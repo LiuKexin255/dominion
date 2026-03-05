@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "add",
+    srcs = ["add.go"],
+    importpath = "dominion/experimental/add",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "add_test",
+    size = "small",
+    srcs = ["add_test.go"],
+    embed = [":add"],
+)

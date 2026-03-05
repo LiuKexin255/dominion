@@ -1,0 +1,3 @@
+{
+    "go.goroot": "${workspaceFolder}/bazel-${workspaceFolderBasename}/external/rules_go++go_sdk+main___download_0"
+}
