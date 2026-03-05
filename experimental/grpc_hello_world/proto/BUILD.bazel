@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "grpc_hello_world_proto",
+    srcs = ["hello_world.proto"],
+    visibility = ["//visibility:public"],
+)
+
+go_proto_library(
+    name = "grpc_hello_world_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+    ],
+    importpath = "dominion/experimental/grpc_hello_world",
+    proto = ":grpc_hello_world_proto",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "grpc_hello_world",
+    embed = [":grpc_hello_world_go_proto"],
+    importpath = "dominion/experimental/grpc_hello_world",
+    visibility = ["//visibility:public"],
+)

@@ -27,24 +27,35 @@
 ### 编译工具
 
 1. 使用 `bazel` 作为编译工具，使用语言对应 `rules` 为各个语言提供编译支持。
-2. 代码变更后，优先使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。如果无法编译，再根据错误信息修改 `BUILD.bazel` 文件。
+2. 使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。**特别注意**：应当只使用 `gazelle` 生成 `BUILD.bazel` 文件，除非生成的文件无法编译。
+3. 使用 `bazel mod tidy` 命令更新 bazel 依赖。
 
 #### Golang
 
 1. 使用 [`go_rules`](https://github.com/bazel-contrib/rules_go) 提供 golang 编译支持。
 2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
-3. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。
+4. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。
+5. 如果 `proto` 相关依赖，可以尝试使用 `gazelle` 更新 `BUILD.bazel` 后是否解决问题。
  
 ## 开发流程
 
 ### 代码生成流程
-Agent 应按照规定迭代流程生成代码。以下为单个迭代流程，从上到下依次执行，且每行分开执行。
+Agent 应按照规定迭代流程生成代码。以下为单个迭代流程，从上到下依次执行，且单次只执行该步骤中指定的动作，不得执行当前步骤中没有列出的动作。
 
-1. 根据需求/要求，更改代码文件。
-2. 代码格式化与依赖更新（不进行其他操作，特别是不进行编译和单元测试）。
-3. 使用 `gazelle` 更新 `BUILD.bazel` 文件，并对 `BUILD.bazel` 进行修改。
-2. 进行编译检查。
-3. 运行单元测试。
+1. step 1: 分析指令和需求，并列出代码变更计划。
+1. step 2：根据需求/要求，更改代码文件。
+2. step 3：代码格式化与依赖更新。
+3. step 4：使用 `gazelle` 更新 `BUILD.bazel` 文件，并对 `BUILD.bazel` 进行修改。
+2. step 5：进行编译检查。
+3. step 6：运行单元测试。
 
-较大代码变更应拆分为多次迭代进行变更，每次迭代代码变更行数最好小于 500 行。
+较大代码变更应拆分为多次迭代进行变更，每次迭代代码变更行数最好小于 500 行。代码变更计划参考:
+
+```
+epoch 1: 
+    step 1.1: 修改 `xxxx.go` 增加 `xxxx` 方法，...
+    step 1.2: 新增 `xxxx.go` 文件，包含 .... 功能，...
+epoch 2:
+    step 2.1: ...
+```
