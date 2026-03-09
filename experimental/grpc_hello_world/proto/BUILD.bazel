@@ -6,6 +6,12 @@ proto_library(
     name = "grpc_hello_world_proto",
     srcs = ["hello_world.proto"],
     visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:client_proto",
+        "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
+    ],
 )
 
 go_proto_library(
@@ -13,10 +19,17 @@ go_proto_library(
     compilers = [
         "@rules_go//proto:go_grpc_v2",
         "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
     ],
     importpath = "dominion/experimental/grpc_hello_world",
     proto = ":grpc_hello_world_proto",
     visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:annotations_go_proto",
+        "@googleapis//google/api:client_go_proto",
+        "@googleapis//google/api:field_behavior_go_proto",
+        "@googleapis//google/api:resource_go_proto",
+    ],
 )
 
 go_library(

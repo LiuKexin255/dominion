@@ -10,7 +10,7 @@ go_library(
     deps = [
         "//experimental/grpc_hello_world/proto:grpc_hello_world",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//credentials",
+        "@org_golang_google_grpc//grpclog",
         "@org_golang_google_grpc//reflection",
     ],
 )

@@ -9,7 +9,9 @@ bazel_dep(name = "rules_oci", version = "2.2.7")
 bazel_dep(name = "tar.bzl", version = "0.9.0")
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 bazel_dep(name = "rules_shell", version = "0.6.1")
-
+bazel_dep(name = "googleapis", version = "0.0.0-20260223-edfe7983")
+bazel_dep(name = "googleapis-go", version = "1.0.0")
+bazel_dep(name = "grpc_ecosystem_grpc_gateway", version = "2.27.6")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")

@@ -1,19 +1,21 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
 
 go_library(
-    name = "client_lib",
+    name = "gateway_lib",
     srcs = ["main.go"],
-    importpath = "dominion/experimental/grpc_hello_world/client",
+    importpath = "dominion/experimental/grpc_hello_world/gateway",
     visibility = ["//visibility:private"],
     deps = [
         "//experimental/grpc_hello_world/proto:grpc_hello_world",
+        "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//grpclog",
     ],
 )
 
 go_binary(
-    name = "client",
-    embed = [":client_lib"],
+    name = "gateway",
+    embed = [":gateway_lib"],
     visibility = ["//visibility:public"],
 )

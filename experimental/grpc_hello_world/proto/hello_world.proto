@@ -2,16 +2,39 @@ syntax = "proto3";
 
 package experimental.grpc_hello_world;
 
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/api/client.proto";
+
 option go_package = "dominion/experimental/grpc_hello_world;grpc_hello_world";
 
+// ...
 service Greeter {
-  rpc SayHello(HelloRequest) returns (HelloReply);
+  // ...
+  rpc GetHello(HelloRequest) returns (Hello) {
+    option (google.api.http) = {
+      get: "/v1/{name=world/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
 }
 
 message HelloRequest {
-  string name = 1;
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "hello.liukexin.com/Hellow"
+    }];
 }
 
-message HelloReply {
-  string message = 1;
+message Hello {
+  option (google.api.resource) = {
+    type: "hello.liukexin.com/Hellow"
+    pattern: "world/{hello}"
+  };
+  string name = 1; 
+
+  string message = 2;
 }

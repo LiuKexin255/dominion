@@ -9,7 +9,6 @@ import (
 	"dominion/experimental/grpc_hello_world"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -21,15 +20,13 @@ type greeterServer struct {
 	grpc_hello_world.UnimplementedGreeterServer
 }
 
-func (s *greeterServer) SayHello(ctx context.Context, req *grpc_hello_world.HelloRequest) (*grpc_hello_world.HelloReply, error) {
-	_ = ctx
-
+func (s *greeterServer) GetHello(ctx context.Context, req *grpc_hello_world.HelloRequest) (*grpc_hello_world.Hello, error) {
 	name := req.GetName()
 	if name == "" {
 		name = "world"
 	}
 
-	return &grpc_hello_world.HelloReply{Message: "Hello, " + name + "!"}, nil
+	return &grpc_hello_world.Hello{Name: name, Message: "Hello, " + name + "!"}, nil
 }
 
 func main() {
@@ -40,16 +37,18 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	creds, err := credentials.NewServerTLSFromFile(*tlsCertFile, *tlsKeyFile)
-	if err != nil {
-		log.Fatalf("failed to load TLS key pair from cert=%s key=%s: %v", *tlsCertFile, *tlsKeyFile, err)
-	}
+	// creds, err := credentials.NewServerTLSFromFile(*tlsCertFile, *tlsKeyFile)
+	// if err != nil {
+	// 	log.Fatalf("failed to load TLS key pair from cert=%s key=%s: %v", *tlsCertFile, *tlsKeyFile, err)
+	// }
 
-	grpcServer := grpc.NewServer(grpc.Creds(creds))
+	// grpcServer := grpc.NewServer(grpc.Creds(creds))
+	grpcServer := grpc.NewServer()
+
 	grpc_hello_world.RegisterGreeterServer(grpcServer, &greeterServer{})
 	reflection.Register(grpcServer)
 
-	log.Printf("gRPC hello world server listening with TLS on :%s", *port)
+	log.Printf("gRPC hello world server listening: %s", *port)
 	if err := grpcServer.Serve(listener); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
