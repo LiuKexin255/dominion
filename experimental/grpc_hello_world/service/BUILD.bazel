@@ -1,4 +1,6 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@tar.bzl", "tar")
 
 go_library(
     name = "service_lib",
@@ -8,6 +10,7 @@ go_library(
     deps = [
         "//experimental/grpc_hello_world/proto:grpc_hello_world",
         "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials",
         "@org_golang_google_grpc//reflection",
     ],
 )
@@ -16,4 +19,24 @@ go_binary(
     name = "service",
     embed = [":service_lib"],
     visibility = ["//visibility:public"],
+)
+
+tar(
+    name = "service_tar",
+    srcs = [
+        ":service",
+    ],
+)
+
+oci_image(
+    name = "service_image",
+    base = "@distroless_base",
+    entrypoint = ["/service"],
+    tars = [":service_tar"],
+)
+
+oci_push(
+    name = "service_image_push",
+    image = ":service_image",
+    repository = "registry.liukexin.com/experimental/grpc_hello_world/service",
 )

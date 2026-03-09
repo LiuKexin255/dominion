@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-hello-world-service
+  namespace: default
+  labels:
+    app: grpc-hello-world-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: grpc-hello-world-service 
+      app: grpc-hello-world-service
+  template:
+    metadata:
+      labels:
+        name: grpc-hello-world-service
+        app: grpc-hello-world-service
+    spec:
+      containers:
+        - name: service
+          image: grpc-hello-world-service:latest
+          args:
+            - "-port=50051"
+            - "-tls_cert_file=/etc/tls/tls.crt"
+            - "-tls_key_file=/etc/tls/tls.key"
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          volumeMounts:
+            - name: tls-cert
+              mountPath: /etc/tls
+              readOnly: true
+      volumes:
+        - name: tls-cert
+          secret:
+            secretName: my-https-cert
