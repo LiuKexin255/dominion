@@ -13,21 +13,21 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var port = flag.String("port", "8080", "Port to listen on")
-var grpcPort = flag.String("grpc_port", "localhost:50051", "Port to listen on")
+var port = flag.String("port", "80", "Port to listen on")
 
 func main() {
 	flag.Parse()
 
 	mux := runtime.NewServeMux()
+
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	err := grpc_hello_world.RegisterGreeterHandlerFromEndpoint(context.Background(), mux, *grpcPort, opts)
+	err := grpc_hello_world.RegisterGreeterHandlerFromEndpoint(context.Background(), mux, "grpc-hello-world-service:50051", opts)
 	if err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
 
 	log.Printf("gRPC hello world gateway listening :%s", *port)
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	if err := http.ListenAndServe(":"+*port, mux); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
 }

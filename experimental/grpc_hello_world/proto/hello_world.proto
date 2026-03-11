@@ -7,7 +7,7 @@ import "google/api/field_behavior.proto";
 import "google/api/resource.proto";
 import "google/api/client.proto";
 
-option go_package = "dominion/experimental/grpc_hello_world;grpc_hello_world";
+option go_package = "dominion/experimental/grpc_hello_world";
 
 // ...
 service Greeter {
@@ -25,13 +25,13 @@ message HelloRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "hello.liukexin.com/Hellow"
+      type: "hello.liukexin.com/Hello"
     }];
 }
 
 message Hello {
   option (google.api.resource) = {
-    type: "hello.liukexin.com/Hellow"
+    type: "hello.liukexin.com/Hello"
     pattern: "world/{hello}"
   };
   string name = 1; 

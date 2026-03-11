@@ -4,35 +4,111 @@ metadata:
   name: grpc-hello-world-service
   namespace: default
   labels:
-    app: grpc-hello-world-service
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: service
 spec:
   replicas: 1
   selector:
     matchLabels:
-      name: grpc-hello-world-service 
-      app: grpc-hello-world-service
+      app.kubernetes.io/name: grpc-hello-world
+      app.kubernetes.io/instance: service
   template:
     metadata:
       labels:
-        name: grpc-hello-world-service
-        app: grpc-hello-world-service
+        app.kubernetes.io/name: grpc-hello-world
+        app.kubernetes.io/instance: service
     spec:
       containers:
         - name: service
-          image: grpc-hello-world-service:latest
-          args:
-            - "-port=50051"
-            - "-tls_cert_file=/etc/tls/tls.crt"
-            - "-tls_key_file=/etc/tls/tls.key"
+          image: registry.liukexin.com/experimental/grpc_hello_world/service:dev@sha256:820c9114bc57a1204d04da6423b05597396a44dd2764f6cc9f7ef38f2b8e9a40
           ports:
             - name: grpc
               containerPort: 50051
               protocol: TCP
-          volumeMounts:
-            - name: tls-cert
-              mountPath: /etc/tls
-              readOnly: true
-      volumes:
-        - name: tls-cert
-          secret:
-            secretName: my-https-cert
+--- 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-hello-world-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grpc-hello-world
+      app.kubernetes.io/instance: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grpc-hello-world
+        app.kubernetes.io/instance: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: registry.liukexin.com/experimental/grpc_hello_world/gateway:dev@sha256:4f1fa131a9114f4ce28354b36bb30dbce4f09514bf14ec984ff8f03abb8f4e78
+          ports:
+          - name: http
+            containerPort: 80
+            protocol: TCP
+--- 
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-hello-world-service
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: service
+spec:
+  selector:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: service
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-hello-world-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-hello-world-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/name: grpc-hello-world
+    app.kubernetes.io/instance: gateway
+spec:
+  hostnames:
+    - hello.liukexin.com
+  parentRefs:
+    - name: traefik-gateway
+      namespace: ingress
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      backendRefs:
+        - name: grpc-hello-world-gateway
+          port: 80
