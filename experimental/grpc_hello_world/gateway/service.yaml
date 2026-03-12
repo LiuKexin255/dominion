@@ -1,0 +1,11 @@
+name: gateway
+app: grpc_hello_world
+desc: grpc hello world gateway
+artifacts:
+  - name: gateway
+    type: deployment
+    target: :gateway_image
+    ports: 
+      - name: http 
+        port: 80
+ 

@@ -1,0 +1,11 @@
+name: service
+app: grpc_hello_world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: :service_image
+    ports: 
+      - name: grpc 
+        port: 50051
+ 
