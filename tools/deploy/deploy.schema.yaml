@@ -6,17 +6,11 @@ type: object
 description: "部署环境定义"
 additionalProperties: false
 required:
-  - name
   - app
   - desc
   - services
 
 properties:
-  name:
-    type: string
-    minLength: 1
-    description: "环境名"
-
   app:
     type: string
     minLength: 1

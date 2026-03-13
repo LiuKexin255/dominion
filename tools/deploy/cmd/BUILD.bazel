@@ -1,0 +1,42 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "env_deploy_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/tools/deploy/cmd/env_deploy",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_xeipuuv_gojsonschema//:gojsonschema",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_binary(
+    name = "env_deploy",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "env_deploy_test",
+    size = "small",
+    srcs = ["main_test.go"],
+    embed = [":env_deploy_lib"],
+)
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/tools/deploy/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_xeipuuv_gojsonschema//:gojsonschema",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["main_test.go"],
+    embed = [":cmd_lib"],
+)

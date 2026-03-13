@@ -1,0 +1,36 @@
+本目录包含部署相关定义与工具
+
+## 部署定义
+
+1. 使用 `service.yaml` 定义需要被部署的服务单元。
+2. 使用 `deploy.yaml` 定义部署环境，以及该环境需要部署哪些服务单元。
+
+## 部署工具
+
+通过部署工具 `env_deploy` 将 `deploy.yaml` 定义的环境连同其中包含的服务部署到 k8s 当中。部署工具通过 `bazel rules` 包装，类似 `gazelle`，开发者可通过运行 `bazel run //:deploy -- --deploy=/experimental/grpc_hello_world/deploy.yaml --env=grpc-dev` 部署。
+
+### 相关命令
+
+1. 创建/切换环境
+
+```bash
+bazel run //:deply -- --env={env-name}
+```
+
+如果环境不存在，则创建环境；如存在则切换环境
+
+2. 部署/更新服务
+
+```bash 
+bazel run //:deploy -- --deploy={path-of-deploy.yaml} --env={env-name}
+```
+
+3. 删除环境
+
+```bash
+bazel run //:deploy -- --del={env-name}
+```
+
+### 本地缓存
+
+环境包含的信息缓存在当前仓库 .env 目录下，例如环境名为 `dev`，则保存相关信息存储在 .env/dev.env.json。

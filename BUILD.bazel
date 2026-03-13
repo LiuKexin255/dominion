@@ -20,3 +20,8 @@ gazelle(
         "-index=lazy",
     ],
 )
+
+alias(
+    name = "deploy",
+    actual = "//tools/deploy/cmd/env_deploy:env_deploy",
+)
