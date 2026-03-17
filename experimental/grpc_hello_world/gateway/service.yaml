@@ -1,5 +1,5 @@
 name: gateway
-app: grpc_hello_world
+app: grpc-hello-world
 desc: grpc hello world gateway
 artifacts:
   - name: gateway

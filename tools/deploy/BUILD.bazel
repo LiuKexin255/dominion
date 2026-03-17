@@ -1,0 +1,4 @@
+exports_files([
+    "deploy.schema.json",
+    "service.schema.json",
+])

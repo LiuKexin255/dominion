@@ -1,8 +1,0 @@
-load("@rules_go//go:def.bzl", "go_library")
-
-go_library(
-    name = "deploy",
-    srcs = ["deploy.go"],
-    importpath = "dominion/tools/deploy/pkg/deploy",
-    visibility = ["//visibility:public"],
-)

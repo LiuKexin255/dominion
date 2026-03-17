@@ -20,8 +20,6 @@ type options struct {
 	del    string
 }
 
-
-
 type envState struct {
 	Name      string `json:"name"`
 	DeployApp string `json:"deploy_app,omitempty"`
@@ -142,8 +140,8 @@ func schemaPaths() (string, string, error) {
 		return "", "", err
 	}
 
-	deploySchema := filepath.Join(root, "tools", "deploy", "deploy.schema.yaml")
-	serviceSchema := filepath.Join(root, "tools", "deploy", "service.schema.yaml")
+	deploySchema := filepath.Join(root, "tools", "deploy", "deploy.schema.json")
+	serviceSchema := filepath.Join(root, "tools", "deploy", "service.schema.json")
 	if exists(deploySchema) && exists(serviceSchema) {
 		return deploySchema, serviceSchema, nil
 	}

@@ -1,8 +1,23 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "config",
     srcs = ["config.go"],
     importpath = "dominion/tools/deploy/pkg/config",
     visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_goccy_go_yaml//:go-yaml",
+        "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
+    ],
+)
+
+go_test(
+    name = "config_test",
+    srcs = ["config_test.go"],
+    args = ["-test.v"],
+    data = glob(["testdata/**"]) + [
+        "//tools/deploy:deploy.schema.json",
+        "//tools/deploy:service.schema.json",
+    ],
+    deps = [":config"],
 )
