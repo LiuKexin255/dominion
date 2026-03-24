@@ -1,29 +1,28 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/xeipuuv/gojsonschema"
-	"gopkg.in/yaml.v3"
+	"dominion/tools/deploy/pkg/config"
+	"dominion/tools/deploy/pkg/env"
+	"dominion/tools/deploy/pkg/workspace"
+)
+
+const (
+	deploySchemaRelPath  = "tools/deploy/deploy.schema.json"
+	serviceSchemaRelPath = "tools/deploy/service.schema.json"
 )
 
 type options struct {
-	env    string
-	deploy string
-	del    string
-}
-
-type envState struct {
-	Name      string `json:"name"`
-	DeployApp string `json:"deploy_app,omitempty"`
-	UpdatedAt string `json:"updated_at"`
+	env       string
+	app       string
+	deploy    string
+	delete string
 }
 
 func main() {
@@ -38,6 +37,25 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	env.LazyInit()
+	if err := initSchemaValidaters(); err != nil {
+		return err
+	}
+
+	resolvedAppName, err := resolveAppName(opts.app)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case opts.delete != "":
+		return deleteEnvironment(opts.delete, resolvedAppName)
+	case opts.deploy != "":
+		return deployAndActivate(opts.env, resolvedAppName, opts.deploy)
+	default:
+		return switchEnvironment(opts.env, resolvedAppName)
+	}
 }
 
 func parseOptions(args []string) (options, error) {
@@ -45,8 +63,9 @@ func parseOptions(args []string) (options, error) {
 
 	fs := flag.NewFlagSet("env_deploy", flag.ContinueOnError)
 	fs.StringVar(&opts.env, "env", "", "create or switch environment")
+	fs.StringVar(&opts.app, "app", "", "application name")
 	fs.StringVar(&opts.deploy, "deploy", "", "path to deploy.yaml")
-	fs.StringVar(&opts.del, "del", "", "delete environment")
+	fs.StringVar(&opts.delete, "del", "", "delete environment")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -55,7 +74,7 @@ func parseOptions(args []string) (options, error) {
 	}
 
 	switch {
-	case opts.del != "":
+	case opts.delete != "":
 		if opts.env != "" || opts.deploy != "" {
 			return options{}, errors.New("--del cannot be combined with --env or --deploy")
 		}
@@ -70,231 +89,124 @@ func parseOptions(args []string) (options, error) {
 	return opts, nil
 }
 
-func loadDeployAndServices(deployPath string) (string, deployConfig, []serviceConfig, error) {
-	deploySchemaPath, serviceSchemaPath, err := schemaPaths()
+func initSchemaValidaters() error {
+	deploySchemaAbsPath := filepath.Join(workspace.MustRoot(), deploySchemaRelPath)
+	serviceSchemaAbsPath := filepath.Join(workspace.MustRoot(), serviceSchemaRelPath)
+
+	deployValidater, err := config.NewYAMLValidater(deploySchemaAbsPath)
 	if err != nil {
-		return "", deployConfig{}, nil, err
+		return fmt.Errorf("加载 deploy schema 失败: %w", err)
 	}
-	if !filepath.IsAbs(deployPath) {
-		root, err := workspaceRoot()
-		if err != nil {
-			return "", deployConfig{}, nil, err
-		}
-		deployPath = filepath.Join(root, deployPath)
-	}
-
-	absDeployPath, err := filepath.Abs(deployPath)
+	serviceValidater, err := config.NewYAMLValidater(serviceSchemaAbsPath)
 	if err != nil {
-		return "", deployConfig{}, nil, fmt.Errorf("resolve deploy path: %w", err)
+		return fmt.Errorf("加载 service schema 失败: %w", err)
 	}
 
-	deployRaw, err := os.ReadFile(absDeployPath)
-	if err != nil {
-		return "", deployConfig{}, nil, fmt.Errorf("read deploy file: %w", err)
-	}
-	if err := validateYAML(deployRaw, deploySchemaPath); err != nil {
-		return "", deployConfig{}, nil, fmt.Errorf("invalid deploy file %q: %w", absDeployPath, err)
-	}
-
-	var deployCfg deployConfig
-	if err := yaml.Unmarshal(deployRaw, &deployCfg); err != nil {
-		return "", deployConfig{}, nil, fmt.Errorf("decode deploy file: %w", err)
-	}
-
-	serviceCfgs := make([]serviceConfig, 0, len(deployCfg.Services))
-	baseDir := filepath.Dir(absDeployPath)
-	for _, svc := range deployCfg.Services {
-		servicePath := svc.Artifact.Path
-		if !filepath.IsAbs(servicePath) {
-			servicePath = filepath.Join(baseDir, servicePath)
-		}
-		serviceRaw, err := os.ReadFile(servicePath)
-		if err != nil {
-			return "", deployConfig{}, nil, fmt.Errorf("read service file %q: %w", servicePath, err)
-		}
-		if err := validateYAML(serviceRaw, serviceSchemaPath); err != nil {
-			return "", deployConfig{}, nil, fmt.Errorf("invalid service file %q: %w", servicePath, err)
-		}
-
-		var serviceCfg serviceConfig
-		if err := yaml.Unmarshal(serviceRaw, &serviceCfg); err != nil {
-			return "", deployConfig{}, nil, fmt.Errorf("decode service file %q: %w", servicePath, err)
-		}
-		serviceCfgs = append(serviceCfgs, serviceCfg)
-	}
-
-	return absDeployPath, deployCfg, serviceCfgs, nil
-}
-
-func serviceNames(cfgs []serviceConfig) []string {
-	names := make([]string, 0, len(cfgs))
-	for _, cfg := range cfgs {
-		names = append(names, cfg.Name)
-	}
-	return names
-}
-
-func schemaPaths() (string, string, error) {
-	root, err := workspaceRoot()
-	if err != nil {
-		return "", "", err
-	}
-
-	deploySchema := filepath.Join(root, "tools", "deploy", "deploy.schema.json")
-	serviceSchema := filepath.Join(root, "tools", "deploy", "service.schema.json")
-	if exists(deploySchema) && exists(serviceSchema) {
-		return deploySchema, serviceSchema, nil
-	}
-
-	return "", "", errors.New("cannot locate deploy schema files under tools/deploy")
-}
-
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func validateYAML(yamlRaw []byte, schemaPath string) error {
-	schemaRaw, err := os.ReadFile(schemaPath)
-	if err != nil {
-		return fmt.Errorf("read schema %q: %w", schemaPath, err)
-	}
-
-	jsonDoc, err := yamlToJSON(yamlRaw)
-	if err != nil {
-		return fmt.Errorf("convert YAML to JSON document: %w", err)
-	}
-	jsonSchema, err := yamlToJSON(schemaRaw)
-	if err != nil {
-		return fmt.Errorf("convert YAML to JSON schema: %w", err)
-	}
-
-	result, err := gojsonschema.Validate(
-		gojsonschema.NewBytesLoader(jsonSchema),
-		gojsonschema.NewBytesLoader(jsonDoc),
-	)
-	if err != nil {
-		return fmt.Errorf("run schema validation: %w", err)
-	}
-	if result.Valid() {
-		return nil
-	}
-
-	errs := make([]string, 0, len(result.Errors()))
-	for _, issue := range result.Errors() {
-		errs = append(errs, fmt.Sprintf("%s: %s", issue.Field(), issue.Description()))
-	}
-	return errors.New(strings.Join(errs, "; "))
-}
-
-func yamlToJSON(raw []byte) ([]byte, error) {
-	var data any
-	if err := yaml.Unmarshal(raw, &data); err != nil {
-		return nil, err
-	}
-	return json.Marshal(data)
-}
-
-func envFilePath(env string) (string, error) {
-	if strings.TrimSpace(env) == "" {
-		return "", errors.New("env is empty")
-	}
-
-	root, err := workspaceRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, ".env", env+".env.json"), nil
-}
-
-func workspaceRoot() (string, error) {
-	if root := os.Getenv("BUILD_WORKSPACE_DIRECTORY"); root != "" {
-		if exists(root) {
-			return root, nil
-		}
-	}
-
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("get working directory: %w", err)
-	}
-	for {
-		if exists(filepath.Join(wd, "go.mod")) {
-			return wd, nil
-		}
-		parent := filepath.Dir(wd)
-		if parent == wd {
-			break
-		}
-		wd = parent
-	}
-
-	return "", errors.New("cannot locate workspace root")
-}
-
-func upsertEnvCache(env string) (bool, envState, error) {
-	path, err := envFilePath(env)
-	if err != nil {
-		return false, envState{}, err
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, envState{}, fmt.Errorf("create env cache directory: %w", err)
-	}
-
-	state := envState{Name: env, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-	created := true
-	if raw, err := os.ReadFile(path); err == nil {
-		created = false
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &state); err != nil {
-				return false, envState{}, fmt.Errorf("decode env cache %q: %w", path, err)
-			}
-			state.Name = env
-			state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, envState{}, fmt.Errorf("read env cache %q: %w", path, err)
-	}
-
-	if err := writeJSON(path, state); err != nil {
-		return false, envState{}, err
-	}
-
-	return created, state, nil
-}
-
-func writeEnvState(env string, state envState) error {
-	path, err := envFilePath(env)
-	if err != nil {
-		return err
-	}
-	return writeJSON(path, state)
-}
-
-func writeJSON(path string, value any) error {
-	raw, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode json: %w", err)
-	}
-	raw = append(raw, '\n')
-
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		return fmt.Errorf("write file %q: %w", path, err)
-	}
+	config.RegisterDeployValidater(deployValidater)
+	config.RegisterServiceValidater(serviceValidater)
 	return nil
 }
 
-func deleteEnvCache(env string) (bool, error) {
-	path, err := envFilePath(env)
+func resolvePath(inputPath string) (string, error) {
+	if filepath.IsAbs(inputPath) {
+		return inputPath, nil
+	}
+	root, err := workspace.Root()
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if err := os.Remove(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+	return filepath.Join(root, inputPath), nil
+}
+
+func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
+	absDeployPath, err := resolvePath(deployPath)
+	if err != nil {
+		return nil, fmt.Errorf("解析 deploy 文件路径失败: %w", err)
+	}
+
+	deployConfig, err := config.ParseDeployConfig(absDeployPath)
+	if err != nil {
+		return nil, fmt.Errorf("解析部署配置失败: %w", err)
+	}
+
+	return deployConfig, nil
+}
+
+func resolveAppName(appName string) (string, error) {
+	if strings.TrimSpace(appName) != "" {
+		return appName, nil
+	}
+
+	active, err := env.Current()
+	if err != nil {
+		return "", errors.New("未指定 --app，且当前没有激活环境")
+	}
+	return active.App, nil
+}
+
+func deployAndActivate(envName string, appName string, deployPath string) error {
+	deployConfig, err := parseDeployConfig(deployPath)
+	if err != nil {
+		return err
+	}
+
+	deployEnv, err := env.Get(envName, appName)
+	if err != nil {
+		if !errors.Is(err, env.ErrNotFound) {
+			return err
 		}
-		return false, fmt.Errorf("delete env cache %q: %w", path, err)
+
+		deployEnv, err = env.New(envName, appName)
+		if err != nil {
+			return fmt.Errorf("创建环境失败: %w", err)
+		}
 	}
-	return true, nil
+
+	if err := deployEnv.Update(deployConfig); err != nil {
+		return fmt.Errorf("更新环境失败: %w", err)
+	}
+
+	if err := deployEnv.Active(); err != nil {
+		return fmt.Errorf("激活环境失败: %w", err)
+	}
+
+	fmt.Printf("环境 %s/%s 已激活\n", envName, appName)
+	return nil
+}
+
+func switchEnvironment(envName string, appName string) error {
+	deployEnv, err := env.Get(envName, appName)
+	if err != nil {
+		if !errors.Is(err, env.ErrNotFound) {
+			return err
+		}
+
+		deployEnv, err = env.New(envName, appName)
+		if err != nil {
+			return fmt.Errorf("创建环境失败: %w", err)
+		}
+	}
+
+	if err := deployEnv.Active(); err != nil {
+		return err
+	}
+
+	fmt.Printf("已切换到环境 %s/%s\n", envName, appName)
+	return nil
+}
+
+func deleteEnvironment(envName string, appName string) error {
+	deployEnv, err := env.Get(envName, appName)
+	if err != nil {
+		if errors.Is(err, env.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := deployEnv.Delete(); err != nil {
+		return err
+	}
+
+	fmt.Printf("环境 %s/%s 已删除\n", envName, appName)
+	return nil
 }

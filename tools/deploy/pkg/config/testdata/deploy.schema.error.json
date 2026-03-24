@@ -5,12 +5,18 @@
   "description": "部署环境定义",
   "additionalProperties": false,
   "required": [
+    "template",
     "app",
     "desc",
     "services"
   ],
   "properties": {
-    "app": {
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "description": "部署配置模板名称"
+    },
+    "app": 
       "type": "string",
       "minLength": 1,
       "description": "环境所属应用名，同一个应用下环境名不能重复"
@@ -20,7 +26,7 @@
       "minLength": 1,
       "description": "环境描述"
     },
-    "services": 
+    "services": {
       "type": "array",
       "description": "部署的服务列表，同一个服务不能多次部署",
       "minItems": 1,

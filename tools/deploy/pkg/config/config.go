@@ -39,6 +39,7 @@ const (
 
 // DeployConfig 部署配置
 type DeployConfig struct {
+	Template string           `yaml:"template"`
 	App      string           `yaml:"app"`
 	Desc     string           `yaml:"desc"`
 	Services []*DeployService `yaml:"services"`
@@ -46,7 +47,7 @@ type DeployConfig struct {
 
 type DeployService struct {
 	Artifact DeployArtifact `yaml:"artifact"`
-	HTTP     DeployHTTP     `yaml:"http"`
+	HTTP     DeployHTTP     `yaml:"http,omitempty"`
 }
 
 type DeployArtifact struct {

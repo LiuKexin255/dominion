@@ -5,11 +5,17 @@
   "description": "部署环境定义",
   "additionalProperties": false,
   "required": [
+    "template",
     "app",
     "desc",
     "services"
   ],
   "properties": {
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "description": "部署配置模板名称"
+    },
     "app": {
       "type": "string",
       "minLength": 1,

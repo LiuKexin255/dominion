@@ -1,3 +1,4 @@
+template: deploy
 app: grpc-hello-world
 desc: "开发环境"
 services:

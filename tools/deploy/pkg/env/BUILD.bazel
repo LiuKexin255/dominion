@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "env",
+    srcs = ["env.go"],
+    importpath = "dominion/tools/deploy/pkg/env",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/deploy/pkg/config",
+        "//tools/deploy/pkg/workspace",
+        "@com_github_goccy_go_yaml//:go-yaml",
+    ],
+)
+
+go_test(
+    name = "env_test",
+    srcs = ["env_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":env"],
+    deps = [
+        "//tools/deploy/pkg/config",
+        "//tools/deploy/pkg/workspace",
+    ],
+)

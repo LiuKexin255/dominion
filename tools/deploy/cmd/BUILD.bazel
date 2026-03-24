@@ -6,8 +6,9 @@ go_library(
     importpath = "dominion/tools/deploy/cmd/env_deploy",
     visibility = ["//visibility:private"],
     deps = [
-        "@com_github_xeipuuv_gojsonschema//:gojsonschema",
-        "@in_gopkg_yaml_v3//:yaml_v3",
+        "//tools/deploy/pkg/config",
+        "//tools/deploy/pkg/env",
+        "//tools/deploy/pkg/workspace",
     ],
 )
 
@@ -30,8 +31,9 @@ go_library(
     importpath = "dominion/tools/deploy/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "@com_github_xeipuuv_gojsonschema//:gojsonschema",
-        "@in_gopkg_yaml_v3//:yaml_v3",
+        "//tools/deploy/pkg/config",
+        "//tools/deploy/pkg/env",
+        "//tools/deploy/pkg/workspace",
     ],
 )
 

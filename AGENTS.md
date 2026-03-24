@@ -33,6 +33,7 @@
 #### Golang
 
 1. 使用 [`go_rules`](https://github.com/bazel-contrib/rules_go) 提供 golang 编译支持。
+2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
 2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
 4. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。

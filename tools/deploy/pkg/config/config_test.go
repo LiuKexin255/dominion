@@ -61,8 +61,9 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取部署配置成功",
 			path: "testdata/deploy.yaml",
 			want: &config.DeployConfig{
-				App:  "grpc-hello-world",
-				Desc: "开发环境",
+				Template: "deploy",
+				App:      "grpc-hello-world",
+				Desc:     "开发环境",
 				Services: []*config.DeployService{
 					{
 						Artifact: config.DeployArtifact{
