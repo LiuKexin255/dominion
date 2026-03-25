@@ -21,6 +21,8 @@ const (
 	commandUse    = "use"
 	commandDeploy = "deploy"
 	commandDel    = "del"
+	commandList   = "list"
+	commandCur    = "cur"
 
 	flagApp = "app"
 )
@@ -72,6 +74,8 @@ var commandFlagTable = map[string][]string{
 	commandUse:    {flagApp},
 	commandDeploy: {},
 	commandDel:    {flagApp},
+	commandList:   {},
+	commandCur:    {},
 }
 
 // commandExecFunc 命令执行方法
@@ -84,12 +88,16 @@ var commandExecTable = map[string]commandExecFunc{
 	commandUse:    switchEnvironment,
 	commandDeploy: deployAndActivate,
 	commandDel:    deleteEnvironment,
+	commandList:   listEnvironments,
+	commandCur:    showCurrentEnvironment,
 }
 
 var commandValidaterTable = map[string]commandValidaterFunc{
 	commandUse:    validateUseOptions,
 	commandDeploy: validateDeployOptions,
 	commandDel:    validateDelOptions,
+	commandList:   validateListOptions,
+	commandCur:    validateCurOptions,
 }
 
 func main() {
@@ -106,8 +114,10 @@ func run(args []string) error {
 	}
 
 	env.LazyInit()
-	if err := initSchemaValidaters(); err != nil {
-		return err
+	if opts.command == commandDeploy {
+		if err := initSchemaValidaters(); err != nil {
+			return err
+		}
 	}
 
 	if err := opts.Default(); err != nil {
@@ -124,7 +134,7 @@ func run(args []string) error {
 
 func parseOptions(args []string) (*options, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("必须提供命令：%s、%s 或 %s", commandUse, commandDeploy, commandDel)
+		return nil, fmt.Errorf("必须提供命令：%s、%s、%s、%s 或 %s", commandUse, commandDeploy, commandDel, commandList, commandCur)
 	}
 
 	fs, opts, err := newCommandFlagSet(args[0])
@@ -201,6 +211,20 @@ func validateDelOptions(opts *options) error {
 	return nil
 }
 
+func validateListOptions(opts *options) error {
+	if opts.target != "" {
+		return fmt.Errorf("%s does not accept positional args", commandList)
+	}
+	return nil
+}
+
+func validateCurOptions(opts *options) error {
+	if opts.target != "" {
+		return fmt.Errorf("%s does not accept positional args", commandCur)
+	}
+	return nil
+}
+
 func initSchemaValidaters() error {
 	deploySchemaAbsPath := filepath.Join(workspace.MustRoot(), deploySchemaRelPath)
 	serviceSchemaAbsPath := filepath.Join(workspace.MustRoot(), serviceSchemaRelPath)
@@ -227,7 +251,6 @@ func resolvePath(inputPath string) string {
 	if filepath.IsAbs(inputPath) {
 		return inputPath
 	}
-
 	return filepath.Join(workspace.MustWorking(), inputPath)
 }
 
@@ -259,7 +282,7 @@ func deployAndActivate(opts *options) error {
 		return fmt.Errorf("激活环境失败: %w", err)
 	}
 
-	fmt.Printf("环境 %s/%s 已激活\n", active.Name, active.App)
+	fmt.Printf("环境 %s/%s 已部署\n", active.Name, active.App)
 	return nil
 }
 
@@ -287,9 +310,6 @@ func switchEnvironment(opts *options) error {
 func deleteEnvironment(opts *options) error {
 	deployEnv, err := env.Get(opts.target, opts.app)
 	if err != nil {
-		if errors.Is(err, env.ErrNotFound) {
-			return nil
-		}
 		return err
 	}
 	if err := deployEnv.Delete(); err != nil {
@@ -297,5 +317,33 @@ func deleteEnvironment(opts *options) error {
 	}
 
 	fmt.Printf("环境 %s/%s 已删除\n", opts.target, opts.app)
+	return nil
+}
+
+func listEnvironments(_ *options) error {
+	envs, err := env.List()
+	if err != nil {
+		return err
+	}
+
+	if len(envs) == 0 {
+		fmt.Println("暂无环境")
+		return nil
+	}
+
+	for _, item := range envs {
+		fmt.Printf("%s/%s\n", item.App, item.Name)
+	}
+
+	return nil
+}
+
+func showCurrentEnvironment(_ *options) error {
+	active, err := env.Current()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(active)
 	return nil
 }

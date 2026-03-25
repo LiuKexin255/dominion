@@ -1,10 +1,10 @@
 template: deploy
 app: grpc-hello-world
-desc: 开发环境1111
+desc: 开发环境
 services:
 - artifact:
     path: service/service.yaml
-    name: service1111
+    name: service
 - artifact:
     path: gateway/service.yaml
     name: gateway

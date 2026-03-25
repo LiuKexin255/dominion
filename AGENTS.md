@@ -27,7 +27,7 @@
 ### 编译工具
 
 1. 使用 `bazel` 作为编译工具，使用语言对应 `rules` 为各个语言提供编译支持。
-2. 使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。**特别注意**：应当只使用 `gazelle` 生成 `BUILD.bazel` 文件，除非生成的文件无法编译。
+2. 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。**特别注意**：应当只使用 `gazelle` 生成 `BUILD.bazel` 文件，除非生成的文件无法编译。
 3. 使用 `bazel mod tidy` 命令更新 `bazel` 依赖。
 
 #### Golang
@@ -71,4 +71,4 @@ epoch 2:
 
 ## 规范与风格
 
-代码规范与风格参考 `styles/{language}` 目录下的各个语言对应的参考文件。
+代码规范与风格参考 `styles` 目录下的各个语言对应的参考文件。

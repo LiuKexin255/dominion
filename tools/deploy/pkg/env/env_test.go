@@ -292,6 +292,130 @@ func TestGet(t *testing.T) {
 	}
 }
 
+func TestList(t *testing.T) {
+	updatedAt, err := time.Parse(time.RFC3339Nano, "2026-03-24T07:38:55.742159784Z")
+	if err != nil {
+		t.Fatalf("time.Parse() failed: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		dir  string
+		want []*DeployEnv
+	}{
+		{
+			name: "读取所有环境",
+			dir:  filepath.Join("testdata", "list"),
+			want: []*DeployEnv{
+				{
+					Profile: Profile{
+						Name:      "empty",
+						App:       "env",
+						UpdatedAt: updatedAt,
+					},
+				},
+				{
+					Profile: Profile{
+						Name:       "test_env",
+						App:        "grpc-hello-world",
+						UpdatedAt:  updatedAt,
+						MainConfig: "grpc-hello-world__test_env__grpc-hello-world__deploy.yaml",
+					},
+					mainDeployConfig: &config.DeployConfig{
+						Template: "deploy",
+						App:      "grpc-hello-world",
+						Desc:     "开发环境",
+						Services: []*config.DeployService{
+							{
+								Artifact: config.DeployArtifact{
+									Path: "service/service.yaml",
+									Name: "service",
+								},
+							},
+							{
+								Artifact: config.DeployArtifact{
+									Path: "gateway/service.yaml",
+									Name: "gateway",
+								},
+								HTTP: config.DeployHTTP{
+									Hostnames: []string{"hello.liukexin.com"},
+									Matches: []*config.DeployHTTPMatch{
+										{
+											Path: config.DeployHTTPPathMatch{
+												Type:  config.HTTPPathMatchTypePrefix,
+												Value: "/v1",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Profile: Profile{
+						Name:       "test_env_v2",
+						App:        "grpc-hello-world",
+						UpdatedAt:  updatedAt,
+						MainConfig: "grpc-hello-world__test_env_v2__grpc-hello-world__deploy.yaml",
+					},
+					mainDeployConfig: &config.DeployConfig{
+						Template: "deploy",
+						App:      "grpc-hello-world",
+						Desc:     "开发环境1111",
+						Services: []*config.DeployService{
+							{
+								Artifact: config.DeployArtifact{
+									Path: "service/service.yaml",
+									Name: "service1111",
+								},
+							},
+							{
+								Artifact: config.DeployArtifact{
+									Path: "gateway/service.yaml",
+									Name: "gateway",
+								},
+								HTTP: config.DeployHTTP{
+									Hostnames: []string{"hello.liukexin.com1111"},
+									Matches: []*config.DeployHTTPMatch{
+										{
+											Path: config.DeployHTTPPathMatch{
+												Type:  config.HTTPPathMatchTypePrefix,
+												Value: "/v1",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "无环境返回空切片",
+			dir:  t.TempDir(),
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Setenv(workspace.WorkspaceKey, tt.dir)
+			internalInit()
+
+			got, err := List()
+			if err != nil {
+				t.Fatalf("List() failed: %v", err)
+			}
+
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("List() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeployEnv_Active(t *testing.T) {
 	tests := []struct {
 		caseName string // description of this test case

@@ -39,6 +39,8 @@ go_library(
 
 go_test(
     name = "cmd_test",
+    size = "small",
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
+    deps = ["//tools/deploy/pkg/workspace"],
 )

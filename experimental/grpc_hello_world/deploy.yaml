@@ -1,4 +1,5 @@
 app: grpc-hello-world
+template: deploy
 desc: "开发环境"
 services:
   - artifact: 

@@ -159,11 +159,11 @@ func NewYAMLValidater(path string) (*YAMLValidater, error) {
 	}
 
 	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("schema.yaml", schemaJSON); err != nil {
+	if err := compiler.AddResource("/schema.yaml", schemaJSON); err != nil {
 		return nil, err
 	}
 
-	schema, err := compiler.Compile("schema.yaml")
+	schema, err := compiler.Compile("/schema.yaml")
 	if err != nil {
 		return nil, err
 	}

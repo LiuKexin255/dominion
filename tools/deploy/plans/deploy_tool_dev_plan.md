@@ -7,7 +7,9 @@
 1. 创建/切换环境：`use [--app={app-name}] {env-name}`
 2. 部署/更新服务：`deploy {path-of-deploy.yaml}`
 3. 删除环境：`del [--app={app-name}] {env-name}`
-4. `app` 参数如果省略，则使用当前激活环境相同 `app` 名称。
+4. 列出全部环境：`list`
+5. 查看当前激活环境：`cur`
+6. `app` 参数如果省略，则使用当前激活环境相同 `app` 名称。
 
 同时实现本地环境缓存到 `.env` 目录，包含当前激活环境指针与环境/部署配置文件。
 
@@ -43,7 +45,7 @@
 step 1.1: 新增 CLI 入口与参数解析
 
 - 新增 `tools/deploy/cmd/env_deploy/main.go`
-- 支持并校验参数组合：`use [--app] {env-name}` / `deploy {path-of-deploy.yaml}` / `del [--app] {env-name}`
+- 支持并校验参数组合：`use [--app] {env-name}` / `deploy {path-of-deploy.yaml}` / `del [--app] {env-name}` / `list` / `cur`
 - 参数解析采用每个 command 一个 `FlagSet`，通过工厂函数生成，并按参数表绑定与执行命令级校验。
 
 step 1.2: 新增配置加载与 Schema 校验模块
@@ -124,7 +126,9 @@ step 3.3: 文档与契约统一
 2. 环境切换：`bazel run //:deploy -- use --app=grpc-hello-world grpc-dev`
 3. 部署更新：`bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml`
 4. 删除环境：`bazel run //:deploy -- del --app=grpc-hello-world grpc-dev`
-5. 测试：`bazel test //...`
+5. 列出环境：`bazel run //:deploy -- list`
+6. 查看当前环境：`bazel run //:deploy -- cur`
+7. 测试：`bazel test //...`
 
 ## 执行约束（遵循仓库规范）
 

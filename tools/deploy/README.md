@@ -31,12 +31,24 @@ bazel run //:deploy -- deploy {path-of-deploy.yaml}
 bazel run //:deploy -- del [--app={app-name}] {env-name}
 ```
 
-4. `app` 参数规则
+4. 列出环境
+
+```bash
+bazel run //:deploy -- list
+```
+
+5. 查看当前激活环境
+
+```bash
+bazel run //:deploy -- cur
+```
+
+6. `app` 参数规则
 
 - `--app` 可省略；省略时默认使用当前激活环境相同的 `app` 名称。
 - 使用标准参数前置风格，flag 放在位置参数前。
 
-5. `deploy` 文件路径规则
+7. `deploy` 文件路径规则
 
 - 以 `//` 开头：按项目根目录（`BUILD_WORKSPACE_DIRECTORY`）解析。
 - 不以 `/` 开头的相对路径：按当前 shell 工作目录（`BUILD_WORKING_DIRECTORY`）解析。

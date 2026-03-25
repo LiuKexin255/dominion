@@ -14,6 +14,7 @@ go_library(
 
 go_test(
     name = "env_test",
+    size = "small",
     srcs = ["env_test.go"],
     data = glob(["testdata/**"]),
     embed = [":env"],

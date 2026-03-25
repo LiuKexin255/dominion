@@ -20,4 +20,5 @@ go_test(
         "//tools/deploy:service.schema.json",
     ],
     deps = [":config"],
+    size = "small",
 )

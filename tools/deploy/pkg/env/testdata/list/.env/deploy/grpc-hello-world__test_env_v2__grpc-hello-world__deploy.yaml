@@ -10,7 +10,7 @@ services:
     name: gateway
   http:
     hostnames:
-    - hello.liukexin.com
+    - hello.liukexin.com1111
     matches:
     - path:
         type: PathPrefix

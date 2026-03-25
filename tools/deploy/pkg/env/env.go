@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -180,6 +182,10 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	return e.Name == other.Name && e.App == other.App
 }
 
+func (e *DeployEnv) String() string {
+	return fmt.Sprintf("env: %s, app: %s", e.Name, e.App)
+}
+
 func saveDeployConfig(name string, deployConfig *config.DeployConfig) error {
 	configRaw, err := yaml.Marshal(deployConfig)
 	if err != nil {
@@ -258,6 +264,47 @@ func Current() (*DeployEnv, error) {
 	}
 
 	return Get(info.Name, info.App)
+}
+
+// List 返回当前所有环境
+func List() ([]*DeployEnv, error) {
+	entries, err := os.ReadDir(path.Join(workspace.MustRoot(), envProfileDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	profileNames := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if name == currentEnvFileName || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		profileNames = append(profileNames, name)
+	}
+
+	if len(profileNames) == 0 {
+		return nil, nil
+	}
+
+	sort.Strings(profileNames)
+
+	envs := make([]*DeployEnv, 0, len(profileNames))
+	for _, name := range profileNames {
+		env, err := loadDeployEnv(path.Join(workspace.MustRoot(), envProfileDir, name))
+		if err != nil {
+			return nil, err
+		}
+		envs = append(envs, env)
+	}
+
+	return envs, nil
 }
 
 // loadDeployEnv 根据 profile 文件载入环境对象
