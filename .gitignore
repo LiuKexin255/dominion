@@ -1,3 +1,2 @@
 bazel-*
-plans/*
-!plans/README.md
+.*

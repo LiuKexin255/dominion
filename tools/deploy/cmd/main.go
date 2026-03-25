@@ -16,13 +16,80 @@ import (
 const (
 	deploySchemaRelPath  = "tools/deploy/deploy.schema.json"
 	serviceSchemaRelPath = "tools/deploy/service.schema.json"
+	workspacePathPrefix  = "//"
+
+	commandUse    = "use"
+	commandDeploy = "deploy"
+	commandDel    = "del"
+
+	flagApp = "app"
 )
 
 type options struct {
-	env       string
-	app       string
-	deploy    string
-	delete string
+	command string
+	target  string
+	app     string
+}
+
+func (o *options) Default() error {
+	// app 为空时使用当前激活的环境 app
+	if o.app == "" {
+		switch o.command {
+		case commandUse, commandDel:
+			active, err := env.Current()
+			if err != nil {
+				return fmt.Errorf("未指定 --%s，且当前没有激活环境", flagApp)
+			}
+			o.app = active.App
+		}
+	}
+
+	o.app = strings.TrimSpace(o.app)
+	o.target = strings.TrimSpace(o.target)
+
+	return nil
+}
+
+type flagSpec struct {
+	name         string
+	defaultValue string
+	usage        string
+	bind         func(fs *flag.FlagSet, opts *options, spec flagSpec)
+}
+
+var flagSpecs = map[string]flagSpec{
+	flagApp: {
+		name:         flagApp,
+		defaultValue: "",
+		usage:        "application name",
+		bind: func(fs *flag.FlagSet, opts *options, spec flagSpec) {
+			fs.StringVar(&opts.app, spec.name, spec.defaultValue, spec.usage)
+		},
+	},
+}
+
+var commandFlagTable = map[string][]string{
+	commandUse:    {flagApp},
+	commandDeploy: {},
+	commandDel:    {flagApp},
+}
+
+// commandExecFunc 命令执行方法
+type commandExecFunc = func(opts *options) error
+
+// commandValidaterFunc 命令校验方法
+type commandValidaterFunc = func(opts *options) error
+
+var commandExecTable = map[string]commandExecFunc{
+	commandUse:    switchEnvironment,
+	commandDeploy: deployAndActivate,
+	commandDel:    deleteEnvironment,
+}
+
+var commandValidaterTable = map[string]commandValidaterFunc{
+	commandUse:    validateUseOptions,
+	commandDeploy: validateDeployOptions,
+	commandDel:    validateDelOptions,
 }
 
 func main() {
@@ -43,50 +110,95 @@ func run(args []string) error {
 		return err
 	}
 
-	resolvedAppName, err := resolveAppName(opts.app)
-	if err != nil {
+	if err := opts.Default(); err != nil {
 		return err
 	}
 
-	switch {
-	case opts.delete != "":
-		return deleteEnvironment(opts.delete, resolvedAppName)
-	case opts.deploy != "":
-		return deployAndActivate(opts.env, resolvedAppName, opts.deploy)
-	default:
-		return switchEnvironment(opts.env, resolvedAppName)
+	exec, ok := commandExecTable[opts.command]
+	if !ok {
+		return fmt.Errorf("未知命令: %s", opts.command)
 	}
+
+	return exec(opts)
 }
 
-func parseOptions(args []string) (options, error) {
-	var opts options
-
-	fs := flag.NewFlagSet("env_deploy", flag.ContinueOnError)
-	fs.StringVar(&opts.env, "env", "", "create or switch environment")
-	fs.StringVar(&opts.app, "app", "", "application name")
-	fs.StringVar(&opts.deploy, "deploy", "", "path to deploy.yaml")
-	fs.StringVar(&opts.delete, "del", "", "delete environment")
-	if err := fs.Parse(args); err != nil {
-		return options{}, err
-	}
-	if fs.NArg() != 0 {
-		return options{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+func parseOptions(args []string) (*options, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("必须提供命令：%s、%s 或 %s", commandUse, commandDeploy, commandDel)
 	}
 
-	switch {
-	case opts.delete != "":
-		if opts.env != "" || opts.deploy != "" {
-			return options{}, errors.New("--del cannot be combined with --env or --deploy")
-		}
-	case opts.deploy != "":
-		if opts.env == "" {
-			return options{}, errors.New("--deploy requires --env")
-		}
-	case opts.env == "":
-		return options{}, errors.New("must provide --env, --deploy with --env, or --del")
+	fs, opts, err := newCommandFlagSet(args[0])
+	if err != nil {
+		return nil, err
+	}
+
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, err
+	}
+
+	positionArgs := fs.Args()
+	if len(positionArgs) > 0 {
+		opts.target = positionArgs[0]
+	}
+
+	if err := validateOptions(opts); err != nil {
+		return nil, err
 	}
 
 	return opts, nil
+}
+
+func newCommandFlagSet(command string) (*flag.FlagSet, *options, error) {
+	flagNames, ok := commandFlagTable[command]
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown command: %s", command)
+	}
+
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	opts := &options{command: command}
+
+	for _, flagName := range flagNames {
+		spec, ok := flagSpecs[flagName]
+		if !ok {
+			return nil, nil, fmt.Errorf("unknown flag spec for command %s: %s", command, flagName)
+		}
+		spec.bind(fs, opts, spec)
+	}
+
+	return fs, opts, nil
+}
+
+func validateOptions(opts *options) error {
+	validater, ok := commandValidaterTable[opts.command]
+	if !ok {
+		return fmt.Errorf("unknown command: %s", opts.command)
+	}
+
+	return validater(opts)
+}
+
+func validateUseOptions(opts *options) error {
+	if opts.target == "" {
+		return fmt.Errorf("%s requires env name", commandUse)
+	}
+	return nil
+}
+
+func validateDeployOptions(opts *options) error {
+	if opts.target == "" {
+		return fmt.Errorf("%s requires deploy.yaml path", commandDeploy)
+	}
+	if opts.app != "" {
+		return fmt.Errorf("%s does not support --%s", commandDeploy, flagApp)
+	}
+	return nil
+}
+
+func validateDelOptions(opts *options) error {
+	if opts.target == "" {
+		return fmt.Errorf("%s requires env name", commandDel)
+	}
+	return nil
 }
 
 func initSchemaValidaters() error {
@@ -107,24 +219,20 @@ func initSchemaValidaters() error {
 	return nil
 }
 
-func resolvePath(inputPath string) (string, error) {
+func resolvePath(inputPath string) string {
+	if strings.HasPrefix(inputPath, workspacePathPrefix) {
+		return filepath.Join(workspace.MustRoot(), strings.TrimPrefix(inputPath, workspacePathPrefix))
+	}
+
 	if filepath.IsAbs(inputPath) {
-		return inputPath, nil
+		return inputPath
 	}
-	root, err := workspace.Root()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, inputPath), nil
+
+	return filepath.Join(workspace.MustWorking(), inputPath)
 }
 
 func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
-	absDeployPath, err := resolvePath(deployPath)
-	if err != nil {
-		return nil, fmt.Errorf("解析 deploy 文件路径失败: %w", err)
-	}
-
-	deployConfig, err := config.ParseDeployConfig(absDeployPath)
+	deployConfig, err := config.ParseDeployConfig(resolvePath(deployPath))
 	if err != nil {
 		return nil, fmt.Errorf("解析部署配置失败: %w", err)
 	}
@@ -132,56 +240,37 @@ func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
 	return deployConfig, nil
 }
 
-func resolveAppName(appName string) (string, error) {
-	if strings.TrimSpace(appName) != "" {
-		return appName, nil
-	}
-
+func deployAndActivate(opts *options) error {
 	active, err := env.Current()
 	if err != nil {
-		return "", errors.New("未指定 --app，且当前没有激活环境")
+		return fmt.Errorf("%s 需要当前已激活环境", commandDeploy)
 	}
-	return active.App, nil
-}
 
-func deployAndActivate(envName string, appName string, deployPath string) error {
-	deployConfig, err := parseDeployConfig(deployPath)
+	deployConfig, err := parseDeployConfig(opts.target)
 	if err != nil {
 		return err
 	}
 
-	deployEnv, err := env.Get(envName, appName)
-	if err != nil {
-		if !errors.Is(err, env.ErrNotFound) {
-			return err
-		}
-
-		deployEnv, err = env.New(envName, appName)
-		if err != nil {
-			return fmt.Errorf("创建环境失败: %w", err)
-		}
-	}
-
-	if err := deployEnv.Update(deployConfig); err != nil {
+	if err := active.Update(deployConfig); err != nil {
 		return fmt.Errorf("更新环境失败: %w", err)
 	}
 
-	if err := deployEnv.Active(); err != nil {
+	if err := active.Active(); err != nil {
 		return fmt.Errorf("激活环境失败: %w", err)
 	}
 
-	fmt.Printf("环境 %s/%s 已激活\n", envName, appName)
+	fmt.Printf("环境 %s/%s 已激活\n", active.Name, active.App)
 	return nil
 }
 
-func switchEnvironment(envName string, appName string) error {
-	deployEnv, err := env.Get(envName, appName)
+func switchEnvironment(opts *options) error {
+	deployEnv, err := env.Get(opts.target, opts.app)
 	if err != nil {
 		if !errors.Is(err, env.ErrNotFound) {
 			return err
 		}
 
-		deployEnv, err = env.New(envName, appName)
+		deployEnv, err = env.New(opts.target, opts.app)
 		if err != nil {
 			return fmt.Errorf("创建环境失败: %w", err)
 		}
@@ -191,12 +280,12 @@ func switchEnvironment(envName string, appName string) error {
 		return err
 	}
 
-	fmt.Printf("已切换到环境 %s/%s\n", envName, appName)
+	fmt.Printf("已切换到环境 %s/%s\n", opts.target, opts.app)
 	return nil
 }
 
-func deleteEnvironment(envName string, appName string) error {
-	deployEnv, err := env.Get(envName, appName)
+func deleteEnvironment(opts *options) error {
+	deployEnv, err := env.Get(opts.target, opts.app)
 	if err != nil {
 		if errors.Is(err, env.ErrNotFound) {
 			return nil
@@ -207,6 +296,6 @@ func deleteEnvironment(envName string, appName string) error {
 		return err
 	}
 
-	fmt.Printf("环境 %s/%s 已删除\n", envName, appName)
+	fmt.Printf("环境 %s/%s 已删除\n", opts.target, opts.app)
 	return nil
 }
