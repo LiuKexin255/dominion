@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.6
+	github.com/spf13/pflag v1.0.10
 	google.golang.org/grpc v1.79.1
 )
 

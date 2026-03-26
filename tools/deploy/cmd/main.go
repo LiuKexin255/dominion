@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/env"
 	"dominion/tools/deploy/pkg/workspace"
+
+	"github.com/spf13/pflag"
 )
 
 const (
@@ -56,7 +57,7 @@ type flagSpec struct {
 	name         string
 	defaultValue string
 	usage        string
-	bind         func(fs *flag.FlagSet, opts *options, spec flagSpec)
+	bind         func(fs *pflag.FlagSet, opts *options, spec flagSpec)
 }
 
 var flagSpecs = map[string]flagSpec{
@@ -64,7 +65,7 @@ var flagSpecs = map[string]flagSpec{
 		name:         flagApp,
 		defaultValue: "",
 		usage:        "application name",
-		bind: func(fs *flag.FlagSet, opts *options, spec flagSpec) {
+		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
 			fs.StringVar(&opts.app, spec.name, spec.defaultValue, spec.usage)
 		},
 	},
@@ -158,13 +159,13 @@ func parseOptions(args []string) (*options, error) {
 	return opts, nil
 }
 
-func newCommandFlagSet(command string) (*flag.FlagSet, *options, error) {
+func newCommandFlagSet(command string) (*pflag.FlagSet, *options, error) {
 	flagNames, ok := commandFlagTable[command]
 	if !ok {
 		return nil, nil, fmt.Errorf("unknown command: %s", command)
 	}
 
-	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs := pflag.NewFlagSet(command, pflag.ContinueOnError)
 	opts := &options{command: command}
 
 	for _, flagName := range flagNames {

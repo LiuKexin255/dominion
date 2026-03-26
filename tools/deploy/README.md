@@ -14,7 +14,7 @@
 1. 创建/切换环境
 
 ```bash
-bazel run //:deploy -- use [--app={app-name}] {env-name}
+bazel run //:deploy -- use {env-name} [--app={app-name}]
 ```
 
 如果环境不存在，则创建环境；如存在则切换环境
@@ -28,7 +28,7 @@ bazel run //:deploy -- deploy {path-of-deploy.yaml}
 3. 删除环境
 
 ```bash
-bazel run //:deploy -- del [--app={app-name}] {env-name}
+bazel run //:deploy -- del {env-name} [--app={app-name}]
 ```
 
 4. 列出环境
@@ -46,7 +46,6 @@ bazel run //:deploy -- cur
 6. `app` 参数规则
 
 - `--app` 可省略；省略时默认使用当前激活环境相同的 `app` 名称。
-- 使用标准参数前置风格，flag 放在位置参数前。
 
 7. `deploy` 文件路径规则
 

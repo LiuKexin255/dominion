@@ -13,6 +13,7 @@ go_library(
 
 go_test(
     name = "config_test",
+    size = "small",
     srcs = ["config_test.go"],
     args = ["-test.v"],
     data = glob(["testdata/**"]) + [
@@ -20,5 +21,4 @@ go_test(
         "//tools/deploy:service.schema.json",
     ],
     deps = [":config"],
-    size = "small",
 )

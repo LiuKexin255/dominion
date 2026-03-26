@@ -9,6 +9,7 @@ go_library(
         "//tools/deploy/pkg/config",
         "//tools/deploy/pkg/env",
         "//tools/deploy/pkg/workspace",
+        "@com_github_spf13_pflag//:pflag",
     ],
 )
 
@@ -34,6 +35,7 @@ go_library(
         "//tools/deploy/pkg/config",
         "//tools/deploy/pkg/env",
         "//tools/deploy/pkg/workspace",
+        "@com_github_spf13_pflag//:pflag",
     ],
 )
 
