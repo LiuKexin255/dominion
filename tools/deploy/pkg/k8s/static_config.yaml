@@ -1,0 +1,5 @@
+namespace: "__NAMESPACE__"
+managed_by: "__MANAGED_BY__"
+gateway:
+  name: "__GATEWAY_NAME__"
+  namespace: "__GATEWAY_NAMESPACE__"

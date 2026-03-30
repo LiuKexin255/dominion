@@ -31,7 +31,7 @@
 2. 配置校验：解析 YAML 后使用 JSON Schema 做强校验（复用现有 schema）。
 3. 执行方式：以 K8s HTTP API 为执行后端（基于 `client-go`），不依赖本机 `kubectl`。
 4. 产物解析：从 `service.yaml` 的 `artifacts[].target` 推导并使用对应 push 目标信息生成镜像引用。
-5. 资源生成：按服务产物生成 `Deployment/Service`，按 `deploy.yaml.http` 生成 `HTTPRoute`。
+5. 资源删除策略：仅删除由部署工具管理标签命中的资源，不执行命名空间级删除。
 6. 缓存策略：在 `.env` 下维护环境资料与部署主配置引用。环境 profile 文件名为 `{app}__{env}.json`；当前激活环境写入 `.env/current.json`；部署主配置写入 `.env/deploy/{app}__{env}__{templateApp}__{template}.yaml`。
 7. 路径解析策略：
    - `//` 前缀表示项目根目录（`BUILD_WORKSPACE_DIRECTORY`）下的路径；
@@ -64,31 +64,41 @@ step 1.3: 新增环境缓存模块
 - 配置可校验
 - 环境缓存可创建与切换
 
-### epoch 2：部署主流程
+### epoch 2：部署主流程（优化后）
 
-step 2.0: API 客户端初始化
+step 2.0: 新增 k8s 抽象层
 
-- 初始化 typed client 与 dynamic client
-- 统一命名空间与资源标签约定
+- 在 `tools/deploy/pkg` 新增 `k8s` 包，承载部署对象抽象与资源操作入口。
+- 统一管理部署对象模型、资源组织方式与部署流程编排边界。
+- 保持该层与 CLI、环境缓存层解耦，便于后续测试与扩展。
 
-step 2.1: 产物与镜像引用解析
+step 2.1: 增加配置对象到部署对象转换
 
-- 解析 `artifacts` 与部署目标服务映射
-- 基于 Bazel 规则约定构建可部署镜像引用
+- 将 `deploy/service` 配置对象转换为 k8s 部署对象 DTO。
+- 支持 Deployment、Service 以及存在 `http` 配置时的路由对象生成。
+- 将镜像引用解析与端口、路由等部署输入纳入同一转换流程。
 
-step 2.2: K8s 资源渲染与应用
+step 2.2: 新增 k8s client 初始化能力
 
-- 生成 Deployment/Service（typed 方式）
-- 当配置存在 `http` 时，使用 `sigs.k8s.io/gateway-api/apis/v1` 的 `HTTPRoute` 结构体生成资源，并转换为 `unstructured`
-- 通过 API 完成部署/更新
+- 在 `k8s` 包内实现 API 客户端初始化能力，覆盖 typed 与 dynamic 两类客户端。
+- 将运行时依赖（集群访问配置、命名空间上下文等）统一收敛到该层处理。
+- 对初始化失败场景提供一致的失败返回路径。
 
-step 2.3: 环境删除流程
+step 2.3: 与 env 包整合部署/更新流程
 
-- 通过 API 执行资源删除（按标签批量删除 + 按对象删除兜底）
-- 删除目标环境 profile 与关联 deploy 配置；若被删环境为当前激活环境，则清理 `.env/current.json`
+- 将 `k8s` 包能力接入 `env` 包，由环境对象触发资源部署与更新。
+- 调整 `deploy` 命令执行链路，使部署流程由“配置更新”升级为“远端资源操作 + 本地状态同步”。
+- 保持现有命令参数契约不变（`deploy/list/cur/use/del`）。
+
+step 2.4: 与 env 包整合删除流程
+
+- 在删除环境时通过 `k8s` 包执行资源删除，并采用“管理标签命中资源删除”策略。
+- 删除完成后清理本地环境缓存与关联配置；若删除目标为当前激活环境，清理 `.env/current.json`。
+- 保障重复执行删除时行为稳定，不引入额外副作用。
 
 交付结果：
 
+- `pkg/k8s` 抽象层与 client 初始化能力可用
 - 示例环境可完成部署、更新、删除全流程
 - 部署工具运行不依赖本机 `kubectl` 二进制
 
