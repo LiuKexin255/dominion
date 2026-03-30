@@ -3,11 +3,15 @@ package workspace
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 const (
 	WorkspaceKey = "BUILD_WORKSPACE_DIRECTORY"
 	WorkingKey   = "BUILD_WORKING_DIRECTORY"
+
+	workspacePathPrefix = "//"
 )
 
 // Root 返回项目根目录
@@ -59,4 +63,19 @@ func MustWorking() string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func ResolvePath(inputPath string) string {
+	if strings.HasPrefix(inputPath, workspacePathPrefix) {
+		return ResolveRootPath(inputPath)
+	}
+
+	if filepath.IsAbs(inputPath) {
+		return inputPath
+	}
+	return filepath.Join(MustWorking(), inputPath)
+}
+
+func ResolveRootPath(inputPath string) string {
+	return filepath.Join(MustRoot(), strings.TrimPrefix(inputPath, workspacePathPrefix))
 }

@@ -3,10 +3,10 @@ template: deploy
 desc: "开发环境"
 services:
   - artifact: 
-      path: service/service.yaml
+      path: //experimental/grpc_hello_world/service/service.yaml
       name: service
   - artifact: 
-      path: gateway/service.yaml
+      path: //experimental/grpc_hello_world/gateway/service.yaml
       name: gateway 
     http: 
       hostnames:

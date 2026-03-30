@@ -55,7 +55,7 @@
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "bazel target 地址"
+            "description": "bazel target 地址，相对路径以文件所在目录为基准"
           },
           "protocol": {
             "type": "string",

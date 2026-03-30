@@ -26,8 +26,10 @@ var (
 	// deployConfigFileName 环境配置文件名 {应用名}__{环境名}___{模板应用名}__{模板名}
 	deployConfigFileName = "%s__%s__%s__%s.yaml"
 
-	// deployConfigDir 环境配置缓存路径
+	// serviceConfigDir 环境服务配置缓存路径
 	serviceConfigDir = path.Join(envProfileDir, "service")
+	// serviceConfigFileName 环境配置文件名 {应用名}__{环境名}
+	serviceConfigFileName = "%s__%s.yaml"
 
 	currentEnvFileName = "current.json"
 	currentEnvPath     = path.Join(envProfileDir, currentEnvFileName)
@@ -68,8 +70,7 @@ type Profile struct {
 	App       string    `json:"app"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	MainConfig    string   `json:"main_config,omitempty"`
-	DeployConfigs []string `json:"deploy_configs,omitempty"`
+	MainConfig string `json:"main_config,omitempty"`
 }
 
 // DeployEnv 部署环境
@@ -77,12 +78,22 @@ type DeployEnv struct {
 	Profile
 
 	mainDeployConfig *config.DeployConfig
-	deployConfigs    []*config.DeployConfig
+	serviceArtifacts []*config.ServiceArtifact
 }
 
 // Update 更新环境
 func (e *DeployEnv) Update(deployConfig *config.DeployConfig) error {
+	if deployConfig == nil {
+		return fmt.Errorf("部署配置为空")
+	}
+
+	serviceArtifacts, err := readServiceArtifacts(deployConfig)
+	if err != nil {
+		return err
+	}
+
 	e.mainDeployConfig = deployConfig
+	e.serviceArtifacts = serviceArtifacts
 	e.UpdatedAt = now()
 
 	return e.save()
@@ -116,11 +127,19 @@ func (e *DeployEnv) Delete() error {
 		return err
 	}
 
+	if err := e.deleteServiceArtifacts(); err != nil {
+		return err
+	}
+
 	return os.RemoveAll(path.Join(workspace.MustRoot(), envProfileDir, profileName(e.Name, e.App)))
 }
 
 // save 保存环境信息
 func (e *DeployEnv) save() error {
+	if err := e.saveServiceArtifacts(); err != nil {
+		return err
+	}
+
 	if err := e.saveDeployConfigs(); err != nil {
 		return err
 	}
@@ -175,6 +194,35 @@ func (e *DeployEnv) deleteDeployConfigs() error {
 	return deleteDeployConfig(e.MainConfig)
 }
 
+func (e *DeployEnv) saveServiceArtifacts() error {
+	raw, err := yaml.Marshal(e.serviceArtifacts)
+	if err != nil {
+		return err
+	}
+
+	filePath := path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name))
+	return os.WriteFile(filePath, raw, os.ModePerm)
+}
+
+func (e *DeployEnv) loadServiceArtifacts() error {
+	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
+	if err != nil {
+		return err
+	}
+
+	var serviceArtifacts []*config.ServiceArtifact
+	if err := yaml.Unmarshal(raw, &serviceArtifacts); err != nil {
+		return err
+	}
+
+	e.serviceArtifacts = serviceArtifacts
+	return nil
+}
+
+func (e *DeployEnv) deleteServiceArtifacts() error {
+	return os.RemoveAll(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
+}
+
 func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	if other == nil {
 		return false
@@ -182,35 +230,50 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	return e.Name == other.Name && e.App == other.App
 }
 
-func (e *DeployEnv) String() string {
-	return fmt.Sprintf("env: %s, app: %s", e.Name, e.App)
+// func (e *DeployEnv) String() string {
+// 	return fmt.Sprintf("env: %s, app: %s", e.Name, e.App)
+// }
+
+func readServiceArtifacts(deployConfig *config.DeployConfig) ([]*config.ServiceArtifact, error) {
+	serviceArtifacts := make([]*config.ServiceArtifact, 0, len(deployConfig.Services))
+	for _, service := range deployConfig.Services {
+		serviceConfig, err := config.ParseServiceConfig(workspace.ResolveRootPath(service.Artifact.Path))
+		if err != nil {
+			return nil, fmt.Errorf("读取服务配置 %s 失败: %w", service.Artifact.Path, err)
+		}
+
+		artifact, err := serviceConfig.GetArtifact(service.Artifact.Name)
+		if err != nil {
+			return nil, fmt.Errorf("服务配置 %s 中不存在产物 %s: %w", service.Artifact.Path, service.Artifact.Name, err)
+		}
+
+		serviceArtifacts = append(serviceArtifacts, artifact)
+	}
+
+	return serviceArtifacts, nil
 }
 
-func saveDeployConfig(name string, deployConfig *config.DeployConfig) error {
+func saveDeployConfig(fileName string, deployConfig *config.DeployConfig) error {
 	configRaw, err := yaml.Marshal(deployConfig)
 	if err != nil {
 		return err
 	}
 
-	filePath := path.Join(workspace.MustRoot(), deployConfigDir, name)
+	filePath := path.Join(workspace.MustRoot(), deployConfigDir, fileName)
 	return os.WriteFile(filePath, configRaw, os.ModePerm)
 }
 
-func loadDeployConfig(name string) (*config.DeployConfig, error) {
-	deployConfigRaw, err := os.ReadFile(path.Join(workspace.MustRoot(), deployConfigDir, name))
+func loadDeployConfig(fileName string) (*config.DeployConfig, error) {
+	deployConfig, err := config.ParseDeployConfig(path.Join(workspace.MustRoot(), deployConfigDir, fileName))
 	if err != nil {
 		return nil, err
 	}
 
-	deployConfig := new(config.DeployConfig)
-	if err := yaml.Unmarshal(deployConfigRaw, deployConfig); err != nil {
-		return nil, err
-	}
 	return deployConfig, nil
 }
 
-func deleteDeployConfig(name string) error {
-	return os.RemoveAll(path.Join(workspace.MustRoot(), deployConfigDir, name))
+func deleteDeployConfig(fileName string) error {
+	return os.RemoveAll(path.Join(workspace.MustRoot(), deployConfigDir, fileName))
 }
 
 // New 创建新的环境
@@ -325,6 +388,12 @@ func loadDeployEnv(filePath string) (*DeployEnv, error) {
 
 	if err := env.loadDeployConfigs(); err != nil {
 		return nil, err
+	}
+
+	if env.mainDeployConfig != nil {
+		if err := env.loadServiceArtifacts(); err != nil {
+			return nil, err
+		}
 	}
 
 	return env, nil

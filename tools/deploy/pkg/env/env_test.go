@@ -46,6 +46,22 @@ func copyDir(t *testing.T, src string, dst string) {
 	}
 }
 
+func initValidator(t *testing.T) {
+	t.Helper()
+
+	serviceValidator, err := config.NewYAMLValidator(filepath.Join("testdata", "service.schema.json"))
+	if err != nil {
+		t.Fatalf("config.NewYAMLValidator(service) failed: %v", err)
+	}
+	config.RegisterServiceValidator(serviceValidator)
+
+	deployValidator, err := config.NewYAMLValidator(filepath.Join("testdata", "deploy.schema.json"))
+	if err != nil {
+		t.Fatalf("config.NewYAMLValidator(service) failed: %v", err)
+	}
+	config.RegisterDeployValidator(deployValidator)
+}
+
 func Test_currentEnvInfo(t *testing.T) {
 	tests := []struct {
 		name    string // description of this test case
@@ -158,6 +174,7 @@ func TestNew(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, tt.ws)
 
 			internalInit()
+			initValidator(t)
 
 			got, gotErr := New(tt.name, tt.app)
 			if gotErr != nil {
@@ -232,13 +249,13 @@ func TestGet(t *testing.T) {
 					Services: []*config.DeployService{
 						{
 							Artifact: config.DeployArtifact{
-								Path: "service/service.yaml",
+								Path: "//service/service.yaml",
 								Name: "service",
 							},
 						},
 						{
 							Artifact: config.DeployArtifact{
-								Path: "gateway/service.yaml",
+								Path: "//gateway/service.yaml",
 								Name: "gateway",
 							},
 							HTTP: config.DeployHTTP{
@@ -251,6 +268,30 @@ func TestGet(t *testing.T) {
 										},
 									},
 								},
+							},
+						},
+					},
+				},
+				serviceArtifacts: []*config.ServiceArtifact{
+					{
+						Name:   "service",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: ":service_image",
+						Ports: []*config.ServiceArtifactPort{
+							{
+								Name: "grpc",
+								Port: 50051,
+							},
+						},
+					},
+					{
+						Name:   "gateway",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: ":gateway_image",
+						Ports: []*config.ServiceArtifactPort{
+							{
+								Name: "http",
+								Port: 80,
 							},
 						},
 					},
@@ -274,6 +315,7 @@ func TestGet(t *testing.T) {
 		t.Run(tt.caseName, func(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, "testdata")
 			internalInit()
+			initValidator(t)
 
 			got, gotErr := Get(tt.name, tt.app)
 			if gotErr != nil {
@@ -328,13 +370,13 @@ func TestList(t *testing.T) {
 						Services: []*config.DeployService{
 							{
 								Artifact: config.DeployArtifact{
-									Path: "service/service.yaml",
+									Path: "//service/service.yaml",
 									Name: "service",
 								},
 							},
 							{
 								Artifact: config.DeployArtifact{
-									Path: "gateway/service.yaml",
+									Path: "//gateway/service.yaml",
 									Name: "gateway",
 								},
 								HTTP: config.DeployHTTP{
@@ -347,6 +389,30 @@ func TestList(t *testing.T) {
 											},
 										},
 									},
+								},
+							},
+						},
+					},
+					serviceArtifacts: []*config.ServiceArtifact{
+						{
+							Name:   "service",
+							Type:   config.ServiceArtifactTypeDeployment,
+							Target: ":service_image",
+							Ports: []*config.ServiceArtifactPort{
+								{
+									Name: "grpc",
+									Port: 50051,
+								},
+							},
+						},
+						{
+							Name:   "gateway",
+							Type:   config.ServiceArtifactTypeDeployment,
+							Target: ":gateway_image",
+							Ports: []*config.ServiceArtifactPort{
+								{
+									Name: "http",
+									Port: 80,
 								},
 							},
 						},
@@ -366,17 +432,17 @@ func TestList(t *testing.T) {
 						Services: []*config.DeployService{
 							{
 								Artifact: config.DeployArtifact{
-									Path: "service/service.yaml",
+									Path: "//service/service.yaml",
 									Name: "service1111",
 								},
 							},
 							{
 								Artifact: config.DeployArtifact{
-									Path: "gateway/service.yaml",
+									Path: "//gateway/service.yaml",
 									Name: "gateway",
 								},
 								HTTP: config.DeployHTTP{
-									Hostnames: []string{"hello.liukexin.com1111"},
+									Hostnames: []string{"hello.liukexin.com2222"},
 									Matches: []*config.DeployHTTPMatch{
 										{
 											Path: config.DeployHTTPPathMatch{
@@ -385,6 +451,30 @@ func TestList(t *testing.T) {
 											},
 										},
 									},
+								},
+							},
+						},
+					},
+					serviceArtifacts: []*config.ServiceArtifact{
+						{
+							Name:   "service",
+							Type:   config.ServiceArtifactTypeDeployment,
+							Target: ":service111_image",
+							Ports: []*config.ServiceArtifactPort{
+								{
+									Name: "grpc",
+									Port: 50052,
+								},
+							},
+						},
+						{
+							Name:   "gateway",
+							Type:   config.ServiceArtifactTypeDeployment,
+							Target: ":gateway_image",
+							Ports: []*config.ServiceArtifactPort{
+								{
+									Name: "http",
+									Port: 80,
 								},
 							},
 						},
@@ -403,6 +493,7 @@ func TestList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, tt.dir)
 			internalInit()
+			initValidator(t)
 
 			got, err := List()
 			if err != nil {
@@ -436,6 +527,7 @@ func TestDeployEnv_Active(t *testing.T) {
 			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
 			os.Setenv(workspace.WorkspaceKey, dir)
 			internalInit()
+			initValidator(t)
 
 			_, gotErr := Current()
 			if gotErr == nil || !errors.Is(gotErr, ErrNotActive) {
@@ -518,6 +610,7 @@ func TestDeployEnv_Delete(t *testing.T) {
 			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
 			os.Setenv(workspace.WorkspaceKey, dir)
 			internalInit()
+			initValidator(t)
 
 			e, gotErr := Get(tt.name, tt.app)
 			if gotErr != nil {
@@ -545,24 +638,27 @@ func TestDeployEnv_Update(t *testing.T) {
 		app          string
 		deployConfig *config.DeployConfig
 		want         *DeployEnv
+		// wantArtifacts []*config.ServiceArtifact
+		wantErr bool
 	}{
 		{
-			name: "test_env",
-			app:  "grpc-hello-world",
+			caseName: "正常更新",
+			name:     "test_env",
+			app:      "grpc-hello-world",
 			deployConfig: &config.DeployConfig{
 				Template: "deploy",
 				App:      "grpc-hello-world",
-				Desc:     "开发环境11111",
+				Desc:     "开发环境1111122222",
 				Services: []*config.DeployService{
 					{
 						Artifact: config.DeployArtifact{
-							Path: "service/service.yaml",
-							Name: "service111",
+							Path: "//service/service.yaml",
+							Name: "service",
 						},
 					},
 					{
 						Artifact: config.DeployArtifact{
-							Path: "gateway/service1111.yaml",
+							Path: "//gateway/service1111.yaml",
 							Name: "gateway",
 						},
 						HTTP: config.DeployHTTP{
@@ -588,17 +684,17 @@ func TestDeployEnv_Update(t *testing.T) {
 				mainDeployConfig: &config.DeployConfig{
 					Template: "deploy",
 					App:      "grpc-hello-world",
-					Desc:     "开发环境11111",
+					Desc:     "开发环境1111122222",
 					Services: []*config.DeployService{
 						{
 							Artifact: config.DeployArtifact{
-								Path: "service/service.yaml",
-								Name: "service111",
+								Path: "//service/service.yaml",
+								Name: "service",
 							},
 						},
 						{
 							Artifact: config.DeployArtifact{
-								Path: "gateway/service1111.yaml",
+								Path: "//gateway/service1111.yaml",
 								Name: "gateway",
 							},
 							HTTP: config.DeployHTTP{
@@ -615,11 +711,36 @@ func TestDeployEnv_Update(t *testing.T) {
 						},
 					},
 				},
+				serviceArtifacts: []*config.ServiceArtifact{
+					{
+						Name:   "service",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: ":service_image",
+						Ports: []*config.ServiceArtifactPort{
+							{
+								Name: "grpc",
+								Port: 50051,
+							},
+						},
+					},
+					{
+						Name:   "gateway",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: ":gateway_image_123",
+						Ports: []*config.ServiceArtifactPort{
+							{
+								Name: "http",
+								Port: 80,
+							},
+						},
+					},
+				},
 			},
 		},
 		{
-			name: "empty",
-			app:  "env",
+			caseName: "artifact_not_found",
+			name:     "test_env",
+			app:      "grpc-hello-world",
 			deployConfig: &config.DeployConfig{
 				Template: "deploy",
 				App:      "grpc-hello-world",
@@ -627,13 +748,13 @@ func TestDeployEnv_Update(t *testing.T) {
 				Services: []*config.DeployService{
 					{
 						Artifact: config.DeployArtifact{
-							Path: "service/service.yaml",
-							Name: "service",
+							Path: "//service/service.yaml",
+							Name: "service11111",
 						},
 					},
 					{
 						Artifact: config.DeployArtifact{
-							Path: "gateway/service.yaml",
+							Path: "//gateway/service.yaml",
 							Name: "gateway",
 						},
 						HTTP: config.DeployHTTP{
@@ -650,66 +771,69 @@ func TestDeployEnv_Update(t *testing.T) {
 					},
 				},
 			},
-			want: &DeployEnv{
-				Profile: Profile{
-					Name:       "empty",
-					App:        "env",
-					MainConfig: "env__empty__grpc-hello-world__deploy.yaml",
-				},
-				mainDeployConfig: &config.DeployConfig{
-					Template: "deploy",
-					App:      "grpc-hello-world",
-					Desc:     "开发环境",
-					Services: []*config.DeployService{
-						{
-							Artifact: config.DeployArtifact{
-								Path: "service/service.yaml",
-								Name: "service",
-							},
-						},
-						{
-							Artifact: config.DeployArtifact{
-								Path: "gateway/service.yaml",
-								Name: "gateway",
-							},
-							HTTP: config.DeployHTTP{
-								Hostnames: []string{"hello.liukexin.com"},
-								Matches: []*config.DeployHTTPMatch{
-									{
-										Path: config.DeployHTTPPathMatch{
-											Type:  config.HTTPPathMatchTypePrefix,
-											Value: "/v1",
-										},
-									},
-								},
-							},
+			wantErr: true,
+		},
+		{
+			caseName: "服务定义文件不存在",
+			name:     "empty",
+			app:      "env",
+			deployConfig: &config.DeployConfig{
+				Template: "deploy",
+				App:      "grpc-hello-world",
+				Desc:     "开发环境",
+				Services: []*config.DeployService{
+					{
+						Artifact: config.DeployArtifact{
+							Path: "//service/service44444.yaml",
+							Name: "service",
 						},
 					},
 				},
 			},
+			wantErr: true,
+		},
+		{
+			caseName: "更新配置为空",
+			app:      "grpc-hello-world",
+			name:     "test_env",
+			wantErr:  true,
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.caseName, func(t *testing.T) {
 			dir := t.TempDir()
-			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
+			copyDir(t, "testdata", dir)
 			os.Setenv(workspace.WorkspaceKey, dir)
-			internalInit()
 
+			internalInit()
+			initValidator(t)
 			nowTime := time.Now().UTC().Round(0)
 			now = func() time.Time {
 				return nowTime
 			}
-			tt.want.UpdatedAt = nowTime
+			if !tt.wantErr {
+				tt.want.UpdatedAt = nowTime
+			}
 
 			env, err := Get(tt.name, tt.app)
 			if err != nil {
 				t.Fatalf("could not construct receiver type: %v", err)
 			}
 			gotErr := env.Update(tt.deployConfig)
+			if tt.wantErr {
+				if gotErr == nil {
+					t.Fatal("Update() succeeded unexpectedly")
+				}
+				return
+			}
+
 			if gotErr != nil {
 				t.Fatalf("Update() failed: %v", gotErr)
 			}
+
+			// if !reflect.DeepEqual(env.serviceArtifacts, tt.wantArtifacts) {
+			// 	t.Fatalf("Update() serviceArtifacts = %v, want %v", env.serviceArtifacts, tt.wantArtifacts)
+			// }
 
 			env, err = Get(tt.name, tt.app)
 			if err != nil {
@@ -717,9 +841,8 @@ func TestDeployEnv_Update(t *testing.T) {
 			}
 
 			if !reflect.DeepEqual(env, tt.want) {
-				t.Fatalf("Update() = %v, want %v", env, tt.want)
+				t.Fatalf("Update() = %v, want %v", env.serviceArtifacts, tt.want.serviceArtifacts)
 			}
-
 		})
 	}
 }

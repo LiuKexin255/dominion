@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 
 	"github.com/goccy/go-yaml"
@@ -9,20 +11,22 @@ import (
 )
 
 var (
-	// deployValidater 部署配置校验器
-	deployValidater *YAMLValidater
-	// serviceValidater 服务配置校验器
-	serviceValidater *YAMLValidater
+	// deployValidator 部署配置校验器
+	deployValidator *YAMLValidator
+	// serviceValidator 服务配置校验器
+	serviceValidator *YAMLValidator
+	// ErrNotFound 未找到
+	ErrNotFound = errors.New("未找到")
 )
 
-// RegisterDeployValidater 注册部署配置校验器
-func RegisterDeployValidater(validater *YAMLValidater) {
-	deployValidater = validater
+// RegisterDeployValidator 注册部署配置校验器
+func RegisterDeployValidator(Validator *YAMLValidator) {
+	deployValidator = Validator
 }
 
-// RegisterServiceValidater 注册服务配置校验器
-func RegisterServiceValidater(validater *YAMLValidater) {
-	serviceValidater = validater
+// RegisterServiceValidator 注册服务配置校验器
+func RegisterServiceValidator(Validator *YAMLValidator) {
+	serviceValidator = Validator
 }
 
 type HTTPPathMatchType string
@@ -89,13 +93,23 @@ type ServiceArtifactPort struct {
 	Port int    `yaml:"port"`
 }
 
+// GetArtifact 根据产物名称返回产物，如果没有，返回 ErrNotFound
+func (c *ServiceConfig) GetArtifact(name string) (*ServiceArtifact, error) {
+	for _, artifacts := range c.Artifacts {
+		if artifacts.Name == name {
+			return artifacts, nil
+		}
+	}
+	return nil, fmt.Errorf("产物 %s %w", name, ErrNotFound)
+}
+
 // ParseDeployConfig 解析部署配置
 func ParseDeployConfig(path string) (*DeployConfig, error) {
 	deployRaw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := deployValidater.Vaild(deployRaw); err != nil {
+	if err := deployValidator.Vaild(deployRaw); err != nil {
 		return nil, err
 	}
 
@@ -114,7 +128,7 @@ func ParseServiceConfig(path string) (*ServiceConfig, error) {
 		return nil, err
 	}
 
-	if err := serviceValidater.Vaild(serviceRaw); err != nil {
+	if err := serviceValidator.Vaild(serviceRaw); err != nil {
 		return nil, err
 	}
 
@@ -126,13 +140,13 @@ func ParseServiceConfig(path string) (*ServiceConfig, error) {
 	return c, nil
 }
 
-// YAMLValidater yaml 格式校验器 Vaildater
-type YAMLValidater struct {
+// YAMLValidator yaml 格式校验器 Vaildater
+type YAMLValidator struct {
 	schema *jsonschema.Schema
 }
 
 // Vaild 返回 error 如果 raw 存在格式问题
-func (v *YAMLValidater) Vaild(raw []byte) error {
+func (v *YAMLValidator) Vaild(raw []byte) error {
 	jsonRaw, err := yaml.YAMLToJSON(raw)
 	if err != nil {
 		return err
@@ -146,8 +160,8 @@ func (v *YAMLValidater) Vaild(raw []byte) error {
 	return v.schema.Validate(inst)
 }
 
-// NewYAMLValidater 创建 YAML 校验器
-func NewYAMLValidater(path string) (*YAMLValidater, error) {
+// NewYAMLValidator 创建 YAML 校验器
+func NewYAMLValidator(path string) (*YAMLValidator, error) {
 	schemaRaw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -168,7 +182,7 @@ func NewYAMLValidater(path string) (*YAMLValidater, error) {
 		return nil, err
 	}
 
-	return &YAMLValidater{
+	return &YAMLValidator{
 		schema: schema,
 	}, nil
 }

@@ -17,7 +17,6 @@ import (
 const (
 	deploySchemaRelPath  = "tools/deploy/deploy.schema.json"
 	serviceSchemaRelPath = "tools/deploy/service.schema.json"
-	workspacePathPrefix  = "//"
 
 	commandUse    = "use"
 	commandDeploy = "deploy"
@@ -82,8 +81,8 @@ var commandFlagTable = map[string][]string{
 // commandExecFunc 命令执行方法
 type commandExecFunc = func(opts *options) error
 
-// commandValidaterFunc 命令校验方法
-type commandValidaterFunc = func(opts *options) error
+// commandValidatorFunc 命令校验方法
+type commandValidatorFunc = func(opts *options) error
 
 var commandExecTable = map[string]commandExecFunc{
 	commandUse:    switchEnvironment,
@@ -93,7 +92,7 @@ var commandExecTable = map[string]commandExecFunc{
 	commandCur:    showCurrentEnvironment,
 }
 
-var commandValidaterTable = map[string]commandValidaterFunc{
+var commandValidatorTable = map[string]commandValidatorFunc{
 	commandUse:    validateUseOptions,
 	commandDeploy: validateDeployOptions,
 	commandDel:    validateDelOptions,
@@ -116,7 +115,7 @@ func run(args []string) error {
 
 	env.LazyInit()
 	if opts.command == commandDeploy {
-		if err := initSchemaValidaters(); err != nil {
+		if err := initSchemaValidators(); err != nil {
 			return err
 		}
 	}
@@ -180,12 +179,12 @@ func newCommandFlagSet(command string) (*pflag.FlagSet, *options, error) {
 }
 
 func validateOptions(opts *options) error {
-	validater, ok := commandValidaterTable[opts.command]
+	Validator, ok := commandValidatorTable[opts.command]
 	if !ok {
 		return fmt.Errorf("unknown command: %s", opts.command)
 	}
 
-	return validater(opts)
+	return Validator(opts)
 }
 
 func validateUseOptions(opts *options) error {
@@ -226,37 +225,26 @@ func validateCurOptions(opts *options) error {
 	return nil
 }
 
-func initSchemaValidaters() error {
+func initSchemaValidators() error {
 	deploySchemaAbsPath := filepath.Join(workspace.MustRoot(), deploySchemaRelPath)
 	serviceSchemaAbsPath := filepath.Join(workspace.MustRoot(), serviceSchemaRelPath)
 
-	deployValidater, err := config.NewYAMLValidater(deploySchemaAbsPath)
+	deployValidator, err := config.NewYAMLValidator(deploySchemaAbsPath)
 	if err != nil {
 		return fmt.Errorf("加载 deploy schema 失败: %w", err)
 	}
-	serviceValidater, err := config.NewYAMLValidater(serviceSchemaAbsPath)
+	serviceValidator, err := config.NewYAMLValidator(serviceSchemaAbsPath)
 	if err != nil {
 		return fmt.Errorf("加载 service schema 失败: %w", err)
 	}
 
-	config.RegisterDeployValidater(deployValidater)
-	config.RegisterServiceValidater(serviceValidater)
+	config.RegisterDeployValidator(deployValidator)
+	config.RegisterServiceValidator(serviceValidator)
 	return nil
 }
 
-func resolvePath(inputPath string) string {
-	if strings.HasPrefix(inputPath, workspacePathPrefix) {
-		return filepath.Join(workspace.MustRoot(), strings.TrimPrefix(inputPath, workspacePathPrefix))
-	}
-
-	if filepath.IsAbs(inputPath) {
-		return inputPath
-	}
-	return filepath.Join(workspace.MustWorking(), inputPath)
-}
-
 func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
-	deployConfig, err := config.ParseDeployConfig(resolvePath(deployPath))
+	deployConfig, err := config.ParseDeployConfig(workspace.ResolvePath(deployPath))
 	if err != nil {
 		return nil, fmt.Errorf("解析部署配置失败: %w", err)
 	}

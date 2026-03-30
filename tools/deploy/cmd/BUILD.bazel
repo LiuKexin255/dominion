@@ -44,5 +44,4 @@ go_test(
     size = "small",
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
-    deps = ["//tools/deploy/pkg/workspace"],
 )

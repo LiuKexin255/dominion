@@ -1,0 +1,12 @@
+- name: service
+  type: deployment
+  target: :service111_image
+  ports: 
+    - name: grpc 
+      port: 50052
+- name: gateway
+  type: deployment
+  target: :gateway_image
+  ports: 
+    - name: http 
+      port: 80

@@ -3,14 +3,14 @@ app: grpc-hello-world
 desc: 开发环境1111
 services:
 - artifact:
-    path: service/service.yaml
+    path: //service/service.yaml
     name: service1111
 - artifact:
-    path: gateway/service.yaml
+    path: //gateway/service.yaml
     name: gateway
   http:
     hostnames:
-    - hello.liukexin.com1111
+    - hello.liukexin.com2222
     matches:
     - path:
         type: PathPrefix

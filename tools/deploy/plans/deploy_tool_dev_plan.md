@@ -29,7 +29,7 @@
 
 1. 语言与形态：使用 Golang 实现 CLI（`env_deploy`）。
 2. 配置校验：解析 YAML 后使用 JSON Schema 做强校验（复用现有 schema）。
-3. 执行方式：以 `kubectl` 为执行后端（`apply/delete`），优先保证链路可用。
+3. 执行方式：以 K8s HTTP API 为执行后端（基于 `client-go`），不依赖本机 `kubectl`。
 4. 产物解析：从 `service.yaml` 的 `artifacts[].target` 推导并使用对应 push 目标信息生成镜像引用。
 5. 资源生成：按服务产物生成 `Deployment/Service`，按 `deploy.yaml.http` 生成 `HTTPRoute`。
 6. 缓存策略：在 `.env` 下维护环境资料与部署主配置引用。环境 profile 文件名为 `{app}__{env}.json`；当前激活环境写入 `.env/current.json`；部署主配置写入 `.env/deploy/{app}__{env}__{templateApp}__{template}.yaml`。
@@ -66,6 +66,11 @@ step 1.3: 新增环境缓存模块
 
 ### epoch 2：部署主流程
 
+step 2.0: API 客户端初始化
+
+- 初始化 typed client 与 dynamic client
+- 统一命名空间与资源标签约定
+
 step 2.1: 产物与镜像引用解析
 
 - 解析 `artifacts` 与部署目标服务映射
@@ -73,18 +78,19 @@ step 2.1: 产物与镜像引用解析
 
 step 2.2: K8s 资源渲染与应用
 
-- 生成 Deployment/Service
-- 当配置存在 `http` 时生成 HTTPRoute
-- 执行 `kubectl apply -f -` 完成部署/更新
+- 生成 Deployment/Service（typed 方式）
+- 当配置存在 `http` 时，使用 `sigs.k8s.io/gateway-api/apis/v1` 的 `HTTPRoute` 结构体生成资源，并转换为 `unstructured`
+- 通过 API 完成部署/更新
 
 step 2.3: 环境删除流程
 
-- 执行资源删除（`kubectl delete -f -` 或按标签删除）
+- 通过 API 执行资源删除（按标签批量删除 + 按对象删除兜底）
 - 删除目标环境 profile 与关联 deploy 配置；若被删环境为当前激活环境，则清理 `.env/current.json`
 
 交付结果：
 
 - 示例环境可完成部署、更新、删除全流程
+- 部署工具运行不依赖本机 `kubectl` 二进制
 
 ### epoch 3：Bazel 包装与质量收敛
 
@@ -95,7 +101,7 @@ step 3.1: Bazel 规则包装
 
 step 3.2: 测试补齐
 
-- 单元测试：参数解析、Schema 校验、缓存、资源渲染
+- 单元测试：参数解析、Schema 校验、缓存、资源渲染、API 执行器（部署/更新/删除与异常分支）
 - 集成测试：基于 `experimental/grpc_hello_world` 做最小链路验证
 - 为单测 target 设置 `size = "small"`
 
@@ -119,6 +125,7 @@ step 3.3: 文档与契约统一
 4. 修改根 `BUILD.bazel` 暴露 `//:deploy`
 5. 修改 `tools/deploy/README.md` 与必要 schema 文件
 6. 新增部署工具相关测试文件
+7. 按需补充依赖（`k8s.io/client-go`、`k8s.io/apimachinery`、`sigs.k8s.io/gateway-api`）
 
 ## 验证计划
 
