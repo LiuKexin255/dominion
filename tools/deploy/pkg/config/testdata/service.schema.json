@@ -26,6 +26,11 @@
       "minLength": 1,
       "description": "服务描述"
     },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "description": "服务配置资源标识"
+    },
     "artifacts": {
       "type": "array",
       "description": "服务产物 target 列表，必须为 oci_image 对象，并且以 {artifact}_push 作为推送 target",
@@ -55,7 +60,7 @@
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "bazel target 地址，相对路径以文件所在目录为基准"
+            "description": "bazel target 完整地址"
           },
           "protocol": {
             "type": "string",

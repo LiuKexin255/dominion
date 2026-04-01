@@ -11,6 +11,7 @@ services:
       hostnames1:
         - hello.liukexin.com
       matches:
-        - path: 
+        - backend: http
+          path: 
             type: PathPrefix
             value: /v1

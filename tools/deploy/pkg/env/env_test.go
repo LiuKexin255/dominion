@@ -246,6 +246,7 @@ func TestGet(t *testing.T) {
 					Template: "deploy",
 					App:      "grpc-hello-world",
 					Desc:     "开发环境",
+					URI:      "//deploy/grpc-hello-world/deploy.yaml",
 					Services: []*config.DeployService{
 						{
 							Artifact: config.DeployArtifact{
@@ -262,6 +263,7 @@ func TestGet(t *testing.T) {
 								Hostnames: []string{"hello.liukexin.com"},
 								Matches: []*config.DeployHTTPMatch{
 									{
+										Backend: "http",
 										Path: config.DeployHTTPPathMatch{
 											Type:  config.HTTPPathMatchTypePrefix,
 											Value: "/v1",
@@ -272,26 +274,53 @@ func TestGet(t *testing.T) {
 						},
 					},
 				},
-				serviceArtifacts: []*config.ServiceArtifact{
+				serviceConfigs: []*config.ServiceConfig{
 					{
-						Name:   "service",
-						Type:   config.ServiceArtifactTypeDeployment,
-						Target: ":service_image",
-						Ports: []*config.ServiceArtifactPort{
+						Name: "service",
+						App:  "grpc-hello-world",
+						Desc: "service config",
+						URI:  "//service/service.yaml",
+						Artifacts: []*config.ServiceArtifact{
 							{
-								Name: "grpc",
-								Port: 50051,
+								Name:   "service",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//service:service_image",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "grpc",
+										Port: 50051,
+									},
+								},
+							},
+							{
+								Name:   "service111",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//service:service111_image",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "grpc",
+										Port: 50052,
+									},
+								},
 							},
 						},
 					},
 					{
-						Name:   "gateway",
-						Type:   config.ServiceArtifactTypeDeployment,
-						Target: ":gateway_image",
-						Ports: []*config.ServiceArtifactPort{
+						Name: "gateway",
+						App:  "grpc-hello-world",
+						Desc: "gateway config",
+						URI:  "//gateway/service.yaml",
+						Artifacts: []*config.ServiceArtifact{
 							{
-								Name: "http",
-								Port: 80,
+								Name:   "gateway",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//gateway:gateway_image",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "http",
+										Port: 80,
+									},
+								},
 							},
 						},
 					},
@@ -367,6 +396,7 @@ func TestList(t *testing.T) {
 						Template: "deploy",
 						App:      "grpc-hello-world",
 						Desc:     "开发环境",
+						URI:      "//deploy/grpc-hello-world/deploy.yaml",
 						Services: []*config.DeployService{
 							{
 								Artifact: config.DeployArtifact{
@@ -383,6 +413,7 @@ func TestList(t *testing.T) {
 									Hostnames: []string{"hello.liukexin.com"},
 									Matches: []*config.DeployHTTPMatch{
 										{
+											Backend: "http",
 											Path: config.DeployHTTPPathMatch{
 												Type:  config.HTTPPathMatchTypePrefix,
 												Value: "/v1",
@@ -393,26 +424,53 @@ func TestList(t *testing.T) {
 							},
 						},
 					},
-					serviceArtifacts: []*config.ServiceArtifact{
+					serviceConfigs: []*config.ServiceConfig{
 						{
-							Name:   "service",
-							Type:   config.ServiceArtifactTypeDeployment,
-							Target: ":service_image",
-							Ports: []*config.ServiceArtifactPort{
+							Name: "service",
+							App:  "grpc-hello-world",
+							Desc: "service config",
+							URI:  "//service/service.yaml",
+							Artifacts: []*config.ServiceArtifact{
 								{
-									Name: "grpc",
-									Port: 50051,
+									Name:   "service",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//service:service_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "grpc",
+											Port: 50051,
+										},
+									},
+								},
+								{
+									Name:   "service111",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//service:service111_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "grpc",
+											Port: 50052,
+										},
+									},
 								},
 							},
 						},
 						{
-							Name:   "gateway",
-							Type:   config.ServiceArtifactTypeDeployment,
-							Target: ":gateway_image",
-							Ports: []*config.ServiceArtifactPort{
+							Name: "gateway",
+							App:  "grpc-hello-world",
+							Desc: "gateway config",
+							URI:  "//gateway/service.yaml",
+							Artifacts: []*config.ServiceArtifact{
 								{
-									Name: "http",
-									Port: 80,
+									Name:   "gateway",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//gateway:gateway_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "http",
+											Port: 80,
+										},
+									},
 								},
 							},
 						},
@@ -429,6 +487,7 @@ func TestList(t *testing.T) {
 						Template: "deploy",
 						App:      "grpc-hello-world",
 						Desc:     "开发环境1111",
+						URI:      "//deploy/grpc-hello-world/deploy_v2.yaml",
 						Services: []*config.DeployService{
 							{
 								Artifact: config.DeployArtifact{
@@ -445,6 +504,7 @@ func TestList(t *testing.T) {
 									Hostnames: []string{"hello.liukexin.com2222"},
 									Matches: []*config.DeployHTTPMatch{
 										{
+											Backend: "http",
 											Path: config.DeployHTTPPathMatch{
 												Type:  config.HTTPPathMatchTypePrefix,
 												Value: "/v1",
@@ -455,26 +515,53 @@ func TestList(t *testing.T) {
 							},
 						},
 					},
-					serviceArtifacts: []*config.ServiceArtifact{
+					serviceConfigs: []*config.ServiceConfig{
 						{
-							Name:   "service",
-							Type:   config.ServiceArtifactTypeDeployment,
-							Target: ":service111_image",
-							Ports: []*config.ServiceArtifactPort{
+							Name: "service",
+							App:  "grpc-hello-world",
+							Desc: "service config",
+							URI:  "//service/service.yaml",
+							Artifacts: []*config.ServiceArtifact{
 								{
-									Name: "grpc",
-									Port: 50052,
+									Name:   "service",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//service:service_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "grpc",
+											Port: 50051,
+										},
+									},
+								},
+								{
+									Name:   "service111",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//service:service111_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "grpc",
+											Port: 50052,
+										},
+									},
 								},
 							},
 						},
 						{
-							Name:   "gateway",
-							Type:   config.ServiceArtifactTypeDeployment,
-							Target: ":gateway_image",
-							Ports: []*config.ServiceArtifactPort{
+							Name: "gateway",
+							App:  "grpc-hello-world",
+							Desc: "gateway config",
+							URI:  "//gateway/service.yaml",
+							Artifacts: []*config.ServiceArtifact{
 								{
-									Name: "http",
-									Port: 80,
+									Name:   "gateway",
+									Type:   config.ServiceArtifactTypeDeployment,
+									Target: "//gateway:gateway_image",
+									Ports: []*config.ServiceArtifactPort{
+										{
+											Name: "http",
+											Port: 80,
+										},
+									},
 								},
 							},
 						},
@@ -638,8 +725,7 @@ func TestDeployEnv_Update(t *testing.T) {
 		app          string
 		deployConfig *config.DeployConfig
 		want         *DeployEnv
-		// wantArtifacts []*config.ServiceArtifact
-		wantErr bool
+		wantErr      bool
 	}{
 		{
 			caseName: "正常更新",
@@ -649,6 +735,7 @@ func TestDeployEnv_Update(t *testing.T) {
 				Template: "deploy",
 				App:      "grpc-hello-world",
 				Desc:     "开发环境1111122222",
+				URI:      "//deploy/grpc-hello-world/deploy_update.yaml",
 				Services: []*config.DeployService{
 					{
 						Artifact: config.DeployArtifact{
@@ -665,6 +752,7 @@ func TestDeployEnv_Update(t *testing.T) {
 							Hostnames: []string{"hello.liukexin.com"},
 							Matches: []*config.DeployHTTPMatch{
 								{
+									Backend: "http",
 									Path: config.DeployHTTPPathMatch{
 										Type:  config.HTTPPathMatchTypePrefix,
 										Value: "/v1",
@@ -685,6 +773,7 @@ func TestDeployEnv_Update(t *testing.T) {
 					Template: "deploy",
 					App:      "grpc-hello-world",
 					Desc:     "开发环境1111122222",
+					URI:      "//deploy/grpc-hello-world/deploy_update.yaml",
 					Services: []*config.DeployService{
 						{
 							Artifact: config.DeployArtifact{
@@ -701,6 +790,7 @@ func TestDeployEnv_Update(t *testing.T) {
 								Hostnames: []string{"hello.liukexin.com"},
 								Matches: []*config.DeployHTTPMatch{
 									{
+										Backend: "http",
 										Path: config.DeployHTTPPathMatch{
 											Type:  config.HTTPPathMatchTypePrefix,
 											Value: "/v1",
@@ -711,26 +801,53 @@ func TestDeployEnv_Update(t *testing.T) {
 						},
 					},
 				},
-				serviceArtifacts: []*config.ServiceArtifact{
+				serviceConfigs: []*config.ServiceConfig{
 					{
-						Name:   "service",
-						Type:   config.ServiceArtifactTypeDeployment,
-						Target: ":service_image",
-						Ports: []*config.ServiceArtifactPort{
+						Name: "service",
+						App:  "grpc-hello-world",
+						Desc: "service config",
+						URI:  "//service/service.yaml",
+						Artifacts: []*config.ServiceArtifact{
 							{
-								Name: "grpc",
-								Port: 50051,
+								Name:   "service",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//service:service_image",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "grpc",
+										Port: 50051,
+									},
+								},
+							},
+							{
+								Name:   "service111",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//service:service111_image",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "grpc",
+										Port: 50052,
+									},
+								},
 							},
 						},
 					},
 					{
-						Name:   "gateway",
-						Type:   config.ServiceArtifactTypeDeployment,
-						Target: ":gateway_image_123",
-						Ports: []*config.ServiceArtifactPort{
+						Name: "gateway",
+						App:  "grpc-hello-world",
+						Desc: "gateway config112312",
+						URI:  "//gateway/service1111.yaml",
+						Artifacts: []*config.ServiceArtifact{
 							{
-								Name: "http",
-								Port: 80,
+								Name:   "gateway",
+								Type:   config.ServiceArtifactTypeDeployment,
+								Target: "//gateway:gateway_image_123",
+								Ports: []*config.ServiceArtifactPort{
+									{
+										Name: "http",
+										Port: 80,
+									},
+								},
 							},
 						},
 					},
@@ -761,6 +878,7 @@ func TestDeployEnv_Update(t *testing.T) {
 							Hostnames: []string{"hello.liukexin.com"},
 							Matches: []*config.DeployHTTPMatch{
 								{
+									Backend: "http",
 									Path: config.DeployHTTPPathMatch{
 										Type:  config.HTTPPathMatchTypePrefix,
 										Value: "/v1",
@@ -831,18 +949,73 @@ func TestDeployEnv_Update(t *testing.T) {
 				t.Fatalf("Update() failed: %v", gotErr)
 			}
 
-			// if !reflect.DeepEqual(env.serviceArtifacts, tt.wantArtifacts) {
-			// 	t.Fatalf("Update() serviceArtifacts = %v, want %v", env.serviceArtifacts, tt.wantArtifacts)
-			// }
-
 			env, err = Get(tt.name, tt.app)
 			if err != nil {
 				t.Fatalf("could not construct receiver type: %v", err)
 			}
 
 			if !reflect.DeepEqual(env, tt.want) {
-				t.Fatalf("Update() = %v, want %v", env.serviceArtifacts, tt.want.serviceArtifacts)
+				t.Fatalf("Update() = %v, want %v", env, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeployEnv_BuildDeployObjects(t *testing.T) {
+	env := &DeployEnv{
+		Profile: Profile{Name: "dev", App: "grpc-hello-world"},
+		mainDeployConfig: &config.DeployConfig{
+			App:      "grpc-hello-world",
+			Template: "deploy",
+			Services: []*config.DeployService{
+				{Artifact: config.DeployArtifact{Name: "service"}},
+				{
+					Artifact: config.DeployArtifact{Name: "gateway"},
+					HTTP: config.DeployHTTP{
+						Matches: []*config.DeployHTTPMatch{{
+							Backend: "http",
+							Path:    config.DeployHTTPPathMatch{Type: config.HTTPPathMatchTypePrefix, Value: "/v1"},
+						}},
+					},
+				},
+			},
+		},
+		serviceConfigs: []*config.ServiceConfig{
+			{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "service",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: ":service_image",
+					Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
+				}},
+			},
+			{
+				Name: "gateway",
+				App:  "grpc-hello-world",
+				Desc: "gateway service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "gateway",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: ":gateway_image",
+					Ports:  []*config.ServiceArtifactPort{{Name: "http", Port: 80}},
+				}},
+			},
+		},
+	}
+
+	objects, err := env.BuildDeployObjects()
+	if err != nil {
+		t.Fatalf("BuildDeployObjects() failed: %v", err)
+	}
+
+	if len(objects.Deployments) != 2 || len(objects.Services) != 2 || len(objects.HTTPRoutes) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d services=%d routes=%d", len(objects.Deployments), len(objects.Services), len(objects.HTTPRoutes))
+	}
+
+	if objects.Deployments[0].EnvironmentName != "dev" || objects.Deployments[1].EnvironmentName != "dev" {
+		t.Fatal("environment name was not propagated into deployment workloads")
 	}
 }

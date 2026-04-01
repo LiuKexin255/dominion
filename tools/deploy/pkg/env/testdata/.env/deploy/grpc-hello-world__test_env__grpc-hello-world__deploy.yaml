@@ -1,6 +1,7 @@
 template: deploy
 app: grpc-hello-world
 desc: 开发环境
+uri: //deploy/grpc-hello-world/deploy.yaml
 services:
 - artifact:
     path: //service/service.yaml
@@ -12,6 +13,7 @@ services:
     hostnames:
     - hello.liukexin.com
     matches:
-    - path:
+    - backend: http
+      path:
         type: PathPrefix
         value: /v1

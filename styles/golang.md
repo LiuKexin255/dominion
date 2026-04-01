@@ -3,6 +3,30 @@
 ## 数组
 
 * 函数返回空数组（长度为 0 数组）时返回 `nil`
+* 数组与 `map` 初始化除非必要，否则不加长度参数
+
+```golang
+// good case
+var a []string
+m := make(map[string]string)
+
+// bad case
+a := make([]string , 0 , len(...))
+m := make(map[string]string, 0, len(...))
+
+```
+
+## 变量
+
+* 对于结构体指针对象，使用关键字 `new` 创建。
+
+```golang
+// good case
+a := new(A)
+
+// bad case
+a := &A{}
+```
 
 ## 注释
 
@@ -10,7 +34,15 @@
 * `package` 级别内部变量和 `type` 定义类型需增加注释。
 * 复杂代码逻辑、关键步骤或易错地方，应增加注释以说明原因和注意点。
 
+## 函数
+
+* 不要对入参、结构体
+
 ## 单元测试 
+
+### 命名风格
+
+* 导出函数使用 `TestFuncName` 作为单测函数名，非导出函数使用 `Test_funcName` 作为单测函数名。 
 
 ### 使用表驱动风格
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"dominion/tools/deploy/pkg/config"
+	"dominion/tools/deploy/pkg/k8s"
 	"dominion/tools/deploy/pkg/workspace"
 
 	"github.com/goccy/go-yaml"
@@ -78,7 +79,7 @@ type DeployEnv struct {
 	Profile
 
 	mainDeployConfig *config.DeployConfig
-	serviceArtifacts []*config.ServiceArtifact
+	serviceConfigs   []*config.ServiceConfig
 }
 
 // Update 更新环境
@@ -87,13 +88,13 @@ func (e *DeployEnv) Update(deployConfig *config.DeployConfig) error {
 		return fmt.Errorf("部署配置为空")
 	}
 
-	serviceArtifacts, err := readServiceArtifacts(deployConfig)
+	serviceConfigs, err := readServiceConfigs(deployConfig)
 	if err != nil {
 		return err
 	}
 
 	e.mainDeployConfig = deployConfig
-	e.serviceArtifacts = serviceArtifacts
+	e.serviceConfigs = serviceConfigs
 	e.UpdatedAt = now()
 
 	return e.save()
@@ -127,7 +128,7 @@ func (e *DeployEnv) Delete() error {
 		return err
 	}
 
-	if err := e.deleteServiceArtifacts(); err != nil {
+	if err := e.deleteServiceConfigs(); err != nil {
 		return err
 	}
 
@@ -136,7 +137,7 @@ func (e *DeployEnv) Delete() error {
 
 // save 保存环境信息
 func (e *DeployEnv) save() error {
-	if err := e.saveServiceArtifacts(); err != nil {
+	if err := e.saveServiceConfigs(); err != nil {
 		return err
 	}
 
@@ -194,8 +195,8 @@ func (e *DeployEnv) deleteDeployConfigs() error {
 	return deleteDeployConfig(e.MainConfig)
 }
 
-func (e *DeployEnv) saveServiceArtifacts() error {
-	raw, err := yaml.Marshal(e.serviceArtifacts)
+func (e *DeployEnv) saveServiceConfigs() error {
+	raw, err := yaml.Marshal(e.serviceConfigs)
 	if err != nil {
 		return err
 	}
@@ -204,22 +205,22 @@ func (e *DeployEnv) saveServiceArtifacts() error {
 	return os.WriteFile(filePath, raw, os.ModePerm)
 }
 
-func (e *DeployEnv) loadServiceArtifacts() error {
+func (e *DeployEnv) loadServiceConfigs() error {
 	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
 	if err != nil {
 		return err
 	}
 
-	var serviceArtifacts []*config.ServiceArtifact
-	if err := yaml.Unmarshal(raw, &serviceArtifacts); err != nil {
+	var serviceConfigs []*config.ServiceConfig
+	if err := yaml.Unmarshal(raw, &serviceConfigs); err != nil {
 		return err
 	}
 
-	e.serviceArtifacts = serviceArtifacts
+	e.serviceConfigs = serviceConfigs
 	return nil
 }
 
-func (e *DeployEnv) deleteServiceArtifacts() error {
+func (e *DeployEnv) deleteServiceConfigs() error {
 	return os.RemoveAll(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
 }
 
@@ -230,27 +231,31 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	return e.Name == other.Name && e.App == other.App
 }
 
+// BuildDeployObjects 根据当前环境缓存配置构建部署对象。
+func (e *DeployEnv) BuildDeployObjects() (*k8s.DeployObjects, error) {
+	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name)
+}
+
 // func (e *DeployEnv) String() string {
 // 	return fmt.Sprintf("env: %s, app: %s", e.Name, e.App)
 // }
 
-func readServiceArtifacts(deployConfig *config.DeployConfig) ([]*config.ServiceArtifact, error) {
-	serviceArtifacts := make([]*config.ServiceArtifact, 0, len(deployConfig.Services))
+func readServiceConfigs(deployConfig *config.DeployConfig) ([]*config.ServiceConfig, error) {
+	serviceConfigs := make([]*config.ServiceConfig, 0, len(deployConfig.Services))
 	for _, service := range deployConfig.Services {
 		serviceConfig, err := config.ParseServiceConfig(workspace.ResolveRootPath(service.Artifact.Path))
 		if err != nil {
 			return nil, fmt.Errorf("读取服务配置 %s 失败: %w", service.Artifact.Path, err)
 		}
 
-		artifact, err := serviceConfig.GetArtifact(service.Artifact.Name)
-		if err != nil {
+		if _, err := serviceConfig.GetArtifact(service.Artifact.Name); err != nil {
 			return nil, fmt.Errorf("服务配置 %s 中不存在产物 %s: %w", service.Artifact.Path, service.Artifact.Name, err)
 		}
 
-		serviceArtifacts = append(serviceArtifacts, artifact)
+		serviceConfigs = append(serviceConfigs, serviceConfig)
 	}
 
-	return serviceArtifacts, nil
+	return serviceConfigs, nil
 }
 
 func saveDeployConfig(fileName string, deployConfig *config.DeployConfig) error {
@@ -391,7 +396,7 @@ func loadDeployEnv(filePath string) (*DeployEnv, error) {
 	}
 
 	if env.mainDeployConfig != nil {
-		if err := env.loadServiceArtifacts(); err != nil {
+		if err := env.loadServiceConfigs(); err != nil {
 			return nil, err
 		}
 	}

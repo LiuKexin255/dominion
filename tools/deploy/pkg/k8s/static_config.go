@@ -9,27 +9,35 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// staticConfigFileName 是内置静态配置文件名。
 const staticConfigFileName = "static_config.yaml"
 
+// staticConfigFS 保存内置静态配置文件。
+//
 //go:embed static_config.yaml
 var staticConfigFS embed.FS
 
 var (
+	// loadK8sConfigOnce 确保静态配置只加载一次。
 	loadK8sConfigOnce sync.Once
-	loadedK8sConfig   *K8sConfig
+	// loadedK8sConfig 缓存已加载的静态配置。
+	loadedK8sConfig *K8sConfig
 )
 
+// GatewayConfig 定义网关资源的命名信息。
 type GatewayConfig struct {
 	Name      string `yaml:"name"`
 	Namespace string `yaml:"namespace"`
 }
 
+// K8sConfig 定义部署流程使用的静态 Kubernetes 配置。
 type K8sConfig struct {
 	Namespace string        `yaml:"namespace"`
 	ManagedBy string        `yaml:"managed_by"`
 	Gateway   GatewayConfig `yaml:"gateway"`
 }
 
+// LoadK8sConfig 加载并缓存静态 Kubernetes 配置。
 func LoadK8sConfig() *K8sConfig {
 	loadK8sConfigOnce.Do(func() {
 		raw, err := staticConfigFS.ReadFile(staticConfigFileName)
@@ -61,6 +69,7 @@ func parseK8sConfig(raw []byte) (*K8sConfig, error) {
 	return cfg, nil
 }
 
+// Validate 校验静态 Kubernetes 配置字段。
 func (c *K8sConfig) Validate() error {
 	if c == nil {
 		return fmt.Errorf("静态配置为空")

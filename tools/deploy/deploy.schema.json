@@ -26,6 +26,11 @@
       "minLength": 1,
       "description": "环境描述"
     },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "description": "部署配置资源标识"
+    },
     "services": {
       "type": "array",
       "description": "部署的服务列表，同一个服务不能多次部署",
@@ -81,7 +86,16 @@
                   "type": "object",
                   "additionalProperties": false,
                   "minProperties": 1,
+                  "required": [
+                    "path",
+                    "backend"
+                  ],
                   "properties": {
+                    "backend": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "后端 port 名称"
+                    },
                     "path": {
                       "type": "object",
                       "additionalProperties": false,

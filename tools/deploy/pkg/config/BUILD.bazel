@@ -6,6 +6,7 @@ go_library(
     importpath = "dominion/tools/deploy/pkg/config",
     visibility = ["//visibility:public"],
     deps = [
+        "//tools/deploy/pkg/workspace",
         "@com_github_goccy_go_yaml//:go-yaml",
         "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
     ],
@@ -20,5 +21,6 @@ go_test(
         "//tools/deploy:deploy.schema.json",
         "//tools/deploy:service.schema.json",
     ],
-    deps = [":config"],
+    embed = [":config"],
+    deps = ["//tools/deploy/pkg/workspace"],
 )

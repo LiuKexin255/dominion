@@ -11,7 +11,7 @@ const (
 	WorkspaceKey = "BUILD_WORKSPACE_DIRECTORY"
 	WorkingKey   = "BUILD_WORKING_DIRECTORY"
 
-	workspacePathPrefix = "//"
+	WorkspacePathPrefix = "//"
 )
 
 // Root 返回项目根目录
@@ -66,7 +66,7 @@ func exists(path string) bool {
 }
 
 func ResolvePath(inputPath string) string {
-	if strings.HasPrefix(inputPath, workspacePathPrefix) {
+	if strings.HasPrefix(inputPath, WorkspacePathPrefix) {
 		return ResolveRootPath(inputPath)
 	}
 
@@ -77,5 +77,22 @@ func ResolvePath(inputPath string) string {
 }
 
 func ResolveRootPath(inputPath string) string {
-	return filepath.Join(MustRoot(), strings.TrimPrefix(inputPath, workspacePathPrefix))
+	return filepath.Join(MustRoot(), strings.TrimPrefix(inputPath, WorkspacePathPrefix))
+}
+
+// ToURI 将路径转换为 // 开头的仓库相对 URI。
+// 如果路径不在仓库根目录下或无法获取仓库根目录，返回错误。
+func ToURI(absPath string) (string, error) {
+	root, err := Root()
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return "", fmt.Errorf("计算路径 %s 相对于 %s 的相对路径失败: %w", absPath, root, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径 %s 不在项目目录 %s 下", absPath, root)
+	}
+	return WorkspacePathPrefix + rel, nil
 }

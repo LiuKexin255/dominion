@@ -3,21 +3,27 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "k8s",
     srcs = [
-        "deployment_model.go",
+        "converter.go",
         "static_config.go",
+        "workload.go",
     ],
     embedsrcs = ["static_config.yaml"],
     importpath = "dominion/tools/deploy/pkg/k8s",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_goccy_go_yaml//:go-yaml"],
+    deps = [
+        "//tools/deploy/pkg/config",
+        "@com_github_goccy_go_yaml//:go-yaml",
+    ],
 )
 
 go_test(
     name = "k8s_test",
     size = "small",
     srcs = [
-        "deployment_model_test.go",
+        "converter_test.go",
         "static_config_test.go",
+        "workload_test.go",
     ],
     embed = [":k8s"],
+    deps = ["//tools/deploy/pkg/config"],
 )

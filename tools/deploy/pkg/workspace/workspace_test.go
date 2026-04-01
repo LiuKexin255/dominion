@@ -127,3 +127,59 @@ func TestResolvePath(t *testing.T) {
 		})
 	}
 }
+
+func TestToURI(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name    string
+		root    string // BUILD_WORKSPACE_DIRECTORY 值，空字符串表示未设置
+		absPath string
+		want    string
+		wantErr bool
+	}{
+		{
+			name:    "仓库内路径正确转换为 URI",
+			root:    root,
+			absPath: filepath.Join(root, "tools/deploy/deploy.yaml"),
+			want:    "//tools/deploy/deploy.yaml",
+		},
+		{
+			name:    "仓库外路径返回错误",
+			root:    root,
+			absPath: filepath.Join(t.TempDir(), "outside.yaml"),
+			wantErr: true,
+		},
+		{
+			name:    "BUILD_WORKSPACE_DIRECTORY 未设置时返回错误",
+			root:    "",
+			absPath: filepath.Join(t.TempDir(), "tools/deploy/deploy.yaml"),
+			wantErr: true,
+		},
+		{
+			name:    "共享前缀但非子目录返回错误",
+			root:    root,
+			absPath: root + "-sibling/file.yaml",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(workspace.WorkspaceKey, tt.root)
+			got, gotErr := workspace.ToURI(tt.absPath)
+			if gotErr != nil {
+				if !tt.wantErr {
+					t.Errorf("ToURI(%q) failed: %v", tt.absPath, gotErr)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatalf("ToURI(%q) succeeded unexpectedly", tt.absPath)
+			}
+			if got != tt.want {
+				t.Errorf("ToURI(%q) = %q, want %q", tt.absPath, got, tt.want)
+			}
+		})
+	}
+}
