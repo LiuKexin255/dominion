@@ -20,7 +20,6 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 	// 构建 URI -> ServiceConfig 的 map
 	serviceConfigMap := make(map[string]*config.ServiceConfig)
 	for _, sc := range serviceConfigs {
-
 		if sc.URI == "" {
 			return nil, fmt.Errorf("service config %s 的 URI 为空", sc.Name)
 		}

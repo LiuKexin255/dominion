@@ -9,6 +9,7 @@
 // good case
 var a []string
 m := make(map[string]string)
+m := map[string]string{}
 
 // bad case
 a := make([]string , 0 , len(...))
@@ -18,7 +19,7 @@ m := make(map[string]string, 0, len(...))
 
 ## 变量
 
-* 对于结构体指针对象，使用关键字 `new` 创建。
+* 对于**无初始化**的指针对象创建，使用关键字 `new`。
 
 ```golang
 // good case
@@ -26,6 +27,38 @@ a := new(A)
 
 // bad case
 a := &A{}
+```
+
+* 对于带有初始值的初始化，使用字面量创建
+
+```golang
+// good case
+a := A{
+	Foo: "value",
+	Bar: 123,
+}
+
+aPtr := &A{
+	Foo: "value",
+	Bar: 123,
+}
+
+// not recommended
+aPtr := new(A)
+aPtr.Foo = "value"
+aPtr.Bar = 123
+```
+
+* 当需要将值类型赋给指针类型时，使用 `&` 或 `toPtr` 操作。
+
+```golang
+// good case
+var a A 
+var need *A
+
+need = &a
+// or 定义一个转换指针方法 toPtr 
+need = toPtr(a)
 ```
 
 ## 注释
@@ -36,13 +69,18 @@ a := &A{}
 
 ## 函数
 
-* 不要对入参、结构体
+* 对入参、结构体 Revicer 校验仅限于函数自身功能内需要，不对参数做过度或不是本参数（包）负责的校验。特别是传入的参数已经在本仓库的其他包内进行校验，不要做重复校验。
 
 ## 单元测试 
 
 ### 命名风格
 
 * 导出函数使用 `TestFuncName` 作为单测函数名，非导出函数使用 `Test_funcName` 作为单测函数名。 
+
+### 测试逻辑
+
+* 一个测试函数的测试用例应该共享同一个测试逻辑。如果某个函数需要多种测试逻辑，则拆分成多个测试函数。
+* **禁止**在测试用例中塞入断言逻辑。
 
 ### 使用表驱动风格
 

@@ -968,9 +968,9 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 			App:      "grpc-hello-world",
 			Template: "deploy",
 			Services: []*config.DeployService{
-				{Artifact: config.DeployArtifact{Name: "service"}},
+				{Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"}},
 				{
-					Artifact: config.DeployArtifact{Name: "gateway"},
+					Artifact: config.DeployArtifact{Path: "//svc/gateway.yaml", Name: "gateway"},
 					HTTP: config.DeployHTTP{
 						Matches: []*config.DeployHTTPMatch{{
 							Backend: "http",
@@ -982,6 +982,7 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 		},
 		serviceConfigs: []*config.ServiceConfig{
 			{
+				URI:  "//svc/service.yaml",
 				Name: "service",
 				App:  "grpc-hello-world",
 				Desc: "grpc service",
@@ -993,6 +994,7 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 				}},
 			},
 			{
+				URI:  "//svc/gateway.yaml",
 				Name: "gateway",
 				App:  "grpc-hello-world",
 				Desc: "gateway service",

@@ -161,3 +161,31 @@ func TestValidateCurOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    *options
+		wantErr string
+	}{
+		{
+			name:    "missing active env",
+			opts:    &options{target: "deploy.yaml"},
+			wantErr: "deploy 需要当前已激活环境",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BUILD_WORKSPACE_DIRECTORY", t.TempDir())
+
+			err := deployAndActivate(tt.opts)
+			if err == nil {
+				t.Fatal("deployAndActivate() expected error")
+			}
+			if err.Error() != tt.wantErr {
+				t.Fatalf("deployAndActivate() error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}

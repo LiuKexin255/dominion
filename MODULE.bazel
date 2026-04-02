@@ -23,6 +23,11 @@ use_repo(
     "com_github_goccy_go_yaml",
     "com_github_santhosh_tekuri_jsonschema_v6",
     "com_github_spf13_pflag",
+    "io_k8s_api",
+    "io_k8s_apimachinery",
+    "io_k8s_client_go",
+    "io_k8s_sigs_gateway_api",
+    "io_k8s_utils",
     "org_golang_google_grpc",
 )
 

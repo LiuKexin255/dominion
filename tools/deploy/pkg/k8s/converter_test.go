@@ -281,36 +281,6 @@ func TestNewDeployObjects_ErrorCases(t *testing.T) {
 			wantErr:     true,
 			errContains: "为空",
 		},
-		{
-			name: "empty deploy services",
-			deployCfg: &config.DeployConfig{
-				Services: []*config.DeployService{},
-			},
-			serviceConfigs: []*config.ServiceConfig{},
-			envName:        "dev",
-			wantErr:        true,
-			errContains:    "services 为空",
-		},
-		{
-			name:           "nil deploy config",
-			deployCfg:      nil,
-			serviceConfigs: []*config.ServiceConfig{},
-			envName:        "dev",
-			wantErr:        true,
-			errContains:    "deploy config 为空",
-		},
-		{
-			name: "nil service config",
-			deployCfg: &config.DeployConfig{
-				Services: []*config.DeployService{
-					{Artifact: config.DeployArtifact{Path: "//svc/a.yaml", Name: "service"}},
-				},
-			},
-			serviceConfigs: []*config.ServiceConfig{nil},
-			envName:        "dev",
-			wantErr:        true,
-			errContains:    "service config 为空",
-		},
 	}
 
 	for _, tt := range tests {
