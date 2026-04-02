@@ -77,14 +77,48 @@ need = toPtr(a)
 
 * 导出函数使用 `TestFuncName` 作为单测函数名，非导出函数使用 `Test_funcName` 作为单测函数名。 
 
-### 测试逻辑
+### 测试代码
 
-* 一个测试函数的测试用例应该共享同一个测试逻辑。如果某个函数需要多种测试逻辑，则拆分成多个测试函数。
+* 一个测试函数的测试用例应该共享同一个测试逻辑，避免使用过多的流程控制（如 `if/switch`）。如果某个函数需要多种测试逻辑，则拆分成多个测试函数。
 * **禁止**在测试用例中塞入断言逻辑。
+* 测试代码主体应当完整，包含如何从输入得到输出结果的所有信息。不要将重要信息隐藏在 `helper` 方法中。
+* 测试状态（结果）而不是交互；测试行为而不是方法。
+
+```golang
+// 例如测试 add 方法
+func add (a int , b int) int {
+	return a + b
+}
+
+// good test  
+
+good_case := &case {
+	param: &param{
+		a : 2,
+		b : 3,
+	},
+	want: 5 // 可以通过测试代码看出，5 是如何得到的。
+}
+
+got := add(good_case.param.a, good_case.param.b)
+if got != good_case.want {
+	// test error
+}
+
+// bad test 
+bad_case := &case {
+	param: build_hepler(),
+	want: 5 // 无法看出为什么结果是 5。
+}
+```
 
 ### 使用表驱动风格
 
-单元测试风格如下：
+测试函数使用表驱动风格，并且包括 `given/when/then`（也可以称 `arrange/act/assert`）:
+
+* `given`: `tests` 提供测试用例与所需信息。
+* `when`: 执行 `parseOptions` 解析参数。
+* `then`: 解析**是/否**成功。
 
 ```golang
 func TestParseOptions(t *testing.T) {
