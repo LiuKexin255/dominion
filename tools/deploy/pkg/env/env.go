@@ -19,9 +19,12 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// RemoteStatus 表示环境的远程部署状态类型。
+type RemoteStatus string
+
 const (
-	RemoteStatusPending  = "pending"
-	RemoteStatusDeployed = "deployed"
+	RemoteStatusPending  RemoteStatus = "pending"
+	RemoteStatusDeployed RemoteStatus = "deployed"
 )
 
 var (
@@ -80,10 +83,10 @@ func internalInit() {
 
 // Profile 环境基本信息
 type Profile struct {
-	Name         string    `json:"name"`
-	App          string    `json:"app"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	RemoteStatus string    `json:"remote_status,omitempty"`
+	Name         string       `json:"name"`
+	App          string       `json:"app"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	RemoteStatus RemoteStatus `json:"remote_status,omitempty"`
 
 	MainConfig string `json:"main_config,omitempty"`
 }
