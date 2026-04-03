@@ -25,6 +25,7 @@ go_test(
     size = "small",
     srcs = ["main_test.go"],
     embed = [":env_deploy_lib"],
+    deps = ["//tools/deploy/pkg/k8s"],
 )
 
 go_library(
@@ -46,4 +47,5 @@ go_test(
     size = "small",
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
+    deps = ["//tools/deploy/pkg/k8s"],
 )

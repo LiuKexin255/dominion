@@ -22,15 +22,16 @@ bazel run //:deploy -- use {env-name} [--app={app-name}]
 2. 部署/更新服务
 
 ```bash 
-bazel run //:deploy -- deploy {path-of-deploy.yaml}
+bazel run //:deploy -- deploy [--kubeconfig={path}] {path-of-deploy.yaml}
 ```
 
 - `deploy` 需要先有当前激活环境，必须先执行 `use`，否则命令会失败。
+- `--kubeconfig` 可选；不传时按 client-go 默认规则加载（例如 `KUBECONFIG` 或 `~/.kube/config`）。
 
 3. 删除环境
 
 ```bash
-bazel run //:deploy -- del {env-name} [--app={app-name}]
+bazel run //:deploy -- del {env-name} [--app={app-name}] [--kubeconfig={path}]
 ```
 
 4. 列出环境
@@ -81,6 +82,7 @@ bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml
 
 - Kubernetes 集群可达。
 - `kubectl` 已配置好可用的 context，并且当前用户有创建/删除 namespace 与资源的权限。
+- 如果使用 microk8s 且 kubeconfig 不在默认位置，可显式传入 `--kubeconfig`；否则需要先把 microk8s 配置导出到 `KUBECONFIG` 或 `~/.kube/config`。
 
 冒烟步骤：
 

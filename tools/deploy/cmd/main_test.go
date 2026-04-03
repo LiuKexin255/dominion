@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"dominion/tools/deploy/pkg/k8s"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -18,9 +20,11 @@ func TestParseOptions(t *testing.T) {
 		{name: "use with app", args: []string{"use", "--app=test-app", "dev"}},
 		{name: "use with app postfix", args: []string{"use", "dev", "--app=test-app"}},
 		{name: "deploy only", args: []string{"deploy", "deploy.yaml"}},
+		{name: "deploy with kubeconfig", args: []string{"deploy", "--kubeconfig=/tmp/kubeconfig", "deploy.yaml"}},
 		{name: "deploy with app", args: []string{"deploy", "--app=test-app", "deploy.yaml"}, wantErr: true},
 		{name: "deploy with app postfix", args: []string{"deploy", "deploy.yaml", "--app=test-app"}, wantErr: true},
 		{name: "del only", args: []string{"del", "dev"}},
+		{name: "del with kubeconfig", args: []string{"del", "--kubeconfig=/tmp/kubeconfig", "dev"}},
 		{name: "del with app", args: []string{"del", "--app=test-app", "dev"}},
 		{name: "del with app postfix", args: []string{"del", "dev", "--app=test-app"}},
 		{name: "list only", args: []string{"list"}},
@@ -193,6 +197,25 @@ func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
 	}
 }
 
+func TestNewExecutor_UsesKubeconfigPath(t *testing.T) {
+	originalFactory := runtimeClientFactory
+	t.Cleanup(func() { runtimeClientFactory = originalFactory })
+
+	var gotPath string
+	runtimeClientFactory = func(kubeconfigPath string) (*k8s.RuntimeClient, error) {
+		gotPath = kubeconfigPath
+		return &k8s.RuntimeClient{}, nil
+	}
+
+	_, err := newExecutor(&options{kubeconfigPath: " /tmp/microk8s.conf "})
+	if err != nil {
+		t.Fatalf("newExecutor() unexpected error: %v", err)
+	}
+	if gotPath != " /tmp/microk8s.conf " {
+		t.Fatalf("newExecutor() kubeconfig path = %q, want %q", gotPath, " /tmp/microk8s.conf ")
+	}
+}
+
 func TestRun_Help(t *testing.T) {
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
@@ -217,5 +240,8 @@ func TestRun_Help(t *testing.T) {
 	got := string(out)
 	if !strings.Contains(got, "Usage: deploy <command> [args]") {
 		t.Fatalf("help output missing usage text: %q", got)
+	}
+	if !strings.Contains(got, "--kubeconfig=path") {
+		t.Fatalf("help output missing kubeconfig flag: %q", got)
 	}
 }

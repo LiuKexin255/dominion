@@ -26,13 +26,15 @@ const (
 	commandList   = "list"
 	commandCur    = "cur"
 
-	flagApp = "app"
+	flagApp        = "app"
+	flagKubeconfig = "kubeconfig"
 )
 
 type options struct {
-	command string
-	target  string
-	app     string
+	command        string
+	target         string
+	app            string
+	kubeconfigPath string
 }
 
 type executor interface {
@@ -55,6 +57,7 @@ func (o *options) Default() error {
 
 	o.app = strings.TrimSpace(o.app)
 	o.target = strings.TrimSpace(o.target)
+	o.kubeconfigPath = strings.TrimSpace(o.kubeconfigPath)
 
 	return nil
 }
@@ -75,15 +78,25 @@ var flagSpecs = map[string]flagSpec{
 			fs.StringVar(&opts.app, spec.name, spec.defaultValue, spec.usage)
 		},
 	},
+	flagKubeconfig: {
+		name:         flagKubeconfig,
+		defaultValue: "/var/snap/microk8s/current/credentials/client.config",
+		usage:        "path to kubeconfig; empty uses client-go default loading rules",
+		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
+			fs.StringVar(&opts.kubeconfigPath, spec.name, spec.defaultValue, spec.usage)
+		},
+	},
 }
 
 var commandFlagTable = map[string][]string{
 	commandUse:    {flagApp},
-	commandDeploy: {},
-	commandDel:    {flagApp},
+	commandDeploy: {flagKubeconfig},
+	commandDel:    {flagApp, flagKubeconfig},
 	commandList:   {},
 	commandCur:    {},
 }
+
+var runtimeClientFactory = k8s.NewRuntimeClient
 
 // commandExecFunc 命令执行方法
 type commandExecFunc = func(opts *options) error
@@ -264,8 +277,8 @@ func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
 	return deployConfig, nil
 }
 
-func newExecutor() (executor, error) {
-	runtimeClient, err := k8s.NewRuntimeClient("")
+func newExecutor(opts *options) (executor, error) {
+	runtimeClient, err := runtimeClientFactory(opts.kubeconfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("创建 runtime client 失败: %w", err)
 	}
@@ -287,7 +300,7 @@ func deployAndActivate(opts *options) error {
 		return fmt.Errorf("更新环境配置失败: %w", err)
 	}
 
-	exec, err := newExecutor()
+	exec, err := newExecutor(opts)
 	if err != nil {
 		return err
 	}
@@ -331,7 +344,7 @@ func deleteEnvironment(opts *options) error {
 		return err
 	}
 
-	exec, err := newExecutor()
+	exec, err := newExecutor(opts)
 	if err != nil {
 		return err
 	}
@@ -391,8 +404,8 @@ func usageText() string {
 		"",
 		"Commands:",
 		"  use <env> [--app=app]   创建或切换环境",
-		"  deploy <deploy.yaml>    读取部署配置并执行部署",
-		"  del <env> [--app=app]   删除环境",
+		"  deploy [--kubeconfig=path] <deploy.yaml>  读取部署配置并执行部署",
+		"  del [--app=app] [--kubeconfig=path] <env> 删除环境",
 		"  list                    列出环境",
 		"  cur                     查看当前激活环境",
 	}, "\n") + "\n"
