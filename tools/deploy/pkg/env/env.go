@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,13 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+const (
+	RemoteStatusPending  = "pending"
+	RemoteStatusDeployed = "deployed"
+)
+
 var (
+
 	// envProfileDir 环境信息缓存路径
 	envProfileDir = ".env"
 
@@ -53,6 +60,12 @@ var (
 	LazyInit = sync.OnceFunc(internalInit)
 )
 
+// executor 定义环境层依赖的远端执行接口。
+type executor interface {
+	Apply(ctx context.Context, objects *k8s.DeployObjects) error
+	Delete(ctx context.Context, app, environment string) error
+}
+
 func internalInit() {
 	// 创建保存文件所需目录
 	for _, dir := range []string{
@@ -67,9 +80,10 @@ func internalInit() {
 
 // Profile 环境基本信息
 type Profile struct {
-	Name      string    `json:"name"`
-	App       string    `json:"app"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name         string    `json:"name"`
+	App          string    `json:"app"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	RemoteStatus string    `json:"remote_status,omitempty"`
 
 	MainConfig string `json:"main_config,omitempty"`
 }
@@ -84,6 +98,43 @@ type DeployEnv struct {
 
 // Update 更新环境
 func (e *DeployEnv) Update(deployConfig *config.DeployConfig) error {
+	return e.persistLocalDesiredState(deployConfig)
+}
+
+// Deploy 使用已缓存的期望配置执行远程部署，成功后仅更新 profile 状态为 deployed。
+func (e *DeployEnv) Deploy(ctx context.Context, exec executor) error {
+	if exec == nil {
+		return fmt.Errorf("executor is nil")
+	}
+	if e.mainDeployConfig == nil {
+		return fmt.Errorf("no cached deploy config, call Update first")
+	}
+
+	objects, err := e.BuildDeployObjects()
+	if err != nil {
+		return err
+	}
+
+	if err := exec.Apply(ctx, objects); err != nil {
+		return err
+	}
+
+	e.RemoteStatus = RemoteStatusDeployed
+	e.UpdatedAt = now()
+	return e.saveProfile()
+}
+
+func (e *DeployEnv) persistLocalDesiredState(deployConfig *config.DeployConfig) error {
+	if err := e.prepareDesiredState(deployConfig); err != nil {
+		return err
+	}
+
+	e.RemoteStatus = RemoteStatusPending
+	e.UpdatedAt = now()
+	return e.save()
+}
+
+func (e *DeployEnv) prepareDesiredState(deployConfig *config.DeployConfig) error {
 	if deployConfig == nil {
 		return fmt.Errorf("部署配置为空")
 	}
@@ -95,9 +146,7 @@ func (e *DeployEnv) Update(deployConfig *config.DeployConfig) error {
 
 	e.mainDeployConfig = deployConfig
 	e.serviceConfigs = serviceConfigs
-	e.UpdatedAt = now()
-
-	return e.save()
+	return nil
 }
 
 // Active 设置该环境为当前环境
@@ -109,7 +158,16 @@ func (e *DeployEnv) Active() error {
 }
 
 // Delete 删除环境
-func (e *DeployEnv) Delete() error {
+func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
+	if exec == nil {
+		return fmt.Errorf("executor is nil")
+	}
+
+	// 先执行远程删除（remote-first）
+	if err := exec.Delete(ctx, e.App, e.Name); err != nil {
+		return err
+	}
+
 	// 如果当前激活环境为自身，移除缓存
 	cur, err := Current()
 	if err != nil {

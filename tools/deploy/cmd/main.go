@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/env"
+	"dominion/tools/deploy/pkg/k8s"
 	"dominion/tools/deploy/pkg/workspace"
 
 	"github.com/spf13/pflag"
@@ -33,6 +35,11 @@ type options struct {
 	app     string
 }
 
+type executor interface {
+	Apply(context.Context, *k8s.DeployObjects) error
+	Delete(context.Context, string, string) error
+}
+
 func (o *options) Default() error {
 	// app 为空时使用当前激活的环境 app
 	if o.app == "" {
@@ -40,7 +47,7 @@ func (o *options) Default() error {
 		case commandUse, commandDel:
 			active, err := env.Current()
 			if err != nil {
-				return fmt.Errorf("未指定 --%s，且当前没有激活环境", flagApp)
+				return fmt.Errorf("未指定 --%s，且当前没有激活环境，请先执行 `%s <env>`", flagApp, commandUse)
 			}
 			o.app = active.App
 		}
@@ -108,6 +115,11 @@ func main() {
 }
 
 func run(args []string) error {
+	if isHelpArgs(args) {
+		fmt.Fprint(os.Stdout, usageText())
+		return nil
+	}
+
 	opts, err := parseOptions(args)
 	if err != nil {
 		return err
@@ -252,10 +264,18 @@ func parseDeployConfig(deployPath string) (*config.DeployConfig, error) {
 	return deployConfig, nil
 }
 
+func newExecutor() (executor, error) {
+	runtimeClient, err := k8s.NewRuntimeClient("")
+	if err != nil {
+		return nil, fmt.Errorf("创建 runtime client 失败: %w", err)
+	}
+	return k8s.NewExecutor(runtimeClient), nil
+}
+
 func deployAndActivate(opts *options) error {
 	active, err := env.Current()
 	if err != nil {
-		return fmt.Errorf("%s 需要当前已激活环境", commandDeploy)
+		return fmt.Errorf("%s 需要当前已激活环境，请先执行 `%s <env>`", commandDeploy, commandUse)
 	}
 
 	deployConfig, err := parseDeployConfig(opts.target)
@@ -264,7 +284,16 @@ func deployAndActivate(opts *options) error {
 	}
 
 	if err := active.Update(deployConfig); err != nil {
-		return fmt.Errorf("更新环境失败: %w", err)
+		return fmt.Errorf("更新环境配置失败: %w", err)
+	}
+
+	exec, err := newExecutor()
+	if err != nil {
+		return err
+	}
+
+	if err := active.Deploy(context.Background(), exec); err != nil {
+		return fmt.Errorf("部署环境失败: %w", err)
 	}
 
 	if err := active.Active(); err != nil {
@@ -301,7 +330,13 @@ func deleteEnvironment(opts *options) error {
 	if err != nil {
 		return err
 	}
-	if err := deployEnv.Delete(); err != nil {
+
+	exec, err := newExecutor()
+	if err != nil {
+		return err
+	}
+
+	if err := deployEnv.Delete(context.Background(), exec); err != nil {
 		return err
 	}
 
@@ -335,4 +370,30 @@ func showCurrentEnvironment(_ *options) error {
 
 	fmt.Println(active)
 	return nil
+}
+
+func isHelpArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+
+	switch args[0] {
+	case "--help", "-h", "help":
+		return true
+	default:
+		return false
+	}
+}
+
+func usageText() string {
+	return strings.Join([]string{
+		"Usage: deploy <command> [args]",
+		"",
+		"Commands:",
+		"  use <env> [--app=app]   创建或切换环境",
+		"  deploy <deploy.yaml>    读取部署配置并执行部署",
+		"  del <env> [--app=app]   删除环境",
+		"  list                    列出环境",
+		"  cur                     查看当前激活环境",
+	}, "\n") + "\n"
 }

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -171,7 +174,7 @@ func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
 		{
 			name:    "missing active env",
 			opts:    &options{target: "deploy.yaml"},
-			wantErr: "deploy 需要当前已激活环境",
+			wantErr: "deploy 需要当前已激活环境，请先执行 `use <env>`",
 		},
 	}
 
@@ -187,5 +190,32 @@ func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
 				t.Fatalf("deployAndActivate() error = %q, want %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRun_Help(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() failed: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	if err := run([]string{"--help"}); err != nil {
+		t.Fatalf("run(--help) failed: %v", err)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close failed: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("io.ReadAll() failed: %v", err)
+	}
+
+	got := string(out)
+	if !strings.Contains(got, "Usage: deploy <command> [args]") {
+		t.Fatalf("help output missing usage text: %q", got)
 	}
 }

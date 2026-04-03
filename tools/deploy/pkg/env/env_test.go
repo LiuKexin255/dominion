@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"dominion/tools/deploy/pkg/config"
+	"dominion/tools/deploy/pkg/k8s"
 	"dominion/tools/deploy/pkg/workspace"
 )
 
@@ -60,6 +62,26 @@ func initValidator(t *testing.T) {
 		t.Fatalf("config.NewYAMLValidator(service) failed: %v", err)
 	}
 	config.RegisterDeployValidator(deployValidator)
+}
+
+// stubExecutor 为 env 层测试提供可注入的执行器替身。
+type stubExecutor struct {
+	applyFunc  func(ctx context.Context, objects *k8s.DeployObjects) error
+	deleteFunc func(ctx context.Context, app, environment string) error
+}
+
+func (e *stubExecutor) Apply(ctx context.Context, objects *k8s.DeployObjects) error {
+	if e == nil || e.applyFunc == nil {
+		return nil
+	}
+	return e.applyFunc(ctx, objects)
+}
+
+func (e *stubExecutor) Delete(ctx context.Context, app, environment string) error {
+	if e == nil || e.deleteFunc == nil {
+		return nil
+	}
+	return e.deleteFunc(ctx, app, environment)
 }
 
 func Test_currentEnvInfo(t *testing.T) {
@@ -661,7 +683,7 @@ func TestDeployEnv_Active(t *testing.T) {
 				t.Fatalf("Current() = %v, want %v", env, curEnv)
 			}
 
-			gotErr = curEnv.Delete()
+			gotErr = curEnv.Delete(context.Background(), &stubExecutor{})
 			if gotErr != nil {
 				t.Fatalf("Delete() failed: %v", gotErr)
 			}
@@ -704,7 +726,7 @@ func TestDeployEnv_Delete(t *testing.T) {
 				t.Fatalf("Get() failed: %v", gotErr)
 			}
 
-			gotErr = e.Delete()
+			gotErr = e.Delete(context.Background(), &stubExecutor{})
 			if gotErr != nil {
 				t.Fatalf("Delete() failed: %v", gotErr)
 			}
@@ -714,6 +736,168 @@ func TestDeployEnv_Delete(t *testing.T) {
 				t.Fatalf("Get() after Delete() gotErr = %v, want %v", gotErr, ErrNotFound)
 			}
 		})
+	}
+}
+
+func TestDeployEnv_Deploy_RequiresExecutor(t *testing.T) {
+	for _, tt := range []struct {
+		caseName string
+		name     string
+		app      string
+		exec     executor
+		wantErr  bool
+	}{
+		{caseName: "nil executor", name: "test_env", app: "grpc-hello-world", wantErr: true},
+		{caseName: "valid executor", name: "test_env", app: "grpc-hello-world", exec: &stubExecutor{}, wantErr: false},
+	} {
+		t.Run(tt.caseName, func(t *testing.T) {
+			dir := t.TempDir()
+			copyDir(t, "testdata", dir)
+			t.Setenv(workspace.WorkspaceKey, dir)
+
+			internalInit()
+			initValidator(t)
+
+			env, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() failed: %v", err)
+			}
+
+			if err := env.Update(&config.DeployConfig{
+				Template: "deploy",
+				App:      "grpc-hello-world",
+				Desc:     "开发环境",
+				URI:      "//deploy/grpc-hello-world/deploy.yaml",
+				Services: []*config.DeployService{
+					{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+					{Artifact: config.DeployArtifact{Path: "//gateway/service.yaml", Name: "gateway"}},
+				},
+			}); err != nil {
+				t.Fatalf("Update() failed: %v", err)
+			}
+
+			err = env.Deploy(context.Background(), tt.exec)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Deploy() succeeded unexpectedly")
+				}
+			} else if err != nil {
+				t.Fatalf("Deploy() failed: %v", err)
+			}
+
+			cached, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() after Deploy() failed: %v", err)
+			}
+			wantStatus := RemoteStatusPending
+			if !tt.wantErr {
+				wantStatus = RemoteStatusDeployed
+			}
+			if cached.RemoteStatus != wantStatus {
+				t.Fatalf("Deploy() remote_status = %q, want %q", cached.RemoteStatus, wantStatus)
+			}
+		})
+	}
+}
+
+func TestDeployEnv_Delete_RequiresExecutor(t *testing.T) {
+	for _, tt := range []struct {
+		caseName string
+		name     string
+		app      string
+		exec     executor
+		wantErr  bool
+	}{
+		{caseName: "nil executor", name: "test_env", app: "grpc-hello-world", wantErr: true},
+		{caseName: "valid executor", name: "test_env", app: "grpc-hello-world", exec: &stubExecutor{}},
+	} {
+		t.Run(tt.caseName, func(t *testing.T) {
+			dir := t.TempDir()
+			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
+			t.Setenv(workspace.WorkspaceKey, dir)
+
+			internalInit()
+			initValidator(t)
+
+			env, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() failed: %v", err)
+			}
+
+			err = env.Delete(context.Background(), tt.exec)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Delete() succeeded unexpectedly")
+				}
+			} else if err != nil {
+				t.Fatalf("Delete() failed: %v", err)
+			}
+
+			cached, err := Get(tt.name, tt.app)
+			if tt.wantErr {
+				if err != nil {
+					t.Fatalf("Get() after Delete() failed: %v", err)
+				}
+				if !cached.Equal(env) {
+					t.Fatalf("Get() after failed Delete() = %v, want %v", cached, env)
+				}
+			} else {
+				if err == nil || !errors.Is(err, ErrNotFound) {
+					t.Fatalf("Get() after Delete() err = %v, want %v", err, ErrNotFound)
+				}
+			}
+		})
+	}
+}
+
+func TestDeployEnv_Deploy_FailedRemainsPending(t *testing.T) {
+	dir := t.TempDir()
+	copyDir(t, "testdata", dir)
+	t.Setenv(workspace.WorkspaceKey, dir)
+
+	internalInit()
+	initValidator(t)
+
+	env, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{
+			{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+			{Artifact: config.DeployArtifact{Path: "//gateway/service.yaml", Name: "gateway"}},
+		},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	wantErr := errors.New("apply failed")
+	exec := &stubExecutor{applyFunc: func(context.Context, *k8s.DeployObjects) error { return wantErr }}
+	if err := env.Deploy(context.Background(), exec); !errors.Is(err, wantErr) {
+		t.Fatalf("Deploy() err = %v, want %v", err, wantErr)
+	}
+
+	cached, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() after Deploy() failed: %v", err)
+	}
+	if cached.RemoteStatus != RemoteStatusPending {
+		t.Fatalf("Deploy() remote_status = %q, want %q", cached.RemoteStatus, RemoteStatusPending)
+	}
+	if cached.MainConfig == "" {
+		t.Fatal("Deploy() removed cached deploy config unexpectedly")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".env", "deploy", cached.MainConfig)); err != nil {
+		t.Fatalf("deploy cache missing after failed Deploy(): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".env", "service", "env__empty.yaml")); err != nil {
+		t.Fatalf("service cache missing after failed Deploy(): %v", err)
 	}
 }
 
@@ -765,9 +949,10 @@ func TestDeployEnv_Update(t *testing.T) {
 			},
 			want: &DeployEnv{
 				Profile: Profile{
-					Name:       "test_env",
-					App:        "grpc-hello-world",
-					MainConfig: "grpc-hello-world__test_env__grpc-hello-world__deploy.yaml",
+					Name:         "test_env",
+					App:          "grpc-hello-world",
+					RemoteStatus: RemoteStatusPending,
+					MainConfig:   "grpc-hello-world__test_env__grpc-hello-world__deploy.yaml",
 				},
 				mainDeployConfig: &config.DeployConfig{
 					Template: "deploy",
@@ -956,6 +1141,176 @@ func TestDeployEnv_Update(t *testing.T) {
 
 			if !reflect.DeepEqual(env, tt.want) {
 				t.Fatalf("Update() = %v, want %v", env, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeployEnv_Update_PersistsPendingStatusWithoutRemoteApply(t *testing.T) {
+	tests := []struct {
+		caseName     string
+		name         string
+		app          string
+		deployConfig *config.DeployConfig
+	}{
+		{
+			caseName: "远端应用先于本地缓存落盘",
+			name:     "empty",
+			app:      "env",
+			deployConfig: &config.DeployConfig{
+				Template: "deploy",
+				App:      "grpc-hello-world",
+				Desc:     "开发环境",
+				URI:      "//deploy/grpc-hello-world/deploy.yaml",
+				Services: []*config.DeployService{
+					{
+						Artifact: config.DeployArtifact{
+							Path: "//service/service.yaml",
+							Name: "service",
+						},
+					},
+					{
+						Artifact: config.DeployArtifact{
+							Path: "//gateway/service.yaml",
+							Name: "gateway",
+						},
+						HTTP: config.DeployHTTP{
+							Hostnames: []string{"hello.liukexin.com"},
+							Matches: []*config.DeployHTTPMatch{
+								{
+									Backend: "http",
+									Path: config.DeployHTTPPathMatch{
+										Type:  config.HTTPPathMatchTypePrefix,
+										Value: "/v1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.caseName, func(t *testing.T) {
+			dir := t.TempDir()
+			copyDir(t, "testdata", dir)
+			t.Setenv(workspace.WorkspaceKey, dir)
+
+			internalInit()
+			initValidator(t)
+
+			env, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() failed: %v", err)
+			}
+
+			applyCalled := false
+			exec := &stubExecutor{
+				applyFunc: func(ctx context.Context, objects *k8s.DeployObjects) error {
+					applyCalled = true
+					return nil
+				},
+			}
+
+			if err := env.Update(tt.deployConfig); err != nil {
+				t.Fatalf("Update() failed: %v", err)
+			}
+
+			if applyCalled {
+				t.Fatal("executor Apply() was called unexpectedly during Update")
+			}
+
+			cached, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() after Update() failed: %v", err)
+			}
+			if cached.MainConfig == "" {
+				t.Fatal("profile cache was not persisted after Update()")
+			}
+			if cached.RemoteStatus != RemoteStatusPending {
+				t.Fatalf("Update() remote_status = %q, want %q", cached.RemoteStatus, RemoteStatusPending)
+			}
+
+			if err := env.Deploy(context.Background(), exec); err != nil {
+				t.Fatalf("Deploy() failed: %v", err)
+			}
+
+			if !applyCalled {
+				t.Fatal("executor Apply() was not called during Deploy")
+			}
+
+			deployedCache, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() after Deploy() failed: %v", err)
+			}
+			if deployedCache.RemoteStatus != RemoteStatusDeployed {
+				t.Fatalf("Deploy() remote_status = %q, want %q", deployedCache.RemoteStatus, RemoteStatusDeployed)
+			}
+		})
+	}
+}
+
+func TestDeployEnv_Delete_RemoteDeleteFailurePreservesLocalCache(t *testing.T) {
+	tests := []struct {
+		caseName string
+		name     string
+		app      string
+	}{
+		{
+			caseName: "远端删除失败时保留本地缓存",
+			name:     "test_env",
+			app:      "grpc-hello-world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.caseName, func(t *testing.T) {
+			dir := t.TempDir()
+			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
+			t.Setenv(workspace.WorkspaceKey, dir)
+
+			internalInit()
+			initValidator(t)
+
+			env, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() failed: %v", err)
+			}
+
+			wantErr := errors.New("remote delete failed")
+			deleteCalled := false
+			exec := &stubExecutor{
+				deleteFunc: func(ctx context.Context, app, environment string) error {
+					deleteCalled = true
+					if app != tt.app || environment != tt.name {
+						t.Fatalf("Delete() got app=%q environment=%q, want app=%q environment=%q", app, environment, tt.app, tt.name)
+					}
+					return wantErr
+				},
+			}
+
+			err = env.Delete(context.Background(), exec)
+			if err == nil {
+				t.Fatal("Delete() succeeded unexpectedly")
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Delete() err = %v, want %v", err, wantErr)
+			}
+			if !deleteCalled {
+				t.Fatal("executor Delete() was not called")
+			}
+
+			cached, err := Get(tt.name, tt.app)
+			if err != nil {
+				t.Fatalf("Get() after failed Delete() failed: %v", err)
+			}
+			if !cached.Equal(env) {
+				t.Fatalf("Get() after failed Delete() = %v, want %v", cached, env)
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".env", "grpc-hello-world__test_env.json")); err != nil {
+				t.Fatalf("profile cache missing after failed remote Delete(): %v", err)
 			}
 		})
 	}

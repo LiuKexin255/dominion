@@ -21,6 +21,7 @@ go_test(
     embed = [":env"],
     deps = [
         "//tools/deploy/pkg/config",
+        "//tools/deploy/pkg/k8s",
         "//tools/deploy/pkg/workspace",
     ],
 )
