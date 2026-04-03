@@ -6,6 +6,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 type Executor struct {
@@ -41,6 +42,156 @@ func (e *Executor) Apply(ctx context.Context, objects *DeployObjects) error {
 	}
 
 	return nil
+}
+
+func (e *Executor) Delete(ctx context.Context, app, environment string) error {
+	if e == nil || e.client == nil {
+		return fmt.Errorf("runtime client 为空")
+	}
+
+	namespace := e.client.K8sConfig.Namespace
+	matchLabels := buildLabels(
+		withApp(app),
+		withEnvironment(environment),
+		withManagedBy(e.client.K8sConfig.ManagedBy),
+	)
+
+	if err := e.deleteHTTPRoutes(ctx, namespace, matchLabels); err != nil {
+		return err
+	}
+	if err := e.deleteServices(ctx, namespace, matchLabels); err != nil {
+		return err
+	}
+	if err := e.deleteDeployments(ctx, namespace, matchLabels); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (e *Executor) deleteDeployments(ctx context.Context, namespace string, matchLabels labels.Set) error {
+	listOptions := metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)}
+	deleteOptions := metav1.DeleteOptions{}
+
+	deployments, err := e.client.TypedClient.AppsV1().Deployments(namespace).List(ctx, listOptions)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to list %s in %s: %w", resourceKindDeployment, namespace, err)
+		}
+		return nil
+	}
+
+	for _, deployment := range deployments.Items {
+		if !hasAllLabels(deployment.Labels, matchLabels) {
+			continue
+		}
+		if err := e.client.TypedClient.AppsV1().Deployments(namespace).Delete(ctx, deployment.Name, deleteOptions); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete %s %s/%s: %w", resourceKindDeployment, namespace, deployment.Name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Executor) deleteServices(ctx context.Context, namespace string, matchLabels labels.Set) error {
+	listOptions := metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)}
+	deleteOptions := metav1.DeleteOptions{}
+
+	services, err := e.client.TypedClient.CoreV1().Services(namespace).List(ctx, listOptions)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to list %s in %s: %w", resourceKindService, namespace, err)
+		}
+		return nil
+	}
+
+	for _, service := range services.Items {
+		if !hasAllLabels(service.Labels, matchLabels) {
+			continue
+		}
+		if err := e.client.TypedClient.CoreV1().Services(namespace).Delete(ctx, service.Name, deleteOptions); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete %s %s/%s: %w", resourceKindService, namespace, service.Name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Executor) deleteHTTPRoutes(ctx context.Context, namespace string, matchLabels labels.Set) error {
+	listOptions := metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)}
+	deleteOptions := metav1.DeleteOptions{}
+
+	routes, err := e.client.DynamicClient.Resource(httpRouteGVR()).Namespace(namespace).List(ctx, listOptions)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to list %s in %s: %w", resourceKindHTTPRoute, namespace, err)
+		}
+		return nil
+	}
+
+	for _, route := range routes.Items {
+		if !hasAllLabels(route.GetLabels(), matchLabels) {
+			continue
+		}
+		if err := e.client.DynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Delete(ctx, route.GetName(), deleteOptions); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete %s %s/%s: %w", resourceKindHTTPRoute, namespace, route.GetName(), err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func hasAllLabels(current map[string]string, want labels.Set) bool {
+	for key, value := range want {
+		if current[key] != value {
+			return false
+		}
+	}
+
+	return true
+}
+
+func buildLabelSelector(matchLabels labels.Set) string {
+	selectorLabels := labels.Set{}
+	for key, value := range matchLabels {
+		if !isValidLabelValue(value) {
+			continue
+		}
+		selectorLabels[key] = value
+	}
+
+	return selectorLabels.String()
+}
+
+func isValidLabelValue(value string) bool {
+	if value == "" {
+		return true
+	}
+
+	for i, r := range value {
+		if !isValidLabelValueChar(r) {
+			return false
+		}
+		if (i == 0 || i == len(value)-1) && !isASCIIAlphaNumeric(r) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isValidLabelValueChar(r rune) bool {
+	return isASCIIAlphaNumeric(r) || r == '-' || r == '_' || r == '.'
+}
+
+func isASCIIAlphaNumeric(r rune) bool {
+	return ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9')
 }
 
 func (e *Executor) applyDeployment(ctx context.Context, workload *DeploymentWorkload) error {

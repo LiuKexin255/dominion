@@ -46,6 +46,7 @@ go_test(
         "builder_test.go",
         "client_test.go",
         "converter_test.go",
+        "executor_delete_test.go",
         "executor_test.go",
         "fake_harness_test.go",
         "static_config_test.go",
