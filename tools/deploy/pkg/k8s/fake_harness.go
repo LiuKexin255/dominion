@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -10,7 +11,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apiRuntime "k8s.io/apimachinery/pkg/runtime"
@@ -31,13 +31,6 @@ const (
 	operationDelete = "delete"
 )
 
-type operationRecord struct {
-	resourceType string
-	operation    string
-	namespace    string
-	name         string
-}
-
 type failureKey struct {
 	resourceType string
 	operation    string
@@ -49,9 +42,8 @@ type FakeHarness struct {
 	typedClient   *kubernetesfake.Clientset
 	dynamicClient *dynamicfake.FakeDynamicClient
 
-	mu         sync.Mutex
-	failures   map[failureKey]error
-	operations []operationRecord
+	mu       sync.Mutex
+	failures map[failureKey]error
 }
 
 func NewFakeHarness(t *testing.T) *FakeHarness {
@@ -62,7 +54,6 @@ func NewFakeHarness(t *testing.T) *FakeHarness {
 		typedClient:   kubernetesfake.NewSimpleClientset(),
 		dynamicClient: newFakeDynamicClient(),
 		failures:      make(map[failureKey]error),
-		operations:    nil,
 	}
 
 	h.typedClient.PrependReactor("*", "*", h.reactor)
@@ -120,39 +111,78 @@ func (h *FakeHarness) InjectFailure(resourceType, operation string, err error) {
 }
 
 func (h *FakeHarness) AssertDeploymentCreated(namespace, name string) {
-	h.assertOperation(resourceKindDeployment, operationCreate, namespace, name, true)
+	h.t.Helper()
+	if _, err := h.getDeployment(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
-func (h *FakeHarness) AssertDeploymentUpdated(namespace, name string) {
-	h.assertOperation(resourceKindDeployment, operationUpdate, namespace, name, true)
+func (h *FakeHarness) AssertDeploymentUpdated(namespace, name string, expected *appsv1.Deployment) {
+	h.t.Helper()
+	stored, err := h.getDeployment(namespace, name)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := assertDeploymentMatches(stored, expected); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) AssertDeploymentDeleted(namespace, name string) {
-	h.assertOperation(resourceKindDeployment, operationDelete, namespace, name, false)
+	h.t.Helper()
+	if err := h.assertDeploymentMissing(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) AssertServiceCreated(namespace, name string) {
-	h.assertOperation(resourceKindService, operationCreate, namespace, name, true)
+	h.t.Helper()
+	if _, err := h.getService(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
-func (h *FakeHarness) AssertServiceUpdated(namespace, name string) {
-	h.assertOperation(resourceKindService, operationUpdate, namespace, name, true)
+func (h *FakeHarness) AssertServiceUpdated(namespace, name string, expected *corev1.Service) {
+	h.t.Helper()
+	stored, err := h.getService(namespace, name)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := assertServiceMatches(stored, expected); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) AssertServiceDeleted(namespace, name string) {
-	h.assertOperation(resourceKindService, operationDelete, namespace, name, false)
+	h.t.Helper()
+	if err := h.assertServiceMissing(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) AssertHTTPRouteCreated(namespace, name string) {
-	h.assertOperation(resourceKindHTTPRoute, operationCreate, namespace, name, true)
+	h.t.Helper()
+	if _, err := h.getHTTPRoute(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
-func (h *FakeHarness) AssertHTTPRouteUpdated(namespace, name string) {
-	h.assertOperation(resourceKindHTTPRoute, operationUpdate, namespace, name, true)
+func (h *FakeHarness) AssertHTTPRouteUpdated(namespace, name string, expected *unstructured.Unstructured) {
+	h.t.Helper()
+	stored, err := h.getHTTPRoute(namespace, name)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := assertHTTPRouteMatches(stored, expected); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) AssertHTTPRouteDeleted(namespace, name string) {
-	h.assertOperation(resourceKindHTTPRoute, operationDelete, namespace, name, false)
+	h.t.Helper()
+	if err := h.assertHTTPRouteMissing(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *FakeHarness) reactor(action k8stesting.Action) (bool, apiRuntime.Object, error) {
@@ -170,16 +200,6 @@ func (h *FakeHarness) reactor(action k8stesting.Action) (bool, apiRuntime.Object
 		return true, nil, err
 	}
 
-	name, namespace := actionIdentity(action)
-	h.mu.Lock()
-	h.operations = append(h.operations, operationRecord{
-		resourceType: resourceType,
-		operation:    operation,
-		namespace:    namespace,
-		name:         name,
-	})
-	h.mu.Unlock()
-
 	return false, nil, nil
 }
 
@@ -189,128 +209,147 @@ func (h *FakeHarness) failureFor(resourceType, operation string) error {
 	return h.failures[failureKey{resourceType: resourceType, operation: operation}]
 }
 
-func (h *FakeHarness) assertOperation(resourceType, operation, namespace, name string, wantPresent bool) {
-	h.t.Helper()
-
-	if !h.hasOperation(resourceType, operation, namespace, name) {
-		h.t.Fatalf("%s %s %s/%s was not recorded; operations=%s", resourceType, operation, namespace, name, h.describeOperations())
-	}
-
-	if wantPresent {
-		if err := h.assertExists(resourceType, namespace, name); err != nil {
-			h.t.Fatal(err)
-		}
-		return
-	}
-
-	if err := h.assertMissing(resourceType, namespace, name); err != nil {
-		h.t.Fatal(err)
-	}
-}
-
-func (h *FakeHarness) hasOperation(resourceType, operation, namespace, name string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, op := range h.operations {
-		if op.resourceType == resourceType && op.operation == operation && op.namespace == namespace && op.name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *FakeHarness) describeOperations() string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.operations) == 0 {
-		return "[]"
-	}
-
-	parts := make([]string, 0, len(h.operations))
-	for _, op := range h.operations {
-		parts = append(parts, fmt.Sprintf("%s %s %s/%s", op.resourceType, op.operation, op.namespace, op.name))
-	}
-
-	return "[" + strings.Join(parts, ", ") + "]"
-}
-
-func (h *FakeHarness) assertExists(resourceType, namespace, name string) error {
-	switch resourceType {
-	case resourceKindDeployment:
-		_, err := h.typedClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("deployment %s/%s should exist: %w", namespace, name, err)
-		}
-	case resourceKindService:
-		_, err := h.typedClient.CoreV1().Services(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("service %s/%s should exist: %w", namespace, name, err)
-		}
-	case resourceKindHTTPRoute:
-		_, err := h.dynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("httproute %s/%s should exist: %w", namespace, name, err)
-		}
-	default:
-		return fmt.Errorf("unsupported resource type %q", resourceType)
-	}
-
-	return nil
-}
-
-func (h *FakeHarness) assertMissing(resourceType, namespace, name string) error {
-	switch resourceType {
-	case resourceKindDeployment:
-		_, err := h.typedClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err == nil {
-			return fmt.Errorf("deployment %s/%s should have been deleted", namespace, name)
-		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("deployment %s/%s delete check failed: %w", namespace, name, err)
-		}
-	case resourceKindService:
-		_, err := h.typedClient.CoreV1().Services(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err == nil {
-			return fmt.Errorf("service %s/%s should have been deleted", namespace, name)
-		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("service %s/%s delete check failed: %w", namespace, name, err)
-		}
-	case resourceKindHTTPRoute:
-		_, err := h.dynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})
-		if err == nil {
-			return fmt.Errorf("httproute %s/%s should have been deleted", namespace, name)
-		}
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("httproute %s/%s delete check failed: %w", namespace, name, err)
-		}
-	default:
-		return fmt.Errorf("unsupported resource type %q", resourceType)
-	}
-
-	return nil
-}
-
-func actionIdentity(action k8stesting.Action) (string, string) {
-	resource := strings.ToLower(action.GetResource().Resource)
-	if a, ok := action.(k8stesting.CreateAction); ok {
-		return objectIdentity(a.GetObject())
-	}
-	if a, ok := action.(k8stesting.UpdateAction); ok {
-		return objectIdentity(a.GetObject())
-	}
-	if a, ok := action.(k8stesting.DeleteAction); ok {
-		return a.GetName(), a.GetNamespace()
-	}
-	return "", action.GetNamespace() + ":" + resource
-}
-
-func objectIdentity(obj apiRuntime.Object) (string, string) {
-	accessor, err := meta.Accessor(obj)
+func (h *FakeHarness) getDeployment(namespace, name string) (*appsv1.Deployment, error) {
+	deployment, err := h.typedClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
-		return "", ""
+		return nil, fmt.Errorf("deployment %s/%s lookup failed: %w", namespace, name, err)
 	}
-	return accessor.GetName(), accessor.GetNamespace()
+	return deployment, nil
+}
+
+func (h *FakeHarness) getService(namespace, name string) (*corev1.Service, error) {
+	service, err := h.typedClient.CoreV1().Services(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("service %s/%s lookup failed: %w", namespace, name, err)
+	}
+	return service, nil
+}
+
+func (h *FakeHarness) getHTTPRoute(namespace, name string) (*unstructured.Unstructured, error) {
+	route, err := h.dynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("httproute %s/%s lookup failed: %w", namespace, name, err)
+	}
+	return route, nil
+}
+
+func (h *FakeHarness) assertDeploymentMissing(namespace, name string) error {
+	_, err := h.typedClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("deployment %s/%s should have been deleted", namespace, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deployment %s/%s delete check failed: %w", namespace, name, err)
+	}
+	return nil
+}
+
+func (h *FakeHarness) assertServiceMissing(namespace, name string) error {
+	_, err := h.typedClient.CoreV1().Services(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("service %s/%s should have been deleted", namespace, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("service %s/%s delete check failed: %w", namespace, name, err)
+	}
+	return nil
+}
+
+func (h *FakeHarness) assertHTTPRouteMissing(namespace, name string) error {
+	_, err := h.dynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("httproute %s/%s should have been deleted", namespace, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("httproute %s/%s delete check failed: %w", namespace, name, err)
+	}
+	return nil
+}
+
+func assertDeploymentMatches(stored, expected *appsv1.Deployment) error {
+	if stored == nil || expected == nil {
+		return fmt.Errorf("deployment comparison requires non-nil objects")
+	}
+	got := normalizeDeploymentForAssertion(stored)
+	want := normalizeDeploymentForAssertion(expected)
+	if reflect.DeepEqual(got, want) {
+		return nil
+	}
+	return fmt.Errorf("deployment %s/%s mismatch (-got +want): got=%#v want=%#v", stored.Namespace, stored.Name, got, want)
+}
+
+func assertServiceMatches(stored, expected *corev1.Service) error {
+	if stored == nil || expected == nil {
+		return fmt.Errorf("service comparison requires non-nil objects")
+	}
+	got := normalizeServiceForAssertion(stored)
+	want := normalizeServiceForAssertion(expected)
+	if reflect.DeepEqual(got, want) {
+		return nil
+	}
+	return fmt.Errorf("service %s/%s mismatch (-got +want): got=%#v want=%#v", stored.Namespace, stored.Name, got, want)
+}
+
+func assertHTTPRouteMatches(stored, expected *unstructured.Unstructured) error {
+	if stored == nil || expected == nil {
+		return fmt.Errorf("httproute comparison requires non-nil objects")
+	}
+	got := normalizeHTTPRouteForAssertion(stored)
+	want := normalizeHTTPRouteForAssertion(expected)
+	if reflect.DeepEqual(got, want) {
+		return nil
+	}
+	return fmt.Errorf("httproute %s/%s mismatch (-got +want): got=%#v want=%#v", stored.GetNamespace(), stored.GetName(), got.Object, want.Object)
+}
+
+func normalizeDeploymentForAssertion(deployment *appsv1.Deployment) *appsv1.Deployment {
+	normalized := deployment.DeepCopy()
+	normalizeObjectMeta(&normalized.ObjectMeta)
+	normalizePodTemplateMeta(&normalized.Spec.Template.ObjectMeta)
+	return normalized
+}
+
+func normalizeServiceForAssertion(service *corev1.Service) *corev1.Service {
+	normalized := service.DeepCopy()
+	normalizeObjectMeta(&normalized.ObjectMeta)
+	normalized.Spec.ClusterIP = ""
+	normalized.Spec.ClusterIPs = nil
+	normalized.Spec.HealthCheckNodePort = 0
+	normalized.Spec.IPFamilies = nil
+	normalized.Spec.IPFamilyPolicy = nil
+	normalized.Spec.SessionAffinityConfig = nil
+	normalized.Status = corev1.ServiceStatus{}
+	return normalized
+}
+
+func normalizeHTTPRouteForAssertion(route *unstructured.Unstructured) *unstructured.Unstructured {
+	normalized := route.DeepCopy()
+	unstructured.RemoveNestedField(normalized.Object, "metadata", "resourceVersion")
+	unstructured.RemoveNestedField(normalized.Object, "metadata", "generation")
+	unstructured.RemoveNestedField(normalized.Object, "metadata", "uid")
+	unstructured.RemoveNestedField(normalized.Object, "metadata", "creationTimestamp")
+	unstructured.RemoveNestedField(normalized.Object, "metadata", "managedFields")
+	unstructured.RemoveNestedField(normalized.Object, "status")
+	return normalized
+}
+
+func normalizeObjectMeta(meta *metav1.ObjectMeta) {
+	meta.ResourceVersion = ""
+	meta.Generation = 0
+	meta.UID = ""
+	meta.CreationTimestamp = metav1.Time{}
+	meta.DeletionTimestamp = nil
+	meta.DeletionGracePeriodSeconds = nil
+	meta.ManagedFields = nil
+	meta.OwnerReferences = nil
+	meta.Finalizers = nil
+}
+
+func normalizePodTemplateMeta(meta *metav1.ObjectMeta) {
+	normalizeObjectMeta(meta)
+	meta.Name = ""
+	meta.Namespace = ""
+	meta.GenerateName = ""
 }
 
 func normalizeResourceType(value string) string {

@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -31,16 +32,16 @@ func TestFakeHarness_RuntimeClientAndSeeding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get deployment failed: %v", err)
 	}
-	if gotDep.Name != dep.Name || gotDep.Namespace != dep.Namespace {
-		t.Fatalf("deployment = %s/%s, want %s/%s", gotDep.Namespace, gotDep.Name, dep.Namespace, dep.Name)
+	if gotDep.Name != dep.Name || gotDep.Namespace != dep.Namespace || gotDep.Labels["app"] != dep.Labels["app"] {
+		t.Fatalf("deployment = %+v, want %+v", gotDep.ObjectMeta, dep.ObjectMeta)
 	}
 
 	gotSvc, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(context.Background(), svc.Name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get service failed: %v", err)
 	}
-	if gotSvc.Name != svc.Name || gotSvc.Namespace != svc.Namespace {
-		t.Fatalf("service = %s/%s, want %s/%s", gotSvc.Namespace, gotSvc.Name, svc.Namespace, svc.Name)
+	if gotSvc.Name != svc.Name || gotSvc.Namespace != svc.Namespace || gotSvc.Labels["app"] != svc.Labels["app"] {
+		t.Fatalf("service = %+v, want %+v", gotSvc.ObjectMeta, svc.ObjectMeta)
 	}
 
 	gotRoute, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(context.Background(), route.GetName(), metav1.GetOptions{})
@@ -49,6 +50,14 @@ func TestFakeHarness_RuntimeClientAndSeeding(t *testing.T) {
 	}
 	if gotRoute.GetName() != route.GetName() || gotRoute.GetNamespace() != route.GetNamespace() {
 		t.Fatalf("httproute = %s/%s, want %s/%s", gotRoute.GetNamespace(), gotRoute.GetName(), route.GetNamespace(), route.GetName())
+	}
+	wantApp := route.Object["metadata"].(map[string]any)["labels"].(map[string]any)["app"].(string)
+	labels, found, err := unstructured.NestedStringMap(gotRoute.Object, "metadata", "labels")
+	if err != nil {
+		t.Fatalf("read httproute labels failed: %v", err)
+	}
+	if !found || labels["app"] != wantApp {
+		t.Fatalf("httproute labels = %#v, want app=%q", labels, wantApp)
 	}
 }
 
@@ -72,8 +81,13 @@ func TestFakeHarness_DeploymentCreated(t *testing.T) {
 			if _, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Create(ctx, dep, metav1.CreateOptions{}); err != nil {
 				t.Fatalf("create deployment failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name}})
-			h.AssertDeploymentCreated(dep.Namespace, dep.Name)
+			gotDep, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get deployment failed: %v", err)
+			}
+			if gotDep.Name != dep.Name || gotDep.Namespace != dep.Namespace || gotDep.Labels["app"] != dep.Labels["app"] {
+				t.Fatalf("deployment = %+v, want %+v", gotDep.ObjectMeta, dep.ObjectMeta)
+			}
 		})
 	}
 }
@@ -102,12 +116,13 @@ func TestFakeHarness_DeploymentUpdated(t *testing.T) {
 			if _, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
 				t.Fatalf("update deployment failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name},
-				{resourceType: resourceKindDeployment, operation: operationUpdate, namespace: dep.Namespace, name: dep.Name},
-			})
-			h.AssertDeploymentCreated(dep.Namespace, dep.Name)
-			h.AssertDeploymentUpdated(dep.Namespace, dep.Name)
+			gotDep, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get deployment failed: %v", err)
+			}
+			if gotDep.Labels["app"] != dep.Labels["app"] || gotDep.Labels["version"] != "v2" {
+				t.Fatalf("deployment labels = %#v, want app=%q version=%q", gotDep.Labels, dep.Labels["app"], "v2")
+			}
 		})
 	}
 }
@@ -135,11 +150,9 @@ func TestFakeHarness_DeploymentDeleted(t *testing.T) {
 			if err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Delete(ctx, dep.Name, metav1.DeleteOptions{}); err != nil {
 				t.Fatalf("delete deployment failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name},
-				{resourceType: resourceKindDeployment, operation: operationDelete, namespace: dep.Namespace, name: dep.Name},
-			})
-			h.AssertDeploymentDeleted(dep.Namespace, dep.Name)
+			if _, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("get deployment error = %v, want not found", err)
+			}
 		})
 	}
 }
@@ -164,8 +177,13 @@ func TestFakeHarness_ServiceCreated(t *testing.T) {
 			if _, err := client.TypedClient.CoreV1().Services(svc.Namespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil {
 				t.Fatalf("create service failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name}})
-			h.AssertServiceCreated(svc.Namespace, svc.Name)
+			gotSvc, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get service failed: %v", err)
+			}
+			if gotSvc.Name != svc.Name || gotSvc.Namespace != svc.Namespace || gotSvc.Labels["app"] != svc.Labels["app"] {
+				t.Fatalf("service = %+v, want %+v", gotSvc.ObjectMeta, svc.ObjectMeta)
+			}
 		})
 	}
 }
@@ -194,12 +212,13 @@ func TestFakeHarness_ServiceUpdated(t *testing.T) {
 			if _, err := client.TypedClient.CoreV1().Services(svc.Namespace).Update(ctx, svc, metav1.UpdateOptions{}); err != nil {
 				t.Fatalf("update service failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name},
-				{resourceType: resourceKindService, operation: operationUpdate, namespace: svc.Namespace, name: svc.Name},
-			})
-			h.AssertServiceCreated(svc.Namespace, svc.Name)
-			h.AssertServiceUpdated(svc.Namespace, svc.Name)
+			gotSvc, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get service failed: %v", err)
+			}
+			if gotSvc.Labels["app"] != svc.Labels["app"] || gotSvc.Labels["version"] != "v2" {
+				t.Fatalf("service labels = %#v, want app=%q version=%q", gotSvc.Labels, svc.Labels["app"], "v2")
+			}
 		})
 	}
 }
@@ -227,11 +246,9 @@ func TestFakeHarness_ServiceDeleted(t *testing.T) {
 			if err := client.TypedClient.CoreV1().Services(svc.Namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{}); err != nil {
 				t.Fatalf("delete service failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name},
-				{resourceType: resourceKindService, operation: operationDelete, namespace: svc.Namespace, name: svc.Name},
-			})
-			h.AssertServiceDeleted(svc.Namespace, svc.Name)
+			if _, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("get service error = %v, want not found", err)
+			}
 		})
 	}
 }
@@ -256,8 +273,18 @@ func TestFakeHarness_HTTPRouteCreated(t *testing.T) {
 			if _, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Create(ctx, route, metav1.CreateOptions{}); err != nil {
 				t.Fatalf("create httproute failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()}})
-			h.AssertHTTPRouteCreated(route.GetNamespace(), route.GetName())
+			gotRoute, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get httproute failed: %v", err)
+			}
+			wantApp := route.Object["metadata"].(map[string]any)["labels"].(map[string]any)["app"].(string)
+			labels, found, err := unstructured.NestedStringMap(gotRoute.Object, "metadata", "labels")
+			if err != nil {
+				t.Fatalf("read httproute labels failed: %v", err)
+			}
+			if !found || labels["app"] != wantApp {
+				t.Fatalf("httproute labels = %#v, want app=%q", labels, wantApp)
+			}
 		})
 	}
 }
@@ -286,12 +313,18 @@ func TestFakeHarness_HTTPRouteUpdated(t *testing.T) {
 			if _, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Update(ctx, route, metav1.UpdateOptions{}); err != nil {
 				t.Fatalf("update httproute failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()},
-				{resourceType: resourceKindHTTPRoute, operation: operationUpdate, namespace: route.GetNamespace(), name: route.GetName()},
-			})
-			h.AssertHTTPRouteCreated(route.GetNamespace(), route.GetName())
-			h.AssertHTTPRouteUpdated(route.GetNamespace(), route.GetName())
+			gotRoute, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get httproute failed: %v", err)
+			}
+			wantApp := route.Object["metadata"].(map[string]any)["labels"].(map[string]any)["app"].(string)
+			labels, found, err := unstructured.NestedStringMap(gotRoute.Object, "metadata", "labels")
+			if err != nil {
+				t.Fatalf("read httproute labels failed: %v", err)
+			}
+			if !found || labels["app"] != wantApp || labels["version"] != "v2" {
+				t.Fatalf("httproute labels = %#v, want app=%q version=%q", labels, wantApp, "v2")
+			}
 		})
 	}
 }
@@ -319,11 +352,9 @@ func TestFakeHarness_HTTPRouteDeleted(t *testing.T) {
 			if err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Delete(ctx, route.GetName(), metav1.DeleteOptions{}); err != nil {
 				t.Fatalf("delete httproute failed: %v", err)
 			}
-			assertRecordedOperations(t, h, []operationRecord{
-				{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()},
-				{resourceType: resourceKindHTTPRoute, operation: operationDelete, namespace: route.GetNamespace(), name: route.GetName()},
-			})
-			h.AssertHTTPRouteDeleted(route.GetNamespace(), route.GetName())
+			if _, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("get httproute error = %v, want not found", err)
+			}
 		})
 	}
 }
@@ -398,11 +429,34 @@ func TestFakeHarness_CreateSequence(t *testing.T) {
 		t.Fatalf("create httproute failed: %v", err)
 	}
 
-	assertRecordedOperations(t, h, []operationRecord{
-		{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name},
-		{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name},
-		{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()},
-	})
+	gotDep, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get deployment failed: %v", err)
+	}
+	if gotDep.Labels["app"] != dep.Labels["app"] {
+		t.Fatalf("deployment labels = %#v, want app=%q", gotDep.Labels, dep.Labels["app"])
+	}
+
+	gotSvc, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get service failed: %v", err)
+	}
+	if gotSvc.Labels["app"] != svc.Labels["app"] {
+		t.Fatalf("service labels = %#v, want app=%q", gotSvc.Labels, svc.Labels["app"])
+	}
+
+	gotRoute, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get httproute failed: %v", err)
+	}
+	wantApp := route.Object["metadata"].(map[string]any)["labels"].(map[string]any)["app"].(string)
+	labels, found, err := unstructured.NestedStringMap(gotRoute.Object, "metadata", "labels")
+	if err != nil {
+		t.Fatalf("read httproute labels failed: %v", err)
+	}
+	if !found || labels["app"] != wantApp {
+		t.Fatalf("httproute labels = %#v, want app=%q", labels, wantApp)
+	}
 }
 
 func TestFakeHarness_UpdateSequence(t *testing.T) {
@@ -438,14 +492,33 @@ func TestFakeHarness_UpdateSequence(t *testing.T) {
 		t.Fatalf("update httproute failed: %v", err)
 	}
 
-	assertRecordedOperations(t, h, []operationRecord{
-		{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name},
-		{resourceType: resourceKindDeployment, operation: operationUpdate, namespace: dep.Namespace, name: dep.Name},
-		{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name},
-		{resourceType: resourceKindService, operation: operationUpdate, namespace: svc.Namespace, name: svc.Name},
-		{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()},
-		{resourceType: resourceKindHTTPRoute, operation: operationUpdate, namespace: route.GetNamespace(), name: route.GetName()},
-	})
+	gotDep, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get deployment failed: %v", err)
+	}
+	if gotDep.Labels["sequence"] != "1" {
+		t.Fatalf("deployment labels = %#v, want sequence=%q", gotDep.Labels, "1")
+	}
+
+	gotSvc, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get service failed: %v", err)
+	}
+	if gotSvc.Labels["sequence"] != "1" {
+		t.Fatalf("service labels = %#v, want sequence=%q", gotSvc.Labels, "1")
+	}
+
+	gotRoute, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get httproute failed: %v", err)
+	}
+	labels, found, err := unstructured.NestedStringMap(gotRoute.Object, "metadata", "labels")
+	if err != nil {
+		t.Fatalf("read httproute labels failed: %v", err)
+	}
+	if !found || labels["sequence"] != "1" {
+		t.Fatalf("httproute labels = %#v, want sequence=%q", labels, "1")
+	}
 }
 
 func TestFakeHarness_DeleteSequence(t *testing.T) {
@@ -478,14 +551,15 @@ func TestFakeHarness_DeleteSequence(t *testing.T) {
 		t.Fatalf("delete httproute failed: %v", err)
 	}
 
-	assertRecordedOperations(t, h, []operationRecord{
-		{resourceType: resourceKindDeployment, operation: operationCreate, namespace: dep.Namespace, name: dep.Name},
-		{resourceType: resourceKindDeployment, operation: operationDelete, namespace: dep.Namespace, name: dep.Name},
-		{resourceType: resourceKindService, operation: operationCreate, namespace: svc.Namespace, name: svc.Name},
-		{resourceType: resourceKindService, operation: operationDelete, namespace: svc.Namespace, name: svc.Name},
-		{resourceType: resourceKindHTTPRoute, operation: operationCreate, namespace: route.GetNamespace(), name: route.GetName()},
-		{resourceType: resourceKindHTTPRoute, operation: operationDelete, namespace: route.GetNamespace(), name: route.GetName()},
-	})
+	if _, err := client.TypedClient.AppsV1().Deployments(dep.Namespace).Get(ctx, dep.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("get deployment error = %v, want not found", err)
+	}
+	if _, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("get service error = %v, want not found", err)
+	}
+	if _, err := client.DynamicClient.Resource(httpRouteGVR()).Namespace(route.GetNamespace()).Get(ctx, route.GetName(), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("get httproute error = %v, want not found", err)
+	}
 }
 
 func testFakeDeployment(namespace, name string) *appsv1.Deployment {
@@ -524,21 +598,4 @@ func testFakeHTTPRoute(namespace, name string) *unstructured.Unstructured {
 			},
 		},
 	}}
-}
-
-func assertRecordedOperations(t *testing.T, h *FakeHarness, want []operationRecord) {
-	t.Helper()
-
-	h.mu.Lock()
-	got := append([]operationRecord(nil), h.operations...)
-	h.mu.Unlock()
-
-	if len(got) != len(want) {
-		t.Fatalf("operations len = %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("operation[%d] = %+v, want %+v", i, got[i], want[i])
-		}
-	}
 }
