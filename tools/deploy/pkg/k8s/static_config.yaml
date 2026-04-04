@@ -1,5 +1,5 @@
-namespace: "__NAMESPACE__"
-managed_by: "__MANAGED_BY__"
+namespace: "default"
+managed_by: "dominion"
 gateway:
-  name: "__GATEWAY_NAME__"
-  namespace: "__GATEWAY_NAMESPACE__"
+  name: "traefik-gateway"
+  namespace: "ingress"

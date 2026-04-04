@@ -1,34 +1,6 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
-    name = "env_deploy_lib",
-    srcs = ["main.go"],
-    importpath = "dominion/tools/deploy/cmd/env_deploy",
-    visibility = ["//visibility:private"],
-    deps = [
-        "//tools/deploy/pkg/config",
-        "//tools/deploy/pkg/env",
-        "//tools/deploy/pkg/k8s",
-        "//tools/deploy/pkg/workspace",
-        "@com_github_spf13_pflag//:pflag",
-    ],
-)
-
-go_binary(
-    name = "env_deploy",
-    embed = [":cmd_lib"],
-    visibility = ["//visibility:public"],
-)
-
-go_test(
-    name = "env_deploy_test",
-    size = "small",
-    srcs = ["main_test.go"],
-    embed = [":env_deploy_lib"],
-    deps = ["//tools/deploy/pkg/k8s"],
-)
-
-go_library(
     name = "cmd_lib",
     srcs = ["main.go"],
     importpath = "dominion/tools/deploy/cmd",
@@ -42,9 +14,14 @@ go_library(
     ],
 )
 
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
 go_test(
     name = "cmd_test",
-    size = "small",
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
     deps = ["//tools/deploy/pkg/k8s"],
