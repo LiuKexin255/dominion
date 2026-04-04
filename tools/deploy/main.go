@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"dominion/tools/deploy/pkg/config"
@@ -17,9 +16,6 @@ import (
 )
 
 const (
-	deploySchemaRelPath  = "tools/deploy/deploy.schema.json"
-	serviceSchemaRelPath = "tools/deploy/service.schema.json"
-
 	commandUse    = "use"
 	commandDeploy = "deploy"
 	commandDel    = "del"
@@ -139,11 +135,6 @@ func run(args []string) error {
 	}
 
 	env.LazyInit()
-	if opts.command == commandDeploy {
-		if err := initSchemaValidators(); err != nil {
-			return err
-		}
-	}
 
 	if err := opts.Default(); err != nil {
 		return err
@@ -247,24 +238,6 @@ func validateCurOptions(opts *options) error {
 	if opts.target != "" {
 		return fmt.Errorf("%s does not accept positional args", commandCur)
 	}
-	return nil
-}
-
-func initSchemaValidators() error {
-	deploySchemaAbsPath := filepath.Join(workspace.MustRoot(), deploySchemaRelPath)
-	serviceSchemaAbsPath := filepath.Join(workspace.MustRoot(), serviceSchemaRelPath)
-
-	deployValidator, err := config.NewYAMLValidator(deploySchemaAbsPath)
-	if err != nil {
-		return fmt.Errorf("加载 deploy schema 失败: %w", err)
-	}
-	serviceValidator, err := config.NewYAMLValidator(serviceSchemaAbsPath)
-	if err != nil {
-		return fmt.Errorf("加载 service schema 失败: %w", err)
-	}
-
-	config.RegisterDeployValidator(deployValidator)
-	config.RegisterServiceValidator(serviceValidator)
 	return nil
 }
 

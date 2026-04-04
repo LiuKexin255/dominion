@@ -23,5 +23,5 @@ gazelle(
 
 alias(
     name = "deploy",
-    actual = "//tools/deploy/cmd",
+    actual = "//tools/deploy",
 )

@@ -48,22 +48,6 @@ func copyDir(t *testing.T, src string, dst string) {
 	}
 }
 
-func initValidator(t *testing.T) {
-	t.Helper()
-
-	serviceValidator, err := config.NewYAMLValidator(filepath.Join("testdata", "service.schema.json"))
-	if err != nil {
-		t.Fatalf("config.NewYAMLValidator(service) failed: %v", err)
-	}
-	config.RegisterServiceValidator(serviceValidator)
-
-	deployValidator, err := config.NewYAMLValidator(filepath.Join("testdata", "deploy.schema.json"))
-	if err != nil {
-		t.Fatalf("config.NewYAMLValidator(service) failed: %v", err)
-	}
-	config.RegisterDeployValidator(deployValidator)
-}
-
 // stubExecutor 为 env 层测试提供可注入的执行器替身。
 type stubExecutor struct {
 	applyFunc  func(ctx context.Context, objects *k8s.DeployObjects) error
@@ -196,7 +180,6 @@ func TestNew(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, tt.ws)
 
 			internalInit()
-			initValidator(t)
 
 			got, gotErr := New(tt.name, tt.app)
 			if gotErr != nil {
@@ -366,7 +349,6 @@ func TestGet(t *testing.T) {
 		t.Run(tt.caseName, func(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, "testdata")
 			internalInit()
-			initValidator(t)
 
 			got, gotErr := Get(tt.name, tt.app)
 			if gotErr != nil {
@@ -602,7 +584,6 @@ func TestList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, tt.dir)
 			internalInit()
-			initValidator(t)
 
 			got, err := List()
 			if err != nil {
@@ -636,7 +617,6 @@ func TestDeployEnv_Active(t *testing.T) {
 			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
 			os.Setenv(workspace.WorkspaceKey, dir)
 			internalInit()
-			initValidator(t)
 
 			_, gotErr := Current()
 			if gotErr == nil || !errors.Is(gotErr, ErrNotActive) {
@@ -719,7 +699,6 @@ func TestDeployEnv_Delete(t *testing.T) {
 			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
 			os.Setenv(workspace.WorkspaceKey, dir)
 			internalInit()
-			initValidator(t)
 
 			e, gotErr := Get(tt.name, tt.app)
 			if gotErr != nil {
@@ -756,7 +735,6 @@ func TestDeployEnv_Deploy_RequiresExecutor(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, dir)
 
 			internalInit()
-			initValidator(t)
 
 			env, err := Get(tt.name, tt.app)
 			if err != nil {
@@ -817,7 +795,6 @@ func TestDeployEnv_Delete_RequiresExecutor(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, dir)
 
 			internalInit()
-			initValidator(t)
 
 			env, err := Get(tt.name, tt.app)
 			if err != nil {
@@ -856,7 +833,6 @@ func TestDeployEnv_Deploy_FailedRemainsPending(t *testing.T) {
 	t.Setenv(workspace.WorkspaceKey, dir)
 
 	internalInit()
-	initValidator(t)
 
 	env, err := Get("empty", "env")
 	if err != nil {
@@ -1109,7 +1085,6 @@ func TestDeployEnv_Update(t *testing.T) {
 			os.Setenv(workspace.WorkspaceKey, dir)
 
 			internalInit()
-			initValidator(t)
 			nowTime := time.Now().UTC().Round(0)
 			now = func() time.Time {
 				return nowTime
@@ -1199,7 +1174,6 @@ func TestDeployEnv_Update_PersistsPendingStatusWithoutRemoteApply(t *testing.T) 
 			t.Setenv(workspace.WorkspaceKey, dir)
 
 			internalInit()
-			initValidator(t)
 
 			env, err := Get(tt.name, tt.app)
 			if err != nil {
@@ -1272,7 +1246,6 @@ func TestDeployEnv_Delete_RemoteDeleteFailurePreservesLocalCache(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, dir)
 
 			internalInit()
-			initValidator(t)
 
 			env, err := Get(tt.name, tt.app)
 			if err != nil {

@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "schema",
+    srcs = ["schema.go"],
+    embedsrcs = [
+        "deploy.schema.json",
+        "service.schema.json",
+    ],
+    importpath = "dominion/tools/deploy/pkg/schema",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_goccy_go_yaml//:go-yaml",
+        "@com_github_santhosh_tekuri_jsonschema_v6//:jsonschema",
+    ],
+)
+
+go_test(
+    name = "schema_test",
+    size = "small",
+    srcs = ["schema_test.go"],
+    embed = [":schema"],
+)

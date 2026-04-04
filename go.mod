@@ -7,7 +7,6 @@ require (
 	github.com/spf13/pflag v1.0.10
 	google.golang.org/grpc v1.79.1
 	k8s.io/api v0.35.3
-	k8s.io/utils v0.0.0-20260108192941-914a6e750570
 	sigs.k8s.io/gateway-api v1.0.0
 )
 
@@ -41,6 +40,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
+	k8s.io/utils v0.0.0-20260108192941-914a6e750570 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect

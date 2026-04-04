@@ -7,48 +7,6 @@ import (
 	"dominion/tools/deploy/pkg/workspace"
 )
 
-func TestNewYAMLValidator(t *testing.T) {
-	tests := []struct {
-		name string // description of this test case
-		// Named input parameters for target function.
-		path    string
-		wantErr bool
-	}{
-		{
-			name: "成功加载 deploy schema 文件",
-			path: "testdata/deploy.schema.json",
-		},
-		{
-			name:    "schema 格式错误",
-			path:    "testdata/deploy.schema.error.json",
-			wantErr: true,
-		},
-		{
-			name:    "文件不存在",
-			path:    "testdata/deploy1.schema.json",
-			wantErr: true,
-		},
-		{
-			name: "成功加载 service schema 文件",
-			path: "testdata/service.schema.json",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, gotErr := NewYAMLValidator(tt.path)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("NewYAMLValidator() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("NewYAMLValidator() succeeded unexpectedly")
-			}
-		})
-	}
-}
-
 func TestParseDeployConfig(t *testing.T) {
 	tests := []struct {
 		name string // description of this test case
@@ -107,12 +65,6 @@ func TestParseDeployConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, ".")
-			Validator, err := NewYAMLValidator("testdata/deploy.schema.json")
-			if err != nil {
-				t.Fatal("NewYAMLValidator() failed unexpectedly")
-			}
-			RegisterDeployValidator(Validator)
-
 			got, gotErr := ParseDeployConfig(tt.path)
 			if gotErr != nil {
 				if !tt.wantErr {
@@ -175,12 +127,6 @@ func TestParseServiceConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, ".")
-			Validator, err := NewYAMLValidator("testdata/service.schema.json")
-			if err != nil {
-				t.Fatal("NewYAMLValidator() failed unexpectedly")
-			}
-			RegisterServiceValidator(Validator)
-
 			got, gotErr := ParseServiceConfig(tt.path)
 			if gotErr != nil {
 				if !tt.wantErr {
@@ -227,12 +173,6 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(workspace.WorkspaceKey, ".")
-			Validator, err := NewYAMLValidator("testdata/service.schema.json")
-			if err != nil {
-				t.Fatal("NewYAMLValidator() failed unexpectedly")
-			}
-			RegisterServiceValidator(Validator)
-
 			c, err := ParseServiceConfig(tt.path)
 			if err != nil {
 				t.Fatalf("could not construct receiver type: %v", err)

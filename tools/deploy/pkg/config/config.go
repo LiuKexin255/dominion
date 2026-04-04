@@ -1,37 +1,22 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"strings"
 
+	"dominion/tools/deploy/pkg/schema"
 	"dominion/tools/deploy/pkg/workspace"
 
 	"github.com/goccy/go-yaml"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 var (
-	// deployValidator 部署配置校验器
-	deployValidator *YAMLValidator
-	// serviceValidator 服务配置校验器
-	serviceValidator *YAMLValidator
 	// ErrNotFound 未找到
 	ErrNotFound = errors.New("未找到")
 )
-
-// RegisterDeployValidator 注册部署配置校验器
-func RegisterDeployValidator(Validator *YAMLValidator) {
-	deployValidator = Validator
-}
-
-// RegisterServiceValidator 注册服务配置校验器
-func RegisterServiceValidator(Validator *YAMLValidator) {
-	serviceValidator = Validator
-}
 
 type HTTPPathMatchType string
 
@@ -120,7 +105,7 @@ func ParseDeployConfig(filePath string) (*DeployConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := deployValidator.Vaild(deployRaw); err != nil {
+	if err := schema.ValidateDeployYAML(deployRaw); err != nil {
 		return nil, err
 	}
 
@@ -151,7 +136,7 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 		return nil, err
 	}
 
-	if err := serviceValidator.Vaild(serviceRaw); err != nil {
+	if err := schema.ValidateServiceYAML(serviceRaw); err != nil {
 		return nil, err
 	}
 
@@ -177,26 +162,6 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 	}
 
 	return c, nil
-}
-
-// YAMLValidator yaml 格式校验器 Vaildater
-type YAMLValidator struct {
-	schema *jsonschema.Schema
-}
-
-// Vaild 返回 error 如果 raw 存在格式问题
-func (v *YAMLValidator) Vaild(raw []byte) error {
-	jsonRaw, err := yaml.YAMLToJSON(raw)
-	if err != nil {
-		return err
-	}
-
-	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(jsonRaw))
-	if err != nil {
-		return err
-	}
-
-	return v.schema.Validate(inst)
 }
 
 // uriDir 返回 URI 的目录部分，保留 "//" 前缀。
@@ -237,31 +202,4 @@ func normalizeArtifactPath(artifactPath string, configURI string) string {
 	// configURI 形如 "//a/b/deploy.yaml"，取目录得 "//a/b"
 	dir := uriDir(configURI)
 	return dir + "/" + trimmed
-}
-
-// NewYAMLValidator 创建 YAML 校验器
-func NewYAMLValidator(path string) (*YAMLValidator, error) {
-	schemaRaw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	schemaJSON, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaRaw))
-	if err != nil {
-		return nil, err
-	}
-
-	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("/schema.yaml", schemaJSON); err != nil {
-		return nil, err
-	}
-
-	schema, err := compiler.Compile("/schema.yaml")
-	if err != nil {
-		return nil, err
-	}
-
-	return &YAMLValidator{
-		schema: schema,
-	}, nil
 }
