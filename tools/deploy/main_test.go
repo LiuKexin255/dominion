@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"dominion/tools/deploy/pkg/env"
 	"dominion/tools/deploy/pkg/k8s"
+	"dominion/tools/deploy/pkg/workspace"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -166,6 +170,44 @@ func TestValidateCurOptions(t *testing.T) {
 				t.Fatalf("validateCurOptions() unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestOptionsDefault_UsesLastAppWithoutActiveEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	ctx := env.DeployContext{LastApp: "cached-app"}
+	raw, err := json.Marshal(&ctx)
+	if err != nil {
+		t.Fatalf("json.Marshal() failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env", "current.json"), raw, os.ModePerm); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	opts := &options{command: commandUse}
+	if err := opts.Default(); err != nil {
+		t.Fatalf("Default() unexpected error: %v", err)
+	}
+	if got, want := opts.app, "cached-app"; got != want {
+		t.Fatalf("Default() app = %q, want %q", got, want)
+	}
+}
+
+func TestOptionsDefault_NoContextReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+
+	opts := &options{command: commandDel}
+	err := opts.Default()
+	if err == nil {
+		t.Fatal("Default() expected error")
+	}
+	if !strings.Contains(err.Error(), "未指定 --app，且当前没有可用 app") {
+		t.Fatalf("Default() error = %v, want clear missing-app message", err)
 	}
 }
 

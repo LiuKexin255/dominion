@@ -43,11 +43,11 @@ func (o *options) Default() error {
 	if o.app == "" {
 		switch o.command {
 		case commandUse, commandDel:
-			active, err := env.Current()
+			app, err := env.DefaultApp()
 			if err != nil {
-				return fmt.Errorf("未指定 --%s，且当前没有激活环境，请先执行 `%s <env>`", flagApp, commandUse)
+				return err
 			}
-			o.app = active.App
+			o.app = app
 		}
 	}
 

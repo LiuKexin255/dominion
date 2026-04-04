@@ -69,7 +69,7 @@ bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml
 
 环境包含的信息缓存在当前仓库 `.env/` 目录下：
 
-- `.env/current.json`：当前激活环境指针，记录 `Name` 和 `App`。
+- `.env/current.json`：deploy 上下文文件，记录当前激活环境（`ActiveEnv`）与最近一次使用的应用（`LastApp`）。删除当前激活环境后，`cur` 命令将返回未激活错误，但 `use` 和 `del` 命令在缺省 `--app` 时仍可使用 `LastApp` 作为默认值。
 - `.env/{app}__{env}.json`：环境 profile 文件，例如 `grpc-hello-world__dev.json`。
 - `.env/deploy/`：deploy 配置缓存，文件名格式为 `{app}__{env}__{template_app}__{template}.yaml`。
 - `.env/service/`：service 配置缓存，文件名格式为 `{app}__{env}.yaml`。

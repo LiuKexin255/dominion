@@ -154,9 +154,12 @@ func (e *DeployEnv) prepareDesiredState(deployConfig *config.DeployConfig) error
 
 // Active 设置该环境为当前环境
 func (e *DeployEnv) Active() error {
-	return saveCurrentEnvInfo(&currentEnvInfo{
-		Name: e.Name,
-		App:  e.App,
+	return saveDeployContext(&DeployContext{
+		ActiveEnv: &EnvRef{
+			Name: e.Name,
+			App:  e.App,
+		},
+		LastApp: e.App,
 	})
 }
 
@@ -171,16 +174,13 @@ func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
 		return err
 	}
 
-	// 如果当前激活环境为自身，移除缓存
-	cur, err := Current()
+	ctxInfo, err := loadDeployContext()
 	if err != nil {
-		if !errors.Is(err, ErrNotActive) {
-			return err
-		}
+		return err
 	}
-
-	if cur != nil && e.Equal(cur) {
-		if err := deleteCurrentEnvInfo(); err != nil {
+	if ctxInfo != nil && ctxInfo.ActiveEnv != nil && ctxInfo.ActiveEnv.Name == e.Name && ctxInfo.ActiveEnv.App == e.App {
+		ctxInfo.ActiveEnv = nil
+		if err := saveDeployContext(ctxInfo); err != nil {
 			return err
 		}
 	}
@@ -387,12 +387,27 @@ func Get(name string, app string) (*DeployEnv, error) {
 
 // Current 返回当前激活中的环境
 func Current() (*DeployEnv, error) {
-	info, err := loadCurrentEnvInfo()
+	ctx, err := loadDeployContext()
 	if err != nil {
 		return nil, err
 	}
+	if ctx == nil || ctx.ActiveEnv == nil || ctx.ActiveEnv.Name == "" || ctx.ActiveEnv.App == "" {
+		return nil, ErrNotActive
+	}
 
-	return Get(info.Name, info.App)
+	return Get(ctx.ActiveEnv.Name, ctx.ActiveEnv.App)
+}
+
+func DefaultApp() (string, error) {
+	ctx, err := loadDeployContext()
+	if err != nil {
+		return "", err
+	}
+	if ctx != nil && strings.TrimSpace(ctx.LastApp) != "" {
+		return ctx.LastApp, nil
+	}
+
+	return "", fmt.Errorf("未指定 --app，且当前没有可用 app，请先执行 `%s <env>`", "use")
 }
 
 // List 返回当前所有环境
@@ -469,13 +484,24 @@ func profileName(name string, app string) string {
 	return fmt.Sprintf(profileFormat, app, name)
 }
 
-type currentEnvInfo struct {
+// EnvRef 表示一个可激活的环境引用。
+type EnvRef struct {
 	Name string `json:"name"`
 	App  string `json:"app"`
 }
 
-func saveCurrentEnvInfo(info *currentEnvInfo) error {
-	raw, err := json.Marshal(info)
+// DeployContext 表示 current.json 中保存的部署上下文。
+type DeployContext struct {
+	ActiveEnv *EnvRef `json:"active_env,omitempty"`
+	LastApp   string  `json:"last_app,omitempty"`
+}
+
+func saveDeployContext(ctx *DeployContext) error {
+	if ctx == nil {
+		ctx = &DeployContext{}
+	}
+
+	raw, err := json.Marshal(ctx)
 	if err != nil {
 		return err
 	}
@@ -483,23 +509,23 @@ func saveCurrentEnvInfo(info *currentEnvInfo) error {
 	return os.WriteFile(path.Join(workspace.MustRoot(), currentEnvPath), raw, os.ModePerm)
 }
 
-func deleteCurrentEnvInfo() error {
-	return os.RemoveAll(path.Join(workspace.MustRoot(), currentEnvPath))
-}
-
-func loadCurrentEnvInfo() (*currentEnvInfo, error) {
+func loadDeployContext() (*DeployContext, error) {
 	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), currentEnvPath))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, ErrNotActive
+			return &DeployContext{}, nil
 		}
 		return nil, err
 	}
 
-	info := new(currentEnvInfo)
-	if err := json.Unmarshal(raw, info); err != nil {
-		return nil, err
+	ctx := new(DeployContext)
+	if err := json.Unmarshal(raw, ctx); err != nil {
+		return nil, fmt.Errorf("load deploy context from %s: %w", currentEnvPath, err)
 	}
 
-	return info, nil
+	return ctx, nil
+}
+
+func deleteCurrentEnvInfo() error {
+	return os.RemoveAll(path.Join(workspace.MustRoot(), currentEnvPath))
 }

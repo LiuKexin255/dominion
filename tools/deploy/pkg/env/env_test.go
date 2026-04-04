@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,50 +69,86 @@ func (e *stubExecutor) Delete(ctx context.Context, app, environment string) erro
 	return e.deleteFunc(ctx, app, environment)
 }
 
-func Test_currentEnvInfo(t *testing.T) {
-	tests := []struct {
-		name    string // description of this test case
-		want    *currentEnvInfo
-		wantErr bool
-	}{
-		{
-			name: "读取和载入当前环境信息",
-			want: &currentEnvInfo{
-				Name: "test-Name",
-				App:  "app-test",
-			},
-		},
+func TestDeployContext_SaveLoad(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	want := &DeployContext{
+		ActiveEnv: &EnvRef{Name: "test-Name", App: "app-test"},
+		LastApp:   "app-test",
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			os.Setenv("BUILD_WORKSPACE_DIRECTORY", dir)
 
-			internalInit()
+	if err := saveDeployContext(want); err != nil {
+		t.Fatalf("saveDeployContext() failed: %v", err)
+	}
 
-			gotErr := saveCurrentEnvInfo(tt.want)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("saveCurrentEnvInfo() failed: %v", gotErr)
-				}
-				return
-			}
+	raw, err := os.ReadFile(filepath.Join(dir, currentEnvPath))
+	if err != nil {
+		t.Fatalf("os.ReadFile() failed: %v", err)
+	}
+	if got := string(raw); !strings.Contains(got, `"active_env"`) || !strings.Contains(got, `"last_app":"app-test"`) {
+		t.Fatalf("saved json = %s, want deploy context fields", got)
+	}
 
-			got, gotErr := loadCurrentEnvInfo()
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("loadCurrentEnvInfo() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("loadCurrentEnvInfo() succeeded unexpectedly")
-			}
+	got, err := loadDeployContext()
+	if err != nil {
+		t.Fatalf("loadDeployContext() failed: %v", err)
+	}
 
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("loadCurrentEnvInfo() = %v, want %v", got, tt.want)
-			}
-		})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loadDeployContext() = %v, want %v", got, want)
+	}
+}
+
+func TestDeployContext_LoadMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	got, err := loadDeployContext()
+	if err != nil {
+		t.Fatalf("loadDeployContext() failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(got, &DeployContext{}) {
+		t.Fatalf("loadDeployContext() = %v, want empty context", got)
+	}
+}
+
+func TestDeployContext_LoadCorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	if err := os.WriteFile(filepath.Join(dir, currentEnvPath), []byte("{broken json"), os.ModePerm); err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	_, err := loadDeployContext()
+	if err == nil {
+		t.Fatal("loadDeployContext() succeeded unexpectedly")
+	}
+	if !strings.Contains(err.Error(), "load deploy context") {
+		t.Fatalf("loadDeployContext() error = %v, want context error", err)
+	}
+}
+
+func TestDefaultApp_WithLastAppOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	if err := saveDeployContext(&DeployContext{LastApp: "cached-app"}); err != nil {
+		t.Fatalf("saveDeployContext() failed: %v", err)
+	}
+
+	got, err := DefaultApp()
+	if err != nil {
+		t.Fatalf("DefaultApp() failed: %v", err)
+	}
+	if got != "cached-app" {
+		t.Fatalf("DefaultApp() = %q, want %q", got, "cached-app")
 	}
 }
 
@@ -633,6 +670,14 @@ func TestDeployEnv_Active(t *testing.T) {
 				t.Fatalf("Get() failed: %v", gotErr)
 			}
 
+			ctxInfo, gotErr := loadDeployContext()
+			if gotErr != nil {
+				t.Fatalf("loadDeployContext() failed: %v", gotErr)
+			}
+			if !reflect.DeepEqual(ctxInfo, &DeployContext{ActiveEnv: &EnvRef{Name: tt.name1, App: tt.app}, LastApp: tt.app}) {
+				t.Fatalf("loadDeployContext() = %v, want active_env=%s/%s last_app=%s", ctxInfo, tt.app, tt.name1, tt.app)
+			}
+
 			curEnv, gotErr := Current()
 			if gotErr != nil {
 				t.Fatalf("Current() failed: %v", gotErr)
@@ -654,6 +699,14 @@ func TestDeployEnv_Active(t *testing.T) {
 				t.Fatalf("Get() failed: %v", gotErr)
 			}
 
+			ctxInfo, gotErr = loadDeployContext()
+			if gotErr != nil {
+				t.Fatalf("loadDeployContext() failed: %v", gotErr)
+			}
+			if !reflect.DeepEqual(ctxInfo, &DeployContext{ActiveEnv: &EnvRef{Name: tt.name2, App: tt.app}, LastApp: tt.app}) {
+				t.Fatalf("loadDeployContext() = %v, want active_env=%s/%s last_app=%s", ctxInfo, tt.app, tt.name2, tt.app)
+			}
+
 			curEnv, gotErr = Current()
 			if gotErr != nil {
 				t.Fatalf("Current() failed: %v", gotErr)
@@ -671,6 +724,17 @@ func TestDeployEnv_Active(t *testing.T) {
 			curEnv, gotErr = Current()
 			if gotErr == nil || !errors.Is(gotErr, ErrNotActive) {
 				t.Fatalf("Current() after Delete() gotErr = %v, want %v", gotErr, ErrNotActive)
+			}
+
+			ctxInfo, gotErr = loadDeployContext()
+			if gotErr != nil {
+				t.Fatalf("loadDeployContext() failed: %v", gotErr)
+			}
+			if ctxInfo.ActiveEnv != nil {
+				t.Fatalf("loadDeployContext() active_env = %v, want nil", ctxInfo.ActiveEnv)
+			}
+			if ctxInfo.LastApp != tt.app {
+				t.Fatalf("loadDeployContext() last_app = %q, want %q", ctxInfo.LastApp, tt.app)
 			}
 		})
 	}
@@ -715,6 +779,68 @@ func TestDeployEnv_Delete(t *testing.T) {
 				t.Fatalf("Get() after Delete() gotErr = %v, want %v", gotErr, ErrNotFound)
 			}
 		})
+	}
+}
+
+func TestDeployEnv_Delete_NonCurrentPreservesContext(t *testing.T) {
+	dir := t.TempDir()
+	copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	activeEnv, err := Get("test_env_v2", "grpc-hello-world")
+	if err != nil {
+		t.Fatalf("Get(active) failed: %v", err)
+	}
+	if err := activeEnv.Active(); err != nil {
+		t.Fatalf("Active() failed: %v", err)
+	}
+
+	ctxBefore, err := loadDeployContext()
+	if err != nil {
+		t.Fatalf("loadDeployContext() before delete failed: %v", err)
+	}
+
+	deleteEnv, err := Get("test_env", "grpc-hello-world")
+	if err != nil {
+		t.Fatalf("Get(delete target) failed: %v", err)
+	}
+	if err := deleteEnv.Delete(context.Background(), &stubExecutor{}); err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	curEnv, err := Current()
+	if err != nil {
+		t.Fatalf("Current() after deleting non-current env failed: %v", err)
+	}
+	if !curEnv.Equal(activeEnv) {
+		t.Fatalf("Current() = %v, want %v", curEnv, activeEnv)
+	}
+
+	ctxAfter, err := loadDeployContext()
+	if err != nil {
+		t.Fatalf("loadDeployContext() after delete failed: %v", err)
+	}
+	if !reflect.DeepEqual(ctxAfter, ctxBefore) {
+		t.Fatalf("context changed after deleting non-current env: got %v, want %v", ctxAfter, ctxBefore)
+	}
+}
+
+func TestCurrent_ActiveEnvProfileMissing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(workspace.WorkspaceKey, dir)
+	internalInit()
+
+	if err := saveDeployContext(&DeployContext{ActiveEnv: &EnvRef{Name: "missing", App: "missing-app"}, LastApp: "cached-app"}); err != nil {
+		t.Fatalf("saveDeployContext() failed: %v", err)
+	}
+
+	_, err := Current()
+	if err == nil {
+		t.Fatal("Current() succeeded unexpectedly")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Current() err = %v, want %v", err, ErrNotFound)
 	}
 }
 
