@@ -397,7 +397,7 @@ func Current() (*DeployEnv, error) {
 
 	return Get(ctx.ActiveEnv.Name, ctx.ActiveEnv.App)
 }
-
+  
 func DefaultApp() (string, error) {
 	ctx, err := loadDeployContext()
 	if err != nil {
