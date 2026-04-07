@@ -12,7 +12,6 @@ import (
 
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/k8s"
-	"dominion/tools/deploy/pkg/workspace"
 )
 
 func copyDir(t *testing.T, src string, dst string) {
@@ -49,6 +48,46 @@ func copyDir(t *testing.T, src string, dst string) {
 	}
 }
 
+func newBazelWorkspace(t *testing.T, envDir string) string {
+	t.Helper()
+
+	srcRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	copyDir(t, filepath.Join(srcRoot, "testdata"), filepath.Join(root, "testdata"))
+	copyDir(t, filepath.Join(root, "testdata", "service"), filepath.Join(root, "service"))
+	copyDir(t, filepath.Join(root, "testdata", "gateway"), filepath.Join(root, "gateway"))
+	if envDir != "" {
+		copyDir(t, filepath.Join(root, "testdata", envDir), filepath.Join(root, ".env"))
+	}
+	withWorkingDir(t, root)
+	return root
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
+}
+
 // stubExecutor 为 env 层测试提供可注入的执行器替身。
 type stubExecutor struct {
 	applyFunc  func(ctx context.Context, objects *k8s.DeployObjects) error
@@ -70,8 +109,7 @@ func (e *stubExecutor) Delete(ctx context.Context, app, environment string) erro
 }
 
 func TestDeployContext_SaveLoad(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	dir := newBazelWorkspace(t, "")
 	internalInit()
 
 	want := &DeployContext{
@@ -102,8 +140,7 @@ func TestDeployContext_SaveLoad(t *testing.T) {
 }
 
 func TestDeployContext_LoadMissingFile(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	newBazelWorkspace(t, "")
 	internalInit()
 
 	got, err := loadDeployContext()
@@ -117,8 +154,7 @@ func TestDeployContext_LoadMissingFile(t *testing.T) {
 }
 
 func TestDeployContext_LoadCorruptJSON(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	dir := newBazelWorkspace(t, "")
 	internalInit()
 
 	if err := os.WriteFile(filepath.Join(dir, currentEnvPath), []byte("{broken json"), os.ModePerm); err != nil {
@@ -135,8 +171,7 @@ func TestDeployContext_LoadCorruptJSON(t *testing.T) {
 }
 
 func TestDefaultApp_WithLastAppOnly(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	newBazelWorkspace(t, "")
 	internalInit()
 
 	if err := saveDeployContext(&DeployContext{LastApp: "cached-app"}); err != nil {
@@ -183,7 +218,7 @@ func TestNew(t *testing.T) {
 		caseName string // description of this test case
 		name     string
 		app      string
-		ws       string
+		envDir   string
 		want     *DeployEnv
 		wantErr  bool
 	}{
@@ -191,7 +226,7 @@ func TestNew(t *testing.T) {
 			caseName: "创建新的环境",
 			name:     "test_env",
 			app:      "test_app",
-			ws:       t.TempDir(),
+			envDir:   "",
 			want: &DeployEnv{
 				Profile: Profile{
 					Name: "test_env",
@@ -201,7 +236,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			caseName: "环境已存在",
-			ws:       "testdata",
+			envDir:   ".env",
 			name:     "test_env",
 			app:      "grpc-hello-world",
 			wantErr:  true,
@@ -214,7 +249,7 @@ func TestNew(t *testing.T) {
 				return nowTime
 			}
 
-			os.Setenv(workspace.WorkspaceKey, tt.ws)
+			newBazelWorkspace(t, tt.envDir)
 
 			internalInit()
 
@@ -384,7 +419,7 @@ func TestGet(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			os.Setenv(workspace.WorkspaceKey, "testdata")
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			got, gotErr := Get(tt.name, tt.app)
@@ -411,13 +446,13 @@ func TestList(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		dir  string
-		want []*DeployEnv
+		name      string
+		copyLists bool
+		want      []*DeployEnv
 	}{
 		{
-			name: "读取所有环境",
-			dir:  filepath.Join("testdata", "list"),
+			name:      "读取所有环境",
+			copyLists: true,
 			want: []*DeployEnv{
 				{
 					Profile: Profile{
@@ -612,14 +647,17 @@ func TestList(t *testing.T) {
 		},
 		{
 			name: "无环境返回空切片",
-			dir:  t.TempDir(),
 			want: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv(workspace.WorkspaceKey, tt.dir)
+			envDir := ""
+			if tt.copyLists {
+				envDir = filepath.Join("list", ".env")
+			}
+			newBazelWorkspace(t, envDir)
 			internalInit()
 
 			got, err := List()
@@ -650,9 +688,7 @@ func TestDeployEnv_Active(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
-			os.Setenv(workspace.WorkspaceKey, dir)
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			_, gotErr := Current()
@@ -759,9 +795,7 @@ func TestDeployEnv_Delete(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
-			os.Setenv(workspace.WorkspaceKey, dir)
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			e, gotErr := Get(tt.name, tt.app)
@@ -783,9 +817,7 @@ func TestDeployEnv_Delete(t *testing.T) {
 }
 
 func TestDeployEnv_Delete_NonCurrentPreservesContext(t *testing.T) {
-	dir := t.TempDir()
-	copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
-	t.Setenv(workspace.WorkspaceKey, dir)
+	newBazelWorkspace(t, ".env")
 	internalInit()
 
 	activeEnv, err := Get("test_env_v2", "grpc-hello-world")
@@ -827,8 +859,7 @@ func TestDeployEnv_Delete_NonCurrentPreservesContext(t *testing.T) {
 }
 
 func TestCurrent_ActiveEnvProfileMissing(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	newBazelWorkspace(t, "")
 	internalInit()
 
 	if err := saveDeployContext(&DeployContext{ActiveEnv: &EnvRef{Name: "missing", App: "missing-app"}, LastApp: "cached-app"}); err != nil {
@@ -856,10 +887,7 @@ func TestDeployEnv_Deploy_RequiresExecutor(t *testing.T) {
 		{caseName: "valid executor", name: "test_env", app: "grpc-hello-world", exec: &stubExecutor{}, wantErr: false},
 	} {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, "testdata", dir)
-			t.Setenv(workspace.WorkspaceKey, dir)
-
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			env, err := Get(tt.name, tt.app)
@@ -916,10 +944,7 @@ func TestDeployEnv_Delete_RequiresExecutor(t *testing.T) {
 		{caseName: "valid executor", name: "test_env", app: "grpc-hello-world", exec: &stubExecutor{}},
 	} {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
-			t.Setenv(workspace.WorkspaceKey, dir)
-
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			env, err := Get(tt.name, tt.app)
@@ -954,9 +979,7 @@ func TestDeployEnv_Delete_RequiresExecutor(t *testing.T) {
 }
 
 func TestDeployEnv_Deploy_FailedRemainsPending(t *testing.T) {
-	dir := t.TempDir()
-	copyDir(t, "testdata", dir)
-	t.Setenv(workspace.WorkspaceKey, dir)
+	dir := newBazelWorkspace(t, ".env")
 
 	internalInit()
 
@@ -1206,10 +1229,7 @@ func TestDeployEnv_Update(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, "testdata", dir)
-			os.Setenv(workspace.WorkspaceKey, dir)
-
+			newBazelWorkspace(t, ".env")
 			internalInit()
 			nowTime := time.Now().UTC().Round(0)
 			now = func() time.Time {
@@ -1295,10 +1315,7 @@ func TestDeployEnv_Update_PersistsPendingStatusWithoutRemoteApply(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, "testdata", dir)
-			t.Setenv(workspace.WorkspaceKey, dir)
-
+			newBazelWorkspace(t, ".env")
 			internalInit()
 
 			env, err := Get(tt.name, tt.app)
@@ -1367,10 +1384,7 @@ func TestDeployEnv_Delete_RemoteDeleteFailurePreservesLocalCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.caseName, func(t *testing.T) {
-			dir := t.TempDir()
-			copyDir(t, filepath.Join("testdata", ".env"), filepath.Join(dir, ".env"))
-			t.Setenv(workspace.WorkspaceKey, dir)
-
+			dir := newBazelWorkspace(t, ".env")
 			internalInit()
 
 			env, err := Get(tt.name, tt.app)

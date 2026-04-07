@@ -134,7 +134,9 @@ func run(args []string) error {
 		return err
 	}
 
-	env.LazyInit()
+	if err := env.LazyInit(); err != nil {
+		return err
+	}
 
 	if err := opts.Default(); err != nil {
 		return err

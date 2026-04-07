@@ -1,13 +1,15 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
-
-	"dominion/tools/deploy/pkg/workspace"
 )
 
 func TestParseDeployConfig(t *testing.T) {
+	root := newBazelWorkspace(t)
+
 	tests := []struct {
 		name string // description of this test case
 		// Named input parameters for target function.
@@ -17,7 +19,7 @@ func TestParseDeployConfig(t *testing.T) {
 	}{
 		{
 			name: "读取部署配置成功",
-			path: "testdata/deploy.yaml",
+			path: filepath.Join(root, "testdata", "deploy.yaml"),
 			want: &DeployConfig{
 				Template: "deploy",
 				App:      "grpc-hello-world",
@@ -53,18 +55,17 @@ func TestParseDeployConfig(t *testing.T) {
 		},
 		{
 			name:    "文件不存在",
-			path:    "testdata/deploy1.yaml",
+			path:    filepath.Join(root, "testdata", "deploy1.yaml"),
 			wantErr: true,
 		},
 		{
 			name:    "部署配置文件格式错误",
-			path:    "testdata/deploy.error.yaml",
+			path:    filepath.Join(root, "testdata", "deploy.error.yaml"),
 			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(workspace.WorkspaceKey, ".")
 			got, gotErr := ParseDeployConfig(tt.path)
 			if gotErr != nil {
 				if !tt.wantErr {
@@ -83,6 +84,8 @@ func TestParseDeployConfig(t *testing.T) {
 }
 
 func TestParseServiceConfig(t *testing.T) {
+	root := newBazelWorkspace(t)
+
 	tests := []struct {
 		name string // description of this test case
 		// Named input parameters for target function.
@@ -92,7 +95,7 @@ func TestParseServiceConfig(t *testing.T) {
 	}{
 		{
 			name: "读取服务配置成功",
-			path: "testdata/service.yaml",
+			path: filepath.Join(root, "testdata", "service.yaml"),
 			want: &ServiceConfig{
 				Name: "service",
 				App:  "grpc-hello-world",
@@ -115,18 +118,17 @@ func TestParseServiceConfig(t *testing.T) {
 		},
 		{
 			name:    "文件不存在",
-			path:    "testdata/service1.yaml",
+			path:    filepath.Join(root, "testdata", "service1.yaml"),
 			wantErr: true,
 		},
 		{
 			name:    "服务配置文件格式错误",
-			path:    "testdata/service.error.yaml",
+			path:    filepath.Join(root, "testdata", "service.error.yaml"),
 			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(workspace.WorkspaceKey, ".")
 			got, gotErr := ParseServiceConfig(tt.path)
 			if gotErr != nil {
 				if !tt.wantErr {
@@ -145,6 +147,8 @@ func TestParseServiceConfig(t *testing.T) {
 }
 
 func TestServiceConfig_GetArtifact(t *testing.T) {
+	root := newBazelWorkspace(t)
+
 	tests := []struct {
 		name string // description of this test case
 		// Named input parameters for receiver constructor.
@@ -155,7 +159,7 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 	}{
 		{
 			name:         "正常返回产物",
-			path:         "testdata/service.yaml",
+			path:         filepath.Join(root, "testdata", "service.yaml"),
 			artifactName: "service",
 			want: &ServiceArtifact{
 				Name:   "service",
@@ -172,7 +176,6 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(workspace.WorkspaceKey, ".")
 			c, err := ParseServiceConfig(tt.path)
 			if err != nil {
 				t.Fatalf("could not construct receiver type: %v", err)
@@ -192,6 +195,74 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 			}
 		})
 	}
+}
+
+func newBazelWorkspace(t *testing.T) string {
+	t.Helper()
+
+	srcRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	copyDir(t, filepath.Join(srcRoot, "testdata"), filepath.Join(root, "testdata"))
+	withWorkingDir(t, root)
+	return root
+}
+
+func copyDir(t *testing.T, src string, dst string) {
+	t.Helper()
+
+	err := filepath.Walk(src, func(srcPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		relPath, err := filepath.Rel(src, srcPath)
+		if err != nil {
+			return err
+		}
+
+		dstPath := filepath.Join(dst, relPath)
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, os.ModePerm)
+		}
+
+		raw, err := os.ReadFile(srcPath)
+		if err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
+			return err
+		}
+
+		return os.WriteFile(dstPath, raw, info.Mode())
+	})
+	if err != nil {
+		t.Fatalf("copyDir() failed: %v", err)
+	}
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
 }
 
 func Test_uriDir(t *testing.T) {

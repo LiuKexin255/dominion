@@ -7,14 +7,26 @@
 
 ## 部署工具
 
-通过部署工具 `env_deploy` 将 `deploy.yaml` 定义的环境连同其中包含的服务部署到 k8s 当中。部署工具通过 `bazel rules` 包装，类似 `gazelle`。
+通过部署工具 `deploy` 将 `deploy.yaml` 定义的环境连同其中包含的服务部署到 k8s 当中。
+
+### 安装
+
+使用以下命令安装 `deploy` 工具：
+
+```bash
+bazel run //:deploy_install
+```
+
+- 默认安装路径为 `$HOME/.local/bin`。
+- 可以通过 `--prefix` 参数指定安装路径，例如：`bazel run //:deploy_install -- --prefix=/usr/local/bin`。
+- 安装完成后，请确保安装路径已添加到系统的 `PATH` 环境变量中。
 
 ### 相关命令
 
 1. 创建/切换环境
 
 ```bash
-bazel run //:deploy -- use {env-name} [--app={app-name}]
+deploy use {env-name} [--app={app-name}]
 ```
 
 如果环境不存在，则创建环境；如存在则切换环境
@@ -22,7 +34,7 @@ bazel run //:deploy -- use {env-name} [--app={app-name}]
 2. 部署/更新服务
 
 ```bash 
-bazel run //:deploy -- deploy [--kubeconfig={path}] {path-of-deploy.yaml}
+deploy deploy [--kubeconfig={path}] {path-of-deploy.yaml}
 ```
 
 - `deploy` 需要先有当前激活环境，必须先执行 `use`，否则命令会失败。
@@ -31,13 +43,13 @@ bazel run //:deploy -- deploy [--kubeconfig={path}] {path-of-deploy.yaml}
 3. 删除环境
 
 ```bash
-bazel run //:deploy -- del {env-name} [--app={app-name}] [--kubeconfig={path}]
+deploy del {env-name} [--app={app-name}] [--kubeconfig={path}]
 ```
 
 4. 列出环境
 
 ```bash
-bazel run //:deploy -- list
+deploy list
 ```
 
 - 环境展示和引用格式为 `{app}/{env}`，例如 `grpc-hello-world/dev`。
@@ -45,7 +57,7 @@ bazel run //:deploy -- list
 5. 查看当前激活环境
 
 ```bash
-bazel run //:deploy -- cur
+deploy cur
 ```
 
 6. `app` 参数规则
@@ -54,15 +66,17 @@ bazel run //:deploy -- cur
 
 7. `deploy` 文件路径规则
 
-- 以 `//` 开头：按项目根目录（`BUILD_WORKSPACE_DIRECTORY`）解析。
-- 不以 `/` 开头的相对路径：按当前 shell 工作目录（`BUILD_WORKING_DIRECTORY`）解析。
+- 以 `//` 开头：按项目 Bazel 工作区根目录（包含 WORKSPACE.bazel 或 MODULE.bazel 的目录）解析。
+- 不以 `/` 开头的相对路径：按当前 shell 工作目录解析。
 - 以 `/` 开头：按系统绝对路径解析。
+
+注意：`deploy` 工具必须在 Bazel 工作区内运行，否则会返回错误。
 
 示例：
 
 ```bash
-bazel run //:deploy -- deploy //experimental/grpc_hello_world/deploy.yaml
-bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml
+deploy deploy //experimental/grpc_hello_world/deploy.yaml
+deploy deploy experimental/grpc_hello_world/deploy.yaml
 ```
 
 ### 本地缓存
@@ -87,10 +101,10 @@ bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml
 冒烟步骤：
 
 ```bash
-bazel run //:deploy -- use --app=grpc-hello-world grpc-dev
-bazel run //:deploy -- deploy experimental/grpc_hello_world/deploy.yaml
-bazel run //:deploy -- cur
-bazel run //:deploy -- del --app=grpc-hello-world grpc-dev
+deploy use --app=grpc-hello-world grpc-dev
+deploy deploy experimental/grpc_hello_world/deploy.yaml
+deploy cur
+deploy del --app=grpc-hello-world grpc-dev
 ```
 
 - `use` 仅切换/创建本地激活环境；如果集群不可达，它仍可正常执行。

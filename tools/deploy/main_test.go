@@ -10,7 +10,6 @@ import (
 
 	"dominion/tools/deploy/pkg/env"
 	"dominion/tools/deploy/pkg/k8s"
-	"dominion/tools/deploy/pkg/workspace"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -174,9 +173,20 @@ func TestValidateCurOptions(t *testing.T) {
 }
 
 func TestOptionsDefault_UsesLastAppWithoutActiveEnv(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
-	if err := os.MkdirAll(filepath.Join(dir, ".env"), os.ModePerm); err != nil {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: .git/worktrees/deploy-test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	nested := filepath.Join(root, "apps", "svc")
+	if err := os.MkdirAll(nested, os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, nested)
+
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
 	}
 	ctx := env.DeployContext{LastApp: "cached-app"}
@@ -184,7 +194,7 @@ func TestOptionsDefault_UsesLastAppWithoutActiveEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal() failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".env", "current.json"), raw, os.ModePerm); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env", "current.json"), raw, os.ModePerm); err != nil {
 		t.Fatalf("WriteFile() failed: %v", err)
 	}
 
@@ -198,8 +208,18 @@ func TestOptionsDefault_UsesLastAppWithoutActiveEnv(t *testing.T) {
 }
 
 func TestOptionsDefault_NoContextReturnsError(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, dir)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: .git/worktrees/deploy-test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	nested := filepath.Join(root, "apps", "svc")
+	if err := os.MkdirAll(nested, os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, nested)
 
 	opts := &options{command: commandDel}
 	err := opts.Default()
@@ -209,6 +229,23 @@ func TestOptionsDefault_NoContextReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "未指定 --app，且当前没有可用 app") {
 		t.Fatalf("Default() error = %v, want clear missing-app message", err)
 	}
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
 }
 
 func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
@@ -226,7 +263,15 @@ func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("BUILD_WORKSPACE_DIRECTORY", t.TempDir())
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+				t.Fatalf("WriteFile() failed: %v", err)
+			}
+			nested := filepath.Join(root, "apps", "svc")
+			if err := os.MkdirAll(nested, os.ModePerm); err != nil {
+				t.Fatalf("MkdirAll() failed: %v", err)
+			}
+			withWorkingDir(t, nested)
 
 			err := deployAndActivate(tt.opts)
 			if err == nil {
@@ -285,5 +330,47 @@ func TestRun_Help(t *testing.T) {
 	}
 	if !strings.Contains(got, "--kubeconfig=path") {
 		t.Fatalf("help output missing kubeconfig flag: %q", got)
+	}
+}
+
+func TestRun_OutsideGitRepoReturnsError(t *testing.T) {
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "apps", "svc"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.Chdir(filepath.Join(outside, "apps", "svc")); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", filepath.Join(outside, "apps", "svc"), err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
+	var (
+		recovered any
+		runErr    error
+	)
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		runErr = run([]string{"cur"})
+	}()
+
+	if recovered != nil {
+		t.Fatalf("run() panicked: %v", recovered)
+	}
+	if runErr == nil {
+		t.Fatal("run() succeeded unexpectedly")
+	}
+	if !strings.Contains(runErr.Error(), "没有激活中的环境") {
+		t.Fatalf("run() error = %v, want missing active env message", runErr)
 	}
 }

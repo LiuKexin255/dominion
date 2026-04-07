@@ -34,7 +34,6 @@ services:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("BUILD_WORKSPACE_DIRECTORY", t.TempDir())
 			t.Chdir(t.TempDir())
 
 			err := ValidateDeployYAML(tt.raw)
@@ -81,7 +80,6 @@ artifacts:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("BUILD_WORKSPACE_DIRECTORY", t.TempDir())
 			t.Chdir(t.TempDir())
 
 			err := ValidateServiceYAML(tt.raw)

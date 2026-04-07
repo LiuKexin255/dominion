@@ -60,7 +60,10 @@ var (
 	ErrIsExist = errors.New("没有激活中的环境")
 
 	// LazyInit 初始化所需操作
-	LazyInit = sync.OnceFunc(internalInit)
+	LazyInit = lazyInit
+
+	initOnce sync.Once
+	initErr  error
 )
 
 // executor 定义环境层依赖的远端执行接口。
@@ -69,16 +72,25 @@ type executor interface {
 	Delete(ctx context.Context, app, environment string) error
 }
 
-func internalInit() {
+func lazyInit() error {
+	initOnce.Do(func() {
+		initErr = internalInit()
+	})
+	return initErr
+}
+
+func internalInit() error {
 	// 创建保存文件所需目录
 	for _, dir := range []string{
 		deployConfigDir,
 		serviceConfigDir,
 	} {
 		if err := os.MkdirAll(path.Join(workspace.MustRoot(), dir), os.ModePerm); err != nil {
-			panic(err)
+			return err
 		}
 	}
+
+	return nil
 }
 
 // Profile 环境基本信息
@@ -397,7 +409,7 @@ func Current() (*DeployEnv, error) {
 
 	return Get(ctx.ActiveEnv.Name, ctx.ActiveEnv.App)
 }
-  
+
 func DefaultApp() (string, error) {
 	ctx, err := loadDeployContext()
 	if err != nil {
@@ -412,7 +424,8 @@ func DefaultApp() (string, error) {
 
 // List 返回当前所有环境
 func List() ([]*DeployEnv, error) {
-	entries, err := os.ReadDir(path.Join(workspace.MustRoot(), envProfileDir))
+	root := workspace.MustRoot()
+	entries, err := os.ReadDir(path.Join(root, envProfileDir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -441,7 +454,7 @@ func List() ([]*DeployEnv, error) {
 
 	envs := make([]*DeployEnv, 0, len(profileNames))
 	for _, name := range profileNames {
-		env, err := loadDeployEnv(path.Join(workspace.MustRoot(), envProfileDir, name))
+		env, err := loadDeployEnv(path.Join(root, envProfileDir, name))
 		if err != nil {
 			return nil, err
 		}

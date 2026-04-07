@@ -8,24 +8,31 @@ import (
 )
 
 const (
-	WorkspaceKey = "BUILD_WORKSPACE_DIRECTORY"
-	WorkingKey   = "BUILD_WORKING_DIRECTORY"
-
 	WorkspacePathPrefix = "//"
+	bazelWorkspaceFile  = "WORKSPACE.bazel"
+	bazelModuleFile     = "MODULE.bazel"
 )
 
 // Root 返回项目根目录
 func Root() (string, error) {
-	root := os.Getenv(WorkspaceKey)
-	if root == "" {
-		return "", fmt.Errorf("获取项目根目录失败")
+	working, err := Working()
+	if err != nil {
+		return "", err
 	}
 
-	if !exists(root) {
-		return "", fmt.Errorf("项目目录 %s 读取失败", root)
+	for {
+		if hasBazelWorkspace(working) {
+			return working, nil
+		}
+
+		parent := filepath.Dir(working)
+		if parent == working {
+			break
+		}
+		working = parent
 	}
 
-	return root, nil
+	return "", fmt.Errorf("未找到 Bazel 工作区根目录")
 }
 
 // MustRoot 返回项目根目录，如果报错抛出 panic
@@ -39,19 +46,15 @@ func MustRoot() string {
 
 // Working 返回 shell 当前目录
 func Working() (string, error) {
-	working := os.Getenv(WorkingKey)
-	if working == "" {
-		return "", fmt.Errorf("获取当前目录失败")
+	working, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("获取当前工作目录失败: %w", err)
 	}
 
-	if !exists(working) {
-		return "", fmt.Errorf("当前目录 %s 读取失败", working)
-	}
-
-	return working, nil
+	return filepath.Clean(working), nil
 }
 
-// MustRoot 返回当前目录，如果报错抛出 panic
+// MustWorking 返回当前工作目录，如果报错抛出 panic。
 func MustWorking() string {
 	ws, err := Working()
 	if err != nil {
@@ -60,8 +63,12 @@ func MustWorking() string {
 	return ws
 }
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
+func hasBazelWorkspace(path string) bool {
+	_, err := os.Stat(filepath.Join(path, bazelWorkspaceFile))
+	if err == nil {
+		return true
+	}
+	_, err = os.Stat(filepath.Join(path, bazelModuleFile))
 	return err == nil
 }
 

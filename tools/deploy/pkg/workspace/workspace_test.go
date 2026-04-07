@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -9,92 +10,67 @@ import (
 
 func TestRoot(t *testing.T) {
 	tests := []struct {
-		name    string // description of this test case
-		want    string
+		name    string
 		wantErr bool
 	}{
-		{
-			name:    "未能获取到项目目录地址",
-			wantErr: true,
-		},
-		{
-			name:    "获取到的项目地址无法读取",
-			want:    filepath.Join(t.TempDir(), "not-exists"),
-			wantErr: true,
-		},
-		{
-			name: "正常读取到项目地址",
-			want: t.TempDir(),
-		},
+		{name: "accepts MODULE.bazel"},
+		{name: "outside repo returns error", wantErr: true},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("BUILD_WORKSPACE_DIRECTORY", tt.want)
+			root := t.TempDir()
+			nested := filepath.Join(root, "apps", "svc", "deploy")
+			if err := os.MkdirAll(nested, 0o755); err != nil {
+				t.Fatalf("MkdirAll() failed: %v", err)
+			}
 
-			got, gotErr := workspace.Root()
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("Root() failed: %v", gotErr)
+			if !tt.wantErr {
+				if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+					t.Fatalf("WriteFile() failed: %v", err)
+				}
+			}
+
+			cwd := nested
+			if tt.wantErr {
+				cwd = t.TempDir()
+			}
+			withWorkingDir(t, cwd)
+
+			got, err := workspace.Root()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Root() succeeded unexpectedly")
 				}
 				return
 			}
-			if tt.wantErr {
-				t.Fatal("Root() succeeded unexpectedly")
+			if err != nil {
+				t.Fatalf("Root() failed: %v", err)
 			}
-			if got != tt.want {
-				t.Errorf("Root() = %v, want %v", got, tt.want)
+			if got != root {
+				t.Fatalf("Root() = %q, want %q", got, root)
 			}
 		})
 	}
 }
 
 func TestWorking(t *testing.T) {
-	tests := []struct {
-		name    string
-		want    string
-		wantErr bool
-	}{
-		{
-			name:    "未能获取到当前目录地址",
-			wantErr: true,
-		},
-		{
-			name:    "获取到的当前目录地址无法读取",
-			want:    filepath.Join(t.TempDir(), "not-exists"),
-			wantErr: true,
-		},
-		{
-			name: "正常读取到当前目录地址",
-			want: t.TempDir(),
-		},
+	root, nested := newWorkspaceRepo(t)
+	_ = root
+	withWorkingDir(t, nested)
+
+	got, err := workspace.Working()
+	if err != nil {
+		t.Fatalf("Working() failed: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(workspace.WorkingKey, tt.want)
-
-			got, gotErr := workspace.Working()
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("Working() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("Working() succeeded unexpectedly")
-			}
-			if got != tt.want {
-				t.Errorf("Working() = %v, want %v", got, tt.want)
-			}
-		})
+	if got != nested {
+		t.Fatalf("Working() = %q, want %q", got, nested)
 	}
 }
 
 func TestResolvePath(t *testing.T) {
-	workspaceRoot := t.TempDir()
-	workingDir := t.TempDir()
-	t.Setenv(workspace.WorkspaceKey, workspaceRoot)
-	t.Setenv(workspace.WorkingKey, workingDir)
+	root, nested := newWorkspaceRepo(t)
+	withWorkingDir(t, nested)
 
 	tests := []struct {
 		name string
@@ -102,17 +78,17 @@ func TestResolvePath(t *testing.T) {
 		want string
 	}{
 		{
-			name: "workspace prefix path",
+			name: "workspace prefix resolves from discovered Bazel root",
 			path: "//tools/deploy/deploy.yaml",
-			want: filepath.Join(workspaceRoot, "tools/deploy/deploy.yaml"),
+			want: filepath.Join(root, "tools/deploy/deploy.yaml"),
 		},
 		{
-			name: "relative path",
+			name: "relative path resolves from cwd",
 			path: "tools/deploy/deploy.yaml",
-			want: filepath.Join(workingDir, "tools/deploy/deploy.yaml"),
+			want: filepath.Join(nested, "tools/deploy/deploy.yaml"),
 		},
 		{
-			name: "absolute path",
+			name: "absolute path is preserved",
 			path: "/tmp/deploy.yaml",
 			want: "/tmp/deploy.yaml",
 		},
@@ -122,64 +98,87 @@ func TestResolvePath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := workspace.ResolvePath(tt.path)
 			if got != tt.want {
-				t.Fatalf("resolvePath(%q) = %q, want %q", tt.path, got, tt.want)
+				t.Fatalf("ResolvePath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestToURI(t *testing.T) {
-	root := t.TempDir()
+	root, nested := newWorkspaceRepo(t)
+	withWorkingDir(t, nested)
 
 	tests := []struct {
 		name    string
-		root    string // BUILD_WORKSPACE_DIRECTORY 值，空字符串表示未设置
 		absPath string
 		want    string
 		wantErr bool
 	}{
 		{
-			name:    "仓库内路径正确转换为 URI",
-			root:    root,
+			name:    "repo root path uses discovered Bazel root",
 			absPath: filepath.Join(root, "tools/deploy/deploy.yaml"),
 			want:    "//tools/deploy/deploy.yaml",
 		},
 		{
-			name:    "仓库外路径返回错误",
-			root:    root,
+			name:    "nested path also uses discovered Bazel root",
+			absPath: filepath.Join(nested, "deploy.yaml"),
+			want:    "//apps/svc/deploy/deploy.yaml",
+		},
+		{
+			name:    "outside repo returns error",
 			absPath: filepath.Join(t.TempDir(), "outside.yaml"),
-			wantErr: true,
-		},
-		{
-			name:    "BUILD_WORKSPACE_DIRECTORY 未设置时返回错误",
-			root:    "",
-			absPath: filepath.Join(t.TempDir(), "tools/deploy/deploy.yaml"),
-			wantErr: true,
-		},
-		{
-			name:    "共享前缀但非子目录返回错误",
-			root:    root,
-			absPath: root + "-sibling/file.yaml",
 			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(workspace.WorkspaceKey, tt.root)
-			got, gotErr := workspace.ToURI(tt.absPath)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("ToURI(%q) failed: %v", tt.absPath, gotErr)
+			got, err := workspace.ToURI(tt.absPath)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ToURI() succeeded unexpectedly")
 				}
 				return
 			}
-			if tt.wantErr {
-				t.Fatalf("ToURI(%q) succeeded unexpectedly", tt.absPath)
+			if err != nil {
+				t.Fatalf("ToURI() failed: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("ToURI(%q) = %q, want %q", tt.absPath, got, tt.want)
+				t.Fatalf("ToURI(%q) = %q, want %q", tt.absPath, got, tt.want)
 			}
 		})
 	}
+}
+
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
+}
+
+func newWorkspaceRepo(t *testing.T) (string, string) {
+	t.Helper()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	nested := filepath.Join(root, "apps", "svc", "deploy")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+
+	return root, nested
 }
