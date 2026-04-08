@@ -197,6 +197,56 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 	}
 }
 
+func TestServiceArtifactType_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   ServiceArtifactType
+		wantErr bool
+	}{
+		{name: "deployment", value: ServiceArtifactTypeDeployment},
+		{name: "unsupported", value: ServiceArtifactType("job"), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.value.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Validate() succeeded unexpectedly")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseServiceConfig_RejectsUnsupportedArtifactType(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	servicePath := filepath.Join(root, "testdata", "service.unsupported-type.yaml")
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: job
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	if _, err := ParseServiceConfig(servicePath); err == nil {
+		t.Fatal("ParseServiceConfig() succeeded unexpectedly")
+	}
+}
+
 func newBazelWorkspace(t *testing.T) string {
 	t.Helper()
 

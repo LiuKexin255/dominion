@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "imagepush",
+    srcs = [
+        "imagepush.go",
+        "runner.go",
+    ],
+    importpath = "dominion/tools/deploy/pkg/imagepush",
+    visibility = ["//visibility:public"],
+    deps = ["//tools/deploy/pkg/workspace"],
+)
+
+go_test(
+    name = "imagepush_test",
+    size = "small",
+    srcs = ["imagepush_test.go"],
+    embed = [":imagepush"],
+)

@@ -22,11 +22,6 @@ gazelle(
 )
 
 alias(
-    name = "deploy",
-    actual = "//tools/deploy",
-)
-
-alias(
     name = "deploy_install",
     actual = "//tools/deploy:install",
 )

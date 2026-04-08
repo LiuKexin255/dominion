@@ -34,7 +34,9 @@ func TestNewDeployObjects_SingleService(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev")
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
+		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	})
 	if err != nil {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
@@ -44,6 +46,9 @@ func TestNewDeployObjects_SingleService(t *testing.T) {
 	}
 	if objects.Deployments[0].EnvironmentName != "dev" {
 		t.Fatal("environment name was not propagated into deployment workload")
+	}
+	if objects.Deployments[0].Image != "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111" {
+		t.Fatalf("deployment image = %q, want injected resolved image", objects.Deployments[0].Image)
 	}
 }
 
@@ -96,7 +101,10 @@ func TestNewDeployObjects_MultipleServices(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev")
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
+		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"//some/path:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	})
 	if err != nil {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
@@ -144,7 +152,10 @@ func TestNewDeployObjects_ServiceConfigOrderMismatch(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev")
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
+		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"//some/path:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	})
 	if err != nil {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
@@ -285,7 +296,11 @@ func TestNewDeployObjects_ErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewDeployObjects(tt.deployCfg, tt.serviceConfigs, tt.envName)
+			_, err := NewDeployObjects(tt.deployCfg, tt.serviceConfigs, tt.envName, map[string]string{
+				"//some/path:service_image":  "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				"//some/path:service1_image": "registry.example.com/team/service1@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+				"//some/path:service2_image": "registry.example.com/team/service2@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			})
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("NewDeployObjects() expected error")
@@ -300,5 +315,84 @@ func TestNewDeployObjects_ErrorCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewDeployObjects_UsesInjectedResolvedImages(t *testing.T) {
+	deployCfg := &config.DeployConfig{
+		App:      "grpc-hello-world",
+		Template: "deploy",
+		Desc:     "dev",
+		Services: []*config.DeployService{
+			{
+				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
+			},
+		},
+	}
+
+	serviceConfigs := []*config.ServiceConfig{
+		{
+			URI:  "//svc/service.yaml",
+			Name: "service",
+			App:  "grpc-hello-world",
+			Desc: "grpc service",
+			Artifacts: []*config.ServiceArtifact{{
+				Name:   "service",
+				Type:   config.ServiceArtifactTypeDeployment,
+				Target: "//svc:service_image",
+				Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
+			}},
+		},
+	}
+
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
+		"//svc:service_image": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+	if err != nil {
+		t.Fatalf("NewDeployObjects() failed: %v", err)
+	}
+
+	if len(objects.Deployments) != 1 {
+		t.Fatalf("deployment count = %d, want 1", len(objects.Deployments))
+	}
+	if objects.Deployments[0].Image != "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("deployment image = %q, want injected resolved image", objects.Deployments[0].Image)
+	}
+}
+
+func TestNewDeployObjects_ErrorsWhenResolvedImageMissing(t *testing.T) {
+	deployCfg := &config.DeployConfig{
+		App:      "grpc-hello-world",
+		Template: "deploy",
+		Desc:     "dev",
+		Services: []*config.DeployService{
+			{
+				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
+			},
+		},
+	}
+
+	serviceConfigs := []*config.ServiceConfig{
+		{
+			URI:  "//svc/service.yaml",
+			Name: "service",
+			App:  "grpc-hello-world",
+			Desc: "grpc service",
+			Artifacts: []*config.ServiceArtifact{{
+				Name:   "service",
+				Type:   config.ServiceArtifactTypeDeployment,
+				Target: "//svc:service_image",
+				Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
+			}},
+		},
+	}
+
+	_, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{})
+	if err == nil {
+		t.Fatal("NewDeployObjects() succeeded unexpectedly")
+	}
+	wantErr := "artifact target //svc:service_image missing resolved image"
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("NewDeployObjects() err = %v, want substring %q", err, wantErr)
 	}
 }

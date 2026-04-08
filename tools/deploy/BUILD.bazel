@@ -26,7 +26,10 @@ go_test(
     size = "small",
     srcs = ["main_test.go"],
     embed = [":deploy_lib"],
-    deps = ["//tools/deploy/pkg/k8s"],
+    deps = [
+        "//tools/deploy/pkg/env",
+        "//tools/deploy/pkg/k8s",
+    ],
 )
 
 sh_binary(

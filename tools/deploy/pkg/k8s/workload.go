@@ -9,9 +9,6 @@ import (
 )
 
 var (
-	// labelTargetPattern 匹配 bazel label 目标格式。
-	labelTargetPattern = regexp.MustCompile(`^(:[A-Za-z0-9_\-.+]+|//[^:]+:[A-Za-z0-9_\-.+]+)$`)
-
 	// nonDNSLabel 匹配名称中不符合 DNS label 规范的字符。
 	nonDNSLabel = regexp.MustCompile(`[^a-z0-9-]+`)
 )
@@ -30,8 +27,6 @@ const (
 	WorkloadKindHTTPRoute WorkloadKind = "route"
 
 	maxK8sResourceNameSize = 63
-
-	defaultImageTag = "dev"
 )
 
 // DeploymentPort 定义 deployment 暴露端口。
@@ -332,19 +327,15 @@ func (w *HTTPRouteWorkload) Validate() error {
 	return nil
 }
 
-// NewDeploymentWorkload 根据服务配置、环境名和产物名构建 deployment workload。
-// serviceCfg 提供服务元数据与产物列表，artifactName 指定要使用的 deployment 产物。
-// 若产物不存在、类型不支持或镜像解析失败，则返回错误。
-func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, artifactName string) (*DeploymentWorkload, error) {
+// NewDeploymentWorkload 根据服务配置、环境名、产物名和注入的镜像引用构建 deployment workload。
+// serviceCfg 提供服务元数据与产物列表，artifactName 指定要使用的产物。
+// 若产物不存在、类型非法或镜像为空，则返回错误。
+func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, artifactName string, imageRef string) (*DeploymentWorkload, error) {
 	artifact, err := resolveArtifactByName(serviceCfg, artifactName)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureDeploymentArtifactType(artifact); err != nil {
-		return nil, err
-	}
-	imageRef, err := resolveDeploymentImageRef(artifact.Target)
-	if err != nil {
+	if err := artifact.Type.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -431,30 +422,6 @@ func resolveArtifactByName(serviceCfg *config.ServiceConfig, artifactName string
 
 	return artifact, nil
 }
-
-func ensureDeploymentArtifactType(artifact *config.ServiceArtifact) error {
-	if artifact == nil {
-		return fmt.Errorf("service artifact 为空")
-	}
-	if artifact.Type != config.ServiceArtifactTypeDeployment {
-		return fmt.Errorf("不支持的产物类型 %s", artifact.Type)
-	}
-
-	return nil
-}
-
-func resolveDeploymentImageRef(artifactTarget string) (string, error) {
-	imageRef, err := ResolveImageRefFromTarget(artifactTarget)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(imageRef) == "" {
-		return "", fmt.Errorf("deployment workload image 为空")
-	}
-
-	return imageRef, nil
-}
-
 func toDeploymentPorts(ports []*config.ServiceArtifactPort) []*DeploymentPort {
 	mapped := make([]*DeploymentPort, 0, len(ports))
 	for _, p := range ports {
@@ -500,23 +467,4 @@ func sanitizeNamePart(part string) string {
 	part = nonDNSLabel.ReplaceAllString(part, "-")
 	part = strings.Trim(part, "-")
 	return part
-}
-
-// ResolveImageRefFromTarget 从 artifact target 推导镜像引用。
-func ResolveImageRefFromTarget(artifactTarget string) (string, error) {
-	target := strings.TrimSpace(artifactTarget)
-	if !labelTargetPattern.MatchString(target) {
-		return "", fmt.Errorf("非法 target: %s", artifactTarget)
-	}
-
-	idx := strings.LastIndex(target, ":")
-	if idx < 0 || idx+1 >= len(target) {
-		return "", fmt.Errorf("target %s 缺少 :name", target)
-	}
-	labelName := target[idx+1:]
-	if strings.TrimSpace(labelName) == "" {
-		return "", fmt.Errorf("target %s 缺少 name", target)
-	}
-
-	return fmt.Sprintf("%s:%s", labelName, defaultImageTag), nil
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"dominion/tools/deploy/pkg/config"
+	"dominion/tools/deploy/pkg/imagepush"
 	"dominion/tools/deploy/pkg/k8s"
 	"dominion/tools/deploy/pkg/workspace"
 
@@ -72,6 +73,36 @@ type executor interface {
 	Delete(ctx context.Context, app, environment string) error
 }
 
+// imageResolver 定义 env 层镜像解析依赖，负责把部署引用转换为最终镜像引用。
+type imageResolver interface {
+	Resolve(ctx context.Context, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error)
+}
+
+// newImageResolver 返回默认镜像解析器，测试可覆盖该工厂注入桩实现。
+var newImageResolver = func() imageResolver {
+	return &defaultImageResolver{
+		newRunner: imagepush.NewRunner,
+	}
+}
+
+// defaultImageResolver 使用 imagepush.Runner 解析部署所需的镜像引用。
+type defaultImageResolver struct {
+	newRunner func() (imagepush.Runner, error)
+}
+
+func (r *defaultImageResolver) Resolve(ctx context.Context, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
+	if r == nil || r.newRunner == nil {
+		return nil, fmt.Errorf("image resolver runner factory is nil")
+	}
+
+	runner, err := r.newRunner()
+	if err != nil {
+		return nil, err
+	}
+
+	return resolveImages(ctx, imagepush.NewResolver(runner), deployConfig, serviceConfigs)
+}
+
 func lazyInit() error {
 	initOnce.Do(func() {
 		initErr = internalInit()
@@ -125,7 +156,17 @@ func (e *DeployEnv) Deploy(ctx context.Context, exec executor) error {
 		return fmt.Errorf("no cached deploy config, call Update first")
 	}
 
-	objects, err := e.BuildDeployObjects()
+	resolver := newImageResolver()
+	if resolver == nil {
+		return fmt.Errorf("image resolver is nil")
+	}
+
+	resolvedImages, err := resolver.Resolve(ctx, e.mainDeployConfig, e.serviceConfigs)
+	if err != nil {
+		return err
+	}
+
+	objects, err := e.BuildDeployObjects(resolvedImages)
 	if err != nil {
 		return err
 	}
@@ -305,8 +346,84 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 }
 
 // BuildDeployObjects 根据当前环境缓存配置构建部署对象。
-func (e *DeployEnv) BuildDeployObjects() (*k8s.DeployObjects, error) {
-	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name)
+func (e *DeployEnv) BuildDeployObjects(resolvedImages map[string]string) (*k8s.DeployObjects, error) {
+	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name, resolvedImages)
+}
+
+func resolveImages(ctx context.Context, resolver *imagepush.Resolver, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("imagepush resolver is nil")
+	}
+
+	artifactTargets, err := collectReferencedArtifactTargets(deployConfig, serviceConfigs)
+	if err != nil {
+		return nil, err
+	}
+	if len(artifactTargets) == 0 {
+		return nil, nil
+	}
+
+	resolvedImages := make(map[string]string)
+	for _, artifactTarget := range artifactTargets {
+		result, err := resolver.Resolve(ctx, artifactTarget)
+		if err != nil {
+			return nil, err
+		}
+
+		imageRef, err := result.ImageRef()
+		if err != nil {
+			return nil, err
+		}
+		resolvedImages[artifactTarget] = imageRef
+	}
+
+	return resolvedImages, nil
+}
+
+func collectReferencedArtifactTargets(deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) ([]string, error) {
+	if deployConfig == nil {
+		return nil, fmt.Errorf("deploy config is nil")
+	}
+
+	serviceConfigMap := make(map[string]*config.ServiceConfig)
+	for _, serviceConfig := range serviceConfigs {
+		if serviceConfig == nil {
+			return nil, fmt.Errorf("service config 为空")
+		}
+		if strings.TrimSpace(serviceConfig.URI) == "" {
+			return nil, fmt.Errorf("service config %s 的 URI 为空", serviceConfig.Name)
+		}
+		if _, exists := serviceConfigMap[serviceConfig.URI]; exists {
+			return nil, fmt.Errorf("service config URI 重复: %s", serviceConfig.URI)
+		}
+		serviceConfigMap[serviceConfig.URI] = serviceConfig
+	}
+
+	artifactTargetSet := make(map[string]struct{})
+	for _, deployService := range deployConfig.Services {
+		if deployService == nil {
+			return nil, fmt.Errorf("deploy service 为空")
+		}
+
+		serviceConfig, ok := serviceConfigMap[deployService.Artifact.Path]
+		if !ok {
+			return nil, fmt.Errorf("deploy service 引用的 path %s 未找到对应的 service config", deployService.Artifact.Path)
+		}
+
+		artifact, err := serviceConfig.GetArtifact(deployService.Artifact.Name)
+		if err != nil {
+			return nil, fmt.Errorf("service config %s 中未找到 artifact %s", serviceConfig.URI, deployService.Artifact.Name)
+		}
+
+		artifactTargetSet[artifact.Target] = struct{}{}
+	}
+
+	artifactTargets := make([]string, 0, len(artifactTargetSet))
+	for artifactTarget := range artifactTargetSet {
+		artifactTargets = append(artifactTargets, artifactTarget)
+	}
+	sort.Strings(artifactTargets)
+	return artifactTargets, nil
 }
 
 // func (e *DeployEnv) String() string {

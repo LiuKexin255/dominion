@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dominion/tools/deploy/pkg/config"
+	"dominion/tools/deploy/pkg/imagepush"
 	"dominion/tools/deploy/pkg/k8s"
 )
 
@@ -106,6 +107,40 @@ func (e *stubExecutor) Delete(ctx context.Context, app, environment string) erro
 		return nil
 	}
 	return e.deleteFunc(ctx, app, environment)
+}
+
+type stubImageResolver struct {
+	resolveFunc func(ctx context.Context, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error)
+}
+
+func (r *stubImageResolver) Resolve(ctx context.Context, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
+	if r == nil || r.resolveFunc == nil {
+		return nil, nil
+	}
+	return r.resolveFunc(ctx, deployConfig, serviceConfigs)
+}
+
+type stubImagePushRunner struct {
+	runFunc func(ctx context.Context, pushTarget string) (*imagepush.PushOutput, error)
+}
+
+func (r *stubImagePushRunner) Run(ctx context.Context, pushTarget string) (*imagepush.PushOutput, error) {
+	if r == nil || r.runFunc == nil {
+		return nil, nil
+	}
+	return r.runFunc(ctx, pushTarget)
+}
+
+func withImageResolver(t *testing.T, resolver imageResolver) {
+	t.Helper()
+
+	oldNewImageResolver := newImageResolver
+	newImageResolver = func() imageResolver {
+		return resolver
+	}
+	t.Cleanup(func() {
+		newImageResolver = oldNewImageResolver
+	})
 }
 
 func TestDeployContext_SaveLoad(t *testing.T) {
@@ -894,6 +929,16 @@ func TestDeployEnv_Deploy_RequiresExecutor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Get() failed: %v", err)
 			}
+			if tt.exec != nil {
+				withImageResolver(t, &stubImageResolver{
+					resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+						return map[string]string{
+							"//service:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+							"//gateway:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+						}, nil
+					},
+				})
+			}
 
 			if err := env.Update(&config.DeployConfig{
 				Template: "deploy",
@@ -1001,6 +1046,14 @@ func TestDeployEnv_Deploy_FailedRemainsPending(t *testing.T) {
 	if err := env.Update(deployConfig); err != nil {
 		t.Fatalf("Update() failed: %v", err)
 	}
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			return map[string]string{
+				"//service:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				"//gateway:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			}, nil
+		},
+	})
 
 	wantErr := errors.New("apply failed")
 	exec := &stubExecutor{applyFunc: func(context.Context, *k8s.DeployObjects) error { return wantErr }}
@@ -1023,6 +1076,242 @@ func TestDeployEnv_Deploy_FailedRemainsPending(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".env", "service", "env__empty.yaml")); err != nil {
 		t.Fatalf("service cache missing after failed Deploy(): %v", err)
+	}
+}
+
+func TestDeploy_DoesNotPushDuringUpdate(t *testing.T) {
+	newBazelWorkspace(t, ".env")
+	internalInit()
+
+	env, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	pushCalls := 0
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			pushCalls++
+			return map[string]string{}, nil
+		},
+	})
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{
+			{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+			{Artifact: config.DeployArtifact{Path: "//gateway/service.yaml", Name: "gateway"}},
+		},
+	}
+
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	if pushCalls != 0 {
+		t.Fatalf("Update() push calls = %d, want 0", pushCalls)
+	}
+}
+
+func TestDeploy_RunsPushBeforeApply(t *testing.T) {
+	newBazelWorkspace(t, ".env")
+	internalInit()
+
+	env, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{
+			{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+			{Artifact: config.DeployArtifact{Path: "//gateway/service.yaml", Name: "gateway"}},
+		},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	events := []string{}
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			events = append(events, "push")
+			return map[string]string{
+				"//service:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				"//gateway:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			}, nil
+		},
+	})
+
+	exec := &stubExecutor{
+		applyFunc: func(ctx context.Context, objects *k8s.DeployObjects) error {
+			events = append(events, "apply")
+			if len(objects.Deployments) != 2 {
+				t.Fatalf("Deploy() produced %d deployments, want 2", len(objects.Deployments))
+			}
+
+			gotImages := map[string]string{}
+			for _, deployment := range objects.Deployments {
+				gotImages[deployment.ServiceName] = deployment.Image
+			}
+			wantImages := map[string]string{
+				"service": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				"gateway": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+			}
+			if !reflect.DeepEqual(gotImages, wantImages) {
+				t.Fatalf("Apply() deployment images = %v, want %v", gotImages, wantImages)
+			}
+			return nil
+		},
+	}
+
+	if err := env.Deploy(context.Background(), exec); err != nil {
+		t.Fatalf("Deploy() failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(events, []string{"push", "apply"}) {
+		t.Fatalf("Deploy() events = %v, want [push apply]", events)
+	}
+}
+
+func TestDeploy_CachesByPushTarget(t *testing.T) {
+	newBazelWorkspace(t, "")
+	internalInit()
+
+	env := &DeployEnv{
+		Profile: Profile{Name: "dev", App: "shared-app"},
+		mainDeployConfig: &config.DeployConfig{
+			App:      "shared-app",
+			Template: "deploy",
+			Services: []*config.DeployService{
+				{Artifact: config.DeployArtifact{Path: "//svc/api.yaml", Name: "api"}},
+				{Artifact: config.DeployArtifact{Path: "//svc/worker.yaml", Name: "worker"}},
+			},
+		},
+		serviceConfigs: []*config.ServiceConfig{
+			{
+				URI:  "//svc/api.yaml",
+				Name: "api",
+				App:  "shared-app",
+				Desc: "api service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "api",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: "//shared:bundle_image",
+					Ports:  []*config.ServiceArtifactPort{{Name: "http", Port: 8080}},
+				}},
+			},
+			{
+				URI:  "//svc/worker.yaml",
+				Name: "worker",
+				App:  "shared-app",
+				Desc: "worker service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "worker",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: "//shared:bundle_image",
+					Ports:  []*config.ServiceArtifactPort{{Name: "http", Port: 9090}},
+				}},
+			},
+		},
+	}
+
+	runCalls := []string{}
+	withImageResolver(t, &defaultImageResolver{
+		newRunner: func() (imagepush.Runner, error) {
+			return &stubImagePushRunner{
+				runFunc: func(_ context.Context, pushTarget string) (*imagepush.PushOutput, error) {
+					runCalls = append(runCalls, pushTarget)
+					return &imagepush.PushOutput{
+						Repository: "registry.example.com/team/shared",
+						Digest:     "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+					}, nil
+				},
+			}, nil
+		},
+	})
+
+	exec := &stubExecutor{applyFunc: func(ctx context.Context, objects *k8s.DeployObjects) error {
+		gotImages := map[string]string{}
+		for _, deployment := range objects.Deployments {
+			gotImages[deployment.ServiceName] = deployment.Image
+		}
+		wantImages := map[string]string{
+			"api":    "registry.example.com/team/shared@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+			"worker": "registry.example.com/team/shared@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		}
+		if !reflect.DeepEqual(gotImages, wantImages) {
+			t.Fatalf("Apply() deployment images = %v, want %v", gotImages, wantImages)
+		}
+		return nil
+	}}
+
+	if err := env.Deploy(context.Background(), exec); err != nil {
+		t.Fatalf("Deploy() failed: %v", err)
+	}
+	if !reflect.DeepEqual(runCalls, []string{"//shared:bundle_image_push"}) {
+		t.Fatalf("push targets = %v, want [//shared:bundle_image_push]", runCalls)
+	}
+}
+
+func TestDeploy_StopsBeforeApplyOnPushFailure(t *testing.T) {
+	newBazelWorkspace(t, ".env")
+	internalInit()
+
+	env, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{
+			{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+			{Artifact: config.DeployArtifact{Path: "//gateway/service.yaml", Name: "gateway"}},
+		},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	pushErr := errors.New("push failed")
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			return nil, pushErr
+		},
+	})
+
+	applyCalled := false
+	exec := &stubExecutor{
+		applyFunc: func(context.Context, *k8s.DeployObjects) error {
+			applyCalled = true
+			return nil
+		},
+	}
+
+	if err := env.Deploy(context.Background(), exec); !errors.Is(err, pushErr) {
+		t.Fatalf("Deploy() err = %v, want %v", err, pushErr)
+	}
+	if applyCalled {
+		t.Fatal("Deploy() called Apply() after push failure")
+	}
+
+	cached, err := Get("empty", "env")
+	if err != nil {
+		t.Fatalf("Get() after Deploy() failed: %v", err)
+	}
+	if cached.RemoteStatus != RemoteStatusPending {
+		t.Fatalf("Deploy() remote_status = %q, want %q", cached.RemoteStatus, RemoteStatusPending)
 	}
 }
 
@@ -1350,6 +1639,15 @@ func TestDeployEnv_Update_PersistsPendingStatusWithoutRemoteApply(t *testing.T) 
 				t.Fatalf("Update() remote_status = %q, want %q", cached.RemoteStatus, RemoteStatusPending)
 			}
 
+			withImageResolver(t, &stubImageResolver{
+				resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+					return map[string]string{
+						"//service:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+						"//gateway:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+					}, nil
+				},
+			})
+
 			if err := env.Deploy(context.Background(), exec); err != nil {
 				t.Fatalf("Deploy() failed: %v", err)
 			}
@@ -1457,7 +1755,7 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 				Artifacts: []*config.ServiceArtifact{{
 					Name:   "service",
 					Type:   config.ServiceArtifactTypeDeployment,
-					Target: ":service_image",
+					Target: "//svc:service_image",
 					Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
 				}},
 			},
@@ -1469,14 +1767,17 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 				Artifacts: []*config.ServiceArtifact{{
 					Name:   "gateway",
 					Type:   config.ServiceArtifactTypeDeployment,
-					Target: ":gateway_image",
+					Target: "//svc:gateway_image",
 					Ports:  []*config.ServiceArtifactPort{{Name: "http", Port: 80}},
 				}},
 			},
 		},
 	}
 
-	objects, err := env.BuildDeployObjects()
+	objects, err := env.BuildDeployObjects(map[string]string{
+		"//svc:service_image": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"//svc:gateway_image": "registry.example.com/team/gateway@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	})
 	if err != nil {
 		t.Fatalf("BuildDeployObjects() failed: %v", err)
 	}
@@ -1487,5 +1788,17 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 
 	if objects.Deployments[0].EnvironmentName != "dev" || objects.Deployments[1].EnvironmentName != "dev" {
 		t.Fatal("environment name was not propagated into deployment workloads")
+	}
+
+	gotImages := map[string]string{}
+	for _, deployment := range objects.Deployments {
+		gotImages[deployment.ServiceName] = deployment.Image
+	}
+	wantImages := map[string]string{
+		"service": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"gateway": "registry.example.com/team/gateway@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	if !reflect.DeepEqual(gotImages, wantImages) {
+		t.Fatalf("BuildDeployObjects() deployment images = %v, want %v", gotImages, wantImages)
 	}
 }

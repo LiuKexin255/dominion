@@ -30,6 +30,16 @@ const (
 	ServiceArtifactTypeDeployment = "deployment"
 )
 
+// Validate 校验服务产物类型是否合法。
+func (t ServiceArtifactType) Validate() error {
+	switch t {
+	case ServiceArtifactTypeDeployment:
+		return nil
+	default:
+		return fmt.Errorf("不支持的产物类型 %s", t)
+	}
+}
+
 // DeployConfig 部署配置
 type DeployConfig struct {
 	Template string           `yaml:"template"`
@@ -154,6 +164,9 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 	}
 
 	for _, artifact := range c.Artifacts {
+		if err := artifact.Type.Validate(); err != nil {
+			return nil, err
+		}
 		normalized, err := normalizeArtifactTarget(artifact.Target, configURI)
 		if err != nil {
 			return nil, fmt.Errorf("标准化产物 target 失败: %w", err)

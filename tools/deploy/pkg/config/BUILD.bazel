@@ -19,5 +19,4 @@ go_test(
     args = ["-test.v"],
     data = glob(["testdata/**"]),
     embed = [":config"],
-    deps = ["//tools/deploy/pkg/workspace"],
 )

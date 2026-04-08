@@ -292,57 +292,6 @@ func Test_newObjectName(t *testing.T) {
 	}
 }
 
-func TestResolveImageRefFromTarget(t *testing.T) {
-	tests := []struct {
-		name           string
-		artifactTarget string
-		want           string
-		wantErr        bool
-	}{
-		{
-			name:           "label target",
-			artifactTarget: ":service_image",
-			want:           "service_image:dev",
-		},
-		{
-			name:           "package label target",
-			artifactTarget: " //foo/bar:gateway.image ",
-			want:           "gateway.image:dev",
-		},
-		{
-			name:    "empty target",
-			wantErr: true,
-		},
-		{
-			name:           "missing label in package target",
-			artifactTarget: "//foo/bar",
-			wantErr:        true,
-		},
-		{
-			name:           "invalid characters",
-			artifactTarget: ":bad name",
-			wantErr:        true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := ResolveImageRefFromTarget(tt.artifactTarget)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("ResolveImageRefFromTarget() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("ResolveImageRefFromTarget() succeeded unexpectedly")
-			}
-			if got != tt.want {
-				t.Errorf("ResolveImageRefFromTarget() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func Test_toDeploymentPorts(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -378,46 +327,6 @@ func Test_toDeploymentPorts(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("toDeploymentPorts() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func Test_ensureDeploymentArtifactType(t *testing.T) {
-	tests := []struct {
-		name     string
-		artifact *config.ServiceArtifact
-		wantErr  bool
-	}{
-		{
-			name: "deployment type",
-			artifact: &config.ServiceArtifact{
-				Type: config.ServiceArtifactTypeDeployment,
-			},
-		},
-		{
-			name:    "nil artifact",
-			wantErr: true,
-		},
-		{
-			name: "unsupported type",
-			artifact: &config.ServiceArtifact{
-				Type: "job",
-			},
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotErr := ensureDeploymentArtifactType(tt.artifact)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("ensureDeploymentArtifactType() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("ensureDeploymentArtifactType() succeeded unexpectedly")
 			}
 		})
 	}
@@ -491,6 +400,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 		serviceCfg   *config.ServiceConfig
 		envName      string
 		artifactName string
+		imageRef     string
 		want         *DeploymentWorkload
 		wantErr      bool
 	}{
@@ -512,12 +422,13 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			},
 			envName:      " dev ",
 			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			want: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				Desc:            "gateway service",
-				Image:           "gateway_image:dev",
+				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Replicas:        1,
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
@@ -526,6 +437,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			name:         "nil service config",
 			envName:      "dev",
 			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
 		},
 		{
@@ -538,6 +450,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			},
 			envName:      "dev",
 			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
 		},
 		{
@@ -554,10 +467,11 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			},
 			envName:      "dev",
 			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
 		},
 		{
-			name: "invalid artifact target",
+			name: "missing injected image",
 			serviceCfg: &config.ServiceConfig{
 				Name: "gateway",
 				App:  "grpc-hello-world",
@@ -565,11 +479,12 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				Artifacts: []*config.ServiceArtifact{{
 					Name:   "gateway",
 					Type:   config.ServiceArtifactTypeDeployment,
-					Target: "//foo/bar",
+					Target: "//foo:gateway_image",
 				}},
 			},
 			envName:      "dev",
 			artifactName: "gateway",
+			imageRef:     "",
 			wantErr:      true,
 		},
 		{
@@ -586,12 +501,13 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			},
 			envName:      "cccccccccccccccccccc",
 			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := NewDeploymentWorkload(tt.serviceCfg, tt.envName, tt.artifactName)
+			got, gotErr := NewDeploymentWorkload(tt.serviceCfg, tt.envName, tt.artifactName, tt.imageRef)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("NewDeploymentWorkload() failed: %v", gotErr)
@@ -798,7 +714,7 @@ func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				Desc:            "gateway service",
-				Image:           "gateway_image:dev",
+				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			want: &ServiceWorkload{
@@ -820,7 +736,7 @@ func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				Desc:            "gateway service",
-				Image:           "gateway_image:dev",
+				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports:           []*DeploymentPort{nil},
 			},
 			wantErr: true,
