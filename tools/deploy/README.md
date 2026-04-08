@@ -34,10 +34,10 @@ deploy use {env-name} [--app={app-name}]
 2. 部署/更新服务
 
 ```bash 
-deploy deploy [--kubeconfig={path}] {path-of-deploy.yaml}
+deploy apply [--kubeconfig={path}] {path-of-deploy.yaml}
 ```
 
-- `deploy` 需要先有当前激活环境，必须先执行 `use`，否则命令会失败。
+- `apply` 需要先有当前激活环境，必须先执行 `use`，否则命令会失败。
 - `--kubeconfig` 可选；不传时按 client-go 默认规则加载（例如 `KUBECONFIG` 或 `~/.kube/config`）。
 
 3. 删除环境
@@ -64,7 +64,7 @@ deploy cur
 
 - `--app` 可省略；省略时默认使用当前激活环境相同的 `app` 名称。
 
-7. `deploy` 文件路径规则
+7. `deploy.yaml` 文件路径规则
 
 - 以 `//` 开头：按项目 Bazel 工作区根目录（包含 WORKSPACE.bazel 或 MODULE.bazel 的目录）解析。
 - 不以 `/` 开头的相对路径：按当前 shell 工作目录解析。
@@ -75,8 +75,8 @@ deploy cur
 示例：
 
 ```bash
-deploy deploy //experimental/grpc_hello_world/deploy.yaml
-deploy deploy experimental/grpc_hello_world/deploy.yaml
+deploy apply //experimental/grpc_hello_world/deploy.yaml
+deploy apply experimental/grpc_hello_world/deploy.yaml
 ```
 
 ### 本地缓存
@@ -102,12 +102,12 @@ deploy deploy experimental/grpc_hello_world/deploy.yaml
 
 ```bash
 deploy use --app=grpc-hello-world grpc-dev
-deploy deploy experimental/grpc_hello_world/deploy.yaml
+deploy apply experimental/grpc_hello_world/deploy.yaml
 deploy cur
 deploy del --app=grpc-hello-world grpc-dev
 ```
 
 - `use` 仅切换/创建本地激活环境；如果集群不可达，它仍可正常执行。
-- `deploy` 需要访问 Kubernetes；如果集群或 `kubectl` 配置不可用，会直接报出清晰的连接/权限错误并退出。
+- `apply` 需要访问 Kubernetes；如果集群或 `kubectl` 配置不可用，会直接报出清晰的连接/权限错误并退出。
 - `cur` 只查看当前激活环境，不依赖集群。
 - `del` 在可达集群上清理环境；如果集群不可达，会同样失败并给出明确错误。

@@ -9,14 +9,17 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+// Executor 在 Kubernetes 中执行部署对象的应用与删除。
 type Executor struct {
 	client *RuntimeClient
 }
 
+// NewExecutor 创建一个 Executor。
 func NewExecutor(client *RuntimeClient) *Executor {
 	return &Executor{client: client}
 }
 
+// Apply 将部署对象应用到集群。
 func (e *Executor) Apply(ctx context.Context, objects *DeployObjects) error {
 	if e == nil || e.client == nil {
 		return fmt.Errorf("runtime client 为空")
@@ -44,6 +47,7 @@ func (e *Executor) Apply(ctx context.Context, objects *DeployObjects) error {
 	return nil
 }
 
+// Delete 删除指定 app 和 environment 下的资源。
 func (e *Executor) Delete(ctx context.Context, app, environment string) error {
 	if e == nil || e.client == nil {
 		return fmt.Errorf("runtime client 为空")
@@ -51,8 +55,8 @@ func (e *Executor) Delete(ctx context.Context, app, environment string) error {
 
 	namespace := e.client.K8sConfig.Namespace
 	matchLabels := buildLabels(
-		withApp(app),
-		withEnvironment(environment),
+		withDominionApp(app),
+		withDominionEnvironment(environment),
 		withManagedBy(e.client.K8sConfig.ManagedBy),
 	)
 
@@ -219,7 +223,6 @@ func (e *Executor) applyDeployment(ctx context.Context, workload *DeploymentWork
 	if _, err := e.client.TypedClient.AppsV1().Deployments(desired.Namespace).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("failed to update %s %s/%s: %w", resourceKindDeployment, desired.Namespace, desired.Name, err)
 	}
-
 	return nil
 }
 
@@ -248,7 +251,6 @@ func (e *Executor) applyService(ctx context.Context, workload *ServiceWorkload) 
 	if _, err := e.client.TypedClient.CoreV1().Services(desired.Namespace).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("failed to update %s %s/%s: %w", resourceKindService, desired.Namespace, desired.Name, err)
 	}
-
 	return nil
 }
 
@@ -277,6 +279,5 @@ func (e *Executor) applyHTTPRoute(ctx context.Context, workload *HTTPRouteWorklo
 	if _, err := e.client.DynamicClient.Resource(httpRouteGVR()).Namespace(desired.GetNamespace()).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("failed to update %s %s/%s: %w", resourceKindHTTPRoute, desired.GetNamespace(), desired.GetName(), err)
 	}
-
 	return nil
 }

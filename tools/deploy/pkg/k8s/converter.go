@@ -14,8 +14,8 @@ type DeployObjects struct {
 	HTTPRoutes  []*HTTPRouteWorkload
 }
 
-// NewDeployObjects 根据部署配置和服务配置构建 Kubernetes 部署对象。
-func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig, envName string, resolvedImages map[string]string) (*DeployObjects, error) {
+// NewDeployObjects 根据部署配置、环境归属 app 和服务配置构建 Kubernetes 部署对象。
+func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig, envName string, dominionApp string, resolvedImages map[string]string) (*DeployObjects, error) {
 	k8sConfig := LoadK8sConfig()
 
 	// 构建 URI -> ServiceConfig 的 map
@@ -56,6 +56,7 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 		deployment, err := NewDeploymentWorkload(
 			serviceConfig,
 			envName,
+			dominionApp,
 			deployService.Artifact.Name,
 			imageRef,
 		)

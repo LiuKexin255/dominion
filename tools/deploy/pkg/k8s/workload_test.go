@@ -237,6 +237,7 @@ func Test_newObjectName(t *testing.T) {
 		name            string
 		kind            WorkloadKind
 		app             string
+		dominionApp     string
 		serviceName     string
 		environmentName string
 		want            string
@@ -245,46 +246,51 @@ func Test_newObjectName(t *testing.T) {
 			name:            "normal",
 			kind:            WorkloadKindDeployment,
 			app:             "grpc-hello-world",
+			dominionApp:     "grpc-hello-world",
 			serviceName:     "gateway",
 			environmentName: "dev",
-			want:            "deploy-grpc-hello-world-gateway-dev",
+			want:            "deploy-dev-gateway-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
 		},
 		{
 			name:            "normalize and sanitize",
 			kind:            WorkloadKindService,
 			app:             " GRPC_HELLO.WORLD ",
+			dominionApp:     "grpc-hello-world",
 			serviceName:     "gateway@v1",
 			environmentName: " Dev ",
-			want:            "svc-grpc-hello-world-gateway-v1-dev",
+			want:            "svc-dev-gateway-v1-" + shortNameHash(" GRPC_HELLO.WORLD ", "grpc-hello-world"),
 		},
 		{
 			name:            "only kind when all parts empty",
 			kind:            WorkloadKindHTTPRoute,
 			app:             "",
+			dominionApp:     "",
 			serviceName:     "",
 			environmentName: "",
-			want:            "route",
+			want:            "route-" + shortNameHash("", ""),
 		},
 		{
 			name:            "fallback to unknown kind",
 			kind:            "",
 			app:             "app",
+			dominionApp:     "app",
 			serviceName:     "svc",
 			environmentName: "dev",
-			want:            "unknown-app-svc-dev",
+			want:            "unknown-dev-svc-" + shortNameHash("app", "app"),
 		},
 		{
 			name:            "skip empty normalized part",
 			kind:            WorkloadKindDeployment,
 			app:             "---",
+			dominionApp:     "grpc-hello-world",
 			serviceName:     "svc",
 			environmentName: "dev",
-			want:            "deploy-svc-dev",
+			want:            "deploy-dev-svc-" + shortNameHash("---", "grpc-hello-world"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := newObjectName(tt.kind, tt.app, tt.serviceName, tt.environmentName)
+			got := newObjectName(tt.kind, tt.app, tt.dominionApp, tt.serviceName, tt.environmentName)
 			if got != tt.want {
 				t.Errorf("newObjectName() = %v, want %v", got, tt.want)
 			}
@@ -399,6 +405,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 		name         string
 		serviceCfg   *config.ServiceConfig
 		envName      string
+		dominionApp  string
 		artifactName string
 		imageRef     string
 		want         *DeploymentWorkload
@@ -421,12 +428,14 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				}},
 			},
 			envName:      " dev ",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			want: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Replicas:        1,
@@ -436,6 +445,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 		{
 			name:         "nil service config",
 			envName:      "dev",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
@@ -449,6 +459,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				Artifacts: []*config.ServiceArtifact{},
 			},
 			envName:      "dev",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
@@ -466,6 +477,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				}},
 			},
 			envName:      "dev",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
@@ -483,6 +495,7 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				}},
 			},
 			envName:      "dev",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "",
 			wantErr:      true,
@@ -500,14 +513,24 @@ func TestNewDeploymentWorkload(t *testing.T) {
 				}},
 			},
 			envName:      "cccccccccccccccccccc",
+			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			wantErr:      true,
+			want: &DeploymentWorkload{
+				ServiceName:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				EnvironmentName: "cccccccccccccccccccc",
+				App:             "bbbbbbbbbbbbbbbbbbbb",
+				DominionApp:     "grpc-hello-world",
+				Desc:            "gateway service",
+				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				Replicas:        1,
+			},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := NewDeploymentWorkload(tt.serviceCfg, tt.envName, tt.artifactName, tt.imageRef)
+			got, gotErr := NewDeploymentWorkload(tt.serviceCfg, tt.envName, tt.dominionApp, tt.artifactName, tt.imageRef)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("NewDeploymentWorkload() failed: %v", gotErr)
@@ -608,6 +631,7 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -627,9 +651,10 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:      "gateway",
 				EnvironmentName:  "dev",
 				App:              "grpc-hello-world",
+				DominionApp:      "grpc-hello-world",
 				Hostnames:        []string{"hello.example.com"},
 				Matches:          []*HTTPRoutePathMatch{{Type: config.HTTPPathMatchTypePrefix, Value: "/v1", BackendName: "http", BackendPort: 80}},
-				BackendService:   "svc-grpc-hello-world-gateway-dev",
+				BackendService:   newTestServiceWorkload().ResourceName(),
 				GatewayName:      "gw",
 				GatewayNamespace: "infra",
 			},
@@ -640,6 +665,7 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -657,6 +683,7 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -674,6 +701,7 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{HTTP: config.DeployHTTP{Matches: nil}},
@@ -713,6 +741,7 @@ func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
@@ -721,6 +750,7 @@ func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
@@ -735,6 +765,7 @@ func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
+				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				Ports:           []*DeploymentPort{nil},

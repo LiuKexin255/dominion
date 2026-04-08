@@ -1,6 +1,8 @@
 package k8s
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -17,10 +19,12 @@ var (
 type WorkloadKind string
 
 const (
+	// WorkloadEmpty 类型为空
+	WorkloadEmpty = ""
 	// WorkloadUnknown 表示未知类型前缀。
 	WorkloadUnknown WorkloadKind = "unknown"
 	// WorkloadKindDeployment 表示 Deployment 类型前缀。
-	WorkloadKindDeployment WorkloadKind = "deploy"
+	WorkloadKindDeployment WorkloadKind = "dp"
 	// WorkloadKindService 表示 Service 类型前缀。
 	WorkloadKindService WorkloadKind = "svc"
 	// WorkloadKindHTTPRoute 表示 HTTPRoute 类型前缀。
@@ -40,6 +44,7 @@ type DeploymentWorkload struct {
 	ServiceName     string
 	EnvironmentName string
 	App             string
+	DominionApp     string
 	Desc            string
 	Image           string
 	Replicas        int32
@@ -53,7 +58,7 @@ func (w *DeploymentWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newWorkloadName(w.App, w.ServiceName, w.EnvironmentName)
+	return newWorkloadName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
 }
 
 // Validate 校验 deployment workload 字段是否合法。
@@ -108,6 +113,7 @@ func (w *DeploymentWorkload) NewServiceWorkload() (*ServiceWorkload, error) {
 		ServiceName:     w.ServiceName,
 		EnvironmentName: w.EnvironmentName,
 		App:             w.App,
+		DominionApp:     w.DominionApp,
 		Desc:            w.Desc,
 		Ports:           w.Ports,
 	}
@@ -119,8 +125,8 @@ func (w *DeploymentWorkload) NewServiceWorkload() (*ServiceWorkload, error) {
 	return svc, nil
 }
 
-func newWorkloadName(app string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindDeployment, app, serviceName, environmentName)
+func newWorkloadName(app string, dominionApp string, serviceName string, environmentName string) string {
+	return newObjectName(WorkloadKindDeployment, app, dominionApp, serviceName, environmentName)
 }
 
 // ServiceWorkload 描述 service 生成所需字段。
@@ -128,6 +134,7 @@ type ServiceWorkload struct {
 	ServiceName     string
 	EnvironmentName string
 	App             string
+	DominionApp     string
 	Desc            string
 	Ports           []*DeploymentPort
 }
@@ -139,11 +146,11 @@ func (w *ServiceWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newServiceName(w.App, w.ServiceName, w.EnvironmentName)
+	return newServiceName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
 }
 
-func newServiceName(app string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindService, app, serviceName, environmentName)
+func newServiceName(app string, dominionApp string, serviceName string, environmentName string) string {
+	return newObjectName(WorkloadKindService, app, dominionApp, serviceName, environmentName)
 }
 
 // Validate 校验 service workload 字段是否合法。
@@ -191,6 +198,7 @@ func (w *ServiceWorkload) NewHTTPRouteWorkload(deployService *config.DeployServi
 		ServiceName:      w.ServiceName,
 		EnvironmentName:  w.EnvironmentName,
 		App:              w.App,
+		DominionApp:      w.DominionApp,
 		Hostnames:        deployService.HTTP.Hostnames,
 		Matches:          matches,
 		BackendService:   w.ResourceName(),
@@ -258,6 +266,7 @@ type HTTPRouteWorkload struct {
 	ServiceName      string
 	EnvironmentName  string
 	App              string
+	DominionApp      string
 	Hostnames        []string
 	Matches          []*HTTPRoutePathMatch
 	BackendService   string
@@ -272,11 +281,11 @@ func (w *HTTPRouteWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newHTTPRouteName(w.App, w.ServiceName, w.EnvironmentName)
+	return newHTTPRouteName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
 }
 
-func newHTTPRouteName(app string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindHTTPRoute, app, serviceName, environmentName)
+func newHTTPRouteName(app string, dominionApp string, serviceName string, environmentName string) string {
+	return newObjectName(WorkloadKindHTTPRoute, app, dominionApp, serviceName, environmentName)
 }
 
 // Validate 校验 HTTPRoute workload 字段是否合法。
@@ -327,77 +336,41 @@ func (w *HTTPRouteWorkload) Validate() error {
 	return nil
 }
 
-// NewDeploymentWorkload 根据服务配置、环境名、产物名和注入的镜像引用构建 deployment workload。
+// NewDeploymentWorkload 根据服务配置、环境名、Dominion app、产物名和注入的镜像引用构建 deployment workload。
 // serviceCfg 提供服务元数据与产物列表，artifactName 指定要使用的产物。
 // 若产物不存在、类型非法或镜像为空，则返回错误。
-func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, artifactName string, imageRef string) (*DeploymentWorkload, error) {
+func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, dominionApp string, artifactName string, imageRef string) (*DeploymentWorkload, error) {
 	artifact, err := resolveArtifactByName(serviceCfg, artifactName)
 	if err != nil {
 		return nil, err
 	}
-	if err := artifact.Type.Validate(); err != nil {
-		return nil, err
+	if strings.TrimSpace(string(artifact.Type)) == "" {
+		return nil, fmt.Errorf("artifact type 为空")
+	}
+	if artifact.Type != config.ServiceArtifactTypeDeployment {
+		return nil, fmt.Errorf("不支持的 artifact type %s", artifact.Type)
 	}
 
-	return newDeploymentWorkloadWithImage(
-		serviceCfg,
-		withDeploymentWorkloadEnvName(envName),
-		withDeploymentWorkloadArtifact(artifact),
-		withDeploymentWorkloadImageRef(imageRef),
-	)
+	return newDeploymentWorkloadWithImage(serviceCfg, envName, dominionApp, artifact, imageRef)
 }
 
-// deploymentWorkloadBuildOption 定义 deployment 构建选项。
-type deploymentWorkloadBuildOption func(*deploymentWorkloadBuildArgs)
-
-// deploymentWorkloadBuildArgs 聚合 deployment 构建参数。
-type deploymentWorkloadBuildArgs struct {
-	envName  string
-	artifact *config.ServiceArtifact
-	imageRef string
-}
-
-func withDeploymentWorkloadEnvName(envName string) deploymentWorkloadBuildOption {
-	return func(args *deploymentWorkloadBuildArgs) {
-		args.envName = strings.TrimSpace(envName)
-	}
-}
-
-func withDeploymentWorkloadArtifact(artifact *config.ServiceArtifact) deploymentWorkloadBuildOption {
-	return func(args *deploymentWorkloadBuildArgs) {
-		args.artifact = artifact
-	}
-}
-
-func withDeploymentWorkloadImageRef(imageRef string) deploymentWorkloadBuildOption {
-	return func(args *deploymentWorkloadBuildArgs) {
-		args.imageRef = strings.TrimSpace(imageRef)
-	}
-}
-
-func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, options ...deploymentWorkloadBuildOption) (*DeploymentWorkload, error) {
-	args := deploymentWorkloadBuildArgs{}
-	for _, option := range options {
-		if option != nil {
-			option(&args)
-		}
-	}
-
-	if strings.TrimSpace(args.imageRef) == "" {
+func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, envName string, dominionApp string, artifact *config.ServiceArtifact, imageRef string) (*DeploymentWorkload, error) {
+	if strings.TrimSpace(imageRef) == "" {
 		return nil, fmt.Errorf("deployment workload image 为空")
 	}
-	if args.artifact == nil {
+	if artifact == nil {
 		return nil, fmt.Errorf("service artifact 为空")
 	}
 
 	w := &DeploymentWorkload{
 		ServiceName:     serviceCfg.Name,
-		EnvironmentName: args.envName,
+		EnvironmentName: strings.TrimSpace(envName),
 		App:             serviceCfg.App,
+		DominionApp:     strings.TrimSpace(dominionApp),
 		Desc:            serviceCfg.Desc,
-		Image:           args.imageRef,
+		Image:           strings.TrimSpace(imageRef),
 		Replicas:        1,
-		Ports:           toDeploymentPorts(args.artifact.Ports),
+		Ports:           toDeploymentPorts(artifact.Ports),
 	}
 
 	if err := w.Validate(); err != nil {
@@ -440,8 +413,11 @@ func toDeploymentPorts(ports []*config.ServiceArtifactPort) []*DeploymentPort {
 	return mapped
 }
 
-func newObjectName(kind WorkloadKind, app string, serviceName string, environmentName string) string {
-	parts := []string{app, serviceName, environmentName}
+func newObjectName(kind WorkloadKind, app string, dominionApp string, serviceName string, environmentName string) string {
+	if kind == WorkloadEmpty {
+		kind = WorkloadUnknown
+	}
+	parts := []string{string(kind), environmentName, serviceName, shortNameHash(app, dominionApp)}
 	normalized := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = sanitizeNamePart(part)
@@ -450,16 +426,7 @@ func newObjectName(kind WorkloadKind, app string, serviceName string, environmen
 		}
 	}
 
-	base := strings.Join(normalized, "-")
-	kindName := sanitizeNamePart(string(kind))
-	if kindName == "" {
-		kindName = string(WorkloadUnknown)
-	}
-	if base == "" {
-		return kindName
-	}
-
-	return kindName + "-" + base
+	return strings.Join(normalized, "-")
 }
 
 func sanitizeNamePart(part string) string {
@@ -467,4 +434,9 @@ func sanitizeNamePart(part string) string {
 	part = nonDNSLabel.ReplaceAllString(part, "-")
 	part = strings.Trim(part, "-")
 	return part
+}
+
+func shortNameHash(app string, dominionApp string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(app) + "\x00" + strings.TrimSpace(dominionApp)))
+	return hex.EncodeToString(sum[:4])
 }

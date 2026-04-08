@@ -338,6 +338,7 @@ func (e *DeployEnv) deleteServiceConfigs() error {
 	return os.RemoveAll(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
 }
 
+// Equal 判断两个 DeployEnv 是否指向同一个环境。
 func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	if other == nil {
 		return false
@@ -347,7 +348,7 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 
 // BuildDeployObjects 根据当前环境缓存配置构建部署对象。
 func (e *DeployEnv) BuildDeployObjects(resolvedImages map[string]string) (*k8s.DeployObjects, error) {
-	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name, resolvedImages)
+	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name, e.App, resolvedImages)
 }
 
 func resolveImages(ctx context.Context, resolver *imagepush.Resolver, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
@@ -425,10 +426,6 @@ func collectReferencedArtifactTargets(deployConfig *config.DeployConfig, service
 	sort.Strings(artifactTargets)
 	return artifactTargets, nil
 }
-
-// func (e *DeployEnv) String() string {
-// 	return fmt.Sprintf("env: %s, app: %s", e.Name, e.App)
-// }
 
 func readServiceConfigs(deployConfig *config.DeployConfig) ([]*config.ServiceConfig, error) {
 	serviceConfigs := make([]*config.ServiceConfig, 0, len(deployConfig.Services))
@@ -527,6 +524,7 @@ func Current() (*DeployEnv, error) {
 	return Get(ctx.ActiveEnv.Name, ctx.ActiveEnv.App)
 }
 
+// DefaultApp 返回当前上下文下的默认 app。
 func DefaultApp() (string, error) {
 	ctx, err := loadDeployContext()
 	if err != nil {

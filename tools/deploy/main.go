@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	commandUse    = "use"
-	commandDeploy = "deploy"
-	commandDel    = "del"
-	commandList   = "list"
-	commandCur    = "cur"
+	commandUse   = "use"
+	commandApply = "apply"
+	commandDel   = "del"
+	commandList  = "list"
+	commandCur   = "cur"
 
 	flagApp        = "app"
 	flagKubeconfig = "kubeconfig"
@@ -85,11 +85,11 @@ var flagSpecs = map[string]flagSpec{
 }
 
 var commandFlagTable = map[string][]string{
-	commandUse:    {flagApp},
-	commandDeploy: {flagKubeconfig},
-	commandDel:    {flagApp, flagKubeconfig},
-	commandList:   {},
-	commandCur:    {},
+	commandUse:   {flagApp},
+	commandApply: {flagKubeconfig},
+	commandDel:   {flagApp, flagKubeconfig},
+	commandList:  {},
+	commandCur:   {},
 }
 
 var runtimeClientFactory = k8s.NewRuntimeClient
@@ -101,19 +101,19 @@ type commandExecFunc = func(opts *options) error
 type commandValidatorFunc = func(opts *options) error
 
 var commandExecTable = map[string]commandExecFunc{
-	commandUse:    switchEnvironment,
-	commandDeploy: deployAndActivate,
-	commandDel:    deleteEnvironment,
-	commandList:   listEnvironments,
-	commandCur:    showCurrentEnvironment,
+	commandUse:   switchEnvironment,
+	commandApply: deployAndActivate,
+	commandDel:   deleteEnvironment,
+	commandList:  listEnvironments,
+	commandCur:   showCurrentEnvironment,
 }
 
 var commandValidatorTable = map[string]commandValidatorFunc{
-	commandUse:    validateUseOptions,
-	commandDeploy: validateDeployOptions,
-	commandDel:    validateDelOptions,
-	commandList:   validateListOptions,
-	commandCur:    validateCurOptions,
+	commandUse:   validateUseOptions,
+	commandApply: validateDeployOptions,
+	commandDel:   validateDelOptions,
+	commandList:  validateListOptions,
+	commandCur:   validateCurOptions,
 }
 
 func main() {
@@ -152,7 +152,7 @@ func run(args []string) error {
 
 func parseOptions(args []string) (*options, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("必须提供命令：%s、%s、%s、%s 或 %s", commandUse, commandDeploy, commandDel, commandList, commandCur)
+		return nil, fmt.Errorf("必须提供命令：%s、%s、%s、%s 或 %s", commandUse, commandApply, commandDel, commandList, commandCur)
 	}
 
 	fs, opts, err := newCommandFlagSet(args[0])
@@ -214,10 +214,10 @@ func validateUseOptions(opts *options) error {
 
 func validateDeployOptions(opts *options) error {
 	if opts.target == "" {
-		return fmt.Errorf("%s requires deploy.yaml path", commandDeploy)
+		return fmt.Errorf("%s requires deploy.yaml path", commandApply)
 	}
 	if opts.app != "" {
-		return fmt.Errorf("%s does not support --%s", commandDeploy, flagApp)
+		return fmt.Errorf("%s does not support --%s", commandApply, flagApp)
 	}
 	return nil
 }
@@ -263,7 +263,7 @@ func newExecutor(opts *options) (executor, error) {
 func deployAndActivate(opts *options) error {
 	active, err := env.Current()
 	if err != nil {
-		return fmt.Errorf("%s 需要当前已激活环境，请先执行 `%s <env>`", commandDeploy, commandUse)
+		return fmt.Errorf("%s 需要当前已激活环境，请先执行 `%s <env>`", commandApply, commandUse)
 	}
 
 	deployConfig, err := parseDeployConfig(opts.target)
@@ -379,7 +379,7 @@ func usageText() string {
 		"",
 		"Commands:",
 		"  use <env> [--app=app]   创建或切换环境",
-		"  deploy [--kubeconfig=path] <deploy.yaml>  读取部署配置并执行部署",
+		"  apply [--kubeconfig=path] <deploy.yaml>   读取部署配置并执行部署",
 		"  del [--app=app] [--kubeconfig=path] <env> 删除环境",
 		"  list                    列出环境",
 		"  cur                     查看当前激活环境",

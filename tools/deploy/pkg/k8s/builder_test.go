@@ -18,6 +18,7 @@ type deploymentExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
+	dominionApp string
 	serviceName string
 	environment string
 	replicas    int32
@@ -30,6 +31,7 @@ type serviceExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
+	dominionApp string
 	serviceName string
 	environment string
 	ports       []corev1.ServicePort
@@ -42,6 +44,7 @@ type httpRouteExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
+	dominionApp string
 	serviceName string
 	environment string
 	hostnames   []string
@@ -65,10 +68,11 @@ func TestBuildDeployment(t *testing.T) {
 			workload:  newTestDeploymentWorkload(),
 			k8sConfig: newTestK8sConfig(),
 			want: &deploymentExpectation{
-				name:        "deploy-grpc-hello-world-gateway-dev",
+				name:        newTestDeploymentWorkload().WorkloadName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
+				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				replicas:    3,
@@ -128,10 +132,11 @@ func TestBuildService(t *testing.T) {
 			workload:  newTestServiceWorkload(),
 			k8sConfig: newTestK8sConfig(),
 			want: &serviceExpectation{
-				name:        "svc-grpc-hello-world-gateway-dev",
+				name:        newTestServiceWorkload().ResourceName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
+				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				ports: []corev1.ServicePort{
@@ -189,10 +194,11 @@ func TestBuildHTTPRoute(t *testing.T) {
 			want: &httpRouteExpectation{
 				apiVersion:  gatewayv1.GroupVersion.String(),
 				kind:        httpRouteKind,
-				name:        "route-grpc-hello-world-gateway-dev",
+				name:        newTestHTTPRouteWorkload().ResourceName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
+				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				hostnames:   []string{"gateway.example.com", "gateway.dev.example.com"},
@@ -216,7 +222,7 @@ func TestBuildHTTPRoute(t *testing.T) {
 	}
 }
 
-func TestBuildContainerPorts(t *testing.T) {
+func Test_buildContainerPorts(t *testing.T) {
 	tests := []struct {
 		name        string
 		ports       []*DeploymentPort
@@ -370,6 +376,7 @@ func newTestDeploymentWorkload() *DeploymentWorkload {
 		ServiceName:     "gateway",
 		EnvironmentName: "dev",
 		App:             "grpc-hello-world",
+		DominionApp:     "grpc-hello-world",
 		Desc:            "gateway service",
 		Image:           "registry.local/gateway:latest",
 		Replicas:        3,
@@ -392,6 +399,7 @@ func newTestServiceWorkload() *ServiceWorkload {
 		ServiceName:     "gateway",
 		EnvironmentName: "dev",
 		App:             "grpc-hello-world",
+		DominionApp:     "grpc-hello-world",
 		Desc:            "gateway service",
 		Ports: []*DeploymentPort{
 			{Name: "http", Port: 8080},
@@ -408,12 +416,15 @@ func newTestServiceWorkloadWithNilPort() *ServiceWorkload {
 }
 
 func newTestHTTPRouteWorkload() *HTTPRouteWorkload {
+	backendService := newTestServiceWorkload().ResourceName()
+
 	return &HTTPRouteWorkload{
 		ServiceName:      "gateway",
 		EnvironmentName:  "dev",
 		App:              "grpc-hello-world",
+		DominionApp:      "grpc-hello-world",
 		Hostnames:        []string{"gateway.example.com", "gateway.dev.example.com"},
-		BackendService:   "svc-grpc-hello-world-gateway-dev",
+		BackendService:   backendService,
 		GatewayName:      "shared-gateway",
 		GatewayNamespace: "infra-system",
 		Matches: []*HTTPRoutePathMatch{
@@ -432,9 +443,9 @@ func assertDeployment(t *testing.T, got *appsv1.Deployment, want *deploymentExpe
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.environment)
-	assertManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.environment, want.managedBy)
+	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.dominionApp, want.environment)
+	assertManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
 	if got.Spec.Replicas == nil || *got.Spec.Replicas != want.replicas {
 		t.Fatalf("replicas = %v, want %d", got.Spec.Replicas, want.replicas)
 	}
@@ -468,8 +479,8 @@ func assertService(t *testing.T, got *corev1.Service, want *serviceExpectation) 
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector, want.app, want.serviceName, want.environment)
+	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertSelectorLabels(t, got.Spec.Selector, want.app, want.serviceName, want.dominionApp, want.environment)
 	if len(got.Spec.Ports) != len(want.ports) {
 		t.Fatalf("ports len = %d, want %d", len(got.Spec.Ports), len(want.ports))
 	}
@@ -495,7 +506,7 @@ func assertHTTPRoute(t *testing.T, got *unstructured.Unstructured, want *httpRou
 	if got.GetNamespace() != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.GetNamespace(), want.namespace)
 	}
-	assertManagedLabels(t, got.GetLabels(), want.app, want.serviceName, want.environment, want.managedBy)
+	assertManagedLabels(t, got.GetLabels(), want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
 
 	hostnames, found, err := unstructured.NestedStringSlice(got.Object, "spec", "hostnames")
 	if err != nil || !found {
@@ -537,19 +548,7 @@ func assertHTTPRoute(t *testing.T, got *unstructured.Unstructured, want *httpRou
 	}
 }
 
-func assertManagedLabels(t *testing.T, got map[string]string, app string, serviceName string, environment string, managedBy string) {
-	t.Helper()
-
-	assertSelectorLabels(t, got, app, serviceName, environment)
-	if _, ok := got["managed-by"]; ok {
-		t.Fatalf("unexpected legacy managed-by label key present")
-	}
-	if got[managedByLabelKey] != managedBy {
-		t.Fatalf("managed-by label = %q, want %q", got[managedByLabelKey], managedBy)
-	}
-}
-
-func assertSelectorLabels(t *testing.T, got map[string]string, app string, serviceName string, environment string) {
+func assertManagedLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionApp string, dominionEnvironment string, managedBy string) {
 	t.Helper()
 
 	if _, ok := got["app"]; ok {
@@ -567,8 +566,49 @@ func assertSelectorLabels(t *testing.T, got map[string]string, app string, servi
 	if got[serviceLabelKey] != serviceName {
 		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
 	}
-	if got[environmentLabelKey] != environment {
-		t.Fatalf("environment label = %q, want %q", got[environmentLabelKey], environment)
+	if got[dominionAppLabelKey] != dominionApp {
+		t.Fatalf("dominion app label = %q, want %q", got[dominionAppLabelKey], dominionApp)
+	}
+	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
+		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
+	}
+	if _, ok := got["managed-by"]; ok {
+		t.Fatalf("unexpected legacy managed-by label key present")
+	}
+	if got[managedByLabelKey] != managedBy {
+		t.Fatalf("managed-by label = %q, want %q", got[managedByLabelKey], managedBy)
+	}
+	if len(got) != 5 {
+		t.Fatalf("managed labels len = %d, want 5", len(got))
+	}
+}
+
+func assertSelectorLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionApp string, dominionEnvironment string) {
+	t.Helper()
+
+	if _, ok := got["app"]; ok {
+		t.Fatalf("unexpected legacy app label key present")
+	}
+	if _, ok := got["service"]; ok {
+		t.Fatalf("unexpected legacy service label key present")
+	}
+	if _, ok := got["environment"]; ok {
+		t.Fatalf("unexpected legacy environment label key present")
+	}
+	if got[appLabelKey] != app {
+		t.Fatalf("app label = %q, want %q", got[appLabelKey], app)
+	}
+	if got[serviceLabelKey] != serviceName {
+		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
+	}
+	if got[dominionAppLabelKey] != dominionApp {
+		t.Fatalf("dominion app label = %q, want %q", got[dominionAppLabelKey], dominionApp)
+	}
+	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
+		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
+	}
+	if len(got) != 4 {
+		t.Fatalf("selector labels len = %d, want 4", len(got))
 	}
 }
 
@@ -604,8 +644,8 @@ func assertHTTPRouteRule(t *testing.T, rawRule any, pathValue string, backendPor
 	if !ok {
 		t.Fatalf("backendRef type = %T, want map[string]any", backendRefs[0])
 	}
-	if backendRef["name"] != "svc-grpc-hello-world-gateway-dev" {
-		t.Fatalf("backendRef.name = %#v, want %q", backendRef["name"], "svc-grpc-hello-world-gateway-dev")
+	if backendRef["name"] != newTestServiceWorkload().ResourceName() {
+		t.Fatalf("backendRef.name = %#v, want %q", backendRef["name"], newTestServiceWorkload().ResourceName())
 	}
 	if backendRef["port"] != float64(backendPort) {
 		t.Fatalf("backendRef = %#v, want service name with port %d", backendRef, backendPort)

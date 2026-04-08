@@ -22,10 +22,10 @@ func TestParseOptions(t *testing.T) {
 		{name: "use only", args: []string{"use", "dev"}},
 		{name: "use with app", args: []string{"use", "--app=test-app", "dev"}},
 		{name: "use with app postfix", args: []string{"use", "dev", "--app=test-app"}},
-		{name: "deploy only", args: []string{"deploy", "deploy.yaml"}},
-		{name: "deploy with kubeconfig", args: []string{"deploy", "--kubeconfig=/tmp/kubeconfig", "deploy.yaml"}},
-		{name: "deploy with app", args: []string{"deploy", "--app=test-app", "deploy.yaml"}, wantErr: true},
-		{name: "deploy with app postfix", args: []string{"deploy", "deploy.yaml", "--app=test-app"}, wantErr: true},
+		{name: "apply only", args: []string{"apply", "deploy.yaml"}},
+		{name: "apply with kubeconfig", args: []string{"apply", "--kubeconfig=/tmp/kubeconfig", "deploy.yaml"}},
+		{name: "apply with app", args: []string{"apply", "--app=test-app", "deploy.yaml"}, wantErr: true},
+		{name: "apply with app postfix", args: []string{"apply", "deploy.yaml", "--app=test-app"}, wantErr: true},
 		{name: "del only", args: []string{"del", "dev"}},
 		{name: "del with kubeconfig", args: []string{"del", "--kubeconfig=/tmp/kubeconfig", "dev"}},
 		{name: "del with app", args: []string{"del", "--app=test-app", "dev"}},
@@ -38,7 +38,7 @@ func TestParseOptions(t *testing.T) {
 		{name: "cur with app", args: []string{"cur", "--app=test-app"}, wantErr: true},
 		{name: "unknown command", args: []string{"switch", "dev"}, wantErr: true},
 		{name: "use missing env", args: []string{"use"}, wantErr: true},
-		{name: "deploy missing path", args: []string{"deploy"}, wantErr: true},
+		{name: "apply missing path", args: []string{"apply"}, wantErr: true},
 		{name: "unknown option", args: []string{"use", "--env=dev", "dev"}, wantErr: true},
 	}
 
@@ -257,7 +257,7 @@ func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
 		{
 			name:    "missing active env",
 			opts:    &options{target: "deploy.yaml"},
-			wantErr: "deploy 需要当前已激活环境，请先执行 `use <env>`",
+			wantErr: "apply 需要当前已激活环境，请先执行 `use <env>`",
 		},
 	}
 

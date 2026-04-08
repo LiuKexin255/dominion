@@ -22,8 +22,10 @@ const (
 	appLabelKey = "app.kubernetes.io/name"
 	// serviceLabelKey 标识服务名称标签键。
 	serviceLabelKey = "app.kubernetes.io/component"
-	// environmentLabelKey 标识环境名称标签键。
-	environmentLabelKey = "app.kubernetes.io/instance"
+	// dominionAppLabelKey 标识 Dominion 应用名称标签键。
+	dominionAppLabelKey = "dominion.io/app"
+	// dominionEnvironmentLabelKey 标识 Dominion 环境名称标签键。
+	dominionEnvironmentLabelKey = "dominion.io/environment"
 
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
@@ -34,13 +36,15 @@ func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withEnvironment(workload.EnvironmentName),
+		withDominionApp(workload.DominionApp),
+		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withEnvironment(workload.EnvironmentName),
+		withDominionApp(workload.DominionApp),
+		withDominionEnvironment(workload.EnvironmentName),
 	)
 	ports, err := buildContainerPorts(workload.Ports)
 	if err != nil {
@@ -81,13 +85,15 @@ func BuildService(workload *ServiceWorkload, k8sConfig *K8sConfig) (*corev1.Serv
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withEnvironment(workload.EnvironmentName),
+		withDominionApp(workload.DominionApp),
+		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withEnvironment(workload.EnvironmentName),
+		withDominionApp(workload.DominionApp),
+		withDominionEnvironment(workload.EnvironmentName),
 	)
 	ports, err := buildServicePorts(workload.Ports)
 	if err != nil {
@@ -112,7 +118,8 @@ func BuildHTTPRoute(workload *HTTPRouteWorkload, k8sConfig *K8sConfig) (*unstruc
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withEnvironment(workload.EnvironmentName),
+		withDominionApp(workload.DominionApp),
+		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	var hostnames []gatewayv1.Hostname
@@ -188,10 +195,11 @@ type labelOption func(*labelSet)
 
 // labelSet 聚合标签构建过程中的中间状态。
 type labelSet struct {
-	app         string
-	service     string
-	environment string
-	managedBy   string
+	app                 string
+	service             string
+	dominionApp         string
+	dominionEnvironment string
+	managedBy           string
 }
 
 func withApp(name string) labelOption {
@@ -206,9 +214,15 @@ func withService(name string) labelOption {
 	}
 }
 
-func withEnvironment(name string) labelOption {
+func withDominionApp(name string) labelOption {
 	return func(set *labelSet) {
-		set.environment = strings.TrimSpace(name)
+		set.dominionApp = strings.TrimSpace(name)
+	}
+}
+
+func withDominionEnvironment(name string) labelOption {
+	return func(set *labelSet) {
+		set.dominionEnvironment = strings.TrimSpace(name)
 	}
 }
 
@@ -233,8 +247,11 @@ func buildLabels(options ...labelOption) labels.Set {
 	if set.service != "" {
 		result[serviceLabelKey] = set.service
 	}
-	if set.environment != "" {
-		result[environmentLabelKey] = set.environment
+	if set.dominionApp != "" {
+		result[dominionAppLabelKey] = set.dominionApp
+	}
+	if set.dominionEnvironment != "" {
+		result[dominionEnvironmentLabelKey] = set.dominionEnvironment
 	}
 	if set.managedBy != "" {
 		result[managedByLabelKey] = set.managedBy
