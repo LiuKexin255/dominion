@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"errors"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"strings"
 	"testing"
@@ -37,6 +38,7 @@ func TestExecutor_Apply_CreatesResources(t *testing.T) {
 	h.AssertDeploymentCreated(dep.Namespace, dep.Name)
 	h.AssertServiceCreated(svc.Namespace, svc.Name)
 	h.AssertHTTPRouteCreated(route.GetNamespace(), route.GetName())
+	assertStoredDeploymentReservedEnv(t, h, dep.Namespace, dep.Name)
 
 	h.AssertDeploymentUpdated(dep.Namespace, dep.Name, dep)
 	h.AssertServiceUpdated(svc.Namespace, svc.Name, svc)
@@ -220,5 +222,35 @@ func newExecutorTestDeployObjects() *DeployObjects {
 		Deployments: []*DeploymentWorkload{newTestDeploymentWorkload()},
 		Services:    []*ServiceWorkload{newTestServiceWorkload()},
 		HTTPRoutes:  []*HTTPRouteWorkload{newTestHTTPRouteWorkload()},
+	}
+}
+
+func assertStoredDeploymentReservedEnv(t *testing.T, h *FakeHarness, namespace string, name string) {
+	t.Helper()
+
+	deployment, err := h.getDeployment(namespace, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("containers len = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
+	}
+	assertExecutorReservedEnv(t, deployment.Spec.Template.Spec.Containers[0].Env)
+}
+
+func assertExecutorReservedEnv(t *testing.T, env []corev1.EnvVar) {
+	t.Helper()
+
+	if len(env) != 3 {
+		t.Fatalf("env len = %d, want 3", len(env))
+	}
+	if env[0].Name != reservedEnvNameDominionApp || env[0].Value != "grpc-hello-world" {
+		t.Fatalf("env[0] = %#v, want DOMINION_APP literal", env[0])
+	}
+	if env[1].Name != reservedEnvNameDominionEnvironment || env[1].Value != "dev" {
+		t.Fatalf("env[1] = %#v, want DOMINION_ENVIRONMENT literal", env[1])
+	}
+	if env[2].Name != reservedEnvNamePodNamespace || env[2].Value != "default" {
+		t.Fatalf("env[2] = %#v, want POD_NAMESPACE literal", env[2])
 	}
 }

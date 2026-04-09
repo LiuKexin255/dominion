@@ -7,10 +7,11 @@ import (
 	"net/http"
 
 	"dominion/experimental/grpc_hello_world"
+	pgrpc "dominion/pkg/grpc"
+	"dominion/pkg/grpc/solver"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 var port = flag.String("port", "80", "Port to listen on")
@@ -18,10 +19,15 @@ var port = flag.String("port", "80", "Port to listen on")
 func main() {
 	flag.Parse()
 
-	mux := runtime.NewServeMux()
+	ctx := context.Background()
+	conn, err := grpc.NewClient(solver.URI("grpc-hello-world/service:50051"), pgrpc.ClientDefault()...)
+	if err != nil {
+		log.Fatalf("failed to dial backend: %v", err)
+	}
+	defer conn.Close()
 
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
-	err := grpc_hello_world.RegisterGreeterHandlerFromEndpoint(context.Background(), mux, "grpc-hello-world-service:50051", opts)
+	mux := runtime.NewServeMux()
+	err = grpc_hello_world.RegisterGreeterHandler(ctx, mux, conn)
 	if err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

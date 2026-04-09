@@ -336,7 +336,7 @@ func (w *HTTPRouteWorkload) Validate() error {
 	return nil
 }
 
-// NewDeploymentWorkload 根据服务配置、环境名、Dominion app、产物名和注入的镜像引用构建 deployment workload。
+// NewDeploymentWorkload 根据服务配置、环境名、归属 app、产物名和注入的镜像引用构建 deployment workload。
 // serviceCfg 提供服务元数据与产物列表，artifactName 指定要使用的产物。
 // 若产物不存在、类型非法或镜像为空，则返回错误。
 func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, dominionApp string, artifactName string, imageRef string) (*DeploymentWorkload, error) {
@@ -351,10 +351,10 @@ func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, dom
 		return nil, fmt.Errorf("不支持的 artifact type %s", artifact.Type)
 	}
 
-	return newDeploymentWorkloadWithImage(serviceCfg, envName, dominionApp, artifact, imageRef)
+	return newDeploymentWorkloadWithImage(serviceCfg, artifact, strings.TrimSpace(envName), strings.TrimSpace(dominionApp), imageRef)
 }
 
-func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, envName string, dominionApp string, artifact *config.ServiceArtifact, imageRef string) (*DeploymentWorkload, error) {
+func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, artifact *config.ServiceArtifact, envName string, dominionApp string, imageRef string) (*DeploymentWorkload, error) {
 	if strings.TrimSpace(imageRef) == "" {
 		return nil, fmt.Errorf("deployment workload image 为空")
 	}
@@ -364,9 +364,9 @@ func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, envName st
 
 	w := &DeploymentWorkload{
 		ServiceName:     serviceCfg.Name,
-		EnvironmentName: strings.TrimSpace(envName),
+		EnvironmentName: envName,
 		App:             serviceCfg.App,
-		DominionApp:     strings.TrimSpace(dominionApp),
+		DominionApp:     dominionApp,
 		Desc:            serviceCfg.Desc,
 		Image:           strings.TrimSpace(imageRef),
 		Replicas:        1,
@@ -379,7 +379,6 @@ func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, envName st
 
 	return w, nil
 }
-
 func resolveArtifactByName(serviceCfg *config.ServiceConfig, artifactName string) (*config.ServiceArtifact, error) {
 	if serviceCfg == nil {
 		return nil, fmt.Errorf("service config 为空")

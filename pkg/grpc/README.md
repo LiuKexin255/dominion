@@ -9,6 +9,8 @@
 1. 聚合入口。
 2. 目录说明。
 
+当前阶段的聚合入口由 `default.go` 提供，具体 resolver / dial / target / env / k8s 实现统一放在 `pkg/grpc/solver` 子目录中。
+
 ## 目标
 
 该目录负责承载仓库内共享的 grpc 基础能力，包括但不限于：
@@ -26,3 +28,7 @@
 - 负责：共享的 grpc 连接、发现、安全、装配能力。
 - 不负责：具体 proto 生成代码、业务方法封装、业务请求编排。
 
+## 目录结构
+
+- `default.go`：包级默认装配入口。
+- `solver/`：resolver、target 解析、环境读取和 k8s 查询的实现目录。

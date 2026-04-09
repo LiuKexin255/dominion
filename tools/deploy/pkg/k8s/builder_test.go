@@ -24,6 +24,7 @@ type deploymentExpectation struct {
 	replicas    int32
 	image       string
 	ports       []corev1.ContainerPort
+	env         []corev1.EnvVar
 }
 
 type serviceExpectation struct {
@@ -80,6 +81,11 @@ func TestBuildDeployment(t *testing.T) {
 				ports: []corev1.ContainerPort{
 					{Name: "http", ContainerPort: 8080},
 					{Name: "grpc", ContainerPort: 9090},
+				},
+				env: []corev1.EnvVar{
+					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
+					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 				},
 			},
 		},
@@ -467,6 +473,50 @@ func assertDeployment(t *testing.T, got *appsv1.Deployment, want *deploymentExpe
 		if container.Ports[i] != want.ports[i] {
 			t.Fatalf("ports[%d] = %#v, want %#v", i, container.Ports[i], want.ports[i])
 		}
+	}
+	assertContainerEnv(t, container.Env, want.env)
+}
+
+func assertContainerEnv(t *testing.T, got []corev1.EnvVar, want []corev1.EnvVar) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("env len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Name != want[i].Name {
+			t.Fatalf("env[%d].name = %q, want %q", i, got[i].Name, want[i].Name)
+		}
+		if got[i].Value != want[i].Value {
+			t.Fatalf("env[%d].value = %q, want %q", i, got[i].Value, want[i].Value)
+		}
+		assertEnvValueSource(t, got[i].ValueFrom, want[i].ValueFrom, i)
+	}
+}
+
+func assertEnvValueSource(t *testing.T, got *corev1.EnvVarSource, want *corev1.EnvVarSource, index int) {
+	t.Helper()
+
+	if want == nil {
+		if got != nil {
+			t.Fatalf("env[%d].valueFrom = %#v, want nil", index, got)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("env[%d].valueFrom = nil, want non-nil", index)
+	}
+	if want.FieldRef == nil {
+		if got.FieldRef != nil {
+			t.Fatalf("env[%d].fieldRef = %#v, want nil", index, got.FieldRef)
+		}
+		return
+	}
+	if got.FieldRef == nil {
+		t.Fatalf("env[%d].fieldRef = nil, want non-nil", index)
+	}
+	if got.FieldRef.FieldPath != want.FieldRef.FieldPath {
+		t.Fatalf("env[%d].fieldRef.fieldPath = %q, want %q", index, got.FieldRef.FieldPath, want.FieldRef.FieldPath)
 	}
 }
 

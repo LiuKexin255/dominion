@@ -26,6 +26,12 @@ const (
 	dominionAppLabelKey = "dominion.io/app"
 	// dominionEnvironmentLabelKey 标识 Dominion 环境名称标签键。
 	dominionEnvironmentLabelKey = "dominion.io/environment"
+	// reservedEnvNameDominionApp 为 Dominion app 注入环境变量名。
+	reservedEnvNameDominionApp = "DOMINION_APP"
+	// reservedEnvNameDominionEnvironment 为 Dominion 环境注入环境变量名。
+	reservedEnvNameDominionEnvironment = "DOMINION_ENVIRONMENT"
+	// reservedEnvNamePodNamespace 为 Pod 命名空间注入环境变量名。
+	reservedEnvNamePodNamespace = "POD_NAMESPACE"
 
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
@@ -73,6 +79,11 @@ func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv
 						Name:  workload.WorkloadName(),
 						Image: workload.Image,
 						Ports: ports,
+						Env: []corev1.EnvVar{
+							{Name: reservedEnvNameDominionApp, Value: workload.DominionApp},
+							{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+							{Name: reservedEnvNamePodNamespace, Value: k8sConfig.Namespace},
+						},
 					}},
 				},
 			},

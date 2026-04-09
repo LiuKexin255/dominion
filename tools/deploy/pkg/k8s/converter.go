@@ -52,7 +52,6 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 		if !ok {
 			return nil, fmt.Errorf("artifact target %s missing resolved image", artifactTarget)
 		}
-
 		deployment, err := NewDeploymentWorkload(
 			serviceConfig,
 			envName,

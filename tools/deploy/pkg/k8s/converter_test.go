@@ -423,6 +423,22 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	if builtDeployment.Labels[dominionAppLabelKey] != "grpc-hello-world" {
 		t.Fatalf("deployment dominion app label = %q, want %q", builtDeployment.Labels[dominionAppLabelKey], "grpc-hello-world")
 	}
+	if len(builtDeployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("deployment containers len = %d, want 1", len(builtDeployment.Spec.Template.Spec.Containers))
+	}
+	gotEnv := builtDeployment.Spec.Template.Spec.Containers[0].Env
+	if len(gotEnv) != 3 {
+		t.Fatalf("deployment env len = %d, want 3", len(gotEnv))
+	}
+	if gotEnv[0].Name != reservedEnvNameDominionApp || gotEnv[0].Value != "grpc-hello-world" {
+		t.Fatalf("deployment env[0] = %#v, want DOMINION_APP literal", gotEnv[0])
+	}
+	if gotEnv[1].Name != reservedEnvNameDominionEnvironment || gotEnv[1].Value != "dev" {
+		t.Fatalf("deployment env[1] = %#v, want DOMINION_ENVIRONMENT literal", gotEnv[1])
+	}
+	if gotEnv[2].Name != reservedEnvNamePodNamespace || gotEnv[2].Value != k8sConfig.Namespace {
+		t.Fatalf("deployment env[2] = %#v, want POD_NAMESPACE literal", gotEnv[2])
+	}
 
 	builtService, err := BuildService(service, k8sConfig)
 	if err != nil {

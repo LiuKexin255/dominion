@@ -249,7 +249,7 @@ func Test_newObjectName(t *testing.T) {
 			dominionApp:     "grpc-hello-world",
 			serviceName:     "gateway",
 			environmentName: "dev",
-			want:            "deploy-dev-gateway-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
+			want:            "dp-dev-gateway-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
 		},
 		{
 			name:            "normalize and sanitize",
@@ -285,7 +285,7 @@ func Test_newObjectName(t *testing.T) {
 			dominionApp:     "grpc-hello-world",
 			serviceName:     "svc",
 			environmentName: "dev",
-			want:            "deploy-dev-svc-" + shortNameHash("---", "grpc-hello-world"),
+			want:            "dp-dev-svc-" + shortNameHash("---", "grpc-hello-world"),
 		},
 	}
 	for _, tt := range tests {
@@ -498,6 +498,24 @@ func TestNewDeploymentWorkload(t *testing.T) {
 			dominionApp:  "grpc-hello-world",
 			artifactName: "gateway",
 			imageRef:     "",
+			wantErr:      true,
+		},
+		{
+			name: "missing environment name",
+			serviceCfg: &config.ServiceConfig{
+				Name: "gateway",
+				App:  "grpc-hello-world",
+				Desc: "gateway service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "gateway",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: "//foo:gateway_image",
+				}},
+			},
+			envName:      "   ",
+			dominionApp:  "grpc-hello-world",
+			artifactName: "gateway",
+			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 			wantErr:      true,
 		},
 		{
