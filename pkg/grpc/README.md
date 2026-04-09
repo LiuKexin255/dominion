@@ -32,3 +32,42 @@
 
 - `default.go`：包级默认装配入口。
 - `solver/`：resolver、target 解析、环境读取和 k8s 查询的实现目录。
+- `tls/`：标准 TLS credentials 封装。
+
+## TLS 支持
+
+`pkg/grpc/tls` 包为 gRPC 提供标准的 TLS 凭据。
+
+### 使用示例
+
+```go
+import grpctls "dominion/pkg/grpc/tls"
+
+serverConfig := &grpctls.ServerConfig{
+    CertFile: "/etc/tls/tls.crt",
+    KeyFile:  "/etc/tls/tls.key",
+    MinVersion: tls.VersionTLS12,
+}
+creds, err := grpctls.NewServerTransportCredentials(serverConfig)
+```
+
+### 默认入口
+
+使用 `Default()` 进行标准配置装配：
+
+```go
+import "dominion/pkg/grpc"
+
+opts, err := grpc.Default(grpc.DefaultConfig{
+    ServerTLS: serverConfig,
+})
+server := grpc.NewServer(opts.Server...)
+```
+
+### 设计约束与特性
+
+- **固定路径**：默认使用 `/etc/tls/tls.crt`、`/etc/tls/tls.key` 和 `/etc/tls/ca.crt`。
+- **安全边界**：`ServerName` 必须来自受信任的部署配置，不接受解析器或用户输入。
+- **Fail-Closed**：TLS 启用但配置错误时直接报错，不回退到非安全连接。
+- **Phase-1 限制**：当前版本不支持 mTLS、动态证书轮转或自定义验证回调。
+- **部署中立**：部署层注入的环境变量采用中立命名（如 `TLS_CERT_FILE`），不带有 gRPC 前缀。

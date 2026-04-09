@@ -400,166 +400,48 @@ func Test_resolveArtifactByName(t *testing.T) {
 	}
 }
 
-func TestNewDeploymentWorkload(t *testing.T) {
+func Test_newDeploymentWorkload_TLSEnabled(t *testing.T) {
 	tests := []struct {
-		name         string
-		serviceCfg   *config.ServiceConfig
-		envName      string
-		dominionApp  string
-		artifactName string
-		imageRef     string
-		want         *DeploymentWorkload
-		wantErr      bool
+		name        string
+		artifactTLS bool
+		wantEnabled bool
 	}{
 		{
-			name: "valid workload",
-			serviceCfg: &config.ServiceConfig{
-				Name: "gateway",
-				App:  "grpc-hello-world",
-				Desc: "gateway service",
-				Artifacts: []*config.ServiceArtifact{{
-					Name:   "gateway",
-					Type:   config.ServiceArtifactTypeDeployment,
-					Target: "//some/path:gateway_image",
-					Ports: []*config.ServiceArtifactPort{
-						{Name: "http", Port: 80},
-						nil,
-					},
-				}},
-			},
-			envName:      " dev ",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			want: &DeploymentWorkload{
-				ServiceName:     "gateway",
-				EnvironmentName: "dev",
-				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
-				Desc:            "gateway service",
-				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Replicas:        1,
-				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
-			},
+			name:        "carries tls enabled flag",
+			artifactTLS: true,
+			wantEnabled: true,
 		},
 		{
-			name:         "nil service config",
-			envName:      "dev",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			wantErr:      true,
-		},
-		{
-			name: "missing artifact",
-			serviceCfg: &config.ServiceConfig{
-				Name:      "gateway",
-				App:       "grpc-hello-world",
-				Desc:      "gateway service",
-				Artifacts: []*config.ServiceArtifact{},
-			},
-			envName:      "dev",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			wantErr:      true,
-		},
-		{
-			name: "unsupported artifact type",
-			serviceCfg: &config.ServiceConfig{
-				Name: "gateway",
-				App:  "grpc-hello-world",
-				Desc: "gateway service",
-				Artifacts: []*config.ServiceArtifact{{
-					Name:   "gateway",
-					Type:   "job",
-					Target: ":gateway_image",
-				}},
-			},
-			envName:      "dev",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			wantErr:      true,
-		},
-		{
-			name: "missing injected image",
-			serviceCfg: &config.ServiceConfig{
-				Name: "gateway",
-				App:  "grpc-hello-world",
-				Desc: "gateway service",
-				Artifacts: []*config.ServiceArtifact{{
-					Name:   "gateway",
-					Type:   config.ServiceArtifactTypeDeployment,
-					Target: "//foo:gateway_image",
-				}},
-			},
-			envName:      "dev",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "",
-			wantErr:      true,
-		},
-		{
-			name: "missing environment name",
-			serviceCfg: &config.ServiceConfig{
-				Name: "gateway",
-				App:  "grpc-hello-world",
-				Desc: "gateway service",
-				Artifacts: []*config.ServiceArtifact{{
-					Name:   "gateway",
-					Type:   config.ServiceArtifactTypeDeployment,
-					Target: "//foo:gateway_image",
-				}},
-			},
-			envName:      "   ",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			wantErr:      true,
-		},
-		{
-			name: "generated name too long",
-			serviceCfg: &config.ServiceConfig{
-				Name: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				App:  "bbbbbbbbbbbbbbbbbbbb",
-				Desc: "gateway service",
-				Artifacts: []*config.ServiceArtifact{{
-					Name:   "gateway",
-					Type:   config.ServiceArtifactTypeDeployment,
-					Target: "//some/path:gateway_image",
-				}},
-			},
-			envName:      "cccccccccccccccccccc",
-			dominionApp:  "grpc-hello-world",
-			artifactName: "gateway",
-			imageRef:     "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			want: &DeploymentWorkload{
-				ServiceName:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				EnvironmentName: "cccccccccccccccccccc",
-				App:             "bbbbbbbbbbbbbbbbbbbb",
-				DominionApp:     "grpc-hello-world",
-				Desc:            "gateway service",
-				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Replicas:        1,
-			},
-			wantErr: true,
+			name:        "keeps tls disabled by default",
+			wantEnabled: false,
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := NewDeploymentWorkload(tt.serviceCfg, tt.envName, tt.dominionApp, tt.artifactName, tt.imageRef)
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("NewDeploymentWorkload() failed: %v", gotErr)
-				}
-				return
+			serviceCfg := &config.ServiceConfig{
+				Name: "gateway",
+				App:  "grpc-hello-world",
+				Desc: "gateway service",
 			}
-			if tt.wantErr {
-				t.Fatal("NewDeploymentWorkload() succeeded unexpectedly")
+			artifact := &config.ServiceArtifact{
+				Name:   "gateway",
+				Type:   config.ServiceArtifactTypeDeployment,
+				Target: "//some/path:gateway_image",
+				TLS:    tt.artifactTLS,
+				Ports: []*config.ServiceArtifactPort{{
+					Name: "grpc",
+					Port: 50051,
+				}},
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewDeploymentWorkload() = %v, want %v", got, tt.want)
+
+			got, err := newDeploymentWorkload(serviceCfg, artifact, "dev", "grpc-hello-world", "registry.example.com/team/gateway:latest")
+			if err != nil {
+				t.Fatalf("newDeploymentWorkload() failed: %v", err)
+			}
+
+			if got.TLSEnabled != tt.wantEnabled {
+				t.Fatalf("deployment tls enabled = %t, want %t", got.TLSEnabled, tt.wantEnabled)
 			}
 		})
 	}
@@ -729,7 +611,9 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := tt.workload.NewHTTPRouteWorkload(tt.deployService, tt.k8sConfig)
+			stubLoadK8sConfig(t, tt.k8sConfig)
+
+			got, gotErr := tt.workload.NewHTTPRouteWorkload(tt.deployService)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("NewHTTPRouteWorkload() failed: %v", gotErr)

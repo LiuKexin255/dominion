@@ -22,15 +22,15 @@ func TestExecutor_Apply_CreatesResources(t *testing.T) {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
-	dep, err := BuildDeployment(objects.Deployments[0], h.RuntimeClient().K8sConfig)
+	dep, err := BuildDeployment(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0], h.RuntimeClient().K8sConfig)
+	svc, err := BuildService(objects.Services[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
-	route, err := BuildHTTPRoute(objects.HTTPRoutes[0], h.RuntimeClient().K8sConfig)
+	route, err := BuildHTTPRoute(objects.HTTPRoutes[0])
 	if err != nil {
 		t.Fatalf("BuildHTTPRoute() failed: %v", err)
 	}
@@ -49,17 +49,15 @@ func TestExecutor_Apply_UpdatesExistingResources(t *testing.T) {
 	h := NewFakeHarness(t)
 	executor := NewExecutor(h.RuntimeClient())
 	objects := newExecutorTestDeployObjects()
-	k8sConfig := h.RuntimeClient().K8sConfig
-
-	dep, err := BuildDeployment(objects.Deployments[0], k8sConfig)
+	dep, err := BuildDeployment(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0], k8sConfig)
+	svc, err := BuildService(objects.Services[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
-	route, err := BuildHTTPRoute(objects.HTTPRoutes[0], k8sConfig)
+	route, err := BuildHTTPRoute(objects.HTTPRoutes[0])
 	if err != nil {
 		t.Fatalf("BuildHTTPRoute() failed: %v", err)
 	}
@@ -145,17 +143,15 @@ func TestExecutor_Apply_IsIdempotent(t *testing.T) {
 	h := NewFakeHarness(t)
 	executor := NewExecutor(h.RuntimeClient())
 	objects := newExecutorTestDeployObjects()
-	k8sConfig := h.RuntimeClient().K8sConfig
-
-	dep, err := BuildDeployment(objects.Deployments[0], k8sConfig)
+	dep, err := BuildDeployment(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0], k8sConfig)
+	svc, err := BuildService(objects.Services[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
-	route, err := BuildHTTPRoute(objects.HTTPRoutes[0], k8sConfig)
+	route, err := BuildHTTPRoute(objects.HTTPRoutes[0])
 	if err != nil {
 		t.Fatalf("BuildHTTPRoute() failed: %v", err)
 	}
@@ -179,17 +175,15 @@ func TestExecutor_Apply_PartialFailure_StopsAndReports(t *testing.T) {
 	h := NewFakeHarness(t)
 	executor := NewExecutor(h.RuntimeClient())
 	objects := newExecutorTestDeployObjects()
-	k8sConfig := h.RuntimeClient().K8sConfig
-
-	dep, err := BuildDeployment(objects.Deployments[0], k8sConfig)
+	dep, err := BuildDeployment(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0], k8sConfig)
+	svc, err := BuildService(objects.Services[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
-	route, err := BuildHTTPRoute(objects.HTTPRoutes[0], k8sConfig)
+	route, err := BuildHTTPRoute(objects.HTTPRoutes[0])
 	if err != nil {
 		t.Fatalf("BuildHTTPRoute() failed: %v", err)
 	}

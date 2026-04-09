@@ -14,17 +14,19 @@ import (
 )
 
 type deploymentExpectation struct {
-	name        string
-	namespace   string
-	managedBy   string
-	app         string
-	dominionApp string
-	serviceName string
-	environment string
-	replicas    int32
-	image       string
-	ports       []corev1.ContainerPort
-	env         []corev1.EnvVar
+	name         string
+	namespace    string
+	managedBy    string
+	app          string
+	dominionApp  string
+	serviceName  string
+	environment  string
+	replicas     int32
+	image        string
+	ports        []corev1.ContainerPort
+	volumes      []corev1.Volume
+	volumeMounts []corev1.VolumeMount
+	env          []corev1.EnvVar
 }
 
 type serviceExpectation struct {
@@ -82,10 +84,58 @@ func TestBuildDeployment(t *testing.T) {
 					{Name: "http", ContainerPort: 8080},
 					{Name: "grpc", ContainerPort: 9090},
 				},
+				volumes:      nil,
+				volumeMounts: nil,
 				env: []corev1.EnvVar{
 					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
+				},
+			},
+		},
+		{
+			name:      "renders tls secret volume mount and env vars",
+			workload:  newTestDeploymentWorkloadWithTLS(),
+			k8sConfig: newTestK8sConfigWithTLS(),
+			want: &deploymentExpectation{
+				name:        newTestDeploymentWorkloadWithTLS().WorkloadName(),
+				namespace:   "team-dev",
+				managedBy:   "deploy-tool",
+				app:         "grpc-hello-world",
+				dominionApp: "grpc-hello-world",
+				serviceName: "gateway",
+				environment: "dev",
+				replicas:    3,
+				image:       "registry.local/gateway:latest",
+				ports: []corev1.ContainerPort{
+					{Name: "http", ContainerPort: 8080},
+					{Name: "grpc", ContainerPort: 9090},
+				},
+				volumes: []corev1.Volume{{
+					Name: "tls",
+					VolumeSource: corev1.VolumeSource{
+						Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{
+							{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "gateway-tls"}}},
+							{ConfigMap: &corev1.ConfigMapProjection{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "gateway-ca"},
+								Items:                []corev1.KeyToPath{{Key: "bundle.pem", Path: "ca.crt"}},
+							}},
+						}},
+					},
+				}},
+				volumeMounts: []corev1.VolumeMount{{
+					Name:      "tls",
+					MountPath: "/etc/tls",
+					ReadOnly:  true,
+				}},
+				env: []corev1.EnvVar{
+					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
+					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
+					{Name: "TLS_CERT_FILE", Value: "/etc/tls/tls.crt"},
+					{Name: "TLS_KEY_FILE", Value: "/etc/tls/tls.key"},
+					{Name: "TLS_CA_FILE", Value: "/etc/tls/ca.crt"},
+					{Name: "TLS_SERVER_NAME", Value: "gateway.internal.example.com"},
 				},
 			},
 		},
@@ -100,7 +150,9 @@ func TestBuildDeployment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildDeployment(tt.workload, tt.k8sConfig)
+			stubLoadK8sConfig(t, tt.k8sConfig)
+
+			got, err := BuildDeployment(tt.workload)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("BuildDeployment() expected error")
@@ -162,7 +214,9 @@ func TestBuildService(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildService(tt.workload, tt.k8sConfig)
+			stubLoadK8sConfig(t, tt.k8sConfig)
+
+			got, err := BuildService(tt.workload)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("BuildService() expected error")
@@ -218,7 +272,9 @@ func TestBuildHTTPRoute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildHTTPRoute(tt.workload, tt.k8sConfig)
+			stubLoadK8sConfig(t, tt.k8sConfig)
+
+			got, err := BuildHTTPRoute(tt.workload)
 			if err != nil {
 				t.Fatalf("BuildHTTPRoute() failed: %v", err)
 			}
@@ -226,6 +282,32 @@ func TestBuildHTTPRoute(t *testing.T) {
 			assertHTTPRoute(t, got, tt.want)
 		})
 	}
+}
+
+func TestBuildHTTPRoute_TLSDoesNotAffectRouteRendering(t *testing.T) {
+	stubLoadK8sConfig(t, newTestK8sConfig())
+
+	got, err := BuildHTTPRoute(newTestHTTPRouteWorkload())
+	if err != nil {
+		t.Fatalf("BuildHTTPRoute() failed: %v", err)
+	}
+
+	assertHTTPRoute(t, got, &httpRouteExpectation{
+		apiVersion:  gatewayv1.GroupVersion.String(),
+		kind:        httpRouteKind,
+		name:        newTestHTTPRouteWorkload().ResourceName(),
+		namespace:   "team-dev",
+		managedBy:   "deploy-tool",
+		app:         "grpc-hello-world",
+		dominionApp: "grpc-hello-world",
+		serviceName: "gateway",
+		environment: "dev",
+		hostnames:   []string{"gateway.example.com", "gateway.dev.example.com"},
+		gatewayName: "shared-gateway",
+		gatewayNS:   "infra-system",
+		rulePaths:   []string{"/v1", "/grpc"},
+		rulePorts:   []int64{8080, 9090},
+	})
 }
 
 func Test_buildContainerPorts(t *testing.T) {
@@ -377,6 +459,20 @@ func newTestK8sConfig() *K8sConfig {
 	}
 }
 
+func newTestK8sConfigWithTLS() *K8sConfig {
+	k8sConfig := newTestK8sConfig()
+	k8sConfig.TLS = TLSConfig{
+		Secret:    "gateway-tls",
+		Domain:    "gateway.internal.example.com",
+		CAConfigMap: ConfigMapConfig{
+			Name: "gateway-ca",
+			Key:  "bundle.pem",
+		},
+	}
+
+	return k8sConfig
+}
+
 func newTestDeploymentWorkload() *DeploymentWorkload {
 	return &DeploymentWorkload{
 		ServiceName:     "gateway",
@@ -396,6 +492,13 @@ func newTestDeploymentWorkload() *DeploymentWorkload {
 func newTestDeploymentWorkloadWithNilPort() *DeploymentWorkload {
 	workload := newTestDeploymentWorkload()
 	workload.Ports = []*DeploymentPort{{Name: "http", Port: 8080}, nil}
+
+	return workload
+}
+
+func newTestDeploymentWorkloadWithTLS() *DeploymentWorkload {
+	workload := newTestDeploymentWorkload()
+	workload.TLSEnabled = true
 
 	return workload
 }
@@ -474,7 +577,92 @@ func assertDeployment(t *testing.T, got *appsv1.Deployment, want *deploymentExpe
 			t.Fatalf("ports[%d] = %#v, want %#v", i, container.Ports[i], want.ports[i])
 		}
 	}
+	assertVolumes(t, got.Spec.Template.Spec.Volumes, want.volumes)
+	assertVolumeMounts(t, container.VolumeMounts, want.volumeMounts)
 	assertContainerEnv(t, container.Env, want.env)
+}
+
+func assertVolumes(t *testing.T, got []corev1.Volume, want []corev1.Volume) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("volumes len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Name != want[i].Name {
+			t.Fatalf("volumes[%d].name = %q, want %q", i, got[i].Name, want[i].Name)
+		}
+		if want[i].Projected == nil {
+			if got[i].Projected != nil {
+				t.Fatalf("volumes[%d].projected = %#v, want nil", i, got[i].Projected)
+			}
+			continue
+		}
+		if got[i].Projected == nil {
+			t.Fatalf("volumes[%d].projected = nil, want non-nil", i)
+		}
+		if len(got[i].Projected.Sources) != len(want[i].Projected.Sources) {
+			t.Fatalf("volumes[%d].projected.sources len = %d, want %d", i, len(got[i].Projected.Sources), len(want[i].Projected.Sources))
+		}
+		for j := range want[i].Projected.Sources {
+			assertProjectedVolumeSource(t, got[i].Projected.Sources[j], want[i].Projected.Sources[j], i, j)
+		}
+	}
+}
+
+func assertProjectedVolumeSource(t *testing.T, got corev1.VolumeProjection, want corev1.VolumeProjection, volumeIndex int, sourceIndex int) {
+	t.Helper()
+
+	if want.Secret != nil {
+		if got.Secret == nil {
+			t.Fatalf("volumes[%d].projected.sources[%d].secret = nil, want non-nil", volumeIndex, sourceIndex)
+		}
+		if got.Secret.Name != want.Secret.Name {
+			t.Fatalf("volumes[%d].projected.sources[%d].secret.name = %q, want %q", volumeIndex, sourceIndex, got.Secret.Name, want.Secret.Name)
+		}
+		return
+	}
+	if want.ConfigMap != nil {
+		if got.ConfigMap == nil {
+			t.Fatalf("volumes[%d].projected.sources[%d].configMap = nil, want non-nil", volumeIndex, sourceIndex)
+		}
+		if got.ConfigMap.Name != want.ConfigMap.Name {
+			t.Fatalf("volumes[%d].projected.sources[%d].configMap.name = %q, want %q", volumeIndex, sourceIndex, got.ConfigMap.Name, want.ConfigMap.Name)
+		}
+		if len(got.ConfigMap.Items) != len(want.ConfigMap.Items) {
+			t.Fatalf("volumes[%d].projected.sources[%d].configMap.items len = %d, want %d", volumeIndex, sourceIndex, len(got.ConfigMap.Items), len(want.ConfigMap.Items))
+		}
+		for itemIndex := range want.ConfigMap.Items {
+			if got.ConfigMap.Items[itemIndex].Key != want.ConfigMap.Items[itemIndex].Key {
+				t.Fatalf("volumes[%d].projected.sources[%d].configMap.items[%d].key = %q, want %q", volumeIndex, sourceIndex, itemIndex, got.ConfigMap.Items[itemIndex].Key, want.ConfigMap.Items[itemIndex].Key)
+			}
+			if got.ConfigMap.Items[itemIndex].Path != want.ConfigMap.Items[itemIndex].Path {
+				t.Fatalf("volumes[%d].projected.sources[%d].configMap.items[%d].path = %q, want %q", volumeIndex, sourceIndex, itemIndex, got.ConfigMap.Items[itemIndex].Path, want.ConfigMap.Items[itemIndex].Path)
+			}
+		}
+		return
+	}
+
+	t.Fatalf("volumes[%d].projected.sources[%d] expected secret or configMap", volumeIndex, sourceIndex)
+}
+
+func assertVolumeMounts(t *testing.T, got []corev1.VolumeMount, want []corev1.VolumeMount) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("volume mounts len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Name != want[i].Name {
+			t.Fatalf("volumeMounts[%d].name = %q, want %q", i, got[i].Name, want[i].Name)
+		}
+		if got[i].MountPath != want[i].MountPath {
+			t.Fatalf("volumeMounts[%d].mountPath = %q, want %q", i, got[i].MountPath, want[i].MountPath)
+		}
+		if got[i].ReadOnly != want[i].ReadOnly {
+			t.Fatalf("volumeMounts[%d].readOnly = %v, want %v", i, got[i].ReadOnly, want[i].ReadOnly)
+		}
+	}
 }
 
 func assertContainerEnv(t *testing.T, got []corev1.EnvVar, want []corev1.EnvVar) {

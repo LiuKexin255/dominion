@@ -33,7 +33,7 @@
     },
     "services": {
       "type": "array",
-      "description": "部署的服务列表，同一个服务不能多次部署",
+      "description": "部署的服务列表，同一个服务不能多次部署；TLS 运行时配置不允许出现在 deploy.yaml 中",
       "minItems": 1,
       "items": {
         "type": "object",

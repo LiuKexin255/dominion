@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tls",
+    srcs = ["tls.go"],
+    importpath = "dominion/pkg/grpc/tls",
+    visibility = ["//visibility:public"],
+    deps = ["@org_golang_google_grpc//credentials"],
+)
+
+go_test(
+    name = "tls_test",
+    size = "small",
+    srcs = ["tls_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":tls"],
+)

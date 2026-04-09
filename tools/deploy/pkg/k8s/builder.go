@@ -4,6 +4,7 @@ package k8s
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -32,13 +33,32 @@ const (
 	reservedEnvNameDominionEnvironment = "DOMINION_ENVIRONMENT"
 	// reservedEnvNamePodNamespace 为 Pod 命名空间注入环境变量名。
 	reservedEnvNamePodNamespace = "POD_NAMESPACE"
+	// tlsVolumeName 为 TLS projected volume 固定名称。
+	tlsVolumeName = "tls"
+	// tlsMountPath 为 TLS 文件固定挂载目录。
+	tlsMountPath = "/etc/tls"
+	// tlsCAFileName 为容器内固定的 CA 文件名。
+	tlsCAFileName = "ca.crt"
+	// tlsCertFileName 为容器内固定的证书文件名。
+	tlsCertFileName = "tls.crt"
+	// tlsKeyFileName 为容器内固定的私钥文件名。
+	tlsKeyFileName = "tls.key"
+	// envTLSCertFile 为 TLS 证书文件环境变量名。
+	envTLSCertFile = "TLS_CERT_FILE"
+	// envTLSKeyFile 为 TLS 私钥文件环境变量名。
+	envTLSKeyFile = "TLS_KEY_FILE"
+	// envTLSCAFile 为 TLS CA 文件环境变量名。
+	envTLSCAFile = "TLS_CA_FILE"
+	// envTLSDomain 为 TLS 服务名环境变量名。
+	envTLSDomain = "TLS_SERVER_NAME"
 
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 )
 
 // BuildDeployment 将 deployment workload 构造成可直接下发的 Deployment 对象。
-func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv1.Deployment, error) {
+func BuildDeployment(workload *DeploymentWorkload) (*appsv1.Deployment, error) {
+	k8sConfig := LoadK8sConfig()
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
@@ -58,6 +78,43 @@ func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv
 	}
 
 	replicas := workload.Replicas
+	containerEnv := []corev1.EnvVar{
+		{Name: reservedEnvNameDominionApp, Value: workload.DominionApp},
+		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		{Name: reservedEnvNamePodNamespace, Value: k8sConfig.Namespace},
+	}
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+	if workload.TLSEnabled {
+		volumes = []corev1.Volume{{
+			Name: tlsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: k8sConfig.TLS.Secret}}},
+						{ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: k8sConfig.TLS.CAConfigMap.Name},
+							Items: []corev1.KeyToPath{{
+								Key:  k8sConfig.TLS.CAConfigMap.Key,
+								Path: tlsCAFileName,
+							}},
+						}},
+					},
+				},
+			},
+		}}
+		volumeMounts = []corev1.VolumeMount{{
+			Name:      tlsVolumeName,
+			MountPath: tlsMountPath,
+			ReadOnly:  true,
+		}}
+		containerEnv = append(containerEnv,
+			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+			corev1.EnvVar{Name: envTLSDomain, Value: k8sConfig.TLS.Domain},
+		)
+	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -75,15 +132,13 @@ func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv
 					Labels: map[string]string(objectLabels),
 				},
 				Spec: corev1.PodSpec{
+					Volumes: volumes,
 					Containers: []corev1.Container{{
-						Name:  workload.WorkloadName(),
-						Image: workload.Image,
-						Ports: ports,
-						Env: []corev1.EnvVar{
-							{Name: reservedEnvNameDominionApp, Value: workload.DominionApp},
-							{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
-							{Name: reservedEnvNamePodNamespace, Value: k8sConfig.Namespace},
-						},
+						Name:         workload.WorkloadName(),
+						Image:        workload.Image,
+						Ports:        ports,
+						VolumeMounts: volumeMounts,
+						Env:          containerEnv,
 					}},
 				},
 			},
@@ -92,7 +147,8 @@ func BuildDeployment(workload *DeploymentWorkload, k8sConfig *K8sConfig) (*appsv
 }
 
 // BuildService 将 service workload 构造成可直接下发的 Service 对象。
-func BuildService(workload *ServiceWorkload, k8sConfig *K8sConfig) (*corev1.Service, error) {
+func BuildService(workload *ServiceWorkload) (*corev1.Service, error) {
+	k8sConfig := LoadK8sConfig()
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
@@ -125,7 +181,8 @@ func BuildService(workload *ServiceWorkload, k8sConfig *K8sConfig) (*corev1.Serv
 }
 
 // BuildHTTPRoute 将 HTTPRoute workload 构造成可直接下发的动态对象。
-func BuildHTTPRoute(workload *HTTPRouteWorkload, k8sConfig *K8sConfig) (*unstructured.Unstructured, error) {
+func BuildHTTPRoute(workload *HTTPRouteWorkload) (*unstructured.Unstructured, error) {
+	k8sConfig := LoadK8sConfig()
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),

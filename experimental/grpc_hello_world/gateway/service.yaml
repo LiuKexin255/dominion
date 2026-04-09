@@ -5,6 +5,7 @@ artifacts:
   - name: gateway
     type: deployment
     target: :gateway_image
+    tls: true
     ports: 
       - name: http 
         port: 80

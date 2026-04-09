@@ -29,18 +29,10 @@ var (
 	}
 	// newClientConn bridges grpc client creation for runtime and tests.
 	newClientConn = grpc.NewClient
-	// defaultDialOptionsProvider returns the default dominion grpc dial options.
-	defaultDialOptionsProvider = defaultDialOptions
 )
 
-// SetDefaultDialOptionsProvider overrides the default grpc dial-option bundle.
-func SetDefaultDialOptionsProvider(provider func() []grpc.DialOption) {
-	if provider == nil {
-		defaultDialOptionsProvider = defaultDialOptions
-		return
-	}
-
-	defaultDialOptionsProvider = provider
+func init() {
+	Register()
 }
 
 // Register installs the dominion grpc resolver exactly once.

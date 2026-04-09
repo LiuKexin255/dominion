@@ -41,6 +41,7 @@ type DeploymentPort struct {
 
 // DeploymentWorkload 描述 deployment 生成所需字段。
 type DeploymentWorkload struct {
+	TLSEnabled      bool
 	ServiceName     string
 	EnvironmentName string
 	App             string
@@ -187,8 +188,9 @@ func (w *ServiceWorkload) Validate() error {
 }
 
 // NewHTTPRouteWorkload 基于 service workload 生成 HTTPRoute workload。
-// deployService 提供路由匹配配置，k8sConfig 提供网关配置；任一关键参数为空时返回错误。
-func (w *ServiceWorkload) NewHTTPRouteWorkload(deployService *config.DeployService, k8sConfig *K8sConfig) (*HTTPRouteWorkload, error) {
+// deployService 提供路由匹配配置；网关配置通过静态配置加载。
+func (w *ServiceWorkload) NewHTTPRouteWorkload(deployService *config.DeployService) (*HTTPRouteWorkload, error) {
+	k8sConfig := LoadK8sConfig()
 	matches, err := buildHTTPRoutePathMatches(w.Ports, deployService.HTTP.Matches)
 	if err != nil {
 		return nil, err
@@ -336,25 +338,7 @@ func (w *HTTPRouteWorkload) Validate() error {
 	return nil
 }
 
-// NewDeploymentWorkload 根据服务配置、环境名、归属 app、产物名和注入的镜像引用构建 deployment workload。
-// serviceCfg 提供服务元数据与产物列表，artifactName 指定要使用的产物。
-// 若产物不存在、类型非法或镜像为空，则返回错误。
-func NewDeploymentWorkload(serviceCfg *config.ServiceConfig, envName string, dominionApp string, artifactName string, imageRef string) (*DeploymentWorkload, error) {
-	artifact, err := resolveArtifactByName(serviceCfg, artifactName)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(string(artifact.Type)) == "" {
-		return nil, fmt.Errorf("artifact type 为空")
-	}
-	if artifact.Type != config.ServiceArtifactTypeDeployment {
-		return nil, fmt.Errorf("不支持的 artifact type %s", artifact.Type)
-	}
-
-	return newDeploymentWorkloadWithImage(serviceCfg, artifact, strings.TrimSpace(envName), strings.TrimSpace(dominionApp), imageRef)
-}
-
-func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, artifact *config.ServiceArtifact, envName string, dominionApp string, imageRef string) (*DeploymentWorkload, error) {
+func newDeploymentWorkload(serviceCfg *config.ServiceConfig, artifact *config.ServiceArtifact, envName string, dominionApp string, imageRef string) (*DeploymentWorkload, error) {
 	if strings.TrimSpace(imageRef) == "" {
 		return nil, fmt.Errorf("deployment workload image 为空")
 	}
@@ -363,6 +347,7 @@ func newDeploymentWorkloadWithImage(serviceCfg *config.ServiceConfig, artifact *
 	}
 
 	w := &DeploymentWorkload{
+		TLSEnabled:      artifact.TLS,
 		ServiceName:     serviceCfg.Name,
 		EnvironmentName: envName,
 		App:             serviceCfg.App,

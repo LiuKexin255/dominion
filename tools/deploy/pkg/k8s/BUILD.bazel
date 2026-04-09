@@ -50,6 +50,7 @@ go_test(
         "static_config_test.go",
         "workload_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":k8s"],
     deps = [
         "//tools/deploy/pkg/config",

@@ -203,7 +203,7 @@ func (e *Executor) applyDeployment(ctx context.Context, workload *DeploymentWork
 		return fmt.Errorf("failed to get %s <nil>: %w", resourceKindDeployment, fmt.Errorf("deployment workload 为空"))
 	}
 
-	desired, err := BuildDeployment(workload, e.client.K8sConfig)
+	desired, err := BuildDeployment(workload)
 	if err != nil {
 		return fmt.Errorf("failed to build %s %s: %w", resourceKindDeployment, workload.WorkloadName(), err)
 	}
@@ -231,7 +231,7 @@ func (e *Executor) applyService(ctx context.Context, workload *ServiceWorkload) 
 		return fmt.Errorf("failed to get %s <nil>: %w", resourceKindService, fmt.Errorf("service workload 为空"))
 	}
 
-	desired, err := BuildService(workload, e.client.K8sConfig)
+	desired, err := BuildService(workload)
 	if err != nil {
 		return fmt.Errorf("failed to build %s %s: %w", resourceKindService, workload.ResourceName(), err)
 	}
@@ -259,7 +259,7 @@ func (e *Executor) applyHTTPRoute(ctx context.Context, workload *HTTPRouteWorklo
 		return fmt.Errorf("failed to get %s <nil>: %w", resourceKindHTTPRoute, fmt.Errorf("httproute workload 为空"))
 	}
 
-	desired, err := BuildHTTPRoute(workload, e.client.K8sConfig)
+	desired, err := BuildHTTPRoute(workload)
 	if err != nil {
 		return fmt.Errorf("failed to build %s %s: %w", resourceKindHTTPRoute, workload.ResourceName(), err)
 	}

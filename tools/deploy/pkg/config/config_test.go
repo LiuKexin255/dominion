@@ -63,6 +63,11 @@ func TestParseDeployConfig(t *testing.T) {
 			path:    filepath.Join(root, "testdata", "deploy.error.yaml"),
 			wantErr: true,
 		},
+		{
+			name:    "部署配置拒绝 tls 字段",
+			path:    filepath.Join(root, "testdata", "deploy.tls.error.yaml"),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +111,7 @@ func TestParseServiceConfig(t *testing.T) {
 						Name:   "service",
 						Type:   ServiceArtifactTypeDeployment,
 						Target: "//testdata:service_image",
+						TLS:    false,
 						Ports: []*ServiceArtifactPort{
 							{
 								Name: "grpc",
@@ -117,6 +123,46 @@ func TestParseServiceConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "读取服务配置并启用 tls",
+			path: filepath.Join(root, "testdata", "service.tls.true.yaml"),
+			want: &ServiceConfig{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc hello world service",
+				URI:  "//testdata/service.tls.true.yaml",
+				Artifacts: []*ServiceArtifact{{
+					Name:   "service",
+					Type:   ServiceArtifactTypeDeployment,
+					Target: "//testdata:service_image",
+					TLS:    true,
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "读取服务配置并显式关闭 tls",
+			path: filepath.Join(root, "testdata", "service.tls.false.yaml"),
+			want: &ServiceConfig{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc hello world service",
+				URI:  "//testdata/service.tls.false.yaml",
+				Artifacts: []*ServiceArtifact{{
+					Name:   "service",
+					Type:   ServiceArtifactTypeDeployment,
+					Target: "//testdata:service_image",
+					TLS:    false,
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
 			name:    "文件不存在",
 			path:    filepath.Join(root, "testdata", "service1.yaml"),
 			wantErr: true,
@@ -124,6 +170,16 @@ func TestParseServiceConfig(t *testing.T) {
 		{
 			name:    "服务配置文件格式错误",
 			path:    filepath.Join(root, "testdata", "service.error.yaml"),
+			wantErr: true,
+		},
+		{
+			name:    "服务配置拒绝非布尔 tls",
+			path:    filepath.Join(root, "testdata", "service.tls.invalid.yaml"),
+			wantErr: true,
+		},
+		{
+			name:    "服务配置拒绝运行时 tls 细节",
+			path:    filepath.Join(root, "testdata", "service.runtime-tls.error.yaml"),
 			wantErr: true,
 		},
 	}
@@ -165,6 +221,7 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 				Name:   "service",
 				Type:   "deployment",
 				Target: "//testdata:service_image",
+				TLS:    false,
 				Ports: []*ServiceArtifactPort{
 					{
 						Name: "grpc",

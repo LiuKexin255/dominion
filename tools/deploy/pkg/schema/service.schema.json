@@ -62,6 +62,10 @@
             "minLength": 1,
             "description": "bazel target 完整地址"
           },
+          "tls": {
+            "type": "boolean",
+            "description": "是否为该产物启用 TLS，默认 false"
+          },
           "protocol": {
             "type": "string",
             "enum": [

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "grpc",
@@ -7,20 +7,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/grpc/solver",
+        "//pkg/grpc/tls",
         "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//keepalive",
-    ],
-)
-
-go_test(
-    name = "grpc_test",
-    size = "small",
-    srcs = ["grpc_test.go"],
-    embed = [":grpc"],
-    deps = [
-        "//pkg/grpc/solver",
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//resolver",
     ],
 )

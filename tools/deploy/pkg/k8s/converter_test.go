@@ -363,6 +363,68 @@ func TestNewDeployObjects_UsesInjectedResolvedImages(t *testing.T) {
 	}
 }
 
+func TestNewDeployObjects_TLSEnabled(t *testing.T) {
+	tests := []struct {
+		name        string
+		artifactTLS bool
+		wantEnabled bool
+	}{
+		{
+			name:        "tls enabled marks deployment workload",
+			artifactTLS: true,
+			wantEnabled: true,
+		},
+		{
+			name:        "tls disabled keeps deployment workload plain",
+			artifactTLS: false,
+			wantEnabled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deployCfg := &config.DeployConfig{
+				App:      "grpc-hello-world",
+				Template: "deploy",
+				Desc:     "dev",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
+				}},
+			}
+
+			serviceConfigs := []*config.ServiceConfig{{
+				URI:  "//svc/service.yaml",
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc service",
+				Artifacts: []*config.ServiceArtifact{{
+					Name:   "service",
+					Type:   config.ServiceArtifactTypeDeployment,
+					Target: "//svc:service_image",
+					TLS:    tt.artifactTLS,
+					Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
+				}},
+			}}
+
+			objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+				"//svc:service_image": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			})
+
+			if err != nil {
+				t.Fatalf("NewDeployObjects() failed: %v", err)
+			}
+			if len(objects.Deployments) != 1 {
+				t.Fatalf("deployment count = %d, want 1", len(objects.Deployments))
+			}
+
+			deployment := objects.Deployments[0]
+			if deployment.TLSEnabled != tt.wantEnabled {
+				t.Fatalf("deployment tls enabled = %t, want %t", deployment.TLSEnabled, tt.wantEnabled)
+			}
+		})
+	}
+}
+
 func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	deployCfg := &config.DeployConfig{
 		App:      "grpc-hello-world",
@@ -413,7 +475,9 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	}
 
 	k8sConfig := newTestK8sConfig()
-	builtDeployment, err := BuildDeployment(deployment, k8sConfig)
+	stubLoadK8sConfig(t, k8sConfig)
+
+	builtDeployment, err := BuildDeployment(deployment)
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
@@ -440,7 +504,7 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 		t.Fatalf("deployment env[2] = %#v, want POD_NAMESPACE literal", gotEnv[2])
 	}
 
-	builtService, err := BuildService(service, k8sConfig)
+	builtService, err := BuildService(service)
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}

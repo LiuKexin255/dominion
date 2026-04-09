@@ -31,6 +31,20 @@ services:
 `),
 			wantErr: true,
 		},
+		{
+			name: "deploy yaml rejects tls fields",
+			raw: []byte(`template: deploy
+app: grpc-hello-world
+desc: 开发环境
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+    tls:
+      secret_name: grpc-hello-world-service-tls
+`),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -60,6 +74,21 @@ artifacts:
   - name: service
     type: deployment
     target: //experimental/grpc_hello_world/service:service_image
+    tls: true
+    ports:
+      - name: grpc
+        port: 50051
+`),
+		},
+		{
+			name: "valid service yaml without tls field",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
     ports:
       - name: grpc
         port: 50051
@@ -74,6 +103,40 @@ artifacts:
   - name: service
     type: invalid
     target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid service yaml tls is not boolean",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+    tls: enabled
+    ports:
+      - name: grpc
+        port: 50051
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml rejects runtime tls details",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+    tls: true
+    secret_name: grpc-hello-world-service-tls
+    server_name: grpc-hello-world-service.default.svc.cluster.local
+    ports:
+      - name: grpc
+        port: 50051
 `),
 			wantErr: true,
 		},

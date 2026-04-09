@@ -91,6 +91,7 @@ type ServiceArtifact struct {
 	Name   string                 `yaml:"name"`
 	Type   ServiceArtifactType    `yaml:"type"`
 	Target string                 `yaml:"target"`
+	TLS    bool                   `yaml:"tls,omitempty"`
 	Ports  []*ServiceArtifactPort `yaml:"ports"`
 }
 

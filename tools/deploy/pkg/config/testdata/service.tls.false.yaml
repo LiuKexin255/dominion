@@ -5,8 +5,7 @@ artifacts:
   - name: service
     type: deployment
     target: :service_image
-    tls: true
-    ports: 
-      - name: grpc 
+    tls: false
+    ports:
+      - name: grpc
         port: 50051
- 

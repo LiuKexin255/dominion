@@ -7,14 +7,13 @@ import (
 	"net"
 
 	"dominion/experimental/grpc_hello_world"
+	pgrpc "dominion/pkg/grpc"
 
-	"google.golang.org/grpc"
+	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 var port = flag.String("port", "50051", "Port to listen on")
-var tlsCertFile = flag.String("tls_cert_file", "/etc/tls/tls.crt", "Path to TLS certificate file")
-var tlsKeyFile = flag.String("tls_key_file", "/etc/tls/tls.key", "Path to TLS private key file")
 
 type greeterServer struct {
 	grpc_hello_world.UnimplementedGreeterServer
@@ -37,13 +36,7 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	// creds, err := credentials.NewServerTLSFromFile(*tlsCertFile, *tlsKeyFile)
-	// if err != nil {
-	// 	log.Fatalf("failed to load TLS key pair from cert=%s key=%s: %v", *tlsCertFile, *tlsKeyFile, err)
-	// }
-
-	// grpcServer := grpc.NewServer(grpc.Creds(creds))
-	grpcServer := grpc.NewServer()
+	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
 
 	grpc_hello_world.RegisterGreeterServer(grpcServer, &greeterServer{})
 	reflection.Register(grpcServer)

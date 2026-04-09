@@ -6,7 +6,8 @@ artifacts:
     type: deployment
     target: :service_image
     tls: true
-    ports: 
-      - name: grpc 
+    secret_name: grpc-hello-world-service-tls
+    server_name: grpc-hello-world-service.default.svc.cluster.local
+    ports:
+      - name: grpc
         port: 50051
- 

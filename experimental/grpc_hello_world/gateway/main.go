@@ -18,8 +18,6 @@ var port = flag.String("port", "80", "Port to listen on")
 
 func main() {
 	flag.Parse()
-
-	ctx := context.Background()
 	conn, err := grpc.NewClient(solver.URI("grpc-hello-world/service:50051"), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("failed to dial backend: %v", err)
@@ -27,7 +25,7 @@ func main() {
 	defer conn.Close()
 
 	mux := runtime.NewServeMux()
-	err = grpc_hello_world.RegisterGreeterHandler(ctx, mux, conn)
+	err = grpc_hello_world.RegisterGreeterHandler(context.Background(), mux, conn)
 	if err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

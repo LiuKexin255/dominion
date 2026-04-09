@@ -111,3 +111,23 @@ deploy del --app=grpc-hello-world grpc-dev
 - `apply` 需要访问 Kubernetes；如果集群或 `kubectl` 配置不可用，会直接报出清晰的连接/权限错误并退出。
 - `cur` 只查看当前激活环境，不依赖集群。
 - `del` 在可达集群上清理环境；如果集群不可达，会同样失败并给出明确错误。
+
+## TLS 配置
+
+服务可以通过在 `service.yaml` 的 `artifacts[].tls` 字段设置为 `true` 来启用 TLS：
+
+运行时 TLS 配置在 `static_config.yaml` 中定义：
+
+```yaml
+tls:
+  secret_name: "my-service-tls"
+  secret_namespace: "default"
+  server_name: "my-service.default.svc.cluster.local"
+  ca_file: "/etc/tls/ca.crt"
+```
+
+当 TLS 启用时，部署工具会注入以下环境变量：
+- `TLS_CERT_FILE`
+- `TLS_KEY_FILE`
+- `TLS_CA_FILE`
+- `TLS_SERVER_NAME`
