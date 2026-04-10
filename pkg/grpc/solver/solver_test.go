@@ -137,13 +137,15 @@ func TestLoadEnvironment(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lookupEnv := func(key string) (string, bool) {
+			originalLookupEnv := lookupEnv
+			t.Cleanup(func() { lookupEnv = originalLookupEnv })
+			lookupEnv = func(key string) (string, bool) {
 				value, ok := tt.env[key]
 				return value, ok
 			}
 
 			// when
-			got, err := loadEnvironment(tt.target, lookupEnv)
+			got, err := loadEnvironment(tt.target)
 
 			// then
 			if tt.wantErr {

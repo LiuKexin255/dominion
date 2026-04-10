@@ -1,4 +1,4 @@
-package solver
+package mongo
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ const (
 	podNamespaceEnvKey = "POD_NAMESPACE"
 )
 
-// Environment captures the runtime values used by dominion resolver lookup.
+// Environment captures the runtime values used by dominion mongo client lookup.
 type Environment struct {
 	Name      string
 	App       string
