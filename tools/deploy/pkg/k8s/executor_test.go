@@ -5,6 +5,8 @@ import (
 	"errors"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -211,10 +213,92 @@ func TestExecutor_Apply_PartialFailure_StopsAndReports(t *testing.T) {
 	}
 }
 
+func TestExecutor_Apply_MongoDB_CreatesResourcesInOrder(t *testing.T) {
+	// given
+	stubLoadK8sConfig(t, newTestK8sConfigWithMongoProfile())
+	h := NewFakeHarness(t)
+	executor := NewExecutor(h.RuntimeClient())
+	objects := newExecutorTestMongoDeployObjects()
+	workload := objects.MongoDBWorkloads[0]
+
+	var createOrder []string
+	h.typedClient.PrependReactor("create", "*", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
+		switch action.GetResource().Resource {
+		case "persistentvolumeclaims":
+			createOrder = append(createOrder, resourceKindPVC)
+		default:
+			resourceType, ok := normalizeResourceTypeFromAction(action.GetResource().Resource)
+			if ok {
+				createOrder = append(createOrder, resourceType)
+			}
+		}
+		return false, nil, nil
+	})
+
+	// when
+	if err := executor.Apply(context.Background(), objects); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	// then
+	wantOrder := []string{resourceKindPVC, resourceKindSecret, resourceKindDeployment, resourceKindService}
+	if !reflect.DeepEqual(createOrder, wantOrder) {
+		t.Fatalf("create order = %v, want %v", createOrder, wantOrder)
+	}
+
+	h.AssertPVCCreated("team-dev", workload.PVCResourceName())
+	h.AssertSecretCreated("team-dev", workload.SecretResourceName())
+	h.AssertDeploymentCreated("team-dev", workload.ResourceName())
+	h.AssertServiceCreated("team-dev", workload.ServiceResourceName())
+	assertStoredMongoDeploymentReservedEnv(t, h, "team-dev", workload.ResourceName())
+}
+
+func TestExecutor_Apply_MongoDB_IncompatiblePVCStopsAndReports(t *testing.T) {
+	// given
+	stubLoadK8sConfig(t, newTestK8sConfigWithMongoProfile())
+	h := NewFakeHarness(t)
+	executor := NewExecutor(h.RuntimeClient())
+	objects := newExecutorTestMongoDeployObjects()
+	workload := objects.MongoDBWorkloads[0]
+
+	existingPVC := newMongoPVCWithMutation(func(pvc *corev1.PersistentVolumeClaim) {
+		pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("2Gi")
+	})
+	h.SeedPVC(existingPVC)
+
+	// when
+	err := executor.Apply(context.Background(), objects)
+
+	// then
+	if err == nil {
+		t.Fatal("Apply() expected error")
+	}
+	if !strings.Contains(err.Error(), workload.PVCResourceName()) {
+		t.Fatalf("error = %v, want contains pvc name %q", err, workload.PVCResourceName())
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), resourceKindPVC) {
+		t.Fatalf("error = %v, want contains pvc kind", err)
+	}
+
+	h.AssertPVCCreated("team-dev", workload.PVCResourceName())
+	h.AssertSecretDeleted("team-dev", workload.SecretResourceName())
+	h.AssertDeploymentDeleted("team-dev", workload.ResourceName())
+	h.AssertServiceDeleted("team-dev", workload.ServiceResourceName())
+}
+
 func newExecutorTestDeployObjects() *DeployObjects {
 	return &DeployObjects{
 		Deployments: []*DeploymentWorkload{newTestDeploymentWorkload()},
 		HTTPRoutes:  []*HTTPRouteWorkload{newTestHTTPRouteWorkload()},
+	}
+}
+
+func newExecutorTestMongoDeployObjects() *DeployObjects {
+	workload := newTestMongoDBWorkload()
+	workload.Persistence.Enabled = true
+
+	return &DeployObjects{
+		MongoDBWorkloads: []*MongoDBWorkload{workload},
 	}
 }
 
@@ -229,6 +313,40 @@ func assertStoredDeploymentReservedEnv(t *testing.T, h *FakeHarness, namespace s
 		t.Fatalf("containers len = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	assertExecutorReservedEnv(t, deployment.Spec.Template.Spec.Containers[0].Env)
+}
+
+func assertStoredMongoDeploymentReservedEnv(t *testing.T, h *FakeHarness, namespace string, name string) {
+	t.Helper()
+
+	deployment, err := h.getDeployment(namespace, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployment.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("containers len = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
+	}
+	assertMongoReservedEnv(t, deployment.Spec.Template.Spec.Containers[0].Env)
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("init containers len = %d, want 1", len(deployment.Spec.Template.Spec.InitContainers))
+	}
+	assertMongoReservedEnv(t, deployment.Spec.Template.Spec.InitContainers[0].Env)
+}
+
+func assertMongoReservedEnv(t *testing.T, env []corev1.EnvVar) {
+	t.Helper()
+
+	if len(env) < 3 {
+		t.Fatalf("env len = %d, want >= 3", len(env))
+	}
+	if env[0].Name != reservedEnvNameDominionApp || env[0].Value != "grpc-hello-world" {
+		t.Fatalf("env[0] = %#v, want DOMINION_APP literal", env[0])
+	}
+	if env[1].Name != reservedEnvNameDominionEnvironment || env[1].Value != "dev" {
+		t.Fatalf("env[1] = %#v, want DOMINION_ENVIRONMENT literal", env[1])
+	}
+	if env[2].Name != reservedEnvNamePodNamespace || env[2].ValueFrom == nil || env[2].ValueFrom.FieldRef == nil || env[2].ValueFrom.FieldRef.FieldPath != mongoPodFieldPathNS {
+		t.Fatalf("env[2] = %#v, want POD_NAMESPACE fieldRef %q", env[2], mongoPodFieldPathNS)
+	}
 }
 
 func assertExecutorReservedEnv(t *testing.T, env []corev1.EnvVar) {

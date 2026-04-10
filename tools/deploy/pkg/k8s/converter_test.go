@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -542,5 +543,219 @@ func TestNewDeployObjects_ErrorsWhenResolvedImageMissing(t *testing.T) {
 	wantErr := "artifact target //svc:service_image missing resolved image"
 	if !strings.Contains(err.Error(), wantErr) {
 		t.Fatalf("NewDeployObjects() err = %v, want substring %q", err, wantErr)
+	}
+}
+
+func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
+	tests := []struct {
+		name               string
+		persistenceEnabled bool
+		wantPVCCount       int
+	}{
+		{
+			name:               "persistence enabled creates mongodb workloads including pvc",
+			persistenceEnabled: true,
+			wantPVCCount:       1,
+		},
+		{
+			name:               "persistence disabled skips pvc workload",
+			persistenceEnabled: false,
+			wantPVCCount:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k8sConfig := newTestK8sConfigWithMongoProfile()
+			stubLoadK8sConfig(t, k8sConfig)
+
+			deployCfg := &config.DeployConfig{
+				App:      "grpc-hello-world",
+				Template: "deploy",
+				Desc:     "dev",
+				Services: []*config.DeployService{{
+					Infra: config.DeployInfra{
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo-main",
+						Persistence: config.DeployInfraPersistence{
+							Enabled: tt.persistenceEnabled,
+						},
+					},
+				}},
+			}
+
+			objects, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+			if err != nil {
+				t.Fatalf("NewDeployObjects() failed: %v", err)
+			}
+
+			if len(objects.Deployments) != 0 {
+				t.Fatalf("deployment count = %d, want 0", len(objects.Deployments))
+			}
+			if len(objects.HTTPRoutes) != 0 {
+				t.Fatalf("http route count = %d, want 0", len(objects.HTTPRoutes))
+			}
+			if len(objects.MongoDBWorkloads) != 1 {
+				t.Fatalf("mongodb workload count = %d, want 1", len(objects.MongoDBWorkloads))
+			}
+
+			mongoWorkload := objects.MongoDBWorkloads[0]
+			if mongoWorkload.ServiceName != "mongo-main" {
+				t.Fatalf("mongodb workload service name = %q, want %q", mongoWorkload.ServiceName, "mongo-main")
+			}
+			if mongoWorkload.EnvironmentName != "dev" {
+				t.Fatalf("mongodb workload environment = %q, want %q", mongoWorkload.EnvironmentName, "dev")
+			}
+			if mongoWorkload.ProfileName != "dev-single" {
+				t.Fatalf("mongodb workload profile = %q, want %q", mongoWorkload.ProfileName, "dev-single")
+			}
+			if mongoWorkload.Persistence.Enabled != tt.persistenceEnabled {
+				t.Fatalf("mongodb workload persistence enabled = %t, want %t", mongoWorkload.Persistence.Enabled, tt.persistenceEnabled)
+			}
+			gotPVCCount := 0
+			if mongoWorkload.Persistence.Enabled {
+				gotPVCCount = 1
+			}
+			if gotPVCCount != tt.wantPVCCount {
+				t.Fatalf("mongodb pvc workload count = %d, want %d", gotPVCCount, tt.wantPVCCount)
+			}
+
+			wantDeploymentName := newObjectName(WorkloadKindMongoDB, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			if mongoWorkload.ResourceName() != wantDeploymentName {
+				t.Fatalf("mongodb workload resource name = %q, want %q", mongoWorkload.ResourceName(), wantDeploymentName)
+			}
+
+			deployment, err := BuildMongoDBDeployment(mongoWorkload)
+			if err != nil {
+				t.Fatalf("BuildMongoDBDeployment() failed: %v", err)
+			}
+			if len(deployment.Spec.Template.Spec.Containers) != 1 {
+				t.Fatalf("mongodb deployment containers len = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
+			}
+			if deployment.Spec.Template.Spec.Containers[0].Image != "mongo:7.0" {
+				t.Fatalf("mongodb deployment image = %q, want %q", deployment.Spec.Template.Spec.Containers[0].Image, "mongo:7.0")
+			}
+			if deployment.Labels[appLabelKey] != "grpc-hello-world" {
+				t.Fatalf("mongodb deployment app label = %q, want %q", deployment.Labels[appLabelKey], "grpc-hello-world")
+			}
+
+			service, err := BuildMongoDBService(mongoWorkload)
+			if err != nil {
+				t.Fatalf("BuildMongoDBService() failed: %v", err)
+			}
+			wantServiceName := newObjectName(WorkloadKindService, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			if service.Name != wantServiceName {
+				t.Fatalf("mongodb service name = %q, want %q", service.Name, wantServiceName)
+			}
+			if len(service.Spec.Ports) != 1 {
+				t.Fatalf("mongodb service port count = %d, want 1", len(service.Spec.Ports))
+			}
+			if service.Spec.Ports[0].Port != 27017 {
+				t.Fatalf("mongodb service port = %d, want 27017", service.Spec.Ports[0].Port)
+			}
+			if service.Labels[dominionAppLabelKey] != "grpc-hello-world" {
+				t.Fatalf("mongodb service dominion app label = %q, want %q", service.Labels[dominionAppLabelKey], "grpc-hello-world")
+			}
+
+			secret, err := BuildMongoDBSecret(mongoWorkload)
+			if err != nil {
+				t.Fatalf("BuildMongoDBSecret() failed: %v", err)
+			}
+			wantSecretName := newObjectName(WorkloadKindSecret, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			if secret.Name != wantSecretName {
+				t.Fatalf("mongodb secret name = %q, want %q", secret.Name, wantSecretName)
+			}
+			username, err := base64.StdEncoding.DecodeString(string(secret.Data[mongoSecretUsernameKey]))
+			if err != nil {
+				t.Fatalf("DecodeString(username) failed: %v", err)
+			}
+			if string(username) != "admin" {
+				t.Fatalf("mongodb secret username = %q, want %q", string(username), "admin")
+			}
+		})
+	}
+}
+
+func TestNewDeployObjects_InfraAndArtifactMutuallyExclusive(t *testing.T) {
+	k8sConfig := newTestK8sConfigWithMongoProfile()
+	stubLoadK8sConfig(t, k8sConfig)
+
+	deployCfg := &config.DeployConfig{
+		App:      "grpc-hello-world",
+		Template: "deploy",
+		Desc:     "dev",
+		Services: []*config.DeployService{{
+			Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
+			Infra: config.DeployInfra{
+				Resource: "mongodb",
+				Profile:  "dev-single",
+				Name:     "mongo-main",
+			},
+		}},
+	}
+
+	_, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	if err == nil {
+		t.Fatal("NewDeployObjects() succeeded unexpectedly")
+	}
+	if !strings.Contains(err.Error(), "infra 和 artifact 不能同时配置") {
+		t.Fatalf("NewDeployObjects() err = %v, want mutual exclusivity error", err)
+	}
+}
+
+func TestNewDeployObjects_InfraMongoDBPasswordDeterministic(t *testing.T) {
+	k8sConfig := newTestK8sConfigWithMongoProfile()
+	stubLoadK8sConfig(t, k8sConfig)
+
+	deployCfg := &config.DeployConfig{
+		App:      "grpc-hello-world",
+		Template: "deploy",
+		Desc:     "dev",
+		Services: []*config.DeployService{{
+			Infra: config.DeployInfra{
+				Resource: "mongodb",
+				Profile:  "dev-single",
+				Name:     "mongo-main",
+				Persistence: config.DeployInfraPersistence{
+					Enabled: true,
+				},
+			},
+		}},
+	}
+
+	objectsA, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	if err != nil {
+		t.Fatalf("NewDeployObjects() first call failed: %v", err)
+	}
+	objectsB, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	if err != nil {
+		t.Fatalf("NewDeployObjects() second call failed: %v", err)
+	}
+
+	secretA, err := BuildMongoDBSecret(objectsA.MongoDBWorkloads[0])
+	if err != nil {
+		t.Fatalf("BuildMongoDBSecret() first call failed: %v", err)
+	}
+	secretB, err := BuildMongoDBSecret(objectsB.MongoDBWorkloads[0])
+	if err != nil {
+		t.Fatalf("BuildMongoDBSecret() second call failed: %v", err)
+	}
+
+	passwordA, err := base64.StdEncoding.DecodeString(string(secretA.Data[mongoSecretPasswordKey]))
+	if err != nil {
+		t.Fatalf("DecodeString(passwordA) failed: %v", err)
+	}
+	passwordB, err := base64.StdEncoding.DecodeString(string(secretB.Data[mongoSecretPasswordKey]))
+	if err != nil {
+		t.Fatalf("DecodeString(passwordB) failed: %v", err)
+	}
+
+	wantPassword := generateStablePassword("grpc-hello-world", "dev", "mongo-main")
+	if string(passwordA) != wantPassword {
+		t.Fatalf("mongodb password A = %q, want %q", string(passwordA), wantPassword)
+	}
+	if string(passwordB) != wantPassword {
+		t.Fatalf("mongodb password B = %q, want %q", string(passwordB), wantPassword)
 	}
 }

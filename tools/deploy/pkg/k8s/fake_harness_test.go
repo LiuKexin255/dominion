@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -248,6 +249,129 @@ func TestFakeHarness_ServiceDeleted(t *testing.T) {
 			}
 			if _, err := client.TypedClient.CoreV1().Services(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 				t.Fatalf("get service error = %v, want not found", err)
+			}
+		})
+	}
+}
+
+func TestFakeHarness_SecretCreatedAndDeleted(t *testing.T) {
+	tests := []struct {
+		name       string
+		namespace  string
+		secretName string
+	}{
+		{name: "default namespace", namespace: "default", secretName: "app1-secret"},
+		{name: "custom namespace", namespace: "team-a", secretName: "gateway-secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewFakeHarness(t)
+			client := h.RuntimeClient()
+			ctx := context.Background()
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: tt.namespace,
+					Name:      tt.secretName,
+					Labels: map[string]string{
+						"app": tt.secretName,
+					},
+				},
+				StringData: map[string]string{
+					"token": "value",
+				},
+			}
+
+			h.SeedSecret(secret)
+			h.AssertSecretCreated(secret.Namespace, secret.Name)
+
+			if _, err := client.TypedClient.CoreV1().Secrets(secret.Namespace).Get(ctx, secret.Name, metav1.GetOptions{}); err != nil {
+				t.Fatalf("get secret failed: %v", err)
+			}
+
+			if err := client.TypedClient.CoreV1().Secrets(secret.Namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{}); err != nil {
+				t.Fatalf("delete secret failed: %v", err)
+			}
+			h.AssertSecretDeleted(secret.Namespace, secret.Name)
+			if _, err := client.TypedClient.CoreV1().Secrets(secret.Namespace).Get(ctx, secret.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("get secret error = %v, want not found", err)
+			}
+		})
+	}
+}
+
+func TestFakeHarness_PVCCreated(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		pvcName   string
+	}{
+		{name: "default namespace", namespace: "default", pvcName: "app1-pvc"},
+		{name: "custom namespace", namespace: "team-a", pvcName: "gateway-pvc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewFakeHarness(t)
+			client := h.RuntimeClient()
+			ctx := context.Background()
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: tt.namespace,
+					Name:      tt.pvcName,
+					Labels: map[string]string{
+						"app": tt.pvcName,
+					},
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+
+			h.SeedPVC(pvc)
+			h.AssertPVCCreated(pvc.Namespace, pvc.Name)
+
+			gotPVC, err := client.TypedClient.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get pvc failed: %v", err)
+			}
+			if gotPVC.Name != pvc.Name || gotPVC.Namespace != pvc.Namespace || gotPVC.Labels["app"] != pvc.Labels["app"] {
+				t.Fatalf("pvc = %+v, want %+v", gotPVC.ObjectMeta, pvc.ObjectMeta)
+			}
+		})
+	}
+}
+
+func TestNormalizeResourceTypeFromAction(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		want     string
+		ok       bool
+	}{
+		{name: "deployment singular", resource: "deployment", want: resourceKindDeployment, ok: true},
+		{name: "service plural", resource: "services", want: resourceKindService, ok: true},
+		{name: "httproute plural", resource: "httproutes", want: resourceKindHTTPRoute, ok: true},
+		{name: "pvc singular", resource: "pvc", want: resourceKindPVC, ok: true},
+		{name: "pvc plural", resource: "pvcs", want: resourceKindPVC, ok: true},
+		{name: "secret singular", resource: "secret", want: resourceKindSecret, ok: true},
+		{name: "secret plural", resource: "secrets", want: resourceKindSecret, ok: true},
+		{name: "unknown", resource: "configmaps", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizeResourceTypeFromAction(tt.resource)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Fatalf("got = %q, want %q", got, tt.want)
 			}
 		})
 	}

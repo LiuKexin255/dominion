@@ -111,20 +111,19 @@ func parseK8sConfig(raw []byte) (*K8sConfig, error) {
 	return cfg, nil
 }
 
-// LoadMongoProfile 加载静态配置中的 Mongo profile。
+// MongoProfile 加载静态配置中的 Mongo profile。
 // 当 profile 不存在时返回 nil。
-func LoadMongoProfile(profile string) *MongoProfileConfig {
-	cfg := LoadK8sConfig()
-	if cfg == nil {
+func (c *K8sConfig) MongoProfile(profile string) *MongoProfileConfig {
+	if c == nil {
 		return nil
 	}
 
 	profile = strings.TrimSpace(profile)
-	if profile == "" || cfg.MongoDB == nil {
+	if profile == "" || c.MongoDB == nil {
 		return nil
 	}
 
-	return cfg.MongoDB[profile]
+	return c.MongoDB[profile]
 }
 
 // Validate 校验 Mongo profile 字段是否合法。

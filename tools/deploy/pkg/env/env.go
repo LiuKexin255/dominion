@@ -156,14 +156,26 @@ func (e *DeployEnv) Deploy(ctx context.Context, exec executor) error {
 		return fmt.Errorf("no cached deploy config, call Update first")
 	}
 
-	resolver := newImageResolver()
-	if resolver == nil {
-		return fmt.Errorf("image resolver is nil")
-	}
+	var resolvedImages map[string]string
+	for _, deployService := range e.mainDeployConfig.Services {
+		if deployService == nil {
+			return fmt.Errorf("deploy service 为空")
+		}
+		if isInfraService(deployService) {
+			continue
+		}
 
-	resolvedImages, err := resolver.Resolve(ctx, e.mainDeployConfig, e.serviceConfigs)
-	if err != nil {
-		return err
+		resolver := newImageResolver()
+		if resolver == nil {
+			return fmt.Errorf("image resolver is nil")
+		}
+
+		var err error
+		resolvedImages, err = resolver.Resolve(ctx, e.mainDeployConfig, e.serviceConfigs)
+		if err != nil {
+			return err
+		}
+		break
 	}
 
 	objects, err := e.BuildDeployObjects(resolvedImages)
@@ -405,6 +417,9 @@ func collectReferencedArtifactTargets(deployConfig *config.DeployConfig, service
 		if deployService == nil {
 			return nil, fmt.Errorf("deploy service 为空")
 		}
+		if isInfraService(deployService) {
+			continue
+		}
 
 		serviceConfig, ok := serviceConfigMap[deployService.Artifact.Path]
 		if !ok {
@@ -428,8 +443,15 @@ func collectReferencedArtifactTargets(deployConfig *config.DeployConfig, service
 }
 
 func readServiceConfigs(deployConfig *config.DeployConfig) ([]*config.ServiceConfig, error) {
-	serviceConfigs := make([]*config.ServiceConfig, 0, len(deployConfig.Services))
+	var serviceConfigs []*config.ServiceConfig
 	for _, service := range deployConfig.Services {
+		if service == nil {
+			return nil, fmt.Errorf("deploy service 为空")
+		}
+		if isInfraService(service) {
+			continue
+		}
+
 		serviceConfig, err := config.ParseServiceConfig(workspace.ResolveRootPath(service.Artifact.Path))
 		if err != nil {
 			return nil, fmt.Errorf("读取服务配置 %s 失败: %w", service.Artifact.Path, err)
@@ -443,6 +465,14 @@ func readServiceConfigs(deployConfig *config.DeployConfig) ([]*config.ServiceCon
 	}
 
 	return serviceConfigs, nil
+}
+
+func isInfraService(deployService *config.DeployService) bool {
+	if deployService == nil {
+		return false
+	}
+
+	return strings.TrimSpace(deployService.Infra.Resource) != ""
 }
 
 func saveDeployConfig(fileName string, deployConfig *config.DeployConfig) error {

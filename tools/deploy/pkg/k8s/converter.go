@@ -7,10 +7,13 @@ import (
 	"dominion/tools/deploy/pkg/config"
 )
 
+const deployInfraResourceMongoDB = "mongodb"
+
 // DeployObjects 表示一次部署所需的 Kubernetes 工作负载对象集合。
 type DeployObjects struct {
-	Deployments []*DeploymentWorkload
-	HTTPRoutes  []*HTTPRouteWorkload
+	Deployments      []*DeploymentWorkload
+	HTTPRoutes       []*HTTPRouteWorkload
+	MongoDBWorkloads []*MongoDBWorkload
 }
 
 // NewDeployObjects 根据部署配置、环境归属 app 和服务配置构建 Kubernetes 部署对象。
@@ -32,6 +35,37 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 	for _, deployService := range deployConfig.Services {
 		if deployService == nil {
 			return nil, fmt.Errorf("deploy service 为空")
+		}
+
+		hasArtifact := strings.TrimSpace(deployService.Artifact.Path) != "" || strings.TrimSpace(deployService.Artifact.Name) != ""
+		hasInfra := strings.TrimSpace(deployService.Infra.Resource) != "" || strings.TrimSpace(deployService.Infra.Profile) != "" || strings.TrimSpace(deployService.Infra.Name) != "" || deployService.Infra.Persistence.Enabled
+
+		if hasInfra {
+			if hasArtifact {
+				return nil, fmt.Errorf("deploy service 的 infra 和 artifact 不能同时配置")
+			}
+
+			if strings.TrimSpace(deployService.Infra.Resource) != deployInfraResourceMongoDB {
+				return nil, fmt.Errorf("暂不支持的 infra resource: %s", strings.TrimSpace(deployService.Infra.Resource))
+			}
+
+			mongoWorkload, err := newMongoDBWorkload(deployService.Infra, envName, dominionApp)
+			if err != nil {
+				return nil, fmt.Errorf("创建 mongodb workload 失败: %w", err)
+			}
+
+			k8sConfig := LoadK8sConfig()
+			profile := k8sConfig.MongoProfile(mongoWorkload.ProfileName)
+			if profile == nil {
+				return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(mongoWorkload.ProfileName))
+			}
+			if err := profile.Validate(); err != nil {
+				return nil, fmt.Errorf("mongo profile %s 无效: %w", strings.TrimSpace(mongoWorkload.ProfileName), err)
+			}
+
+			objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, mongoWorkload)
+
+			continue
 		}
 
 		// 根据 Artifact.Path (URI) 匹配 service config

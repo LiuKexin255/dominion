@@ -25,6 +25,8 @@ const (
 	resourceKindDeployment = "deployment"
 	resourceKindService    = "service"
 	resourceKindHTTPRoute  = "httproute"
+	resourceKindPVC        = "pvc"
+	resourceKindSecret     = "secret"
 
 	operationCreate = "create"
 	operationUpdate = "update"
@@ -87,6 +89,28 @@ func (h *FakeHarness) SeedService(s *corev1.Service) {
 	}
 	if err := h.typedClient.Tracker().Add(s.DeepCopy()); err != nil {
 		h.t.Fatalf("seed service %s/%s failed: %v", s.Namespace, s.Name, err)
+	}
+}
+
+// SeedPVC seeds a PersistentVolumeClaim into the fake typed client.
+func (h *FakeHarness) SeedPVC(pvc *corev1.PersistentVolumeClaim) {
+	h.t.Helper()
+	if pvc == nil {
+		h.t.Fatal("SeedPVC() requires a pvc")
+	}
+	if err := h.typedClient.Tracker().Add(pvc.DeepCopy()); err != nil {
+		h.t.Fatalf("seed pvc %s/%s failed: %v", pvc.Namespace, pvc.Name, err)
+	}
+}
+
+// SeedSecret seeds a Secret into the fake typed client.
+func (h *FakeHarness) SeedSecret(secret *corev1.Secret) {
+	h.t.Helper()
+	if secret == nil {
+		h.t.Fatal("SeedSecret() requires a secret")
+	}
+	if err := h.typedClient.Tracker().Add(secret.DeepCopy()); err != nil {
+		h.t.Fatalf("seed secret %s/%s failed: %v", secret.Namespace, secret.Name, err)
 	}
 }
 
@@ -160,6 +184,30 @@ func (h *FakeHarness) AssertServiceDeleted(namespace, name string) {
 	}
 }
 
+// AssertSecretCreated verifies that a Secret exists in the fake client.
+func (h *FakeHarness) AssertSecretCreated(namespace, name string) {
+	h.t.Helper()
+	if _, err := h.getSecret(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// AssertSecretDeleted verifies that a Secret has been deleted from the fake client.
+func (h *FakeHarness) AssertSecretDeleted(namespace, name string) {
+	h.t.Helper()
+	if err := h.assertSecretMissing(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// AssertPVCCreated verifies that a PersistentVolumeClaim exists in the fake client.
+func (h *FakeHarness) AssertPVCCreated(namespace, name string) {
+	h.t.Helper()
+	if _, err := h.getPVC(namespace, name); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 func (h *FakeHarness) AssertHTTPRouteCreated(namespace, name string) {
 	h.t.Helper()
 	if _, err := h.getHTTPRoute(namespace, name); err != nil {
@@ -225,6 +273,22 @@ func (h *FakeHarness) getService(namespace, name string) (*corev1.Service, error
 	return service, nil
 }
 
+func (h *FakeHarness) getSecret(namespace, name string) (*corev1.Secret, error) {
+	secret, err := h.typedClient.CoreV1().Secrets(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("secret %s/%s lookup failed: %w", namespace, name, err)
+	}
+	return secret, nil
+}
+
+func (h *FakeHarness) getPVC(namespace, name string) (*corev1.PersistentVolumeClaim, error) {
+	pvc, err := h.typedClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("pvc %s/%s lookup failed: %w", namespace, name, err)
+	}
+	return pvc, nil
+}
+
 func (h *FakeHarness) getHTTPRoute(namespace, name string) (*unstructured.Unstructured, error) {
 	route, err := h.dynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
@@ -251,6 +315,17 @@ func (h *FakeHarness) assertServiceMissing(namespace, name string) error {
 	}
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("service %s/%s delete check failed: %w", namespace, name, err)
+	}
+	return nil
+}
+
+func (h *FakeHarness) assertSecretMissing(namespace, name string) error {
+	_, err := h.typedClient.CoreV1().Secrets(namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err == nil {
+		return fmt.Errorf("secret %s/%s should have been deleted", namespace, name)
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("secret %s/%s delete check failed: %w", namespace, name, err)
 	}
 	return nil
 }
@@ -363,6 +438,10 @@ func normalizeResourceTypeFromAction(resource string) (string, bool) {
 		return resourceKindDeployment, true
 	case resourceKindService, "services":
 		return resourceKindService, true
+	case resourceKindPVC, "pvcs":
+		return resourceKindPVC, true
+	case resourceKindSecret, "secrets":
+		return resourceKindSecret, true
 	case resourceKindHTTPRoute, "httproutes":
 		return resourceKindHTTPRoute, true
 	default:

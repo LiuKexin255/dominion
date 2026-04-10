@@ -217,10 +217,20 @@ func TestLoadMongoProfile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stubLoadK8sConfig(t, tt.cfg)
-			got := LoadMongoProfile(tt.profile)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
-			}
+
+			t.Run("standalone", func(t *testing.T) {
+				got := tt.cfg.MongoProfile(tt.profile)
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
+				}
+			})
+
+			t.Run("method", func(t *testing.T) {
+				got := tt.cfg.MongoProfile(tt.profile)
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("(*K8sConfig).LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
+				}
+			})
 		})
 	}
 }

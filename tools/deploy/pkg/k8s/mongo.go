@@ -193,12 +193,12 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload) (*appsv1.Deployment, erro
 		return nil, err
 	}
 
-	profile := LoadMongoProfile(workload.ProfileName)
+	k8sConfig := LoadK8sConfig()
+	profile := k8sConfig.MongoProfile(workload.ProfileName)
 	if profile == nil {
 		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
 	}
 
-	k8sConfig := LoadK8sConfig()
 	deploymentName := workload.ResourceName()
 	objectLabels := buildLabels(
 		withApp(workload.App),
@@ -286,12 +286,12 @@ func BuildMongoDBPVC(workload *MongoDBWorkload) (*corev1.PersistentVolumeClaim, 
 		return nil, err
 	}
 
-	profile := LoadMongoProfile(workload.ProfileName)
+	k8sConfig := LoadK8sConfig()
+	profile := k8sConfig.MongoProfile(workload.ProfileName)
 	if profile == nil {
 		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
 	}
 
-	k8sConfig := LoadK8sConfig()
 	pvcName := workload.PVCResourceName()
 	objectLabels := buildLabels(
 		withApp(workload.App),
@@ -335,7 +335,8 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 		return err
 	}
 
-	profile := LoadMongoProfile(desired.ProfileName)
+	k8sConfig := LoadK8sConfig()
+	profile := k8sConfig.MongoProfile(desired.ProfileName)
 	if profile == nil {
 		return fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(desired.ProfileName))
 	}
@@ -380,12 +381,12 @@ func BuildMongoDBService(workload *MongoDBWorkload) (*corev1.Service, error) {
 		return nil, fmt.Errorf("mongo workload 为空")
 	}
 
-	profile := LoadMongoProfile(workload.ProfileName)
+	k8sConfig := LoadK8sConfig()
+	profile := k8sConfig.MongoProfile(workload.ProfileName)
 	if profile == nil {
 		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
 	}
 
-	k8sConfig := LoadK8sConfig()
 	serviceName := workload.ServiceResourceName()
 	objectLabels := buildLabels(
 		withApp(workload.App),
@@ -426,12 +427,12 @@ func BuildMongoDBSecret(workload *MongoDBWorkload) (*corev1.Secret, error) {
 		return nil, fmt.Errorf("mongo workload 为空")
 	}
 
-	profile := LoadMongoProfile(workload.ProfileName)
+	k8sConfig := LoadK8sConfig()
+	profile := k8sConfig.MongoProfile(workload.ProfileName)
 	if profile == nil {
 		return nil, fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(workload.ProfileName))
 	}
 
-	k8sConfig := LoadK8sConfig()
 	secretName := workload.SecretResourceName()
 	objectLabels := buildLabels(
 		withApp(workload.App),
