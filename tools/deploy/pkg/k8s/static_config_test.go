@@ -21,6 +21,9 @@ func TestLoadK8sConfig(t *testing.T) {
 		{name: "tls.domain", want: "tls.liukexin.com", got: LoadK8sConfig().TLS.Domain},
 		{name: "tls.ca_config_map.name", want: "my-ca.crt", got: LoadK8sConfig().TLS.CAConfigMap.Name},
 		{name: "tls.ca_config_map.key", want: "ca.crt", got: LoadK8sConfig().TLS.CAConfigMap.Key},
+		{name: "mongodb.dev-single.image", want: "mongo", got: LoadK8sConfig().MongoDB["dev-single"].Image},
+		{name: "mongodb.dev-single.version", want: "7.0", got: LoadK8sConfig().MongoDB["dev-single"].Version},
+		{name: "mongodb.dev-single.admin_username", want: "admin", got: LoadK8sConfig().MongoDB["dev-single"].AdminUsername},
 	}
 
 	for _, tt := range tests {
@@ -29,6 +32,19 @@ func TestLoadK8sConfig(t *testing.T) {
 				t.Fatalf("LoadK8sConfig() %s = %q, want %q", tt.name, tt.got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadK8sConfigMongoProfile(t *testing.T) {
+	profile := LoadK8sConfig().MongoDB["dev-single"]
+	if profile == nil {
+		t.Fatal("LoadK8sConfig().MongoDB[\"dev-single\"] is nil")
+	}
+	if profile.Port != 27017 {
+		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Port = %d, want %d", profile.Port, 27017)
+	}
+	if !reflect.DeepEqual(profile.Storage.AccessModes, []string{"ReadWriteOnce"}) {
+		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Storage.AccessModes = %#v, want %#v", profile.Storage.AccessModes, []string{"ReadWriteOnce"})
 	}
 }
 
@@ -71,14 +87,49 @@ func TestParseK8sConfig(t *testing.T) {
 					Namespace: "ingress",
 				},
 				TLS: TLSConfig{
-					Secret:    "grpc-hello-world-service-tls",
-					Domain:    "grpc-hello-world-service.default.svc.cluster.local",
+					Secret: "grpc-hello-world-service-tls",
+					Domain: "grpc-hello-world-service.default.svc.cluster.local",
 					CAConfigMap: ConfigMapConfig{
 						Name: "grpc-hello-world-service-ca",
 						Key:  "ca.crt",
 					},
 				},
 			},
+		},
+		{
+			name: "valid mongo config",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.mongodb.valid.yaml")
+			},
+			want: &K8sConfig{
+				Namespace: "default",
+				ManagedBy: "dominion.io",
+				Gateway: GatewayConfig{
+					Name:      "traefik-gateway",
+					Namespace: "ingress",
+				},
+				MongoDB: map[string]*MongoProfileConfig{
+					"dev-single": {
+						Image:         "mongo",
+						Version:       "7.0",
+						Port:          27017,
+						AdminUsername: "admin",
+						Storage: MongoStorageConfig{
+							StorageClassName: "local-path",
+							Capacity:         "1Gi",
+							AccessModes:      []string{"ReadWriteOnce"},
+							VolumeMode:       "Filesystem",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "invalid mongo config",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.mongodb.invalid.yaml")
+			},
+			wantErr: true,
 		},
 		{
 			name: "missing secret",
@@ -118,6 +169,57 @@ func TestParseK8sConfig(t *testing.T) {
 			}
 			if !reflect.DeepEqual(tt.want, cfg) {
 				t.Fatalf("parseK8sConfig() = %#v, want %#v", cfg, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadMongoProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *K8sConfig
+		profile string
+		want    *MongoProfileConfig
+	}{
+		{
+			name: "found",
+			cfg: &K8sConfig{MongoDB: map[string]*MongoProfileConfig{
+				"dev-single": {
+					Image:         "mongo",
+					Version:       "7.0",
+					Port:          27017,
+					AdminUsername: "admin",
+				},
+			}},
+			profile: "dev-single",
+			want: &MongoProfileConfig{
+				Image:         "mongo",
+				Version:       "7.0",
+				Port:          27017,
+				AdminUsername: "admin",
+			},
+		},
+		{
+			name: "not found",
+			cfg: &K8sConfig{MongoDB: map[string]*MongoProfileConfig{
+				"dev-single": {
+					Image:         "mongo",
+					Version:       "7.0",
+					Port:          27017,
+					AdminUsername: "admin",
+				},
+			}},
+			profile: "nonexistent",
+			want:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubLoadK8sConfig(t, tt.cfg)
+			got := LoadMongoProfile(tt.profile)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
 			}
 		})
 	}

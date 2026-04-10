@@ -29,6 +29,12 @@ const (
 	WorkloadKindService WorkloadKind = "svc"
 	// WorkloadKindHTTPRoute 表示 HTTPRoute 类型前缀。
 	WorkloadKindHTTPRoute WorkloadKind = "route"
+	// WorkloadKindMongoDB 表示 MongoDB 类型前缀。
+	WorkloadKindMongoDB WorkloadKind = "mongo"
+	// WorkloadKindPVC 表示 PVC 类型前缀。
+	WorkloadKindPVC WorkloadKind = "pvc"
+	// WorkloadKindSecret 表示 Secret 类型前缀。
+	WorkloadKindSecret WorkloadKind = "secret"
 
 	maxK8sResourceNameSize = 63
 )

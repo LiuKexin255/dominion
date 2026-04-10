@@ -53,12 +53,26 @@ type DeployConfig struct {
 
 type DeployService struct {
 	Artifact DeployArtifact `yaml:"artifact"`
+	Infra    DeployInfra    `yaml:"infra,omitempty"`
 	HTTP     DeployHTTP     `yaml:"http,omitempty"`
 }
 
 type DeployArtifact struct {
 	Path string `yaml:"path"`
 	Name string `yaml:"name"`
+}
+
+// DeployInfra 表示基于基础设施的部署定义。
+type DeployInfra struct {
+	Resource    string                 `yaml:"resource"`
+	Profile     string                 `yaml:"profile"`
+	Name        string                 `yaml:"name"`
+	Persistence DeployInfraPersistence `yaml:"persistence"`
+}
+
+// DeployInfraPersistence 表示基础设施部署的持久化配置。
+type DeployInfraPersistence struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type DeployHTTP struct {
@@ -134,7 +148,9 @@ func ParseDeployConfig(filePath string) (*DeployConfig, error) {
 	}
 
 	for _, svc := range c.Services {
-		svc.Artifact.Path = normalizeArtifactPath(svc.Artifact.Path, configURI)
+		if svc.Artifact.Path != "" || svc.Artifact.Name != "" {
+			svc.Artifact.Path = normalizeArtifactPath(svc.Artifact.Path, configURI)
+		}
 	}
 
 	return c, nil

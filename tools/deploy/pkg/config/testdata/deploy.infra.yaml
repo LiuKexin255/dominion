@@ -1,0 +1,10 @@
+template: deploy
+app: grpc-hello-world
+desc: "开发环境"
+services:
+  - infra:
+      resource: mongo
+      profile: development
+      name: grpc-hello-world-mongo
+      persistence:
+        enabled: true

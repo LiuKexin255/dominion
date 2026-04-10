@@ -3,12 +3,6 @@ managed_by: "dominion.io"
 gateway:
   name: "traefik-gateway"
   namespace: "ingress"
-tls:
-  secret: "my-https-cert"
-  domain: "tls.liukexin.com"
-  ca_config_map:
-    name: "my-ca.crt"
-    key: "ca.crt"
 mongodb:
   dev-single:
     image: "mongo"

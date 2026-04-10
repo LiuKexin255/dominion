@@ -49,12 +49,30 @@ type TLSConfig struct {
 	CAConfigMap ConfigMapConfig `yaml:"ca_config_map"`
 }
 
+// MongoStorageConfig 定义 Mongo 默认持久化配置。
+type MongoStorageConfig struct {
+	StorageClassName string   `yaml:"storage_class_name"`
+	Capacity         string   `yaml:"capacity"`
+	AccessModes      []string `yaml:"access_modes"`
+	VolumeMode       string   `yaml:"volume_mode"`
+}
+
+// MongoProfileConfig 定义 Mongo 内置 profile 的默认参数。
+type MongoProfileConfig struct {
+	Image         string             `yaml:"image"`
+	Version       string             `yaml:"version"`
+	Port          int                `yaml:"port"`
+	AdminUsername string             `yaml:"admin_username"`
+	Storage       MongoStorageConfig `yaml:"storage"`
+}
+
 // K8sConfig 定义部署流程使用的静态 Kubernetes 配置。
 type K8sConfig struct {
-	Namespace string        `yaml:"namespace"`
-	ManagedBy string        `yaml:"managed_by"`
-	Gateway   GatewayConfig `yaml:"gateway"`
-	TLS       TLSConfig     `yaml:"tls,omitempty"`
+	Namespace string                         `yaml:"namespace"`
+	ManagedBy string                         `yaml:"managed_by"`
+	Gateway   GatewayConfig                  `yaml:"gateway"`
+	TLS       TLSConfig                      `yaml:"tls,omitempty"`
+	MongoDB   map[string]*MongoProfileConfig `yaml:"mongodb,omitempty"`
 }
 
 // LoadK8sConfig 加载并缓存静态 Kubernetes 配置。
@@ -93,6 +111,56 @@ func parseK8sConfig(raw []byte) (*K8sConfig, error) {
 	return cfg, nil
 }
 
+// LoadMongoProfile 加载静态配置中的 Mongo profile。
+// 当 profile 不存在时返回 nil。
+func LoadMongoProfile(profile string) *MongoProfileConfig {
+	cfg := LoadK8sConfig()
+	if cfg == nil {
+		return nil
+	}
+
+	profile = strings.TrimSpace(profile)
+	if profile == "" || cfg.MongoDB == nil {
+		return nil
+	}
+
+	return cfg.MongoDB[profile]
+}
+
+// Validate 校验 Mongo profile 字段是否合法。
+func (c *MongoProfileConfig) Validate() error {
+	if c == nil {
+		return fmt.Errorf("mongo profile 为空")
+	}
+
+	if strings.TrimSpace(c.Image) == "" {
+		return fmt.Errorf("mongo profile 缺少 image")
+	}
+	if strings.TrimSpace(c.Version) == "" {
+		return fmt.Errorf("mongo profile 缺少 version")
+	}
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("mongo profile port 非法")
+	}
+	if strings.TrimSpace(c.AdminUsername) == "" {
+		return fmt.Errorf("mongo profile 缺少 admin_username")
+	}
+	if strings.TrimSpace(c.Storage.StorageClassName) == "" {
+		return fmt.Errorf("mongo profile 缺少 storage.storage_class_name")
+	}
+	if strings.TrimSpace(c.Storage.Capacity) == "" {
+		return fmt.Errorf("mongo profile 缺少 storage.capacity")
+	}
+	if len(c.Storage.AccessModes) == 0 {
+		return fmt.Errorf("mongo profile 缺少 storage.access_modes")
+	}
+	if strings.TrimSpace(c.Storage.VolumeMode) == "" {
+		return fmt.Errorf("mongo profile 缺少 storage.volume_mode")
+	}
+
+	return nil
+}
+
 // Validate 校验静态 Kubernetes 配置字段。
 func (c *K8sConfig) Validate() error {
 	if c == nil {
@@ -110,6 +178,14 @@ func (c *K8sConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.Gateway.Namespace) == "" {
 		return fmt.Errorf("静态配置缺少 gateway.namespace")
+	}
+	for profileName, profileCfg := range c.MongoDB {
+		if profileCfg == nil {
+			return fmt.Errorf("静态配置缺少 mongodb.%s", profileName)
+		}
+		if err := profileCfg.Validate(); err != nil {
+			return fmt.Errorf("静态配置 mongodb.%s 无效: %w", profileName, err)
+		}
 	}
 
 	secret := strings.TrimSpace(c.TLS.Secret)

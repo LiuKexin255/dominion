@@ -38,9 +38,6 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "artifact"
-        ],
         "properties": {
           "artifact": {
             "type": "object",
@@ -57,6 +54,45 @@
               "name": {
                 "type": "string",
                 "description": "产物别名"
+              }
+            }
+          },
+          "infra": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "resource",
+              "profile",
+              "name"
+            ],
+            "properties": {
+              "resource": {
+                "type": "string",
+                "enum": [
+                  "mongo"
+                ]
+              },
+              "profile": {
+                "type": "string",
+                "minLength": 1,
+                "description": "基础设施配置 profile"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "基础设施实例名称"
+              },
+              "persistence": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
               }
             }
           },
@@ -122,7 +158,29 @@
               }
             }
           }
-        }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "artifact"
+            ],
+            "not": {
+              "required": [
+                "infra"
+              ]
+            }
+          },
+          {
+            "required": [
+              "infra"
+            ],
+            "not": {
+              "required": [
+                "artifact"
+              ]
+            }
+          }
+        ]
       }
     }
   }

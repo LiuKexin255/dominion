@@ -1,0 +1,10 @@
+namespace: "default"
+managed_by: "dominion.io"
+gateway:
+  name: "traefik-gateway"
+  namespace: "ingress"
+mongodb:
+  dev-single:
+    version: "7.0"
+    port: 27017
+    admin_username: "admin"

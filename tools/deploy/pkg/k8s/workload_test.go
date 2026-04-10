@@ -232,6 +232,26 @@ func TestHTTPRouteWorkloadValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkloadKindMongoDBAndStorageKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		got  WorkloadKind
+		want WorkloadKind
+	}{
+		{name: "mongo", got: WorkloadKindMongoDB, want: "mongo"},
+		{name: "pvc", got: WorkloadKindPVC, want: "pvc"},
+		{name: "secret", got: WorkloadKindSecret, want: "secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}
 func Test_newObjectName(t *testing.T) {
 	tests := []struct {
 		name            string
