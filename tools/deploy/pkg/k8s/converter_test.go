@@ -41,8 +41,8 @@ func TestNewDeployObjects_SingleService(t *testing.T) {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
 
-	if len(objects.Deployments) != 1 || len(objects.Services) != 1 || len(objects.HTTPRoutes) != 0 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d routes=%d", len(objects.Deployments), len(objects.Services), len(objects.HTTPRoutes))
+	if len(objects.Deployments) != 1 || len(objects.HTTPRoutes) != 0 {
+		t.Fatalf("unexpected object counts: deployments=%d routes=%d", len(objects.Deployments), len(objects.HTTPRoutes))
 	}
 	if objects.Deployments[0].EnvironmentName != "dev" {
 		t.Fatal("environment name was not propagated into deployment workload")
@@ -112,8 +112,8 @@ func TestNewDeployObjects_MultipleServices(t *testing.T) {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
 
-	if len(objects.Deployments) != 2 || len(objects.Services) != 2 || len(objects.HTTPRoutes) != 1 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d routes=%d", len(objects.Deployments), len(objects.Services), len(objects.HTTPRoutes))
+	if len(objects.Deployments) != 2 || len(objects.HTTPRoutes) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d routes=%d", len(objects.Deployments), len(objects.HTTPRoutes))
 	}
 	if objects.Deployments[0].EnvironmentName != "dev" || objects.Deployments[1].EnvironmentName != "dev" {
 		t.Fatal("environment name was not propagated into deployment workloads")
@@ -163,8 +163,8 @@ func TestNewDeployObjects_ServiceConfigOrderMismatch(t *testing.T) {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
 
-	if len(objects.Deployments) != 2 || len(objects.Services) != 2 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d", len(objects.Deployments), len(objects.Services))
+	if len(objects.Deployments) != 2 {
+		t.Fatalf("unexpected object counts: deployments=%d", len(objects.Deployments))
 	}
 
 	deploymentNames := make(map[string]bool)
@@ -454,8 +454,8 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}
-	if len(objects.Deployments) != 1 || len(objects.Services) != 1 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d", len(objects.Deployments), len(objects.Services))
+	if len(objects.Deployments) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d", len(objects.Deployments))
 	}
 
 	deployment := objects.Deployments[0]
@@ -464,14 +464,6 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	}
 	if deployment.DominionApp != "grpc-hello-world" {
 		t.Fatalf("deployment dominion app = %q, want %q", deployment.DominionApp, "grpc-hello-world")
-	}
-
-	service := objects.Services[0]
-	if service.App != "grpc_hello_world" {
-		t.Fatalf("service app = %q, want %q", service.App, "grpc_hello_world")
-	}
-	if service.DominionApp != "grpc-hello-world" {
-		t.Fatalf("service dominion app = %q, want %q", service.DominionApp, "grpc-hello-world")
 	}
 
 	k8sConfig := newTestK8sConfig()
@@ -504,7 +496,7 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 		t.Fatalf("deployment env[2] = %#v, want POD_NAMESPACE literal", gotEnv[2])
 	}
 
-	builtService, err := BuildService(service)
+	builtService, err := BuildService(deployment)
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}

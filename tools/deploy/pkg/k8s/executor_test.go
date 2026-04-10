@@ -26,7 +26,7 @@ func TestExecutor_Apply_CreatesResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0])
+	svc, err := BuildService(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestExecutor_Apply_UpdatesExistingResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0])
+	svc, err := BuildService(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestExecutor_Apply_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0])
+	svc, err := BuildService(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestExecutor_Apply_PartialFailure_StopsAndReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDeployment() failed: %v", err)
 	}
-	svc, err := BuildService(objects.Services[0])
+	svc, err := BuildService(objects.Deployments[0])
 	if err != nil {
 		t.Fatalf("BuildService() failed: %v", err)
 	}
@@ -214,7 +214,6 @@ func TestExecutor_Apply_PartialFailure_StopsAndReports(t *testing.T) {
 func newExecutorTestDeployObjects() *DeployObjects {
 	return &DeployObjects{
 		Deployments: []*DeploymentWorkload{newTestDeploymentWorkload()},
-		Services:    []*ServiceWorkload{newTestServiceWorkload()},
 		HTTPRoutes:  []*HTTPRouteWorkload{newTestHTTPRouteWorkload()},
 	}
 }

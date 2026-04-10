@@ -68,6 +68,16 @@ func (w *DeploymentWorkload) WorkloadName() string {
 	return newWorkloadName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
 }
 
+// ServiceResourceName 返回 deployment 对应 service 的资源名。
+// 若 w 为空，则返回空字符串。
+func (w *DeploymentWorkload) ServiceResourceName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindService, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+}
+
 // Validate 校验 deployment workload 字段是否合法。
 // 当必填字段缺失、名称超长或端口非法时返回错误。
 func (w *DeploymentWorkload) Validate() error {
@@ -109,93 +119,13 @@ func (w *DeploymentWorkload) Validate() error {
 	return nil
 }
 
-// NewServiceWorkload 基于 deployment workload 生成 service workload。
-// 返回的新对象会复用当前对象中的 service 标识和端口信息，并在返回前完成校验。
-func (w *DeploymentWorkload) NewServiceWorkload() (*ServiceWorkload, error) {
-	if w == nil {
-		return nil, fmt.Errorf("deployment workload 为空")
-	}
-
-	svc := &ServiceWorkload{
-		ServiceName:     w.ServiceName,
-		EnvironmentName: w.EnvironmentName,
-		App:             w.App,
-		DominionApp:     w.DominionApp,
-		Desc:            w.Desc,
-		Ports:           w.Ports,
-	}
-
-	if err := svc.Validate(); err != nil {
-		return nil, err
-	}
-
-	return svc, nil
-}
-
 func newWorkloadName(app string, dominionApp string, serviceName string, environmentName string) string {
 	return newObjectName(WorkloadKindDeployment, app, dominionApp, serviceName, environmentName)
 }
 
-// ServiceWorkload 描述 service 生成所需字段。
-type ServiceWorkload struct {
-	ServiceName     string
-	EnvironmentName string
-	App             string
-	DominionApp     string
-	Desc            string
-	Ports           []*DeploymentPort
-}
-
-// ResourceName 返回 service 对应的资源名。
-// 若 w 为空，则返回空字符串。
-func (w *ServiceWorkload) ResourceName() string {
-	if w == nil {
-		return ""
-	}
-
-	return newServiceName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
-}
-
-func newServiceName(app string, dominionApp string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindService, app, dominionApp, serviceName, environmentName)
-}
-
-// Validate 校验 service workload 字段是否合法。
-// 当必填字段缺失、名称超长或端口非法时返回错误。
-func (w *ServiceWorkload) Validate() error {
-	if w == nil {
-		return fmt.Errorf("service workload 为空")
-	}
-	if strings.TrimSpace(w.ServiceName) == "" {
-		return fmt.Errorf("service workload 缺少 service name")
-	}
-	if strings.TrimSpace(w.EnvironmentName) == "" {
-		return fmt.Errorf("service workload 缺少 environment name")
-	}
-	if strings.TrimSpace(w.App) == "" {
-		return fmt.Errorf("service workload 缺少 app")
-	}
-	if len(w.ResourceName()) > maxK8sResourceNameSize {
-		return fmt.Errorf("service workload name 超过 63 字符")
-	}
-	for _, port := range w.Ports {
-		if port == nil {
-			return fmt.Errorf("service workload 存在空端口")
-		}
-		if strings.TrimSpace(port.Name) == "" {
-			return fmt.Errorf("service workload 存在空端口名")
-		}
-		if port.Port < 1 || port.Port > 65535 {
-			return fmt.Errorf("service workload 端口 %d 非法", port.Port)
-		}
-	}
-
-	return nil
-}
-
-// NewHTTPRouteWorkload 基于 service workload 生成 HTTPRoute workload。
+// NewHTTPRouteWorkload 基于 deployment workload 生成 HTTPRoute workload。
 // deployService 提供路由匹配配置；网关配置通过静态配置加载。
-func (w *ServiceWorkload) NewHTTPRouteWorkload(deployService *config.DeployService) (*HTTPRouteWorkload, error) {
+func (w *DeploymentWorkload) NewHTTPRouteWorkload(deployService *config.DeployService) (*HTTPRouteWorkload, error) {
 	k8sConfig := LoadK8sConfig()
 	matches, err := buildHTTPRoutePathMatches(w.Ports, deployService.HTTP.Matches)
 	if err != nil {
@@ -209,7 +139,7 @@ func (w *ServiceWorkload) NewHTTPRouteWorkload(deployService *config.DeployServi
 		DominionApp:      w.DominionApp,
 		Hostnames:        deployService.HTTP.Hostnames,
 		Matches:          matches,
-		BackendService:   w.ResourceName(),
+		BackendService:   w.ServiceResourceName(),
 		GatewayName:      k8sConfig.Gateway.Name,
 		GatewayNamespace: k8sConfig.Gateway.Namespace,
 	}

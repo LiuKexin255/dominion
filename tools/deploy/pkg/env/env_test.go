@@ -1781,8 +1781,8 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 		t.Fatalf("BuildDeployObjects() failed: %v", err)
 	}
 
-	if len(objects.Deployments) != 2 || len(objects.Services) != 2 || len(objects.HTTPRoutes) != 1 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d routes=%d", len(objects.Deployments), len(objects.Services), len(objects.HTTPRoutes))
+	if len(objects.Deployments) != 2 || len(objects.HTTPRoutes) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d routes=%d", len(objects.Deployments), len(objects.HTTPRoutes))
 	}
 
 	if objects.Deployments[0].EnvironmentName != "dev" || objects.Deployments[1].EnvironmentName != "dev" {

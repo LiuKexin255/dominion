@@ -146,8 +146,8 @@ func BuildDeployment(workload *DeploymentWorkload) (*appsv1.Deployment, error) {
 	}, nil
 }
 
-// BuildService 将 service workload 构造成可直接下发的 Service 对象。
-func BuildService(workload *ServiceWorkload) (*corev1.Service, error) {
+// BuildService 将 deployment workload 构造成可直接下发的 Service 对象。
+func BuildService(workload *DeploymentWorkload) (*corev1.Service, error) {
 	k8sConfig := LoadK8sConfig()
 	objectLabels := buildLabels(
 		withApp(workload.App),
@@ -169,7 +169,7 @@ func BuildService(workload *ServiceWorkload) (*corev1.Service, error) {
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      workload.ResourceName(),
+			Name:      workload.ServiceResourceName(),
 			Namespace: k8sConfig.Namespace,
 			Labels:    map[string]string(objectLabels),
 		},

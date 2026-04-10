@@ -32,8 +32,6 @@ func (e *Executor) Apply(ctx context.Context, objects *DeployObjects) error {
 		if err := e.applyDeployment(ctx, workload); err != nil {
 			return err
 		}
-	}
-	for _, workload := range objects.Services {
 		if err := e.applyService(ctx, workload); err != nil {
 			return err
 		}
@@ -226,14 +224,14 @@ func (e *Executor) applyDeployment(ctx context.Context, workload *DeploymentWork
 	return nil
 }
 
-func (e *Executor) applyService(ctx context.Context, workload *ServiceWorkload) error {
+func (e *Executor) applyService(ctx context.Context, workload *DeploymentWorkload) error {
 	if workload == nil {
-		return fmt.Errorf("failed to get %s <nil>: %w", resourceKindService, fmt.Errorf("service workload 为空"))
+		return fmt.Errorf("failed to get %s <nil>: %w", resourceKindService, fmt.Errorf("deployment workload 为空"))
 	}
 
 	desired, err := BuildService(workload)
 	if err != nil {
-		return fmt.Errorf("failed to build %s %s: %w", resourceKindService, workload.ResourceName(), err)
+		return fmt.Errorf("failed to build %s %s: %w", resourceKindService, workload.ServiceResourceName(), err)
 	}
 
 	current, err := e.client.TypedClient.CoreV1().Services(desired.Namespace).Get(ctx, desired.Name, metav1.GetOptions{})

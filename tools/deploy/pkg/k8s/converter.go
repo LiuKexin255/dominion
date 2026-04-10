@@ -10,7 +10,6 @@ import (
 // DeployObjects 表示一次部署所需的 Kubernetes 工作负载对象集合。
 type DeployObjects struct {
 	Deployments []*DeploymentWorkload
-	Services    []*ServiceWorkload
 	HTTPRoutes  []*HTTPRouteWorkload
 }
 
@@ -57,17 +56,11 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 		}
 		objects.Deployments = append(objects.Deployments, deployment)
 
-		svc, err := deployment.NewServiceWorkload()
-		if err != nil {
-			return nil, fmt.Errorf("创建 service workload 失败: %w", err)
-		}
-		objects.Services = append(objects.Services, svc)
-
 		if len(deployService.HTTP.Matches) == 0 {
 			continue
 		}
 
-		route, err := svc.NewHTTPRouteWorkload(deployService)
+		route, err := deployment.NewHTTPRouteWorkload(deployService)
 		if err != nil {
 			return nil, fmt.Errorf("创建 http route workload 失败: %w", err)
 		}
