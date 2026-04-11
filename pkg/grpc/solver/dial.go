@@ -1,6 +1,7 @@
 package solver
 
 import (
+	"dominion/pkg/solver"
 	"fmt"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ func defaultDialOptions() []grpc.DialOption {
 }
 
 func URI(raw string) string {
-	target, err := ParseTarget(raw)
+	target, err := solver.ParseTarget(raw)
 	if err != nil {
 		fmt.Printf("%s format error\n", raw)
 		return raw

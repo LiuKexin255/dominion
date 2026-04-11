@@ -137,47 +137,6 @@ func TestDeploymentWorkloadValidate(t *testing.T) {
 	}
 }
 
-func TestServiceWorkloadValidate(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   *ServiceWorkload
-		wantErr bool
-	}{
-		{
-			name: "valid",
-			input: &ServiceWorkload{
-				ServiceName:     "gateway",
-				EnvironmentName: "dev",
-				App:             "grpc-hello-world",
-				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
-			},
-		},
-		{name: "nil workload", wantErr: true},
-		{
-			name: "name too long",
-			input: &ServiceWorkload{
-				ServiceName:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				EnvironmentName: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				App:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.input.Validate()
-			if tt.wantErr && err == nil {
-				t.Fatal("Validate() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("Validate() failed: %v", err)
-			}
-		})
-	}
-}
-
 func TestHTTPRouteWorkloadValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -228,6 +187,26 @@ func TestHTTPRouteWorkloadValidate(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("Validate() failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkloadKindMongoDBAndStorageKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		got  WorkloadKind
+		want WorkloadKind
+	}{
+		{name: "mongo", got: WorkloadKindMongoDB, want: "mongo"},
+		{name: "pvc", got: WorkloadKindPVC, want: "pvc"},
+		{name: "secret", got: WorkloadKindSecret, want: "secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("%s = %q, want %q", tt.name, tt.got, tt.want)
 			}
 		})
 	}
@@ -516,10 +495,10 @@ func Test_buildHTTPRoutePathMatches(t *testing.T) {
 	}
 }
 
-func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
+func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 	tests := []struct {
 		name          string
-		workload      *ServiceWorkload
+		workload      *DeploymentWorkload
 		deployService *config.DeployService
 		k8sConfig     *K8sConfig
 		want          *HTTPRouteWorkload
@@ -527,11 +506,13 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 	}{
 		{
 			name: "valid",
-			workload: &ServiceWorkload{
+			workload: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				DominionApp:     "grpc-hello-world",
+				Desc:            "gateway service",
+				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -554,18 +535,20 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				DominionApp:      "grpc-hello-world",
 				Hostnames:        []string{"hello.example.com"},
 				Matches:          []*HTTPRoutePathMatch{{Type: config.HTTPPathMatchTypePrefix, Value: "/v1", BackendName: "http", BackendPort: 80}},
-				BackendService:   newTestServiceWorkload().ResourceName(),
+				BackendService:   (&DeploymentWorkload{ServiceName: "gateway", EnvironmentName: "dev", App: "grpc-hello-world", DominionApp: "grpc-hello-world"}).ServiceResourceName(),
 				GatewayName:      "gw",
 				GatewayNamespace: "infra",
 			},
 		},
 		{
 			name: "backend not found",
-			workload: &ServiceWorkload{
+			workload: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				DominionApp:     "grpc-hello-world",
+				Desc:            "gateway service",
+				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -579,11 +562,13 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 		},
 		{
 			name: "missing gateway name",
-			workload: &ServiceWorkload{
+			workload: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				DominionApp:     "grpc-hello-world",
+				Desc:            "gateway service",
+				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{
@@ -597,11 +582,13 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 		},
 		{
 			name: "empty matches",
-			workload: &ServiceWorkload{
+			workload: &DeploymentWorkload{
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
 				DominionApp:     "grpc-hello-world",
+				Desc:            "gateway service",
+				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
 			},
 			deployService: &config.DeployService{HTTP: config.DeployHTTP{Matches: nil}},
@@ -625,70 +612,6 @@ func TestServiceWorkloadNewHTTPRouteWorkload(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("NewHTTPRouteWorkload() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDeploymentWorkloadNewServiceWorkload(t *testing.T) {
-	tests := []struct {
-		name     string
-		workload *DeploymentWorkload
-		want     *ServiceWorkload
-		wantErr  bool
-	}{
-		{
-			name: "valid",
-			workload: &DeploymentWorkload{
-				ServiceName:     "gateway",
-				EnvironmentName: "dev",
-				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
-				Desc:            "gateway service",
-				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
-			},
-			want: &ServiceWorkload{
-				ServiceName:     "gateway",
-				EnvironmentName: "dev",
-				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
-				Desc:            "gateway service",
-				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
-			},
-		},
-		{
-			name:    "nil receiver",
-			wantErr: true,
-		},
-		{
-			name: "invalid ports",
-			workload: &DeploymentWorkload{
-				ServiceName:     "gateway",
-				EnvironmentName: "dev",
-				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
-				Desc:            "gateway service",
-				Image:           "registry.example.com/team/gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-				Ports:           []*DeploymentPort{nil},
-			},
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, gotErr := tt.workload.NewServiceWorkload()
-			if gotErr != nil {
-				if !tt.wantErr {
-					t.Errorf("NewServiceWorkload() failed: %v", gotErr)
-				}
-				return
-			}
-			if tt.wantErr {
-				t.Fatal("NewServiceWorkload() succeeded unexpectedly")
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewServiceWorkload() = %v, want %v", got, tt.want)
 			}
 		})
 	}

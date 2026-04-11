@@ -54,6 +54,26 @@ func TestParseDeployConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "读取 infra 部署配置成功",
+			path: filepath.Join(root, "testdata", "deploy.infra.yaml"),
+			want: &DeployConfig{
+				Template: "deploy",
+				App:      "grpc-hello-world",
+				Desc:     "开发环境",
+				URI:      "//testdata/deploy.infra.yaml",
+				Services: []*DeployService{{
+					Infra: DeployInfra{
+						Resource: "mongo",
+						Profile:  "development",
+						Name:     "grpc-hello-world-mongo",
+						Persistence: DeployInfraPersistence{
+							Enabled: true,
+						},
+					},
+				}},
+			},
+		},
+		{
 			name:    "文件不存在",
 			path:    filepath.Join(root, "testdata", "deploy1.yaml"),
 			wantErr: true,

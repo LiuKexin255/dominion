@@ -1,0 +1,20 @@
+namespace: "default"
+managed_by: "dominion.io"
+gateway:
+  name: "traefik-gateway"
+  namespace: "ingress"
+mongodb:
+  dev-single:
+    image: "mongo"
+    version: "7.0"
+    port: 27017
+    admin_username: "admin"
+    security:
+      run_as_user: 0
+      run_as_group: 3000
+    storage:
+      storage_class_name: "local-path"
+      capacity: "1Gi"
+      access_modes:
+        - "ReadWriteOnce"
+      volume_mode: "Filesystem"

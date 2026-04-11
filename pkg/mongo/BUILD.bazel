@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "mongo",
+    srcs = [
+        "client.go",
+        "credentials.go",
+        "default.go",
+    ],
+    importpath = "dominion/pkg/mongo",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/solver",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
+
+go_test(
+    name = "mongo_test",
+    size = "small",
+    srcs = [
+        "client_test.go",
+        "credentials_test.go",
+    ],
+    embed = [":mongo"],
+    deps = [
+        "//pkg/solver",
+        "@org_mongodb_go_mongo_driver//mongo",
+    ],
+)

@@ -87,7 +87,7 @@ func TestBuildDeployment(t *testing.T) {
 				volumes:      nil,
 				volumeMounts: nil,
 				env: []corev1.EnvVar{
-					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameServiceApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 				},
@@ -129,13 +129,49 @@ func TestBuildDeployment(t *testing.T) {
 					ReadOnly:  true,
 				}},
 				env: []corev1.EnvVar{
-					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameServiceApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 					{Name: "TLS_CERT_FILE", Value: "/etc/tls/tls.crt"},
 					{Name: "TLS_KEY_FILE", Value: "/etc/tls/tls.key"},
 					{Name: "TLS_CA_FILE", Value: "/etc/tls/ca.crt"},
 					{Name: "TLS_SERVER_NAME", Value: "gateway.internal.example.com"},
+				},
+			},
+		},
+		{
+			name: "injects service app env from workload app while keeping dominion label",
+			workload: func() *DeploymentWorkload {
+				workload := newTestDeploymentWorkload()
+				workload.App = "gateway-service"
+				workload.DominionApp = "grpc-hello-world"
+				return workload
+			}(),
+			k8sConfig: newTestK8sConfig(),
+			want: &deploymentExpectation{
+				name: func() string {
+					workload := newTestDeploymentWorkload()
+					workload.App = "gateway-service"
+					return workload.WorkloadName()
+				}(),
+				namespace:   "team-dev",
+				managedBy:   "deploy-tool",
+				app:         "gateway-service",
+				dominionApp: "grpc-hello-world",
+				serviceName: "gateway",
+				environment: "dev",
+				replicas:    3,
+				image:       "registry.local/gateway:latest",
+				ports: []corev1.ContainerPort{
+					{Name: "http", ContainerPort: 8080},
+					{Name: "grpc", ContainerPort: 9090},
+				},
+				volumes:      nil,
+				volumeMounts: nil,
+				env: []corev1.EnvVar{
+					{Name: reservedEnvNameServiceApp, Value: "gateway-service"},
+					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
+					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 				},
 			},
 		},
@@ -179,7 +215,7 @@ func TestBuildDeployment(t *testing.T) {
 func TestBuildService(t *testing.T) {
 	tests := []struct {
 		name        string
-		workload    *ServiceWorkload
+		workload    *DeploymentWorkload
 		k8sConfig   *K8sConfig
 		wantErr     bool
 		errContains string
@@ -187,10 +223,10 @@ func TestBuildService(t *testing.T) {
 	}{
 		{
 			name:      "success",
-			workload:  newTestServiceWorkload(),
+			workload:  newTestDeploymentWorkload(),
 			k8sConfig: newTestK8sConfig(),
 			want: &serviceExpectation{
-				name:        newTestServiceWorkload().ResourceName(),
+				name:        newTestDeploymentWorkload().ServiceResourceName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
@@ -205,7 +241,7 @@ func TestBuildService(t *testing.T) {
 		},
 		{
 			name:        "returns error when service ports contain nil entry",
-			workload:    newTestServiceWorkloadWithNilPort(),
+			workload:    newTestDeploymentWorkloadWithNilPort(),
 			k8sConfig:   newTestK8sConfig(),
 			wantErr:     true,
 			errContains: "构建 service ports 失败: 端口为空",
@@ -462,8 +498,8 @@ func newTestK8sConfig() *K8sConfig {
 func newTestK8sConfigWithTLS() *K8sConfig {
 	k8sConfig := newTestK8sConfig()
 	k8sConfig.TLS = TLSConfig{
-		Secret:    "gateway-tls",
-		Domain:    "gateway.internal.example.com",
+		Secret: "gateway-tls",
+		Domain: "gateway.internal.example.com",
 		CAConfigMap: ConfigMapConfig{
 			Name: "gateway-ca",
 			Key:  "bundle.pem",
@@ -503,29 +539,8 @@ func newTestDeploymentWorkloadWithTLS() *DeploymentWorkload {
 	return workload
 }
 
-func newTestServiceWorkload() *ServiceWorkload {
-	return &ServiceWorkload{
-		ServiceName:     "gateway",
-		EnvironmentName: "dev",
-		App:             "grpc-hello-world",
-		DominionApp:     "grpc-hello-world",
-		Desc:            "gateway service",
-		Ports: []*DeploymentPort{
-			{Name: "http", Port: 8080},
-			{Name: "grpc", Port: 9090},
-		},
-	}
-}
-
-func newTestServiceWorkloadWithNilPort() *ServiceWorkload {
-	workload := newTestServiceWorkload()
-	workload.Ports = []*DeploymentPort{{Name: "http", Port: 8080}, nil}
-
-	return workload
-}
-
 func newTestHTTPRouteWorkload() *HTTPRouteWorkload {
-	backendService := newTestServiceWorkload().ResourceName()
+	backendService := newTestDeploymentWorkload().ServiceResourceName()
 
 	return &HTTPRouteWorkload{
 		ServiceName:      "gateway",
@@ -882,8 +897,8 @@ func assertHTTPRouteRule(t *testing.T, rawRule any, pathValue string, backendPor
 	if !ok {
 		t.Fatalf("backendRef type = %T, want map[string]any", backendRefs[0])
 	}
-	if backendRef["name"] != newTestServiceWorkload().ResourceName() {
-		t.Fatalf("backendRef.name = %#v, want %q", backendRef["name"], newTestServiceWorkload().ResourceName())
+	if backendRef["name"] != newTestDeploymentWorkload().ServiceResourceName() {
+		t.Fatalf("backendRef.name = %#v, want %q", backendRef["name"], newTestDeploymentWorkload().ServiceResourceName())
 	}
 	if backendRef["port"] != float64(backendPort) {
 		t.Fatalf("backendRef = %#v, want service name with port %d", backendRef, backendPort)

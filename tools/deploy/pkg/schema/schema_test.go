@@ -21,6 +21,20 @@ services:
 `),
 		},
 		{
+			name: "valid infra deploy yaml",
+			raw: []byte(`template: deploy
+app: grpc-hello-world
+desc: 开发环境
+services:
+  - infra:
+      resource: mongo
+      profile: development
+      name: grpc-hello-world-mongo
+      persistence:
+        enabled: true
+`),
+		},
+		{
 			name: "invalid deploy yaml",
 			raw: []byte(`template: deploy
 app: grpc-hello-world
@@ -28,6 +42,52 @@ desc: 开发环境
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml
+`),
+			wantErr: true,
+		},
+		{
+			name: "infra deploy yaml missing required fields",
+			raw: []byte(`template: deploy
+app: grpc-hello-world
+desc: 开发环境
+services:
+  - infra:
+      resource: mongo
+      persistence:
+        enabled: true
+`),
+			wantErr: true,
+		},
+		{
+			name: "infra deploy yaml rejects unknown resource",
+			raw: []byte(`template: deploy
+app: grpc-hello-world
+desc: 开发环境
+services:
+  - infra:
+      resource: redis
+      profile: development
+      name: grpc-hello-world-redis
+      persistence:
+        enabled: true
+`),
+			wantErr: true,
+		},
+		{
+			name: "infra and artifact are mutually exclusive",
+			raw: []byte(`template: deploy
+app: grpc-hello-world
+desc: 开发环境
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+    infra:
+      resource: mongo
+      profile: development
+      name: grpc-hello-world-mongo
+      persistence:
+        enabled: true
 `),
 			wantErr: true,
 		},

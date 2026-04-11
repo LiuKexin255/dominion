@@ -27,9 +27,10 @@
 ### 编译工具
 
 1. 使用 `bazel` 作为编译工具，使用语言对应 `rules` 为各个语言提供编译支持。
-2. 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。**特别注意**：应当只使用 `gazelle` 生成 `BUILD.bazel` 文件，除非生成的文件无法编译。
-3. 使用 `bazel mod tidy` 命令更新 `bazel` 依赖。
-4. 【**重要**】使用 `bazel test` 作为单测验证标准。
+2. 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件。
+3. `BUILD.bazel` 文件通常应**只由** `gazelle` 命令生成/更新，如需添加 `target`（如 `oci_image`）应在 `gazelle` 生成后添加。不要更改 `gazelle` 生成的内容，除非生成的 `BUILD.bazel` 文件无法编译。
+4. 使用 `bazel mod tidy` 命令更新 `bazel` 依赖。
+5. 【**重要**】使用 `bazel test` 作为单测验证标准。
 
 #### Golang
 
@@ -38,7 +39,7 @@
 2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
 4. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。
-5. 如果缺少 `proto` 相关依赖，可以尝试使用 `gazelle` 更新 `BUILD.bazel` 后是否解决问题。
+5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译；**禁止**自己编写 `proto` 和 `grpc stub` 代码。
 
 ##### 格式化与依赖更新
 

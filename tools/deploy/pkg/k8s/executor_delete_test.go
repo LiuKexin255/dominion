@@ -281,6 +281,63 @@ func TestExecutor_Delete_ReverseOrder(t *testing.T) {
 	}
 }
 
+func TestExecutor_Delete_MongoDB_RemovesWorkloadAndSecretPreservesPVC(t *testing.T) {
+	// given
+	stubLoadK8sConfig(t, newTestK8sConfigWithMongoProfile())
+	h := NewFakeHarness(t)
+	workload := newTestMongoDBWorkload()
+	pvc, err := BuildMongoDBPVC(workload)
+	if err != nil {
+		t.Fatalf("BuildMongoDBPVC() failed: %v", err)
+	}
+	secret, err := BuildMongoDBSecret(workload)
+	if err != nil {
+		t.Fatalf("BuildMongoDBSecret() failed: %v", err)
+	}
+	deployment, err := BuildMongoDBDeployment(workload)
+	if err != nil {
+		t.Fatalf("BuildMongoDBDeployment() failed: %v", err)
+	}
+	service, err := BuildMongoDBService(workload)
+	if err != nil {
+		t.Fatalf("BuildMongoDBService() failed: %v", err)
+	}
+	h.SeedPVC(pvc)
+	h.SeedSecret(secret)
+	h.SeedDeployment(deployment)
+	h.SeedService(service)
+	executor := NewExecutor(h.RuntimeClient())
+	deleteFunc := requireExecutorDelete(t, executor)
+
+	var deleteOrder []string
+	recordDelete := func(action k8stesting.Action) {
+		resourceType, ok := normalizeResourceTypeFromAction(action.GetResource().Resource)
+		if ok {
+			deleteOrder = append(deleteOrder, resourceType)
+		}
+	}
+	h.typedClient.PrependReactor("delete", "*", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		recordDelete(action)
+		return false, nil, nil
+	})
+
+	// when
+	err = deleteFunc(context.Background(), workload.App, workload.EnvironmentName)
+	if err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	// then
+	wantOrder := []string{resourceKindService, resourceKindDeployment, resourceKindSecret}
+	if !reflect.DeepEqual(deleteOrder, wantOrder) {
+		t.Fatalf("delete order = %v, want %v", deleteOrder, wantOrder)
+	}
+	h.AssertServiceDeleted(service.Namespace, service.Name)
+	h.AssertDeploymentDeleted(deployment.Namespace, deployment.Name)
+	h.AssertSecretDeleted(secret.Namespace, secret.Name)
+	h.AssertPVCCreated(pvc.Namespace, pvc.Name)
+}
+
 type deleteSeedOptions struct {
 	app         string
 	environment string

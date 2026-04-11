@@ -1314,6 +1314,206 @@ func TestDeploy_StopsBeforeApplyOnPushFailure(t *testing.T) {
 	}
 }
 
+func TestDeploy_InfraMongoDB_AppliesResourcesWithoutImageResolution(t *testing.T) {
+	newBazelWorkspace(t, "")
+	internalInit()
+
+	env, err := New("dev", "grpc-hello-world")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{{
+			Infra: config.DeployInfra{
+				Resource: "mongodb",
+				Profile:  "dev-single",
+				Name:     "mongo-main",
+				Persistence: config.DeployInfraPersistence{
+					Enabled: true,
+				},
+			},
+		}},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			t.Fatal("Deploy() called image resolver for infra-only services")
+			return nil, nil
+		},
+	})
+
+	h := k8s.NewFakeHarness(t)
+	exec := k8s.NewExecutor(h.RuntimeClient())
+	if err := env.Deploy(context.Background(), exec); err != nil {
+		t.Fatalf("Deploy() failed: %v", err)
+	}
+
+	objects, err := env.BuildDeployObjects(nil)
+	if err != nil {
+		t.Fatalf("BuildDeployObjects() failed: %v", err)
+	}
+	if len(objects.Deployments) != 0 || len(objects.HTTPRoutes) != 0 {
+		t.Fatalf("unexpected artifact objects: deployments=%d routes=%d", len(objects.Deployments), len(objects.HTTPRoutes))
+	}
+	if len(objects.MongoDBWorkloads) != 1 {
+		t.Fatalf("unexpected infra object counts: workloads=%d", len(objects.MongoDBWorkloads))
+	}
+
+	workload := objects.MongoDBWorkloads[0]
+	namespace := h.RuntimeClient().K8sConfig.Namespace
+	h.AssertPVCCreated(namespace, workload.PVCResourceName())
+	h.AssertSecretCreated(namespace, workload.SecretResourceName())
+	h.AssertDeploymentCreated(namespace, workload.ResourceName())
+	h.AssertServiceCreated(namespace, workload.ServiceResourceName())
+}
+
+func TestDeploy_MixedArtifactAndInfra_UsesResolverOnlyForArtifacts(t *testing.T) {
+	newBazelWorkspace(t, "")
+	internalInit()
+
+	env, err := New("dev", "grpc-hello-world")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{
+			{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}},
+			{
+				Infra: config.DeployInfra{
+					Resource: "mongodb",
+					Profile:  "dev-single",
+					Name:     "mongo-main",
+					Persistence: config.DeployInfraPersistence{
+						Enabled: true,
+					},
+				},
+			},
+		},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	resolvedImages := map[string]string{
+		"//service:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	}
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(_ context.Context, gotDeployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
+			if gotDeployConfig != deployConfig {
+				t.Fatal("Deploy() passed unexpected deploy config to resolver")
+			}
+			if len(serviceConfigs) != 1 {
+				t.Fatalf("resolver service config count = %d, want 1", len(serviceConfigs))
+			}
+			if serviceConfigs[0].URI != "//service/service.yaml" {
+				t.Fatalf("resolver service config URI = %q, want %q", serviceConfigs[0].URI, "//service/service.yaml")
+			}
+			return resolvedImages, nil
+		},
+	})
+
+	h := k8s.NewFakeHarness(t)
+	exec := k8s.NewExecutor(h.RuntimeClient())
+	if err := env.Deploy(context.Background(), exec); err != nil {
+		t.Fatalf("Deploy() failed: %v", err)
+	}
+
+	objects, err := env.BuildDeployObjects(resolvedImages)
+	if err != nil {
+		t.Fatalf("BuildDeployObjects() failed: %v", err)
+	}
+	if len(objects.Deployments) != 1 || len(objects.MongoDBWorkloads) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d mongo=%d", len(objects.Deployments), len(objects.MongoDBWorkloads))
+	}
+
+	artifactWorkload := objects.Deployments[0]
+	mongoWorkload := objects.MongoDBWorkloads[0]
+	namespace := h.RuntimeClient().K8sConfig.Namespace
+	h.AssertDeploymentCreated(namespace, artifactWorkload.WorkloadName())
+	h.AssertServiceCreated(namespace, artifactWorkload.ServiceResourceName())
+	h.AssertPVCCreated(namespace, mongoWorkload.PVCResourceName())
+	h.AssertSecretCreated(namespace, mongoWorkload.SecretResourceName())
+	h.AssertDeploymentCreated(namespace, mongoWorkload.ResourceName())
+	h.AssertServiceCreated(namespace, mongoWorkload.ServiceResourceName())
+}
+
+func TestDeployEnv_Delete_InfraMongoDBPreservesPVC(t *testing.T) {
+	newBazelWorkspace(t, "")
+	internalInit()
+
+	env, err := New("dev", "grpc-hello-world")
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	deployConfig := &config.DeployConfig{
+		Template: "deploy",
+		App:      "grpc-hello-world",
+		Desc:     "开发环境",
+		URI:      "//deploy/grpc-hello-world/deploy.yaml",
+		Services: []*config.DeployService{{
+			Infra: config.DeployInfra{
+				Resource: "mongodb",
+				Profile:  "dev-single",
+				Name:     "mongo-main",
+				Persistence: config.DeployInfraPersistence{
+					Enabled: true,
+				},
+			},
+		}},
+	}
+	if err := env.Update(deployConfig); err != nil {
+		t.Fatalf("Update() failed: %v", err)
+	}
+
+	withImageResolver(t, &stubImageResolver{
+		resolveFunc: func(context.Context, *config.DeployConfig, []*config.ServiceConfig) (map[string]string, error) {
+			t.Fatal("Deploy() called image resolver for infra-only services")
+			return nil, nil
+		},
+	})
+
+	h := k8s.NewFakeHarness(t)
+	exec := k8s.NewExecutor(h.RuntimeClient())
+	if err := env.Deploy(context.Background(), exec); err != nil {
+		t.Fatalf("Deploy() failed: %v", err)
+	}
+
+	objects, err := env.BuildDeployObjects(nil)
+	if err != nil {
+		t.Fatalf("BuildDeployObjects() failed: %v", err)
+	}
+	workload := objects.MongoDBWorkloads[0]
+	namespace := h.RuntimeClient().K8sConfig.Namespace
+
+	if err := env.Delete(context.Background(), exec); err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	h.AssertPVCCreated(namespace, workload.PVCResourceName())
+	h.AssertSecretDeleted(namespace, workload.SecretResourceName())
+	h.AssertDeploymentDeleted(namespace, workload.ResourceName())
+	h.AssertServiceDeleted(namespace, workload.ServiceResourceName())
+
+	_, err = Get("dev", "grpc-hello-world")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get() after Delete() err = %v, want %v", err, ErrNotFound)
+	}
+}
+
 func TestDeployEnv_Update(t *testing.T) {
 	tests := []struct {
 		caseName string // description of this test case
@@ -1781,8 +1981,8 @@ func TestDeployEnv_BuildDeployObjects(t *testing.T) {
 		t.Fatalf("BuildDeployObjects() failed: %v", err)
 	}
 
-	if len(objects.Deployments) != 2 || len(objects.Services) != 2 || len(objects.HTTPRoutes) != 1 {
-		t.Fatalf("unexpected object counts: deployments=%d services=%d routes=%d", len(objects.Deployments), len(objects.Services), len(objects.HTTPRoutes))
+	if len(objects.Deployments) != 2 || len(objects.HTTPRoutes) != 1 {
+		t.Fatalf("unexpected object counts: deployments=%d routes=%d", len(objects.Deployments), len(objects.HTTPRoutes))
 	}
 
 	if objects.Deployments[0].EnvironmentName != "dev" || objects.Deployments[1].EnvironmentName != "dev" {

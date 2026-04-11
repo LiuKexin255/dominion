@@ -1,0 +1,70 @@
+package solver
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+// lookupEnv is the function used to look up environment variables.
+// It is a variable to allow injection during tests.
+var lookupEnv = os.LookupEnv
+
+const (
+	// serviceAppEnvKey stores the current service app name.
+	serviceAppEnvKey = "SERVICE_APP"
+	// dominionEnvironmentEnvKey stores the current dominion environment name.
+	dominionEnvironmentEnvKey = "DOMINION_ENVIRONMENT"
+	// podNamespaceEnvKey stores the current pod namespace.
+	podNamespaceEnvKey = "POD_NAMESPACE"
+)
+
+// environment captures the runtime values used by dominion resolver lookup.
+type environment struct {
+	Name      string
+	App       string
+	Namespace string
+}
+
+// loadEnvironment loads and validates runtime environment using the provided lookup.
+func loadEnvironment(target *Target) (*environment, error) {
+	app, err := lookupRequiredEnv(serviceAppEnvKey)
+	if err != nil {
+		return nil, err
+	}
+
+	if target.App != app {
+		return nil, fmt.Errorf("target app %q does not match %s %q", target.App, serviceAppEnvKey, app)
+	}
+
+	environmentName, err := lookupRequiredEnv(dominionEnvironmentEnvKey)
+	if err != nil {
+		return nil, err
+	}
+
+	namespace, err := lookupRequiredEnv(podNamespaceEnvKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &environment{
+		Name:      environmentName,
+		App:       app,
+		Namespace: namespace,
+	}, nil
+}
+
+// lookupRequiredEnv reads a required env var and rejects missing or blank values.
+func lookupRequiredEnv(key string) (string, error) {
+	value, ok := lookupEnv(key)
+	if !ok {
+		return "", fmt.Errorf("missing required env %s", key)
+	}
+
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("missing required env %s", key)
+	}
+
+	return value, nil
+}

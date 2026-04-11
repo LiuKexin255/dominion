@@ -2,6 +2,7 @@ package solver
 
 import (
 	"context"
+	"dominion/pkg/solver"
 	"fmt"
 	"sync"
 	"time"
@@ -33,9 +34,8 @@ func (t *runtimeTicker) Chan() <-chan time.Time {
 
 // Builder builds dominion grpc resolvers.
 type Builder struct {
-	EnvLoader       EnvLoader
-	K8sClient       K8sClient
-	NewK8sClient    func() (K8sClient, error)
+	Resolver        solver.Resolver
+	NewResolver     func() (solver.Resolver, error)
 	NewTicker       func(time.Duration) refreshTicker
 	RefreshInterval time.Duration
 }
@@ -46,9 +46,8 @@ type BuilderOption func(*Builder)
 // NewBuilder constructs a Builder with sensible dominion defaults.
 func NewBuilder(opts ...BuilderOption) *Builder {
 	b := &Builder{
-		EnvLoader: new(OSEnvLoader),
-		NewK8sClient: func() (K8sClient, error) {
-			return NewInClusterClient()
+		NewResolver: func() (solver.Resolver, error) {
+			return solver.NewK8sResolver()
 		},
 		NewTicker: func(d time.Duration) refreshTicker {
 			return &runtimeTicker{timeticker: time.NewTicker(d)}
@@ -65,24 +64,17 @@ func NewBuilder(opts ...BuilderOption) *Builder {
 	return b
 }
 
-// WithEnvLoader overrides the runtime environment loader.
-func WithEnvLoader(envLoader EnvLoader) BuilderOption {
+// WithResolver overrides the resolver implementation.
+func WithResolver(resolver solver.Resolver) BuilderOption {
 	return func(b *Builder) {
-		b.EnvLoader = envLoader
+		b.Resolver = resolver
 	}
 }
 
-// WithK8sClient overrides the kubernetes resolver client.
-func WithK8sClient(k8sClient K8sClient) BuilderOption {
+// WithNewResolver overrides the resolver factory.
+func WithNewResolver(newResolver func() (solver.Resolver, error)) BuilderOption {
 	return func(b *Builder) {
-		b.K8sClient = k8sClient
-	}
-}
-
-// WithNewK8sClient overrides the kubernetes client factory.
-func WithNewK8sClient(newK8sClient func() (K8sClient, error)) BuilderOption {
-	return func(b *Builder) {
-		b.NewK8sClient = newK8sClient
+		b.NewResolver = newResolver
 	}
 }
 
@@ -103,9 +95,8 @@ func WithRefreshInterval(refreshInterval time.Duration) BuilderOption {
 // Resolver polls Kubernetes EndpointSlices and publishes grpc resolver state.
 type Resolver struct {
 	cc              grpcresolver.ClientConn
-	target          *Target
-	env             *Environment
-	k8sClient       K8sClient
+	target          *solver.Target
+	resolver        solver.Resolver
 	ticker          refreshTicker
 	resolveNowCh    chan struct{}
 	done            chan struct{}
@@ -125,19 +116,14 @@ func (b *Builder) Scheme() string {
 
 // Build creates a dominion grpc polling resolver.
 func (b *Builder) Build(target grpcresolver.Target, cc grpcresolver.ClientConn, _ grpcresolver.BuildOptions) (grpcresolver.Resolver, error) {
-	parsedTarget, err := ParseTarget(target.Endpoint())
+	parsedTarget, err := solver.ParseTarget(target.Endpoint())
 	if err != nil {
 		return nil, err
 	}
 
-	env, err := b.EnvLoader.Load(parsedTarget)
-	if err != nil {
-		return nil, err
-	}
-
-	k8sClient := b.K8sClient
-	if k8sClient == nil {
-		k8sClient, err = b.NewK8sClient()
+	resolver := b.Resolver
+	if resolver == nil {
+		resolver, err = b.NewResolver()
 		if err != nil {
 			return nil, err
 		}
@@ -148,8 +134,7 @@ func (b *Builder) Build(target grpcresolver.Target, cc grpcresolver.ClientConn, 
 	r := &Resolver{
 		cc:              cc,
 		target:          parsedTarget,
-		env:             env,
-		k8sClient:       k8sClient,
+		resolver:        resolver,
 		ticker:          b.NewTicker(refreshInterval),
 		resolveNowCh:    make(chan struct{}, 1),
 		done:            make(chan struct{}),
@@ -190,7 +175,7 @@ func (r *Resolver) refresh() {
 
 // Resolve refreshes the current EndpointSlice-derived address state.
 func (r *Resolver) Resolve() error {
-	addresses, err := r.k8sClient.Resolve(context.Background(), r.target, r.env)
+	addresses, err := r.resolver.Resolve(context.Background(), r.target)
 	if err != nil {
 		return err
 	}
