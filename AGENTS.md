@@ -39,7 +39,7 @@
 2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
 4. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。
-5. 如果缺少 `proto` 相关依赖，可以尝试使用 `gazelle` 更新 `BUILD.bazel` 后是否解决问题。
+5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译；**禁止**自己编写 `proto` 和 `grpc stub` 代码。
 
 ##### 格式化与依赖更新
 

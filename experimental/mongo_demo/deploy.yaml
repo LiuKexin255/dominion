@@ -1,0 +1,21 @@
+app: mongo-demo
+template: deploy
+desc: "Mongo Demo CRUD 服务"
+services:
+  - infra:
+      resource: mongo
+      profile: dev-single
+      name: mongo
+      persistence:
+        enabled: true
+  - artifact:
+      path: //experimental/mongo_demo/cmd/service.yaml
+      name: cmd
+    http:
+      hostnames:
+        - mongo-demo.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1

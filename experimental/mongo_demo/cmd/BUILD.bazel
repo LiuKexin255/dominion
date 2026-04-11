@@ -1,0 +1,58 @@
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@tar.bzl", "mutate", "tar")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/experimental/mongo_demo/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//experimental/mongo_demo",
+        "//experimental/mongo_demo/storage",
+        "//pkg/grpc",
+        "//pkg/mongo",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//reflection",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+tar(
+    name = "cmd_tar",
+    srcs = [
+        ":cmd",
+    ],
+    mutate = mutate(strip_prefix = package_name() + "/cmd_"),
+)
+
+oci_image(
+    name = "cmd_image",
+    base = "@distroless_base",
+    entrypoint = ["/cmd"],
+    tars = [":cmd_tar"],
+)
+
+expand_template(
+    name = "stamped",
+    out = "_stamped.tags.txt",
+    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
+    template = ["dev"],
+)
+
+oci_push(
+    name = "cmd_image_push",
+    image = ":cmd_image",
+    remote_tags = ":stamped",
+    repository = "registry.liukexin.com/experimental/mongo_demo/cmd",
+)

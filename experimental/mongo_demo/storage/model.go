@@ -10,7 +10,8 @@ import (
 
 // mongoRecord stores MongoRecord documents in MongoDB.
 type mongoRecord struct {
-	Name        string            `bson:"_id"`
+	Name        string            `bson:"name"`
+	App         string            `bson:"app"`
 	Title       string            `bson:"title"`
 	Description string            `bson:"description"`
 	Labels      map[string]string `bson:"labels"`
@@ -74,6 +75,9 @@ func mongoRecordFromProto(p *mongodemo.MongoRecord) *mongoRecord {
 		Archived:    p.GetArchived(),
 		CreateTime:  mongoDateTimeFromProto(p.GetCreateTime()),
 		UpdateTime:  mongoDateTimeFromProto(p.GetUpdateTime()),
+	}
+	if parent, _, err := ParseResourceName(p.GetName()); err == nil {
+		r.App = parent
 	}
 	if profile := p.GetProfile(); profile != nil {
 		r.Profile = &mongoProfile{
