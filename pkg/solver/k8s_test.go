@@ -26,12 +26,12 @@ var (
 	sharedFalse = false
 )
 
-func TestBuildServiceSelector(t *testing.T) {
+func Test_buildServiceSelector(t *testing.T) {
 	tests := []struct {
 		name  string
 		given struct {
 			target *Target
-			env    *Environment
+			env    *environment
 		}
 		want string
 	}{
@@ -39,10 +39,10 @@ func TestBuildServiceSelector(t *testing.T) {
 			name: "standard target and environment",
 			given: struct {
 				target *Target
-				env    *Environment
+				env    *environment
 			}{
 				target: &Target{App: "app-a", Service: "service-a"},
-				env:    &Environment{App: "app-a", Name: "dev"},
+				env:    &environment{App: "app-a", Name: "dev"},
 			},
 			want: "app.kubernetes.io/component=service-a,app.kubernetes.io/name=app-a,dominion.io/app=app-a,dominion.io/environment=dev",
 		},
@@ -50,10 +50,10 @@ func TestBuildServiceSelector(t *testing.T) {
 			name: "different target and app values",
 			given: struct {
 				target *Target
-				env    *Environment
+				env    *environment
 			}{
 				target: &Target{App: "app-b", Service: "service-b"},
-				env:    &Environment{App: "app-b", Name: "prod"},
+				env:    &environment{App: "app-b", Name: "prod"},
 			},
 			want: "app.kubernetes.io/component=service-b,app.kubernetes.io/name=app-b,dominion.io/app=app-b,dominion.io/environment=prod",
 		},
@@ -62,23 +62,23 @@ func TestBuildServiceSelector(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			got := BuildServiceSelector(tt.given.target, tt.given.env)
+			got := buildServiceSelector(tt.given.target, tt.given.env)
 
 			// then
 			if got != tt.want {
-				t.Fatalf("BuildServiceSelector(%#v, %#v) = %q, want %q", tt.given.target, tt.given.env, got, tt.want)
+				t.Fatalf("buildServiceSelector(%#v, %#v) = %q, want %q", tt.given.target, tt.given.env, got, tt.want)
 			}
 			if _, err := labels.Parse(got); err != nil {
-				t.Fatalf("BuildServiceSelector(%#v, %#v) produced unparseable selector %q: %v", tt.given.target, tt.given.env, got, err)
+				t.Fatalf("buildServiceSelector(%#v, %#v) produced unparseable selector %q: %v", tt.given.target, tt.given.env, got, err)
 			}
 		})
 	}
 }
 
-func TestBuildServiceSelectorDifferentInputsProduceDifferentSelectors(t *testing.T) {
+func Test_buildServiceSelectorDifferentInputsProduceDifferentSelectors(t *testing.T) {
 	// given
-	first := BuildServiceSelector(&Target{App: "app-a", Service: "service-a"}, &Environment{App: "app-a", Name: "dev"})
-	second := BuildServiceSelector(&Target{App: "app-b", Service: "service-b"}, &Environment{App: "app-b", Name: "prod"})
+	first := buildServiceSelector(&Target{App: "app-a", Service: "service-a"}, &environment{App: "app-a", Name: "dev"})
+	second := buildServiceSelector(&Target{App: "app-b", Service: "service-b"}, &environment{App: "app-b", Name: "prod"})
 
 	// when / then
 	if first == second {
@@ -86,7 +86,7 @@ func TestBuildServiceSelectorDifferentInputsProduceDifferentSelectors(t *testing
 	}
 }
 
-func TestNewInClusterClient(t *testing.T) {
+func TestNewK8sResolver(t *testing.T) {
 	originalInClusterConfig := inClusterConfig
 	originalNewClientsetForConfig := newClientsetForConfig
 	t.Cleanup(func() {
@@ -146,23 +146,23 @@ func TestNewInClusterClient(t *testing.T) {
 			}
 
 			// when
-			got, err := NewInClusterClient()
+			got, err := NewK8sResolver()
 
 			// then
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("NewInClusterClient() error = %v, want substring %q", err, tt.wantErr)
+					t.Fatalf("NewK8sResolver() error = %v, want substring %q", err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("NewInClusterClient() unexpected error: %v", err)
+				t.Fatalf("NewK8sResolver() unexpected error: %v", err)
 			}
 			if got == nil {
-				t.Fatal("NewInClusterClient() returned nil client")
+				t.Fatal("NewK8sResolver() returned nil client")
 			}
 			if got.clientset == nil {
-				t.Fatal("NewInClusterClient() returned nil clientset")
+				t.Fatal("NewK8sResolver() returned nil clientset")
 			}
 			if configCalls != 1 {
 				t.Fatalf("inClusterConfig calls = %d, want 1", configCalls)
@@ -174,7 +174,7 @@ func TestNewInClusterClient(t *testing.T) {
 	}
 }
 
-func TestRuntimeK8sClientLookup(t *testing.T) {
+func TestK8sResolverLookup(t *testing.T) {
 	tests := []struct {
 		name  string
 		given struct {
@@ -246,6 +246,23 @@ func TestRuntimeK8sClientLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalLookupEnv := lookupEnv
+			t.Cleanup(func() {
+				lookupEnv = originalLookupEnv
+			})
+			lookupEnv = func(key string) (string, bool) {
+				switch key {
+				case dominionAppEnvKey:
+					return "billing", true
+				case dominionEnvironmentEnvKey:
+					return "dev", true
+				case podNamespaceEnvKey:
+					return "default", true
+				default:
+					return "", false
+				}
+			}
+
 			// given
 			clientset := fake.NewSimpleClientset()
 			for _, object := range tt.given.services {
@@ -257,12 +274,11 @@ func TestRuntimeK8sClientLookup(t *testing.T) {
 				tt.given.reactor(clientset)
 			}
 
-			client := &RuntimeK8sClient{clientset: clientset}
+			client := &K8sResolver{clientset: clientset}
 			target := &Target{App: "billing", Service: "api"}
-			env := &Environment{App: "billing", Name: "dev", Namespace: "default"}
 
 			// when
-			got, err := client.Lookup(context.Background(), target, env)
+			got, err := client.Lookup(context.Background(), target)
 
 			// then
 			if tt.wantErr != "" {
@@ -281,7 +297,7 @@ func TestRuntimeK8sClientLookup(t *testing.T) {
 	}
 }
 
-func TestRuntimeK8sClientResolveEndpoints(t *testing.T) {
+func TestK8sResolverResolveEndpoints(t *testing.T) {
 	tests := []struct {
 		name  string
 		given struct {
@@ -356,6 +372,23 @@ func TestRuntimeK8sClientResolveEndpoints(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalLookupEnv := lookupEnv
+			t.Cleanup(func() {
+				lookupEnv = originalLookupEnv
+			})
+			lookupEnv = func(key string) (string, bool) {
+				switch key {
+				case dominionAppEnvKey:
+					return "billing", true
+				case dominionEnvironmentEnvKey:
+					return "dev", true
+				case podNamespaceEnvKey:
+					return "default", true
+				default:
+					return "", false
+				}
+			}
+
 			// given
 			clientset := fake.NewSimpleClientset()
 			for _, object := range tt.given.endpointSlices {
@@ -367,12 +400,11 @@ func TestRuntimeK8sClientResolveEndpoints(t *testing.T) {
 				tt.given.reactor(clientset)
 			}
 
-			client := &RuntimeK8sClient{clientset: clientset}
+			client := &K8sResolver{clientset: clientset}
 			target := &Target{App: "billing", Service: "api", Port: tt.given.targetPort}
-			env := &Environment{App: "billing", Name: "dev", Namespace: "default"}
 
 			// when
-			got, err := client.ResolveEndpoints(context.Background(), target, env, "service-a")
+			got, err := client.ResolveEndpoints(context.Background(), target, "service-a")
 
 			// then
 			if tt.wantErr != "" {
@@ -391,7 +423,7 @@ func TestRuntimeK8sClientResolveEndpoints(t *testing.T) {
 	}
 }
 
-func TestRuntimeK8sClientResolve(t *testing.T) {
+func TestK8sResolverResolve(t *testing.T) {
 	tests := []struct {
 		name  string
 		given struct {
@@ -421,6 +453,23 @@ func TestRuntimeK8sClientResolve(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			originalLookupEnv := lookupEnv
+			t.Cleanup(func() {
+				lookupEnv = originalLookupEnv
+			})
+			lookupEnv = func(key string) (string, bool) {
+				switch key {
+				case dominionAppEnvKey:
+					return "billing", true
+				case dominionEnvironmentEnvKey:
+					return "dev", true
+				case podNamespaceEnvKey:
+					return "default", true
+				default:
+					return "", false
+				}
+			}
+
 			// given
 			clientset := fake.NewSimpleClientset()
 			for _, object := range tt.given.objects {
@@ -429,12 +478,11 @@ func TestRuntimeK8sClientResolve(t *testing.T) {
 				}
 			}
 
-			client := &RuntimeK8sClient{clientset: clientset}
+			client := &K8sResolver{clientset: clientset}
 			target := &Target{App: "billing", Service: "api"}
-			env := &Environment{App: "billing", Name: "dev", Namespace: "default"}
 
 			// when
-			got, err := client.Resolve(context.Background(), target, env)
+			got, err := client.Resolve(context.Background(), target)
 
 			// then
 			if tt.wantErr != "" {

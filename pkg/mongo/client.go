@@ -5,99 +5,56 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net"
+	"os"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
+
+	"dominion/pkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	discoveryv1 "k8s.io/api/discovery/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 )
 
 var (
-	defaultEnvLoader EnvLoader = new(OSEnvLoader)
-	nonDNSLabel                = regexp.MustCompile(`[^a-z0-9-]+`)
-	newMongoClient             = func(uri string) (*mongodriver.Client, error) {
+	lookupEnv      = os.LookupEnv
+	nonDNSLabel    = regexp.MustCompile(`[^a-z0-9-]+`)
+	newMongoClient = func(uri string) (*mongodriver.Client, error) {
 		return mongodriver.Connect(context.Background(), options.Client().ApplyURI(uri))
 	}
-	newK8sClient = func() (K8sClient, error) {
-		return NewInClusterClient()
+	newResolver = func() (solver.Resolver, error) {
+		return solver.NewK8sResolver()
 	}
 )
 
 const (
-	serviceAppLabelKey                 = "app.kubernetes.io/name"
-	serviceComponentLabelKey           = "app.kubernetes.io/component"
-	serviceDominionAppLabelKey         = "dominion.io/app"
-	serviceDominionEnvironmentLabelKey = "dominion.io/environment"
+	dominionEnvironmentEnvKey = "DOMINION_ENVIRONMENT"
 )
 
-// K8sClient is the kubernetes lookup client used by the mongo helper.
-type K8sClient interface {
-	Resolve(ctx context.Context, target *Target, env *Environment) (string, error)
-}
-
-// inClusterConfig loads the runtime pod service-account configuration.
-var inClusterConfig = rest.InClusterConfig
-
-// newClientsetForConfig constructs a kubernetes client from the runtime config.
-var newClientsetForConfig = func(config *rest.Config) (kubernetes.Interface, error) {
-	return kubernetes.NewForConfig(config)
-}
-
-// RuntimeK8sClient is the in-cluster kubernetes client used by the mongo helper.
-type RuntimeK8sClient struct {
-	clientset kubernetes.Interface
-}
-
-// NewInClusterClient constructs the runtime kubernetes client from pod credentials.
-func NewInClusterClient() (*RuntimeK8sClient, error) {
-	config, err := inClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("build in-cluster kubernetes config: %w", err)
-	}
-
-	clientset, err := newClientsetForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("build kubernetes clientset: %w", err)
-	}
-
-	return &RuntimeK8sClient{clientset: clientset}, nil
-}
+// ClientOption configures NewClient.
+type ClientOption func()
 
 // NewClient creates a MongoDB client for the given dominion target.
-func NewClient(rawTarget string) (*mongodriver.Client, error) {
-	target, err := ParseTarget(rawTarget)
+func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, error) {
+	target, err := solver.ParseTarget(rawTarget)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target %q: want app/name", rawTarget)
+	}
+
+	resolver, err := newResolver()
 	if err != nil {
 		return nil, err
 	}
 
-	env, err := defaultEnvLoader.Load(target)
+	addresses, err := resolver.Resolve(context.Background(), target)
 	if err != nil {
 		return nil, err
 	}
-	if env == nil {
-		return nil, fmt.Errorf("load environment for %q: environment is nil", rawTarget)
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("resolve mongo endpoint for target %q/%q: no ready endpoints found", target.App, target.Service)
 	}
+	address := addresses[0]
 
-	k8sClient, err := newK8sClient()
-	if err != nil {
-		return nil, err
-	}
-
-	address, err := k8sClient.Resolve(context.Background(), target, env)
-	if err != nil {
-		return nil, err
-	}
-
-	uri := buildMongoURI(target, env, address)
+	uri := buildMongoURI(target, address)
 	client, err := newMongoClient(uri)
 	if err != nil {
 		return nil, fmt.Errorf("create mongo client for %q: %w", rawTarget, err)
@@ -106,8 +63,9 @@ func NewClient(rawTarget string) (*mongodriver.Client, error) {
 	return client, nil
 }
 
-func buildMongoURI(target *Target, env *Environment, address string) string {
-	password := generateStablePassword(target.App, env.Name, target.Name)
+func buildMongoURI(target *solver.Target, address string) string {
+	envName := lookupEnvOrDefault(dominionEnvironmentEnvKey, "default")
+	password := generateStablePassword(target.App, envName, target.Service)
 
 	return fmt.Sprintf(
 		"mongodb://%s:%s@%s/%s?authSource=%s",
@@ -119,102 +77,11 @@ func buildMongoURI(target *Target, env *Environment, address string) string {
 	)
 }
 
-// buildServiceSelector returns the stable Service label selector for a mongo target.
-func buildServiceSelector(target *Target, env *Environment) string {
-	return labels.SelectorFromSet(labels.Set{
-		serviceAppLabelKey:                 target.App,
-		serviceComponentLabelKey:           target.Name,
-		serviceDominionAppLabelKey:         env.App,
-		serviceDominionEnvironmentLabelKey: env.Name,
-	}).String()
-}
-
-// Resolve lists EndpointSlices for the resolved Service and returns the first ready ip:port address.
-func (c *RuntimeK8sClient) Resolve(ctx context.Context, target *Target, env *Environment) (string, error) {
-	serviceName, err := c.lookup(ctx, target, env)
-	if err != nil {
-		return "", err
+func lookupEnvOrDefault(key, defaultValue string) string {
+	if value, ok := lookupEnv(key); ok && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
 	}
-
-	selector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: serviceName}).String()
-	endpointSlices, err := c.clientset.DiscoveryV1().EndpointSlices(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
-	if err != nil {
-		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-			return "", fmt.Errorf("list EndpointSlices in namespace %q with selector %q: permission denied: %w", env.Namespace, selector, err)
-		}
-		return "", fmt.Errorf("list EndpointSlices in namespace %q with selector %q: %w", env.Namespace, selector, err)
-	}
-
-	for _, endpointSlice := range endpointSlices.Items {
-		for _, endpoint := range endpointSlice.Endpoints {
-			if !includeEndpoint(endpoint) {
-				continue
-			}
-
-			for _, address := range endpoint.Addresses {
-				address = strings.TrimSpace(address)
-				if address == "" {
-					continue
-				}
-				return net.JoinHostPort(address, strconv.Itoa(defaultMongoPort)), nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("resolve mongo endpoint for target %q/%q in namespace %q: no ready endpoints found for Service %q", target.App, target.Name, env.Namespace, serviceName)
-}
-
-func (c *RuntimeK8sClient) lookup(ctx context.Context, target *Target, env *Environment) (string, error) {
-	selector := buildServiceSelector(target, env)
-	services, err := c.clientset.CoreV1().Services(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
-	if err != nil {
-		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-			return "", fmt.Errorf("list services in namespace %q with selector %q: permission denied: %w", env.Namespace, selector, err)
-		}
-		return "", fmt.Errorf("list services in namespace %q with selector %q: %w", env.Namespace, selector, err)
-	}
-
-	if len(services.Items) == 0 {
-		return "", fmt.Errorf("resolve service for target %q/%q in namespace %q: no Services matched selector %q", target.App, target.Name, env.Namespace, selector)
-	}
-	if len(services.Items) > 1 {
-		names := make([]string, 0, len(services.Items))
-		for _, service := range services.Items {
-			names = append(names, service.Name)
-		}
-		sort.Strings(names)
-		return "", fmt.Errorf(
-			"resolve service for target %q/%q in namespace %q: expected exactly one Service for selector %q, found %d (%s)",
-			target.App,
-			target.Name,
-			env.Namespace,
-			selector,
-			len(names),
-			strings.Join(names, ", "),
-		)
-	}
-
-	serviceName := services.Items[0].Name
-	derivedServiceName := deriveServiceName(target, env)
-	if serviceName != derivedServiceName {
-		return "", fmt.Errorf("resolve service for target %q/%q in namespace %q: service name %q does not match expected derived name %q", target.App, target.Name, env.Namespace, serviceName, derivedServiceName)
-	}
-
-	return serviceName, nil
-}
-
-func includeEndpoint(endpoint discoveryv1.Endpoint) bool {
-	if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
-		return false
-	}
-	if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating {
-		return false
-	}
-	return true
-}
-
-func deriveServiceName(target *Target, env *Environment) string {
-	return newObjectName(serviceWorkloadKind, target.App, env.App, target.Name, env.Name)
+	return defaultValue
 }
 
 func newObjectName(kind string, app string, dominionApp string, serviceName string, environmentName string) string {

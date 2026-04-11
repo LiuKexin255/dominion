@@ -19,28 +19,15 @@ const (
 	podNamespaceEnvKey = "POD_NAMESPACE"
 )
 
-// Environment captures the runtime values used by dominion resolver lookup.
-type Environment struct {
+// environment captures the runtime values used by dominion resolver lookup.
+type environment struct {
 	Name      string
 	App       string
 	Namespace string
 }
 
-// EnvLoader loads runtime environment data.
-type EnvLoader interface {
-	Load(target *Target) (*Environment, error)
-}
-
-// OSEnvLoader loads runtime environment data from process env vars.
-type OSEnvLoader struct{}
-
-// Load returns the current runtime environment from process env vars.
-func (*OSEnvLoader) Load(target *Target) (*Environment, error) {
-	return loadEnvironment(target)
-}
-
 // loadEnvironment loads and validates runtime environment using the provided lookup.
-func loadEnvironment(target *Target) (*Environment, error) {
+func loadEnvironment(target *Target) (*environment, error) {
 	app, err := lookupRequiredEnv(dominionAppEnvKey)
 	if err != nil {
 		return nil, err
@@ -60,7 +47,7 @@ func loadEnvironment(target *Target) (*Environment, error) {
 		return nil, err
 	}
 
-	return &Environment{
+	return &environment{
 		Name:      environmentName,
 		App:       app,
 		Namespace: namespace,

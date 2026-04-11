@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-func TestOSEnvLoader_Load(t *testing.T) {
+func Test_osEnvLoader_Load(t *testing.T) {
 	tests := []struct {
 		name    string
 		given   map[string]string
 		target  *Target
-		want    *Environment
+		want    *environment
 		wantErr bool
 	}{
 		{
@@ -21,7 +21,7 @@ func TestOSEnvLoader_Load(t *testing.T) {
 				podNamespaceEnvKey:        "ns-a",
 			},
 			target: &Target{App: "app-a"},
-			want:   &Environment{Name: "dev", App: "app-a", Namespace: "ns-a"},
+			want:   &environment{Name: "dev", App: "app-a", Namespace: "ns-a"},
 		},
 		{
 			name: "target app mismatch",
@@ -75,7 +75,7 @@ func TestOSEnvLoader_Load(t *testing.T) {
 			}
 
 			// when
-			got, err := (&OSEnvLoader{}).Load(tt.target)
+			got, err := loadEnvironment(tt.target)
 
 			// then
 			if tt.wantErr {
