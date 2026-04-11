@@ -49,6 +49,7 @@ go_test(
         "executor_delete_test.go",
         "executor_test.go",
         "fake_harness_test.go",
+        "mongo_integration_test.go",
         "mongo_test.go",
         "static_config_test.go",
         "workload_test.go",
