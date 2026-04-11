@@ -338,8 +338,8 @@ func assertMongoReservedEnv(t *testing.T, env []corev1.EnvVar) {
 	if len(env) < 3 {
 		t.Fatalf("env len = %d, want >= 3", len(env))
 	}
-	if env[0].Name != reservedEnvNameDominionApp || env[0].Value != "grpc-hello-world" {
-		t.Fatalf("env[0] = %#v, want DOMINION_APP literal", env[0])
+	if env[0].Name != reservedEnvNameServiceApp || env[0].Value != "grpc-hello-world" {
+		t.Fatalf("env[0] = %#v, want SERVICE_APP literal", env[0])
 	}
 	if env[1].Name != reservedEnvNameDominionEnvironment || env[1].Value != "dev" {
 		t.Fatalf("env[1] = %#v, want DOMINION_ENVIRONMENT literal", env[1])
@@ -355,8 +355,8 @@ func assertExecutorReservedEnv(t *testing.T, env []corev1.EnvVar) {
 	if len(env) != 3 {
 		t.Fatalf("env len = %d, want 3", len(env))
 	}
-	if env[0].Name != reservedEnvNameDominionApp || env[0].Value != "grpc-hello-world" {
-		t.Fatalf("env[0] = %#v, want DOMINION_APP literal", env[0])
+	if env[0].Name != reservedEnvNameServiceApp || env[0].Value != "grpc-hello-world" {
+		t.Fatalf("env[0] = %#v, want SERVICE_APP literal", env[0])
 	}
 	if env[1].Name != reservedEnvNameDominionEnvironment || env[1].Value != "dev" {
 		t.Fatalf("env[1] = %#v, want DOMINION_ENVIRONMENT literal", env[1])

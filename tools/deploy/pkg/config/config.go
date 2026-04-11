@@ -52,7 +52,7 @@ type DeployConfig struct {
 }
 
 type DeployService struct {
-	Artifact DeployArtifact `yaml:"artifact"`
+	Artifact DeployArtifact `yaml:"artifact,omitempty"`
 	Infra    DeployInfra    `yaml:"infra,omitempty"`
 	HTTP     DeployHTTP     `yaml:"http,omitempty"`
 }

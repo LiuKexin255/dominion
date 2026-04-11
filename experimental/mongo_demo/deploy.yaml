@@ -3,7 +3,7 @@ template: deploy
 desc: "Mongo Demo CRUD 服务"
 services:
   - infra:
-      resource: mongo
+      resource: mongodb
       profile: dev-single
       name: mongo
       persistence:

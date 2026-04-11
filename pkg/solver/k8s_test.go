@@ -252,7 +252,7 @@ func TestK8sResolverLookup(t *testing.T) {
 			})
 			lookupEnv = func(key string) (string, bool) {
 				switch key {
-				case dominionAppEnvKey:
+				case serviceAppEnvKey:
 					return "billing", true
 				case dominionEnvironmentEnvKey:
 					return "dev", true
@@ -378,7 +378,7 @@ func TestK8sResolverResolveEndpoints(t *testing.T) {
 			})
 			lookupEnv = func(key string) (string, bool) {
 				switch key {
-				case dominionAppEnvKey:
+				case serviceAppEnvKey:
 					return "billing", true
 				case dominionEnvironmentEnvKey:
 					return "dev", true
@@ -459,7 +459,7 @@ func TestK8sResolverResolve(t *testing.T) {
 			})
 			lookupEnv = func(key string) (string, bool) {
 				switch key {
-				case dominionAppEnvKey:
+				case serviceAppEnvKey:
 					return "billing", true
 				case dominionEnvironmentEnvKey:
 					return "dev", true

@@ -68,6 +68,7 @@ func (s *mongoDemoServer) CreateMongoRecord(ctx context.Context, req *mongodemo.
 	if record == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "mongo record is empty")
 	}
+	record.Name = req.GetParent() + "/mongoRecords/" + req.GetMongoRecordId()
 
 	createdRecord, err := s.store.Create(ctx, record)
 	if err != nil {

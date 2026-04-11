@@ -1,7 +1,6 @@
 package k8s
 
 import (
-	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -487,8 +486,8 @@ func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
 	if len(gotEnv) != 3 {
 		t.Fatalf("deployment env len = %d, want 3", len(gotEnv))
 	}
-	if gotEnv[0].Name != reservedEnvNameDominionApp || gotEnv[0].Value != "grpc-hello-world" {
-		t.Fatalf("deployment env[0] = %#v, want DOMINION_APP literal", gotEnv[0])
+	if gotEnv[0].Name != reservedEnvNameServiceApp || gotEnv[0].Value != "grpc_hello_world" {
+		t.Fatalf("deployment env[0] = %#v, want SERVICE_APP literal", gotEnv[0])
 	}
 	if gotEnv[1].Name != reservedEnvNameDominionEnvironment || gotEnv[1].Value != "dev" {
 		t.Fatalf("deployment env[1] = %#v, want DOMINION_ENVIRONMENT literal", gotEnv[1])
@@ -666,12 +665,8 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			if secret.Name != wantSecretName {
 				t.Fatalf("mongodb secret name = %q, want %q", secret.Name, wantSecretName)
 			}
-			username, err := base64.StdEncoding.DecodeString(string(secret.Data[mongoSecretUsernameKey]))
-			if err != nil {
-				t.Fatalf("DecodeString(username) failed: %v", err)
-			}
-			if string(username) != "admin" {
-				t.Fatalf("mongodb secret username = %q, want %q", string(username), "admin")
+			if string(secret.Data[mongoSecretUsernameKey]) != "admin" {
+				t.Fatalf("mongodb secret username = %q, want %q", string(secret.Data[mongoSecretUsernameKey]), "admin")
 			}
 		})
 	}
@@ -742,20 +737,11 @@ func TestNewDeployObjects_InfraMongoDBPasswordDeterministic(t *testing.T) {
 		t.Fatalf("BuildMongoDBSecret() second call failed: %v", err)
 	}
 
-	passwordA, err := base64.StdEncoding.DecodeString(string(secretA.Data[mongoSecretPasswordKey]))
-	if err != nil {
-		t.Fatalf("DecodeString(passwordA) failed: %v", err)
+	wantPassword := generateStablePassword(objectsA.MongoDBWorkloads[0].App, "dev", "mongo-main")
+	if string(secretA.Data[mongoSecretPasswordKey]) != wantPassword {
+		t.Fatalf("mongodb password A = %q, want %q", string(secretA.Data[mongoSecretPasswordKey]), wantPassword)
 	}
-	passwordB, err := base64.StdEncoding.DecodeString(string(secretB.Data[mongoSecretPasswordKey]))
-	if err != nil {
-		t.Fatalf("DecodeString(passwordB) failed: %v", err)
-	}
-
-	wantPassword := generateStablePassword("grpc-hello-world", "dev", "mongo-main")
-	if string(passwordA) != wantPassword {
-		t.Fatalf("mongodb password A = %q, want %q", string(passwordA), wantPassword)
-	}
-	if string(passwordB) != wantPassword {
-		t.Fatalf("mongodb password B = %q, want %q", string(passwordB), wantPassword)
+	if string(secretB.Data[mongoSecretPasswordKey]) != wantPassword {
+		t.Fatalf("mongodb password B = %q, want %q", string(secretB.Data[mongoSecretPasswordKey]), wantPassword)
 	}
 }

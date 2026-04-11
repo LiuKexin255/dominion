@@ -2,7 +2,6 @@ package k8s
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,7 +23,7 @@ app: grpc-hello-world
 desc: "mongodb integration"
 services:
   - infra:
-      resource: mongo
+      resource: mongodb
       profile: dev-single
       name: mongo-main
       persistence:
@@ -87,13 +86,9 @@ func TestEndToEnd_MongoDB_Apply_CreatesResourcesInOrder(t *testing.T) {
 	if string(storedSecret.Data[mongoSecretUsernameKey]) != string(wantSecret.Data[mongoSecretUsernameKey]) {
 		t.Fatalf("stored username = %q, want %q", string(storedSecret.Data[mongoSecretUsernameKey]), string(wantSecret.Data[mongoSecretUsernameKey]))
 	}
-	passwordRaw, err := base64.StdEncoding.DecodeString(string(storedSecret.Data[mongoSecretPasswordKey]))
-	if err != nil {
-		t.Fatalf("DecodeString(password) failed: %v", err)
-	}
-	wantPassword := generateStablePassword(workload.DominionApp, workload.EnvironmentName, workload.ServiceName)
-	if string(passwordRaw) != wantPassword {
-		t.Fatalf("stored password = %q, want %q", string(passwordRaw), wantPassword)
+	wantPassword := generateStablePassword(workload.App, workload.EnvironmentName, workload.ServiceName)
+	if string(storedSecret.Data[mongoSecretPasswordKey]) != wantPassword {
+		t.Fatalf("stored password = %q, want %q", string(storedSecret.Data[mongoSecretPasswordKey]), wantPassword)
 	}
 }
 
@@ -209,7 +204,7 @@ func TestEndToEnd_MongoDB_Password_Consistency(t *testing.T) {
 	workload := st.objects.MongoDBWorkloads[0]
 
 	// when
-	got := generateStablePassword(workload.DominionApp, workload.EnvironmentName, workload.ServiceName)
+	got := generateStablePassword(workload.App, workload.EnvironmentName, workload.ServiceName)
 
 	// then
 	if got != mongoIntegrationExpectedPassword {
@@ -220,12 +215,8 @@ func TestEndToEnd_MongoDB_Password_Consistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildMongoDBSecret() failed: %v", err)
 	}
-	passwordRaw, err := base64.StdEncoding.DecodeString(string(secret.Data[mongoSecretPasswordKey]))
-	if err != nil {
-		t.Fatalf("DecodeString(password) failed: %v", err)
-	}
-	if string(passwordRaw) != mongoIntegrationExpectedPassword {
-		t.Fatalf("secret password = %q, want %q", string(passwordRaw), mongoIntegrationExpectedPassword)
+	if string(secret.Data[mongoSecretPasswordKey]) != mongoIntegrationExpectedPassword {
+		t.Fatalf("secret password = %q, want %q", string(secret.Data[mongoSecretPasswordKey]), mongoIntegrationExpectedPassword)
 	}
 }
 

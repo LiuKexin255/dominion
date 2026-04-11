@@ -16,7 +16,7 @@ func Test_osEnvLoader_Load(t *testing.T) {
 		{
 			name: "success",
 			given: map[string]string{
-				dominionAppEnvKey:         "app-a",
+				serviceAppEnvKey:          "app-a",
 				dominionEnvironmentEnvKey: "dev",
 				podNamespaceEnvKey:        "ns-a",
 			},
@@ -26,7 +26,7 @@ func Test_osEnvLoader_Load(t *testing.T) {
 		{
 			name: "target app mismatch",
 			given: map[string]string{
-				dominionAppEnvKey:         "app-a",
+				serviceAppEnvKey:          "app-a",
 				dominionEnvironmentEnvKey: "dev",
 				podNamespaceEnvKey:        "ns-a",
 			},
@@ -45,7 +45,7 @@ func Test_osEnvLoader_Load(t *testing.T) {
 		{
 			name: "missing environment env",
 			given: map[string]string{
-				dominionAppEnvKey:  "app-a",
+				serviceAppEnvKey:   "app-a",
 				podNamespaceEnvKey: "ns-a",
 			},
 			target:  &Target{App: "app-a"},
@@ -54,7 +54,7 @@ func Test_osEnvLoader_Load(t *testing.T) {
 		{
 			name: "missing namespace env",
 			given: map[string]string{
-				dominionAppEnvKey:         "app-a",
+				serviceAppEnvKey:          "app-a",
 				dominionEnvironmentEnvKey: "dev",
 			},
 			target:  &Target{App: "app-a"},

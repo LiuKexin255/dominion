@@ -1,7 +1,6 @@
 package k8s
 
 import (
-	"encoding/base64"
 	"regexp"
 	"slices"
 	"strings"
@@ -459,6 +458,7 @@ func newTestK8sConfigWithMongoProfile() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
+				Security:      MongoSecurityConfig{RunAsUser: 1000, RunAsGroup: 3000},
 				Storage:       MongoStorageConfig{StorageClassName: "local-path", Capacity: "1Gi", AccessModes: []string{"ReadWriteOnce"}, VolumeMode: "Filesystem"},
 			},
 		},
@@ -499,8 +499,43 @@ func TestBuildMongoDBSecret(t *testing.T) {
 				serviceName: "mongo-main",
 				environment: "dev",
 				secretType:  corev1.SecretTypeOpaque,
-				username:    base64.StdEncoding.EncodeToString([]byte("admin")),
-				password:    base64.StdEncoding.EncodeToString([]byte(generateStablePassword("grpc-hello-world", "dev", "mongo-main"))),
+				username:    "admin",
+				password:    generateStablePassword(newTestMongoDBWorkload().App, "dev", "mongo-main"),
+			},
+		},
+		{
+			name: "password uses service app instead of dominion app",
+			workload: &MongoDBWorkload{
+				ServiceName:     "mongo-main",
+				EnvironmentName: "dev",
+				App:             "service-app",
+				DominionApp:     "dominion-app",
+				ProfileName:     "dev-single",
+			},
+			k8sConfig: &K8sConfig{
+				Namespace: "team-dev",
+				ManagedBy: "deploy-tool",
+				MongoDB: map[string]*MongoProfileConfig{
+					"dev-single": {
+						Image:         "mongo",
+						Version:       "7.0",
+						Port:          27017,
+						AdminUsername: "admin",
+						Storage:       MongoStorageConfig{StorageClassName: "local-path", Capacity: "1Gi", AccessModes: []string{"ReadWriteOnce"}, VolumeMode: "Filesystem"},
+					},
+				},
+			},
+			want: &mongoDBSecretExpectation{
+				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName(),
+				namespace:   "team-dev",
+				managedBy:   "deploy-tool",
+				app:         "service-app",
+				dominionApp: "dominion-app",
+				serviceName: "mongo-main",
+				environment: "dev",
+				secretType:  corev1.SecretTypeOpaque,
+				username:    "admin",
+				password:    generateStablePassword("service-app", "dev", "mongo-main"),
 			},
 		},
 		{
@@ -846,6 +881,9 @@ func assertMongoDBSecret(t *testing.T, got *corev1.Secret, want *mongoDBSecretEx
 }
 
 func TestBuildMongoDBDeployment(t *testing.T) {
+	runAsUser := int64(1000)
+	runAsGroup := int64(3000)
+
 	tests := []struct {
 		name        string
 		workload    *MongoDBWorkload
@@ -868,6 +906,10 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 				environment: "dev",
 				replicas:    1,
 				image:       "mongo:7.0",
+				securityContext: &corev1.PodSecurityContext{
+					RunAsUser:  &runAsUser,
+					RunAsGroup: &runAsGroup,
+				},
 				ports: []corev1.ContainerPort{{
 					Name:          mongoPortName,
 					ContainerPort: 27017,
@@ -885,7 +927,7 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 					MountPath: mongoDataMountPath,
 				}},
 				env: []corev1.EnvVar{
-					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameServiceApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{
 						Name:      reservedEnvNamePodNamespace,
@@ -902,6 +944,70 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 						Name: mongoEnvRootPassword,
 						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{Name: newTestMongoDBWorkload().SecretResourceName()},
+							Key:                  mongoSecretPasswordKey,
+						}},
+					},
+				},
+			},
+		},
+		{
+			name: "deployment env uses service app",
+			workload: &MongoDBWorkload{
+				ServiceName:     "mongo-main",
+				EnvironmentName: "dev",
+				App:             "service-app",
+				DominionApp:     "dominion-app",
+				ProfileName:     "dev-single",
+			},
+			k8sConfig: newTestK8sConfigWithMongoProfile(),
+			want: &mongoDBDeploymentExpectation{
+				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app", ProfileName: "dev-single"}).ResourceName(),
+				namespace:   "team-dev",
+				managedBy:   "deploy-tool",
+				app:         "service-app",
+				dominionApp: "dominion-app",
+				serviceName: "mongo-main",
+				environment: "dev",
+				replicas:    1,
+				image:       "mongo:7.0",
+				securityContext: &corev1.PodSecurityContext{
+					RunAsUser:  &runAsUser,
+					RunAsGroup: &runAsGroup,
+				},
+				ports: []corev1.ContainerPort{{
+					Name:          mongoPortName,
+					ContainerPort: 27017,
+				}},
+				volumes: []corev1.Volume{{
+					Name: mongoDataVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).PVCResourceName(),
+						},
+					},
+				}},
+				volumeMounts: []corev1.VolumeMount{{
+					Name:      mongoDataVolumeName,
+					MountPath: mongoDataMountPath,
+				}},
+				env: []corev1.EnvVar{
+					{Name: reservedEnvNameServiceApp, Value: "service-app"},
+					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
+					{
+						Name:      reservedEnvNamePodNamespace,
+						ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: mongoPodFieldPathNS}},
+					},
+					{
+						Name: mongoEnvRootUsername,
+						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName()},
+							Key:                  mongoSecretUsernameKey,
+						}},
+					},
+					{
+						Name: mongoEnvRootPassword,
+						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName()},
 							Key:                  mongoSecretPasswordKey,
 						}},
 					},
@@ -959,19 +1065,20 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 }
 
 type mongoDBDeploymentExpectation struct {
-	name         string
-	namespace    string
-	managedBy    string
-	app          string
-	dominionApp  string
-	serviceName  string
-	environment  string
-	replicas     int32
-	image        string
-	ports        []corev1.ContainerPort
-	volumes      []corev1.Volume
-	volumeMounts []corev1.VolumeMount
-	env          []corev1.EnvVar
+	name            string
+	namespace       string
+	managedBy       string
+	app             string
+	dominionApp     string
+	serviceName     string
+	environment     string
+	replicas        int32
+	image           string
+	securityContext *corev1.PodSecurityContext
+	ports           []corev1.ContainerPort
+	volumes         []corev1.Volume
+	volumeMounts    []corev1.VolumeMount
+	env             []corev1.EnvVar
 }
 
 func assertMongoDBDeployment(t *testing.T, got *appsv1.Deployment, want *mongoDBDeploymentExpectation) {
@@ -989,6 +1096,7 @@ func assertMongoDBDeployment(t *testing.T, got *appsv1.Deployment, want *mongoDB
 	if got.Spec.Replicas == nil || *got.Spec.Replicas != want.replicas {
 		t.Fatalf("replicas = %v, want %d", got.Spec.Replicas, want.replicas)
 	}
+	assertMongoDBPodSecurityContext(t, got.Spec.Template.Spec.SecurityContext, want.securityContext)
 	assertVolumes(t, got.Spec.Template.Spec.Volumes, want.volumes)
 
 	if len(got.Spec.Template.Spec.InitContainers) != 1 {
@@ -1041,6 +1149,26 @@ func assertMongoDBDeployment(t *testing.T, got *appsv1.Deployment, want *mongoDB
 	assertMongoDBContainerEnv(t, container.Env, want.env)
 	assertMongoDBProbe(t, container.LivenessProbe, "liveness")
 	assertMongoDBProbe(t, container.ReadinessProbe, "readiness")
+}
+
+func assertMongoDBPodSecurityContext(t *testing.T, got *corev1.PodSecurityContext, want *corev1.PodSecurityContext) {
+	t.Helper()
+
+	if want == nil {
+		if got != nil {
+			t.Fatalf("pod securityContext = %#v, want nil", got)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatal("pod securityContext = nil, want non-nil")
+	}
+	if got.RunAsUser == nil || *got.RunAsUser != *want.RunAsUser {
+		t.Fatalf("pod securityContext.runAsUser = %v, want %d", got.RunAsUser, *want.RunAsUser)
+	}
+	if got.RunAsGroup == nil || *got.RunAsGroup != *want.RunAsGroup {
+		t.Fatalf("pod securityContext.runAsGroup = %v, want %d", got.RunAsGroup, *want.RunAsGroup)
+	}
 }
 
 func assertMongoDBContainerEnv(t *testing.T, got []corev1.EnvVar, want []corev1.EnvVar) {

@@ -69,7 +69,7 @@
               "resource": {
                 "type": "string",
                 "enum": [
-                  "mongo"
+                  "mongodb"
                 ]
               },
               "profile": {

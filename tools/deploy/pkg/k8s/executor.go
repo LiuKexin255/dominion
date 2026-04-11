@@ -408,10 +408,7 @@ func (e *Executor) applyPVC(ctx context.Context, workload *MongoDBWorkload) erro
 		return fmt.Errorf("failed to validate %s %s/%s: %w", resourceKindPVC, desired.Namespace, desired.Name, err)
 	}
 
-	desired.ResourceVersion = current.ResourceVersion
-	if _, err := e.client.TypedClient.CoreV1().PersistentVolumeClaims(desired.Namespace).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("failed to update %s %s/%s: %w", resourceKindPVC, desired.Namespace, desired.Name, err)
-	}
+	fmt.Println("pvc already exist, skip apply")
 	return nil
 }
 

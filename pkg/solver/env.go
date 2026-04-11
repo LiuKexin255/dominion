@@ -11,8 +11,8 @@ import (
 var lookupEnv = os.LookupEnv
 
 const (
-	// dominionAppEnvKey stores the current dominion app name.
-	dominionAppEnvKey = "DOMINION_APP"
+	// serviceAppEnvKey stores the current service app name.
+	serviceAppEnvKey = "SERVICE_APP"
 	// dominionEnvironmentEnvKey stores the current dominion environment name.
 	dominionEnvironmentEnvKey = "DOMINION_ENVIRONMENT"
 	// podNamespaceEnvKey stores the current pod namespace.
@@ -28,13 +28,13 @@ type environment struct {
 
 // loadEnvironment loads and validates runtime environment using the provided lookup.
 func loadEnvironment(target *Target) (*environment, error) {
-	app, err := lookupRequiredEnv(dominionAppEnvKey)
+	app, err := lookupRequiredEnv(serviceAppEnvKey)
 	if err != nil {
 		return nil, err
 	}
 
 	if target.App != app {
-		return nil, fmt.Errorf("target app %q does not match %s %q", target.App, dominionAppEnvKey, app)
+		return nil, fmt.Errorf("target app %q does not match %s %q", target.App, serviceAppEnvKey, app)
 	}
 
 	environmentName, err := lookupRequiredEnv(dominionEnvironmentEnvKey)

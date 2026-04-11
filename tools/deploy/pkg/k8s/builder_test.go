@@ -87,7 +87,7 @@ func TestBuildDeployment(t *testing.T) {
 				volumes:      nil,
 				volumeMounts: nil,
 				env: []corev1.EnvVar{
-					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameServiceApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 				},
@@ -129,13 +129,49 @@ func TestBuildDeployment(t *testing.T) {
 					ReadOnly:  true,
 				}},
 				env: []corev1.EnvVar{
-					{Name: reservedEnvNameDominionApp, Value: "grpc-hello-world"},
+					{Name: reservedEnvNameServiceApp, Value: "grpc-hello-world"},
 					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
 					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 					{Name: "TLS_CERT_FILE", Value: "/etc/tls/tls.crt"},
 					{Name: "TLS_KEY_FILE", Value: "/etc/tls/tls.key"},
 					{Name: "TLS_CA_FILE", Value: "/etc/tls/ca.crt"},
 					{Name: "TLS_SERVER_NAME", Value: "gateway.internal.example.com"},
+				},
+			},
+		},
+		{
+			name: "injects service app env from workload app while keeping dominion label",
+			workload: func() *DeploymentWorkload {
+				workload := newTestDeploymentWorkload()
+				workload.App = "gateway-service"
+				workload.DominionApp = "grpc-hello-world"
+				return workload
+			}(),
+			k8sConfig: newTestK8sConfig(),
+			want: &deploymentExpectation{
+				name: func() string {
+					workload := newTestDeploymentWorkload()
+					workload.App = "gateway-service"
+					return workload.WorkloadName()
+				}(),
+				namespace:   "team-dev",
+				managedBy:   "deploy-tool",
+				app:         "gateway-service",
+				dominionApp: "grpc-hello-world",
+				serviceName: "gateway",
+				environment: "dev",
+				replicas:    3,
+				image:       "registry.local/gateway:latest",
+				ports: []corev1.ContainerPort{
+					{Name: "http", ContainerPort: 8080},
+					{Name: "grpc", ContainerPort: 9090},
+				},
+				volumes:      nil,
+				volumeMounts: nil,
+				env: []corev1.EnvVar{
+					{Name: reservedEnvNameServiceApp, Value: "gateway-service"},
+					{Name: reservedEnvNameDominionEnvironment, Value: "dev"},
+					{Name: reservedEnvNamePodNamespace, Value: "team-dev"},
 				},
 			},
 		},

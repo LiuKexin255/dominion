@@ -57,13 +57,20 @@ type MongoStorageConfig struct {
 	VolumeMode       string   `yaml:"volume_mode"`
 }
 
+// MongoSecurityConfig 定义 Mongo workload 的安全上下文配置。
+type MongoSecurityConfig struct {
+	RunAsUser  int64 `yaml:"run_as_user"`
+	RunAsGroup int64 `yaml:"run_as_group"`
+}
+
 // MongoProfileConfig 定义 Mongo 内置 profile 的默认参数。
 type MongoProfileConfig struct {
-	Image         string             `yaml:"image"`
-	Version       string             `yaml:"version"`
-	Port          int                `yaml:"port"`
-	AdminUsername string             `yaml:"admin_username"`
-	Storage       MongoStorageConfig `yaml:"storage"`
+	Image         string              `yaml:"image"`
+	Version       string              `yaml:"version"`
+	Port          int                 `yaml:"port"`
+	AdminUsername string              `yaml:"admin_username"`
+	Security      MongoSecurityConfig `yaml:"security"`
+	Storage       MongoStorageConfig  `yaml:"storage"`
 }
 
 // K8sConfig 定义部署流程使用的静态 Kubernetes 配置。
@@ -143,6 +150,12 @@ func (c *MongoProfileConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.AdminUsername) == "" {
 		return fmt.Errorf("mongo profile 缺少 admin_username")
+	}
+	if c.Security.RunAsUser <= 0 {
+		return fmt.Errorf("mongo profile security.run_as_user 非法")
+	}
+	if c.Security.RunAsGroup <= 0 {
+		return fmt.Errorf("mongo profile security.run_as_group 非法")
 	}
 	if strings.TrimSpace(c.Storage.StorageClassName) == "" {
 		return fmt.Errorf("mongo profile 缺少 storage.storage_class_name")

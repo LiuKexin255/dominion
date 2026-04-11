@@ -27,8 +27,8 @@ const (
 	dominionAppLabelKey = "dominion.io/app"
 	// dominionEnvironmentLabelKey 标识 Dominion 环境名称标签键。
 	dominionEnvironmentLabelKey = "dominion.io/environment"
-	// reservedEnvNameDominionApp 为 Dominion app 注入环境变量名。
-	reservedEnvNameDominionApp = "DOMINION_APP"
+	// reservedEnvNameServiceApp 为 service app 注入环境变量名。
+	reservedEnvNameServiceApp = "SERVICE_APP"
 	// reservedEnvNameDominionEnvironment 为 Dominion 环境注入环境变量名。
 	reservedEnvNameDominionEnvironment = "DOMINION_ENVIRONMENT"
 	// reservedEnvNamePodNamespace 为 Pod 命名空间注入环境变量名。
@@ -79,7 +79,7 @@ func BuildDeployment(workload *DeploymentWorkload) (*appsv1.Deployment, error) {
 
 	replicas := workload.Replicas
 	containerEnv := []corev1.EnvVar{
-		{Name: reservedEnvNameDominionApp, Value: workload.DominionApp},
+		{Name: reservedEnvNameServiceApp, Value: workload.App},
 		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		{Name: reservedEnvNamePodNamespace, Value: k8sConfig.Namespace},
 	}

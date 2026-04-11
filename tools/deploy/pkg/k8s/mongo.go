@@ -3,7 +3,6 @@ package k8s
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"slices"
 	"strings"
@@ -215,10 +214,16 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload) (*appsv1.Deployment, erro
 	)
 	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
 	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
+	runAsUser := profile.Security.RunAsUser
+	runAsGroup := profile.Security.RunAsGroup
 	volumeMounts := []corev1.VolumeMount{{
 		Name:      mongoDataVolumeName,
 		MountPath: mongoDataMountPath,
 	}}
+	podSecurityContext := &corev1.PodSecurityContext{
+		RunAsUser:  &runAsUser,
+		RunAsGroup: &runAsGroup,
+	}
 	volumes := []corev1.Volume{{
 		Name: mongoDataVolumeName,
 		VolumeSource: corev1.VolumeSource{
@@ -250,7 +255,8 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload) (*appsv1.Deployment, erro
 					Labels: map[string]string(objectLabels),
 				},
 				Spec: corev1.PodSpec{
-					Volumes: volumes,
+					SecurityContext: podSecurityContext,
+					Volumes:         volumes,
 					InitContainers: []corev1.Container{{
 						Name:         mongoInitContainerName,
 						Image:        containerImage,
@@ -441,7 +447,7 @@ func BuildMongoDBSecret(workload *MongoDBWorkload) (*corev1.Secret, error) {
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
-	password := generateStablePassword(workload.DominionApp, workload.EnvironmentName, workload.ServiceName)
+	password := generateStablePassword(workload.App, workload.EnvironmentName, workload.ServiceName)
 
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -451,15 +457,15 @@ func BuildMongoDBSecret(workload *MongoDBWorkload) (*corev1.Secret, error) {
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			mongoSecretUsernameKey: []byte(base64.StdEncoding.EncodeToString([]byte(profile.AdminUsername))),
-			mongoSecretPasswordKey: []byte(base64.StdEncoding.EncodeToString([]byte(password))),
+			mongoSecretUsernameKey: []byte(profile.AdminUsername),
+			mongoSecretPasswordKey: []byte(password),
 		},
 	}, nil
 }
 
 func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
 	return []corev1.EnvVar{
-		{Name: reservedEnvNameDominionApp, Value: workload.App},
+		{Name: reservedEnvNameServiceApp, Value: workload.App},
 		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		{
 			Name: reservedEnvNamePodNamespace,
