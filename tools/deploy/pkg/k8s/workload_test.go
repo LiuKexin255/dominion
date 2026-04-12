@@ -213,63 +213,51 @@ func TestWorkloadKindMongoDBAndStorageKinds(t *testing.T) {
 }
 func Test_newObjectName(t *testing.T) {
 	tests := []struct {
-		name            string
-		kind            WorkloadKind
-		app             string
-		dominionApp     string
-		serviceName     string
-		environmentName string
-		want            string
+		name        string
+		kind        WorkloadKind
+		fullEnvName string
+		serviceName string
+		want        string
 	}{
 		{
-			name:            "normal",
-			kind:            WorkloadKindDeployment,
-			app:             "grpc-hello-world",
-			dominionApp:     "grpc-hello-world",
-			serviceName:     "gateway",
-			environmentName: "dev",
-			want:            "dp-dev-gateway-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
+			name:        "normal",
+			kind:        WorkloadKindDeployment,
+			fullEnvName: "grpc-hello-world.dev",
+			serviceName: "gateway",
+			want:        "dp-grpc-hello-world-dev-gateway-" + shortNameHash("grpc-hello-world.dev"),
 		},
 		{
-			name:            "normalize and sanitize",
-			kind:            WorkloadKindService,
-			app:             " GRPC_HELLO.WORLD ",
-			dominionApp:     "grpc-hello-world",
-			serviceName:     "gateway@v1",
-			environmentName: " Dev ",
-			want:            "svc-dev-gateway-v1-" + shortNameHash(" GRPC_HELLO.WORLD ", "grpc-hello-world"),
+			name:        "normalize and sanitize",
+			kind:        WorkloadKindService,
+			fullEnvName: "GRPC_HELLO_WORLD.dev",
+			serviceName: "gateway@v1",
+			want:        "svc-grpc-hello-world-dev-gateway-v1-" + shortNameHash("GRPC_HELLO_WORLD.dev"),
 		},
 		{
-			name:            "only kind when all parts empty",
-			kind:            WorkloadKindHTTPRoute,
-			app:             "",
-			dominionApp:     "",
-			serviceName:     "",
-			environmentName: "",
-			want:            "route-" + shortNameHash("", ""),
+			name:        "only kind when all parts empty",
+			kind:        WorkloadKindHTTPRoute,
+			fullEnvName: "",
+			serviceName: "",
+			want:        "route-" + shortNameHash(""),
 		},
 		{
-			name:            "fallback to unknown kind",
-			kind:            "",
-			app:             "app",
-			dominionApp:     "app",
-			serviceName:     "svc",
-			environmentName: "dev",
-			want:            "unknown-dev-svc-" + shortNameHash("app", "app"),
+			name:        "fallback to unknown kind",
+			kind:        "",
+			fullEnvName: "app.dev",
+			serviceName: "svc",
+			want:        "unknown-app-dev-svc-" + shortNameHash("app.dev"),
 		},
 		{
-			name:            "skip empty normalized part",
-			kind:            WorkloadKindDeployment,
-			app:             "---",
-			dominionApp:     "grpc-hello-world",
-			serviceName:     "svc",
-			environmentName: "dev",
-			want:            "dp-dev-svc-" + shortNameHash("---", "grpc-hello-world"),
+			name:        "skip empty normalized part",
+			kind:        WorkloadKindDeployment,
+			fullEnvName: "---.dev",
+			serviceName: "svc",
+			want:        "dp-dev-svc-" + shortNameHash("---.dev"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := newObjectName(tt.kind, tt.app, tt.dominionApp, tt.serviceName, tt.environmentName)
+			got := newObjectName(tt.kind, tt.fullEnvName, tt.serviceName)
 			if got != tt.want {
 				t.Errorf("newObjectName() = %v, want %v", got, tt.want)
 			}
@@ -414,7 +402,7 @@ func Test_newDeploymentWorkload_TLSEnabled(t *testing.T) {
 				}},
 			}
 
-			got, err := newDeploymentWorkload(serviceCfg, artifact, "dev", "grpc-hello-world", "registry.example.com/team/gateway:latest")
+			got, err := newDeploymentWorkload(serviceCfg, artifact, "dev", "registry.example.com/team/gateway:latest")
 			if err != nil {
 				t.Fatalf("newDeploymentWorkload() failed: %v", err)
 			}
@@ -510,7 +498,6 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
@@ -532,10 +519,9 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:      "gateway",
 				EnvironmentName:  "dev",
 				App:              "grpc-hello-world",
-				DominionApp:      "grpc-hello-world",
 				Hostnames:        []string{"hello.example.com"},
 				Matches:          []*HTTPRoutePathMatch{{Type: config.HTTPPathMatchTypePrefix, Value: "/v1", BackendName: "http", BackendPort: 80}},
-				BackendService:   (&DeploymentWorkload{ServiceName: "gateway", EnvironmentName: "dev", App: "grpc-hello-world", DominionApp: "grpc-hello-world"}).ServiceResourceName(),
+				BackendService:   (&DeploymentWorkload{ServiceName: "gateway", EnvironmentName: "dev"}).ServiceResourceName(),
 				GatewayName:      "gw",
 				GatewayNamespace: "infra",
 			},
@@ -546,7 +532,6 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
@@ -566,7 +551,6 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},
@@ -586,7 +570,6 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				ServiceName:     "gateway",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				Desc:            "gateway service",
 				Image:           "registry.example.com/team/gateway:latest",
 				Ports:           []*DeploymentPort{{Name: "http", Port: 80}},

@@ -27,7 +27,6 @@ func TestMongoDBWorkloadValidate(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "dev-single",
 			},
 		},
@@ -77,9 +76,8 @@ func TestMongoDBWorkloadResourceName(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "Dev",
 				App:             "GRPC_HELLO.WORLD",
-				DominionApp:     "grpc-hello-world",
 			},
-			want: "mongo-dev-mongo-main-" + shortNameHash("GRPC_HELLO.WORLD", "grpc-hello-world"),
+			want: "mongo-dev-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -105,9 +103,8 @@ func TestMongoDBWorkloadSecretResourceName(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "Dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 			},
-			want: "secret-dev-mongo-main-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
+			want: "secret-dev-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -133,10 +130,9 @@ func TestMongoDBWorkloadPVCResourceName(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "Dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "dev-single",
 			},
-			want: "pvc-dev-mongo-main-" + shortNameHash("grpc-hello-world", "grpc-hello-world"),
+			want: "pvc-dev-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -185,6 +181,7 @@ func Test_newMongoDBWorkload(t *testing.T) {
 				Resource: "mongo",
 				Profile:  "dev-single",
 				Name:     "mongo-main",
+				App:      "grpc-hello-world",
 				Persistence: config.DeployInfraPersistence{
 					Enabled: true,
 				},
@@ -204,7 +201,6 @@ func Test_newMongoDBWorkload(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "dev-single",
 				Persistence:     config.DeployInfraPersistence{Enabled: true},
 			},
@@ -214,13 +210,13 @@ func Test_newMongoDBWorkload(t *testing.T) {
 			infra: config.DeployInfra{
 				Profile: "missing",
 				Name:    "mongo-main",
+				App:     "grpc-hello-world",
 			},
 			cfg: &K8sConfig{MongoDB: map[string]*MongoProfileConfig{}},
 			want: &MongoDBWorkload{
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "missing",
 				Persistence:     config.DeployInfraPersistence{},
 			},
@@ -250,7 +246,7 @@ func Test_newMongoDBWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stubLoadK8sConfig(t, tt.cfg)
 
-			got, err := newMongoDBWorkload(tt.infra, "dev", "grpc-hello-world")
+			got, err := newMongoDBWorkload(tt.infra, "dev")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("newMongoDBWorkload() expected error")
@@ -271,9 +267,6 @@ func Test_newMongoDBWorkload(t *testing.T) {
 			}
 			if got.App != tt.want.App {
 				t.Fatalf("App = %q, want %q", got.App, tt.want.App)
-			}
-			if got.DominionApp != tt.want.DominionApp {
-				t.Fatalf("DominionApp = %q, want %q", got.DominionApp, tt.want.DominionApp)
 			}
 			if got.ProfileName != tt.want.ProfileName {
 				t.Fatalf("ProfileName = %q, want %q", got.ProfileName, tt.want.ProfileName)
@@ -297,9 +290,8 @@ func TestMongoDBWorkloadServiceResourceName(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "Dev",
 				App:             "GRPC_HELLO.WORLD",
-				DominionApp:     "grpc-hello-world",
 			},
-			want: "svc-dev-mongo-main-" + shortNameHash("GRPC_HELLO.WORLD", "grpc-hello-world"),
+			want: "svc-dev-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -343,7 +335,6 @@ func TestBuildMongoDBService(t *testing.T) {
 				namespace:           "team-dev",
 				managedBy:           "deploy-tool",
 				app:                 "grpc-hello-world",
-				dominionApp:         "grpc-hello-world",
 				serviceName:         "mongo-main",
 				environment:         "dev",
 				selectorServiceName: "mongo-main",
@@ -365,7 +356,6 @@ func TestBuildMongoDBService(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "nonexistent",
 			},
 			k8sConfig:   &K8sConfig{Namespace: "team-dev", ManagedBy: "deploy-tool", MongoDB: map[string]*MongoProfileConfig{}},
@@ -407,7 +397,6 @@ type mongoDBServiceExpectation struct {
 	namespace           string
 	managedBy           string
 	app                 string
-	dominionApp         string
 	serviceName         string
 	environment         string
 	selectorServiceName string
@@ -423,8 +412,8 @@ func assertMongoDBService(t *testing.T, got *corev1.Service, want *mongoDBServic
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector, want.app, want.selectorServiceName, want.dominionApp, want.environment)
+	assertMongoDBManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
+	assertMongoDBSelectorLabels(t, got.Spec.Selector, want.app, want.selectorServiceName, want.environment)
 	if len(got.Spec.Ports) != len(want.ports) {
 		t.Fatalf("ports len = %d, want %d", len(got.Spec.Ports), len(want.ports))
 	}
@@ -438,12 +427,69 @@ func assertMongoDBService(t *testing.T, got *corev1.Service, want *mongoDBServic
 	}
 }
 
+func assertMongoDBManagedLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionEnvironment string, managedBy string) {
+	t.Helper()
+
+	if _, ok := got["app"]; ok {
+		t.Fatalf("unexpected legacy app label key present")
+	}
+	if _, ok := got["service"]; ok {
+		t.Fatalf("unexpected legacy service label key present")
+	}
+	if _, ok := got["environment"]; ok {
+		t.Fatalf("unexpected legacy environment label key present")
+	}
+	if got[appLabelKey] != app {
+		t.Fatalf("app label = %q, want %q", got[appLabelKey], app)
+	}
+	if got[serviceLabelKey] != serviceName {
+		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
+	}
+	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
+		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
+	}
+	if _, ok := got["managed-by"]; ok {
+		t.Fatalf("unexpected legacy managed-by label key present")
+	}
+	if got[managedByLabelKey] != managedBy {
+		t.Fatalf("managed-by label = %q, want %q", got[managedByLabelKey], managedBy)
+	}
+	if len(got) != 4 {
+		t.Fatalf("managed labels len = %d, want 4", len(got))
+	}
+}
+
+func assertMongoDBSelectorLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionEnvironment string) {
+	t.Helper()
+
+	if _, ok := got["app"]; ok {
+		t.Fatalf("unexpected legacy app label key present")
+	}
+	if _, ok := got["service"]; ok {
+		t.Fatalf("unexpected legacy service label key present")
+	}
+	if _, ok := got["environment"]; ok {
+		t.Fatalf("unexpected legacy environment label key present")
+	}
+	if got[appLabelKey] != app {
+		t.Fatalf("app label = %q, want %q", got[appLabelKey], app)
+	}
+	if got[serviceLabelKey] != serviceName {
+		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
+	}
+	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
+		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
+	}
+	if len(got) != 3 {
+		t.Fatalf("selector labels len = %d, want 3", len(got))
+	}
+}
+
 func newTestMongoDBWorkload() *MongoDBWorkload {
 	return &MongoDBWorkload{
 		ServiceName:     "mongo-main",
 		EnvironmentName: "dev",
 		App:             "grpc-hello-world",
-		DominionApp:     "grpc-hello-world",
 		ProfileName:     "dev-single",
 	}
 }
@@ -495,7 +541,6 @@ func TestBuildMongoDBSecret(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "mongo-main",
 				environment: "dev",
 				secretType:  corev1.SecretTypeOpaque,
@@ -509,7 +554,6 @@ func TestBuildMongoDBSecret(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "service-app",
-				DominionApp:     "dominion-app",
 				ProfileName:     "dev-single",
 			},
 			k8sConfig: &K8sConfig{
@@ -526,11 +570,10 @@ func TestBuildMongoDBSecret(t *testing.T) {
 				},
 			},
 			want: &mongoDBSecretExpectation{
-				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName(),
+				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app"}).SecretResourceName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "service-app",
-				dominionApp: "dominion-app",
 				serviceName: "mongo-main",
 				environment: "dev",
 				secretType:  corev1.SecretTypeOpaque,
@@ -551,7 +594,6 @@ func TestBuildMongoDBSecret(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "nonexistent",
 			},
 			k8sConfig:   &K8sConfig{Namespace: "team-dev", ManagedBy: "deploy-tool", MongoDB: map[string]*MongoProfileConfig{}},
@@ -606,7 +648,6 @@ func TestBuildMongoDBPVC(t *testing.T) {
 				namespace:        "team-dev",
 				managedBy:        "deploy-tool",
 				app:              "grpc-hello-world",
-				dominionApp:      "grpc-hello-world",
 				serviceName:      "mongo-main",
 				environment:      "dev",
 				storageClassName: "local-path",
@@ -628,7 +669,6 @@ func TestBuildMongoDBPVC(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "nonexistent",
 			},
 			k8sConfig:   &K8sConfig{Namespace: "team-dev", ManagedBy: "deploy-tool", MongoDB: map[string]*MongoProfileConfig{}},
@@ -681,12 +721,10 @@ func TestCheckPVCCompatibility(t *testing.T) {
 			k8sConfig: newTestK8sConfigWithMongoProfile(),
 		},
 		{
-			name:        "dominion app mismatch",
-			existing:    newMongoPVCWithMutation(func(pvc *corev1.PersistentVolumeClaim) { pvc.Labels[dominionAppLabelKey] = "other-app" }),
-			desired:     newTestMongoDBWorkload(),
-			k8sConfig:   newTestK8sConfigWithMongoProfile(),
-			wantErr:     true,
-			errContains: dominionAppLabelKey,
+			name:      "custom label ignored",
+			existing:  newMongoPVCWithMutation(func(pvc *corev1.PersistentVolumeClaim) { pvc.Labels["custom-label"] = "other-app" }),
+			desired:   newTestMongoDBWorkload(),
+			k8sConfig: newTestK8sConfigWithMongoProfile(),
 		},
 		{
 			name:        "dominion environment mismatch",
@@ -768,7 +806,6 @@ type mongoDBPVCExpectation struct {
 	namespace        string
 	managedBy        string
 	app              string
-	dominionApp      string
 	serviceName      string
 	environment      string
 	storageClassName string
@@ -786,7 +823,7 @@ func assertMongoDBPVC(t *testing.T, got *corev1.PersistentVolumeClaim, want *mon
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertMongoDBManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
 	if got.Spec.StorageClassName == nil || *got.Spec.StorageClassName != want.storageClassName {
 		t.Fatalf("storageClassName = %v, want %q", got.Spec.StorageClassName, want.storageClassName)
 	}
@@ -816,7 +853,6 @@ func newCompatibleMongoPVC() *corev1.PersistentVolumeClaim {
 			Labels: map[string]string(buildLabels(
 				withApp("grpc-hello-world"),
 				withService("mongo-main"),
-				withDominionApp("grpc-hello-world"),
 				withDominionEnvironment("dev"),
 				withManagedBy("deploy-tool"),
 			)),
@@ -848,7 +884,6 @@ type mongoDBSecretExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
-	dominionApp string
 	serviceName string
 	environment string
 	secretType  corev1.SecretType
@@ -865,7 +900,7 @@ func assertMongoDBSecret(t *testing.T, got *corev1.Secret, want *mongoDBSecretEx
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertMongoDBManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
 	if got.Type != want.secretType {
 		t.Fatalf("type = %q, want %q", got.Type, want.secretType)
 	}
@@ -901,7 +936,6 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "mongo-main",
 				environment: "dev",
 				replicas:    1,
@@ -956,16 +990,14 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "service-app",
-				DominionApp:     "dominion-app",
 				ProfileName:     "dev-single",
 			},
 			k8sConfig: newTestK8sConfigWithMongoProfile(),
 			want: &mongoDBDeploymentExpectation{
-				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app", ProfileName: "dev-single"}).ResourceName(),
+				name:        (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", ProfileName: "dev-single"}).ResourceName(),
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "service-app",
-				dominionApp: "dominion-app",
 				serviceName: "mongo-main",
 				environment: "dev",
 				replicas:    1,
@@ -982,7 +1014,7 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 					Name: mongoDataVolumeName,
 					VolumeSource: corev1.VolumeSource{
 						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).PVCResourceName(),
+							ClaimName: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app"}).PVCResourceName(),
 						},
 					},
 				}},
@@ -1000,14 +1032,14 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 					{
 						Name: mongoEnvRootUsername,
 						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName()},
+							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app"}).SecretResourceName()},
 							Key:                  mongoSecretUsernameKey,
 						}},
 					},
 					{
 						Name: mongoEnvRootPassword,
 						ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app", DominionApp: "dominion-app"}).SecretResourceName()},
+							LocalObjectReference: corev1.LocalObjectReference{Name: (&MongoDBWorkload{ServiceName: "mongo-main", EnvironmentName: "dev", App: "service-app"}).SecretResourceName()},
 							Key:                  mongoSecretPasswordKey,
 						}},
 					},
@@ -1027,7 +1059,6 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 				ServiceName:     "mongo-main",
 				EnvironmentName: "dev",
 				App:             "grpc-hello-world",
-				DominionApp:     "grpc-hello-world",
 				ProfileName:     "nonexistent",
 			},
 			k8sConfig:   &K8sConfig{Namespace: "team-dev", ManagedBy: "deploy-tool", MongoDB: map[string]*MongoProfileConfig{}},
@@ -1069,7 +1100,6 @@ type mongoDBDeploymentExpectation struct {
 	namespace       string
 	managedBy       string
 	app             string
-	dominionApp     string
 	serviceName     string
 	environment     string
 	replicas        int32
@@ -1090,9 +1120,9 @@ func assertMongoDBDeployment(t *testing.T, got *appsv1.Deployment, want *mongoDB
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.dominionApp, want.environment)
-	assertManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertMongoDBManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
+	assertMongoDBSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.environment)
+	assertMongoDBManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.environment, want.managedBy)
 	if got.Spec.Replicas == nil || *got.Spec.Replicas != want.replicas {
 		t.Fatalf("replicas = %v, want %d", got.Spec.Replicas, want.replicas)
 	}

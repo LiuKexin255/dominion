@@ -365,9 +365,7 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 
 // BuildDeployObjects 根据当前环境缓存配置构建部署对象。
 func (e *DeployEnv) BuildDeployObjects(resolvedImages map[string]string) (*k8s.DeployObjects, error) {
-	// TODO：暂时注释，等 k8s 修改完再修改这里
-	// return k8s.NewDeployObjects(e.deployConfig, e.serviceConfigs, e.Name, e.App, resolvedImages)
-	return nil, nil
+	return k8s.NewDeployObjects(e.deployConfig, e.serviceConfigs, string(e.Name), resolvedImages)
 }
 
 func resolveImages(ctx context.Context, resolver *imagepush.Resolver, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {

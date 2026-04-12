@@ -23,8 +23,6 @@ const (
 	appLabelKey = "app.kubernetes.io/name"
 	// serviceLabelKey 标识服务名称标签键。
 	serviceLabelKey = "app.kubernetes.io/component"
-	// dominionAppLabelKey 标识 Dominion 应用名称标签键。
-	dominionAppLabelKey = "dominion.io/app"
 	// dominionEnvironmentLabelKey 标识 Dominion 环境名称标签键。
 	dominionEnvironmentLabelKey = "dominion.io/environment"
 	// reservedEnvNameServiceApp 为 service app 注入环境变量名。
@@ -62,14 +60,12 @@ func BuildDeployment(workload *DeploymentWorkload) (*appsv1.Deployment, error) {
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 	ports, err := buildContainerPorts(workload.Ports)
@@ -152,14 +148,12 @@ func BuildService(workload *DeploymentWorkload) (*corev1.Service, error) {
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 	ports, err := buildServicePorts(workload.Ports)
@@ -186,7 +180,6 @@ func BuildHTTPRoute(workload *HTTPRouteWorkload) (*unstructured.Unstructured, er
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
@@ -265,7 +258,6 @@ type labelOption func(*labelSet)
 type labelSet struct {
 	app                 string
 	service             string
-	dominionApp         string
 	dominionEnvironment string
 	managedBy           string
 }
@@ -279,12 +271,6 @@ func withApp(name string) labelOption {
 func withService(name string) labelOption {
 	return func(set *labelSet) {
 		set.service = strings.TrimSpace(name)
-	}
-}
-
-func withDominionApp(name string) labelOption {
-	return func(set *labelSet) {
-		set.dominionApp = strings.TrimSpace(name)
 	}
 }
 
@@ -314,9 +300,6 @@ func buildLabels(options ...labelOption) labels.Set {
 	}
 	if set.service != "" {
 		result[serviceLabelKey] = set.service
-	}
-	if set.dominionApp != "" {
-		result[dominionAppLabelKey] = set.dominionApp
 	}
 	if set.dominionEnvironment != "" {
 		result[dominionEnvironmentLabelKey] = set.dominionEnvironment

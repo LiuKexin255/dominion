@@ -9,9 +9,7 @@ import (
 
 func TestNewDeployObjects_SingleService(t *testing.T) {
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{
 			{
 				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
@@ -34,7 +32,7 @@ func TestNewDeployObjects_SingleService(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
 		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	})
 	if err != nil {
@@ -50,16 +48,11 @@ func TestNewDeployObjects_SingleService(t *testing.T) {
 	if objects.Deployments[0].Image != "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111" {
 		t.Fatalf("deployment image = %q, want injected resolved image", objects.Deployments[0].Image)
 	}
-	if objects.Deployments[0].DominionApp != "grpc-hello-world" {
-		t.Fatalf("deployment dominion app = %q, want %q", objects.Deployments[0].DominionApp, "grpc-hello-world")
-	}
 }
 
 func TestNewDeployObjects_MultipleServices(t *testing.T) {
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{
 			{
 				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
@@ -104,7 +97,7 @@ func TestNewDeployObjects_MultipleServices(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
 		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		"//some/path:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
 	})
@@ -155,7 +148,7 @@ func TestNewDeployObjects_ServiceConfigOrderMismatch(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
 		"//some/path:service_image": "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		"//some/path:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
 	})
@@ -299,7 +292,7 @@ func TestNewDeployObjects_ErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewDeployObjects(tt.deployCfg, tt.serviceConfigs, tt.envName, "grpc-hello-world", map[string]string{
+			_, err := NewDeployObjects(tt.deployCfg, tt.serviceConfigs, tt.envName, map[string]string{
 				"//some/path:service_image":  "registry.example.com/team/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
 				"//some/path:service1_image": "registry.example.com/team/service1@sha256:2222222222222222222222222222222222222222222222222222222222222222",
 				"//some/path:service2_image": "registry.example.com/team/service2@sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -323,9 +316,7 @@ func TestNewDeployObjects_ErrorCases(t *testing.T) {
 
 func TestNewDeployObjects_UsesInjectedResolvedImages(t *testing.T) {
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{
 			{
 				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
@@ -348,7 +339,7 @@ func TestNewDeployObjects_UsesInjectedResolvedImages(t *testing.T) {
 		},
 	}
 
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
 		"//svc:service_image": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	if err != nil {
@@ -384,9 +375,7 @@ func TestNewDeployObjects_TLSEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deployCfg := &config.DeployConfig{
-				App:      "grpc-hello-world",
-				Template: "deploy",
-				Desc:     "dev",
+				Desc: "dev",
 				Services: []*config.DeployService{{
 					Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
 				}},
@@ -406,7 +395,7 @@ func TestNewDeployObjects_TLSEnabled(t *testing.T) {
 				}},
 			}}
 
-			objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
+			objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{
 				"//svc:service_image": "registry.example.com/team/service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			})
 
@@ -425,94 +414,9 @@ func TestNewDeployObjects_TLSEnabled(t *testing.T) {
 	}
 }
 
-func TestNewDeployObjects_DominionAppMismatchRegression(t *testing.T) {
-	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
-		Services: []*config.DeployService{{
-			Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "gateway"},
-		}},
-	}
-
-	serviceConfigs := []*config.ServiceConfig{{
-		URI:  "//svc/service.yaml",
-		Name: "gateway",
-		App:  "grpc_hello_world",
-		Desc: "gateway service",
-		Artifacts: []*config.ServiceArtifact{{
-			Name:   "gateway",
-			Type:   config.ServiceArtifactTypeDeployment,
-			Target: "//some/path:gateway_image",
-			Ports:  []*config.ServiceArtifactPort{{Name: "grpc", Port: 50051}},
-		}},
-	}}
-
-	objects, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{
-		"//some/path:gateway_image": "registry.example.com/team/gateway@sha256:2222222222222222222222222222222222222222222222222222222222222222",
-	})
-	if err != nil {
-		t.Fatalf("NewDeployObjects() failed: %v", err)
-	}
-	if len(objects.Deployments) != 1 {
-		t.Fatalf("unexpected object counts: deployments=%d", len(objects.Deployments))
-	}
-
-	deployment := objects.Deployments[0]
-	if deployment.App != "grpc_hello_world" {
-		t.Fatalf("deployment app = %q, want %q", deployment.App, "grpc_hello_world")
-	}
-	if deployment.DominionApp != "grpc-hello-world" {
-		t.Fatalf("deployment dominion app = %q, want %q", deployment.DominionApp, "grpc-hello-world")
-	}
-
-	k8sConfig := newTestK8sConfig()
-	stubLoadK8sConfig(t, k8sConfig)
-
-	builtDeployment, err := BuildDeployment(deployment)
-	if err != nil {
-		t.Fatalf("BuildDeployment() failed: %v", err)
-	}
-	if builtDeployment.Labels[appLabelKey] != "grpc_hello_world" {
-		t.Fatalf("deployment app label = %q, want %q", builtDeployment.Labels[appLabelKey], "grpc_hello_world")
-	}
-	if builtDeployment.Labels[dominionAppLabelKey] != "grpc-hello-world" {
-		t.Fatalf("deployment dominion app label = %q, want %q", builtDeployment.Labels[dominionAppLabelKey], "grpc-hello-world")
-	}
-	if len(builtDeployment.Spec.Template.Spec.Containers) != 1 {
-		t.Fatalf("deployment containers len = %d, want 1", len(builtDeployment.Spec.Template.Spec.Containers))
-	}
-	gotEnv := builtDeployment.Spec.Template.Spec.Containers[0].Env
-	if len(gotEnv) != 3 {
-		t.Fatalf("deployment env len = %d, want 3", len(gotEnv))
-	}
-	if gotEnv[0].Name != reservedEnvNameServiceApp || gotEnv[0].Value != "grpc_hello_world" {
-		t.Fatalf("deployment env[0] = %#v, want SERVICE_APP literal", gotEnv[0])
-	}
-	if gotEnv[1].Name != reservedEnvNameDominionEnvironment || gotEnv[1].Value != "dev" {
-		t.Fatalf("deployment env[1] = %#v, want DOMINION_ENVIRONMENT literal", gotEnv[1])
-	}
-	if gotEnv[2].Name != reservedEnvNamePodNamespace || gotEnv[2].Value != k8sConfig.Namespace {
-		t.Fatalf("deployment env[2] = %#v, want POD_NAMESPACE literal", gotEnv[2])
-	}
-
-	builtService, err := BuildService(deployment)
-	if err != nil {
-		t.Fatalf("BuildService() failed: %v", err)
-	}
-	if builtService.Labels[appLabelKey] != "grpc_hello_world" {
-		t.Fatalf("service app label = %q, want %q", builtService.Labels[appLabelKey], "grpc_hello_world")
-	}
-	if builtService.Labels[dominionAppLabelKey] != "grpc-hello-world" {
-		t.Fatalf("service dominion app label = %q, want %q", builtService.Labels[dominionAppLabelKey], "grpc-hello-world")
-	}
-}
-
 func TestNewDeployObjects_ErrorsWhenResolvedImageMissing(t *testing.T) {
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{
 			{
 				Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
@@ -535,7 +439,7 @@ func TestNewDeployObjects_ErrorsWhenResolvedImageMissing(t *testing.T) {
 		},
 	}
 
-	_, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", "grpc-hello-world", map[string]string{})
+	_, err := NewDeployObjects(deployCfg, serviceConfigs, "dev", map[string]string{})
 	if err == nil {
 		t.Fatal("NewDeployObjects() succeeded unexpectedly")
 	}
@@ -569,14 +473,13 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			stubLoadK8sConfig(t, k8sConfig)
 
 			deployCfg := &config.DeployConfig{
-				App:      "grpc-hello-world",
-				Template: "deploy",
-				Desc:     "dev",
+				Desc: "dev",
 				Services: []*config.DeployService{{
 					Infra: config.DeployInfra{
 						Resource: "mongodb",
 						Profile:  "dev-single",
 						Name:     "mongo-main",
+						App:      "grpc-hello-world",
 						Persistence: config.DeployInfraPersistence{
 							Enabled: tt.persistenceEnabled,
 						},
@@ -584,7 +487,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 				}},
 			}
 
-			objects, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+			objects, err := NewDeployObjects(deployCfg, nil, "dev", nil)
 			if err != nil {
 				t.Fatalf("NewDeployObjects() failed: %v", err)
 			}
@@ -620,7 +523,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 				t.Fatalf("mongodb pvc workload count = %d, want %d", gotPVCCount, tt.wantPVCCount)
 			}
 
-			wantDeploymentName := newObjectName(WorkloadKindMongoDB, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			wantDeploymentName := newObjectName(WorkloadKindMongoDB, "dev", "mongo-main")
 			if mongoWorkload.ResourceName() != wantDeploymentName {
 				t.Fatalf("mongodb workload resource name = %q, want %q", mongoWorkload.ResourceName(), wantDeploymentName)
 			}
@@ -643,7 +546,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildMongoDBService() failed: %v", err)
 			}
-			wantServiceName := newObjectName(WorkloadKindService, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			wantServiceName := newObjectName(WorkloadKindService, "dev", "mongo-main")
 			if service.Name != wantServiceName {
 				t.Fatalf("mongodb service name = %q, want %q", service.Name, wantServiceName)
 			}
@@ -653,15 +556,11 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			if service.Spec.Ports[0].Port != 27017 {
 				t.Fatalf("mongodb service port = %d, want 27017", service.Spec.Ports[0].Port)
 			}
-			if service.Labels[dominionAppLabelKey] != "grpc-hello-world" {
-				t.Fatalf("mongodb service dominion app label = %q, want %q", service.Labels[dominionAppLabelKey], "grpc-hello-world")
-			}
-
 			secret, err := BuildMongoDBSecret(mongoWorkload)
 			if err != nil {
 				t.Fatalf("BuildMongoDBSecret() failed: %v", err)
 			}
-			wantSecretName := newObjectName(WorkloadKindSecret, "grpc-hello-world", "grpc-hello-world", "mongo-main", "dev")
+			wantSecretName := newObjectName(WorkloadKindSecret, "dev", "mongo-main")
 			if secret.Name != wantSecretName {
 				t.Fatalf("mongodb secret name = %q, want %q", secret.Name, wantSecretName)
 			}
@@ -677,9 +576,7 @@ func TestNewDeployObjects_InfraAndArtifactMutuallyExclusive(t *testing.T) {
 	stubLoadK8sConfig(t, k8sConfig)
 
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{{
 			Artifact: config.DeployArtifact{Path: "//svc/service.yaml", Name: "service"},
 			Infra: config.DeployInfra{
@@ -690,7 +587,7 @@ func TestNewDeployObjects_InfraAndArtifactMutuallyExclusive(t *testing.T) {
 		}},
 	}
 
-	_, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	_, err := NewDeployObjects(deployCfg, nil, "dev", nil)
 	if err == nil {
 		t.Fatal("NewDeployObjects() succeeded unexpectedly")
 	}
@@ -704,11 +601,10 @@ func TestNewDeployObjects_InfraMongoDBPasswordDeterministic(t *testing.T) {
 	stubLoadK8sConfig(t, k8sConfig)
 
 	deployCfg := &config.DeployConfig{
-		App:      "grpc-hello-world",
-		Template: "deploy",
-		Desc:     "dev",
+		Desc: "dev",
 		Services: []*config.DeployService{{
 			Infra: config.DeployInfra{
+				App:      "grpc-hello-world",
 				Resource: "mongodb",
 				Profile:  "dev-single",
 				Name:     "mongo-main",
@@ -719,11 +615,11 @@ func TestNewDeployObjects_InfraMongoDBPasswordDeterministic(t *testing.T) {
 		}},
 	}
 
-	objectsA, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	objectsA, err := NewDeployObjects(deployCfg, nil, "dev", nil)
 	if err != nil {
 		t.Fatalf("NewDeployObjects() first call failed: %v", err)
 	}
-	objectsB, err := NewDeployObjects(deployCfg, nil, "dev", "grpc-hello-world", nil)
+	objectsB, err := NewDeployObjects(deployCfg, nil, "dev", nil)
 	if err != nil {
 		t.Fatalf("NewDeployObjects() second call failed: %v", err)
 	}

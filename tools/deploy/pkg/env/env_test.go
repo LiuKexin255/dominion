@@ -420,11 +420,28 @@ func TestDeployEnv_Deploy_SuccessUpdatesStatus(t *testing.T) {
 		return map[string]string{"//service:service_image": "registry.example.com/team/service@sha256:111"}, nil
 	}})
 
+	var gotObjects *k8s.DeployObjects
 	applyCalled := false
 	err := env.Deploy(context.Background(), &stubExecutor{applyFunc: func(_ context.Context, objects *k8s.DeployObjects) error {
 		applyCalled = true
-		if objects != nil {
-			t.Fatalf("Apply() objects = %v, want nil because BuildDeployObjects is stubbed", objects)
+		gotObjects = objects
+		if objects == nil {
+			t.Fatal("Apply() objects = nil, want deploy objects")
+		}
+		if len(objects.Deployments) != 1 {
+			t.Fatalf("Apply() deployments len = %d, want 1", len(objects.Deployments))
+		}
+		if len(objects.HTTPRoutes) != 0 {
+			t.Fatalf("Apply() routes len = %d, want 0", len(objects.HTTPRoutes))
+		}
+		if got := objects.Deployments[0].Image; got != "registry.example.com/team/service@sha256:111" {
+			t.Fatalf("Apply() deployment image = %q, want resolved image", got)
+		}
+		if got := objects.Deployments[0].ServiceName; got != "service" {
+			t.Fatalf("Apply() deployment service = %q, want %q", got, "service")
+		}
+		if got := objects.Deployments[0].EnvironmentName; got != string(fullEnv) {
+			t.Fatalf("Apply() deployment env = %q, want %q", got, string(fullEnv))
 		}
 		return nil
 	}})
@@ -433,6 +450,9 @@ func TestDeployEnv_Deploy_SuccessUpdatesStatus(t *testing.T) {
 	}
 	if !applyCalled {
 		t.Fatal("Deploy() did not call Apply()")
+	}
+	if gotObjects == nil {
+		t.Fatal("Apply() objects not captured")
 	}
 	if env.RemoteStatus != RemoteStatusDeployed {
 		t.Fatalf("RemoteStatus = %q, want %q", env.RemoteStatus, RemoteStatusDeployed)
@@ -473,13 +493,39 @@ func TestCollectReferencedArtifactTargets(t *testing.T) {
 	}
 }
 
-func TestBuildDeployObjects_ReturnsNilWhileStubbed(t *testing.T) {
-	env := &DeployEnv{Profile: Profile{Name: testFullEnv("alice", "dev")}}
-	objects, err := env.BuildDeployObjects(nil)
+func TestBuildDeployObjects_ReturnsDeployObjects(t *testing.T) {
+	env := &DeployEnv{
+		Profile: Profile{Name: testFullEnv("alice", "dev")},
+		deployConfig: &config.DeployConfig{
+			Services: []*config.DeployService{{Artifact: config.DeployArtifact{Path: "//service/service.yaml", Name: "service"}}},
+		},
+		serviceConfigs: []*config.ServiceConfig{{
+			URI:  "//service/service.yaml",
+			Name: "service",
+			App:  "grpc-hello-world",
+			Desc: "service config",
+			Artifacts: []*config.ServiceArtifact{{
+				Name:   "service",
+				Type:   config.ServiceArtifactTypeDeployment,
+				Target: "//service:service_image",
+			}},
+		}},
+	}
+
+	objects, err := env.BuildDeployObjects(map[string]string{"//service:service_image": "registry.example.com/team/service@sha256:111"})
 	if err != nil {
 		t.Fatalf("BuildDeployObjects() failed: %v", err)
 	}
-	if objects != nil {
-		t.Fatalf("BuildDeployObjects() = %v, want nil", objects)
+	if objects == nil {
+		t.Fatal("BuildDeployObjects() returned nil objects")
+	}
+	if len(objects.Deployments) != 1 {
+		t.Fatalf("BuildDeployObjects() deployments len = %d, want 1", len(objects.Deployments))
+	}
+	if len(objects.HTTPRoutes) != 0 {
+		t.Fatalf("BuildDeployObjects() routes len = %d, want 0", len(objects.HTTPRoutes))
+	}
+	if got := objects.Deployments[0].Image; got != "registry.example.com/team/service@sha256:111" {
+		t.Fatalf("BuildDeployObjects() deployment image = %q, want resolved image", got)
 	}
 }
