@@ -510,7 +510,7 @@ func New(fullEnvName FullEnvName) (*DeployEnv, error) {
 
 // Get 获取指定环境
 func Get(fullEnvName FullEnvName) (*DeployEnv, error) {
-	filePath := path.Join(workspace.MustRoot(), profileDir)
+	filePath := path.Join(workspace.MustRoot(), profileDir, profileFileName(fullEnvName))
 	_, err := os.Stat(filePath)
 	if err != nil {
 		return nil, err
@@ -565,7 +565,7 @@ func List() ([]*DeployEnv, error) {
 
 	envs := make([]*DeployEnv, 0, len(profileNames))
 	for _, name := range profileNames {
-		env, err := loadDeployEnv(path.Join(root, cacheDir, name))
+		env, err := loadDeployEnv(path.Join(root, profileDir, name))
 		if err != nil {
 			return nil, err
 		}

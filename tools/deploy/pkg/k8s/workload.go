@@ -64,7 +64,7 @@ func (w *DeploymentWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newWorkloadName(w.EnvironmentName, w.ServiceName)
+	return newObjectName(WorkloadKindDeployment, w.App, w.ServiceName)
 }
 
 // ServiceResourceName 返回 deployment 对应 service 的资源名。
@@ -74,7 +74,7 @@ func (w *DeploymentWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
+	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
 }
 
 // Validate 校验 deployment workload 字段是否合法。
@@ -116,10 +116,6 @@ func (w *DeploymentWorkload) Validate() error {
 	}
 
 	return nil
-}
-
-func newWorkloadName(fullEnvName string, serviceName string) string {
-	return newObjectName(WorkloadKindDeployment, fullEnvName, serviceName)
 }
 
 // NewHTTPRouteWorkload 基于 deployment workload 生成 HTTPRoute workload。
@@ -216,11 +212,7 @@ func (w *HTTPRouteWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newHTTPRouteName(w.EnvironmentName, w.ServiceName)
-}
-
-func newHTTPRouteName(fullEnvName string, serviceName string) string {
-	return newObjectName(WorkloadKindHTTPRoute, fullEnvName, serviceName)
+	return newObjectName(WorkloadKindHTTPRoute, w.App, w.ServiceName)
 }
 
 // Validate 校验 HTTPRoute workload 字段是否合法。

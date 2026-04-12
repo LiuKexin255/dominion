@@ -44,7 +44,7 @@ func Test_buildServiceSelector(t *testing.T) {
 				target: &Target{App: "app-a", Service: "service-a"},
 				env:    &environment{App: "app-a", Name: "dev"},
 			},
-			want: "app.kubernetes.io/component=service-a,app.kubernetes.io/name=app-a,dominion.io/app=app-a,dominion.io/environment=dev",
+			want: "app.kubernetes.io/component=service-a,app.kubernetes.io/name=app-a,dominion.io/environment=dev",
 		},
 		{
 			name: "different target and app values",
@@ -55,7 +55,7 @@ func Test_buildServiceSelector(t *testing.T) {
 				target: &Target{App: "app-b", Service: "service-b"},
 				env:    &environment{App: "app-b", Name: "prod"},
 			},
-			want: "app.kubernetes.io/component=service-b,app.kubernetes.io/name=app-b,dominion.io/app=app-b,dominion.io/environment=prod",
+			want: "app.kubernetes.io/component=service-b,app.kubernetes.io/name=app-b,dominion.io/environment=prod",
 		},
 	}
 
@@ -194,7 +194,6 @@ func TestK8sResolverLookup(t *testing.T) {
 					serviceObject("target-service", map[string]string{
 						ServiceAppLabelKey:                 "billing",
 						ServiceComponentLabelKey:           "api",
-						ServiceDominionAppLabelKey:         "billing",
 						ServiceDominionEnvironmentLabelKey: "dev",
 					}),
 				},
@@ -215,13 +214,11 @@ func TestK8sResolverLookup(t *testing.T) {
 					serviceObject("service-b", map[string]string{
 						ServiceAppLabelKey:                 "billing",
 						ServiceComponentLabelKey:           "api",
-						ServiceDominionAppLabelKey:         "billing",
 						ServiceDominionEnvironmentLabelKey: "dev",
 					}),
 					serviceObject("service-a", map[string]string{
 						ServiceAppLabelKey:                 "billing",
 						ServiceComponentLabelKey:           "api",
-						ServiceDominionAppLabelKey:         "billing",
 						ServiceDominionEnvironmentLabelKey: "dev",
 					}),
 				},
@@ -438,7 +435,6 @@ func TestK8sResolverResolve(t *testing.T) {
 				serviceObject("service-a", map[string]string{
 					ServiceAppLabelKey:                 "billing",
 					ServiceComponentLabelKey:           "api",
-					ServiceDominionAppLabelKey:         "billing",
 					ServiceDominionEnvironmentLabelKey: "dev",
 				}),
 				endpointSliceObject("service-a", []int32{50051}, []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.1"}}}),

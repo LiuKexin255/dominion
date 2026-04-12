@@ -222,16 +222,16 @@ func Test_newObjectName(t *testing.T) {
 		{
 			name:        "normal",
 			kind:        WorkloadKindDeployment,
-			fullEnvName: "grpc-hello-world.dev",
+			fullEnvName: "grpc-hello-world",
 			serviceName: "gateway",
-			want:        "dp-grpc-hello-world-dev-gateway-" + shortNameHash("grpc-hello-world.dev"),
+			want:        "dp-grpc-hello-world-gateway-" + shortNameHash("grpc-hello-world"),
 		},
 		{
 			name:        "normalize and sanitize",
 			kind:        WorkloadKindService,
-			fullEnvName: "GRPC_HELLO_WORLD.dev",
+			fullEnvName: "GRPC_HELLO_WORLD",
 			serviceName: "gateway@v1",
-			want:        "svc-grpc-hello-world-dev-gateway-v1-" + shortNameHash("GRPC_HELLO_WORLD.dev"),
+			want:        "svc-grpc-hello-world-gateway-v1-" + shortNameHash("GRPC_HELLO_WORLD"),
 		},
 		{
 			name:        "only kind when all parts empty",
@@ -243,16 +243,16 @@ func Test_newObjectName(t *testing.T) {
 		{
 			name:        "fallback to unknown kind",
 			kind:        "",
-			fullEnvName: "app.dev",
+			fullEnvName: "app",
 			serviceName: "svc",
-			want:        "unknown-app-dev-svc-" + shortNameHash("app.dev"),
+			want:        "unknown-app-svc-" + shortNameHash("app"),
 		},
 		{
 			name:        "skip empty normalized part",
 			kind:        WorkloadKindDeployment,
-			fullEnvName: "---.dev",
+			fullEnvName: "---dev",
 			serviceName: "svc",
-			want:        "dp-dev-svc-" + shortNameHash("---.dev"),
+			want:        "dp-dev-svc-" + shortNameHash("---dev"),
 		},
 	}
 	for _, tt := range tests {
@@ -521,7 +521,7 @@ func TestDeploymentWorkloadNewHTTPRouteWorkload(t *testing.T) {
 				App:              "grpc-hello-world",
 				Hostnames:        []string{"hello.example.com"},
 				Matches:          []*HTTPRoutePathMatch{{Type: config.HTTPPathMatchTypePrefix, Value: "/v1", BackendName: "http", BackendPort: 80}},
-				BackendService:   (&DeploymentWorkload{ServiceName: "gateway", EnvironmentName: "dev"}).ServiceResourceName(),
+				BackendService:   (&DeploymentWorkload{ServiceName: "gateway", EnvironmentName: "dev", App: "grpc-hello-world"}).ServiceResourceName(),
 				GatewayName:      "gw",
 				GatewayNamespace: "infra",
 			},

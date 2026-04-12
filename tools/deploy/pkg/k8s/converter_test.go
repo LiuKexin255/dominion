@@ -523,7 +523,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 				t.Fatalf("mongodb pvc workload count = %d, want %d", gotPVCCount, tt.wantPVCCount)
 			}
 
-			wantDeploymentName := newObjectName(WorkloadKindMongoDB, "dev", "mongo-main")
+			wantDeploymentName := newObjectName(WorkloadKindMongoDB, "grpc-hello-world", "mongo-main")
 			if mongoWorkload.ResourceName() != wantDeploymentName {
 				t.Fatalf("mongodb workload resource name = %q, want %q", mongoWorkload.ResourceName(), wantDeploymentName)
 			}
@@ -546,7 +546,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildMongoDBService() failed: %v", err)
 			}
-			wantServiceName := newObjectName(WorkloadKindService, "dev", "mongo-main")
+			wantServiceName := newObjectName(WorkloadKindService, "grpc-hello-world", "mongo-main")
 			if service.Name != wantServiceName {
 				t.Fatalf("mongodb service name = %q, want %q", service.Name, wantServiceName)
 			}
@@ -560,7 +560,7 @@ func TestNewDeployObjects_InfraMongoDB(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildMongoDBSecret() failed: %v", err)
 			}
-			wantSecretName := newObjectName(WorkloadKindSecret, "dev", "mongo-main")
+			wantSecretName := newObjectName(WorkloadKindSecret, "grpc-hello-world", "mongo-main")
 			if secret.Name != wantSecretName {
 				t.Fatalf("mongodb secret name = %q, want %q", secret.Name, wantSecretName)
 			}

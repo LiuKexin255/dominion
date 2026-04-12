@@ -1,8 +1,8 @@
-app: mongo-demo
-template: deploy
+name: liukexin.demo
 desc: "Mongo Demo CRUD 服务"
 services:
   - infra:
+      app: mongo-demo
       resource: mongodb
       profile: dev-single
       name: mongo
