@@ -5,6 +5,17 @@
 1. 使用 `service.yaml` 定义需要被部署的服务单元。
 2. 使用 `deploy.yaml` 定义部署环境，以及该环境需要部署哪些服务单元。
 
+`deploy.yaml` 示例：
+
+```yaml
+name: alice.dev
+desc: "开发环境"
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+```
+
 ## 部署工具
 
 通过部署工具 `deploy` 将 `deploy.yaml` 定义的环境连同其中包含的服务部署到 k8s 当中。
@@ -26,10 +37,12 @@ bazel run //:deploy_install
 1. 创建/切换环境
 
 ```bash
-deploy use {env-name} [--app={app-name}]
+deploy use {env-name}
 ```
 
-如果环境不存在，则创建环境；如存在则切换环境
+- 支持完整环境名（如 `alice.dev`）和简版环境名（如 `dev`）。
+- 简版环境名会使用默认 scope 自动补全。
+- 如果环境不存在，则创建环境；如存在则切换环境。
 
 2. 部署/更新服务
 
@@ -37,14 +50,19 @@ deploy use {env-name} [--app={app-name}]
 deploy apply [--kubeconfig={path}] {path-of-deploy.yaml}
 ```
 
-- `apply` 需要先有当前激活环境，必须先执行 `use`，否则命令会失败。
+- `apply` 不再要求预先执行 `use`。
+- 自动从 `deploy.yaml` 中读取完整环境名。
+- 若目标环境不存在，则自动创建环境。
+- 部署成功后，该环境将被设置为当前激活环境。
 - `--kubeconfig` 可选；不传时按 client-go 默认规则加载（例如 `KUBECONFIG` 或 `~/.kube/config`）。
 
 3. 删除环境
 
 ```bash
-deploy del {env-name} [--app={app-name}] [--kubeconfig={path}]
+deploy del {env-name} [--kubeconfig={path}]
 ```
+
+- 支持完整环境名和简版环境名。
 
 4. 列出环境
 
@@ -52,7 +70,7 @@ deploy del {env-name} [--app={app-name}] [--kubeconfig={path}]
 deploy list
 ```
 
-- 环境展示和引用格式为 `{app}/{env}`，例如 `grpc-hello-world/dev`。
+- 输出格式为完整环境名，例如 `alice.dev`。
 
 5. 查看当前激活环境
 
@@ -60,9 +78,17 @@ deploy list
 deploy cur
 ```
 
-6. `app` 参数规则
+- 输出格式为完整环境名。
 
-- `--app` 可省略；省略时默认使用当前激活环境相同的 `app` 名称。
+6. 配置默认 scope
+
+```bash
+deploy scope                # 查看当前默认 scope
+deploy scope {scope-name}   # 设置默认 scope
+```
+
+- 默认 scope 用于补全简版环境名。
+- 默认 scope 是仓库级配置，与当前激活环境无关。
 
 7. `deploy.yaml` 文件路径规则
 
@@ -79,14 +105,27 @@ deploy apply //experimental/grpc_hello_world/deploy.yaml
 deploy apply experimental/grpc_hello_world/deploy.yaml
 ```
 
+### 环境名格式
+
+环境唯一标识为完整环境名：`{scope}.{env_name}` (如 `alice.dev`)。
+
+- **命名约束**：`scope` 和 `env_name` 均满足 `^[a-z][a-z0-9]{0,7}$`。
+- **简版名**：仅在 CLI 输入时使用，需要配置默认 scope。
+- **解析规则**：
+  - 输入包含 `.` 时，视为完整环境名。
+  - 输入不含 `.` 时，视为简版名，使用默认 scope 拼接。
+  - 未配置默认 scope 时，简版输入将报错。
+
 ### 本地缓存
 
 环境包含的信息缓存在当前仓库 `.env/` 目录下：
 
-- `.env/current.json`：deploy 上下文文件，记录当前激活环境（`ActiveEnv`）与最近一次使用的应用（`LastApp`）。删除当前激活环境后，`cur` 命令将返回未激活错误，但 `use` 和 `del` 命令在缺省 `--app` 时仍可使用 `LastApp` 作为默认值。
-- `.env/{app}__{env}.json`：环境 profile 文件，例如 `grpc-hello-world__dev.json`。
-- `.env/deploy/`：deploy 配置缓存，文件名格式为 `{app}__{env}__{template_app}__{template}.yaml`。
-- `.env/service/`：service 配置缓存，文件名格式为 `{app}__{env}.yaml`。
+- `.env/current.json`：deploy 上下文文件，记录当前激活环境（`ActiveEnv`）与默认 scope（`DefaultScope`）。
+- `.env/profile/<safe-full-env>.json`：环境 profile 文件。
+- `.env/deploy/<safe-full-env>.yaml`：deploy 配置缓存。
+- `.env/service/<safe-full-env>.yaml`：service 配置缓存。
+
+其中 `<safe-full-env>` 为统一安全编码后的完整环境名。
 
 ### 可选集群冒烟测试
 
@@ -101,10 +140,10 @@ deploy apply experimental/grpc_hello_world/deploy.yaml
 冒烟步骤：
 
 ```bash
-deploy use --app=grpc-hello-world grpc-dev
+deploy use alice.dev
 deploy apply experimental/grpc_hello_world/deploy.yaml
 deploy cur
-deploy del --app=grpc-hello-world grpc-dev
+deploy del alice.dev
 ```
 
 - `use` 仅切换/创建本地激活环境；如果集群不可达，它仍可正常执行。
