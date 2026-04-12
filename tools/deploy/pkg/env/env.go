@@ -221,10 +221,10 @@ func (e *DeployEnv) prepareDesiredState(deployConfig *config.DeployConfig) error
 // Active 设置该环境为当前环境
 func (e *DeployEnv) Active() error {
 	scope, _ := e.Name.Split()
-	return saveDeployContext(&DeployContext{
+	return (&DeployContext{
 		ActiveEnv:    e.Name,
 		DefaultScope: scope,
-	})
+	}).Save()
 }
 
 // Delete 删除环境
@@ -238,13 +238,13 @@ func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
 		return err
 	}
 
-	ctxInfo, err := loadDeployContext()
+	ctxInfo, err := LoadDeployContext()
 	if err != nil {
 		return err
 	}
 	if ctxInfo != nil && ctxInfo.ActiveEnv != EmpytEnvName && ctxInfo.ActiveEnv == e.Name {
 		ctxInfo.ActiveEnv = EmpytEnvName
-		if err := saveDeployContext(ctxInfo); err != nil {
+		if err := ctxInfo.Save(); err != nil {
 			return err
 		}
 	}
@@ -521,7 +521,7 @@ func Get(fullEnvName FullEnvName) (*DeployEnv, error) {
 
 // Current 返回当前激活中的环境
 func Current() (*DeployEnv, error) {
-	ctx, err := loadDeployContext()
+	ctx, err := LoadDeployContext()
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +635,7 @@ func (ctx *DeployContext) SetDefaultScope(scope string) error {
 	return nil
 }
 
-func saveDeployContext(ctx *DeployContext) error {
+func (ctx *DeployContext) Save() error {
 	if ctx == nil {
 		ctx = &DeployContext{}
 	}
@@ -648,7 +648,7 @@ func saveDeployContext(ctx *DeployContext) error {
 	return os.WriteFile(path.Join(workspace.MustRoot(), currentEnvPath), raw, os.ModePerm)
 }
 
-func loadDeployContext() (*DeployContext, error) {
+func LoadDeployContext() (*DeployContext, error) {
 	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), currentEnvPath))
 	if err != nil {
 		if os.IsNotExist(err) {

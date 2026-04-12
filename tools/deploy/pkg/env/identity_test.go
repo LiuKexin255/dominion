@@ -192,3 +192,24 @@ func TestParseFullEnvName(t *testing.T) {
 		})
 	}
 }
+
+func TestIsFullEnvName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "full env name", input: "alice.dev", want: true},
+		{name: "short env name", input: "dev", want: false},
+		{name: "invalid dotted name still counts as candidate", input: "alice.dev.extra", want: true},
+		{name: "empty", input: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsFullEnvName(tt.input); got != tt.want {
+				t.Fatalf("IsFullEnvName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

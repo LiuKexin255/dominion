@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,23 +18,18 @@ func TestParseOptions(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "empty args", args: nil, wantErr: true},
-		{name: "use only", args: []string{"use", "dev"}},
-		{name: "use with app", args: []string{"use", "--app=test-app", "dev"}},
-		{name: "use with app postfix", args: []string{"use", "dev", "--app=test-app"}},
+		{name: "use full env name", args: []string{"use", "alice.dev"}},
 		{name: "apply only", args: []string{"apply", "deploy.yaml"}},
 		{name: "apply with kubeconfig", args: []string{"apply", "--kubeconfig=/tmp/kubeconfig", "deploy.yaml"}},
-		{name: "apply with app", args: []string{"apply", "--app=test-app", "deploy.yaml"}, wantErr: true},
-		{name: "apply with app postfix", args: []string{"apply", "deploy.yaml", "--app=test-app"}, wantErr: true},
-		{name: "del only", args: []string{"del", "dev"}},
-		{name: "del with kubeconfig", args: []string{"del", "--kubeconfig=/tmp/kubeconfig", "dev"}},
-		{name: "del with app", args: []string{"del", "--app=test-app", "dev"}},
-		{name: "del with app postfix", args: []string{"del", "dev", "--app=test-app"}},
+		{name: "del full env name", args: []string{"del", "alice.dev"}},
+		{name: "del with kubeconfig", args: []string{"del", "--kubeconfig=/tmp/kubeconfig", "alice.dev"}},
+		{name: "scope view", args: []string{"scope"}},
+		{name: "scope only", args: []string{"scope", "team"}},
+		{name: "scope invalid", args: []string{"scope", "TEAM"}, wantErr: true},
 		{name: "list only", args: []string{"list"}},
 		{name: "list with positional arg", args: []string{"list", "dev"}, wantErr: true},
-		{name: "list with app", args: []string{"list", "--app=test-app"}, wantErr: true},
 		{name: "cur only", args: []string{"cur"}},
 		{name: "cur with positional arg", args: []string{"cur", "dev"}, wantErr: true},
-		{name: "cur with app", args: []string{"cur", "--app=test-app"}, wantErr: true},
 		{name: "unknown command", args: []string{"switch", "dev"}, wantErr: true},
 		{name: "use missing env", args: []string{"use"}, wantErr: true},
 		{name: "apply missing path", args: []string{"apply"}, wantErr: true},
@@ -55,179 +49,168 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
-func TestValidateUseOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		target  string
-		wantErr bool
-	}{
-		{name: "valid", target: "dev"},
-		{name: "missing target", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateUseOptions(&options{target: tt.target})
-			if tt.wantErr && err == nil {
-				t.Fatal("validateUseOptions() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateUseOptions() unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateDeployOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		target  string
-		app     string
-		wantErr bool
-	}{
-		{name: "valid", target: "deploy.yaml"},
-		{name: "missing target", wantErr: true},
-		{name: "with app", target: "deploy.yaml", app: "test-app", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateDeployOptions(&options{target: tt.target, app: tt.app})
-			if tt.wantErr && err == nil {
-				t.Fatal("validateDeployOptions() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateDeployOptions() unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateDelOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		target  string
-		wantErr bool
-	}{
-		{name: "valid", target: "dev"},
-		{name: "missing target", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateDelOptions(&options{target: tt.target})
-			if tt.wantErr && err == nil {
-				t.Fatal("validateDelOptions() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateDelOptions() unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateListOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		target  string
-		wantErr bool
-	}{
-		{name: "valid"},
-		{name: "with positional arg", target: "dev", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateListOptions(&options{target: tt.target})
-			if tt.wantErr && err == nil {
-				t.Fatal("validateListOptions() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateListOptions() unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestValidateCurOptions(t *testing.T) {
-	tests := []struct {
-		name    string
-		target  string
-		wantErr bool
-	}{
-		{name: "valid"},
-		{name: "with positional arg", target: "dev", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateCurOptions(&options{target: tt.target})
-			if tt.wantErr && err == nil {
-				t.Fatal("validateCurOptions() expected error")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("validateCurOptions() unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestOptionsDefault_UsesLastAppWithoutActiveEnv(t *testing.T) {
+func TestParseOptions_NormalizesShortEnvNameUsingDefaultScope(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
 		t.Fatalf("WriteFile() failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: .git/worktrees/deploy-test\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
-	nested := filepath.Join(root, "apps", "svc")
-	if err := os.MkdirAll(nested, os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
 	}
-	withWorkingDir(t, nested)
-
 	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
 	}
-	ctx := env.DeployContext{LastApp: "cached-app"}
-	raw, err := json.Marshal(&ctx)
-	if err != nil {
-		t.Fatalf("json.Marshal() failed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".env", "current.json"), raw, os.ModePerm); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	if err := (&env.DeployContext{DefaultScope: "team"}).Save(); err != nil {
+		t.Fatalf("DeployContext.Save() failed: %v", err)
 	}
 
-	opts := &options{command: commandUse}
-	if err := opts.Default(); err != nil {
-		t.Fatalf("Default() unexpected error: %v", err)
+	opts, err := parseOptions([]string{"use", "dev"})
+	if err != nil {
+		t.Fatalf("parseOptions() unexpected error: %v", err)
 	}
-	if got, want := opts.app, "cached-app"; got != want {
-		t.Fatalf("Default() app = %q, want %q", got, want)
+	if got, want := opts.target, "team.dev"; got != want {
+		t.Fatalf("parseOptions() target = %q, want %q", got, want)
 	}
 }
 
-func TestOptionsDefault_NoContextReturnsError(t *testing.T) {
+func TestParseOptions_NormalizesDeleteShortEnvNameUsingDefaultScope(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
 		t.Fatalf("WriteFile() failed: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: .git/worktrees/deploy-test\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
-	nested := filepath.Join(root, "apps", "svc")
-	if err := os.MkdirAll(nested, os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
 	}
-	withWorkingDir(t, nested)
-
-	opts := &options{command: commandDel}
-	err := opts.Default()
-	if err == nil {
-		t.Fatal("Default() expected error")
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "未指定 --app，且当前没有可用 app") {
-		t.Fatalf("Default() error = %v, want clear missing-app message", err)
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	if err := (&env.DeployContext{DefaultScope: "team"}).Save(); err != nil {
+		t.Fatalf("DeployContext.Save() failed: %v", err)
+	}
+
+	opts, err := parseOptions([]string{"del", "dev"})
+	if err != nil {
+		t.Fatalf("parseOptions() unexpected error: %v", err)
+	}
+	if got, want := opts.target, "team.dev"; got != want {
+		t.Fatalf("parseOptions() target = %q, want %q", got, want)
+	}
+}
+
+func TestParseOptions_ShortEnvNameWithoutDefaultScopeFails(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	if _, err := parseOptions([]string{"use", "dev"}); err == nil {
+		t.Fatal("parseOptions() succeeded unexpectedly")
+	} else if !strings.Contains(err.Error(), env.ErrNoDefaultScope.Error()) {
+		t.Fatalf("parseOptions() error = %v, want missing default scope", err)
+	}
+}
+
+func TestOptionsDefault_TrimsWhitespace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	opts := &options{target: "  dev  ", kubeconfigPath: "  /tmp/kubeconfig  "}
+	if err := opts.Default(); err != nil {
+		t.Fatalf("Default() unexpected error: %v", err)
+	}
+	if got, want := opts.target, "dev"; got != want {
+		t.Fatalf("Default() target = %q, want %q", got, want)
+	}
+	if got, want := opts.kubeconfigPath, "/tmp/kubeconfig"; got != want {
+		t.Fatalf("Default() kubeconfigPath = %q, want %q", got, want)
+	}
+}
+
+func TestScopeCommand_SetsDefaultScope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	if err := scopeCommand(&options{target: "team"}); err != nil {
+		t.Fatalf("scopeCommand() unexpected error: %v", err)
+	}
+
+	ctx, err := env.LoadDeployContext()
+	if err != nil {
+		t.Fatalf("env.LoadDeployContext() failed: %v", err)
+	}
+	if got, want := ctx.GetDefaultScope(), "team"; got != want {
+		t.Fatalf("GetDefaultScope() = %q, want %q", got, want)
+	}
+}
+
+func TestScopeCommand_ShowsDefaultScope(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "apps", "svc"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".env"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	withWorkingDir(t, filepath.Join(root, "apps", "svc"))
+
+	if err := (&env.DeployContext{DefaultScope: "team"}).Save(); err != nil {
+		t.Fatalf("DeployContext.Save() failed: %v", err)
+	}
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() failed: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	if err := scopeCommand(&options{}); err != nil {
+		t.Fatalf("scopeCommand() unexpected error: %v", err)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("stdout close failed: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("io.ReadAll() failed: %v", err)
+	}
+
+	if got := strings.TrimSpace(string(out)); got != "team" {
+		t.Fatalf("scopeCommand() output = %q, want %q", got, "team")
 	}
 }
 
@@ -246,42 +229,6 @@ func withWorkingDir(t *testing.T, dir string) {
 			t.Fatalf("restore working dir failed: %v", err)
 		}
 	})
-}
-
-func TestDeployAndActivate_RequiresActiveEnvironment(t *testing.T) {
-	tests := []struct {
-		name    string
-		opts    *options
-		wantErr string
-	}{
-		{
-			name:    "missing active env",
-			opts:    &options{target: "deploy.yaml"},
-			wantErr: "apply 需要当前已激活环境，请先执行 `use <env>`",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
-				t.Fatalf("WriteFile() failed: %v", err)
-			}
-			nested := filepath.Join(root, "apps", "svc")
-			if err := os.MkdirAll(nested, os.ModePerm); err != nil {
-				t.Fatalf("MkdirAll() failed: %v", err)
-			}
-			withWorkingDir(t, nested)
-
-			err := deployAndActivate(tt.opts)
-			if err == nil {
-				t.Fatal("deployAndActivate() expected error")
-			}
-			if err.Error() != tt.wantErr {
-				t.Fatalf("deployAndActivate() error = %q, want %q", err.Error(), tt.wantErr)
-			}
-		})
-	}
 }
 
 func TestNewExecutor_UsesKubeconfigPath(t *testing.T) {

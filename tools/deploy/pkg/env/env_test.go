@@ -163,7 +163,7 @@ func TestDeployContext_SaveLoad(t *testing.T) {
 		DefaultScope: "alice",
 	}
 
-	if err := saveDeployContext(want); err != nil {
+	if err := want.Save(); err != nil {
 		t.Fatalf("saveDeployContext() failed: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestDeployContext_SaveLoad(t *testing.T) {
 		t.Fatalf("saved json = %s, want default_scope field", gotJSON)
 	}
 
-	got, err := loadDeployContext()
+	got, err := LoadDeployContext()
 	if err != nil {
 		t.Fatalf("loadDeployContext() failed: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestDeployContext_LoadMissingFile(t *testing.T) {
 	newBazelWorkspace(t)
 	internalInit()
 
-	got, err := loadDeployContext()
+	got, err := LoadDeployContext()
 	if err != nil {
 		t.Fatalf("loadDeployContext() failed: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestDeployContext_LoadCorruptJSON(t *testing.T) {
 		t.Fatalf("os.WriteFile() failed: %v", err)
 	}
 
-	_, err := loadDeployContext()
+	_, err := LoadDeployContext()
 	if err == nil {
 		t.Fatal("loadDeployContext() succeeded unexpectedly")
 	}
@@ -254,7 +254,7 @@ func TestDeployEnv_Active(t *testing.T) {
 		t.Fatalf("Active() failed: %v", err)
 	}
 
-	ctxInfo, err := loadDeployContext()
+	ctxInfo, err := LoadDeployContext()
 	if err != nil {
 		t.Fatalf("loadDeployContext() failed: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDeployEnv_Delete_ClearsActiveContext(t *testing.T) {
 	fullEnv := testFullEnv("alice", "dev")
 	env := &DeployEnv{Profile: Profile{Name: fullEnv}}
 
-	if err := saveDeployContext(&DeployContext{ActiveEnv: fullEnv, DefaultScope: "alice"}); err != nil {
+	if err := (&DeployContext{ActiveEnv: fullEnv, DefaultScope: "alice"}).Save(); err != nil {
 		t.Fatalf("saveDeployContext() failed: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, profileDir, profileFileName(fullEnv)), []byte(`{"env_name":"alice.dev"}`), os.ModePerm); err != nil {
@@ -310,7 +310,7 @@ func TestDeployEnv_Delete_ClearsActiveContext(t *testing.T) {
 		t.Fatalf("Delete() environment = %q, want %q", deletedEnvironment, string(fullEnv))
 	}
 
-	ctxInfo, err := loadDeployContext()
+	ctxInfo, err := LoadDeployContext()
 	if err != nil {
 		t.Fatalf("loadDeployContext() failed: %v", err)
 	}

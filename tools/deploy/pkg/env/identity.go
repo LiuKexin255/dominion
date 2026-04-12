@@ -34,7 +34,7 @@ var (
 
 // NewFullEnvName 解析输入并返回完整环境名。
 func NewFullEnvName(scope string, name string) (FullEnvName, error) {
-	if strings.Contains(name, ".") {
+	if IsFullEnvName(name) {
 		if err := ValidateFullEnvName(name); err != nil {
 			return "", err
 		}
@@ -51,6 +51,11 @@ func NewFullEnvName(scope string, name string) (FullEnvName, error) {
 		return "", err
 	}
 	return FullEnvName(scope + "." + name), nil
+}
+
+// IsFullEnvName 返回输入是否采用完整环境名形式。
+func IsFullEnvName(name string) bool {
+	return strings.Contains(name, ".")
 }
 
 // FullEnvName 表示完整环境名（scope.name 格式）。
