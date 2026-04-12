@@ -29,25 +29,17 @@ const (
 )
 
 var (
-
-	// envProfileDir 环境信息缓存路径
-	envProfileDir = ".env"
+	// cacheDir 环境信息缓存路径
+	cacheDir = ".env"
 
 	// deployConfigDir 环境配置缓存路径
-	deployConfigDir = path.Join(envProfileDir, "deploy")
-	// deployConfigFileName 环境配置文件名 {应用名}__{环境名}___{模板应用名}__{模板名}
-	deployConfigFileName = "%s__%s__%s__%s.yaml"
+	deployConfigDir = path.Join(cacheDir, "deploy")
 
 	// serviceConfigDir 环境服务配置缓存路径
-	serviceConfigDir = path.Join(envProfileDir, "service")
-	// serviceConfigFileName 环境配置文件名 {应用名}__{环境名}
-	serviceConfigFileName = "%s__%s.yaml"
+	serviceConfigDir = path.Join(cacheDir, "service")
 
-	currentEnvFileName = "current.json"
-	currentEnvPath     = path.Join(envProfileDir, currentEnvFileName)
-
-	// profileFormat 环境信息文件格式 {应用名}_{环境名}.json
-	profileFormat = "%s__%s.json"
+	profileDir     = path.Join(cacheDir, "profile")
+	currentEnvPath = path.Join(cacheDir, "current.json")
 
 	now = time.Now
 )
@@ -70,7 +62,7 @@ var (
 // executor 定义环境层依赖的远端执行接口。
 type executor interface {
 	Apply(ctx context.Context, objects *k8s.DeployObjects) error
-	Delete(ctx context.Context, app, environment string) error
+	Delete(ctx context.Context, environment string) error
 }
 
 // imageResolver 定义 env 层镜像解析依赖，负责把部署引用转换为最终镜像引用。
@@ -126,20 +118,29 @@ func internalInit() error {
 
 // Profile 环境基本信息
 type Profile struct {
-	Name         string       `json:"name"`
-	App          string       `json:"app"`
+	Name         FullEnvName  `json:"env_name"`
 	UpdatedAt    time.Time    `json:"updated_at"`
 	RemoteStatus RemoteStatus `json:"remote_status,omitempty"`
+}
 
-	MainConfig string `json:"main_config,omitempty"`
+func profileFileName(fullEnvName FullEnvName) string {
+	return fullEnvName.SafeFileName() + ".json"
 }
 
 // DeployEnv 部署环境
 type DeployEnv struct {
 	Profile
 
-	mainDeployConfig *config.DeployConfig
-	serviceConfigs   []*config.ServiceConfig
+	deployConfig   *config.DeployConfig
+	serviceConfigs []*config.ServiceConfig
+}
+
+func (e *DeployEnv) deployConfigFileName() string {
+	return e.Name.SafeFileName() + ".yaml"
+}
+
+func (e *DeployEnv) serviceConfigFileName() string {
+	return e.Name.SafeFileName() + ".yaml"
 }
 
 // Update 更新环境
@@ -152,12 +153,12 @@ func (e *DeployEnv) Deploy(ctx context.Context, exec executor) error {
 	if exec == nil {
 		return fmt.Errorf("executor is nil")
 	}
-	if e.mainDeployConfig == nil {
+	if e.deployConfig == nil {
 		return fmt.Errorf("no cached deploy config, call Update first")
 	}
 
 	var resolvedImages map[string]string
-	for _, deployService := range e.mainDeployConfig.Services {
+	for _, deployService := range e.deployConfig.Services {
 		if deployService == nil {
 			return fmt.Errorf("deploy service 为空")
 		}
@@ -171,7 +172,7 @@ func (e *DeployEnv) Deploy(ctx context.Context, exec executor) error {
 		}
 
 		var err error
-		resolvedImages, err = resolver.Resolve(ctx, e.mainDeployConfig, e.serviceConfigs)
+		resolvedImages, err = resolver.Resolve(ctx, e.deployConfig, e.serviceConfigs)
 		if err != nil {
 			return err
 		}
@@ -212,19 +213,17 @@ func (e *DeployEnv) prepareDesiredState(deployConfig *config.DeployConfig) error
 		return err
 	}
 
-	e.mainDeployConfig = deployConfig
+	e.deployConfig = deployConfig
 	e.serviceConfigs = serviceConfigs
 	return nil
 }
 
 // Active 设置该环境为当前环境
 func (e *DeployEnv) Active() error {
+	scope, _ := e.Name.Split()
 	return saveDeployContext(&DeployContext{
-		ActiveEnv: &EnvRef{
-			Name: e.Name,
-			App:  e.App,
-		},
-		LastApp: e.App,
+		ActiveEnv:    e.Name,
+		DefaultScope: scope,
 	})
 }
 
@@ -235,7 +234,7 @@ func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
 	}
 
 	// 先执行远程删除（remote-first）
-	if err := exec.Delete(ctx, e.App, e.Name); err != nil {
+	if err := exec.Delete(ctx, string(e.Name)); err != nil {
 		return err
 	}
 
@@ -243,14 +242,14 @@ func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
 	if err != nil {
 		return err
 	}
-	if ctxInfo != nil && ctxInfo.ActiveEnv != nil && ctxInfo.ActiveEnv.Name == e.Name && ctxInfo.ActiveEnv.App == e.App {
-		ctxInfo.ActiveEnv = nil
+	if ctxInfo != nil && ctxInfo.ActiveEnv != EmpytEnvName && ctxInfo.ActiveEnv == e.Name {
+		ctxInfo.ActiveEnv = EmpytEnvName
 		if err := saveDeployContext(ctxInfo); err != nil {
 			return err
 		}
 	}
 
-	if err := e.deleteDeployConfigs(); err != nil {
+	if err := e.deleteDeployConfig(); err != nil {
 		return err
 	}
 
@@ -258,7 +257,7 @@ func (e *DeployEnv) Delete(ctx context.Context, exec executor) error {
 		return err
 	}
 
-	return os.RemoveAll(path.Join(workspace.MustRoot(), envProfileDir, profileName(e.Name, e.App)))
+	return os.RemoveAll(path.Join(workspace.MustRoot(), profileDir, profileFileName(e.Name)))
 }
 
 // save 保存环境信息
@@ -267,7 +266,7 @@ func (e *DeployEnv) save() error {
 		return err
 	}
 
-	if err := e.saveDeployConfigs(); err != nil {
+	if err := e.saveDeployConfig(); err != nil {
 		return err
 	}
 
@@ -285,40 +284,43 @@ func (e *DeployEnv) saveProfile() error {
 	if err != nil {
 		return err
 	}
-	filePath := path.Join(workspace.MustRoot(), envProfileDir, profileName(e.Name, e.App))
+	filePath := path.Join(workspace.MustRoot(), profileDir, profileFileName(e.Name))
 
 	return os.WriteFile(filePath, profileRaw, os.ModePerm)
 }
 
-func (e *DeployEnv) saveDeployConfigs() error {
+func (e *DeployEnv) saveDeployConfig() error {
 	// 序列化配置文件
 	// 单独设置主配置文件名
-	if e.mainDeployConfig == nil {
+	if e.deployConfig == nil {
 		return nil
 	}
 
-	e.MainConfig = fmt.Sprintf(deployConfigFileName, e.App, e.Name, e.mainDeployConfig.App, e.mainDeployConfig.Template)
-	return saveDeployConfig(e.MainConfig, e.mainDeployConfig)
-}
-
-func (e *DeployEnv) loadDeployConfigs() error {
-	if e.MainConfig == "" {
-		return nil
-	}
-
-	mainDeployConfig, err := loadDeployConfig(e.MainConfig)
+	configRaw, err := yaml.Marshal(e.deployConfig)
 	if err != nil {
 		return err
 	}
-	e.mainDeployConfig = mainDeployConfig
+
+	filePath := path.Join(workspace.MustRoot(), deployConfigDir, e.deployConfigFileName())
+	return os.WriteFile(filePath, configRaw, os.ModePerm)
+}
+
+func (e *DeployEnv) loadDeployConfig() error {
+	deployConfig, err := config.ParseDeployConfig(path.Join(workspace.MustRoot(), deployConfigDir, e.deployConfigFileName()))
+	if err != nil {
+		// 忽略不存在错误
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	e.deployConfig = deployConfig
 	return nil
 }
 
-func (e *DeployEnv) deleteDeployConfigs() error {
-	if e.MainConfig == "" {
-		return nil
-	}
-	return deleteDeployConfig(e.MainConfig)
+func (e *DeployEnv) deleteDeployConfig() error {
+	return os.RemoveAll(path.Join(workspace.MustRoot(), deployConfigDir, e.deployConfigFileName()))
 }
 
 func (e *DeployEnv) saveServiceConfigs() error {
@@ -327,14 +329,17 @@ func (e *DeployEnv) saveServiceConfigs() error {
 		return err
 	}
 
-	filePath := path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name))
+	filePath := path.Join(workspace.MustRoot(), serviceConfigDir, e.serviceConfigFileName())
 	return os.WriteFile(filePath, raw, os.ModePerm)
 }
 
 func (e *DeployEnv) loadServiceConfigs() error {
-	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
+	raw, err := os.ReadFile(path.Join(workspace.MustRoot(), serviceConfigDir, e.serviceConfigFileName()))
 	if err != nil {
-		return err
+		// 忽略不存在错误
+		if os.IsNotExist(err) {
+			return nil
+		}
 	}
 
 	var serviceConfigs []*config.ServiceConfig
@@ -347,7 +352,7 @@ func (e *DeployEnv) loadServiceConfigs() error {
 }
 
 func (e *DeployEnv) deleteServiceConfigs() error {
-	return os.RemoveAll(path.Join(workspace.MustRoot(), serviceConfigDir, fmt.Sprintf(serviceConfigFileName, e.App, e.Name)))
+	return os.RemoveAll(path.Join(workspace.MustRoot(), serviceConfigDir, e.serviceConfigFileName()))
 }
 
 // Equal 判断两个 DeployEnv 是否指向同一个环境。
@@ -355,12 +360,14 @@ func (e *DeployEnv) Equal(other *DeployEnv) bool {
 	if other == nil {
 		return false
 	}
-	return e.Name == other.Name && e.App == other.App
+	return e.Name == other.Name
 }
 
 // BuildDeployObjects 根据当前环境缓存配置构建部署对象。
 func (e *DeployEnv) BuildDeployObjects(resolvedImages map[string]string) (*k8s.DeployObjects, error) {
-	return k8s.NewDeployObjects(e.mainDeployConfig, e.serviceConfigs, e.Name, e.App, resolvedImages)
+	// TODO：暂时注释，等 k8s 修改完再修改这里
+	// return k8s.NewDeployObjects(e.deployConfig, e.serviceConfigs, e.Name, e.App, resolvedImages)
+	return nil, nil
 }
 
 func resolveImages(ctx context.Context, resolver *imagepush.Resolver, deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig) (map[string]string, error) {
@@ -475,33 +482,10 @@ func isInfraService(deployService *config.DeployService) bool {
 	return strings.TrimSpace(deployService.Infra.Resource) != ""
 }
 
-func saveDeployConfig(fileName string, deployConfig *config.DeployConfig) error {
-	configRaw, err := yaml.Marshal(deployConfig)
-	if err != nil {
-		return err
-	}
-
-	filePath := path.Join(workspace.MustRoot(), deployConfigDir, fileName)
-	return os.WriteFile(filePath, configRaw, os.ModePerm)
-}
-
-func loadDeployConfig(fileName string) (*config.DeployConfig, error) {
-	deployConfig, err := config.ParseDeployConfig(path.Join(workspace.MustRoot(), deployConfigDir, fileName))
-	if err != nil {
-		return nil, err
-	}
-
-	return deployConfig, nil
-}
-
-func deleteDeployConfig(fileName string) error {
-	return os.RemoveAll(path.Join(workspace.MustRoot(), deployConfigDir, fileName))
-}
-
 // New 创建新的环境
-func New(name string, app string) (*DeployEnv, error) {
+func New(fullEnvName FullEnvName) (*DeployEnv, error) {
 	// 检查是否有同名服务
-	env, err := Get(name, app)
+	env, err := Get(fullEnvName)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -515,8 +499,7 @@ func New(name string, app string) (*DeployEnv, error) {
 	// 未找到环境
 	env = &DeployEnv{
 		Profile: Profile{
-			Name:      name,
-			App:       app,
+			Name:      fullEnvName,
 			UpdatedAt: now(),
 		},
 	}
@@ -528,13 +511,10 @@ func New(name string, app string) (*DeployEnv, error) {
 }
 
 // Get 获取指定环境
-func Get(name string, app string) (*DeployEnv, error) {
-	filePath := path.Join(workspace.MustRoot(), envProfileDir, profileName(name, app))
+func Get(fullEnvName FullEnvName) (*DeployEnv, error) {
+	filePath := path.Join(workspace.MustRoot(), profileDir)
 	_, err := os.Stat(filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s/%s %w", name, app, ErrNotFound)
-		}
 		return nil, err
 	}
 
@@ -547,30 +527,17 @@ func Current() (*DeployEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ctx == nil || ctx.ActiveEnv == nil || ctx.ActiveEnv.Name == "" || ctx.ActiveEnv.App == "" {
+	if ctx == nil || ctx.ActiveEnv == EmpytEnvName {
 		return nil, ErrNotActive
 	}
 
-	return Get(ctx.ActiveEnv.Name, ctx.ActiveEnv.App)
-}
-
-// DefaultApp 返回当前上下文下的默认 app。
-func DefaultApp() (string, error) {
-	ctx, err := loadDeployContext()
-	if err != nil {
-		return "", err
-	}
-	if ctx != nil && strings.TrimSpace(ctx.LastApp) != "" {
-		return ctx.LastApp, nil
-	}
-
-	return "", fmt.Errorf("未指定 --app，且当前没有可用 app，请先执行 `%s <env>`", "use")
+	return Get(ctx.ActiveEnv)
 }
 
 // List 返回当前所有环境
 func List() ([]*DeployEnv, error) {
 	root := workspace.MustRoot()
-	entries, err := os.ReadDir(path.Join(root, envProfileDir))
+	entries, err := os.ReadDir(path.Join(root, profileDir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -585,7 +552,8 @@ func List() ([]*DeployEnv, error) {
 		}
 
 		name := entry.Name()
-		if name == currentEnvFileName || !strings.HasSuffix(name, ".json") {
+		base := strings.TrimSuffix(name, ".json")
+		if !strings.HasSuffix(name, ".json") || strings.Contains(base, ".") {
 			continue
 		}
 		profileNames = append(profileNames, name)
@@ -599,7 +567,7 @@ func List() ([]*DeployEnv, error) {
 
 	envs := make([]*DeployEnv, 0, len(profileNames))
 	for _, name := range profileNames {
-		env, err := loadDeployEnv(path.Join(root, envProfileDir, name))
+		env, err := loadDeployEnv(path.Join(root, cacheDir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -625,21 +593,17 @@ func loadDeployEnv(filePath string) (*DeployEnv, error) {
 		Profile: *profile,
 	}
 
-	if err := env.loadDeployConfigs(); err != nil {
+	if err := env.loadDeployConfig(); err != nil {
 		return nil, err
 	}
 
-	if env.mainDeployConfig != nil {
+	if env.deployConfig != nil {
 		if err := env.loadServiceConfigs(); err != nil {
 			return nil, err
 		}
 	}
 
 	return env, nil
-}
-
-func profileName(name string, app string) string {
-	return fmt.Sprintf(profileFormat, app, name)
 }
 
 // EnvRef 表示一个可激活的环境引用。
@@ -650,8 +614,27 @@ type EnvRef struct {
 
 // DeployContext 表示 current.json 中保存的部署上下文。
 type DeployContext struct {
-	ActiveEnv *EnvRef `json:"active_env,omitempty"`
-	LastApp   string  `json:"last_app,omitempty"`
+	ActiveEnv    FullEnvName `json:"active_env,omitempty"`
+	DefaultScope string      `json:"default_scope,omitempty"`
+}
+
+// GetDefaultScope 返回默认 scope。
+func (ctx *DeployContext) GetDefaultScope() string {
+	if ctx == nil {
+		return ""
+	}
+
+	return ctx.DefaultScope
+}
+
+// SetDefaultScope 设置默认 scope。
+func (ctx *DeployContext) SetDefaultScope(scope string) error {
+	if err := ValidateScope(scope); err != nil {
+		return err
+	}
+
+	ctx.DefaultScope = scope
+	return nil
 }
 
 func saveDeployContext(ctx *DeployContext) error {

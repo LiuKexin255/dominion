@@ -171,7 +171,7 @@ func TestParseFullEnvName(t *testing.T) {
 			// given
 
 			// when
-			got, err := ParseFullEnvName(tt.input, tt.defaultScope)
+			got, err := NewFullEnvName(tt.defaultScope, tt.input)
 
 			// then
 			if tt.wantErr != nil {
@@ -186,7 +186,7 @@ func TestParseFullEnvName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse%q, %q) failed: %v", tt.input, tt.defaultScope, err)
 			}
-			if got != tt.want {
+			if string(got) != tt.want {
 				t.Fatalf("Parse%q, %q) = %q, want %q", tt.input, tt.defaultScope, got, tt.want)
 			}
 		})
