@@ -61,16 +61,15 @@ func (e *Executor) Apply(ctx context.Context, objects *DeployObjects) error {
 	return nil
 }
 
-// Delete 删除指定 app 和 environment 下的资源。
-func (e *Executor) Delete(ctx context.Context, app, environment string) error {
+// Delete 删除指定 fullEnvName 下的资源。
+func (e *Executor) Delete(ctx context.Context, fullEnvName string) error {
 	if e == nil || e.client == nil {
 		return fmt.Errorf("runtime client 为空")
 	}
 
 	namespace := e.client.K8sConfig.Namespace
 	matchLabels := buildLabels(
-		withDominionApp(app),
-		withDominionEnvironment(environment),
+		withDominionEnvironment(fullEnvName),
 		withManagedBy(e.client.K8sConfig.ManagedBy),
 	)
 

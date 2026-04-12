@@ -18,14 +18,14 @@ import (
 const (
 	mongoIntegrationDeployDirName  = "apps/mongo-integration"
 	mongoIntegrationDeployFileName = "deploy.yaml"
-	mongoIntegrationDeployYAML     = `template: deploy
-app: grpc-hello-world
+	mongoIntegrationDeployYAML     = `name: grpc.dev
 desc: "mongodb integration"
 services:
   - infra:
       resource: mongodb
       profile: dev-single
       name: mongo-main
+      app: grpc-hello-world
       persistence:
         enabled: true
 `
@@ -119,7 +119,7 @@ func TestEndToEnd_MongoDB_Delete_PreservesPVC(t *testing.T) {
 	st.h.SeedService(service)
 
 	// when
-	if err := st.executor.Delete(context.Background(), workload.App, workload.EnvironmentName); err != nil {
+	if err := st.executor.Delete(context.Background(), workload.EnvironmentName); err != nil {
 		t.Fatalf("Delete() failed: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func newMongoIntegrationState(t *testing.T) *mongoIntegrationState {
 
 	stubLoadK8sConfig(t, newTestK8sConfigWithMongoProfile())
 	deployConfig := mustParseMongoIntegrationDeployConfig(t)
-	objects, err := NewDeployObjects(deployConfig, nil, "dev", "grpc-hello-world", nil)
+	objects, err := NewDeployObjects(deployConfig, nil, "dev", nil)
 	if err != nil {
 		t.Fatalf("NewDeployObjects() failed: %v", err)
 	}

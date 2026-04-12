@@ -18,7 +18,6 @@ type deploymentExpectation struct {
 	namespace    string
 	managedBy    string
 	app          string
-	dominionApp  string
 	serviceName  string
 	environment  string
 	replicas     int32
@@ -34,7 +33,6 @@ type serviceExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
-	dominionApp string
 	serviceName string
 	environment string
 	ports       []corev1.ServicePort
@@ -47,7 +45,6 @@ type httpRouteExpectation struct {
 	namespace   string
 	managedBy   string
 	app         string
-	dominionApp string
 	serviceName string
 	environment string
 	hostnames   []string
@@ -75,7 +72,6 @@ func TestBuildDeployment(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				replicas:    3,
@@ -102,7 +98,6 @@ func TestBuildDeployment(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				replicas:    3,
@@ -144,7 +139,6 @@ func TestBuildDeployment(t *testing.T) {
 			workload: func() *DeploymentWorkload {
 				workload := newTestDeploymentWorkload()
 				workload.App = "gateway-service"
-				workload.DominionApp = "grpc-hello-world"
 				return workload
 			}(),
 			k8sConfig: newTestK8sConfig(),
@@ -157,7 +151,6 @@ func TestBuildDeployment(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "gateway-service",
-				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				replicas:    3,
@@ -230,7 +223,6 @@ func TestBuildService(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				ports: []corev1.ServicePort{
@@ -294,7 +286,6 @@ func TestBuildHTTPRoute(t *testing.T) {
 				namespace:   "team-dev",
 				managedBy:   "deploy-tool",
 				app:         "grpc-hello-world",
-				dominionApp: "grpc-hello-world",
 				serviceName: "gateway",
 				environment: "dev",
 				hostnames:   []string{"gateway.example.com", "gateway.dev.example.com"},
@@ -335,7 +326,6 @@ func TestBuildHTTPRoute_TLSDoesNotAffectRouteRendering(t *testing.T) {
 		namespace:   "team-dev",
 		managedBy:   "deploy-tool",
 		app:         "grpc-hello-world",
-		dominionApp: "grpc-hello-world",
 		serviceName: "gateway",
 		environment: "dev",
 		hostnames:   []string{"gateway.example.com", "gateway.dev.example.com"},
@@ -514,7 +504,6 @@ func newTestDeploymentWorkload() *DeploymentWorkload {
 		ServiceName:     "gateway",
 		EnvironmentName: "dev",
 		App:             "grpc-hello-world",
-		DominionApp:     "grpc-hello-world",
 		Desc:            "gateway service",
 		Image:           "registry.local/gateway:latest",
 		Replicas:        3,
@@ -546,7 +535,6 @@ func newTestHTTPRouteWorkload() *HTTPRouteWorkload {
 		ServiceName:      "gateway",
 		EnvironmentName:  "dev",
 		App:              "grpc-hello-world",
-		DominionApp:      "grpc-hello-world",
 		Hostnames:        []string{"gateway.example.com", "gateway.dev.example.com"},
 		BackendService:   backendService,
 		GatewayName:      "shared-gateway",
@@ -567,9 +555,9 @@ func assertDeployment(t *testing.T, got *appsv1.Deployment, want *deploymentExpe
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.dominionApp, want.environment)
-	assertManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
+	assertSelectorLabels(t, got.Spec.Selector.MatchLabels, want.app, want.serviceName, want.environment)
+	assertManagedLabels(t, got.Spec.Template.Labels, want.app, want.serviceName, want.environment, want.managedBy)
 	if got.Spec.Replicas == nil || *got.Spec.Replicas != want.replicas {
 		t.Fatalf("replicas = %v, want %d", got.Spec.Replicas, want.replicas)
 	}
@@ -732,8 +720,8 @@ func assertService(t *testing.T, got *corev1.Service, want *serviceExpectation) 
 	if got.Namespace != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.Namespace, want.namespace)
 	}
-	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
-	assertSelectorLabels(t, got.Spec.Selector, want.app, want.serviceName, want.dominionApp, want.environment)
+	assertManagedLabels(t, got.Labels, want.app, want.serviceName, want.environment, want.managedBy)
+	assertSelectorLabels(t, got.Spec.Selector, want.app, want.serviceName, want.environment)
 	if len(got.Spec.Ports) != len(want.ports) {
 		t.Fatalf("ports len = %d, want %d", len(got.Spec.Ports), len(want.ports))
 	}
@@ -759,7 +747,7 @@ func assertHTTPRoute(t *testing.T, got *unstructured.Unstructured, want *httpRou
 	if got.GetNamespace() != want.namespace {
 		t.Fatalf("namespace = %q, want %q", got.GetNamespace(), want.namespace)
 	}
-	assertManagedLabels(t, got.GetLabels(), want.app, want.serviceName, want.dominionApp, want.environment, want.managedBy)
+	assertManagedLabels(t, got.GetLabels(), want.app, want.serviceName, want.environment, want.managedBy)
 
 	hostnames, found, err := unstructured.NestedStringSlice(got.Object, "spec", "hostnames")
 	if err != nil || !found {
@@ -801,7 +789,7 @@ func assertHTTPRoute(t *testing.T, got *unstructured.Unstructured, want *httpRou
 	}
 }
 
-func assertManagedLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionApp string, dominionEnvironment string, managedBy string) {
+func assertManagedLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionEnvironment string, managedBy string) {
 	t.Helper()
 
 	if _, ok := got["app"]; ok {
@@ -818,9 +806,6 @@ func assertManagedLabels(t *testing.T, got map[string]string, app string, servic
 	}
 	if got[serviceLabelKey] != serviceName {
 		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
-	}
-	if got[dominionAppLabelKey] != dominionApp {
-		t.Fatalf("dominion app label = %q, want %q", got[dominionAppLabelKey], dominionApp)
 	}
 	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
 		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
@@ -831,12 +816,12 @@ func assertManagedLabels(t *testing.T, got map[string]string, app string, servic
 	if got[managedByLabelKey] != managedBy {
 		t.Fatalf("managed-by label = %q, want %q", got[managedByLabelKey], managedBy)
 	}
-	if len(got) != 5 {
-		t.Fatalf("managed labels len = %d, want 5", len(got))
+	if len(got) != 4 {
+		t.Fatalf("managed labels len = %d, want 4", len(got))
 	}
 }
 
-func assertSelectorLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionApp string, dominionEnvironment string) {
+func assertSelectorLabels(t *testing.T, got map[string]string, app string, serviceName string, dominionEnvironment string) {
 	t.Helper()
 
 	if _, ok := got["app"]; ok {
@@ -854,14 +839,11 @@ func assertSelectorLabels(t *testing.T, got map[string]string, app string, servi
 	if got[serviceLabelKey] != serviceName {
 		t.Fatalf("service label = %q, want %q", got[serviceLabelKey], serviceName)
 	}
-	if got[dominionAppLabelKey] != dominionApp {
-		t.Fatalf("dominion app label = %q, want %q", got[dominionAppLabelKey], dominionApp)
-	}
 	if got[dominionEnvironmentLabelKey] != dominionEnvironment {
 		t.Fatalf("dominion environment label = %q, want %q", got[dominionEnvironmentLabelKey], dominionEnvironment)
 	}
-	if len(got) != 4 {
-		t.Fatalf("selector labels len = %d, want 4", len(got))
+	if len(got) != 3 {
+		t.Fatalf("selector labels len = %d, want 3", len(got))
 	}
 }
 

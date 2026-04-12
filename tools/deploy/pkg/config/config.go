@@ -42,8 +42,7 @@ func (t ServiceArtifactType) Validate() error {
 
 // DeployConfig 部署配置
 type DeployConfig struct {
-	Template string           `yaml:"template"`
-	App      string           `yaml:"app"`
+	Name     string           `yaml:"name"`
 	Desc     string           `yaml:"desc"`
 	Services []*DeployService `yaml:"services"`
 
@@ -67,6 +66,7 @@ type DeployInfra struct {
 	Resource    string                 `yaml:"resource"`
 	Profile     string                 `yaml:"profile"`
 	Name        string                 `yaml:"name"`
+	App         string                 `yaml:"app"`
 	Persistence DeployInfraPersistence `yaml:"persistence"`
 }
 

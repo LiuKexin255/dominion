@@ -67,7 +67,6 @@ type MongoDBWorkload struct {
 	ServiceName     string
 	EnvironmentName string
 	App             string
-	DominionApp     string
 	ProfileName     string
 	Persistence     config.DeployInfraPersistence
 }
@@ -79,7 +78,7 @@ func (w *MongoDBWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindMongoDB, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindMongoDB, w.App, w.ServiceName)
 }
 
 // ServiceResourceName 返回 MongoDB Service 对应的资源名。
@@ -89,7 +88,7 @@ func (w *MongoDBWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
 }
 
 // SecretResourceName 返回 MongoDB Secret 对应的资源名。
@@ -99,7 +98,7 @@ func (w *MongoDBWorkload) SecretResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindSecret, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindSecret, w.App, w.ServiceName)
 }
 
 // PVCResourceName 返回 MongoDB PVC 对应的资源名。
@@ -109,7 +108,7 @@ func (w *MongoDBWorkload) PVCResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindPVC, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindPVC, w.App, w.ServiceName)
 }
 
 // Validate 校验 MongoDB workload 字段是否合法。
@@ -166,12 +165,11 @@ func generateStablePassword(inputs ...string) string {
 	return string(encoded)
 }
 
-func newMongoDBWorkload(infra config.DeployInfra, envName string, dominionApp string) (*MongoDBWorkload, error) {
+func newMongoDBWorkload(infra config.DeployInfra, envName string) (*MongoDBWorkload, error) {
 	w := &MongoDBWorkload{
 		ServiceName:     strings.TrimSpace(infra.Name),
 		EnvironmentName: strings.TrimSpace(envName),
-		App:             strings.TrimSpace(dominionApp),
-		DominionApp:     strings.TrimSpace(dominionApp),
+		App:             strings.TrimSpace(infra.App),
 		ProfileName:     strings.TrimSpace(infra.Profile),
 		Persistence:     infra.Persistence,
 	}
@@ -202,14 +200,12 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload) (*appsv1.Deployment, erro
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
@@ -302,7 +298,6 @@ func BuildMongoDBPVC(workload *MongoDBWorkload) (*corev1.PersistentVolumeClaim, 
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
@@ -347,9 +342,6 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 		return fmt.Errorf("mongo profile %s 不存在", strings.TrimSpace(desired.ProfileName))
 	}
 
-	if strings.TrimSpace(existing.Labels[dominionAppLabelKey]) != strings.TrimSpace(desired.DominionApp) {
-		return fmt.Errorf("pvc %s 标签 %s 不兼容: existing=%q desired=%q", existing.Name, dominionAppLabelKey, existing.Labels[dominionAppLabelKey], desired.DominionApp)
-	}
 	if strings.TrimSpace(existing.Labels[dominionEnvironmentLabelKey]) != strings.TrimSpace(desired.EnvironmentName) {
 		return fmt.Errorf("pvc %s 标签 %s 不兼容: existing=%q desired=%q", existing.Name, dominionEnvironmentLabelKey, existing.Labels[dominionEnvironmentLabelKey], desired.EnvironmentName)
 	}
@@ -397,14 +389,12 @@ func BuildMongoDBService(workload *MongoDBWorkload) (*corev1.Service, error) {
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)
 	selectorLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 
@@ -443,7 +433,6 @@ func BuildMongoDBSecret(workload *MongoDBWorkload) (*corev1.Secret, error) {
 	objectLabels := buildLabels(
 		withApp(workload.App),
 		withService(workload.ServiceName),
-		withDominionApp(workload.DominionApp),
 		withDominionEnvironment(workload.EnvironmentName),
 		withManagedBy(k8sConfig.ManagedBy),
 	)

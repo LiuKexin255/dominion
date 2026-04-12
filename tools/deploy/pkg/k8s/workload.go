@@ -51,7 +51,6 @@ type DeploymentWorkload struct {
 	ServiceName     string
 	EnvironmentName string
 	App             string
-	DominionApp     string
 	Desc            string
 	Image           string
 	Replicas        int32
@@ -65,7 +64,7 @@ func (w *DeploymentWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newWorkloadName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindDeployment, w.App, w.ServiceName)
 }
 
 // ServiceResourceName 返回 deployment 对应 service 的资源名。
@@ -75,7 +74,7 @@ func (w *DeploymentWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
+	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
 }
 
 // Validate 校验 deployment workload 字段是否合法。
@@ -119,10 +118,6 @@ func (w *DeploymentWorkload) Validate() error {
 	return nil
 }
 
-func newWorkloadName(app string, dominionApp string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindDeployment, app, dominionApp, serviceName, environmentName)
-}
-
 // NewHTTPRouteWorkload 基于 deployment workload 生成 HTTPRoute workload。
 // deployService 提供路由匹配配置；网关配置通过静态配置加载。
 func (w *DeploymentWorkload) NewHTTPRouteWorkload(deployService *config.DeployService) (*HTTPRouteWorkload, error) {
@@ -136,7 +131,6 @@ func (w *DeploymentWorkload) NewHTTPRouteWorkload(deployService *config.DeploySe
 		ServiceName:      w.ServiceName,
 		EnvironmentName:  w.EnvironmentName,
 		App:              w.App,
-		DominionApp:      w.DominionApp,
 		Hostnames:        deployService.HTTP.Hostnames,
 		Matches:          matches,
 		BackendService:   w.ServiceResourceName(),
@@ -204,7 +198,6 @@ type HTTPRouteWorkload struct {
 	ServiceName      string
 	EnvironmentName  string
 	App              string
-	DominionApp      string
 	Hostnames        []string
 	Matches          []*HTTPRoutePathMatch
 	BackendService   string
@@ -219,11 +212,7 @@ func (w *HTTPRouteWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newHTTPRouteName(w.App, w.DominionApp, w.ServiceName, w.EnvironmentName)
-}
-
-func newHTTPRouteName(app string, dominionApp string, serviceName string, environmentName string) string {
-	return newObjectName(WorkloadKindHTTPRoute, app, dominionApp, serviceName, environmentName)
+	return newObjectName(WorkloadKindHTTPRoute, w.App, w.ServiceName)
 }
 
 // Validate 校验 HTTPRoute workload 字段是否合法。
@@ -274,7 +263,7 @@ func (w *HTTPRouteWorkload) Validate() error {
 	return nil
 }
 
-func newDeploymentWorkload(serviceCfg *config.ServiceConfig, artifact *config.ServiceArtifact, envName string, dominionApp string, imageRef string) (*DeploymentWorkload, error) {
+func newDeploymentWorkload(serviceCfg *config.ServiceConfig, artifact *config.ServiceArtifact, envName string, imageRef string) (*DeploymentWorkload, error) {
 	if strings.TrimSpace(imageRef) == "" {
 		return nil, fmt.Errorf("deployment workload image 为空")
 	}
@@ -287,7 +276,6 @@ func newDeploymentWorkload(serviceCfg *config.ServiceConfig, artifact *config.Se
 		ServiceName:     serviceCfg.Name,
 		EnvironmentName: envName,
 		App:             serviceCfg.App,
-		DominionApp:     dominionApp,
 		Desc:            serviceCfg.Desc,
 		Image:           strings.TrimSpace(imageRef),
 		Replicas:        1,
@@ -333,11 +321,11 @@ func toDeploymentPorts(ports []*config.ServiceArtifactPort) []*DeploymentPort {
 	return mapped
 }
 
-func newObjectName(kind WorkloadKind, app string, dominionApp string, serviceName string, environmentName string) string {
+func newObjectName(kind WorkloadKind, fullEnvName string, serviceName string) string {
 	if kind == WorkloadEmpty {
 		kind = WorkloadUnknown
 	}
-	parts := []string{string(kind), environmentName, serviceName, shortNameHash(app, dominionApp)}
+	parts := []string{string(kind), fullEnvName, serviceName, shortNameHash(fullEnvName)}
 	normalized := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = sanitizeNamePart(part)
@@ -356,7 +344,7 @@ func sanitizeNamePart(part string) string {
 	return part
 }
 
-func shortNameHash(app string, dominionApp string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(app) + "\x00" + strings.TrimSpace(dominionApp)))
+func shortNameHash(fullEnvName string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(fullEnvName)))
 	return hex.EncodeToString(sum[:4])
 }

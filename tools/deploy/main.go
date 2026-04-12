@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/env"
@@ -19,41 +21,49 @@ const (
 	commandUse   = "use"
 	commandApply = "apply"
 	commandDel   = "del"
+	commandScope = "scope"
 	commandList  = "list"
 	commandCur   = "cur"
 
-	flagApp        = "app"
 	flagKubeconfig = "kubeconfig"
 )
 
 type options struct {
 	command        string
 	target         string
-	app            string
 	kubeconfigPath string
 }
 
 type executor interface {
 	Apply(context.Context, *k8s.DeployObjects) error
-	Delete(context.Context, string, string) error
+	Delete(context.Context, string) error
 }
 
 func (o *options) Default() error {
-	// app 为空时使用当前激活的环境 app
-	if o.app == "" {
-		switch o.command {
-		case commandUse, commandDel:
-			app, err := env.DefaultApp()
-			if err != nil {
-				return err
-			}
-			o.app = app
-		}
-	}
-
-	o.app = strings.TrimSpace(o.app)
 	o.target = strings.TrimSpace(o.target)
 	o.kubeconfigPath = strings.TrimSpace(o.kubeconfigPath)
+
+	if o.command != commandUse && o.command != commandDel {
+		return nil
+	}
+	if o.target == "" {
+		return nil
+	}
+
+	defaultScope := ""
+	if !env.IsFullEnvName(o.target) {
+		ctx, err := env.LoadDeployContext()
+		if err != nil {
+			return err
+		}
+		defaultScope = ctx.GetDefaultScope()
+	}
+
+	fullEnvName, err := env.NewFullEnvName(defaultScope, o.target)
+	if err != nil {
+		return err
+	}
+	o.target = fullEnvName.String()
 
 	return nil
 }
@@ -66,14 +76,6 @@ type flagSpec struct {
 }
 
 var flagSpecs = map[string]flagSpec{
-	flagApp: {
-		name:         flagApp,
-		defaultValue: "",
-		usage:        "application name",
-		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
-			fs.StringVar(&opts.app, spec.name, spec.defaultValue, spec.usage)
-		},
-	},
 	flagKubeconfig: {
 		name:         flagKubeconfig,
 		defaultValue: "/var/snap/microk8s/current/credentials/client.config",
@@ -85,9 +87,10 @@ var flagSpecs = map[string]flagSpec{
 }
 
 var commandFlagTable = map[string][]string{
-	commandUse:   {flagApp},
+	commandUse:   {},
 	commandApply: {flagKubeconfig},
-	commandDel:   {flagApp, flagKubeconfig},
+	commandDel:   {flagKubeconfig},
+	commandScope: {},
 	commandList:  {},
 	commandCur:   {},
 }
@@ -104,6 +107,7 @@ var commandExecTable = map[string]commandExecFunc{
 	commandUse:   switchEnvironment,
 	commandApply: deployAndActivate,
 	commandDel:   deleteEnvironment,
+	commandScope: scopeCommand,
 	commandList:  listEnvironments,
 	commandCur:   showCurrentEnvironment,
 }
@@ -112,6 +116,7 @@ var commandValidatorTable = map[string]commandValidatorFunc{
 	commandUse:   validateUseOptions,
 	commandApply: validateDeployOptions,
 	commandDel:   validateDelOptions,
+	commandScope: validateScopeOptions,
 	commandList:  validateListOptions,
 	commandCur:   validateCurOptions,
 }
@@ -138,10 +143,6 @@ func run(args []string) error {
 		return err
 	}
 
-	if err := opts.Default(); err != nil {
-		return err
-	}
-
 	exec, ok := commandExecTable[opts.command]
 	if !ok {
 		return fmt.Errorf("未知命令: %s", opts.command)
@@ -152,7 +153,7 @@ func run(args []string) error {
 
 func parseOptions(args []string) (*options, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("必须提供命令：%s、%s、%s、%s 或 %s", commandUse, commandApply, commandDel, commandList, commandCur)
+		return nil, fmt.Errorf("必须提供命令：%s、%s、%s、%s、%s 或 %s", commandUse, commandApply, commandDel, commandScope, commandList, commandCur)
 	}
 
 	fs, opts, err := newCommandFlagSet(args[0])
@@ -167,6 +168,10 @@ func parseOptions(args []string) (*options, error) {
 	positionArgs := fs.Args()
 	if len(positionArgs) > 0 {
 		opts.target = positionArgs[0]
+	}
+
+	if err := opts.Default(); err != nil {
+		return nil, err
 	}
 
 	if err := validateOptions(opts); err != nil {
@@ -216,9 +221,6 @@ func validateDeployOptions(opts *options) error {
 	if opts.target == "" {
 		return fmt.Errorf("%s requires deploy.yaml path", commandApply)
 	}
-	if opts.app != "" {
-		return fmt.Errorf("%s does not support --%s", commandApply, flagApp)
-	}
 	return nil
 }
 
@@ -227,6 +229,13 @@ func validateDelOptions(opts *options) error {
 		return fmt.Errorf("%s requires env name", commandDel)
 	}
 	return nil
+}
+
+func validateScopeOptions(opts *options) error {
+	if opts.target == "" {
+		return nil
+	}
+	return env.ValidateScope(opts.target)
 }
 
 func validateListOptions(opts *options) error {
@@ -261,9 +270,8 @@ func newExecutor(opts *options) (executor, error) {
 }
 
 func deployAndActivate(opts *options) error {
-	active, err := env.Current()
-	if err != nil {
-		return fmt.Errorf("%s 需要当前已激活环境，请先执行 `%s <env>`", commandApply, commandUse)
+	if err := env.LazyInit(); err != nil {
+		return err
 	}
 
 	deployConfig, err := parseDeployConfig(opts.target)
@@ -271,7 +279,28 @@ func deployAndActivate(opts *options) error {
 		return err
 	}
 
-	if err := active.Update(deployConfig); err != nil {
+	if err := env.ValidateFullEnvName(deployConfig.Name); err != nil {
+		return err
+	}
+
+	fullEnvName := env.FullEnvName(deployConfig.Name)
+	deployEnv, err := env.Get(fullEnvName)
+	if err != nil {
+		if !errors.Is(err, env.ErrNotFound) && !os.IsNotExist(err) {
+			return err
+		}
+
+		if err := os.MkdirAll(filepath.Join(workspace.MustRoot(), ".env", "profile"), os.ModePerm); err != nil {
+			return err
+		}
+
+		deployEnv, err = env.New(fullEnvName)
+		if err != nil {
+			deployEnv = &env.DeployEnv{Profile: env.Profile{Name: fullEnvName, UpdatedAt: time.Now()}}
+		}
+	}
+
+	if err := deployEnv.Update(deployConfig); err != nil {
 		return fmt.Errorf("更新环境配置失败: %w", err)
 	}
 
@@ -280,26 +309,31 @@ func deployAndActivate(opts *options) error {
 		return err
 	}
 
-	if err := active.Deploy(context.Background(), exec); err != nil {
+	if err := deployEnv.Deploy(context.Background(), exec); err != nil {
 		return fmt.Errorf("部署环境失败: %w", err)
 	}
 
-	if err := active.Active(); err != nil {
+	if err := deployEnv.Active(); err != nil {
 		return fmt.Errorf("激活环境失败: %w", err)
 	}
 
-	fmt.Printf("环境 %s/%s 已部署\n", active.Name, active.App)
+	fmt.Printf("环境 %s 已部署\n", deployEnv.Name)
 	return nil
 }
 
 func switchEnvironment(opts *options) error {
-	deployEnv, err := env.Get(opts.target, opts.app)
+	if err := env.ValidateFullEnvName(opts.target); err != nil {
+		return err
+	}
+	fullEnvName := env.FullEnvName(opts.target)
+
+	deployEnv, err := env.Get(fullEnvName)
 	if err != nil {
 		if !errors.Is(err, env.ErrNotFound) {
 			return err
 		}
 
-		deployEnv, err = env.New(opts.target, opts.app)
+		deployEnv, err = env.New(fullEnvName)
 		if err != nil {
 			return fmt.Errorf("创建环境失败: %w", err)
 		}
@@ -309,12 +343,17 @@ func switchEnvironment(opts *options) error {
 		return err
 	}
 
-	fmt.Printf("已切换到环境 %s/%s\n", opts.target, opts.app)
+	fmt.Printf("已切换到环境 %s\n", fullEnvName)
 	return nil
 }
 
 func deleteEnvironment(opts *options) error {
-	deployEnv, err := env.Get(opts.target, opts.app)
+	if err := env.ValidateFullEnvName(opts.target); err != nil {
+		return err
+	}
+	fullEnvName := env.FullEnvName(opts.target)
+
+	deployEnv, err := env.Get(fullEnvName)
 	if err != nil {
 		return err
 	}
@@ -328,7 +367,36 @@ func deleteEnvironment(opts *options) error {
 		return err
 	}
 
-	fmt.Printf("环境 %s/%s 已删除\n", opts.target, opts.app)
+	fmt.Printf("环境 %s 已删除\n", fullEnvName)
+	return nil
+}
+
+func scopeCommand(opts *options) error {
+	ctx, err := env.LoadDeployContext()
+	if err != nil {
+		return err
+	}
+
+	if opts.target == "" {
+		scope := strings.TrimSpace(ctx.GetDefaultScope())
+		if scope == "" {
+			fmt.Println("not set")
+			return nil
+		}
+
+		fmt.Println(scope)
+		return nil
+	}
+
+	if err := ctx.SetDefaultScope(opts.target); err != nil {
+		return err
+	}
+
+	if err := ctx.Save(); err != nil {
+		return err
+	}
+
+	fmt.Printf("默认 scope 已设置为 %s\n", opts.target)
 	return nil
 }
 
@@ -344,7 +412,7 @@ func listEnvironments(_ *options) error {
 	}
 
 	for _, item := range envs {
-		fmt.Printf("%s/%s\n", item.App, item.Name)
+		fmt.Printf("%s\n", item.Name)
 	}
 
 	return nil
@@ -356,7 +424,7 @@ func showCurrentEnvironment(_ *options) error {
 		return err
 	}
 
-	fmt.Println(active)
+	fmt.Println(active.Name)
 	return nil
 }
 
@@ -378,9 +446,10 @@ func usageText() string {
 		"Usage: deploy <command> [args]",
 		"",
 		"Commands:",
-		"  use <env> [--app=app]   创建或切换环境",
+		"  use <env>               创建或切换环境",
 		"  apply [--kubeconfig=path] <deploy.yaml>   读取部署配置并执行部署",
-		"  del [--app=app] [--kubeconfig=path] <env> 删除环境",
+		"  del [--kubeconfig=path] <env> 删除环境",
+		"  scope [scope]           查看或设置默认 scope",
 		"  list                    列出环境",
 		"  cur                     查看当前激活环境",
 	}, "\n") + "\n"

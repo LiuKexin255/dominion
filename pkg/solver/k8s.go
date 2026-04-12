@@ -21,8 +21,6 @@ const (
 	ServiceAppLabelKey = "app.kubernetes.io/name"
 	// ServiceComponentLabelKey is the standard Kubernetes component label.
 	ServiceComponentLabelKey = "app.kubernetes.io/component"
-	// ServiceDominionAppLabelKey stores the dominion app name.
-	ServiceDominionAppLabelKey = "dominion.io/app"
 	// ServiceDominionEnvironmentLabelKey stores the dominion environment name.
 	ServiceDominionEnvironmentLabelKey = "dominion.io/environment"
 )
@@ -67,7 +65,6 @@ func buildServiceSelector(target *Target, env *environment) string {
 	return labels.SelectorFromSet(labels.Set{
 		ServiceAppLabelKey:                 target.App,
 		ServiceComponentLabelKey:           target.Service,
-		ServiceDominionAppLabelKey:         env.App,
 		ServiceDominionEnvironmentLabelKey: env.Name,
 	}).String()
 }

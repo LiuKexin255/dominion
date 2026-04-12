@@ -5,21 +5,15 @@
   "description": "部署环境定义",
   "additionalProperties": false,
   "required": [
-    "template",
-    "app",
+    "name",
     "desc",
     "services"
   ],
   "properties": {
-    "template": {
+    "name": {
       "type": "string",
-      "minLength": 1,
-      "description": "部署配置模板名称"
-    },
-    "app": {
-      "type": "string",
-      "minLength": 1,
-      "description": "环境所属应用名，同一个应用下环境名不能重复"
+      "pattern": "^[a-z][a-z0-9]{0,7}\\.[a-z][a-z0-9]{0,7}$",
+      "description": "部署环境名称"
     },
     "desc": {
       "type": "string",
@@ -63,7 +57,8 @@
             "required": [
               "resource",
               "profile",
-              "name"
+              "name",
+              "app"
             ],
             "properties": {
               "resource": {
@@ -81,6 +76,11 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "基础设施实例名称"
+              },
+              "app": {
+                "type": "string",
+                "minLength": 1,
+                "description": "基础设施所属应用名"
               },
               "persistence": {
                 "type": "object",

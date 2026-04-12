@@ -17,7 +17,7 @@ type DeployObjects struct {
 }
 
 // NewDeployObjects 根据部署配置、环境归属 app 和服务配置构建 Kubernetes 部署对象。
-func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig, envName string, dominionApp string, resolvedImages map[string]string) (*DeployObjects, error) {
+func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*config.ServiceConfig, envName string, resolvedImages map[string]string) (*DeployObjects, error) {
 	// 构建 URI -> ServiceConfig 的 map
 	serviceConfigMap := make(map[string]*config.ServiceConfig)
 	for _, sc := range serviceConfigs {
@@ -49,7 +49,7 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 				return nil, fmt.Errorf("暂不支持的 infra resource: %s", strings.TrimSpace(deployService.Infra.Resource))
 			}
 
-			mongoWorkload, err := newMongoDBWorkload(deployService.Infra, envName, dominionApp)
+			mongoWorkload, err := newMongoDBWorkload(deployService.Infra, envName)
 			if err != nil {
 				return nil, fmt.Errorf("创建 mongodb workload 失败: %w", err)
 			}
@@ -84,7 +84,7 @@ func NewDeployObjects(deployConfig *config.DeployConfig, serviceConfigs []*confi
 			return nil, fmt.Errorf("artifact target %s missing resolved image", artifactTarget)
 		}
 
-		deployment, err := newDeploymentWorkload(serviceConfig, artifact, envName, dominionApp, imageRef)
+		deployment, err := newDeploymentWorkload(serviceConfig, artifact, envName, imageRef)
 		if err != nil {
 			return nil, fmt.Errorf("创建 deployment workload 失败: %w", err)
 		}
