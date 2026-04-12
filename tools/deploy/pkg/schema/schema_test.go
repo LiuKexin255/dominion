@@ -11,8 +11,7 @@ func TestValidateDeployYAML(t *testing.T) {
 	}{
 		{
 			name: "valid deploy yaml",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - artifact:
@@ -22,22 +21,21 @@ services:
 		},
 		{
 			name: "valid infra deploy yaml",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - infra:
-      resource: mongo
+      resource: mongodb
       profile: development
       name: grpc-hello-world-mongo
+      app: grpc-hello-world
       persistence:
         enabled: true
 `),
 		},
 		{
 			name: "invalid deploy yaml",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - artifact:
@@ -46,9 +44,41 @@ services:
 			wantErr: true,
 		},
 		{
+			name: "invalid deploy yaml missing dot in name",
+			raw: []byte(`name: grpcdev
+desc: 开发环境
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid deploy yaml uppercase name",
+			raw: []byte(`name: Grpc.dev
+desc: 开发环境
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid deploy yaml too long name",
+			raw: []byte(`name: grpctoolong.dev
+desc: 开发环境
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
 			name: "infra deploy yaml missing required fields",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - infra:
@@ -60,14 +90,14 @@ services:
 		},
 		{
 			name: "infra deploy yaml rejects unknown resource",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - infra:
       resource: redis
       profile: development
       name: grpc-hello-world-redis
+      app: grpc-hello-world
       persistence:
         enabled: true
 `),
@@ -75,8 +105,7 @@ services:
 		},
 		{
 			name: "infra and artifact are mutually exclusive",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - artifact:
@@ -86,6 +115,7 @@ services:
       resource: mongo
       profile: development
       name: grpc-hello-world-mongo
+      app: grpc-hello-world
       persistence:
         enabled: true
 `),
@@ -93,8 +123,7 @@ services:
 		},
 		{
 			name: "deploy yaml rejects tls fields",
-			raw: []byte(`template: deploy
-app: grpc-hello-world
+			raw: []byte(`name: grpc.dev
 desc: 开发环境
 services:
   - artifact:

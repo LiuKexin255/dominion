@@ -21,10 +21,9 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.yaml"),
 			want: &DeployConfig{
-				Template: "deploy",
-				App:      "grpc-hello-world",
-				Desc:     "开发环境",
-				URI:      "//testdata/deploy.yaml",
+				Name: "grpc.dev",
+				Desc: "开发环境",
+				URI:  "//testdata/deploy.yaml",
 				Services: []*DeployService{
 					{
 						Artifact: DeployArtifact{
@@ -57,15 +56,15 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取 infra 部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.infra.yaml"),
 			want: &DeployConfig{
-				Template: "deploy",
-				App:      "grpc-hello-world",
-				Desc:     "开发环境",
-				URI:      "//testdata/deploy.infra.yaml",
+				Name: "grpc.dev",
+				Desc: "开发环境",
+				URI:  "//testdata/deploy.infra.yaml",
 				Services: []*DeployService{{
 					Infra: DeployInfra{
-						Resource: "mongo",
+						Resource: "mongodb",
 						Profile:  "development",
 						Name:     "grpc-hello-world-mongo",
+						App:      "grpc-hello-world",
 						Persistence: DeployInfraPersistence{
 							Enabled: true,
 						},
