@@ -1,0 +1,14 @@
+name: deploy.iface
+desc: "deploy service environment"
+services:
+  - artifact:
+      path: //projects/infra/deploy/service.yaml
+      name: service
+    http:
+      hostnames:
+        - infra.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1/deploy

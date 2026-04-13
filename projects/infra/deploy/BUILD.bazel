@@ -1,6 +1,9 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@tar.bzl", "mutate", "tar")
 
 proto_library(
     name = "deploy_proto",
@@ -37,7 +40,90 @@ go_proto_library(
 
 go_library(
     name = "deploy",
+    srcs = [
+        "handler.go",
+        "reconciler.go",
+    ],
     embed = [":deploy_go_proto"],
     importpath = "dominion/projects/infra/deploy",
     visibility = ["//visibility:public"],
+    deps = [
+        "//projects/infra/deploy/domain",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    srcs = ["main.go"],
+    gotags = ["cmd"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":deploy",
+        "//pkg/grpc",
+        "//projects/infra/deploy/storage",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//reflection",
+    ],
+)
+
+tar(
+    name = "deploy_layer",
+    srcs = [
+        ":cmd",
+    ],
+    mutate = mutate(strip_prefix = package_name() + "/cmd_"),
+)
+
+oci_image(
+    name = "deploy_image",
+    base = "@distroless_base",
+    entrypoint = ["/cmd"],
+    tars = [":deploy_layer"],
+)
+
+expand_template(
+    name = "stamped",
+    out = "_stamped.tags.txt",
+    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
+    template = ["dev"],
+)
+
+oci_push(
+    name = "deploy_image_push",
+    image = ":deploy_image",
+    remote_tags = ":stamped",
+    repository = "registry.liukexin.com/projects/infra/deploy",
+)
+
+go_test(
+    name = "deploy_test",
+    size = "small",
+    srcs = [
+        "handler_test.go",
+        "integration_test.go",
+    ],
+    embed = [":deploy"],
+    deps = [
+        "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/storage",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+    ],
+)
+
+go_test(
+    name = "integration_test",
+    size = "medium",
+    srcs = ["integration_test.go"],
+    env = {
+        "SUT_HOST_URL": "https://infra.liukexin.com",
+    },
+    tags = ["manual"],
 )

@@ -8,12 +8,12 @@ import (
 
 const (
 	environmentNamePattern = `^[a-z][a-z0-9]{0,7}$`
-	environmentNameFormat  = "deploy/%s/environments/%s"
+	environmentNameFormat  = "deploy/scopes/%s/environments/%s"
 )
 
 var (
 	environmentNameRegexp        = regexp.MustCompile(environmentNamePattern)
-	environmentResourceNameRegex = regexp.MustCompile(`^deploy/([a-z][a-z0-9]{0,7})/environments/([a-z][a-z0-9]{0,7})$`)
+	environmentResourceNameRegex = regexp.MustCompile(`^deploy/scopes/([a-z][a-z0-9]{0,7})/environments/([a-z][a-z0-9]{0,7})$`)
 )
 
 // EnvironmentName represents the canonical resource name for an environment.
@@ -22,7 +22,7 @@ type EnvironmentName struct {
 	envName string
 }
 
-// ParseResourceName parses deploy/{scope}/environments/{env_name} into an EnvironmentName.
+// ParseResourceName parses deploy/scopes/{scope}/environments/{env_name} into an EnvironmentName.
 func ParseResourceName(name string) (EnvironmentName, error) {
 	matches := environmentResourceNameRegex.FindStringSubmatch(name)
 	if len(matches) != 3 {
@@ -44,7 +44,7 @@ func NewEnvironmentName(scope, envName string) (EnvironmentName, error) {
 	}, nil
 }
 
-// String returns the canonical resource name deploy/{scope}/environments/{env_name}.
+// String returns the canonical resource name deploy/scopes/{scope}/environments/{env_name}.
 func (n EnvironmentName) String() string {
 	return fmt.Sprintf(environmentNameFormat, n.scope, n.envName)
 }

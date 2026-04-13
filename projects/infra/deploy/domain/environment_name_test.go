@@ -11,16 +11,16 @@ func TestParseResourceName(t *testing.T) {
 	}{
 		{
 			name:  "valid resource name",
-			input: "deploy/scope1/environments/dev",
+			input: "deploy/scopes/scope1/environments/dev",
 			want: EnvironmentName{
 				scope:   "scope1",
 				envName: "dev",
 			},
 		},
 		{name: "empty", input: "", wantErr: true},
-		{name: "wrong format", input: "deploy/scope1/dev", wantErr: true},
-		{name: "invalid characters", input: "deploy/Scope1/environments/dev", wantErr: true},
-		{name: "too long", input: "deploy/scope1234/environments/dev", wantErr: true},
+		{name: "wrong format", input: "deploy/scopes/scope1/dev", wantErr: true},
+		{name: "invalid characters", input: "deploy/scopes/Scope1/environments/dev", wantErr: true},
+		{name: "too long", input: "deploy/scopes/scope1234/environments/dev", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -97,8 +97,8 @@ func TestNewEnvironmentName(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("NewEnvironmentName(%q, %q) = %#v, want %#v", scope, envName, got, tt.want)
 			}
-			if got.String() != "deploy/scope1/environments/dev" {
-				t.Fatalf("String() = %q, want %q", got.String(), "deploy/scope1/environments/dev")
+			if got.String() != "deploy/scopes/scope1/environments/dev" {
+				t.Fatalf("String() = %q, want %q", got.String(), "deploy/scopes/scope1/environments/dev")
 			}
 			if got.Scope() != scope {
 				t.Fatalf("Scope() = %q, want %q", got.Scope(), scope)

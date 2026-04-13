@@ -23,7 +23,7 @@ service DeployService {
   // including its current observed status.
   rpc GetEnvironment(GetEnvironmentRequest) returns (Environment) {
     option (google.api.http) = {
-      get: "/v1/{name=deploy/*/environments/*}"
+      get: "/v1/{name=deploy/scopes/*/environments/*}"
     };
 
     option (google.api.method_signature) = "name";
@@ -32,7 +32,7 @@ service DeployService {
   // ListEnvironments lists Environment resources under a scope.
   rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse) {
     option (google.api.http) = {
-      get: "/v1/{parent=deploy/*}/environments"
+      get: "/v1/{parent=deploy/scopes/*}/environments"
     };
 
     option (google.api.method_signature) = "parent";
@@ -45,7 +45,7 @@ service DeployService {
   // persisted. The actual deployment is performed asynchronously.
   rpc CreateEnvironment(CreateEnvironmentRequest) returns (Environment) {
     option (google.api.http) = {
-      post: "/v1/{parent=deploy/*}/environments"
+      post: "/v1/{parent=deploy/scopes/*}/environments"
       body: "*"
     };
 
@@ -58,7 +58,7 @@ service DeployService {
   // persisted. The server reconciles the updated state asynchronously.
   rpc UpdateEnvironment(UpdateEnvironmentRequest) returns (Environment) {
     option (google.api.http) = {
-      patch: "/v1/{environment.name=deploy/*/environments/*}"
+      patch: "/v1/{environment.name=deploy/scopes/*/environments/*}"
       body: "*"
     };
 
@@ -69,7 +69,7 @@ service DeployService {
   // the deployment resources owned by that environment.
   rpc DeleteEnvironment(DeleteEnvironmentRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/v1/{name=deploy/*/environments/*}"
+      delete: "/v1/{name=deploy/scopes/*/environments/*}"
     };
 
     option (google.api.method_signature) = "name";
@@ -79,7 +79,7 @@ service DeployService {
 message Environment {
   option (google.api.resource) = {
     type: "infra.liukexin.com/deploy/Environment"
-    pattern: "deploy/{scope}/environments/{env_name}"
+    pattern: "deploy/scopes/{scope}/environments/{env_name}"
     plural: "environments"
     singular: "environment"
   };

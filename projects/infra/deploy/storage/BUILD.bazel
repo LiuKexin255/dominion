@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "storage",
+    srcs = ["memory.go"],
+    importpath = "dominion/projects/infra/deploy/storage",
+    visibility = ["//visibility:public"],
+    deps = ["//projects/infra/deploy/domain"],
+)
+
+go_test(
+    name = "storage_test",
+    size = "small",
+    srcs = ["memory_test.go"],
+    embed = [":storage"],
+    deps = ["//projects/infra/deploy/domain"],
+)

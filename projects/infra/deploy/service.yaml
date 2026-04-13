@@ -1,0 +1,13 @@
+name: service
+app: deploy
+desc: deploy service
+artifacts:
+  - name: service
+    type: deployment
+    target: :deploy_image
+    tls: false
+    ports:
+      - name: grpc
+        port: 8080
+      - name: http
+        port: 8081
