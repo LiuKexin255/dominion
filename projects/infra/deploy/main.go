@@ -17,7 +17,7 @@ import (
 
 	"dominion/pkg/grpc"
 	"dominion/pkg/mongo"
-	deploy "dominion/projects/infra/deploy"
+	"dominion/projects/infra/deploy"
 	"dominion/projects/infra/deploy/domain"
 	"dominion/projects/infra/deploy/storage"
 
