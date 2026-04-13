@@ -1,0 +1,490 @@
+package domain
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestNewEnvironment(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		desiredState DesiredState
+		wantErr      error
+	}{
+		{
+			name: "valid desired state",
+			desiredState: DesiredState{
+				Services: []ServiceSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v1",
+					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Replicas: 1,
+				}},
+				Infras: []InfraSpec{{
+					Resource: "redis",
+					Name:     "cache",
+				}},
+				HTTPRoutes: []HTTPRouteSpec{{
+					Hostnames: []string{"example.com"},
+					Rules: []HTTPRouteRule{{
+						Backend: "api",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				}},
+			},
+		},
+		{
+			name: "invalid nested service spec",
+			desiredState: DesiredState{
+				Services: []ServiceSpec{{
+					Name:  "api",
+					App:   "demo",
+					Ports: []ServicePortSpec{{Name: "http", Port: 8080}},
+				}},
+			},
+			wantErr: ErrInvalidSpec,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			desiredState := tt.desiredState
+
+			// when
+			env, err := NewEnvironment(name, "demo environment", desiredState)
+
+			// then
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("NewEnvironment() error = %v, want %v", err, tt.wantErr)
+				}
+				if env != nil {
+					t.Fatalf("NewEnvironment() env = %#v, want nil", env)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("NewEnvironment() unexpected error: %v", err)
+			}
+			if env.status.State != StatePending {
+				t.Fatalf("status.State = %v, want %v", env.status.State, StatePending)
+			}
+			if env.createTime.IsZero() {
+				t.Fatalf("createTime should be set")
+			}
+			if env.updateTime.IsZero() {
+				t.Fatalf("updateTime should be set")
+			}
+			if env.createTime != env.updateTime {
+				t.Fatalf("createTime = %v, updateTime = %v, want equal", env.createTime, env.updateTime)
+			}
+			if env.description != "demo environment" {
+				t.Fatalf("description = %q, want %q", env.description, "demo environment")
+			}
+		})
+	}
+}
+
+func TestEnvironment_UpdateDesiredState(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() unexpected error: %v", err)
+	}
+	if err := env.MarkReady(); err != nil {
+		t.Fatalf("MarkReady() unexpected error: %v", err)
+	}
+	previousLastSuccessTime := env.status.LastSuccessTime
+	newState := DesiredState{
+		Services: []ServiceSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v2",
+			Ports:    []ServicePortSpec{{Name: "http", Port: 9090}},
+			Replicas: 2,
+		}},
+		HTTPRoutes: []HTTPRouteSpec{{
+			Hostnames: []string{"example.com"},
+			Rules: []HTTPRouteRule{{
+				Backend: "api",
+				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/v2"},
+			}},
+		}},
+	}
+
+	// when
+	err := env.UpdateDesiredState(newState)
+
+	// then
+	if err != nil {
+		t.Fatalf("UpdateDesiredState() unexpected error: %v", err)
+	}
+	if env.status.State != StateReconciling {
+		t.Fatalf("status.State = %v, want %v", env.status.State, StateReconciling)
+	}
+	if env.status.LastReconcileTime.IsZero() {
+		t.Fatalf("LastReconcileTime should be set")
+	}
+	if env.status.LastSuccessTime != previousLastSuccessTime {
+		t.Fatalf("LastSuccessTime = %v, want %v", env.status.LastSuccessTime, previousLastSuccessTime)
+	}
+	if got := env.desiredState.Services[0].Image; got != "repo/demo:v2" {
+		t.Fatalf("desiredState.Services[0].Image = %q, want %q", got, "repo/demo:v2")
+	}
+}
+
+func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkDeleting(); err != nil {
+		t.Fatalf("MarkDeleting() unexpected error: %v", err)
+	}
+	newState := DesiredState{
+		Services: []ServiceSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v2",
+			Ports:    []ServicePortSpec{{Name: "http", Port: 9090}},
+			Replicas: 2,
+		}},
+	}
+
+	// when
+	err := env.UpdateDesiredState(newState)
+
+	// then
+	if err != ErrInvalidState {
+		t.Fatalf("UpdateDesiredState() error = %v, want %v", err, ErrInvalidState)
+	}
+	if env.status.State != StateDeleting {
+		t.Fatalf("status.State = %v, want %v", env.status.State, StateDeleting)
+	}
+}
+
+func TestEnvironment_MarkReconciling(t *testing.T) {
+	tests := []struct {
+		name      string
+		prepare   func(*testing.T, *Environment)
+		wantErr   error
+		wantState EnvironmentState
+	}{
+		{name: "pending to reconciling", wantState: StateReconciling},
+		{
+			name: "deleting to reconciling is invalid",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkDeleting(); err != nil {
+					t.Fatalf("MarkDeleting() unexpected error: %v", err)
+				}
+			},
+			wantErr:   ErrInvalidState,
+			wantState: StateDeleting,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkReconciling()
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkReconciling() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkReconciling() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if tt.wantErr == nil && env.status.LastReconcileTime.IsZero() {
+				t.Fatalf("LastReconcileTime should be set")
+			}
+		})
+	}
+}
+
+func TestEnvironment_MarkReady(t *testing.T) {
+	tests := []struct {
+		name      string
+		prepare   func(*testing.T, *Environment)
+		wantErr   error
+		wantState EnvironmentState
+	}{
+		{
+			name: "reconciling to ready",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+			},
+			wantState: StateReady,
+		},
+		{name: "pending to ready is invalid", wantErr: ErrInvalidState, wantState: StatePending},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkReady()
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkReady() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkReady() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if tt.wantErr == nil && env.status.LastSuccessTime.IsZero() {
+				t.Fatalf("LastSuccessTime should be set")
+			}
+		})
+	}
+}
+
+func TestEnvironment_MarkFailed(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(*testing.T, *Environment)
+		message     string
+		wantErr     error
+		wantState   EnvironmentState
+		wantMessage string
+	}{
+		{
+			name: "reconciling to failed",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+			},
+			message:     "apply failed",
+			wantState:   StateFailed,
+			wantMessage: "apply failed",
+		},
+		{
+			name:        "pending to failed is invalid",
+			message:     "apply failed",
+			wantErr:     ErrInvalidState,
+			wantState:   StatePending,
+			wantMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkFailed(tt.message)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkFailed() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkFailed() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if env.status.Message != tt.wantMessage {
+				t.Fatalf("status.Message = %q, want %q", env.status.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestEnvironment_MarkDeleting(t *testing.T) {
+	tests := []struct {
+		name      string
+		prepare   func(*testing.T, *Environment)
+		wantErr   error
+		wantState EnvironmentState
+	}{
+		{name: "pending to deleting", wantState: StateDeleting},
+		{
+			name: "deleting to deleting is invalid",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkDeleting(); err != nil {
+					t.Fatalf("MarkDeleting() unexpected error: %v", err)
+				}
+			},
+			wantErr:   ErrInvalidState,
+			wantState: StateDeleting,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkDeleting()
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkDeleting() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkDeleting() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+		})
+	}
+}
+
+func TestEnvironment_Validate(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		desiredState DesiredState
+		wantErr      error
+		wantContains string
+	}{
+		{
+			name: "backend references existing service",
+			desiredState: DesiredState{
+				Services: []ServiceSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v1",
+					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Replicas: 1,
+				}},
+				HTTPRoutes: []HTTPRouteSpec{{
+					Hostnames: []string{"example.com"},
+					Rules: []HTTPRouteRule{{
+						Backend: "api",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				}},
+			},
+		},
+		{
+			name: "backend reference missing service",
+			desiredState: DesiredState{
+				Services: []ServiceSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v1",
+					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Replicas: 1,
+				}},
+				HTTPRoutes: []HTTPRouteSpec{{
+					Hostnames: []string{"example.com"},
+					Rules: []HTTPRouteRule{{
+						Backend: "worker",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				}},
+			},
+			wantErr:      ErrInvalidSpec,
+			wantContains: `backend "worker" does not reference an existing service`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := &Environment{
+				name:         name,
+				description:  "demo environment",
+				desiredState: cloneDesiredState(tt.desiredState),
+				status: EnvironmentStatus{
+					State: StatePending,
+				},
+			}
+
+			// when
+			err := env.Validate()
+
+			// then
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Validate() error = %v, want %v", err, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantContains) {
+					t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func mustNewEnvironment(t *testing.T) *Environment {
+	t.Helper()
+
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	env, err := NewEnvironment(name, "demo environment", DesiredState{
+		Services: []ServiceSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v1",
+			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+			Replicas: 1,
+		}},
+		HTTPRoutes: []HTTPRouteSpec{{
+			Hostnames: []string{"example.com"},
+			Rules: []HTTPRouteRule{{
+				Backend: "api",
+				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewEnvironment() unexpected error: %v", err)
+	}
+
+	return env
+}

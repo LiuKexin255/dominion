@@ -3,6 +3,7 @@ syntax = "proto3";
 package projects.infra.deploy;
 
 import "google/api/annotations.proto";
+import "google/api/client.proto";
 import "google/api/field_behavior.proto";
 import "google/api/resource.proto";
 import "google/protobuf/empty.proto";

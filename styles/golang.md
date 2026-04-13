@@ -65,6 +65,18 @@ need = toPtr(a)
 
 * 文件名、目录、环境变量等字面量，应当定义常量避免魔术字。
 * 枚举值应当定义自己的类型。
+* 仅在**有需要**时，才对结构体、数组和字典进行深拷贝。不要对无修改影响的对象进行深拷贝。
+
+```golang
+// bad case 
+func foo() []string {
+	var a []string 
+	a = otherFunc() 
+	// deep copy is unnecessary
+	return deepcopy(a)
+}
+
+```
 
 ## 注释
 
