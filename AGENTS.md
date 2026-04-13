@@ -38,7 +38,7 @@
 2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
 2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
-4. 为 `BUILD.bazel` 中的测试 target 设置 `test_args = -test.v`。
+4. 为 `BUILD.bazel` 中的测试 target 设置 `args = -test.v`。
 5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译；**禁止**自己编写 `proto` 和 `grpc stub` 代码。
 
 ##### 格式化与依赖更新
@@ -74,6 +74,9 @@ Golang 代码格式化与依赖更新步骤如下：
 ## 测试
 
 * 单元测试使用 `bazel test` 执行，且随 `bazel build` 一起作为编译验证的一部分。
-* 服务代码需要编写大型测试，先编写测试计划并放到 `testplan` 目录，然后使用 `test-plan` SKILL 执行测试计划。
+* 大型测试用例需要被标记为 `manual`，且测试代码不能与单元测试放进一个 `target`。
+* 服务代码需要进行大型测试。先编写测试计划并放到 `testplan` 目录，然后按计划部署服务、执行测试用例。
 * 为单元测试设置 `size= "small"`；大型测试则根据测试规模设置大小。
 * 更多大型测试信息参阅 `style` 目录。
+
+> FOR `Prometheus`: 使用 `test-plan` SKILL 执行测试计划。

@@ -7,12 +7,25 @@ import (
 	"time"
 )
 
+// EnvironmentSnapshot captures the full persisted state of an environment.
+// It is used to rehydrate existing aggregates from storage without bypassing
+// domain encapsulation.
+type EnvironmentSnapshot struct {
+	Name         EnvironmentName
+	Description  string
+	DesiredState *DesiredState
+	Status       *EnvironmentStatus
+	CreateTime   time.Time
+	UpdateTime   time.Time
+	ETag         string
+}
+
 // Environment is the aggregate root for a deploy environment.
 type Environment struct {
 	name         EnvironmentName
 	description  string
-	desiredState DesiredState
-	status       EnvironmentStatus
+	desiredState *DesiredState
+	status       *EnvironmentStatus
 	createTime   time.Time
 	updateTime   time.Time
 	etag         string
@@ -20,9 +33,9 @@ type Environment struct {
 
 // DesiredState describes the target deployment content of an environment.
 type DesiredState struct {
-	Services   []ServiceSpec
-	Infras     []InfraSpec
-	HTTPRoutes []HTTPRouteSpec
+	Services   []*ServiceSpec
+	Infras     []*InfraSpec
+	HTTPRoutes []*HTTPRouteSpec
 }
 
 // EnvironmentStatus describes the observed reconciliation status.
@@ -34,12 +47,16 @@ type EnvironmentStatus struct {
 }
 
 // NewEnvironment validates and constructs an environment in the pending state.
-func NewEnvironment(name EnvironmentName, description string, desiredState DesiredState) (*Environment, error) {
+func NewEnvironment(name EnvironmentName, description string, desiredState *DesiredState) (*Environment, error) {
+	if desiredState == nil {
+		return nil, ErrInvalidSpec
+	}
+
 	env := &Environment{
 		name:         name,
 		description:  description,
 		desiredState: cloneDesiredState(desiredState),
-		status: EnvironmentStatus{
+		status: &EnvironmentStatus{
 			State: StatePending,
 		},
 	}
@@ -55,6 +72,34 @@ func NewEnvironment(name EnvironmentName, description string, desiredState Desir
 	return env, nil
 }
 
+// RehydrateEnvironment reconstructs an existing environment from persisted
+// state. It is intended for repository implementations loading aggregates from
+// storage rather than creating brand-new environments.
+func RehydrateEnvironment(snapshot EnvironmentSnapshot) (*Environment, error) {
+	if snapshot.DesiredState == nil {
+		return nil, ErrInvalidSpec
+	}
+	if snapshot.Status == nil {
+		return nil, ErrInvalidState
+	}
+
+	env := &Environment{
+		name:         snapshot.Name,
+		description:  snapshot.Description,
+		desiredState: cloneDesiredState(snapshot.DesiredState),
+		status:       cloneStatus(snapshot.Status),
+		createTime:   snapshot.CreateTime,
+		updateTime:   snapshot.UpdateTime,
+		etag:         snapshot.ETag,
+	}
+
+	if err := env.Validate(); err != nil {
+		return nil, err
+	}
+
+	return env, nil
+}
+
 // Name returns the canonical resource name of the environment.
 func (e *Environment) Name() EnvironmentName {
 	return e.name
@@ -66,12 +111,12 @@ func (e *Environment) Description() string {
 }
 
 // DesiredState returns a copy of the desired state.
-func (e *Environment) DesiredState() DesiredState {
+func (e *Environment) DesiredState() *DesiredState {
 	return cloneDesiredState(e.desiredState)
 }
 
-// Status returns a copy of the observed status.
-func (e *Environment) Status() EnvironmentStatus {
+// Status returns the observed status.
+func (e *Environment) Status() *EnvironmentStatus {
 	return e.status
 }
 
@@ -91,7 +136,7 @@ func (e *Environment) ETag() string {
 }
 
 // UpdateDesiredState replaces the desired state and marks the environment reconciling.
-func (e *Environment) UpdateDesiredState(newState DesiredState) error {
+func (e *Environment) UpdateDesiredState(newState *DesiredState) error {
 	if e.status.State == StateDeleting {
 		return ErrInvalidState
 	}
@@ -153,8 +198,7 @@ func (e *Environment) Validate() error {
 	var errs []string
 
 	serviceNames := make(map[string]struct{})
-	for i := range e.desiredState.Services {
-		svc := &e.desiredState.Services[i]
+	for i, svc := range e.desiredState.Services {
 		if err := svc.Validate(); err != nil {
 			errs = append(errs, fmt.Sprintf("services[%d]: %s", i, err.Error()))
 			continue
@@ -162,15 +206,13 @@ func (e *Environment) Validate() error {
 		serviceNames[svc.Name] = struct{}{}
 	}
 
-	for i := range e.desiredState.Infras {
-		infra := &e.desiredState.Infras[i]
+	for i, infra := range e.desiredState.Infras {
 		if err := infra.Validate(); err != nil {
 			errs = append(errs, fmt.Sprintf("infras[%d]: %s", i, err.Error()))
 		}
 	}
 
-	for i := range e.desiredState.HTTPRoutes {
-		route := &e.desiredState.HTTPRoutes[i]
+	for i, route := range e.desiredState.HTTPRoutes {
 		if err := route.Validate(); err != nil {
 			errs = append(errs, fmt.Sprintf("http_routes[%d]: %s", i, err.Error()))
 			continue
@@ -205,52 +247,73 @@ func (e *Environment) transitionTo(next EnvironmentState) error {
 	return nil
 }
 
-func cloneDesiredState(state DesiredState) DesiredState {
-	return DesiredState{
+func cloneDesiredState(state *DesiredState) *DesiredState {
+	if state == nil {
+		return nil
+	}
+
+	return &DesiredState{
 		Services:   cloneServices(state.Services),
 		Infras:     cloneInfras(state.Infras),
 		HTTPRoutes: cloneHTTPRoutes(state.HTTPRoutes),
 	}
 }
 
-func cloneServices(services []ServiceSpec) []ServiceSpec {
+func cloneStatus(status *EnvironmentStatus) *EnvironmentStatus {
+	if status == nil {
+		return nil
+	}
+
+	cloned := *status
+	return &cloned
+}
+
+func cloneServices(services []*ServiceSpec) []*ServiceSpec {
 	if len(services) == 0 {
 		return nil
 	}
 
-	cloned := make([]ServiceSpec, len(services))
+	cloned := make([]*ServiceSpec, len(services))
 	for i, service := range services {
-		cloned[i] = service
+		spec := *service
 		if len(service.Ports) > 0 {
-			cloned[i].Ports = append([]ServicePortSpec(nil), service.Ports...)
+			spec.Ports = append([]ServicePortSpec(nil), service.Ports...)
 		}
+		cloned[i] = &spec
 	}
 
 	return cloned
 }
 
-func cloneInfras(infras []InfraSpec) []InfraSpec {
+func cloneInfras(infras []*InfraSpec) []*InfraSpec {
 	if len(infras) == 0 {
 		return nil
 	}
 
-	return append([]InfraSpec(nil), infras...)
+	cloned := make([]*InfraSpec, len(infras))
+	for i, infra := range infras {
+		cp := *infra
+		cloned[i] = &cp
+	}
+
+	return cloned
 }
 
-func cloneHTTPRoutes(routes []HTTPRouteSpec) []HTTPRouteSpec {
+func cloneHTTPRoutes(routes []*HTTPRouteSpec) []*HTTPRouteSpec {
 	if len(routes) == 0 {
 		return nil
 	}
 
-	cloned := make([]HTTPRouteSpec, len(routes))
+	cloned := make([]*HTTPRouteSpec, len(routes))
 	for i, route := range routes {
-		cloned[i] = route
+		spec := *route
 		if len(route.Hostnames) > 0 {
-			cloned[i].Hostnames = append([]string(nil), route.Hostnames...)
+			spec.Hostnames = append([]string(nil), route.Hostnames...)
 		}
 		if len(route.Rules) > 0 {
-			cloned[i].Rules = append([]HTTPRouteRule(nil), route.Rules...)
+			spec.Rules = append([]HTTPRouteRule(nil), route.Rules...)
 		}
+		cloned[i] = &spec
 	}
 
 	return cloned

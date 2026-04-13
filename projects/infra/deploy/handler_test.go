@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
-	"dominion/projects/infra/deploy/storage"
-
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -42,12 +40,7 @@ func TestHandler_GetEnvironment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			repo := storage.NewMemoryRepository()
-			for _, env := range tt.seed {
-				if err := repo.Save(ctx, env); err != nil {
-					t.Fatalf("repo.Save() error = %v", err)
-				}
-			}
+			repo := newFakeRepository(tt.seed...)
 			handler := NewHandler(repo, NewReconciler(repo))
 
 			// when
@@ -117,12 +110,7 @@ func TestHandler_ListEnvironments(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			repo := storage.NewMemoryRepository()
-			for _, env := range tt.seed {
-				if err := repo.Save(ctx, env); err != nil {
-					t.Fatalf("repo.Save() error = %v", err)
-				}
-			}
+			repo := newFakeRepository(tt.seed...)
 			handler := NewHandler(repo, NewReconciler(repo))
 
 			// when
@@ -154,6 +142,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 	tests := []struct {
 		name      string
 		seed      []*domain.Environment
+		repoSetup func(*fakeRepository)
 		request   *CreateEnvironmentRequest
 		wantState EnvironmentState
 		wantCode  codes.Code
@@ -196,16 +185,26 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			},
 			wantCode: codes.InvalidArgument,
 		},
+		{
+			name: "repository save error",
+			repoSetup: func(repo *fakeRepository) {
+				repo.saveErr = errors.New("save failed")
+			},
+			request: &CreateEnvironmentRequest{
+				Parent:      "deploy/scopes/dev",
+				EnvName:     "alpha",
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+			},
+			wantCode: codes.Internal,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			repo := storage.NewMemoryRepository()
-			for _, env := range tt.seed {
-				if err := repo.Save(ctx, env); err != nil {
-					t.Fatalf("repo.Save() error = %v", err)
-				}
+			repo := newFakeRepository(tt.seed...)
+			if tt.repoSetup != nil {
+				tt.repoSetup(repo)
 			}
 			handler := NewHandler(repo, NewReconciler(repo))
 
@@ -228,7 +227,7 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	repo := storage.NewMemoryRepository()
+	repo := newFakeRepository()
 	handler := NewHandler(repo, NewReconciler(repo))
 	createReq := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
@@ -312,7 +311,7 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			repo := storage.NewMemoryRepository()
+			repo := newFakeRepository()
 			if tt.seed != nil {
 				if err := repo.Save(ctx, tt.seed(t)); err != nil {
 					t.Fatalf("repo.Save() error = %v", err)
@@ -339,7 +338,7 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	repo := storage.NewMemoryRepository()
+	repo := newFakeRepository()
 	seed := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
 	if err := seed.MarkReconciling(); err != nil {
 		t.Fatalf("MarkReconciling() error = %v", err)
@@ -402,12 +401,7 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			repo := storage.NewMemoryRepository()
-			for _, env := range tt.seed {
-				if err := repo.Save(ctx, env); err != nil {
-					t.Fatalf("repo.Save() error = %v", err)
-				}
-			}
+			repo := newFakeRepository(tt.seed...)
 			handler := NewHandler(repo, NewReconciler(repo))
 
 			// when
@@ -463,7 +457,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid name maps to invalid argument",
-			handler: NewHandler(storage.NewMemoryRepository(), nil),
+			handler: NewHandler(newFakeRepository(), nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "bad-name"})
 				return err
@@ -472,7 +466,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid spec maps to invalid argument",
-			handler: NewHandler(storage.NewMemoryRepository(), nil),
+			handler: NewHandler(newFakeRepository(), nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{}})
 				return err
@@ -534,7 +528,7 @@ func mustNewDomainEnvironment(t *testing.T, scope, envName string, desiredState 
 		t.Fatalf("NewEnvironmentName() error = %v", err)
 	}
 
-	env, err := domain.NewEnvironment(name, envName, desiredState)
+	env, err := domain.NewEnvironment(name, envName, &desiredState)
 	if err != nil {
 		t.Fatalf("NewEnvironment() error = %v", err)
 	}
@@ -555,7 +549,7 @@ func mustDeletingEnvironment(t *testing.T, scope, envName string) *domain.Enviro
 
 func newDesiredState() domain.DesiredState {
 	return domain.DesiredState{
-		Services: []domain.ServiceSpec{{
+		Services: []*domain.ServiceSpec{{
 			Name:       "api",
 			App:        "gateway",
 			Image:      "example.com/gateway:v1",
@@ -563,14 +557,14 @@ func newDesiredState() domain.DesiredState {
 			Replicas:   1,
 			TLSEnabled: true,
 		}},
-		Infras: []domain.InfraSpec{{
+		Infras: []*domain.InfraSpec{{
 			Resource:           "redis",
 			Profile:            "cache",
 			Name:               "redis-main",
 			App:                "gateway",
 			PersistenceEnabled: true,
 		}},
-		HTTPRoutes: []domain.HTTPRouteSpec{{
+		HTTPRoutes: []*domain.HTTPRouteSpec{{
 			Hostnames: []string{"dev.example.com"},
 			Rules: []domain.HTTPRouteRule{{
 				Backend: "api",

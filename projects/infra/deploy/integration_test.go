@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,7 +80,8 @@ type httpPathRuleJSON struct {
 }
 
 type listEnvironmentsResponse struct {
-	Environments []environmentResponse `json:"environments"`
+	Environments  []environmentResponse `json:"environments"`
+	NextPageToken string                `json:"nextPageToken"`
 }
 
 func serviceURL(t *testing.T) string {
@@ -219,23 +222,15 @@ func waitForEnvironmentState(t *testing.T, client *http.Client, baseURL, name, w
 	return environmentResponse{}
 }
 
-func TestIntegration_CreateAndGet(t *testing.T) {
-	baseURL := serviceURL(t)
-	client := newHTTPClient()
-	scope := uniqueScope()
-	parent := fmt.Sprintf("deploy/scopes/%s", scope)
-	envName := fmt.Sprintf("%s/environments/env1", parent)
-
-	t.Cleanup(func() {
-		cleanupEnvironment(t, client, baseURL, envName)
-	})
+func createEnvironment(t *testing.T, client *http.Client, baseURL, parent, envID, description string, desiredState desiredStateJSON) environmentResponse {
+	t.Helper()
 
 	createReq := map[string]any{
 		"parent":  parent,
-		"envName": "env1",
+		"envName": envID,
 		"environment": map[string]any{
-			"description":  "integration test env",
-			"desiredState": newDesiredStateJSON(),
+			"description":  description,
+			"desiredState": desiredState,
 		},
 	}
 
@@ -244,6 +239,49 @@ func TestIntegration_CreateAndGet(t *testing.T) {
 
 	created := environmentResponse{}
 	decodeJSON(t, body, &created)
+	return created
+}
+
+func getEnvironment(t *testing.T, client *http.Client, baseURL, name string) environmentResponse {
+	t.Helper()
+
+	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodGet, "/v1/"+name, nil)
+	assertHTTPStatus(t, statusCode, http.StatusOK, body)
+
+	environment := environmentResponse{}
+	decodeJSON(t, body, &environment)
+	return environment
+}
+
+func listEnvironments(t *testing.T, client *http.Client, baseURL, parent string, query url.Values) listEnvironmentsResponse {
+	t.Helper()
+
+	path := "/v1/" + parent + "/environments"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+
+	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodGet, path, nil)
+	assertHTTPStatus(t, statusCode, http.StatusOK, body)
+
+	resp := listEnvironmentsResponse{}
+	decodeJSON(t, body, &resp)
+	return resp
+}
+
+func TestIntegration_CreateEnvironmentPersistsDesiredState(t *testing.T) {
+	baseURL := serviceURL(t)
+	client := newHTTPClient()
+	scope := uniqueScope()
+	parent := fmt.Sprintf("deploy/scopes/%s", scope)
+	envName := fmt.Sprintf("%s/environments/env1", parent)
+	desiredState := newDesiredStateJSON()
+
+	t.Cleanup(func() {
+		cleanupEnvironment(t, client, baseURL, envName)
+	})
+
+	created := createEnvironment(t, client, baseURL, parent, "env1", "integration test env", desiredState)
 	if created.Name != envName {
 		t.Fatalf("CreateEnvironment() name = %q, want %q", created.Name, envName)
 	}
@@ -255,56 +293,15 @@ func TestIntegration_CreateAndGet(t *testing.T) {
 	if got.Name != envName {
 		t.Fatalf("GetEnvironment() name = %q, want %q", got.Name, envName)
 	}
-}
-
-func TestIntegration_ListEnvironments(t *testing.T) {
-	baseURL := serviceURL(t)
-	client := newHTTPClient()
-	scope := uniqueScope()
-	parent := fmt.Sprintf("deploy/scopes/%s", scope)
-
-	for _, envID := range []string{"env1", "env2"} {
-		envName := fmt.Sprintf("%s/environments/%s", parent, envID)
-		t.Cleanup(func() {
-			cleanupEnvironment(t, client, baseURL, envName)
-		})
-
-		createReq := map[string]any{
-			"parent":  parent,
-			"envName": envID,
-			"environment": map[string]any{
-				"description":  "list test",
-				"desiredState": newDesiredStateJSON(),
-			},
-		}
-		statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", createReq)
-		assertHTTPStatus(t, statusCode, http.StatusOK, body)
+	if got.Description != "integration test env" {
+		t.Fatalf("GetEnvironment() description = %q, want %q", got.Description, "integration test env")
 	}
-
-	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodGet, "/v1/"+parent+"/environments", nil)
-	assertHTTPStatus(t, statusCode, http.StatusOK, body)
-
-	resp := listEnvironmentsResponse{}
-	decodeJSON(t, body, &resp)
-	if len(resp.Environments) != 2 {
-		t.Fatalf("ListEnvironments() got %d environments, want 2", len(resp.Environments))
-	}
-
-	names := make(map[string]bool)
-	for _, environment := range resp.Environments {
-		names[environment.Name] = true
-	}
-	for _, want := range []string{
-		fmt.Sprintf("%s/environments/env1", parent),
-		fmt.Sprintf("%s/environments/env2", parent),
-	} {
-		if !names[want] {
-			t.Fatalf("ListEnvironments() missing environment %q", want)
-		}
+	if !reflect.DeepEqual(got.DesiredState, desiredState) {
+		t.Fatalf("GetEnvironment() desired state = %#v, want %#v", got.DesiredState, desiredState)
 	}
 }
 
-func TestIntegration_UpdateEnvironment(t *testing.T) {
+func TestIntegration_GetEnvironment(t *testing.T) {
 	baseURL := serviceURL(t)
 	client := newHTTPClient()
 	scope := uniqueScope()
@@ -315,27 +312,86 @@ func TestIntegration_UpdateEnvironment(t *testing.T) {
 		cleanupEnvironment(t, client, baseURL, envName)
 	})
 
-	createReq := map[string]any{
-		"parent":  parent,
-		"envName": "env1",
-		"environment": map[string]any{
-			"description":  "update test",
-			"desiredState": newDesiredStateJSON(),
-		},
+	createEnvironment(t, client, baseURL, parent, "env1", "get test", newDesiredStateJSON())
+	waitForEnvironmentState(t, client, baseURL, envName, readyState)
+
+	got := getEnvironment(t, client, baseURL, envName)
+	if got.Name != envName {
+		t.Fatalf("GetEnvironment() name = %q, want %q", got.Name, envName)
 	}
-	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", createReq)
-	assertHTTPStatus(t, statusCode, http.StatusOK, body)
+	if got.Status.State != readyState {
+		t.Fatalf("GetEnvironment() state = %q, want %q", got.Status.State, readyState)
+	}
+}
+
+func TestIntegration_ListEnvironmentsWithPagination(t *testing.T) {
+	baseURL := serviceURL(t)
+	client := newHTTPClient()
+	scope := uniqueScope()
+	parent := fmt.Sprintf("deploy/scopes/%s", scope)
+
+	for _, envID := range []string{"alpha", "beta", "gamma"} {
+		envName := fmt.Sprintf("%s/environments/%s", parent, envID)
+		t.Cleanup(func() {
+			cleanupEnvironment(t, client, baseURL, envName)
+		})
+
+		createEnvironment(t, client, baseURL, parent, envID, "list test", newDesiredStateJSON())
+	}
+
+	firstPage := listEnvironments(t, client, baseURL, parent, url.Values{"pageSize": {"2"}})
+	if len(firstPage.Environments) != 2 {
+		t.Fatalf("ListEnvironments() first page got %d environments, want 2", len(firstPage.Environments))
+	}
+	if firstPage.Environments[0].Name != fmt.Sprintf("%s/environments/alpha", parent) {
+		t.Fatalf("ListEnvironments() first page item[0] = %q, want %q", firstPage.Environments[0].Name, fmt.Sprintf("%s/environments/alpha", parent))
+	}
+	if firstPage.Environments[1].Name != fmt.Sprintf("%s/environments/beta", parent) {
+		t.Fatalf("ListEnvironments() first page item[1] = %q, want %q", firstPage.Environments[1].Name, fmt.Sprintf("%s/environments/beta", parent))
+	}
+	if firstPage.NextPageToken == "" {
+		t.Fatalf("ListEnvironments() next page token is empty, want non-empty token")
+	}
+
+	secondPage := listEnvironments(t, client, baseURL, parent, url.Values{
+		"pageSize":  {"2"},
+		"pageToken": {firstPage.NextPageToken},
+	})
+	if len(secondPage.Environments) != 1 {
+		t.Fatalf("ListEnvironments() second page got %d environments, want 1", len(secondPage.Environments))
+	}
+	if secondPage.Environments[0].Name != fmt.Sprintf("%s/environments/gamma", parent) {
+		t.Fatalf("ListEnvironments() second page item[0] = %q, want %q", secondPage.Environments[0].Name, fmt.Sprintf("%s/environments/gamma", parent))
+	}
+	if secondPage.NextPageToken != "" {
+		t.Fatalf("ListEnvironments() second page next token = %q, want empty", secondPage.NextPageToken)
+	}
+}
+
+func TestIntegration_UpdateEnvironmentPersistsDesiredState(t *testing.T) {
+	baseURL := serviceURL(t)
+	client := newHTTPClient()
+	scope := uniqueScope()
+	parent := fmt.Sprintf("deploy/scopes/%s", scope)
+	envName := fmt.Sprintf("%s/environments/env1", parent)
+	updatedDesiredState := newUpdatedDesiredStateJSON()
+
+	t.Cleanup(func() {
+		cleanupEnvironment(t, client, baseURL, envName)
+	})
+
+	createEnvironment(t, client, baseURL, parent, "env1", "update test", newDesiredStateJSON())
 
 	waitForEnvironmentState(t, client, baseURL, envName, readyState)
 
 	updateReq := map[string]any{
 		"environment": map[string]any{
 			"name":         envName,
-			"desiredState": newUpdatedDesiredStateJSON(),
+			"desiredState": updatedDesiredState,
 		},
 		"updateMask": "desiredState",
 	}
-	statusCode, body = doHTTPRequest(t, client, baseURL, http.MethodPatch, "/v1/"+envName, updateReq)
+	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPatch, "/v1/"+envName, updateReq)
 	assertHTTPStatus(t, statusCode, http.StatusOK, body)
 
 	updated := environmentResponse{}
@@ -345,15 +401,12 @@ func TestIntegration_UpdateEnvironment(t *testing.T) {
 	}
 
 	got := waitForEnvironmentState(t, client, baseURL, envName, readyState)
-	if got.DesiredState.Services[0].Image != "example.com/gateway:v2" {
-		t.Fatalf("GetEnvironment() image = %q, want %q", got.DesiredState.Services[0].Image, "example.com/gateway:v2")
-	}
-	if got.DesiredState.Services[0].Replicas != 2 {
-		t.Fatalf("GetEnvironment() replicas = %d, want 2", got.DesiredState.Services[0].Replicas)
+	if !reflect.DeepEqual(got.DesiredState, updatedDesiredState) {
+		t.Fatalf("GetEnvironment() desired state = %#v, want %#v", got.DesiredState, updatedDesiredState)
 	}
 }
 
-func TestIntegration_DeleteEnvironment(t *testing.T) {
+func TestIntegration_DeleteEnvironmentRemovesPersistedState(t *testing.T) {
 	baseURL := serviceURL(t)
 	client := newHTTPClient()
 	scope := uniqueScope()
@@ -364,18 +417,9 @@ func TestIntegration_DeleteEnvironment(t *testing.T) {
 		cleanupEnvironment(t, client, baseURL, envName)
 	})
 
-	createReq := map[string]any{
-		"parent":  parent,
-		"envName": "env1",
-		"environment": map[string]any{
-			"description":  "delete test",
-			"desiredState": newDesiredStateJSON(),
-		},
-	}
-	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", createReq)
-	assertHTTPStatus(t, statusCode, http.StatusOK, body)
+	createEnvironment(t, client, baseURL, parent, "env1", "delete test", newDesiredStateJSON())
 
-	statusCode, body = doHTTPRequest(t, client, baseURL, http.MethodDelete, "/v1/"+envName, nil)
+	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodDelete, "/v1/"+envName, nil)
 	if statusCode != http.StatusOK && statusCode != http.StatusNoContent {
 		t.Fatalf("DeleteEnvironment() status = %d, want 200 or 204, body = %s", statusCode, string(body))
 	}
@@ -384,41 +428,43 @@ func TestIntegration_DeleteEnvironment(t *testing.T) {
 	assertHTTPStatus(t, statusCode, http.StatusNotFound, body)
 }
 
-func TestIntegration_ErrorCases(t *testing.T) {
+func TestIntegration_InvalidUpdateDoesNotCorruptPersistence(t *testing.T) {
 	baseURL := serviceURL(t)
 	client := newHTTPClient()
 	scope := uniqueScope()
 	parent := fmt.Sprintf("deploy/scopes/%s", scope)
-	envName := fmt.Sprintf("%s/environments/dup", parent)
+	envName := fmt.Sprintf("%s/environments/env1", parent)
+	originalDesiredState := newDesiredStateJSON()
 
 	t.Cleanup(func() {
 		cleanupEnvironment(t, client, baseURL, envName)
 	})
 
-	duplicateReq := map[string]any{
-		"parent":  parent,
-		"envName": "dup",
-		"environment": map[string]any{
-			"description":  "dup test",
-			"desiredState": newDesiredStateJSON(),
-		},
-	}
-	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", duplicateReq)
-	assertHTTPStatus(t, statusCode, http.StatusOK, body)
-
-	statusCode, body = doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", duplicateReq)
-	assertHTTPStatus(t, statusCode, http.StatusConflict, body)
-
-	statusCode, body = doHTTPRequest(t, client, baseURL, http.MethodGet, "/v1/"+parent+"/environments/missing", nil)
-	assertHTTPStatus(t, statusCode, http.StatusNotFound, body)
+	createEnvironment(t, client, baseURL, parent, "env1", "stable env", originalDesiredState)
+	waitForEnvironmentState(t, client, baseURL, envName, readyState)
 
 	invalidReq := map[string]any{
-		"parent": parent,
 		"environment": map[string]any{
-			"description":  "invalid test",
-			"desiredState": newDesiredStateJSON(),
+			"name": envName,
 		},
+		"updateMask": "desiredState",
 	}
-	statusCode, body = doHTTPRequest(t, client, baseURL, http.MethodPost, "/v1/"+parent+"/environments", invalidReq)
+	statusCode, body := doHTTPRequest(t, client, baseURL, http.MethodPatch, "/v1/"+envName, invalidReq)
 	assertHTTPStatus(t, statusCode, http.StatusBadRequest, body)
+
+	got := getEnvironment(t, client, baseURL, envName)
+	if got.Description != "stable env" {
+		t.Fatalf("GetEnvironment() description = %q, want %q", got.Description, "stable env")
+	}
+	if !reflect.DeepEqual(got.DesiredState, originalDesiredState) {
+		t.Fatalf("GetEnvironment() desired state = %#v, want %#v", got.DesiredState, originalDesiredState)
+	}
+
+	resp := listEnvironments(t, client, baseURL, parent, nil)
+	if len(resp.Environments) != 1 {
+		t.Fatalf("ListEnvironments() got %d environments, want 1", len(resp.Environments))
+	}
+	if resp.Environments[0].Name != envName {
+		t.Fatalf("ListEnvironments() item[0] = %q, want %q", resp.Environments[0].Name, envName)
+	}
 }

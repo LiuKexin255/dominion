@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewEnvironment(t *testing.T) {
@@ -20,18 +21,18 @@ func TestNewEnvironment(t *testing.T) {
 		{
 			name: "valid desired state",
 			desiredState: DesiredState{
-				Services: []ServiceSpec{{
+				Services: []*ServiceSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
 					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
 				}},
-				Infras: []InfraSpec{{
+				Infras: []*InfraSpec{{
 					Resource: "redis",
 					Name:     "cache",
 				}},
-				HTTPRoutes: []HTTPRouteSpec{{
+				HTTPRoutes: []*HTTPRouteSpec{{
 					Hostnames: []string{"example.com"},
 					Rules: []HTTPRouteRule{{
 						Backend: "api",
@@ -43,7 +44,7 @@ func TestNewEnvironment(t *testing.T) {
 		{
 			name: "invalid nested service spec",
 			desiredState: DesiredState{
-				Services: []ServiceSpec{{
+				Services: []*ServiceSpec{{
 					Name:  "api",
 					App:   "demo",
 					Ports: []ServicePortSpec{{Name: "http", Port: 8080}},
@@ -59,7 +60,7 @@ func TestNewEnvironment(t *testing.T) {
 			desiredState := tt.desiredState
 
 			// when
-			env, err := NewEnvironment(name, "demo environment", desiredState)
+			env, err := NewEnvironment(name, "demo environment", &desiredState)
 
 			// then
 			if tt.wantErr != nil {
@@ -105,14 +106,14 @@ func TestEnvironment_UpdateDesiredState(t *testing.T) {
 	}
 	previousLastSuccessTime := env.status.LastSuccessTime
 	newState := DesiredState{
-		Services: []ServiceSpec{{
+		Services: []*ServiceSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v2",
 			Ports:    []ServicePortSpec{{Name: "http", Port: 9090}},
 			Replicas: 2,
 		}},
-		HTTPRoutes: []HTTPRouteSpec{{
+		HTTPRoutes: []*HTTPRouteSpec{{
 			Hostnames: []string{"example.com"},
 			Rules: []HTTPRouteRule{{
 				Backend: "api",
@@ -122,7 +123,7 @@ func TestEnvironment_UpdateDesiredState(t *testing.T) {
 	}
 
 	// when
-	err := env.UpdateDesiredState(newState)
+	err := env.UpdateDesiredState(&newState)
 
 	// then
 	if err != nil {
@@ -149,7 +150,7 @@ func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
 		t.Fatalf("MarkDeleting() unexpected error: %v", err)
 	}
 	newState := DesiredState{
-		Services: []ServiceSpec{{
+		Services: []*ServiceSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v2",
@@ -159,7 +160,7 @@ func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
 	}
 
 	// when
-	err := env.UpdateDesiredState(newState)
+	err := env.UpdateDesiredState(&newState)
 
 	// then
 	if err != ErrInvalidState {
@@ -386,14 +387,14 @@ func TestEnvironment_Validate(t *testing.T) {
 		{
 			name: "backend references existing service",
 			desiredState: DesiredState{
-				Services: []ServiceSpec{{
+				Services: []*ServiceSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
 					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
 				}},
-				HTTPRoutes: []HTTPRouteSpec{{
+				HTTPRoutes: []*HTTPRouteSpec{{
 					Hostnames: []string{"example.com"},
 					Rules: []HTTPRouteRule{{
 						Backend: "api",
@@ -405,14 +406,14 @@ func TestEnvironment_Validate(t *testing.T) {
 		{
 			name: "backend reference missing service",
 			desiredState: DesiredState{
-				Services: []ServiceSpec{{
+				Services: []*ServiceSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
 					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
 				}},
-				HTTPRoutes: []HTTPRouteSpec{{
+				HTTPRoutes: []*HTTPRouteSpec{{
 					Hostnames: []string{"example.com"},
 					Rules: []HTTPRouteRule{{
 						Backend: "worker",
@@ -431,8 +432,8 @@ func TestEnvironment_Validate(t *testing.T) {
 			env := &Environment{
 				name:         name,
 				description:  "demo environment",
-				desiredState: cloneDesiredState(tt.desiredState),
-				status: EnvironmentStatus{
+				desiredState: cloneDesiredState(&tt.desiredState),
+				status: &EnvironmentStatus{
 					State: StatePending,
 				},
 			}
@@ -458,6 +459,116 @@ func TestEnvironment_Validate(t *testing.T) {
 	}
 }
 
+func TestRehydrateEnvironment(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	createTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	updateTime := createTime.Add(5 * time.Minute)
+	status := &EnvironmentStatus{
+		State:             StateReady,
+		Message:           "ready",
+		LastReconcileTime: createTime.Add(2 * time.Minute),
+		LastSuccessTime:   createTime.Add(3 * time.Minute),
+	}
+	desiredState := &DesiredState{
+		Services: []*ServiceSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v1",
+			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+			Replicas: 1,
+		}},
+		HTTPRoutes: []*HTTPRouteSpec{{
+			Hostnames: []string{"example.com"},
+			Rules: []HTTPRouteRule{{
+				Backend: "api",
+				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+			}},
+		}},
+	}
+
+	env, err := RehydrateEnvironment(EnvironmentSnapshot{
+		Name:         name,
+		Description:  "demo environment",
+		DesiredState: desiredState,
+		Status:       status,
+		CreateTime:   createTime,
+		UpdateTime:   updateTime,
+		ETag:         "etag-1",
+	})
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() unexpected error: %v", err)
+	}
+
+	if env.name != name {
+		t.Fatalf("name = %#v, want %#v", env.name, name)
+	}
+	if env.description != "demo environment" {
+		t.Fatalf("description = %q, want %q", env.description, "demo environment")
+	}
+	if env.status == status {
+		t.Fatalf("status pointer should be cloned")
+	}
+	if env.status.State != StateReady {
+		t.Fatalf("status.State = %v, want %v", env.status.State, StateReady)
+	}
+	if env.status.Message != "ready" {
+		t.Fatalf("status.Message = %q, want %q", env.status.Message, "ready")
+	}
+	if !env.createTime.Equal(createTime) {
+		t.Fatalf("createTime = %v, want %v", env.createTime, createTime)
+	}
+	if !env.updateTime.Equal(updateTime) {
+		t.Fatalf("updateTime = %v, want %v", env.updateTime, updateTime)
+	}
+	if env.etag != "etag-1" {
+		t.Fatalf("etag = %q, want %q", env.etag, "etag-1")
+	}
+
+	desiredState.Services[0].Image = "repo/demo:v2"
+	status.Message = "changed"
+	if env.desiredState.Services[0].Image != "repo/demo:v1" {
+		t.Fatalf("desiredState should be cloned")
+	}
+	if env.status.Message != "ready" {
+		t.Fatalf("status should be cloned")
+	}
+}
+
+func TestRehydrateEnvironmentRejectsNilStatus(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	_, err = RehydrateEnvironment(EnvironmentSnapshot{
+		Name:        name,
+		Description: "demo environment",
+		DesiredState: &DesiredState{
+			Services: []*ServiceSpec{{
+				Name:     "api",
+				App:      "demo",
+				Image:    "repo/demo:v1",
+				Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+				Replicas: 1,
+			}},
+			HTTPRoutes: []*HTTPRouteSpec{{
+				Hostnames: []string{"example.com"},
+				Rules: []HTTPRouteRule{{
+					Backend: "api",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			}},
+		},
+	})
+	if err != ErrInvalidState {
+		t.Fatalf("RehydrateEnvironment() error = %v, want %v", err, ErrInvalidState)
+	}
+}
+
 func mustNewEnvironment(t *testing.T) *Environment {
 	t.Helper()
 
@@ -466,15 +577,15 @@ func mustNewEnvironment(t *testing.T) *Environment {
 		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
 	}
 
-	env, err := NewEnvironment(name, "demo environment", DesiredState{
-		Services: []ServiceSpec{{
+	env, err := NewEnvironment(name, "demo environment", &DesiredState{
+		Services: []*ServiceSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v1",
 			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
 			Replicas: 1,
 		}},
-		HTTPRoutes: []HTTPRouteSpec{{
+		HTTPRoutes: []*HTTPRouteSpec{{
 			Hostnames: []string{"example.com"},
 			Rules: []HTTPRouteRule{{
 				Backend: "api",

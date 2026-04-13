@@ -64,10 +64,34 @@ go_binary(
     deps = [
         ":deploy",
         "//pkg/grpc",
+        "//pkg/mongo",
+        "//projects/infra/deploy/domain",
         "//projects/infra/deploy/storage",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//reflection",
+        "@org_mongodb_go_mongo_driver//mongo",
+    ],
+)
+
+go_test(
+    name = "cmd_test",
+    size = "small",
+    srcs = [
+        "main.go",
+        "main_test.go",
+    ],
+    args = ["-test.v"],
+    gotags = ["cmd"],
+    deps = [
+        ":deploy",
+        "//pkg/grpc",
+        "//pkg/mongo",
+        "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/storage",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//mongo",
     ],
 )
 
@@ -105,12 +129,12 @@ go_test(
     size = "small",
     srcs = [
         "handler_test.go",
-        "integration_test.go",
+        "repository_fake_test.go",
     ],
+    args = ["-test.v"],
     embed = [":deploy"],
     deps = [
         "//projects/infra/deploy/domain",
-        "//projects/infra/deploy/storage",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//types/known/emptypb",
@@ -122,6 +146,7 @@ go_test(
     name = "integration_test",
     size = "medium",
     srcs = ["integration_test.go"],
+    args = ["-test.v"],
     env = {
         "SUT_HOST_URL": "https://infra.liukexin.com",
     },

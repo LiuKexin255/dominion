@@ -1,6 +1,13 @@
 name: deploy.iface
 desc: "deploy service environment"
 services:
+  - infra:
+      app: deploy
+      resource: mongodb
+      profile: dev-single
+      name: mongo
+      persistence:
+        enabled: true
   - artifact:
       path: //projects/infra/deploy/service.yaml
       name: service

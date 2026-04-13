@@ -16,17 +16,25 @@ import (
 	"time"
 
 	"dominion/pkg/grpc"
+	"dominion/pkg/mongo"
 	deploy "dominion/projects/infra/deploy"
+	"dominion/projects/infra/deploy/domain"
 	"dominion/projects/infra/deploy/storage"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	grpcgo "google.golang.org/grpc"
 )
 
 const (
 	defaultGRPCListenAddr = ":8080"
 	defaultHTTPListenAddr = ":8081"
+	deployMongoTarget     = "deploy/mongo"
 )
+
+type mongoClientFactory func(target string, opts ...mongo.ClientOption) (*mongodriver.Client, error)
+
+type repositoryFactory func(client *mongodriver.Client) (domain.Repository, error)
 
 var (
 	grpcPort = flag.String("grpc-port", listenAddrFromEnv("PORT", defaultGRPCListenAddr), "gRPC port or listen address")
@@ -36,7 +44,10 @@ var (
 func main() {
 	flag.Parse()
 
-	repo := storage.NewMemoryRepository()
+	repo, err := newRepository(mongo.NewClient, storage.NewMongoRepository)
+	if err != nil {
+		log.Fatalf("create deploy repository: %v", err)
+	}
 	reconciler := deploy.NewReconciler(repo)
 	handler := deploy.NewHandler(repo, reconciler)
 
@@ -87,6 +98,20 @@ func main() {
 }
 
 const shutdownTimeout = 5 * time.Second
+
+func newRepository(newClient mongoClientFactory, newMongoRepository repositoryFactory) (domain.Repository, error) {
+	client, err := newClient(deployMongoTarget)
+	if err != nil {
+		return nil, err
+	}
+
+	repo, err := newMongoRepository(client)
+	if err != nil {
+		return nil, err
+	}
+
+	return repo, nil
+}
 
 func listenAddrFromEnv(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {

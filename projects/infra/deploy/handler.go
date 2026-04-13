@@ -231,7 +231,10 @@ func toProtoState(state domain.EnvironmentState) EnvironmentState {
 	}
 }
 
-func toProtoDesiredState(state domain.DesiredState) *EnvironmentDesiredState {
+func toProtoDesiredState(state *domain.DesiredState) *EnvironmentDesiredState {
+	if state == nil {
+		return nil
+	}
 	return &EnvironmentDesiredState{
 		Services:   toProtoServices(state.Services),
 		Infras:     toProtoInfras(state.Infras),
@@ -239,34 +242,37 @@ func toProtoDesiredState(state domain.DesiredState) *EnvironmentDesiredState {
 	}
 }
 
-func fromProtoDesiredState(state *EnvironmentDesiredState) (domain.DesiredState, error) {
+func fromProtoDesiredState(state *EnvironmentDesiredState) (*domain.DesiredState, error) {
 	if state == nil {
-		return domain.DesiredState{}, domain.ErrInvalidSpec
+		return nil, domain.ErrInvalidSpec
 	}
 
 	services, err := fromProtoServices(state.GetServices())
 	if err != nil {
-		return domain.DesiredState{}, err
+		return nil, err
 	}
 
 	infras, err := fromProtoInfras(state.GetInfras())
 	if err != nil {
-		return domain.DesiredState{}, err
+		return nil, err
 	}
 
 	routes, err := fromProtoHTTPRoutes(state.GetHttpRoutes())
 	if err != nil {
-		return domain.DesiredState{}, err
+		return nil, err
 	}
 
-	return domain.DesiredState{
+	return &domain.DesiredState{
 		Services:   services,
 		Infras:     infras,
 		HTTPRoutes: routes,
 	}, nil
 }
 
-func toProtoStatus(statusValue domain.EnvironmentStatus) *EnvironmentStatus {
+func toProtoStatus(statusValue *domain.EnvironmentStatus) *EnvironmentStatus {
+	if statusValue == nil {
+		return nil
+	}
 	return &EnvironmentStatus{
 		State:             toProtoState(statusValue.State),
 		Message:           statusValue.Message,
@@ -275,7 +281,7 @@ func toProtoStatus(statusValue domain.EnvironmentStatus) *EnvironmentStatus {
 	}
 }
 
-func toProtoServices(services []domain.ServiceSpec) []*ServiceSpec {
+func toProtoServices(services []*domain.ServiceSpec) []*ServiceSpec {
 	if len(services) == 0 {
 		return nil
 	}
@@ -295,17 +301,17 @@ func toProtoServices(services []domain.ServiceSpec) []*ServiceSpec {
 	return result
 }
 
-func fromProtoServices(services []*ServiceSpec) ([]domain.ServiceSpec, error) {
+func fromProtoServices(services []*ServiceSpec) ([]*domain.ServiceSpec, error) {
 	if len(services) == 0 {
 		return nil, nil
 	}
 
-	result := make([]domain.ServiceSpec, 0, len(services))
+	result := make([]*domain.ServiceSpec, 0, len(services))
 	for _, service := range services {
 		if service == nil {
 			return nil, domain.ErrInvalidSpec
 		}
-		result = append(result, domain.ServiceSpec{
+		result = append(result, &domain.ServiceSpec{
 			Name:       service.GetName(),
 			App:        service.GetApp(),
 			Image:      service.GetImage(),
@@ -353,7 +359,7 @@ func fromProtoServicePorts(ports []*ServicePortSpec) []domain.ServicePortSpec {
 	return result
 }
 
-func toProtoInfras(infras []domain.InfraSpec) []*InfraSpec {
+func toProtoInfras(infras []*domain.InfraSpec) []*InfraSpec {
 	if len(infras) == 0 {
 		return nil
 	}
@@ -372,17 +378,17 @@ func toProtoInfras(infras []domain.InfraSpec) []*InfraSpec {
 	return result
 }
 
-func fromProtoInfras(infras []*InfraSpec) ([]domain.InfraSpec, error) {
+func fromProtoInfras(infras []*InfraSpec) ([]*domain.InfraSpec, error) {
 	if len(infras) == 0 {
 		return nil, nil
 	}
 
-	result := make([]domain.InfraSpec, 0, len(infras))
+	result := make([]*domain.InfraSpec, 0, len(infras))
 	for _, infra := range infras {
 		if infra == nil {
 			return nil, domain.ErrInvalidSpec
 		}
-		result = append(result, domain.InfraSpec{
+		result = append(result, &domain.InfraSpec{
 			Resource:           infra.GetResource(),
 			Profile:            infra.GetProfile(),
 			Name:               infra.GetName(),
@@ -394,7 +400,7 @@ func fromProtoInfras(infras []*InfraSpec) ([]domain.InfraSpec, error) {
 	return result, nil
 }
 
-func toProtoHTTPRoutes(routes []domain.HTTPRouteSpec) []*HTTPRouteSpec {
+func toProtoHTTPRoutes(routes []*domain.HTTPRouteSpec) []*HTTPRouteSpec {
 	if len(routes) == 0 {
 		return nil
 	}
@@ -410,17 +416,17 @@ func toProtoHTTPRoutes(routes []domain.HTTPRouteSpec) []*HTTPRouteSpec {
 	return result
 }
 
-func fromProtoHTTPRoutes(routes []*HTTPRouteSpec) ([]domain.HTTPRouteSpec, error) {
+func fromProtoHTTPRoutes(routes []*HTTPRouteSpec) ([]*domain.HTTPRouteSpec, error) {
 	if len(routes) == 0 {
 		return nil, nil
 	}
 
-	result := make([]domain.HTTPRouteSpec, 0, len(routes))
+	result := make([]*domain.HTTPRouteSpec, 0, len(routes))
 	for _, route := range routes {
 		if route == nil {
 			return nil, domain.ErrInvalidSpec
 		}
-		result = append(result, domain.HTTPRouteSpec{
+		result = append(result, &domain.HTTPRouteSpec{
 			Hostnames: append([]string(nil), route.GetHostnames()...),
 			Rules:     fromProtoHTTPRouteRules(route.GetMatches()),
 		})
