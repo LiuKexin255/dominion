@@ -1,0 +1,9 @@
+namespace: default
+managed_by: dominion
+gateway:
+  name: traefik-gateway
+  namespace: ingress
+tls:
+  secret: grpc-hello-world-service-tls
+  namespace: default
+  domain: grpc-hello-world-service.default.svc.cluster.local

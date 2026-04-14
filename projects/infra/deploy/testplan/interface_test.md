@@ -22,7 +22,7 @@ Expected outcome:
 ### 2. 运行 HTTP CRUD 持久化集成测试
 
 ```bash
-bazel test //projects/infra/deploy:integration_test --test_output=errors
+bazel test //projects/infra/deploy/testplan:testplan_test --test_output=errors
 ```
 
 Expected outcome:

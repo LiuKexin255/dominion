@@ -1,0 +1,11 @@
+namespace: default
+managed_by: dominion
+gateway:
+  name: traefik-gateway
+  namespace: ingress
+tls:
+  secret: grpc-hello-world-service-tls
+  namespace: default
+  ca_config_map:
+    name: grpc-hello-world-service-ca
+    key: ca.crt

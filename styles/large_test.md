@@ -9,7 +9,7 @@
 
 ## 测试计划
 
-大型测试通过`测试计划`进行编排。测试计划一般放在 `testplan` 目录，并包含以下内容：
+大型测试通过`测试计划`进行编排。测试计划通常与其使用的测试用**一起**放在 `testplan` 目录，并包含以下内容：
 
 * name：测试计划名
 * deploy：被测系统部署配置配置，通过 `deploy(//tools/deploy)` 工具进行部署，测试完成后移除。
@@ -22,7 +22,7 @@
 * deploy：//projects/infra/deploy/test_deploy.yaml # 最好是完整路径
 
 ## Test cases
-* //projects/infra/deploy:integration_test
+* //projects/infra/deploy/testplan:integration_test # 最好把接口测试也跟测试计划放进一个目录
 ```
 
 ## SUT 分类
