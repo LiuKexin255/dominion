@@ -221,6 +221,66 @@ func TestParseServiceConfig(t *testing.T) {
 	}
 }
 
+func TestParseServiceConfig_NormalizesRelativeArtifactTarget(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	serviceDir := filepath.Join(root, "projects", "infra", "deploy")
+	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	servicePath := filepath.Join(serviceDir, "service.yaml")
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: app/cmd:deploy_image
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	got, err := ParseServiceConfig(servicePath)
+	if err != nil {
+		t.Fatalf("ParseServiceConfig() failed: %v", err)
+	}
+	wantTarget := "//projects/infra/deploy/app/cmd:deploy_image"
+	if got.Artifacts[0].Target != wantTarget {
+		t.Fatalf("ParseServiceConfig() target = %v, want %v", got.Artifacts[0].Target, wantTarget)
+	}
+}
+
+func TestParseServiceConfig_RejectsMalformedArtifactTarget(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	servicePath := filepath.Join(root, "projects", "infra", "deploy", "service.yaml")
+	if err := os.MkdirAll(filepath.Dir(servicePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: app/cmd:
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	if _, err := ParseServiceConfig(servicePath); err == nil {
+		t.Fatal("ParseServiceConfig() succeeded unexpectedly")
+	}
+}
+
 func TestServiceConfig_GetArtifact(t *testing.T) {
 	root := newBazelWorkspace(t)
 
@@ -443,6 +503,36 @@ func Test_normalizeArtifactTarget(t *testing.T) {
 		{
 			name:      "非法 target",
 			target:    "image",
+			configURI: "//a/b/service.yaml",
+			wantErr:   true,
+		},
+		{
+			name:      "相对目录标签",
+			target:    "app/cmd:deploy_image",
+			configURI: "//projects/infra/deploy/service.yaml",
+			want:      "//projects/infra/deploy/app/cmd:deploy_image",
+		},
+		{
+			name:      "根目录相对目录标签",
+			target:    "app/iface:deploy_iface_image",
+			configURI: "//service.yaml",
+			want:      "//app/iface:deploy_iface_image",
+		},
+		{
+			name:      "缺少目标名称",
+			target:    "app/cmd:",
+			configURI: "//a/b/service.yaml",
+			wantErr:   true,
+		},
+		{
+			name:      "缺少路径前缀",
+			target:    ":",
+			configURI: "//a/b/service.yaml",
+			wantErr:   true,
+		},
+		{
+			name:      "多冒号标签",
+			target:    "app/cmd:deploy:bad",
 			configURI: "//a/b/service.yaml",
 			wantErr:   true,
 		},

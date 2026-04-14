@@ -285,8 +285,8 @@ func TestIntegration_CreateEnvironmentPersistsDesiredState(t *testing.T) {
 	if created.Name != envName {
 		t.Fatalf("CreateEnvironment() name = %q, want %q", created.Name, envName)
 	}
-	if created.Status.State != pendingState {
-		t.Fatalf("CreateEnvironment() state = %q, want %q", created.Status.State, pendingState)
+	if created.Status.State != reconcilingState {
+		t.Fatalf("CreateEnvironment() state = %q, want %q", created.Status.State, reconcilingState)
 	}
 
 	got := waitForEnvironmentState(t, client, baseURL, envName, readyState)

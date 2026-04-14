@@ -3,6 +3,30 @@ load("@rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//tools/go:defs.bzl", "go_unittest")
 
+alias(
+    name = "cmd",
+    actual = "//projects/infra/deploy/app/cmd:cmd",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "deploy_image",
+    actual = "//projects/infra/deploy/app/cmd:deploy_image",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "deploy_iface",
+    actual = "//projects/infra/deploy/app/cmd/iface:iface",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "deploy_iface_image",
+    actual = "//projects/infra/deploy/app/cmd/iface:deploy_iface_image",
+    visibility = ["//visibility:public"],
+)
+
 proto_library(
     name = "deploy_proto",
     srcs = ["deploy.proto"],

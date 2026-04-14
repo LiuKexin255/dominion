@@ -10,14 +10,11 @@ go_library(
     importpath = "dominion/projects/infra/deploy/app/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/grpc",
         "//pkg/mongo",
-        "//projects/infra/deploy",
+        "//projects/infra/deploy/app",
         "//projects/infra/deploy/domain",
         "//projects/infra/deploy/runtime/k8s",
         "//projects/infra/deploy/storage",
-        "@grpc_ecosystem_grpc_gateway//runtime",
-        "@org_golang_google_grpc//:grpc",
         "@org_mongodb_go_mongo_driver//mongo",
     ],
 )
@@ -52,6 +49,7 @@ oci_image(
     base = "@distroless_base",
     entrypoint = ["/cmd"],
     tars = [":deploy_layer"],
+    visibility = ["//visibility:public"],
 )
 
 expand_template(

@@ -214,12 +214,27 @@ func normalizeArtifactTarget(target string, configURI string) (string, error) {
 	if strings.HasPrefix(target, "//") {
 		return target, nil
 	}
-	if !strings.HasPrefix(target, ":") {
-		return "", fmt.Errorf("非法 target 格式: %s", target)
-	}
 	// configURI 形如 "//a/b/service.yaml"，取目录得 "//a/b"
 	dir := uriDir(configURI)
-	return dir + target, nil
+	if strings.HasPrefix(target, ":") {
+		if len(target) == 1 {
+			return "", fmt.Errorf("非法 target 格式: %s", target)
+		}
+		return dir + target, nil
+	}
+	pathPart, namePart, ok := strings.Cut(target, ":")
+	if !ok || pathPart == "" || namePart == "" || strings.Contains(namePart, ":") {
+		return "", fmt.Errorf("非法 target 格式: %s", target)
+	}
+	baseDir := strings.TrimPrefix(dir, workspace.WorkspacePathPrefix)
+	joined := path.Join(baseDir, pathPart)
+	if joined == "." {
+		joined = ""
+	}
+	if joined == "" {
+		return workspace.WorkspacePathPrefix + ":" + namePart, nil
+	}
+	return workspace.WorkspacePathPrefix + joined + ":" + namePart, nil
 }
 
 // normalizeArtifactPath 将 artifact.path 标准化为 // 开头的 URI 格式。

@@ -1,0 +1,77 @@
+// Package app provides shared bootstrap logic for the deploy service.
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"dominion/pkg/grpc"
+	"dominion/projects/infra/deploy"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	grpcgo "google.golang.org/grpc"
+)
+
+const shutdownTimeout = 5 * time.Second
+
+var adminHTTPHandler http.Handler
+
+// SetAdminHTTPHandler installs an optional HTTP handler mounted under /admin/.
+// It is intended for test-only wiring.
+func SetAdminHTTPHandler(handler http.Handler) {
+	adminHTTPHandler = handler
+}
+
+// Serve starts the deploy gRPC and HTTP gateway servers.
+func Serve(ctx context.Context, handler *deploy.Handler, grpcAddr, httpAddr string) error {
+	grpcListener, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", grpcAddr, err)
+	}
+
+	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
+	deploy.RegisterDeployServiceServer(grpcServer, handler)
+
+	httpMux := runtime.NewServeMux()
+	if err := deploy.RegisterDeployServiceHandlerServer(context.Background(), httpMux, handler); err != nil {
+		return fmt.Errorf("register HTTP gateway: %w", err)
+	}
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/", httpMux)
+	if adminHTTPHandler != nil {
+		rootMux.Handle("/admin/", adminHTTPHandler)
+	}
+	httpServer := &http.Server{Addr: httpAddr, Handler: rootMux}
+
+	errCh := make(chan error, 2)
+	go func() {
+		<-ctx.Done()
+		grpcServer.GracefulStop()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("shutdown HTTP gateway: %w", err)
+		}
+	}()
+
+	go func() {
+		errCh <- grpcServer.Serve(grpcListener)
+	}()
+
+	go func() {
+		errCh <- httpServer.ListenAndServe()
+	}()
+
+	for i := 0; i < cap(errCh); i++ {
+		if err := <-errCh; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

@@ -4,7 +4,16 @@ desc: deploy service
 artifacts:
   - name: service
     type: deployment
-    target: :deploy_image
+    target: app/cmd:deploy_image
+    tls: false
+    ports:
+      - name: grpc
+        port: 8080
+      - name: http
+        port: 8081
+  - name: service-iface
+    type: deployment
+    target: app/iface:deploy_iface_image
     tls: false
     ports:
       - name: grpc

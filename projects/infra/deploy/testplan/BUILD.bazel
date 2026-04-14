@@ -1,9 +1,9 @@
 load("//tools/go:defs.bzl", "go_largetest")
 
 go_largetest(
-    name = "testplan_test",
+    name = "iface_test",
     srcs = ["integration_test.go"],
     env = {
-        "SUT_HOST_URL": "https://infra.liukexin.com",
+        "SUT_HOST_URL": "https://infra.liukexin.com"
     },
 )
