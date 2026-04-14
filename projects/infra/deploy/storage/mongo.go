@@ -21,7 +21,17 @@ const (
 	// CollectionName is the MongoDB collection used for environments.
 	CollectionName = "environments"
 	// mongoDefaultPageSize is the default number of environments returned by ListByScope.
-	mongoDefaultPageSize = 100
+	mongoDefaultPageSize   = 100
+	mongoFieldName         = "name"
+	mongoFieldScope        = "scope"
+	mongoFieldEnvName      = "env_name"
+	mongoFieldDescription  = "description"
+	mongoFieldDesiredState = "desired_state"
+	mongoFieldStatus       = "status"
+	mongoFieldStatusState  = "status.state"
+	mongoFieldCreateTime   = "create_time"
+	mongoFieldUpdateTime   = "update_time"
+	mongoFieldETag         = "etag"
 )
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
@@ -175,11 +185,11 @@ func NewMongoRepository(client *mongodriver.Client) (domain.Repository, error) {
 func (r *MongoRepository) ensureIndexes(ctx context.Context) error {
 	_, err := r.collection.Indexes().CreateMany(ctx, []mongodriver.IndexModel{
 		{
-			Keys:    bson.D{{Key: "name", Value: 1}},
+			Keys:    bson.D{{Key: mongoFieldName, Value: 1}},
 			Options: options.Index().SetUnique(true),
 		},
 		{
-			Keys:    bson.D{{Key: "scope", Value: 1}, {Key: "name", Value: 1}},
+			Keys:    bson.D{{Key: mongoFieldScope, Value: 1}, {Key: mongoFieldName, Value: 1}},
 			Options: options.Index(),
 		},
 	})
@@ -192,7 +202,7 @@ func (r *MongoRepository) ensureIndexes(ctx context.Context) error {
 
 // Get retrieves an environment by name.
 func (r *MongoRepository) Get(ctx context.Context, name domain.EnvironmentName) (*domain.Environment, error) {
-	filter := bson.M{"name": name.String()}
+	filter := bson.M{mongoFieldName: name.String()}
 	doc := new(mongoEnvironment)
 	if err := r.collection.FindOne(ctx, filter).Decode(doc); err != nil {
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
@@ -202,6 +212,38 @@ func (r *MongoRepository) Get(ctx context.Context, name domain.EnvironmentName) 
 	}
 
 	return doc.toDomain()
+}
+
+// ListByStates lists environments matching any of the provided states.
+func (r *MongoRepository) ListByStates(ctx context.Context, states ...domain.EnvironmentState) ([]*domain.Environment, error) {
+	stateValues := make([]int, len(states))
+	for i, state := range states {
+		stateValues[i] = int(state)
+	}
+
+	filter := bson.M{mongoFieldStatusState: bson.M{"$in": stateValues}}
+	findOpts := options.Find().SetSort(bson.D{{Key: mongoFieldName, Value: 1}})
+	cur, err := r.collection.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []*mongoEnvironment
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+
+	envs := make([]*domain.Environment, 0, len(docs))
+	for _, doc := range docs {
+		env, err := doc.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		envs = append(envs, env)
+	}
+
+	return envs, nil
 }
 
 // ListByScope lists environments in a scope with stable name ordering.
@@ -215,7 +257,7 @@ func (r *MongoRepository) ListByScope(ctx context.Context, scope string, pageSiz
 		return nil, "", fmt.Errorf("invalid page token: %w", err)
 	}
 
-	filter := bson.M{"scope": scope}
+	filter := bson.M{mongoFieldScope: scope}
 	total, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
 		return nil, "", err
@@ -224,7 +266,7 @@ func (r *MongoRepository) ListByScope(ctx context.Context, scope string, pageSiz
 		return nil, "", nil
 	}
 
-	findOpts := options.Find().SetSkip(int64(skip)).SetLimit(int64(pageSize)).SetSort(bson.D{{Key: "name", Value: 1}})
+	findOpts := options.Find().SetSkip(int64(skip)).SetLimit(int64(pageSize)).SetSort(bson.D{{Key: mongoFieldName, Value: 1}})
 	cur, err := r.collection.Find(ctx, filter, findOpts)
 	if err != nil {
 		return nil, "", err
@@ -262,7 +304,7 @@ func (r *MongoRepository) Save(ctx context.Context, env *domain.Environment) err
 
 	_, err = r.collection.UpdateOne(
 		ctx,
-		bson.M{"name": doc.Name},
+		bson.M{mongoFieldName: doc.Name},
 		bson.M{
 			"$set":         doc.updateDocument(),
 			"$setOnInsert": doc.insertDocument(),
@@ -281,7 +323,7 @@ func (r *MongoRepository) Save(ctx context.Context, env *domain.Environment) err
 
 // Delete removes an environment by name.
 func (r *MongoRepository) Delete(ctx context.Context, name domain.EnvironmentName) error {
-	result, err := r.collection.DeleteOne(ctx, bson.M{"name": name.String()})
+	result, err := r.collection.DeleteOne(ctx, bson.M{mongoFieldName: name.String()})
 	if err != nil {
 		return err
 	}
@@ -408,20 +450,20 @@ func statusToMongo(s *domain.EnvironmentStatus) *mongoStatus {
 
 func (m *mongoEnvironment) updateDocument() bson.M {
 	return bson.M{
-		"description":   m.Description,
-		"desired_state": m.DesiredState,
-		"status":        m.Status,
-		"update_time":   m.UpdateTime,
-		"etag":          m.ETag,
+		mongoFieldDescription:  m.Description,
+		mongoFieldDesiredState: m.DesiredState,
+		mongoFieldStatus:       m.Status,
+		mongoFieldUpdateTime:   m.UpdateTime,
+		mongoFieldETag:         m.ETag,
 	}
 }
 
 func (m *mongoEnvironment) insertDocument() bson.M {
 	return bson.M{
-		"name":        m.Name,
-		"scope":       m.Scope,
-		"env_name":    m.EnvName,
-		"create_time": m.CreateTime,
+		mongoFieldName:       m.Name,
+		mongoFieldScope:      m.Scope,
+		mongoFieldEnvName:    m.EnvName,
+		mongoFieldCreateTime: m.CreateTime,
 	}
 }
 

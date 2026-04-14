@@ -1,4 +1,5 @@
-load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "tls",
@@ -8,9 +9,8 @@ go_library(
     deps = ["@org_golang_google_grpc//credentials"],
 )
 
-go_test(
+go_unittest(
     name = "tls_test",
-    size = "small",
     srcs = ["tls_test.go"],
     data = glob(["testdata/**"]),
     embed = [":tls"],

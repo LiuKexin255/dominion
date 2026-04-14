@@ -1,0 +1,69 @@
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@tar.bzl", "mutate", "tar")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/infra/deploy/app/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/grpc",
+        "//pkg/mongo",
+        "//projects/infra/deploy",
+        "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/runtime/k8s",
+        "//projects/infra/deploy/storage",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//mongo",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "cmd_test",
+    srcs = ["main_test.go"],
+    embed = [":cmd_lib"],
+    deps = [
+        "//pkg/mongo",
+        "//projects/infra/deploy/domain",
+        "@org_mongodb_go_mongo_driver//mongo",
+    ],
+)
+
+tar(
+    name = "deploy_layer",
+    srcs = [
+        ":cmd",
+    ],
+    mutate = mutate(strip_prefix = package_name() + "/cmd_"),
+)
+
+oci_image(
+    name = "deploy_image",
+    base = "@distroless_base",
+    entrypoint = ["/cmd"],
+    tars = [":deploy_layer"],
+)
+
+expand_template(
+    name = "stamped",
+    out = "_stamped.tags.txt",
+    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
+    template = ["dev"],
+)
+
+oci_push(
+    name = "deploy_image_push",
+    image = ":deploy_image",
+    remote_tags = ":stamped",
+    repository = "registry.liukexin.com/projects/infra/deploy",
+)

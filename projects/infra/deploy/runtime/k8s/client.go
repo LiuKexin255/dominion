@@ -2,17 +2,16 @@ package k8s
 
 import (
 	"fmt"
-	"strings"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 var (
-	// runtimeRESTConfigLoader 加载 kubeconfig 并返回 REST 配置。
-	runtimeRESTConfigLoader = loadRuntimeRESTConfig
+	// runtimeRESTConfigLoader 加载运行时 REST 配置。
+	runtimeRESTConfigLoader = rest.InClusterConfig
+	// runtimeInClusterRESTConfigLoader 加载集群内 REST 配置。
 	// runtimeTypedClientConstructor 根据 REST 配置创建 typed Kubernetes 客户端。
 	runtimeTypedClientConstructor = func(config *rest.Config) (kubernetes.Interface, error) {
 		return kubernetes.NewForConfig(config)
@@ -30,16 +29,11 @@ type RuntimeClient struct {
 	K8sConfig     *K8sConfig
 }
 
-// NewRuntimeClient 按标准 kubeconfig 加载规则初始化运行时客户端。
-func NewRuntimeClient(kubeconfigPath string) (*RuntimeClient, error) {
-	restConfig, err := runtimeRESTConfigLoader(kubeconfigPath)
+// NewRuntimeClient 初始化运行时客户端，并仅使用集群内配置。
+func NewRuntimeClient() (*RuntimeClient, error) {
+	restConfig, err := runtimeRESTConfigLoader()
 	if err != nil {
-		trimmedPath := strings.TrimSpace(kubeconfigPath)
-		if trimmedPath != "" {
-			return nil, fmt.Errorf("加载 kubeconfig %q 失败: %w", trimmedPath, err)
-		}
-
-		return nil, fmt.Errorf("按默认规则加载 kubeconfig 失败: %w", err)
+		return nil, fmt.Errorf("加载集群内 kubernetes 配置失败: %w", err)
 	}
 
 	return NewRuntimeClientWithConfig(restConfig)
@@ -68,18 +62,4 @@ func NewRuntimeClientWithConfig(restConfig *rest.Config) (*RuntimeClient, error)
 		DynamicClient: dynamicClient,
 		K8sConfig:     k8sConfig,
 	}, nil
-}
-
-func loadRuntimeRESTConfig(kubeconfigPath string) (*rest.Config, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if trimmedPath := strings.TrimSpace(kubeconfigPath); trimmedPath != "" {
-		loadingRules.ExplicitPath = trimmedPath
-	}
-
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		loadingRules,
-		&clientcmd.ConfigOverrides{},
-	)
-
-	return clientConfig.ClientConfig()
 }

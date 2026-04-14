@@ -1,5 +1,6 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("//tools/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "deploy_lib",
@@ -21,9 +22,8 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-go_test(
+go_unittest(
     name = "deploy_test",
-    size = "small",
     srcs = ["main_test.go"],
     embed = [":deploy_lib"],
     deps = [

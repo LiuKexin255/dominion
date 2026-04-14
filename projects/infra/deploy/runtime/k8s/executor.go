@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	"dominion/projects/infra/deploy/domain"
-	deployruntime "dominion/projects/infra/deploy/runtime"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/kubernetes/typed/apps/v1"
+	v1 "k8s.io/client-go/kubernetes/typed/apps/v1"
 	coretypedv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
@@ -23,8 +23,6 @@ const (
 	resourceKindPVC        = "PersistentVolumeClaim"
 	resourceKindSecret     = "Secret"
 )
-
-var _ deployruntime.EnvironmentRuntime = (*K8sRuntime)(nil)
 
 // K8sRuntime reconciles deploy environments into Kubernetes resources.
 type K8sRuntime struct {
@@ -124,7 +122,7 @@ func (r *K8sRuntime) applyDeployment(ctx context.Context, workload *DeploymentWo
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindDeployment, workload.WorkloadName(), err)
 	}
 
-	return applyDeploymentResource(ctx, resourceKindDeployment, desired.Namespace, desired.Name,
+	return applyDeploymentResource(ctx, resourceKindDeployment, desired.Name,
 		r.client.TypedClient.AppsV1().Deployments(desired.Namespace), desired)
 }
 
@@ -138,7 +136,7 @@ func (r *K8sRuntime) applyService(ctx context.Context, workload *DeploymentWorkl
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindService, workload.ServiceResourceName(), err)
 	}
 
-	return applyTypedService(ctx, desired.Namespace, desired.Name,
+	return applyTypedService(ctx, desired.Name,
 		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
 }
 
@@ -213,7 +211,7 @@ func (r *K8sRuntime) applySecret(ctx context.Context, workload *MongoDBWorkload)
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindSecret, workload.SecretResourceName(), err)
 	}
 
-	return applyTypedSecret(ctx, desired.Namespace, desired.Name,
+	return applyTypedSecret(ctx, desired.Name,
 		r.client.TypedClient.CoreV1().Secrets(desired.Namespace), desired)
 }
 
@@ -227,7 +225,7 @@ func (r *K8sRuntime) applyMongoDBDeployment(ctx context.Context, workload *Mongo
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindDeployment, workload.ResourceName(), err)
 	}
 
-	return applyDeploymentResource(ctx, resourceKindDeployment, desired.Namespace, desired.Name,
+	return applyDeploymentResource(ctx, resourceKindDeployment, desired.Name,
 		r.client.TypedClient.AppsV1().Deployments(desired.Namespace), desired)
 }
 
@@ -241,7 +239,7 @@ func (r *K8sRuntime) applyMongoDBService(ctx context.Context, workload *MongoDBW
 		return fmt.Errorf("构建 %s %s 失败: %w", resourceKindService, workload.ServiceResourceName(), err)
 	}
 
-	return applyTypedService(ctx, desired.Namespace, desired.Name,
+	return applyTypedService(ctx, desired.Name,
 		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
 }
 
@@ -337,7 +335,6 @@ func (r *K8sRuntime) deleteSecrets(ctx context.Context, namespace string, matchL
 func applyDeploymentResource(
 	ctx context.Context,
 	kind string,
-	namespace string,
 	name string,
 	client v1.DeploymentInterface,
 	desired *appsv1.Deployment,
@@ -346,33 +343,33 @@ func applyDeploymentResource(
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 %s %s/%s 失败: %w", kind, namespace, name, err)
+				return fmt.Errorf("创建 %s %s 失败: %w", kind, name, err)
 			}
 			return nil
 		}
 
-		return fmt.Errorf("获取 %s %s/%s 失败: %w", kind, namespace, name, err)
+		return fmt.Errorf("获取 %s %s 失败: %w", kind, name, err)
 	}
 
 	desired.ResourceVersion = current.ResourceVersion
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 %s %s/%s 失败: %w", kind, namespace, name, err)
+		return fmt.Errorf("更新 %s %s 失败: %w", kind, name, err)
 	}
 
 	return nil
 }
 
-func applyTypedService(ctx context.Context, namespace string, name string, client coretypedv1.ServiceInterface, desired *corev1.Service) error {
+func applyTypedService(ctx context.Context, name string, client coretypedv1.ServiceInterface, desired *corev1.Service) error {
 	current, err := client.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 %s %s/%s 失败: %w", resourceKindService, namespace, name, err)
+				return fmt.Errorf("创建 %s %s 失败: %w", resourceKindService, name, err)
 			}
 			return nil
 		}
 
-		return fmt.Errorf("获取 %s %s/%s 失败: %w", resourceKindService, namespace, name, err)
+		return fmt.Errorf("获取 %s %s 失败: %w", resourceKindService, name, err)
 	}
 
 	desired.ResourceVersion = current.ResourceVersion
@@ -383,28 +380,28 @@ func applyTypedService(ctx context.Context, namespace string, name string, clien
 	desired.Spec.HealthCheckNodePort = current.Spec.HealthCheckNodePort
 	desired.Spec.AllocateLoadBalancerNodePorts = current.Spec.AllocateLoadBalancerNodePorts
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 %s %s/%s 失败: %w", resourceKindService, namespace, name, err)
+		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindService, name, err)
 	}
 
 	return nil
 }
 
-func applyTypedSecret(ctx context.Context, namespace string, name string, client coretypedv1.SecretInterface, desired *corev1.Secret) error {
+func applyTypedSecret(ctx context.Context, name string, client coretypedv1.SecretInterface, desired *corev1.Secret) error {
 	current, err := client.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 %s %s/%s 失败: %w", resourceKindSecret, namespace, name, err)
+				return fmt.Errorf("创建 %s %s 失败: %w", resourceKindSecret, name, err)
 			}
 			return nil
 		}
 
-		return fmt.Errorf("获取 %s %s/%s 失败: %w", resourceKindSecret, namespace, name, err)
+		return fmt.Errorf("获取 %s %s 失败: %w", resourceKindSecret, name, err)
 	}
 
 	desired.ResourceVersion = current.ResourceVersion
 	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 %s %s/%s 失败: %w", resourceKindSecret, namespace, name, err)
+		return fmt.Errorf("更新 %s %s 失败: %w", resourceKindSecret, name, err)
 	}
 
 	return nil

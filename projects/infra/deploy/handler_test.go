@@ -12,6 +12,32 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
+type fakeQueue struct {
+	normalEnqueued   []domain.EnvironmentName
+	priorityEnqueued []domain.EnvironmentName
+	err              error
+}
+
+func newFakeQueue() *fakeQueue {
+	return &fakeQueue{}
+}
+
+func (q *fakeQueue) Enqueue(_ context.Context, envName domain.EnvironmentName) error {
+	if q.err != nil {
+		return q.err
+	}
+	q.normalEnqueued = append(q.normalEnqueued, envName)
+	return nil
+}
+
+func (q *fakeQueue) EnqueueWithPriority(_ context.Context, envName domain.EnvironmentName) error {
+	if q.err != nil {
+		return q.err
+	}
+	q.priorityEnqueued = append(q.priorityEnqueued, envName)
+	return nil
+}
+
 func TestHandler_GetEnvironment(t *testing.T) {
 	ctx := context.Background()
 
@@ -41,7 +67,7 @@ func TestHandler_GetEnvironment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, NewReconciler(repo))
+			handler := NewHandler(repo, newFakeQueue())
 
 			// when
 			got, err := handler.GetEnvironment(ctx, tt.request)
@@ -111,7 +137,7 @@ func TestHandler_ListEnvironments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, NewReconciler(repo))
+			handler := NewHandler(repo, newFakeQueue())
 
 			// when
 			got, err := handler.ListEnvironments(ctx, tt.request)
@@ -140,22 +166,24 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		seed      []*domain.Environment
-		repoSetup func(*fakeRepository)
-		request   *CreateEnvironmentRequest
-		wantState EnvironmentState
-		wantCode  codes.Code
+		name         string
+		seed         []*domain.Environment
+		repoSetup    func(*fakeRepository)
+		request      *CreateEnvironmentRequest
+		wantState    EnvironmentState
+		wantEnqueued int
+		wantCode     codes.Code
 	}{
 		{
-			name: "success returns pending",
+			name: "success returns reconciling and enqueues",
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
 				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
 			},
-			wantState: EnvironmentState_ENVIRONMENT_STATE_PENDING,
-			wantCode:  codes.OK,
+			wantState:    EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+			wantEnqueued: 1,
+			wantCode:     codes.OK,
 		},
 		{
 			name: "duplicate",
@@ -197,6 +225,16 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			},
 			wantCode: codes.Internal,
 		},
+		{
+			name:      "enqueue error",
+			repoSetup: func(_ *fakeRepository) {},
+			request: &CreateEnvironmentRequest{
+				Parent:      "deploy/scopes/dev",
+				EnvName:     "alpha",
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+			},
+			wantCode: codes.Internal,
+		},
 	}
 
 	for _, tt := range tests {
@@ -206,7 +244,11 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			if tt.repoSetup != nil {
 				tt.repoSetup(repo)
 			}
-			handler := NewHandler(repo, NewReconciler(repo))
+			q := newFakeQueue()
+			if tt.name == "enqueue error" {
+				q.err = errors.New("queue full")
+			}
+			handler := NewHandler(repo, q)
 
 			// when
 			got, err := handler.CreateEnvironment(ctx, tt.request)
@@ -219,6 +261,9 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			if got.GetStatus().GetState() != tt.wantState {
 				t.Fatalf("CreateEnvironment() state = %v, want %v", got.GetStatus().GetState(), tt.wantState)
 			}
+			if len(q.normalEnqueued) != tt.wantEnqueued {
+				t.Fatalf("CreateEnvironment() enqueued = %d, want %d", len(q.normalEnqueued), tt.wantEnqueued)
+			}
 		})
 	}
 }
@@ -228,7 +273,7 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 
 	// given
 	repo := newFakeRepository()
-	handler := NewHandler(repo, NewReconciler(repo))
+	handler := NewHandler(repo, newFakeQueue())
 	createReq := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
@@ -246,11 +291,11 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEnvironment() error = %v", err)
 	}
-	if created.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
-		t.Fatalf("CreateEnvironment() state = %v, want %v", created.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
+	if created.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
+		t.Fatalf("CreateEnvironment() state = %v, want %v", created.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
 	}
-	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_READY {
-		t.Fatalf("GetEnvironment() state = %v, want %v", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_READY)
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
+		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
 	}
 }
 
@@ -258,14 +303,15 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		seed      func(t *testing.T) *domain.Environment
-		request   *UpdateEnvironmentRequest
-		wantState EnvironmentState
-		wantCode  codes.Code
+		name         string
+		seed         func(t *testing.T) *domain.Environment
+		request      *UpdateEnvironmentRequest
+		wantState    EnvironmentState
+		wantEnqueued int
+		wantCode     codes.Code
 	}{
 		{
-			name: "success returns reconciling",
+			name: "success returns reconciling and enqueues",
 			seed: func(t *testing.T) *domain.Environment {
 				env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
 				if err := env.MarkReconciling(); err != nil {
@@ -280,8 +326,9 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 				Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()},
 				UpdateMask:  &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
 			},
-			wantState: EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
-			wantCode:  codes.OK,
+			wantState:    EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+			wantEnqueued: 1,
+			wantCode:     codes.OK,
 		},
 		{
 			name: "not found",
@@ -317,7 +364,8 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 					t.Fatalf("repo.Save() error = %v", err)
 				}
 			}
-			handler := NewHandler(repo, NewReconciler(repo))
+			q := newFakeQueue()
+			handler := NewHandler(repo, q)
 
 			// when
 			got, err := handler.UpdateEnvironment(ctx, tt.request)
@@ -329,6 +377,9 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 			}
 			if got.GetStatus().GetState() != tt.wantState {
 				t.Fatalf("UpdateEnvironment() state = %v, want %v", got.GetStatus().GetState(), tt.wantState)
+			}
+			if len(q.normalEnqueued) != tt.wantEnqueued {
+				t.Fatalf("UpdateEnvironment() enqueued = %d, want %d", len(q.normalEnqueued), tt.wantEnqueued)
 			}
 		})
 	}
@@ -349,7 +400,7 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("repo.Save() error = %v", err)
 	}
-	handler := NewHandler(repo, NewReconciler(repo))
+	handler := NewHandler(repo, newFakeQueue())
 	updateReq := &UpdateEnvironmentRequest{
 		Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()},
 		UpdateMask:  &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
@@ -369,8 +420,8 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if updated.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
 		t.Fatalf("UpdateEnvironment() state = %v, want %v", updated.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
 	}
-	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_READY {
-		t.Fatalf("GetEnvironment() state = %v, want %v", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_READY)
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
+		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
 	}
 }
 
@@ -378,18 +429,20 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name     string
-		seed     []*domain.Environment
-		request  *DeleteEnvironmentRequest
-		wantResp *emptypb.Empty
-		wantCode codes.Code
+		name         string
+		seed         []*domain.Environment
+		request      *DeleteEnvironmentRequest
+		wantResp     *emptypb.Empty
+		wantEnqueued int
+		wantCode     codes.Code
 	}{
 		{
-			name:     "success",
-			seed:     []*domain.Environment{mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())},
-			request:  &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"},
-			wantResp: new(emptypb.Empty),
-			wantCode: codes.OK,
+			name:         "success marks deleting and enqueues with priority",
+			seed:         []*domain.Environment{mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())},
+			request:      &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"},
+			wantResp:     new(emptypb.Empty),
+			wantEnqueued: 1,
+			wantCode:     codes.OK,
 		},
 		{
 			name:     "not found",
@@ -402,7 +455,8 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, NewReconciler(repo))
+			q := newFakeQueue()
+			handler := NewHandler(repo, q)
 
 			// when
 			got, err := handler.DeleteEnvironment(ctx, tt.request)
@@ -415,7 +469,34 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 			if got == nil || tt.wantResp == nil {
 				t.Fatalf("DeleteEnvironment() got = %v, want non-nil empty response", got)
 			}
+			if len(q.priorityEnqueued) != tt.wantEnqueued {
+				t.Fatalf("DeleteEnvironment() priority enqueued = %d, want %d", len(q.priorityEnqueued), tt.wantEnqueued)
+			}
 		})
+	}
+}
+
+func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+	repo := newFakeRepository(env)
+	handler := NewHandler(repo, newFakeQueue())
+
+	// when
+	_, err := handler.DeleteEnvironment(ctx, &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
+	if err != nil {
+		t.Fatalf("DeleteEnvironment() error = %v", err)
+	}
+
+	// then - env still exists with deleting state
+	got, err := repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v, want env to still exist in repo", err)
+	}
+	if got.Status().State != domain.StateDeleting {
+		t.Fatalf("env state = %v, want %v", got.Status().State, domain.StateDeleting)
 	}
 }
 
@@ -430,7 +511,7 @@ func TestHandler_errorMapping(t *testing.T) {
 	}{
 		{
 			name:    "not found maps to not found",
-			handler: NewHandler(&errorRepository{getErr: domain.ErrNotFound}, &Reconciler{repo: &errorRepository{getErr: domain.ErrNotFound}}),
+			handler: NewHandler(&errorRepository{getErr: domain.ErrNotFound}, newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
 				return err
@@ -439,7 +520,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "already exists maps to already exists",
-			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, nil),
+			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{DesiredState: newProtoDesiredState()}})
 				return err
@@ -448,7 +529,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid state maps to failed precondition",
-			handler: NewHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, nil),
+			handler: NewHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.UpdateEnvironment(ctx, &UpdateEnvironmentRequest{Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()}})
 				return err
@@ -457,7 +538,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid name maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), nil),
+			handler: NewHandler(newFakeRepository(), newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "bad-name"})
 				return err
@@ -466,7 +547,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid spec maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), nil),
+			handler: NewHandler(newFakeRepository(), newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{}})
 				return err
@@ -503,6 +584,13 @@ func (r *errorRepository) Get(_ context.Context, _ domain.EnvironmentName) (*dom
 		return r.getEnv, nil
 	}
 	return nil, domain.ErrNotFound
+}
+
+func (r *errorRepository) ListByStates(_ context.Context, _ ...domain.EnvironmentState) ([]*domain.Environment, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	return r.listEnvs, nil
 }
 
 func (r *errorRepository) ListByScope(_ context.Context, _ string, _ int32, _ string) ([]*domain.Environment, string, error) {

@@ -1,5 +1,3 @@
-//go:build cmd
-
 package main
 
 import (
@@ -19,6 +17,7 @@ import (
 	"dominion/pkg/mongo"
 	"dominion/projects/infra/deploy"
 	"dominion/projects/infra/deploy/domain"
+	"dominion/projects/infra/deploy/runtime/k8s"
 	"dominion/projects/infra/deploy/storage"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -48,8 +47,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("create deploy repository: %v", err)
 	}
-	reconciler := deploy.NewReconciler(repo)
-	handler := deploy.NewHandler(repo, reconciler)
+	queue := domain.NewQueue()
+	handler := deploy.NewHandler(repo, queue)
+	runtimeClient, err := k8s.NewRuntimeClient()
+	if err != nil {
+		log.Fatalf("create deploy runtime client: %v", err)
+	}
+	runtimeImpl := k8s.NewK8sRuntime(runtimeClient)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 3)
+
+	if err := domain.Recover(ctx, repo, queue); err != nil {
+		log.Fatalf("recover deploy environments: %v", err)
+	}
+	worker := domain.NewWorker(repo, queue, runtimeImpl)
+	go func() {
+		<-ctx.Done()
+		queue.Stop()
+	}()
+	go func() {
+		if err := worker.Run(ctx); err != nil {
+			errCh <- err
+		}
+	}()
 
 	grpcListener, err := net.Listen("tcp", normalizeListenAddr(*grpcPort))
 	if err != nil {
@@ -67,10 +89,6 @@ func main() {
 		Addr:    normalizeListenAddr(*httpPort),
 		Handler: httpMux,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	errCh := make(chan error, 2)
 
 	go func() {
 		<-ctx.Done()

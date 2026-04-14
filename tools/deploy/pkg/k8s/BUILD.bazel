@@ -1,4 +1,5 @@
-load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "k8s",
@@ -39,9 +40,8 @@ go_library(
     ],
 )
 
-go_test(
+go_unittest(
     name = "k8s_test",
-    size = "small",
     srcs = [
         "builder_test.go",
         "client_test.go",

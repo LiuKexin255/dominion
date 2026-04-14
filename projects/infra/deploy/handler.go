@@ -18,23 +18,24 @@ import (
 
 const deployParentPrefix = "deploy/scopes/"
 
+type Enqueuer interface {
+	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
+	EnqueueWithPriority(ctx context.Context, envName domain.EnvironmentName) error
+}
+
 // Handler implements DeployServiceServer.
 type Handler struct {
 	UnimplementedDeployServiceServer
 
-	repo       domain.Repository
-	reconciler *Reconciler
+	repo  domain.Repository
+	queue Enqueuer
 }
 
 // NewHandler creates a deploy gRPC handler.
-func NewHandler(repo domain.Repository, reconciler *Reconciler) *Handler {
-	if reconciler == nil {
-		reconciler = NewReconciler(repo)
-	}
-
+func NewHandler(repo domain.Repository, queue Enqueuer) *Handler {
 	return &Handler{
-		repo:       repo,
-		reconciler: reconciler,
+		repo:  repo,
+		queue: queue,
 	}
 }
 
@@ -108,16 +109,19 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
+	if err := env.MarkReconciling(); err != nil {
+		return nil, toStatusError(err)
+	}
+
 	if err := h.repo.Save(ctx, env); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	snapshot := toProtoEnvironment(env)
-	if err := h.reconciler.Reconcile(ctx, envName); err != nil {
+	if err := h.queue.Enqueue(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	return snapshot, nil
+	return toProtoEnvironment(env), nil
 }
 
 // UpdateEnvironment updates desired state and returns the pre-reconcile snapshot.
@@ -149,15 +153,13 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	snapshot := toProtoEnvironment(env)
-	if err := h.reconciler.Reconcile(ctx, envName); err != nil {
+	if err := h.queue.Enqueue(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	return snapshot, nil
+	return toProtoEnvironment(env), nil
 }
 
-// DeleteEnvironment deletes an environment by resource name.
 func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentRequest) (*emptypb.Empty, error) {
 	envName, err := domain.ParseResourceName(req.GetName())
 	if err != nil {
@@ -173,7 +175,11 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if err := h.repo.Delete(ctx, envName); err != nil {
+	if err := h.repo.Save(ctx, env); err != nil {
+		return nil, toStatusError(err)
+	}
+
+	if err := h.queue.EnqueueWithPriority(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 

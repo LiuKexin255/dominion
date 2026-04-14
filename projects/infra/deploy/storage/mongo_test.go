@@ -531,6 +531,37 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 	})
 }
 
+func TestMongoRepository_ListByStates(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("filters by any requested state", func(t *testing.T) {
+		// given
+		repo, collection := newMongoRepositoryForTest()
+		envs := []*domain.Environment{
+			newMongoStateTestEnv(t, "dev", "alpha", "env alpha", domain.StateReady, "etag-alpha"),
+			newMongoStateTestEnv(t, "dev", "charlie", "env charlie", domain.StateReconciling, "etag-charlie"),
+			newMongoStateTestEnv(t, "prod", "bravo", "env bravo", domain.StateFailed, "etag-bravo"),
+			newMongoStateTestEnv(t, "prod", "delta", "env delta", domain.StateReady, "etag-delta"),
+		}
+		for _, env := range envs {
+			if err := repo.Save(ctx, env); err != nil {
+				t.Fatalf("Save() unexpected error: %v", err)
+			}
+		}
+
+		// when
+		got, err := repo.ListByStates(ctx, domain.StateFailed, domain.StateReady)
+
+		// then
+		if err != nil {
+			t.Fatalf("ListByStates() unexpected error: %v", err)
+		}
+		assertEnvironmentNames(t, got, []string{"alpha", "bravo", "delta"})
+		assertBSONMapEqual(t, collection.lastFindFilter, bson.M{"status.state": bson.M{"$in": []int{int(domain.StateFailed), int(domain.StateReady)}}}, "Find() filter")
+		assertFindSort(t, collection.lastFindOptions, bson.D{{Key: "name", Value: 1}})
+	})
+}
+
 func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	originalNewCollection := newCollection
 	t.Cleanup(func() {
@@ -657,10 +688,52 @@ func (f *fakeCollectionOps) Find(_ context.Context, filter any, opts ...*options
 		return nil, err
 	}
 	scope, _ := filterDoc["scope"].(string)
+	var stateSet map[int]struct{}
+	_, hasStateFilter := filterDoc["status.state"]
+	if hasStateFilter {
+		stateSet = make(map[int]struct{})
+		stateFilterDoc, err := anyToBSONMap(filterDoc["status.state"])
+		if err != nil {
+			return nil, err
+		}
+		if rawStates, ok := stateFilterDoc["$in"]; ok {
+			rv := reflect.ValueOf(rawStates)
+			addState := func(raw any) {
+				switch v := raw.(type) {
+				case int:
+					stateSet[v] = struct{}{}
+				case int32:
+					stateSet[int(v)] = struct{}{}
+				case int64:
+					stateSet[int(v)] = struct{}{}
+				case float64:
+					stateSet[int(v)] = struct{}{}
+				}
+			}
+			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+				for i := 0; i < rv.Len(); i++ {
+					addState(rv.Index(i).Interface())
+				}
+			} else {
+				addState(rawStates)
+			}
+		}
+	}
 
 	docs := make([]*mongoEnvironment, 0)
 	for _, doc := range f.docs {
-		if doc.Scope == scope {
+		if scope != "" && doc.Scope != scope {
+			continue
+		}
+		if hasStateFilter {
+			if doc.Status == nil {
+				continue
+			}
+			if _, ok := stateSet[doc.Status.State]; !ok {
+				continue
+			}
+		}
+		if scope != "" || hasStateFilter {
 			copy := *doc
 			docs = append(docs, &copy)
 		}
@@ -906,6 +979,49 @@ func newMongoSaveTestEnv(t *testing.T, scope, envName, description, image, etag 
 	return rehydrated
 }
 
+func newMongoStateTestEnv(t *testing.T, scope, envName, description string, state domain.EnvironmentState, etag string) *domain.Environment {
+	t.Helper()
+
+	name, err := domain.NewEnvironmentName(scope, envName)
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() error = %v", err)
+	}
+	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	env, err := domain.NewEnvironment(name, description, &domain.DesiredState{
+		Services: []*domain.ServiceSpec{
+			{
+				Name:     "svc1",
+				App:      "app1",
+				Image:    "image:v1",
+				Replicas: 2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewEnvironment() error = %v", err)
+	}
+
+	rehydrated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         name,
+		Description:  description,
+		DesiredState: env.DesiredState(),
+		Status: &domain.EnvironmentStatus{
+			State:             state,
+			Message:           "state",
+			LastReconcileTime: baseTime.Add(2 * time.Minute),
+			LastSuccessTime:   baseTime.Add(3 * time.Minute),
+		},
+		CreateTime: baseTime,
+		UpdateTime: baseTime.Add(5 * time.Minute),
+		ETag:       etag,
+	})
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() error = %v", err)
+	}
+
+	return rehydrated
+}
+
 func assertEnvironmentEqual(t *testing.T, got *domain.Environment, want *domain.Environment) {
 	t.Helper()
 
@@ -976,6 +1092,21 @@ func assertFindOptions(t *testing.T, opts *options.FindOptions, wantSkip int64, 
 	}
 	if opts.Limit == nil || *opts.Limit != wantLimit {
 		t.Fatalf("Find() limit = %v, want %d", opts.Limit, wantLimit)
+	}
+	gotSort, ok := opts.Sort.(bson.D)
+	if !ok {
+		t.Fatalf("Find() sort type = %T, want bson.D", opts.Sort)
+	}
+	if !reflect.DeepEqual(gotSort, wantSort) {
+		t.Fatalf("Find() sort = %#v, want %#v", gotSort, wantSort)
+	}
+}
+
+func assertFindSort(t *testing.T, opts *options.FindOptions, wantSort bson.D) {
+	t.Helper()
+
+	if opts == nil {
+		t.Fatal("Find() options = nil, want non-nil")
 	}
 	gotSort, ok := opts.Sort.(bson.D)
 	if !ok {

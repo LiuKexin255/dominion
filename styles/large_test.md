@@ -13,7 +13,7 @@
 
 * name：测试计划名
 * deploy：被测系统部署配置配置，通过 `deploy(//tools/deploy)` 工具进行部署，测试完成后移除。
-* cases: 测试用例列表，在部署完成后执行
+* cases: 测试用例列表，在部署完成后执行。
 
 ```markdown
 # 测试计划样例
@@ -24,6 +24,8 @@
 ## Test cases
 * //projects/infra/deploy/testplan:integration_test # 最好把接口测试也跟测试计划放进一个目录
 ```
+
+* 大型测试的 `target` 使用专用的 `bazel rule`，例如 `golang` 使用 `go_largetest(//tools/go:defs.bzl)`。
 
 ## SUT 分类
 

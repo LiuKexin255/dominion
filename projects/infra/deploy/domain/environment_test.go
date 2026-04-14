@@ -326,6 +326,70 @@ func TestEnvironment_MarkFailed(t *testing.T) {
 	}
 }
 
+func TestEnvironment_SetStatusMessage(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(*testing.T, *Environment)
+		message     string
+		wantErr     error
+		wantState   EnvironmentState
+		wantMessage string
+		checkTime   bool
+	}{
+		{
+			name:    "deleting sets message",
+			message: "delete failed",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkDeleting(); err != nil {
+					t.Fatalf("MarkDeleting() unexpected error: %v", err)
+				}
+			},
+			wantState:   StateDeleting,
+			wantMessage: "delete failed",
+			checkTime:   true,
+		},
+		{
+			name:        "pending is invalid",
+			message:     "delete failed",
+			wantErr:     ErrInvalidState,
+			wantState:   StatePending,
+			wantMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+			previousUpdateTime := env.updateTime
+
+			// when
+			err := env.SetStatusMessage(tt.message)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("SetStatusMessage() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("SetStatusMessage() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if env.status.Message != tt.wantMessage {
+				t.Fatalf("status.Message = %q, want %q", env.status.Message, tt.wantMessage)
+			}
+			if tt.checkTime && !env.updateTime.Equal(previousUpdateTime) {
+				t.Fatalf("updateTime = %v, want %v", env.updateTime, previousUpdateTime)
+			}
+		})
+	}
+}
+
 func TestEnvironment_MarkDeleting(t *testing.T) {
 	tests := []struct {
 		name      string

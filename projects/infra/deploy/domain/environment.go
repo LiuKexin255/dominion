@@ -193,6 +193,16 @@ func (e *Environment) MarkDeleting() error {
 	return e.transitionTo(StateDeleting)
 }
 
+// SetStatusMessage records a status message while the environment remains deleting.
+func (e *Environment) SetStatusMessage(msg string) error {
+	if e.status.State != StateDeleting {
+		return ErrInvalidState
+	}
+
+	e.status.Message = msg
+	return nil
+}
+
 // Validate checks the desired state and cross-object references.
 func (e *Environment) Validate() error {
 	var errs []string

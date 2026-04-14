@@ -18,32 +18,21 @@ func TestNewRuntimeClient(t *testing.T) {
 	staticConfig := LoadK8sConfig()
 
 	tests := []struct {
-		name           string
-		kubeconfigPath string
-		restConfig     *rest.Config
-		loadErr        error
-		wantErr        bool
-		errContains    string
-		wantErrPath    bool
+		name        string
+		restConfig  *rest.Config
+		loadErr     error
+		wantErr     bool
+		errContains string
 	}{
 		{
-			name:           "custom kubeconfig path success",
-			kubeconfigPath: "/tmp/custom-kubeconfig",
-			restConfig:     &rest.Config{Host: "https://cluster.example.test"},
+			name:       "in-cluster success",
+			restConfig: &rest.Config{Host: "https://cluster.example.test"},
 		},
 		{
-			name:           "explicit path failure includes path",
-			kubeconfigPath: "/tmp/missing-kubeconfig",
-			loadErr:        errors.New("boom"),
-			wantErr:        true,
-			errContains:    "加载 kubeconfig",
-			wantErrPath:    true,
-		},
-		{
-			name:        "default loading failure uses default-rules message",
+			name:        "in-cluster loading failure uses in-cluster message",
 			loadErr:     errors.New("boom"),
 			wantErr:     true,
-			errContains: "按默认规则加载 kubeconfig 失败",
+			errContains: "加载集群内 kubernetes 配置失败",
 		},
 	}
 
@@ -58,15 +47,13 @@ func TestNewRuntimeClient(t *testing.T) {
 				runtimeDynamicClientConstructor = originalDynamicConstructor
 			})
 
-			var gotKubeconfigPath string
 			var gotTypedConfig *rest.Config
 			var gotDynamicConfig *rest.Config
 
 			fakeTypedClient := kubernetesfake.NewSimpleClientset()
 			fakeDynamicClient := dynamicfake.NewSimpleDynamicClient(apiRuntime.NewScheme())
 
-			runtimeRESTConfigLoader = func(kubeconfigPath string) (*rest.Config, error) {
-				gotKubeconfigPath = kubeconfigPath
+			runtimeRESTConfigLoader = func() (*rest.Config, error) {
 				if tt.loadErr != nil {
 					return nil, tt.loadErr
 				}
@@ -82,16 +69,13 @@ func TestNewRuntimeClient(t *testing.T) {
 				return fakeDynamicClient, nil
 			}
 
-			client, err := NewRuntimeClient(tt.kubeconfigPath)
+			client, err := NewRuntimeClient()
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("NewRuntimeClient() expected error")
 				}
 				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Fatalf("error = %v, want contains %q", err, tt.errContains)
-				}
-				if tt.wantErrPath && !strings.Contains(err.Error(), tt.kubeconfigPath) {
-					t.Fatalf("error = %v, want contains path %q", err, tt.kubeconfigPath)
 				}
 				if client != nil {
 					t.Fatal("NewRuntimeClient() returned runtime client on failure")
@@ -103,9 +87,6 @@ func TestNewRuntimeClient(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewRuntimeClient() failed: %v", err)
 			}
-			if gotKubeconfigPath != tt.kubeconfigPath {
-				t.Fatalf("kubeconfig path = %q, want %q", gotKubeconfigPath, tt.kubeconfigPath)
-			}
 			if gotTypedConfig != tt.restConfig {
 				t.Fatal("typed client did not receive the original rest config")
 			}
@@ -114,6 +95,67 @@ func TestNewRuntimeClient(t *testing.T) {
 			}
 
 			assertRuntimeClient(t, client, fakeTypedClient, fakeDynamicClient, staticConfig)
+		})
+	}
+}
+
+func TestLoadRuntimeRESTConfig(t *testing.T) {
+	tests := []struct {
+		name                string
+		inClusterConfig     *rest.Config
+		inClusterErr        error
+		wantConfig          *rest.Config
+		wantErr             bool
+		wantInClusterCalled bool
+	}{
+		{
+			name:                "uses in-cluster config only",
+			inClusterConfig:     &rest.Config{Host: "https://from-in-cluster.example.test"},
+			wantConfig:          &rest.Config{Host: "https://from-in-cluster.example.test"},
+			wantInClusterCalled: true,
+		},
+		{
+			name:                "returns in-cluster error",
+			inClusterErr:        errors.New("not in cluster"),
+			wantErr:             true,
+			wantInClusterCalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalInClusterLoader := runtimeRESTConfigLoader
+			t.Cleanup(func() {
+				runtimeRESTConfigLoader = originalInClusterLoader
+			})
+
+			var inClusterCalled bool
+
+			runtimeRESTConfigLoader = func() (*rest.Config, error) {
+				inClusterCalled = true
+				if tt.inClusterErr != nil {
+					return nil, tt.inClusterErr
+				}
+				return tt.inClusterConfig, nil
+			}
+
+			got, err := runtimeRESTConfigLoader()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("loadRuntimeRESTConfig() expected error")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("loadRuntimeRESTConfig() failed: %v", err)
+				}
+				if !reflect.DeepEqual(got, tt.wantConfig) {
+					t.Fatalf("rest config = %#v, want %#v", got, tt.wantConfig)
+				}
+			}
+
+			if inClusterCalled != tt.wantInClusterCalled {
+				t.Fatalf("in-cluster called = %v, want %v", inClusterCalled, tt.wantInClusterCalled)
+			}
 		})
 	}
 }

@@ -46,6 +46,37 @@ func (r *fakeRepository) Get(_ context.Context, name domain.EnvironmentName) (*d
 	return env, nil
 }
 
+func (r *fakeRepository) ListByStates(_ context.Context, states ...domain.EnvironmentState) ([]*domain.Environment, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+
+	allowedStates := make(map[domain.EnvironmentState]struct{}, len(states))
+	for _, state := range states {
+		allowedStates[state] = struct{}{}
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	filtered := make([]*domain.Environment, 0, len(r.envs))
+	for _, env := range r.envs {
+		status := env.Status()
+		if status == nil {
+			continue
+		}
+		if _, ok := allowedStates[status.State]; ok {
+			filtered = append(filtered, env)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Name().String() < filtered[j].Name().String()
+	})
+
+	return filtered, nil
+}
+
 func (r *fakeRepository) ListByScope(_ context.Context, scope string, pageSize int32, pageToken string) ([]*domain.Environment, string, error) {
 	if r.listErr != nil {
 		return nil, "", r.listErr

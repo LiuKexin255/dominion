@@ -1,5 +1,3 @@
-//go:build cmd
-
 package main
 
 import (
@@ -36,7 +34,7 @@ func TestNewRepository_UsesDeployMongoTarget(t *testing.T) {
 	if gotTarget != deployMongoTarget {
 		t.Fatalf("newRepository() target = %q, want %q", gotTarget, deployMongoTarget)
 	}
-	if got != wantRepo {
+	if got != domain.Repository(wantRepo) {
 		t.Fatalf("newRepository() repository = %T, want %T", got, wantRepo)
 	}
 }
@@ -61,6 +59,10 @@ func TestNewRepository_FailsFastWhenMongoClientErrors(t *testing.T) {
 type stubRepository struct{}
 
 func (r *stubRepository) Get(context.Context, domain.EnvironmentName) (*domain.Environment, error) {
+	return nil, nil
+}
+
+func (r *stubRepository) ListByStates(context.Context, ...domain.EnvironmentState) ([]*domain.Environment, error) {
 	return nil, nil
 }
 
