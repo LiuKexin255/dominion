@@ -3,4 +3,9 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "testplan_test",
     srcs = ["integration_test.go"],
+    args = ["-test.v"],
+    env = {
+        "SUT_HOST_URL": "https://infra.liukexin.com",
+    },
+    tags = ["manual"],
 )

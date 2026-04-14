@@ -141,14 +141,3 @@ go_test(
         "@org_golang_google_protobuf//types/known/fieldmaskpb",
     ],
 )
-
-go_test(
-    name = "integration_test",
-    size = "medium",
-    srcs = ["integration_test.go"],
-    args = ["-test.v"],
-    env = {
-        "SUT_HOST_URL": "https://infra.liukexin.com",
-    },
-    tags = ["manual"],
-)
