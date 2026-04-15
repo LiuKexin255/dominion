@@ -216,48 +216,54 @@ func Test_newObjectName(t *testing.T) {
 		name        string
 		kind        WorkloadKind
 		fullEnvName string
+		app         string
 		serviceName string
 		want        string
 	}{
 		{
 			name:        "normal",
 			kind:        WorkloadKindDeployment,
-			fullEnvName: "grpc-hello-world",
+			fullEnvName: "dev",
+			app:         "grpc-hello-world",
 			serviceName: "gateway",
-			want:        "dp-grpc-hello-world-gateway-" + shortNameHash("grpc-hello-world"),
+			want:        "dp-grpc-hello-world-gateway-" + shortNameHash("dev"),
 		},
 		{
 			name:        "normalize and sanitize",
 			kind:        WorkloadKindService,
-			fullEnvName: "GRPC_HELLO_WORLD",
+			fullEnvName: "dev",
+			app:         "GRPC_HELLO_WORLD",
 			serviceName: "gateway@v1",
-			want:        "svc-grpc-hello-world-gateway-v1-" + shortNameHash("GRPC_HELLO_WORLD"),
+			want:        "svc-grpc-hello-world-gateway-v1-" + shortNameHash("dev"),
 		},
 		{
 			name:        "only kind when all parts empty",
 			kind:        WorkloadKindHTTPRoute,
 			fullEnvName: "",
+			app:         "",
 			serviceName: "",
 			want:        "route-" + shortNameHash(""),
 		},
 		{
 			name:        "fallback to unknown kind",
 			kind:        "",
-			fullEnvName: "app",
+			fullEnvName: "dev",
+			app:         "app",
 			serviceName: "svc",
-			want:        "unknown-app-svc-" + shortNameHash("app"),
+			want:        "unknown-app-svc-" + shortNameHash("dev"),
 		},
 		{
 			name:        "skip empty normalized part",
 			kind:        WorkloadKindDeployment,
 			fullEnvName: "---dev",
+			app:         "---dev",
 			serviceName: "svc",
 			want:        "dp-dev-svc-" + shortNameHash("---dev"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := newObjectName(tt.kind, tt.fullEnvName, tt.serviceName)
+			got := newObjectName(tt.kind, tt.fullEnvName, tt.app, tt.serviceName)
 			if got != tt.want {
 				t.Errorf("newObjectName() = %v, want %v", got, tt.want)
 			}

@@ -77,7 +77,7 @@ func TestMongoDBWorkloadResourceName(t *testing.T) {
 				EnvironmentName: "Dev",
 				App:             "GRPC_HELLO.WORLD",
 			},
-			want: "mongo-grpc-hello-world-mongo-main-" + shortNameHash("GRPC_HELLO.WORLD"),
+			want: "mongo-grpc-hello-world-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -104,7 +104,7 @@ func TestMongoDBWorkloadSecretResourceName(t *testing.T) {
 				EnvironmentName: "Dev",
 				App:             "grpc-hello-world",
 			},
-			want: "secret-grpc-hello-world-mongo-main-" + shortNameHash("grpc-hello-world"),
+			want: "secret-grpc-hello-world-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -132,7 +132,7 @@ func TestMongoDBWorkloadPVCResourceName(t *testing.T) {
 				App:             "grpc-hello-world",
 				ProfileName:     "dev-single",
 			},
-			want: "pvc-grpc-hello-world-mongo-main-" + shortNameHash("grpc-hello-world"),
+			want: "pvc-grpc-hello-world-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}
@@ -291,7 +291,7 @@ func TestMongoDBWorkloadServiceResourceName(t *testing.T) {
 				EnvironmentName: "Dev",
 				App:             "GRPC_HELLO.WORLD",
 			},
-			want: "svc-grpc-hello-world-mongo-main-" + shortNameHash("GRPC_HELLO.WORLD"),
+			want: "svc-grpc-hello-world-mongo-main-" + shortNameHash("Dev"),
 		},
 		{name: "nil workload", want: ""},
 	}

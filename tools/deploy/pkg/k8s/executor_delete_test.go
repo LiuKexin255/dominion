@@ -52,21 +52,21 @@ func TestExecutor_Delete_RemovesOnlyManagedResources(t *testing.T) {
 			},
 			then: func(t *testing.T, h *FakeHarness) {
 				namespace := h.RuntimeClient().K8sConfig.Namespace
-				h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", ""))
-				h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", ""))
-				h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", ""))
+				h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "grpc-hello-world", ""))
+				h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "grpc-hello-world", ""))
+				h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "grpc-hello-world", ""))
 
-				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "unmanaged"))
-				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "unmanaged"))
-				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "unmanaged"))
+				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "grpc-hello-world", "unmanaged"))
+				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "grpc-hello-world", "unmanaged"))
+				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "grpc-hello-world", "unmanaged"))
 
-				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/prod", "other-env"))
-				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/prod", "other-env"))
-				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/prod", "other-env"))
+				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
+				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
+				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
 
-				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "billing/dev", "other-app"))
-				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "billing/dev", "other-app"))
-				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "billing/dev", "other-app"))
+				h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "billing/dev", "billing", "other-app"))
+				h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "billing/dev", "billing", "other-app"))
+				h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "billing/dev", "billing", "other-app"))
 			},
 		},
 	}
@@ -110,9 +110,9 @@ func TestExecutor_Delete_OldLabeledResourcesAreNotDeleted(t *testing.T) {
 
 	// then
 	namespace := h.RuntimeClient().K8sConfig.Namespace
-	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "legacy"))
-	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "legacy"))
-	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "legacy"))
+	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "grpc-hello-world", "legacy"))
+	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "grpc-hello-world", "legacy"))
+	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "grpc-hello-world", "legacy"))
 }
 
 func TestExecutor_Delete_MixedResourcesScopedCorrectly(t *testing.T) {
@@ -141,17 +141,17 @@ func TestExecutor_Delete_MixedResourcesScopedCorrectly(t *testing.T) {
 
 	// then
 	namespace := h.RuntimeClient().K8sConfig.Namespace
-	h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", ""))
-	h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", ""))
-	h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", ""))
+	h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "grpc-hello-world", ""))
+	h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "grpc-hello-world", ""))
+	h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "grpc-hello-world", ""))
 
-	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/prod", "other-env"))
-	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/prod", "other-env"))
-	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/prod", "other-env"))
+	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
+	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
+	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/prod", "grpc-hello-world", "other-env"))
 
-	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "billing/dev", "other-app"))
-	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "billing/dev", "other-app"))
-	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "billing/dev", "other-app"))
+	h.AssertDeploymentCreated(namespace, deleteResourceName(WorkloadKindDeployment, "billing/dev", "billing", "other-app"))
+	h.AssertServiceCreated(namespace, deleteResourceName(WorkloadKindService, "billing/dev", "billing", "other-app"))
+	h.AssertHTTPRouteCreated(namespace, deleteResourceName(WorkloadKindHTTPRoute, "billing/dev", "billing", "other-app"))
 }
 
 func TestExecutor_Delete_IsIdempotent(t *testing.T) {
@@ -167,9 +167,9 @@ func TestExecutor_Delete_IsIdempotent(t *testing.T) {
 			},
 			then: func(t *testing.T, h *FakeHarness) {
 				namespace := h.RuntimeClient().K8sConfig.Namespace
-				h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", ""))
-				h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", ""))
-				h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", ""))
+				h.AssertDeploymentDeleted(namespace, deleteResourceName(WorkloadKindDeployment, "grpc-hello-world/dev", "grpc-hello-world", ""))
+				h.AssertServiceDeleted(namespace, deleteResourceName(WorkloadKindService, "grpc-hello-world/dev", "grpc-hello-world", ""))
+				h.AssertHTTPRouteDeleted(namespace, deleteResourceName(WorkloadKindHTTPRoute, "grpc-hello-world/dev", "grpc-hello-world", ""))
 			},
 		},
 	}
@@ -380,9 +380,9 @@ func seedDeleteResources(t *testing.T, h *FakeHarness, options deleteSeedOptions
 		dominionEnvironmentLabelKey: options.fullEnvName,
 	}
 
-	deploymentName := deleteResourceName(WorkloadKindDeployment, options.fullEnvName, options.suffix)
-	serviceName := deleteResourceName(WorkloadKindService, options.fullEnvName, options.suffix)
-	routeName := deleteResourceName(WorkloadKindHTTPRoute, options.fullEnvName, options.suffix)
+	deploymentName := deleteResourceName(WorkloadKindDeployment, options.fullEnvName, options.app, options.suffix)
+	serviceName := deleteResourceName(WorkloadKindService, options.fullEnvName, options.app, options.suffix)
+	routeName := deleteResourceName(WorkloadKindHTTPRoute, options.fullEnvName, options.app, options.suffix)
 
 	h.SeedDeployment(&appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -419,9 +419,9 @@ func seedOldDeleteResources(t *testing.T, h *FakeHarness, options deleteSeedOpti
 		"environment":     legacyEnvironmentName(options.fullEnvName),
 	}
 
-	deploymentName := deleteResourceName(WorkloadKindDeployment, options.fullEnvName, options.suffix)
-	serviceName := deleteResourceName(WorkloadKindService, options.fullEnvName, options.suffix)
-	routeName := deleteResourceName(WorkloadKindHTTPRoute, options.fullEnvName, options.suffix)
+	deploymentName := deleteResourceName(WorkloadKindDeployment, options.fullEnvName, options.app, options.suffix)
+	serviceName := deleteResourceName(WorkloadKindService, options.fullEnvName, options.app, options.suffix)
+	routeName := deleteResourceName(WorkloadKindHTTPRoute, options.fullEnvName, options.app, options.suffix)
 
 	h.SeedDeployment(&appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -464,8 +464,8 @@ func cloneAnyMap(source map[string]string) map[string]any {
 	return result
 }
 
-func deleteResourceName(kind WorkloadKind, fullEnvName, suffix string) string {
-	name := newObjectName(kind, fullEnvName, "gateway")
+func deleteResourceName(kind WorkloadKind, fullEnvName, app, suffix string) string {
+	name := newObjectName(kind, fullEnvName, app, "gateway")
 	if suffix == "" {
 		return name
 	}

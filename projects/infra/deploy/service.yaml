@@ -1,4 +1,4 @@
-name: service
+name: manager
 app: deploy
 desc: deploy service
 artifacts:

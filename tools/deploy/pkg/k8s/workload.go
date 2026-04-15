@@ -64,7 +64,7 @@ func (w *DeploymentWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindDeployment, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindDeployment, w.EnvironmentName, w.App, w.ServiceName)
 }
 
 // ServiceResourceName 返回 deployment 对应 service 的资源名。
@@ -74,7 +74,7 @@ func (w *DeploymentWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindService, w.EnvironmentName, w.App, w.ServiceName)
 }
 
 // Validate 校验 deployment workload 字段是否合法。
@@ -212,7 +212,7 @@ func (w *HTTPRouteWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindHTTPRoute, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindHTTPRoute, w.EnvironmentName, w.App, w.ServiceName)
 }
 
 // Validate 校验 HTTPRoute workload 字段是否合法。
@@ -321,11 +321,11 @@ func toDeploymentPorts(ports []*config.ServiceArtifactPort) []*DeploymentPort {
 	return mapped
 }
 
-func newObjectName(kind WorkloadKind, fullEnvName string, serviceName string) string {
+func newObjectName(kind WorkloadKind, fullEnvName, app, serviceName string) string {
 	if kind == WorkloadEmpty {
 		kind = WorkloadUnknown
 	}
-	parts := []string{string(kind), fullEnvName, serviceName, shortNameHash(fullEnvName)}
+	parts := []string{string(kind), app, serviceName, shortNameHash(fullEnvName)}
 	normalized := make([]string, 0, len(parts))
 	for _, part := range parts {
 		part = sanitizeNamePart(part)
