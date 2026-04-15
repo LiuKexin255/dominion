@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "domain",
+    srcs = [
+        "environment.go",
+        "environment_name.go",
+        "errors.go",
+        "queue.go",
+        "recovery.go",
+        "repository.go",
+        "spec.go",
+        "state.go",
+        "worker.go",
+    ],
+    importpath = "dominion/projects/infra/deploy/domain",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "domain_test",
+    srcs = [
+        "environment_name_test.go",
+        "environment_test.go",
+        "queue_test.go",
+        "recovery_test.go",
+        "spec_test.go",
+        "state_test.go",
+        "worker_test.go",
+    ],
+    embed = [":domain"],
+)

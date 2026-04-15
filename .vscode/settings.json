@@ -10,4 +10,18 @@
     "go.testFlags": [
         "-v"
     ],
+    "postman.settings.dotenv-detection-notification-visibility": false,
+    "gopls": {
+        "build.workspaceFiles": [
+            "**/BUILD",
+            "**/WORKSPACE",
+            "**/*.{bzl,bazel}"
+        ],
+        "build.directoryFilters": [
+            "-bazel-bin",
+            "-bazel-out",
+            "-bazel-testlogs",
+            "-bazel-yourrepo"
+        ]
+    }
 }

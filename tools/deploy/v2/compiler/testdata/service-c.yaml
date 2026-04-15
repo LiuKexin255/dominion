@@ -1,0 +1,10 @@
+name: service-c
+app: gamma
+desc: service c
+artifacts:
+  - name: service-c
+    type: deployment
+    target: :service_c_image
+    ports:
+      - name: http
+        port: 8081

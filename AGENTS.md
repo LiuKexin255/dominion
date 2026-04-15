@@ -36,10 +36,10 @@
 
 1. 使用 [`go_rules`](https://github.com/bazel-contrib/rules_go) 提供 golang 编译支持。
 2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
-2. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
-3. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
-4. 为 `BUILD.bazel` 中的单元测试 target 设置 `size= "small"`。
+3. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
+4. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
 5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译；**禁止**自己编写 `proto` 和 `grpc stub` 代码。
+6. golang 大型测试的 `target` 使用 `go_largetest(//tools/go:defs.bzl)` 规则，单元测试使用 `go_unittest` （默认生成）。
 
 ##### 格式化与依赖更新
 
@@ -54,20 +54,27 @@ Golang 代码格式化与依赖更新步骤如下：
 
 开发计划应满足以下要求
 
-* 有明确的目标与验收标准、预计变更范围。
-* `CR` 友好，变更代码行数小于 500 行（不含测试代码）。
+* 有明确的目标与验收标准、预计变更范围。目标不仅包括代码，并且还要有交付的代码能**做什么**、**起到什么作用**。
 * 开发计划以 TDD 驱动，交付结果可以被单测或者其他方式进行验证。如果 `RED Tests` 编写困难，**可改为输出测试计划和用例**，完成编码后编写测试代码。
 * 代码修改应已**计划的最优实现**为首要目标，而不是“最小改动”。当有更好的代码实现时，应对已有代码进行**重构**，而不是迁就现有代码。
 * 计划需明确要求**每次** `Agent/Sub-Agent/Executor` 改动代码前，先阅读仓库规范与风格文件。
-* 禁止 `Agent` 提交代码，`git commit` 操作由开发者进行。
+* 禁止 `Agent` 提交代码，完成 Task 和 Fix 后改用 `**git add**` 暂存代码 。`git commit` 操作由开发者进行。
 
 > FOR `Prometheus`: 
-> 1. 如果变更过大，则拆分为多个开发计划文件，且每个子计划都要满足上述要求。
 > 2. 计划需要明确要求 `Atlas` 执行 TODO 项需委派而不是自己实现。
-> 3. Final Verification Wave 其中 F2. Code Quality Review 需要先阅读先阅读仓库规范与风格文件，并包含**测试代码评审**（测试代码是否符合开发目标，是否按测试计划实现）和**代码风格评审**（变更代码是否符合仓库规范）。
-
+> 3. 计划验收不仅要看有没有交付代码，还要看代码是否实现预期功能。
+> 4. Code Quality Review 需要先阅读先阅读仓库规范与风格文件，并包含**测试代码评审**（测试代码是否符合开发目标，是否按测试计划实现）和**代码风格评审**（变更代码是否符合仓库规范）。
 
 
 ## 规范与风格
 
 代码规范与风格参考 `styles` 目录下的各个语言对应的参考文件。
+
+## 测试
+
+* 单元测试使用 `bazel test` 执行，且随 `bazel build` 一起作为编译验证的一部分。
+* 服务代码需要进行大型测试。先编写测试计划并放到 `testplan` 目录，然后按计划部署服务、执行测试用例。
+* 大型测试用例需要使用各语言对应的大型测试专用 `bazel rule`，并根据测试规模设置 `size`。
+* 更多大型测试信息参阅 `style` 目录。
+
+> FOR `Prometheus`: 使用 `test-plan` SKILL 执行测试计划。

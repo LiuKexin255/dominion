@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "storage",
+    srcs = ["mongo.go"],
+    importpath = "dominion/projects/infra/deploy/storage",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/infra/deploy/domain",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//bson/primitive",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
+
+go_unittest(
+    name = "storage_test",
+    srcs = ["mongo_test.go"],
+    embed = [":storage"],
+    deps = [
+        "//projects/infra/deploy/domain",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//bson/primitive",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)

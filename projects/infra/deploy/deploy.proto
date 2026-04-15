@@ -1,0 +1,244 @@
+syntax = "proto3";
+
+package projects.infra.deploy;
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "dominion/projects/infra/deploy";
+
+// DeployService exposes the control-plane API for deployment environments.
+//
+// The service manages Environment resources as the system of record. Clients
+// write desired_state through CreateEnvironment and UpdateEnvironment, while
+// the server reconciles that state to Kubernetes asynchronously and reports the
+// observed result through Environment.status.
+service DeployService {
+  // GetEnvironment returns the latest persisted Environment resource,
+  // including its current observed status.
+  rpc GetEnvironment(GetEnvironmentRequest) returns (Environment) {
+    option (google.api.http) = {
+      get: "/v1/{name=deploy/scopes/*/environments/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // ListEnvironments lists Environment resources under a scope.
+  rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse) {
+    option (google.api.http) = {
+      get: "/v1/{parent=deploy/scopes/*}/environments"
+    };
+
+    option (google.api.method_signature) = "parent";
+  }
+
+  // CreateEnvironment creates a new Environment resource and accepts its
+  // initial desired state.
+  //
+  // A successful response means the desired state has been accepted and
+  // persisted. The actual deployment is performed asynchronously.
+  rpc CreateEnvironment(CreateEnvironmentRequest) returns (Environment) {
+    option (google.api.http) = {
+      post: "/v1/{parent=deploy/scopes/*}/environments"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "parent,environment,env_name";
+  }
+
+  // UpdateEnvironment updates the desired state of an existing Environment.
+  //
+  // A successful response means the new desired state has been accepted and
+  // persisted. The server reconciles the updated state asynchronously.
+  rpc UpdateEnvironment(UpdateEnvironmentRequest) returns (Environment) {
+    option (google.api.http) = {
+      patch: "/v1/{environment.name=deploy/scopes/*/environments/*}"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "environment,update_mask";
+  }
+
+  // DeleteEnvironment deletes an Environment resource and triggers cleanup of
+  // the deployment resources owned by that environment.
+  rpc DeleteEnvironment(DeleteEnvironmentRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/{name=deploy/scopes/*/environments/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+}
+
+message Environment {
+  option (google.api.resource) = {
+    type: "infra.liukexin.com/deploy/Environment"
+    pattern: "deploy/scopes/{scope}/environments/{env_name}"
+    plural: "environments"
+    singular: "environment"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  string description = 2;
+
+  EnvironmentDesiredState desired_state = 3 [(google.api.field_behavior) = REQUIRED];
+
+  EnvironmentStatus status = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp create_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp update_time = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string etag = 7;
+}
+
+message EnvironmentDesiredState {
+  repeated ArtifactSpec artifacts = 1;
+
+  repeated InfraSpec infras = 2;
+}
+
+message EnvironmentStatus {
+  EnvironmentState state = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string message = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp last_reconcile_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp last_success_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+enum EnvironmentState {
+  ENVIRONMENT_STATE_UNSPECIFIED = 0;
+  ENVIRONMENT_STATE_PENDING = 1;
+  ENVIRONMENT_STATE_RECONCILING = 2;
+  ENVIRONMENT_STATE_READY = 3;
+  ENVIRONMENT_STATE_FAILED = 4;
+  ENVIRONMENT_STATE_DELETING = 5;
+}
+
+message ArtifactSpec {
+  string name = 1;
+
+  string app = 2;
+
+  string image = 3;
+
+  repeated ArtifactPortSpec ports = 4;
+
+  int32 replicas = 5;
+
+  bool tls_enabled = 6;
+
+  ArtifactHTTPSpec http = 7;
+}
+
+message ArtifactPortSpec {
+  string name = 1;
+
+  int32 port = 2;
+}
+
+message InfraSpec {
+  string resource = 1;
+
+  string profile = 2;
+
+  string name = 3;
+
+  string app = 4;
+
+  InfraPersistenceSpec persistence = 5;
+}
+
+message InfraPersistenceSpec {
+  bool enabled = 1;
+}
+
+message ArtifactHTTPSpec {
+  repeated string hostnames = 1;
+
+  repeated HTTPRouteRule matches = 2;
+}
+
+message HTTPRouteRule {
+  string backend = 1;
+
+  HTTPPathRule path = 2;
+}
+
+message HTTPPathRule {
+  HTTPPathRuleType type = 1;
+
+  string value = 2;
+}
+
+enum HTTPPathRuleType {
+  HTTP_PATH_RULE_TYPE_UNSPECIFIED = 0;
+  HTTP_PATH_RULE_TYPE_PATH_PREFIX = 1;
+}
+
+message GetEnvironmentRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "infra.liukexin.com/deploy/Environment"
+    }
+  ];
+}
+
+message ListEnvironmentsRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "infra.liukexin.com/deploy/Environment"
+    }
+  ];
+
+  int32 page_size = 2 [(google.api.field_behavior) = OPTIONAL];
+
+  string page_token = 3 [(google.api.field_behavior) = OPTIONAL];
+
+  string filter = 4 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message ListEnvironmentsResponse {
+  repeated Environment environments = 1;
+
+  string next_page_token = 2;
+}
+
+message CreateEnvironmentRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "infra.liukexin.com/deploy/Environment"
+    }
+  ];
+
+  string env_name = 2 [(google.api.field_behavior) = REQUIRED];
+
+  Environment environment = 3 [(google.api.field_behavior) = REQUIRED];
+}
+
+message UpdateEnvironmentRequest {
+  Environment environment = 1 [(google.api.field_behavior) = REQUIRED];
+
+  google.protobuf.FieldMask update_mask = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteEnvironmentRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "infra.liukexin.com/deploy/Environment"
+    }
+  ];
+}
