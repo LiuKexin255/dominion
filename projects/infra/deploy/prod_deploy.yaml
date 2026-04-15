@@ -10,7 +10,7 @@ services:
         enabled: true
   - artifact:
       path: //projects/infra/deploy/service.yaml
-      name: service-iface
+      name: service
     http:
       hostnames:
         - infra.liukexin.com
