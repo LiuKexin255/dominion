@@ -637,69 +637,71 @@ func mustDeletingEnvironment(t *testing.T, scope, envName string) *domain.Enviro
 
 func newDesiredState() domain.DesiredState {
 	return domain.DesiredState{
-		Services: []*domain.ServiceSpec{{
+		Artifacts: []*domain.ArtifactSpec{{
 			Name:       "api",
 			App:        "gateway",
 			Image:      "example.com/gateway:v1",
-			Ports:      []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:      []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 			Replicas:   1,
 			TLSEnabled: true,
+			HTTP: &domain.ArtifactHTTPSpec{
+				Hostnames: []string{"dev.example.com"},
+				Matches: []domain.HTTPRouteRule{{
+					Backend: "http",
+					Path: domain.HTTPPathRule{
+						Type:  domain.HTTPPathRuleTypePathPrefix,
+						Value: "/",
+					},
+				}},
+			},
 		}},
 		Infras: []*domain.InfraSpec{{
-			Resource:           "redis",
-			Profile:            "cache",
-			Name:               "redis-main",
-			App:                "gateway",
-			PersistenceEnabled: true,
-		}},
-		HTTPRoutes: []*domain.HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"dev.example.com"},
-			Rules: []domain.HTTPRouteRule{{
-				Backend: "http",
-				Path: domain.HTTPPathRule{
-					Type:  domain.HTTPPathRuleTypePathPrefix,
-					Value: "/",
-				},
-			}},
+			Resource: "redis",
+			Profile:  "cache",
+			Name:     "redis-main",
+			App:      "gateway",
+			Persistence: domain.InfraPersistenceSpec{
+				Enabled: true,
+			},
 		}},
 	}
 }
 
 func newUpdatedProtoDesiredState() *EnvironmentDesiredState {
 	state := newProtoDesiredState()
-	state.Services[0].Image = "example.com/gateway:v2"
-	state.Services[0].Replicas = 2
+	state.Artifacts[0].Image = "example.com/gateway:v2"
+	state.Artifacts[0].Replicas = 2
 	return state
 }
 
 func newProtoDesiredState() *EnvironmentDesiredState {
 	return &EnvironmentDesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:       "api",
 			App:        "gateway",
 			Image:      "example.com/gateway:v1",
-			Ports:      []*ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:      []*ArtifactPortSpec{{Name: "http", Port: 8080}},
 			Replicas:   1,
 			TlsEnabled: true,
+			Http: &ArtifactHTTPSpec{
+				Hostnames: []string{"dev.example.com"},
+				Matches: []*HTTPRouteRule{{
+					Backend: "http",
+					Path: &HTTPPathRule{
+						Type:  HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+						Value: "/",
+					},
+				}},
+			},
 		}},
 		Infras: []*InfraSpec{{
-			Resource:           "redis",
-			Profile:            "cache",
-			Name:               "redis-main",
-			App:                "gateway",
-			PersistenceEnabled: true,
-		}},
-		HttpRoutes: []*HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"dev.example.com"},
-			Matches: []*HTTPRouteRule{{
-				Backend: "http",
-				Path: &HTTPPathRule{
-					Type:  HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
-					Value: "/",
-				},
-			}},
+			Resource: "redis",
+			Profile:  "cache",
+			Name:     "redis-main",
+			App:      "gateway",
+			Persistence: &InfraPersistenceSpec{
+				Enabled: true,
+			},
 		}},
 	}
 }

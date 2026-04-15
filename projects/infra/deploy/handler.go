@@ -242,9 +242,8 @@ func toProtoDesiredState(state *domain.DesiredState) *EnvironmentDesiredState {
 		return nil
 	}
 	return &EnvironmentDesiredState{
-		Services:   toProtoServices(state.Services),
-		Infras:     toProtoInfras(state.Infras),
-		HttpRoutes: toProtoHTTPRoutes(state.HTTPRoutes),
+		Artifacts: toProtoArtifacts(state.Artifacts),
+		Infras:    toProtoInfras(state.Infras),
 	}
 }
 
@@ -253,7 +252,7 @@ func fromProtoDesiredState(state *EnvironmentDesiredState) (*domain.DesiredState
 		return nil, domain.ErrInvalidSpec
 	}
 
-	services, err := fromProtoServices(state.GetServices())
+	artifacts, err := fromProtoArtifacts(state.GetArtifacts())
 	if err != nil {
 		return nil, err
 	}
@@ -263,15 +262,9 @@ func fromProtoDesiredState(state *EnvironmentDesiredState) (*domain.DesiredState
 		return nil, err
 	}
 
-	routes, err := fromProtoHTTPRoutes(state.GetHttpRoutes())
-	if err != nil {
-		return nil, err
-	}
-
 	return &domain.DesiredState{
-		Services:   services,
-		Infras:     infras,
-		HTTPRoutes: routes,
+		Artifacts: artifacts,
+		Infras:    infras,
 	}, nil
 }
 
@@ -287,57 +280,59 @@ func toProtoStatus(statusValue *domain.EnvironmentStatus) *EnvironmentStatus {
 	}
 }
 
-func toProtoServices(services []*domain.ServiceSpec) []*ServiceSpec {
-	if len(services) == 0 {
+func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
+	if len(artifacts) == 0 {
 		return nil
 	}
 
-	result := make([]*ServiceSpec, 0, len(services))
-	for _, service := range services {
-		result = append(result, &ServiceSpec{
-			Name:       service.Name,
-			App:        service.App,
-			Image:      service.Image,
-			Ports:      toProtoServicePorts(service.Ports),
-			Replicas:   service.Replicas,
-			TlsEnabled: service.TLSEnabled,
+	result := make([]*ArtifactSpec, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		result = append(result, &ArtifactSpec{
+			Name:       artifact.Name,
+			App:        artifact.App,
+			Image:      artifact.Image,
+			Ports:      toProtoArtifactPorts(artifact.Ports),
+			Replicas:   artifact.Replicas,
+			TlsEnabled: artifact.TLSEnabled,
+			Http:       toProtoArtifactHTTP(artifact.HTTP),
 		})
 	}
 
 	return result
 }
 
-func fromProtoServices(services []*ServiceSpec) ([]*domain.ServiceSpec, error) {
-	if len(services) == 0 {
+func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, error) {
+	if len(artifacts) == 0 {
 		return nil, nil
 	}
 
-	result := make([]*domain.ServiceSpec, 0, len(services))
-	for _, service := range services {
-		if service == nil {
+	result := make([]*domain.ArtifactSpec, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact == nil {
 			return nil, domain.ErrInvalidSpec
 		}
-		result = append(result, &domain.ServiceSpec{
-			Name:       service.GetName(),
-			App:        service.GetApp(),
-			Image:      service.GetImage(),
-			Ports:      fromProtoServicePorts(service.GetPorts()),
-			Replicas:   service.GetReplicas(),
-			TLSEnabled: service.GetTlsEnabled(),
+		result = append(result, &domain.ArtifactSpec{
+			Name:       artifact.GetName(),
+			App:        artifact.GetApp(),
+			Image:      artifact.GetImage(),
+			Ports:      fromProtoArtifactPorts(artifact.GetPorts()),
+			Replicas:   artifact.GetReplicas(),
+			TLSEnabled: artifact.GetTlsEnabled(),
+			HTTP:       fromProtoArtifactHTTP(artifact.GetHttp()),
 		})
 	}
 
 	return result, nil
 }
 
-func toProtoServicePorts(ports []domain.ServicePortSpec) []*ServicePortSpec {
+func toProtoArtifactPorts(ports []domain.ArtifactPortSpec) []*ArtifactPortSpec {
 	if len(ports) == 0 {
 		return nil
 	}
 
-	result := make([]*ServicePortSpec, 0, len(ports))
+	result := make([]*ArtifactPortSpec, 0, len(ports))
 	for _, port := range ports {
-		result = append(result, &ServicePortSpec{
+		result = append(result, &ArtifactPortSpec{
 			Name: port.Name,
 			Port: port.Port,
 		})
@@ -346,23 +341,45 @@ func toProtoServicePorts(ports []domain.ServicePortSpec) []*ServicePortSpec {
 	return result
 }
 
-func fromProtoServicePorts(ports []*ServicePortSpec) []domain.ServicePortSpec {
+func fromProtoArtifactPorts(ports []*ArtifactPortSpec) []domain.ArtifactPortSpec {
 	if len(ports) == 0 {
 		return nil
 	}
 
-	result := make([]domain.ServicePortSpec, 0, len(ports))
+	result := make([]domain.ArtifactPortSpec, 0, len(ports))
 	for _, port := range ports {
 		if port == nil {
 			continue
 		}
-		result = append(result, domain.ServicePortSpec{
+		result = append(result, domain.ArtifactPortSpec{
 			Name: port.GetName(),
 			Port: port.GetPort(),
 		})
 	}
 
 	return result
+}
+
+func toProtoArtifactHTTP(http *domain.ArtifactHTTPSpec) *ArtifactHTTPSpec {
+	if http == nil {
+		return nil
+	}
+
+	return &ArtifactHTTPSpec{
+		Hostnames: append([]string(nil), http.Hostnames...),
+		Matches:   toProtoHTTPRouteRules(http.Matches),
+	}
+}
+
+func fromProtoArtifactHTTP(http *ArtifactHTTPSpec) *domain.ArtifactHTTPSpec {
+	if http == nil {
+		return nil
+	}
+
+	return &domain.ArtifactHTTPSpec{
+		Hostnames: append([]string(nil), http.GetHostnames()...),
+		Matches:   fromProtoHTTPRouteRules(http.GetMatches()),
+	}
 }
 
 func toProtoInfras(infras []*domain.InfraSpec) []*InfraSpec {
@@ -373,11 +390,13 @@ func toProtoInfras(infras []*domain.InfraSpec) []*InfraSpec {
 	result := make([]*InfraSpec, 0, len(infras))
 	for _, infra := range infras {
 		result = append(result, &InfraSpec{
-			Resource:           infra.Resource,
-			Profile:            infra.Profile,
-			Name:               infra.Name,
-			App:                infra.App,
-			PersistenceEnabled: infra.PersistenceEnabled,
+			Resource: infra.Resource,
+			Profile:  infra.Profile,
+			Name:     infra.Name,
+			App:      infra.App,
+			Persistence: &InfraPersistenceSpec{
+				Enabled: infra.Persistence.Enabled,
+			},
 		})
 	}
 
@@ -395,48 +414,13 @@ func fromProtoInfras(infras []*InfraSpec) ([]*domain.InfraSpec, error) {
 			return nil, domain.ErrInvalidSpec
 		}
 		result = append(result, &domain.InfraSpec{
-			Resource:           infra.GetResource(),
-			Profile:            infra.GetProfile(),
-			Name:               infra.GetName(),
-			App:                infra.GetApp(),
-			PersistenceEnabled: infra.GetPersistenceEnabled(),
-		})
-	}
-
-	return result, nil
-}
-
-func toProtoHTTPRoutes(routes []*domain.HTTPRouteSpec) []*HTTPRouteSpec {
-	if len(routes) == 0 {
-		return nil
-	}
-
-	result := make([]*HTTPRouteSpec, 0, len(routes))
-	for _, route := range routes {
-		result = append(result, &HTTPRouteSpec{
-			ServiceName: route.ServiceName,
-			Hostnames:   append([]string(nil), route.Hostnames...),
-			Matches:     toProtoHTTPRouteRules(route.Rules),
-		})
-	}
-
-	return result
-}
-
-func fromProtoHTTPRoutes(routes []*HTTPRouteSpec) ([]*domain.HTTPRouteSpec, error) {
-	if len(routes) == 0 {
-		return nil, nil
-	}
-
-	result := make([]*domain.HTTPRouteSpec, 0, len(routes))
-	for _, route := range routes {
-		if route == nil {
-			return nil, domain.ErrInvalidSpec
-		}
-		result = append(result, &domain.HTTPRouteSpec{
-			ServiceName: route.GetServiceName(),
-			Hostnames:   append([]string(nil), route.GetHostnames()...),
-			Rules:       fromProtoHTTPRouteRules(route.GetMatches()),
+			Resource: infra.GetResource(),
+			Profile:  infra.GetProfile(),
+			Name:     infra.GetName(),
+			App:      infra.GetApp(),
+			Persistence: domain.InfraPersistenceSpec{
+				Enabled: infra.GetPersistence().GetEnabled(),
+			},
 		})
 	}
 

@@ -2,8 +2,8 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -33,9 +33,8 @@ type Environment struct {
 
 // DesiredState describes the target deployment content of an environment.
 type DesiredState struct {
-	Services   []*ServiceSpec
-	Infras     []*InfraSpec
-	HTTPRoutes []*HTTPRouteSpec
+	Artifacts []*ArtifactSpec
+	Infras    []*InfraSpec
 }
 
 // EnvironmentStatus describes the observed reconciliation status.
@@ -205,53 +204,51 @@ func (e *Environment) SetStatusMessage(msg string) error {
 
 // Validate checks the desired state and cross-object references.
 func (e *Environment) Validate() error {
-	var errs []string
+	var errs []error
 
-	serviceNames := make(map[string]struct{})
-	servicePortNames := make(map[string]map[string]struct{})
-	for i, svc := range e.desiredState.Services {
-		if err := svc.Validate(); err != nil {
-			errs = append(errs, fmt.Sprintf("services[%d]: %s", i, err.Error()))
+	artifactNames := make(map[string]struct{})
+	artifactPortNames := make(map[string]map[string]struct{})
+	for i, artifact := range e.desiredState.Artifacts {
+		if err := artifact.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("artifacts[%d]: %w", i, err))
 			continue
 		}
-		serviceNames[svc.Name] = struct{}{}
-		portNames := make(map[string]struct{}, len(svc.Ports))
-		for _, port := range svc.Ports {
-			name := strings.TrimSpace(port.Name)
-			if name == "" {
+		if _, exists := artifactNames[artifact.Name]; exists {
+			errs = append(errs, fmt.Errorf("artifacts[%d]: name %q already exists", i, artifact.Name))
+			continue
+		}
+		artifactNames[artifact.Name] = struct{}{}
+
+		portNames := make(map[string]struct{})
+		for _, port := range artifact.Ports {
+			if port.Name == "" {
 				continue
 			}
-			portNames[name] = struct{}{}
+			portNames[port.Name] = struct{}{}
 		}
-		servicePortNames[svc.Name] = portNames
+		artifactPortNames[artifact.Name] = portNames
+	}
+
+	for i, artifact := range e.desiredState.Artifacts {
+		if artifact.HTTP == nil {
+			continue
+		}
+		portNames := artifactPortNames[artifact.Name]
+		for j, match := range artifact.HTTP.Matches {
+			if _, ok := portNames[match.Backend]; !ok {
+				errs = append(errs, fmt.Errorf("artifacts[%d].http.matches[%d]: backend %q does not reference artifact %q port", i, j, match.Backend, artifact.Name))
+			}
+		}
 	}
 
 	for i, infra := range e.desiredState.Infras {
 		if err := infra.Validate(); err != nil {
-			errs = append(errs, fmt.Sprintf("infras[%d]: %s", i, err.Error()))
-		}
-	}
-
-	for i, route := range e.desiredState.HTTPRoutes {
-		if err := route.Validate(); err != nil {
-			errs = append(errs, fmt.Sprintf("http_routes[%d]: %s", i, err.Error()))
-			continue
-		}
-		if _, ok := serviceNames[route.ServiceName]; !ok {
-			errs = append(errs, fmt.Sprintf("http_routes[%d]: service_name %q does not reference an existing service", i, route.ServiceName))
-			continue
-		}
-
-		portNames := servicePortNames[route.ServiceName]
-		for j, rule := range route.Rules {
-			if _, ok := portNames[rule.Backend]; !ok {
-				errs = append(errs, fmt.Sprintf("http_routes[%d].rules[%d]: backend %q does not reference service %q port", i, j, rule.Backend, route.ServiceName))
-			}
+			errs = append(errs, fmt.Errorf("infras[%d]: %w", i, err))
 		}
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("%w: %s", ErrInvalidSpec, strings.Join(errs, "; "))
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
 	}
 
 	return nil
@@ -278,9 +275,8 @@ func cloneDesiredState(state *DesiredState) *DesiredState {
 	}
 
 	return &DesiredState{
-		Services:   cloneServices(state.Services),
-		Infras:     cloneInfras(state.Infras),
-		HTTPRoutes: cloneHTTPRoutes(state.HTTPRoutes),
+		Artifacts: cloneArtifacts(state.Artifacts),
+		Infras:    cloneInfras(state.Infras),
 	}
 }
 
@@ -293,16 +289,26 @@ func cloneStatus(status *EnvironmentStatus) *EnvironmentStatus {
 	return &cloned
 }
 
-func cloneServices(services []*ServiceSpec) []*ServiceSpec {
-	if len(services) == 0 {
+func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
+	if len(artifacts) == 0 {
 		return nil
 	}
 
-	cloned := make([]*ServiceSpec, len(services))
-	for i, service := range services {
-		spec := *service
-		if len(service.Ports) > 0 {
-			spec.Ports = append([]ServicePortSpec(nil), service.Ports...)
+	cloned := make([]*ArtifactSpec, len(artifacts))
+	for i, artifact := range artifacts {
+		spec := *artifact
+		if len(artifact.Ports) > 0 {
+			spec.Ports = append([]ArtifactPortSpec(nil), artifact.Ports...)
+		}
+		if artifact.HTTP != nil {
+			httpSpec := *artifact.HTTP
+			if len(artifact.HTTP.Hostnames) > 0 {
+				httpSpec.Hostnames = append([]string(nil), artifact.HTTP.Hostnames...)
+			}
+			if len(artifact.HTTP.Matches) > 0 {
+				httpSpec.Matches = append([]HTTPRouteRule(nil), artifact.HTTP.Matches...)
+			}
+			spec.HTTP = &httpSpec
 		}
 		cloned[i] = &spec
 	}
@@ -320,26 +326,5 @@ func cloneInfras(infras []*InfraSpec) []*InfraSpec {
 		cp := *infra
 		cloned[i] = &cp
 	}
-
-	return cloned
-}
-
-func cloneHTTPRoutes(routes []*HTTPRouteSpec) []*HTTPRouteSpec {
-	if len(routes) == 0 {
-		return nil
-	}
-
-	cloned := make([]*HTTPRouteSpec, len(routes))
-	for i, route := range routes {
-		spec := *route
-		if len(route.Hostnames) > 0 {
-			spec.Hostnames = append([]string(nil), route.Hostnames...)
-		}
-		if len(route.Rules) > 0 {
-			spec.Rules = append([]HTTPRouteRule(nil), route.Rules...)
-		}
-		cloned[i] = &spec
-	}
-
 	return cloned
 }

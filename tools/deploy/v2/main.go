@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"dominion/tools/deploy/v2/client"
 	"github.com/spf13/pflag"
 )
 
@@ -25,11 +26,12 @@ const (
 )
 
 type options struct {
-	command  string
-	target   string
-	endpoint string
-	timeout  time.Duration
-	scope    string
+	command   string
+	target    string
+	endpoint  string
+	timeout   time.Duration
+	scope     string
+	apiClient *client.Client
 }
 
 type commandExecFunc func(opts *options) error
@@ -115,6 +117,7 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command: %s", opts.command)
 	}
 
+	opts.apiClient = client.NewClient(opts.endpoint)
 	return exec(opts)
 }
 

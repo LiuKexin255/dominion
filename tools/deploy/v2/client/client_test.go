@@ -30,7 +30,7 @@ func TestClient_GetEnvironment(t *testing.T) {
 				Name:        "deploy/scopes/dev/environments/api",
 				Description: "api env",
 				DesiredState: &deploy.EnvironmentDesiredState{
-					Services: []*deploy.ServiceSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v1", Replicas: 1}},
+					Artifacts: []*deploy.ArtifactSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v1", Replicas: 1}},
 				},
 				Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY},
 			},
@@ -38,7 +38,7 @@ func TestClient_GetEnvironment(t *testing.T) {
 				Name:        "deploy/scopes/dev/environments/api",
 				Description: "api env",
 				DesiredState: &deploy.EnvironmentDesiredState{
-					Services: []*deploy.ServiceSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v1", Replicas: 1}},
+					Artifacts: []*deploy.ArtifactSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v1", Replicas: 1}},
 				},
 				Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY},
 			},
@@ -122,12 +122,18 @@ func TestClient_CreateEnvironment(t *testing.T) {
 	env := &deploy.Environment{
 		Description: "api env",
 		DesiredState: &deploy.EnvironmentDesiredState{
-			Services: []*deploy.ServiceSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v1", Replicas: 1, TlsEnabled: true}},
-			Infras:   []*deploy.InfraSpec{{Resource: "redis", Profile: "cache", Name: "redis-main", App: "gateway", PersistenceEnabled: true}},
-			HttpRoutes: []*deploy.HTTPRouteSpec{{
-				Hostnames: []string{"api.example.com"},
-				Matches:   []*deploy.HTTPRouteRule{{Backend: "http", Path: &deploy.HTTPPathRule{Type: deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX, Value: "/v1"}}},
+			Artifacts: []*deploy.ArtifactSpec{{
+				Name:       "api",
+				App:        "gateway",
+				Image:      "example.com/gateway:v1",
+				Replicas:   1,
+				TlsEnabled: true,
+				Http: &deploy.ArtifactHTTPSpec{
+					Hostnames: []string{"api.example.com"},
+					Matches:   []*deploy.HTTPRouteRule{{Backend: "http", Path: &deploy.HTTPPathRule{Type: deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX, Value: "/v1"}}},
+				},
 			}},
+			Infras: []*deploy.InfraSpec{{Resource: "redis", Profile: "cache", Name: "redis-main", App: "gateway", Persistence: &deploy.InfraPersistenceSpec{Enabled: true}}},
 		},
 	}
 
@@ -181,7 +187,7 @@ func TestClient_UpdateEnvironment(t *testing.T) {
 	env := &deploy.Environment{
 		Name: "deploy/scopes/dev/environments/api",
 		DesiredState: &deploy.EnvironmentDesiredState{
-			Services: []*deploy.ServiceSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v2", Replicas: 2}},
+			Artifacts: []*deploy.ArtifactSpec{{Name: "api", App: "gateway", Image: "example.com/gateway:v2", Replicas: 2}},
 		},
 	}
 

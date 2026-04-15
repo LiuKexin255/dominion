@@ -56,13 +56,13 @@ func TestCompile(t *testing.T) {
 				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 			},
 			want: &deploy.EnvironmentDesiredState{
-				Services: []*deploy.ServiceSpec{{
+				Artifacts: []*deploy.ArtifactSpec{{
 					Name:       "service-a",
 					App:        "alpha",
 					Image:      "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					Replicas:   1,
 					TlsEnabled: true,
-					Ports: []*deploy.ServicePortSpec{{
+					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "grpc",
 						Port: 50051,
 					}},
@@ -86,11 +86,13 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Infras: []*deploy.InfraSpec{{
-					Resource:           "mongodb",
-					Profile:            "dev-single",
-					Name:               "mongo",
-					App:                "alpha",
-					PersistenceEnabled: true,
+					Resource: "mongodb",
+					Profile:  "dev-single",
+					Name:     "mongo",
+					App:      "alpha",
+					Persistence: &deploy.InfraPersistenceSpec{
+						Enabled: true,
+					},
 				}},
 			},
 		},
@@ -130,25 +132,25 @@ func TestCompile(t *testing.T) {
 				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 			},
 			want: &deploy.EnvironmentDesiredState{
-				Services: []*deploy.ServiceSpec{{
+				Artifacts: []*deploy.ArtifactSpec{{
 					Name:     "service-a",
 					App:      "alpha",
 					Image:    "registry.example.com/service-a@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 					Replicas: 1,
-					Ports: []*deploy.ServicePortSpec{{
+					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "grpc",
 						Port: 50051,
 					}},
-				}},
-				HttpRoutes: []*deploy.HTTPRouteSpec{{
-					Hostnames: []string{"service-a.example.com"},
-					Matches: []*deploy.HTTPRouteRule{{
-						Backend: "service-a",
-						Path: &deploy.HTTPPathRule{
-							Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
-							Value: "/v1",
-						},
-					}},
+					Http: &deploy.ArtifactHTTPSpec{
+						Hostnames: []string{"service-a.example.com"},
+						Matches: []*deploy.HTTPRouteRule{{
+							Backend: "grpc",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/v1",
+							},
+						}},
+					},
 				}},
 			},
 		},
@@ -188,12 +190,12 @@ func TestCompile(t *testing.T) {
 				"//apps/service-b:image": {URL: "registry.example.com/service-b", Dest: "sha256:cccccccccccccccccccccccccccccccc"},
 			},
 			want: &deploy.EnvironmentDesiredState{
-				Services: []*deploy.ServiceSpec{{
+				Artifacts: []*deploy.ArtifactSpec{{
 					Name:     "service-b",
 					App:      "beta",
 					Image:    "registry.example.com/service-b@sha256:cccccccccccccccccccccccccccccccc",
 					Replicas: 1,
-					Ports: []*deploy.ServicePortSpec{{
+					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "http",
 						Port: 8080,
 					}},
@@ -241,7 +243,7 @@ func TestCompile(t *testing.T) {
 			imageResults: map[string]*imagepush.Result{
 				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:dddddddddddddddddddddddddddddddd"},
 			},
-			wantErr: "missing-port",
+			wantErr: "http backend missing-port not found in service service-a",
 		},
 		{
 			name: "empty services",
@@ -291,13 +293,13 @@ func TestCompile(t *testing.T) {
 				"//apps/service-c:image": {URL: "registry.example.com/service-c", Dest: "sha256:ffffffffffffffffffffffffffffffff"},
 			},
 			want: &deploy.EnvironmentDesiredState{
-				Services: []*deploy.ServiceSpec{
+				Artifacts: []*deploy.ArtifactSpec{
 					{
 						Name:     "service-a",
 						App:      "alpha",
 						Image:    "registry.example.com/service-a@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 						Replicas: 1,
-						Ports: []*deploy.ServicePortSpec{{
+						Ports: []*deploy.ArtifactPortSpec{{
 							Name: "grpc",
 							Port: 50051,
 						}},
@@ -307,7 +309,7 @@ func TestCompile(t *testing.T) {
 						App:      "gamma",
 						Image:    "registry.example.com/service-c@sha256:ffffffffffffffffffffffffffffffff",
 						Replicas: 1,
-						Ports: []*deploy.ServicePortSpec{{
+						Ports: []*deploy.ArtifactPortSpec{{
 							Name: "http",
 							Port: 8081,
 						}},

@@ -2,28 +2,54 @@ package domain
 
 import "testing"
 
-func TestServiceSpec_Validate(t *testing.T) {
+func TestArtifactSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		spec    ServiceSpec
+		spec    ArtifactSpec
 		wantErr bool
 	}{
 		{
-			name: "valid service spec",
-			spec: ServiceSpec{
+			name: "valid artifact spec without http",
+			spec: ArtifactSpec{
 				Name:     "api",
 				App:      "app",
 				Image:    "repo/app:v1",
-				Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+				Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 				Replicas: 1,
 			},
 		},
-		{name: "missing name", spec: ServiceSpec{App: "app", Image: "repo/app:v1"}, wantErr: true},
-		{name: "missing app", spec: ServiceSpec{Name: "api", Image: "repo/app:v1"}, wantErr: true},
-		{name: "missing image", spec: ServiceSpec{Name: "api", App: "app"}, wantErr: true},
-		{name: "invalid port low", spec: ServiceSpec{Name: "api", App: "app", Image: "repo/app:v1", Ports: []ServicePortSpec{{Port: 0}}}, wantErr: true},
-		{name: "invalid port high", spec: ServiceSpec{Name: "api", App: "app", Image: "repo/app:v1", Ports: []ServicePortSpec{{Port: 65536}}}, wantErr: true},
-		{name: "negative replicas", spec: ServiceSpec{Name: "api", App: "app", Image: "repo/app:v1", Replicas: -1}, wantErr: true},
+		{
+			name: "valid artifact spec with http",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				Ports: []ArtifactPortSpec{{Name: "http", Port: 8080}},
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+					Matches: []HTTPRouteRule{{
+						Backend: "http",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				},
+			},
+		},
+		{name: "missing name", spec: ArtifactSpec{App: "app", Image: "repo/app:v1"}, wantErr: true},
+		{name: "missing app", spec: ArtifactSpec{Name: "api", Image: "repo/app:v1"}, wantErr: true},
+		{name: "missing image", spec: ArtifactSpec{Name: "api", App: "app"}, wantErr: true},
+		{name: "invalid port low", spec: ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Ports: []ArtifactPortSpec{{Port: 0}}}, wantErr: true},
+		{name: "invalid port high", spec: ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Ports: []ArtifactPortSpec{{Port: 65536}}}, wantErr: true},
+		{name: "negative replicas", spec: ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Replicas: -1}, wantErr: true},
+		{
+			name: "http validation failure",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				HTTP:  &ArtifactHTTPSpec{},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -120,24 +146,25 @@ func TestHTTPRouteRule_Validate(t *testing.T) {
 	}
 }
 
-func TestHTTPRouteSpec_Validate(t *testing.T) {
+func TestArtifactHTTPSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		spec    HTTPRouteSpec
+		spec    ArtifactHTTPSpec
 		wantErr bool
 	}{
 		{
-			name: "valid http route spec",
-			spec: HTTPRouteSpec{
-				ServiceName: "api",
-				Hostnames:   []string{"example.com"},
-				Rules:       []HTTPRouteRule{{Backend: "http", Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}},
+			name: "valid artifact http spec",
+			spec: ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
 			},
 		},
-		{name: "missing hostnames", spec: HTTPRouteSpec{ServiceName: "api", Rules: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
-		{name: "missing service name", spec: HTTPRouteSpec{Hostnames: []string{"example.com"}, Rules: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
-		{name: "missing rules", spec: HTTPRouteSpec{ServiceName: "api", Hostnames: []string{"example.com"}}, wantErr: true},
-		{name: "invalid nested rule", spec: HTTPRouteSpec{ServiceName: "api", Hostnames: []string{"example.com"}, Rules: []HTTPRouteRule{{}}}, wantErr: true},
+		{name: "missing hostnames", spec: ArtifactHTTPSpec{Matches: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
+		{name: "missing matches", spec: ArtifactHTTPSpec{Hostnames: []string{"example.com"}}, wantErr: true},
+		{name: "invalid nested rule", spec: ArtifactHTTPSpec{Hostnames: []string{"example.com"}, Matches: []HTTPRouteRule{{}}}, wantErr: true},
 	}
 
 	for _, tt := range tests {

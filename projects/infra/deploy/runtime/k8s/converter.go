@@ -19,20 +19,24 @@ type DeployObjects struct {
 // ConvertToWorkloads 将领域模型 Environment 转换为 Kubernetes 工作负载对象。
 //
 // 该函数只做数据映射，不执行任何 K8s 集群操作。env 提供 DesiredState 中的
-// Services、Infras、HTTPRoutes 分别映射为 DeploymentWorkload、MongoDBWorkload
-// 和 HTTPRouteWorkload。cfg 提供网关等静态配置。
+// Artifacts 和 Infras 分别映射为 DeploymentWorkload（含可选 HTTPRouteWorkload）
+// 和 MongoDBWorkload。cfg 提供网关等静态配置。
 func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects, error) {
 	desiredState := env.DesiredState()
 	envName := env.Name().Label()
 	objects := &DeployObjects{}
-	deploymentMap := make(map[string]*DeploymentWorkload, len(desiredState.Services))
-	serviceSpecMap := make(map[string]*domain.ServiceSpec, len(desiredState.Services))
 
-	for _, svc := range desiredState.Services {
-		workload := convertServiceToWorkload(svc, envName)
-		objects.Deployments = append(objects.Deployments, workload)
-		deploymentMap[svc.Name] = workload
-		serviceSpecMap[svc.Name] = svc
+	for _, artifact := range desiredState.Artifacts {
+		deployment := convertArtifactToDeployment(artifact, envName)
+		objects.Deployments = append(objects.Deployments, deployment)
+
+		if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
+			route, err := convertArtifactHTTPToRoute(artifact, envName, cfg, deployment)
+			if err != nil {
+				return nil, err
+			}
+			objects.HTTPRoutes = append(objects.HTTPRoutes, route)
+		}
 	}
 
 	for _, infra := range desiredState.Infras {
@@ -43,35 +47,18 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 		objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, workload)
 	}
 
-	for _, route := range desiredState.HTTPRoutes {
-		if len(route.Rules) == 0 {
-			continue
-		}
-		deployment, ok := deploymentMap[route.ServiceName]
-		if !ok {
-			return nil, fmt.Errorf("HTTPRoute service %q 未找到对应的 Deployment", route.ServiceName)
-		}
-		spec := serviceSpecMap[route.ServiceName]
-
-		workload, err := convertHTTPRouteToWorkload(route, envName, cfg, deployment, spec)
-		if err != nil {
-			return nil, err
-		}
-		objects.HTTPRoutes = append(objects.HTTPRoutes, workload)
-	}
-
 	return objects, nil
 }
 
-func convertServiceToWorkload(svc *domain.ServiceSpec, envName string) *DeploymentWorkload {
+func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) *DeploymentWorkload {
 	return &DeploymentWorkload{
-		ServiceName:     svc.Name,
+		ServiceName:     artifact.Name,
 		EnvironmentName: envName,
-		App:             svc.App,
-		Image:           svc.Image,
-		Replicas:        svc.Replicas,
-		TLSEnabled:      svc.TLSEnabled,
-		Ports:           convertPorts(svc.Ports),
+		App:             artifact.App,
+		Image:           artifact.Image,
+		Replicas:        artifact.Replicas,
+		TLSEnabled:      artifact.TLSEnabled,
+		Ports:           convertPorts(artifact.Ports),
 	}
 }
 
@@ -83,24 +70,24 @@ func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*Mong
 			EnvironmentName: envName,
 			App:             infra.App,
 			ProfileName:     infra.Profile,
-			Persistence:     PersistenceConfig{Enabled: infra.PersistenceEnabled},
+			Persistence:     PersistenceConfig{Enabled: infra.Persistence.Enabled},
 		}, nil
 	default:
 		return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
 	}
 }
 
-func convertHTTPRouteToWorkload(route *domain.HTTPRouteSpec, envName string, cfg *K8sConfig, deployment *DeploymentWorkload, spec *domain.ServiceSpec) (*HTTPRouteWorkload, error) {
-	matches, err := convertHTTPRouteMatches(spec.Ports, route.Rules)
+func convertArtifactHTTPToRoute(artifact *domain.ArtifactSpec, envName string, cfg *K8sConfig, deployment *DeploymentWorkload) (*HTTPRouteWorkload, error) {
+	matches, err := convertHTTPRouteMatches(artifact.Ports, artifact.HTTP.Matches)
 	if err != nil {
 		return nil, err
 	}
 
 	return &HTTPRouteWorkload{
-		ServiceName:      route.ServiceName,
+		ServiceName:      artifact.Name,
 		EnvironmentName:  envName,
-		App:              spec.App,
-		Hostnames:        route.Hostnames,
+		App:              artifact.App,
+		Hostnames:        artifact.HTTP.Hostnames,
 		Matches:          matches,
 		BackendService:   deployment.ServiceResourceName(),
 		GatewayName:      cfg.Gateway.Name,
@@ -108,7 +95,7 @@ func convertHTTPRouteToWorkload(route *domain.HTTPRouteSpec, envName string, cfg
 	}, nil
 }
 
-func convertHTTPRouteMatches(ports []domain.ServicePortSpec, rules []domain.HTTPRouteRule) ([]*HTTPRoutePathMatch, error) {
+func convertHTTPRouteMatches(ports []domain.ArtifactPortSpec, rules []domain.HTTPRouteRule) ([]*HTTPRoutePathMatch, error) {
 	backendPortMap := make(map[string]int, len(ports))
 	for _, port := range ports {
 		key := strings.ToLower(strings.TrimSpace(port.Name))
@@ -138,7 +125,7 @@ func convertHTTPRouteMatches(ports []domain.ServicePortSpec, rules []domain.HTTP
 }
 
 // convertPorts 将领域模型端口列表转换为部署端口列表。
-func convertPorts(ports []domain.ServicePortSpec) []*DeploymentPort {
+func convertPorts(ports []domain.ArtifactPortSpec) []*DeploymentPort {
 	if len(ports) == 0 {
 		return nil
 	}

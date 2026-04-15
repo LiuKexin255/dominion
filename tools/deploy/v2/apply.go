@@ -58,9 +58,8 @@ func applyCommand(opts *options) error {
 
 	parentName := scopeResourceName(scope)
 	environmentName := environmentResourceName(scope, envName)
-	apiClient := client.NewClient(opts.endpoint)
 
-	if _, err := apiClient.GetEnvironment(context.Background(), environmentName); err != nil {
+	if _, err := opts.apiClient.GetEnvironment(context.Background(), environmentName); err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			return err
 		}
@@ -68,7 +67,7 @@ func applyCommand(opts *options) error {
 			Description:  deployConfig.Desc,
 			DesiredState: desiredState,
 		}
-		if _, err := apiClient.CreateEnvironment(context.Background(), parentName, envName, createRequest); err != nil {
+		if _, err := opts.apiClient.CreateEnvironment(context.Background(), parentName, envName, createRequest); err != nil {
 			return err
 		}
 	} else {
@@ -76,19 +75,19 @@ func applyCommand(opts *options) error {
 			Name:         environmentName,
 			DesiredState: desiredState,
 		}
-		if _, err := apiClient.UpdateEnvironment(context.Background(), updateRequest); err != nil {
+		if _, err := opts.apiClient.UpdateEnvironment(context.Background(), updateRequest); err != nil {
 			return err
 		}
 	}
 
-	readyEnv, err := pollUntilReady(context.Background(), apiClient, environmentName, applyPollInterval, opts.timeout)
+	readyEnv, err := pollUntilReady(context.Background(), opts.apiClient, environmentName, applyPollInterval, opts.timeout)
 	if err != nil {
 		return err
 	}
 
 	state := ""
 	if readyEnv != nil && readyEnv.Status != nil {
-		state = strings.TrimSpace(readyEnv.Status.State.String())
+		state = formatState(readyEnv.Status.State)
 	}
 	if state == "" {
 		fmt.Fprintf(stdout, "环境 %s 已应用\n", fullEnvName)
@@ -127,4 +126,29 @@ func scopeResourceName(scope string) string {
 
 func environmentResourceName(scope, envName string) string {
 	return scopeResourceName(scope) + "/environments/" + envName
+}
+
+func parseEnvironmentResourceName(name string) (scope, envName string) {
+	const prefix = "deploy/scopes/"
+	const infix = "/environments/"
+	rest := strings.TrimPrefix(name, prefix)
+	scope, envName, _ = strings.Cut(rest, infix)
+	return scope, envName
+}
+
+func formatState(s deploy.EnvironmentState) string {
+	switch s {
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_PENDING:
+		return "等待中"
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_RECONCILING:
+		return "部署中"
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_READY:
+		return "就绪"
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_FAILED:
+		return "失败"
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_DELETING:
+		return "删除中"
+	default:
+		return ""
+	}
 }

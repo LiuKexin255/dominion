@@ -21,34 +21,33 @@ func TestNewEnvironment(t *testing.T) {
 		{
 			name: "valid desired state",
 			desiredState: DesiredState{
-				Services: []*ServiceSpec{{
+				Artifacts: []*ArtifactSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
-					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
+					HTTP: &ArtifactHTTPSpec{
+						Hostnames: []string{"example.com"},
+						Matches: []HTTPRouteRule{{
+							Backend: "http",
+							Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
 				}},
 				Infras: []*InfraSpec{{
 					Resource: "redis",
 					Name:     "cache",
 				}},
-				HTTPRoutes: []*HTTPRouteSpec{{
-					ServiceName: "api",
-					Hostnames:   []string{"example.com"},
-					Rules: []HTTPRouteRule{{
-						Backend: "http",
-						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-					}},
-				}},
 			},
 		},
 		{
-			name: "invalid nested service spec",
+			name: "invalid nested artifact spec",
 			desiredState: DesiredState{
-				Services: []*ServiceSpec{{
+				Artifacts: []*ArtifactSpec{{
 					Name:  "api",
 					App:   "demo",
-					Ports: []ServicePortSpec{{Name: "http", Port: 8080}},
+					Ports: []ArtifactPortSpec{{Name: "http", Port: 8080}},
 				}},
 			},
 			wantErr: ErrInvalidSpec,
@@ -107,20 +106,19 @@ func TestEnvironment_UpdateDesiredState(t *testing.T) {
 	}
 	previousLastSuccessTime := env.status.LastSuccessTime
 	newState := DesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v2",
-			Ports:    []ServicePortSpec{{Name: "http", Port: 9090}},
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
 			Replicas: 2,
-		}},
-		HTTPRoutes: []*HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"example.com"},
-			Rules: []HTTPRouteRule{{
-				Backend: "http",
-				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/v2"},
-			}},
+			HTTP: &ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/v2"},
+				}},
+			},
 		}},
 	}
 
@@ -140,8 +138,8 @@ func TestEnvironment_UpdateDesiredState(t *testing.T) {
 	if env.status.LastSuccessTime != previousLastSuccessTime {
 		t.Fatalf("LastSuccessTime = %v, want %v", env.status.LastSuccessTime, previousLastSuccessTime)
 	}
-	if got := env.desiredState.Services[0].Image; got != "repo/demo:v2" {
-		t.Fatalf("desiredState.Services[0].Image = %q, want %q", got, "repo/demo:v2")
+	if got := env.desiredState.Artifacts[0].Image; got != "repo/demo:v2" {
+		t.Fatalf("desiredState.Artifacts[0].Image = %q, want %q", got, "repo/demo:v2")
 	}
 }
 
@@ -152,11 +150,11 @@ func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
 		t.Fatalf("MarkDeleting() unexpected error: %v", err)
 	}
 	newState := DesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v2",
-			Ports:    []ServicePortSpec{{Name: "http", Port: 9090}},
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
 			Replicas: 2,
 		}},
 	}
@@ -451,46 +449,117 @@ func TestEnvironment_Validate(t *testing.T) {
 		wantContains string
 	}{
 		{
-			name: "backend references existing service port",
+			name: "backend references existing artifact port",
 			desiredState: DesiredState{
-				Services: []*ServiceSpec{{
+				Artifacts: []*ArtifactSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
-					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
-				}},
-				HTTPRoutes: []*HTTPRouteSpec{{
-					ServiceName: "api",
-					Hostnames:   []string{"example.com"},
-					Rules: []HTTPRouteRule{{
-						Backend: "http",
-						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-					}},
+					HTTP: &ArtifactHTTPSpec{
+						Hostnames: []string{"example.com"},
+						Matches: []HTTPRouteRule{{
+							Backend: "http",
+							Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
 				}},
 			},
 		},
 		{
-			name: "backend reference missing service port",
+			name: "backend reference missing artifact port",
 			desiredState: DesiredState{
-				Services: []*ServiceSpec{{
+				Artifacts: []*ArtifactSpec{{
 					Name:     "api",
 					App:      "demo",
 					Image:    "repo/demo:v1",
-					Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 					Replicas: 1,
-				}},
-				HTTPRoutes: []*HTTPRouteSpec{{
-					ServiceName: "api",
-					Hostnames:   []string{"example.com"},
-					Rules: []HTTPRouteRule{{
-						Backend: "worker",
-						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-					}},
+					HTTP: &ArtifactHTTPSpec{
+						Hostnames: []string{"example.com"},
+						Matches: []HTTPRouteRule{{
+							Backend: "worker",
+							Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
 				}},
 			},
 			wantErr:      ErrInvalidSpec,
-			wantContains: `backend "worker" does not reference service "api" port`,
+			wantContains: `backend "worker" does not reference artifact "api" port`,
+		},
+		{
+			name: "http backend with no ports fails",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v1",
+					Replicas: 1,
+					HTTP: &ArtifactHTTPSpec{
+						Hostnames: []string{"example.com"},
+						Matches: []HTTPRouteRule{{
+							Backend: "http",
+							Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			},
+			wantErr:      ErrInvalidSpec,
+			wantContains: `backend "http" does not reference artifact "api" port`,
+		},
+		{
+			name: "artifact name must be unique",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{
+					{
+						Name:     "api",
+						App:      "demo",
+						Image:    "repo/demo:v1",
+						Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+					},
+					{
+						Name:     "api",
+						App:      "demo",
+						Image:    "repo/demo:v2",
+						Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
+						Replicas: 1,
+					},
+				},
+			},
+			wantErr:      ErrInvalidSpec,
+			wantContains: `name "api" already exists`,
+		},
+		{
+			name: "http backend must reference same artifact port",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{
+					{
+						Name:     "api",
+						App:      "demo",
+						Image:    "repo/demo:v1",
+						Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+						HTTP: &ArtifactHTTPSpec{
+							Hostnames: []string{"example.com"},
+							Matches: []HTTPRouteRule{{
+								Backend: "metrics",
+								Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+							}},
+						},
+					},
+					{
+						Name:     "worker",
+						App:      "demo",
+						Image:    "repo/worker:v1",
+						Ports:    []ArtifactPortSpec{{Name: "metrics", Port: 9090}},
+						Replicas: 1,
+					},
+				},
+			},
+			wantErr:      ErrInvalidSpec,
+			wantContains: `backend "metrics" does not reference artifact "api" port`,
 		},
 	}
 
@@ -542,20 +611,23 @@ func TestRehydrateEnvironment(t *testing.T) {
 		LastSuccessTime:   createTime.Add(3 * time.Minute),
 	}
 	desiredState := &DesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v1",
-			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 			Replicas: 1,
+			HTTP: &ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
 		}},
-		HTTPRoutes: []*HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"example.com"},
-			Rules: []HTTPRouteRule{{
-				Backend: "http",
-				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-			}},
+		Infras: []*InfraSpec{{
+			Resource: "postgres",
+			Name:     "db",
 		}},
 	}
 
@@ -597,10 +669,14 @@ func TestRehydrateEnvironment(t *testing.T) {
 		t.Fatalf("etag = %q, want %q", env.etag, "etag-1")
 	}
 
-	desiredState.Services[0].Image = "repo/demo:v2"
+	desiredState.Artifacts[0].Image = "repo/demo:v2"
+	desiredState.Infras[0].Persistence.Enabled = true
 	status.Message = "changed"
-	if env.desiredState.Services[0].Image != "repo/demo:v1" {
+	if env.desiredState.Artifacts[0].Image != "repo/demo:v1" {
 		t.Fatalf("desiredState should be cloned")
+	}
+	if env.desiredState.Infras[0].Persistence.Enabled {
+		t.Fatalf("infra persistence should be cloned")
 	}
 	if env.status.Message != "ready" {
 		t.Fatalf("status should be cloned")
@@ -617,25 +693,49 @@ func TestRehydrateEnvironmentRejectsNilStatus(t *testing.T) {
 		Name:        name,
 		Description: "demo environment",
 		DesiredState: &DesiredState{
-			Services: []*ServiceSpec{{
+			Artifacts: []*ArtifactSpec{{
 				Name:     "api",
 				App:      "demo",
 				Image:    "repo/demo:v1",
-				Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+				Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 				Replicas: 1,
-			}},
-			HTTPRoutes: []*HTTPRouteSpec{{
-				ServiceName: "api",
-				Hostnames:   []string{"example.com"},
-				Rules: []HTTPRouteRule{{
-					Backend: "http",
-					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-				}},
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+					Matches: []HTTPRouteRule{{
+						Backend: "http",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				},
 			}},
 		},
 	})
 	if err != ErrInvalidState {
 		t.Fatalf("RehydrateEnvironment() error = %v, want %v", err, ErrInvalidState)
+	}
+}
+
+func TestDesiredState_InfraPersistenceZeroValue(t *testing.T) {
+	// given
+	state := &DesiredState{
+		Infras: []*InfraSpec{{
+			Resource: "postgres",
+			Name:     "db",
+		}},
+	}
+
+	// when
+	cloned := cloneDesiredState(state)
+
+	// then
+	if cloned == nil {
+		t.Fatal("cloneDesiredState() = nil, want non-nil")
+	}
+	if cloned.Infras[0].Persistence.Enabled {
+		t.Fatal("cloneDesiredState().Infras[0].Persistence.Enabled = true, want false")
+	}
+	state.Infras[0].Persistence.Enabled = true
+	if cloned.Infras[0].Persistence.Enabled {
+		t.Fatal("cloned infra persistence should not change with source mutation")
 	}
 }
 
@@ -648,20 +748,23 @@ func mustNewEnvironment(t *testing.T) *Environment {
 	}
 
 	env, err := NewEnvironment(name, "demo environment", &DesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "demo",
 			Image:    "repo/demo:v1",
-			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 			Replicas: 1,
+			HTTP: &ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
 		}},
-		HTTPRoutes: []*HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"example.com"},
-			Rules: []HTTPRouteRule{{
-				Backend: "http",
-				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-			}},
+		Infras: []*InfraSpec{{
+			Resource: "redis",
+			Name:     "cache",
 		}},
 	})
 	if err != nil {

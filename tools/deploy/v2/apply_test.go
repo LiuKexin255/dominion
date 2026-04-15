@@ -111,23 +111,23 @@ func TestApplyCommand(t *testing.T) {
 						Environment: &deploy.Environment{
 							Description: "alpha env",
 							DesiredState: &deploy.EnvironmentDesiredState{
-								Services: []*deploy.ServiceSpec{{
+								Artifacts: []*deploy.ArtifactSpec{{
 									Name:       "service-a",
 									App:        "alpha",
 									Image:      "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 									Replicas:   1,
 									TlsEnabled: true,
-									Ports: []*deploy.ServicePortSpec{
+									Ports: []*deploy.ArtifactPortSpec{
 										{Name: "grpc", Port: 50051},
 										{Name: "http", Port: 8080},
 									},
-								}},
-								HttpRoutes: []*deploy.HTTPRouteSpec{{
-									Hostnames: []string{"api.example.com"},
-									Matches: []*deploy.HTTPRouteRule{{
-										Backend: "service-a",
-										Path:    &deploy.HTTPPathRule{Type: deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX, Value: "/v1"},
-									}},
+									Http: &deploy.ArtifactHTTPSpec{
+										Hostnames: []string{"api.example.com"},
+										Matches: []*deploy.HTTPRouteRule{{
+											Backend: "grpc",
+											Path:    &deploy.HTTPPathRule{Type: deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX, Value: "/v1"},
+										}},
+									},
 								}},
 							},
 						},
@@ -141,7 +141,7 @@ func TestApplyCommand(t *testing.T) {
 				},
 			},
 			pollTimeout:      50 * time.Millisecond,
-			wantOutputSubstr: "环境 team.dev 已应用，状态: ENVIRONMENT_STATE_READY",
+			wantOutputSubstr: "环境 team.dev 已应用，状态: 就绪",
 			wantRequestCount: 3,
 		},
 		{
@@ -173,12 +173,12 @@ func TestApplyCommand(t *testing.T) {
 						Environment: &deploy.Environment{
 							Name: "deploy/scopes/team/environments/dev",
 							DesiredState: &deploy.EnvironmentDesiredState{
-								Services: []*deploy.ServiceSpec{{
+								Artifacts: []*deploy.ArtifactSpec{{
 									Name:     "service-b",
 									App:      "beta",
 									Image:    "registry.example.com/service-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 									Replicas: 1,
-									Ports:    []*deploy.ServicePortSpec{{Name: "http", Port: 8080}},
+									Ports:    []*deploy.ArtifactPortSpec{{Name: "http", Port: 8080}},
 								}},
 							},
 						},
@@ -193,7 +193,7 @@ func TestApplyCommand(t *testing.T) {
 				},
 			},
 			pollTimeout:      50 * time.Millisecond,
-			wantOutputSubstr: "环境 team.dev 已应用，状态: ENVIRONMENT_STATE_READY",
+			wantOutputSubstr: "环境 team.dev 已应用，状态: 就绪",
 			wantRequestCount: 3,
 		},
 		{
@@ -289,10 +289,11 @@ func TestApplyCommand(t *testing.T) {
 			defer func() { stdout = oldStdout }()
 
 			err := applyCommand(&options{
-				target:   deployPath,
-				endpoint: server.URL,
-				timeout:  tt.pollTimeout,
-				scope:    "team",
+				target:    deployPath,
+				endpoint:  server.URL,
+				timeout:   tt.pollTimeout,
+				scope:     "team",
+				apiClient: clientpkg.NewClient(server.URL),
 			})
 
 			if tt.wantErrIs != nil {

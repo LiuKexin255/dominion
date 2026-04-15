@@ -108,34 +108,39 @@ type mongoEnvironment struct {
 
 // mongoDesiredState is the BSON representation of domain.DesiredState.
 type mongoDesiredState struct {
-	Services   []mongoServiceSpec   `bson:"services"`
-	Infras     []mongoInfraSpec     `bson:"infras"`
-	HTTPRoutes []mongoHTTPRouteSpec `bson:"http_routes"`
+	Artifacts []mongoArtifactSpec `bson:"artifacts"`
+	Infras    []mongoInfraSpec    `bson:"infras"`
 }
 
-// mongoServicePortSpec is the BSON representation of domain.ServicePortSpec.
-type mongoServicePortSpec struct {
+// mongoArtifactPortSpec is the BSON representation of domain.ArtifactPortSpec.
+type mongoArtifactPortSpec struct {
 	Name string `bson:"name"`
 	Port int32  `bson:"port"`
 }
 
-// mongoServiceSpec is the BSON representation of domain.ServiceSpec.
-type mongoServiceSpec struct {
-	Name       string                 `bson:"name"`
-	App        string                 `bson:"app"`
-	Image      string                 `bson:"image"`
-	Ports      []mongoServicePortSpec `bson:"ports"`
-	Replicas   int32                  `bson:"replicas"`
-	TLSEnabled bool                   `bson:"tls_enabled"`
+// mongoArtifactSpec is the BSON representation of domain.ArtifactSpec.
+type mongoArtifactSpec struct {
+	Name       string                  `bson:"name"`
+	App        string                  `bson:"app"`
+	Image      string                  `bson:"image"`
+	Ports      []mongoArtifactPortSpec `bson:"ports"`
+	Replicas   int32                   `bson:"replicas"`
+	TLSEnabled bool                    `bson:"tls_enabled"`
+	HTTP       *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
 type mongoInfraSpec struct {
-	Resource           string `bson:"resource"`
-	Profile            string `bson:"profile"`
-	Name               string `bson:"name"`
-	App                string `bson:"app"`
-	PersistenceEnabled bool   `bson:"persistence_enabled"`
+	Resource    string                    `bson:"resource"`
+	Profile     string                    `bson:"profile"`
+	Name        string                    `bson:"name"`
+	App         string                    `bson:"app"`
+	Persistence mongoInfraPersistenceSpec `bson:"persistence"`
+}
+
+// mongoInfraPersistenceSpec is the BSON representation of domain.InfraPersistenceSpec.
+type mongoInfraPersistenceSpec struct {
+	Enabled bool `bson:"enabled"`
 }
 
 // mongoHTTPPathRule is the BSON representation of domain.HTTPPathRule.
@@ -150,11 +155,10 @@ type mongoHTTPRouteRule struct {
 	Path    mongoHTTPPathRule `bson:"path"`
 }
 
-// mongoHTTPRouteSpec is the BSON representation of domain.HTTPRouteSpec.
-type mongoHTTPRouteSpec struct {
-	ServiceName string               `bson:"service_name"`
-	Hostnames   []string             `bson:"hostnames"`
-	Rules       []mongoHTTPRouteRule `bson:"rules"`
+// mongoArtifactHTTPSpec is the BSON representation of domain.ArtifactHTTPSpec.
+type mongoArtifactHTTPSpec struct {
+	Hostnames []string             `bson:"hostnames"`
+	Matches   []mongoHTTPRouteRule `bson:"matches"`
 }
 
 // mongoStatus is the BSON representation of domain.EnvironmentStatus.
@@ -354,37 +358,37 @@ func desiredStateToMongo(ds *domain.DesiredState) *mongoDesiredState {
 		return nil
 	}
 	return &mongoDesiredState{
-		Services:   serviceSpecsToMongo(ds.Services),
-		Infras:     infraSpecsToMongo(ds.Infras),
-		HTTPRoutes: httpRouteSpecsToMongo(ds.HTTPRoutes),
+		Artifacts: artifactSpecsToMongo(ds.Artifacts),
+		Infras:    infraSpecsToMongo(ds.Infras),
 	}
 }
 
-func serviceSpecsToMongo(specs []*domain.ServiceSpec) []mongoServiceSpec {
+func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]mongoServiceSpec, len(specs))
+	result := make([]mongoArtifactSpec, len(specs))
 	for i, s := range specs {
-		result[i] = mongoServiceSpec{
+		result[i] = mongoArtifactSpec{
 			Name:       s.Name,
 			App:        s.App,
 			Image:      s.Image,
-			Ports:      servicePortSpecsToMongo(s.Ports),
+			Ports:      artifactPortSpecsToMongo(s.Ports),
 			Replicas:   s.Replicas,
 			TLSEnabled: s.TLSEnabled,
+			HTTP:       artifactHTTPSpecToMongo(s.HTTP),
 		}
 	}
 	return result
 }
 
-func servicePortSpecsToMongo(specs []domain.ServicePortSpec) []mongoServicePortSpec {
+func artifactPortSpecsToMongo(specs []domain.ArtifactPortSpec) []mongoArtifactPortSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]mongoServicePortSpec, len(specs))
+	result := make([]mongoArtifactPortSpec, len(specs))
 	for i, p := range specs {
-		result[i] = mongoServicePortSpec{Name: p.Name, Port: p.Port}
+		result[i] = mongoArtifactPortSpec{Name: p.Name, Port: p.Port}
 	}
 	return result
 }
@@ -396,29 +400,24 @@ func infraSpecsToMongo(specs []*domain.InfraSpec) []mongoInfraSpec {
 	result := make([]mongoInfraSpec, len(specs))
 	for i, s := range specs {
 		result[i] = mongoInfraSpec{
-			Resource:           s.Resource,
-			Profile:            s.Profile,
-			Name:               s.Name,
-			App:                s.App,
-			PersistenceEnabled: s.PersistenceEnabled,
+			Resource:    s.Resource,
+			Profile:     s.Profile,
+			Name:        s.Name,
+			App:         s.App,
+			Persistence: mongoInfraPersistenceSpec{Enabled: s.Persistence.Enabled},
 		}
 	}
 	return result
 }
 
-func httpRouteSpecsToMongo(specs []*domain.HTTPRouteSpec) []mongoHTTPRouteSpec {
-	if len(specs) == 0 {
+func artifactHTTPSpecToMongo(s *domain.ArtifactHTTPSpec) *mongoArtifactHTTPSpec {
+	if s == nil {
 		return nil
 	}
-	result := make([]mongoHTTPRouteSpec, len(specs))
-	for i, s := range specs {
-		result[i] = mongoHTTPRouteSpec{
-			ServiceName: s.ServiceName,
-			Hostnames:   s.Hostnames,
-			Rules:       httpRouteRulesToMongo(s.Rules),
-		}
+	return &mongoArtifactHTTPSpec{
+		Hostnames: s.Hostnames,
+		Matches:   httpRouteRulesToMongo(s.Matches),
 	}
-	return result
 }
 
 func httpRouteRulesToMongo(rules []domain.HTTPRouteRule) []mongoHTTPRouteRule {
@@ -491,37 +490,37 @@ func desiredStateFromMongo(mds *mongoDesiredState) *domain.DesiredState {
 		return nil
 	}
 	return &domain.DesiredState{
-		Services:   serviceSpecsFromMongo(mds.Services),
-		Infras:     infraSpecsFromMongo(mds.Infras),
-		HTTPRoutes: httpRouteSpecsFromMongo(mds.HTTPRoutes),
+		Artifacts: artifactSpecsFromMongo(mds.Artifacts),
+		Infras:    infraSpecsFromMongo(mds.Infras),
 	}
 }
 
-func serviceSpecsFromMongo(specs []mongoServiceSpec) []*domain.ServiceSpec {
+func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]*domain.ServiceSpec, len(specs))
+	result := make([]*domain.ArtifactSpec, len(specs))
 	for i, s := range specs {
-		result[i] = &domain.ServiceSpec{
+		result[i] = &domain.ArtifactSpec{
 			Name:       s.Name,
 			App:        s.App,
 			Image:      s.Image,
-			Ports:      servicePortSpecsFromMongo(s.Ports),
+			Ports:      artifactPortSpecsFromMongo(s.Ports),
 			Replicas:   s.Replicas,
 			TLSEnabled: s.TLSEnabled,
+			HTTP:       artifactHTTPSpecFromMongo(s.HTTP),
 		}
 	}
 	return result
 }
 
-func servicePortSpecsFromMongo(specs []mongoServicePortSpec) []domain.ServicePortSpec {
+func artifactPortSpecsFromMongo(specs []mongoArtifactPortSpec) []domain.ArtifactPortSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]domain.ServicePortSpec, len(specs))
+	result := make([]domain.ArtifactPortSpec, len(specs))
 	for i, p := range specs {
-		result[i] = domain.ServicePortSpec{Name: p.Name, Port: p.Port}
+		result[i] = domain.ArtifactPortSpec{Name: p.Name, Port: p.Port}
 	}
 	return result
 }
@@ -533,29 +532,24 @@ func infraSpecsFromMongo(specs []mongoInfraSpec) []*domain.InfraSpec {
 	result := make([]*domain.InfraSpec, len(specs))
 	for i, s := range specs {
 		result[i] = &domain.InfraSpec{
-			Resource:           s.Resource,
-			Profile:            s.Profile,
-			Name:               s.Name,
-			App:                s.App,
-			PersistenceEnabled: s.PersistenceEnabled,
+			Resource:    s.Resource,
+			Profile:     s.Profile,
+			Name:        s.Name,
+			App:         s.App,
+			Persistence: domain.InfraPersistenceSpec{Enabled: s.Persistence.Enabled},
 		}
 	}
 	return result
 }
 
-func httpRouteSpecsFromMongo(specs []mongoHTTPRouteSpec) []*domain.HTTPRouteSpec {
-	if len(specs) == 0 {
+func artifactHTTPSpecFromMongo(m *mongoArtifactHTTPSpec) *domain.ArtifactHTTPSpec {
+	if m == nil {
 		return nil
 	}
-	result := make([]*domain.HTTPRouteSpec, len(specs))
-	for i, s := range specs {
-		result[i] = &domain.HTTPRouteSpec{
-			ServiceName: s.ServiceName,
-			Hostnames:   s.Hostnames,
-			Rules:       httpRouteRulesFromMongo(s.Rules),
-		}
+	return &domain.ArtifactHTTPSpec{
+		Hostnames: m.Hostnames,
+		Matches:   httpRouteRulesFromMongo(m.Matches),
 	}
-	return result
 }
 
 func httpRouteRulesFromMongo(rules []mongoHTTPRouteRule) []domain.HTTPRouteRule {

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"dominion/tools/deploy/pkg/workspace"
-	"dominion/tools/deploy/v2/client"
 )
 
 func listCommand(opts *options) error {
@@ -27,8 +26,7 @@ func listCommand(opts *options) error {
 		return err
 	}
 
-	apiClient := client.NewClient(opts.endpoint)
-	environments, err := apiClient.ListEnvironments(context.Background(), scopeResourceName(scope))
+	environments, err := opts.apiClient.ListEnvironments(context.Background(), scopeResourceName(scope))
 	if err != nil {
 		return err
 	}
@@ -37,7 +35,14 @@ func listCommand(opts *options) error {
 		if environment == nil {
 			continue
 		}
-		fmt.Fprintln(stdout, environment.Name)
+		_, envName := parseEnvironmentResourceName(environment.Name)
+		line := scope + "." + envName
+		if environment.Status != nil {
+			if s := formatState(environment.Status.State); s != "" {
+				line += "\t" + s
+			}
+		}
+		fmt.Fprintln(stdout, line)
 	}
 
 	return nil

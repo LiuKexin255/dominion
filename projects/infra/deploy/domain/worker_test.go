@@ -301,12 +301,19 @@ func mustNewWorkerEnvironment(t *testing.T, scope, env string) *Environment {
 	t.Helper()
 	name := mustWorkerEnvName(t, scope, env)
 	environment, err := NewEnvironment(name, env, &DesiredState{
-		Services: []*ServiceSpec{{
+		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "gateway",
 			Image:    "example.com/gateway:v1",
-			Ports:    []ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
 			Replicas: 1,
+			HTTP: &ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
 		}},
 	})
 	if err != nil {

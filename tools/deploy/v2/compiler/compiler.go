@@ -26,13 +26,18 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 		}
 
 		if isInfraService(deployService) {
-			desiredState.Infras = append(desiredState.Infras, &deploy.InfraSpec{
-				Resource:           deployService.Infra.Resource,
-				Profile:            deployService.Infra.Profile,
-				Name:               deployService.Infra.Name,
-				App:                deployService.Infra.App,
-				PersistenceEnabled: deployService.Infra.Persistence.Enabled,
-			})
+			infraSpec := &deploy.InfraSpec{
+				Resource: deployService.Infra.Resource,
+				Profile:  deployService.Infra.Profile,
+				Name:     deployService.Infra.Name,
+				App:      deployService.Infra.App,
+			}
+			if deployService.Infra.Persistence.Enabled {
+				infraSpec.Persistence = &deploy.InfraPersistenceSpec{
+					Enabled: true,
+				}
+			}
+			desiredState.Infras = append(desiredState.Infras, infraSpec)
 			continue
 		}
 
@@ -56,8 +61,8 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			return nil, fmt.Errorf("build image ref for %s failed: %w", artifact.Target, err)
 		}
 
-		compiledService := &deploy.ServiceSpec{
-			Name:       artifact.Name,
+		compiledArtifact := &deploy.ArtifactSpec{
+			Name:       serviceConfig.Name,
 			App:        serviceConfig.App,
 			Image:      imageRef,
 			Replicas:   defaultServiceReplicas,
@@ -67,20 +72,19 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			if port == nil {
 				return nil, fmt.Errorf("service artifact %s has nil port", artifact.Name)
 			}
-			compiledService.Ports = append(compiledService.Ports, &deploy.ServicePortSpec{
+			compiledArtifact.Ports = append(compiledArtifact.Ports, &deploy.ArtifactPortSpec{
 				Name: port.Name,
 				Port: int32(port.Port),
 			})
 		}
-		desiredState.Services = append(desiredState.Services, compiledService)
 
-		compiledHTTPRoute, err := compileHTTPRoute(deployService, artifact)
+		compiledArtifactHTTP, err := compileArtifactHTTP(deployService, artifact)
 		if err != nil {
 			return nil, err
 		}
-		if compiledHTTPRoute != nil {
-			desiredState.HttpRoutes = append(desiredState.HttpRoutes, compiledHTTPRoute)
-		}
+		compiledArtifact.Http = compiledArtifactHTTP
+
+		desiredState.Artifacts = append(desiredState.Artifacts, compiledArtifact)
 	}
 
 	return desiredState, nil
@@ -162,7 +166,7 @@ func ReadServiceConfigs(deployConfig *config.DeployConfig) (map[string]*config.S
 	return serviceConfigs, nil
 }
 
-func compileHTTPRoute(deployService *config.DeployService, artifact *config.ServiceArtifact) (*deploy.HTTPRouteSpec, error) {
+func compileArtifactHTTP(deployService *config.DeployService, artifact *config.ServiceArtifact) (*deploy.ArtifactHTTPSpec, error) {
 	if deployService == nil || artifact == nil {
 		return nil, nil
 	}
@@ -170,7 +174,7 @@ func compileHTTPRoute(deployService *config.DeployService, artifact *config.Serv
 		return nil, nil
 	}
 
-	route := &deploy.HTTPRouteSpec{
+	route := &deploy.ArtifactHTTPSpec{
 		Hostnames: append([]string(nil), deployService.HTTP.Hostnames...),
 	}
 	for _, match := range deployService.HTTP.Matches {
@@ -185,7 +189,7 @@ func compileHTTPRoute(deployService *config.DeployService, artifact *config.Serv
 		}
 
 		route.Matches = append(route.Matches, &deploy.HTTPRouteRule{
-			Backend: artifact.Name,
+			Backend: match.Backend,
 			Path: &deploy.HTTPPathRule{
 				Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
 				Value: match.Path.Value,

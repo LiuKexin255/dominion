@@ -157,14 +157,14 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		{
 			name: "remove service prunes deployment and service only",
 			seedState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("api", "demo", 8080),
-					newExecutorTestServiceSpec("worker", "demo", 9090),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("api", "demo", 8080, nil),
+					newExecutorTestArtifactSpec("worker", "demo", 9090, nil),
 				},
 			},
 			desiredState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("worker", "demo", 9090),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("worker", "demo", 9090, nil),
 				},
 			},
 			wantPresent: pruneResourcePresence{
@@ -204,16 +204,22 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		{
 			name: "remove httproute prunes route and preserves backend service",
 			seedState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("api", "demo", 8080),
-				},
-				HTTPRoutes: []*domain.HTTPRouteSpec{
-					newExecutorTestHTTPRouteSpec("demo.example.com", "api", "http", "/"),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("api", "demo", 8080, &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"demo.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path: domain.HTTPPathRule{
+								Type:  domain.HTTPPathRuleTypePathPrefix,
+								Value: "/",
+							},
+						}},
+					}),
 				},
 			},
 			desiredState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("api", "demo", 8080),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("api", "demo", 8080, nil),
 				},
 			},
 			wantPresent: pruneResourcePresence{
@@ -227,14 +233,20 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		{
 			name: "empty desired state prunes all running resources except pvc",
 			seedState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("api", "demo", 8080),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("api", "demo", 8080, &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"demo.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path: domain.HTTPPathRule{
+								Type:  domain.HTTPPathRuleTypePathPrefix,
+								Value: "/",
+							},
+						}},
+					}),
 				},
 				Infras: []*domain.InfraSpec{
 					newExecutorTestMongoInfraSpec("mongo", "demo"),
-				},
-				HTTPRoutes: []*domain.HTTPRouteSpec{
-					newExecutorTestHTTPRouteSpec("demo.example.com", "api", "http", "/"),
 				},
 			},
 			desiredState: &domain.DesiredState{},
@@ -257,13 +269,13 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		{
 			name: "add new service while pruning old service",
 			seedState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("old-api", "demo", 8080),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("old-api", "demo", 8080, nil),
 				},
 			},
 			desiredState: &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
-					newExecutorTestServiceSpec("new-api", "demo", 8081),
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestArtifactSpec("new-api", "demo", 8081, nil),
 				},
 			},
 			wantPresent: pruneResourcePresence{
@@ -376,31 +388,32 @@ func newExecutorTestEnvironment(t *testing.T) *domain.Environment {
 	t.Helper()
 
 	return newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
-		Services: []*domain.ServiceSpec{{
+		Artifacts: []*domain.ArtifactSpec{{
 			Name:       "api",
 			App:        "demo",
 			Image:      "repo/demo:v1",
 			Replicas:   2,
 			TLSEnabled: true,
-			Ports:      []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+			Ports:      []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+			HTTP: &domain.ArtifactHTTPSpec{
+				Hostnames: []string{"demo.example.com"},
+				Matches: []domain.HTTPRouteRule{{
+					Backend: "http",
+					Path: domain.HTTPPathRule{
+						Type:  domain.HTTPPathRuleTypePathPrefix,
+						Value: "/",
+					},
+				}},
+			},
 		}},
 		Infras: []*domain.InfraSpec{{
-			Resource:           infraResourceMongoDB,
-			Profile:            "dev-single",
-			Name:               "mongo",
-			App:                "demo",
-			PersistenceEnabled: true,
-		}},
-		HTTPRoutes: []*domain.HTTPRouteSpec{{
-			ServiceName: "api",
-			Hostnames:   []string{"demo.example.com"},
-			Rules: []domain.HTTPRouteRule{{
-				Backend: "http",
-				Path: domain.HTTPPathRule{
-					Type:  domain.HTTPPathRuleTypePathPrefix,
-					Value: "/",
-				},
-			}},
+			Resource: infraResourceMongoDB,
+			Profile:  "dev-single",
+			Name:     "mongo",
+			App:      "demo",
+			Persistence: domain.InfraPersistenceSpec{
+				Enabled: true,
+			},
 		}},
 	})
 }
@@ -428,38 +441,27 @@ type pruneResourcePresence struct {
 	PVCs        []string
 }
 
-func newExecutorTestServiceSpec(name string, app string, port int32) *domain.ServiceSpec {
-	return &domain.ServiceSpec{
+func newExecutorTestArtifactSpec(name string, app string, port int32, http *domain.ArtifactHTTPSpec) *domain.ArtifactSpec {
+	return &domain.ArtifactSpec{
 		Name:       name,
 		App:        app,
 		Image:      "repo/" + app + ":v1",
 		Replicas:   1,
 		TLSEnabled: true,
-		Ports:      []domain.ServicePortSpec{{Name: "http", Port: port}},
+		Ports:      []domain.ArtifactPortSpec{{Name: "http", Port: port}},
+		HTTP:       http,
 	}
 }
 
 func newExecutorTestMongoInfraSpec(name string, app string) *domain.InfraSpec {
 	return &domain.InfraSpec{
-		Resource:           infraResourceMongoDB,
-		Profile:            "dev-single",
-		Name:               name,
-		App:                app,
-		PersistenceEnabled: true,
-	}
-}
-
-func newExecutorTestHTTPRouteSpec(hostname string, serviceName string, backend string, path string) *domain.HTTPRouteSpec {
-	return &domain.HTTPRouteSpec{
-		ServiceName: serviceName,
-		Hostnames:   []string{hostname},
-		Rules: []domain.HTTPRouteRule{{
-			Backend: backend,
-			Path: domain.HTTPPathRule{
-				Type:  domain.HTTPPathRuleTypePathPrefix,
-				Value: path,
-			},
-		}},
+		Resource: infraResourceMongoDB,
+		Profile:  "dev-single",
+		Name:     name,
+		App:      app,
+		Persistence: domain.InfraPersistenceSpec{
+			Enabled: true,
+		},
 	}
 }
 

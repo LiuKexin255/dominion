@@ -945,7 +945,7 @@ func newMongoSaveTestEnv(t *testing.T, scope, envName, description, image, etag 
 	}
 	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	env, err := domain.NewEnvironment(name, description, &domain.DesiredState{
-		Services: []*domain.ServiceSpec{
+		Artifacts: []*domain.ArtifactSpec{
 			{
 				Name:     "svc1",
 				App:      "app1",
@@ -988,7 +988,7 @@ func newMongoStateTestEnv(t *testing.T, scope, envName, description string, stat
 	}
 	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	env, err := domain.NewEnvironment(name, description, &domain.DesiredState{
-		Services: []*domain.ServiceSpec{
+		Artifacts: []*domain.ArtifactSpec{
 			{
 				Name:     "svc1",
 				App:      "app1",

@@ -97,7 +97,7 @@ func TestDelCommand(t *testing.T) {
 			}
 
 			gotOutput, err := captureOutputAndError(t, func() error {
-				return delCommand(&options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout})
+				return delCommand(&options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
 			})
 
 			if tt.wantErrIs != nil || tt.wantErrSubstr != "" {
@@ -134,8 +134,8 @@ func TestListCommand(t *testing.T) {
 			name:       "success with environments",
 			scope:      "dev",
 			status:     http.StatusOK,
-			response:   &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{{Name: "deploy/scopes/dev/environments/api"}, {Name: "deploy/scopes/dev/environments/web"}}},
-			wantOutput: "deploy/scopes/dev/environments/api\ndeploy/scopes/dev/environments/web",
+			response:   &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{{Name: "deploy/scopes/dev/environments/api", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}}, {Name: "deploy/scopes/dev/environments/web", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_RECONCILING}}}},
+			wantOutput: "dev.api\t就绪\ndev.web\t部署中",
 		},
 		{
 			name:       "empty list",
@@ -175,7 +175,7 @@ func TestListCommand(t *testing.T) {
 				}
 
 				gotOutput := captureStdout(t, func() error {
-					return listCommand(&options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond})
+					return listCommand(&options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
 				})
 				if strings.TrimSpace(gotOutput) != tt.wantOutput {
 					t.Fatalf("listCommand() output = %q, want %q", strings.TrimSpace(gotOutput), tt.wantOutput)
@@ -191,7 +191,7 @@ func TestListCommand(t *testing.T) {
 				}
 			}
 
-			err := listCommand(&options{endpoint: "http://127.0.0.1:1", timeout: 50 * time.Millisecond})
+			err := listCommand(&options{endpoint: "http://127.0.0.1:1", timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://127.0.0.1:1")})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
 				t.Fatalf("listCommand() error = %v, want substring %q", err, tt.wantErrSubstr)
 			}

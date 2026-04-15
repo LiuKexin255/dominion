@@ -44,12 +44,12 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "services only",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "web",
 						App:      "webapp",
 						Image:    "webapp:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						Replicas: 3,
 					},
 				},
@@ -60,12 +60,12 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "service with TLS enabled",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:       "secure-svc",
 						App:        "secureapp",
 						Image:      "secureapp:v1",
-						Ports:      []domain.ServicePortSpec{{Name: "https", Port: 8443}},
+						Ports:      []domain.ArtifactPortSpec{{Name: "https", Port: 8443}},
 						Replicas:   1,
 						TLSEnabled: true,
 					},
@@ -77,22 +77,24 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "mongodb infra",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "svc1",
 						App:      "app1",
 						Image:    "app1:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						Replicas: 1,
 					},
 				},
 				Infras: []*domain.InfraSpec{
 					{
-						Resource:           "mongodb",
-						Profile:            "dev-single",
-						Name:               "mongo1",
-						App:                "myapp",
-						PersistenceEnabled: true,
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo1",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled: true,
+						},
 					},
 				},
 			}),
@@ -102,12 +104,12 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "mongodb without persistence",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "svc1",
 						App:      "app1",
 						Image:    "app1:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						Replicas: 1,
 					},
 				},
@@ -126,12 +128,12 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "unknown infra resource returns error",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "svc1",
 						App:      "app1",
 						Image:    "app1:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						Replicas: 1,
 					},
 				},
@@ -149,25 +151,22 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "http route with single rule",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "api",
 						App:      "apiapp",
 						Image:    "apiapp:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 9090}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 9090}},
 						Replicas: 2,
-					},
-				},
-				HTTPRoutes: []*domain.HTTPRouteSpec{
-					{
-						ServiceName: "api",
-						Hostnames:   []string{"api.example.com"},
-						Rules: []domain.HTTPRouteRule{
-							{
-								Backend: "http",
-								Path: domain.HTTPPathRule{
-									Type:  domain.HTTPPathRuleTypePathPrefix,
-									Value: "/v1",
+						HTTP: &domain.ArtifactHTTPSpec{
+							Hostnames: []string{"api.example.com"},
+							Matches: []domain.HTTPRouteRule{
+								{
+									Backend: "http",
+									Path: domain.HTTPPathRule{
+										Type:  domain.HTTPPathRuleTypePathPrefix,
+										Value: "/v1",
+									},
 								},
 							},
 						},
@@ -180,32 +179,29 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "http route with multiple rules",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "svc1",
 						App:      "app1",
 						Image:    "app1:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}, {Name: "grpc", Port: 50051}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}, {Name: "grpc", Port: 50051}},
 						Replicas: 1,
-					},
-				},
-				HTTPRoutes: []*domain.HTTPRouteSpec{
-					{
-						ServiceName: "svc1",
-						Hostnames:   []string{"multi.example.com"},
-						Rules: []domain.HTTPRouteRule{
-							{
-								Backend: "http",
-								Path: domain.HTTPPathRule{
-									Type:  domain.HTTPPathRuleTypePathPrefix,
-									Value: "/api",
+						HTTP: &domain.ArtifactHTTPSpec{
+							Hostnames: []string{"multi.example.com"},
+							Matches: []domain.HTTPRouteRule{
+								{
+									Backend: "http",
+									Path: domain.HTTPPathRule{
+										Type:  domain.HTTPPathRuleTypePathPrefix,
+										Value: "/api",
+									},
 								},
-							},
-							{
-								Backend: "grpc",
-								Path: domain.HTTPPathRule{
-									Type:  domain.HTTPPathRuleTypePathPrefix,
-									Value: "/grpc",
+								{
+									Backend: "grpc",
+									Path: domain.HTTPPathRule{
+										Type:  domain.HTTPPathRuleTypePathPrefix,
+										Value: "/grpc",
+									},
 								},
 							},
 						},
@@ -218,43 +214,42 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "full environment with all workload types",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "web",
 						App:      "webapp",
 						Image:    "webapp:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						Replicas: 2,
+						HTTP: &domain.ArtifactHTTPSpec{
+							Hostnames: []string{"web.example.com"},
+							Matches: []domain.HTTPRouteRule{
+								{
+									Backend: "http",
+									Path: domain.HTTPPathRule{
+										Type:  domain.HTTPPathRuleTypePathPrefix,
+										Value: "/",
+									},
+								},
+							},
+						},
 					},
 					{
 						Name:     "api",
 						App:      "apiapp",
 						Image:    "apiapp:v2",
-						Ports:    []domain.ServicePortSpec{{Name: "grpc", Port: 50051}},
+						Ports:    []domain.ArtifactPortSpec{{Name: "grpc", Port: 50051}},
 						Replicas: 1,
 					},
 				},
 				Infras: []*domain.InfraSpec{
 					{
-						Resource:           "mongodb",
-						Profile:            "dev-single",
-						Name:               "mongo",
-						App:                "webapp",
-						PersistenceEnabled: true,
-					},
-				},
-				HTTPRoutes: []*domain.HTTPRouteSpec{
-					{
-						ServiceName: "web",
-						Hostnames:   []string{"web.example.com"},
-						Rules: []domain.HTTPRouteRule{
-							{
-								Backend: "http",
-								Path: domain.HTTPPathRule{
-									Type:  domain.HTTPPathRuleTypePathPrefix,
-									Value: "/",
-								},
-							},
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo",
+						App:      "webapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled: true,
 						},
 					},
 				},
@@ -265,9 +260,8 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "empty desired state",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services:   []*domain.ServiceSpec{},
-				Infras:     []*domain.InfraSpec{},
-				HTTPRoutes: []*domain.HTTPRouteSpec{},
+				Artifacts: []*domain.ArtifactSpec{},
+				Infras:    []*domain.InfraSpec{},
 			}),
 			cfg:  newTestConfig(),
 			want: &DeployObjects{},
@@ -275,7 +269,7 @@ func TestConvertToWorkloads(t *testing.T) {
 		{
 			name: "service without ports",
 			env: newTestEnv(t, &domain.DesiredState{
-				Services: []*domain.ServiceSpec{
+				Artifacts: []*domain.ArtifactSpec{
 					{
 						Name:     "worker",
 						App:      "workerapp",
@@ -539,7 +533,7 @@ func wantDeployObjectsWithoutPorts() *DeployObjects {
 func Test_convertPorts(t *testing.T) {
 	tests := []struct {
 		name  string
-		ports []domain.ServicePortSpec
+		ports []domain.ArtifactPortSpec
 		want  []*DeploymentPort
 	}{
 		{
@@ -549,12 +543,12 @@ func Test_convertPorts(t *testing.T) {
 		},
 		{
 			name:  "empty ports returns nil",
-			ports: []domain.ServicePortSpec{},
+			ports: []domain.ArtifactPortSpec{},
 			want:  nil,
 		},
 		{
 			name: "single port",
-			ports: []domain.ServicePortSpec{
+			ports: []domain.ArtifactPortSpec{
 				{Name: "http", Port: 8080},
 			},
 			want: []*DeploymentPort{
@@ -563,7 +557,7 @@ func Test_convertPorts(t *testing.T) {
 		},
 		{
 			name: "multiple ports",
-			ports: []domain.ServicePortSpec{
+			ports: []domain.ArtifactPortSpec{
 				{Name: "http", Port: 8080},
 				{Name: "grpc", Port: 50051},
 			},

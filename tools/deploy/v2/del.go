@@ -38,12 +38,11 @@ func deleteCommand(opts *options) error {
 	}
 	resourceName := environmentResourceName(scope, envName)
 
-	apiClient := client.NewClient(opts.endpoint)
-	if err := apiClient.DeleteEnvironment(context.Background(), resourceName); err != nil {
+	if err := opts.apiClient.DeleteEnvironment(context.Background(), resourceName); err != nil {
 		return err
 	}
 
-	if err := client.PollUntilDeleted(context.Background(), apiClient, resourceName, deletePollInterval, opts.timeout); err != nil {
+	if err := client.PollUntilDeleted(context.Background(), opts.apiClient, resourceName, deletePollInterval, opts.timeout); err != nil {
 		return err
 	}
 

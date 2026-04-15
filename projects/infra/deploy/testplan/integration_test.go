@@ -37,45 +37,48 @@ type environmentStatus struct {
 }
 
 type desiredStateJSON struct {
-	Services   []serviceSpecJSON   `json:"services,omitempty"`
-	Infras     []infraSpecJSON     `json:"infras,omitempty"`
-	HTTPRoutes []httpRouteSpecJSON `json:"httpRoutes,omitempty"`
+	Artifacts []artifactSpecJSON `json:"artifacts,omitempty"`
+	Infras    []infraSpecJSON    `json:"infras,omitempty"`
 }
 
-type serviceSpecJSON struct {
-	Name       string            `json:"name"`
-	App        string            `json:"app"`
-	Image      string            `json:"image"`
-	Ports      []servicePortJSON `json:"ports,omitempty"`
-	Replicas   int               `json:"replicas"`
-	TLSEnabled bool              `json:"tlsEnabled"`
+type artifactSpecJSON struct {
+	Name       string                `json:"name"`
+	App        string                `json:"app"`
+	Image      string                `json:"image"`
+	Ports      []artifactPortJSON    `json:"ports,omitempty"`
+	Replicas   int                   `json:"replicas"`
+	TLSEnabled bool                  `json:"tlsEnabled"`
+	HTTP       *artifactHTTPSpecJSON `json:"http,omitempty"`
 }
 
-type servicePortJSON struct {
+type artifactPortJSON struct {
 	Name string `json:"name"`
 	Port int    `json:"port"`
 }
 
 type infraSpecJSON struct {
-	Resource           string `json:"resource"`
-	Profile            string `json:"profile"`
-	Name               string `json:"name"`
-	App                string `json:"app"`
-	PersistenceEnabled bool   `json:"persistenceEnabled"`
+	Resource    string                   `json:"resource"`
+	Profile     string                   `json:"profile"`
+	Name        string                   `json:"name"`
+	App         string                   `json:"app"`
+	Persistence infraPersistenceSpecJSON `json:"persistence"`
 }
 
-type httpRouteSpecJSON struct {
-	ServiceName string              `json:"serviceName,omitempty"`
-	Hostnames   []string            `json:"hostnames,omitempty"`
-	Matches     []httpRouteRuleJSON `json:"matches,omitempty"`
+type infraPersistenceSpecJSON struct {
+	Enabled bool `json:"enabled"`
 }
 
-type httpRouteRuleJSON struct {
-	Backend string           `json:"backend"`
-	Path    httpPathRuleJSON `json:"path"`
+type artifactHTTPSpecJSON struct {
+	Hostnames []string                `json:"hostnames,omitempty"`
+	Matches   []artifactHTTPMatchJSON `json:"matches,omitempty"`
 }
 
-type httpPathRuleJSON struct {
+type artifactHTTPMatchJSON struct {
+	Backend string               `json:"backend"`
+	Path    artifactHTTPPathJSON `json:"path"`
+}
+
+type artifactHTTPPathJSON struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
 }
@@ -106,39 +109,40 @@ func uniqueScope() string {
 
 func newDesiredStateJSON() desiredStateJSON {
 	return desiredStateJSON{
-		Services: []serviceSpecJSON{{
+		Artifacts: []artifactSpecJSON{{
 			Name:       "api",
 			App:        "gateway",
 			Image:      "example.com/gateway:v1",
-			Ports:      []servicePortJSON{{Name: "http", Port: 8080}},
+			Ports:      []artifactPortJSON{{Name: "http", Port: 8080}},
 			Replicas:   1,
 			TLSEnabled: false,
+			HTTP: &artifactHTTPSpecJSON{
+				Hostnames: []string{"dev.example.com"},
+				Matches: []artifactHTTPMatchJSON{{
+					Backend: "http",
+					Path: artifactHTTPPathJSON{
+						Type:  "HTTP_PATH_RULE_TYPE_PATH_PREFIX",
+						Value: "/",
+					},
+				}},
+			},
 		}},
 		Infras: []infraSpecJSON{{
-			Resource:           "redis",
-			Profile:            "cache",
-			Name:               "redis-main",
-			App:                "gateway",
-			PersistenceEnabled: true,
-		}},
-		HTTPRoutes: []httpRouteSpecJSON{{
-			ServiceName: "api",
-			Hostnames:   []string{"dev.example.com"},
-			Matches: []httpRouteRuleJSON{{
-				Backend: "http",
-				Path: httpPathRuleJSON{
-					Type:  "HTTP_PATH_RULE_TYPE_PATH_PREFIX",
-					Value: "/",
-				},
-			}},
+			Resource: "redis",
+			Profile:  "cache",
+			Name:     "redis-main",
+			App:      "gateway",
+			Persistence: infraPersistenceSpecJSON{
+				Enabled: true,
+			},
 		}},
 	}
 }
 
 func newUpdatedDesiredStateJSON() desiredStateJSON {
 	state := newDesiredStateJSON()
-	state.Services[0].Image = "example.com/gateway:v2"
-	state.Services[0].Replicas = 2
+	state.Artifacts[0].Image = "example.com/gateway:v2"
+	state.Artifacts[0].Replicas = 2
 	return state
 }
 
