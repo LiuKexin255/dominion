@@ -21,3 +21,4 @@
 
 * Host: infra.liukexin.com
 * Path: /v1/deploy
+* 因服务无法自举，本服务禁止使用 `deploy` 工具部署，也禁止生成除 `k8s` 以外的部署配置。

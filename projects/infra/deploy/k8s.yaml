@@ -1,0 +1,265 @@
+# Deploy service 的原生 Kubernetes 部署清单。
+# 等效于 prod_deploy.yaml 经 deploy 工具生成的资源，用于 deploy 服务自身的自举部署。
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-deploy-mongo-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: mongo
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+type: Opaque
+data:
+  username: YWRtaW4=
+  password: Y2RYVWo3U25TeDZucm5GQ0lrdmkyQXB4Q2ZzYjFNSVk=
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-deploy-mongo-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: mongo
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  storageClassName: nfs-csi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 16Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-deploy-mongo-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: mongo
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: deploy
+      app.kubernetes.io/component: mongo
+      dominion.io/environment: infra.default
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: deploy
+        app.kubernetes.io/component: mongo
+        dominion.io/environment: infra.default
+        app.kubernetes.io/managed-by: dominion.io
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 3000
+      volumes:
+        - name: mongo-data
+          persistentVolumeClaim:
+            claimName: pvc-deploy-mongo-847070f8
+      initContainers:
+        - name: mongo-init
+          image: mongo:7.0
+          command:
+            - bash
+            - -ec
+            - |
+              set -euo pipefail
+
+              shutdown_mongod() {
+                if [ -f "/tmp/mongod-init.pid" ]; then
+                  mongod --dbpath "/data/db" --shutdown >/dev/null 2>&1 || true
+                fi
+              }
+
+              trap shutdown_mongod EXIT
+
+              mongod --bind_ip "127.0.0.1" --port 27017 --dbpath "/data/db" --fork --logpath "/tmp/mongod-init.log" --pidfilepath "/tmp/mongod-init.pid" --auth
+
+              until mongosh --host "127.0.0.1" --port 27017 --quiet --eval 'db.adminCommand({ ping: 1 })' >/dev/null 2>&1; do
+                sleep 1
+              done
+
+              if [ ! -f "/data/db/.admin-initialized" ]; then
+                mongosh --host "127.0.0.1" --port 27017 --quiet --eval 'db.getSiblingDB("admin").createUser({user: process.env.MONGO_INITDB_ROOT_USERNAME, pwd: process.env.MONGO_INITDB_ROOT_PASSWORD, roles: [{role: "root", db: "admin"}]})'
+                touch "/data/db/.admin-initialized"
+                exit 0
+              fi
+
+              mongosh --host "127.0.0.1" --port 27017 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase "admin" --quiet --eval 'db.adminCommand({ ping: 1 })' >/dev/null
+          env:
+            - name: SERVICE_APP
+              value: deploy
+            - name: DOMINION_ENVIRONMENT
+              value: infra.default
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: secret-deploy-mongo-847070f8
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: secret-deploy-mongo-847070f8
+                  key: password
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+      containers:
+        - name: mongo-deploy-mongo-847070f8
+          image: mongo:7.0
+          ports:
+            - name: mongo
+              containerPort: 27017
+          env:
+            - name: SERVICE_APP
+              value: deploy
+            - name: DOMINION_ENVIRONMENT
+              value: infra.default
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: secret-deploy-mongo-847070f8
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: secret-deploy-mongo-847070f8
+                  key: password
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+          livenessProbe:
+            tcpSocket:
+              port: mongo
+          readinessProbe:
+            tcpSocket:
+              port: mongo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-deploy-mongo-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: mongo
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  selector:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: mongo
+    dominion.io/environment: infra.default
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dp-deploy-manager-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: manager
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: deploy
+      app.kubernetes.io/component: manager
+      dominion.io/environment: infra.default
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: deploy
+        app.kubernetes.io/component: manager
+        dominion.io/environment: infra.default
+        app.kubernetes.io/managed-by: dominion.io
+    spec:
+      containers:
+        - name: dp-deploy-manager-847070f8
+          image: registry.liukexin.com/projects/infra/deploy@sha256:b8e61f3315babf6138c7508ad611edb97aa8ae5f2be5f61b1cbc93d9af2a1b17
+          ports:
+            - name: grpc
+              containerPort: 8080
+            - name: http
+              containerPort: 8081
+          env:
+            - name: SERVICE_APP
+              value: deploy
+            - name: DOMINION_ENVIRONMENT
+              value: infra.default
+            - name: POD_NAMESPACE
+              value: default
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-deploy-manager-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: manager
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  selector:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: manager
+    dominion.io/environment: infra.default
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: grpc
+    - name: http
+      port: 8081
+      targetPort: http
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: route-deploy-manager-847070f8
+  namespace: default
+  labels:
+    app.kubernetes.io/name: deploy
+    app.kubernetes.io/component: manager
+    dominion.io/environment: infra.default
+    app.kubernetes.io/managed-by: dominion.io
+spec:
+  hostnames:
+    - infra.liukexin.com
+  parentRefs:
+    - name: traefik-gateway
+      namespace: ingress
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/deploy
+      backendRefs:
+        - name: svc-deploy-manager-847070f8
+          port: 8081
