@@ -100,11 +100,9 @@ message Environment {
 }
 
 message EnvironmentDesiredState {
-  repeated ServiceSpec services = 1;
+  repeated ArtifactSpec artifacts = 1;
 
   repeated InfraSpec infras = 2;
-
-  repeated HTTPRouteSpec http_routes = 3;
 }
 
 message EnvironmentStatus {
@@ -126,21 +124,23 @@ enum EnvironmentState {
   ENVIRONMENT_STATE_DELETING = 5;
 }
 
-message ServiceSpec {
+message ArtifactSpec {
   string name = 1;
 
   string app = 2;
 
   string image = 3;
 
-  repeated ServicePortSpec ports = 4;
+  repeated ArtifactPortSpec ports = 4;
 
   int32 replicas = 5;
 
   bool tls_enabled = 6;
+
+  ArtifactHTTPSpec http = 7;
 }
 
-message ServicePortSpec {
+message ArtifactPortSpec {
   string name = 1;
 
   int32 port = 2;
@@ -155,12 +155,14 @@ message InfraSpec {
 
   string app = 4;
 
-  bool persistence_enabled = 5;
+  InfraPersistenceSpec persistence = 5;
 }
 
-message HTTPRouteSpec {
-  string service_name = 3;
+message InfraPersistenceSpec {
+  bool enabled = 1;
+}
 
+message ArtifactHTTPSpec {
   repeated string hostnames = 1;
 
   repeated HTTPRouteRule matches = 2;
