@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"reflect"
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
@@ -34,11 +35,11 @@ func newTestConfig() *K8sConfig {
 
 func TestConvertToWorkloads(t *testing.T) {
 	tests := []struct {
-		name     string
-		env      *domain.Environment
-		cfg      *K8sConfig
-		wantErr  bool
-		validate func(t *testing.T, objects *DeployObjects)
+		name           string
+		env            *domain.Environment
+		cfg            *K8sConfig
+		want           *DeployObjects
+		wantErrMessage string
 	}{
 		{
 			name: "services only",
@@ -53,48 +54,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if len(objects.Deployments) != 1 {
-					t.Fatalf("Deployments 长度期望 1, 实际 %d", len(objects.Deployments))
-				}
-				d := objects.Deployments[0]
-				if d.ServiceName != "web" {
-					t.Errorf("ServiceName 期望 web, 实际 %s", d.ServiceName)
-				}
-				if d.App != "webapp" {
-					t.Errorf("App 期望 webapp, 实际 %s", d.App)
-				}
-				if d.Image != "webapp:v1" {
-					t.Errorf("Image 期望 webapp:v1, 实际 %s", d.Image)
-				}
-				if d.Replicas != 3 {
-					t.Errorf("Replicas 期望 3, 实际 %d", d.Replicas)
-				}
-				if d.TLSEnabled {
-					t.Error("TLSEnabled 期望 false")
-				}
-				if len(d.Ports) != 1 {
-					t.Fatalf("Ports 长度期望 1, 实际 %d", len(d.Ports))
-				}
-				if d.Ports[0].Name != "http" {
-					t.Errorf("Port Name 期望 http, 实际 %s", d.Ports[0].Name)
-				}
-				if d.Ports[0].Port != 8080 {
-					t.Errorf("Port 期望 8080, 实际 %d", d.Ports[0].Port)
-				}
-				if d.EnvironmentName != "deploy/scopes/tstscope/environments/dev" {
-					t.Errorf("EnvironmentName 期望完整路径, 实际 %s", d.EnvironmentName)
-				}
-				if objects.HTTPRoutes != nil {
-					t.Errorf("HTTPRoutes 期望 nil, 实际 %v", objects.HTTPRoutes)
-				}
-				if objects.MongoDBWorkloads != nil {
-					t.Errorf("MongoDBWorkloads 期望 nil, 实际 %v", objects.MongoDBWorkloads)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithServicesOnly(),
 		},
 		{
 			name: "service with TLS enabled",
@@ -110,14 +71,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if !objects.Deployments[0].TLSEnabled {
-					t.Error("TLSEnabled 期望 true")
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithTLSEnabled(),
 		},
 		{
 			name: "mongodb infra",
@@ -141,30 +96,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if len(objects.MongoDBWorkloads) != 1 {
-					t.Fatalf("MongoDBWorkloads 长度期望 1, 实际 %d", len(objects.MongoDBWorkloads))
-				}
-				m := objects.MongoDBWorkloads[0]
-				if m.ServiceName != "mongo1" {
-					t.Errorf("ServiceName 期望 mongo1, 实际 %s", m.ServiceName)
-				}
-				if m.App != "myapp" {
-					t.Errorf("App 期望 myapp, 实际 %s", m.App)
-				}
-				if m.ProfileName != "dev-single" {
-					t.Errorf("ProfileName 期望 dev-single, 实际 %s", m.ProfileName)
-				}
-				if !m.Persistence.Enabled {
-					t.Error("Persistence.Enabled 期望 true")
-				}
-				if m.EnvironmentName != "deploy/scopes/tstscope/environments/dev" {
-					t.Errorf("EnvironmentName 期望完整路径, 实际 %s", m.EnvironmentName)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithMongoDBInfra(),
 		},
 		{
 			name: "mongodb without persistence",
@@ -187,14 +120,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if objects.MongoDBWorkloads[0].Persistence.Enabled {
-					t.Error("Persistence.Enabled 期望 false")
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithMongoDBWithoutPersistence(),
 		},
 		{
 			name: "unknown infra resource returns error",
@@ -216,8 +143,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: true,
+			cfg:            newTestConfig(),
+			wantErrMessage: "不支持的 infra resource 类型: redis",
 		},
 		{
 			name: "http route with single rule",
@@ -233,10 +160,11 @@ func TestConvertToWorkloads(t *testing.T) {
 				},
 				HTTPRoutes: []*domain.HTTPRouteSpec{
 					{
-						Hostnames: []string{"api.example.com"},
+						ServiceName: "api",
+						Hostnames:   []string{"api.example.com"},
 						Rules: []domain.HTTPRouteRule{
 							{
-								Backend: "api",
+								Backend: "http",
 								Path: domain.HTTPPathRule{
 									Type:  domain.HTTPPathRuleTypePathPrefix,
 									Value: "/v1",
@@ -246,51 +174,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if len(objects.HTTPRoutes) != 1 {
-					t.Fatalf("HTTPRoutes 长度期望 1, 实际 %d", len(objects.HTTPRoutes))
-				}
-				r := objects.HTTPRoutes[0]
-				if r.ServiceName != "api" {
-					t.Errorf("ServiceName 期望 api, 实际 %s", r.ServiceName)
-				}
-				if r.App != "apiapp" {
-					t.Errorf("App 期望 apiapp, 实际 %s", r.App)
-				}
-				if len(r.Hostnames) != 1 || r.Hostnames[0] != "api.example.com" {
-					t.Errorf("Hostnames 期望 [api.example.com], 实际 %v", r.Hostnames)
-				}
-				if r.GatewayName != "test-gateway" {
-					t.Errorf("GatewayName 期望 test-gateway, 实际 %s", r.GatewayName)
-				}
-				if r.GatewayNamespace != "test-gw-ns" {
-					t.Errorf("GatewayNamespace 期望 test-gw-ns, 实际 %s", r.GatewayNamespace)
-				}
-				if len(r.Matches) != 1 {
-					t.Fatalf("Matches 长度期望 1, 实际 %d", len(r.Matches))
-				}
-				m := r.Matches[0]
-				if m.Type != HTTPPathMatchTypePathPrefix {
-					t.Errorf("Match Type 期望 HTTPPathMatchTypePathPrefix, 实际 %v", m.Type)
-				}
-				if m.Value != "/v1" {
-					t.Errorf("Match Value 期望 /v1, 实际 %s", m.Value)
-				}
-				if m.BackendPort != 9090 {
-					t.Errorf("Match BackendPort 期望 9090, 实际 %d", m.BackendPort)
-				}
-				// BackendService 应为 deployment 的 ServiceResourceName
-				expectedBackend := objects.Deployments[0].ServiceResourceName()
-				if r.BackendService != expectedBackend {
-					t.Errorf("BackendService 期望 %s, 实际 %s", expectedBackend, r.BackendService)
-				}
-				if m.BackendName != expectedBackend {
-					t.Errorf("BackendName 期望 %s, 实际 %s", expectedBackend, m.BackendName)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithSingleRuleHTTPRoute(),
 		},
 		{
 			name: "http route with multiple rules",
@@ -300,30 +185,24 @@ func TestConvertToWorkloads(t *testing.T) {
 						Name:     "svc1",
 						App:      "app1",
 						Image:    "app1:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}},
-						Replicas: 1,
-					},
-					{
-						Name:     "svc2",
-						App:      "app2",
-						Image:    "app2:v1",
-						Ports:    []domain.ServicePortSpec{{Name: "grpc", Port: 50051}},
+						Ports:    []domain.ServicePortSpec{{Name: "http", Port: 8080}, {Name: "grpc", Port: 50051}},
 						Replicas: 1,
 					},
 				},
 				HTTPRoutes: []*domain.HTTPRouteSpec{
 					{
-						Hostnames: []string{"multi.example.com"},
+						ServiceName: "svc1",
+						Hostnames:   []string{"multi.example.com"},
 						Rules: []domain.HTTPRouteRule{
 							{
-								Backend: "svc1",
+								Backend: "http",
 								Path: domain.HTTPPathRule{
 									Type:  domain.HTTPPathRuleTypePathPrefix,
 									Value: "/api",
 								},
 							},
 							{
-								Backend: "svc2",
+								Backend: "grpc",
 								Path: domain.HTTPPathRule{
 									Type:  domain.HTTPPathRuleTypePathPrefix,
 									Value: "/grpc",
@@ -333,38 +212,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if len(objects.HTTPRoutes) != 1 {
-					t.Fatalf("HTTPRoutes 长度期望 1, 实际 %d", len(objects.HTTPRoutes))
-				}
-				r := objects.HTTPRoutes[0]
-				// 首条规则的 backend 作为主后端
-				if r.ServiceName != "svc1" {
-					t.Errorf("ServiceName 期望 svc1, 实际 %s", r.ServiceName)
-				}
-				if len(r.Matches) != 2 {
-					t.Fatalf("Matches 长度期望 2, 实际 %d", len(r.Matches))
-				}
-				// 第一条 match 指向 svc1
-				if r.Matches[0].BackendPort != 8080 {
-					t.Errorf("Match[0] BackendPort 期望 8080, 实际 %d", r.Matches[0].BackendPort)
-				}
-				if r.Matches[0].BackendName != objects.Deployments[0].ServiceResourceName() {
-					t.Errorf("Match[0] BackendName 期望 %s, 实际 %s",
-						objects.Deployments[0].ServiceResourceName(), r.Matches[0].BackendName)
-				}
-				// 第二条 match 指向 svc2
-				if r.Matches[1].BackendPort != 50051 {
-					t.Errorf("Match[1] BackendPort 期望 50051, 实际 %d", r.Matches[1].BackendPort)
-				}
-				if r.Matches[1].BackendName != objects.Deployments[1].ServiceResourceName() {
-					t.Errorf("Match[1] BackendName 期望 %s, 实际 %s",
-						objects.Deployments[1].ServiceResourceName(), r.Matches[1].BackendName)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithMultipleRuleHTTPRoute(),
 		},
 		{
 			name: "full environment with all workload types",
@@ -396,10 +245,11 @@ func TestConvertToWorkloads(t *testing.T) {
 				},
 				HTTPRoutes: []*domain.HTTPRouteSpec{
 					{
-						Hostnames: []string{"web.example.com"},
+						ServiceName: "web",
+						Hostnames:   []string{"web.example.com"},
 						Rules: []domain.HTTPRouteRule{
 							{
-								Backend: "web",
+								Backend: "http",
 								Path: domain.HTTPPathRule{
 									Type:  domain.HTTPPathRuleTypePathPrefix,
 									Value: "/",
@@ -409,20 +259,8 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if len(objects.Deployments) != 2 {
-					t.Errorf("Deployments 长度期望 2, 实际 %d", len(objects.Deployments))
-				}
-				if len(objects.MongoDBWorkloads) != 1 {
-					t.Errorf("MongoDBWorkloads 长度期望 1, 实际 %d", len(objects.MongoDBWorkloads))
-				}
-				if len(objects.HTTPRoutes) != 1 {
-					t.Errorf("HTTPRoutes 长度期望 1, 实际 %d", len(objects.HTTPRoutes))
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithAllWorkloadTypes(),
 		},
 		{
 			name: "empty desired state",
@@ -431,20 +269,8 @@ func TestConvertToWorkloads(t *testing.T) {
 				Infras:     []*domain.InfraSpec{},
 				HTTPRoutes: []*domain.HTTPRouteSpec{},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if objects.Deployments != nil {
-					t.Errorf("Deployments 期望 nil, 实际 %v", objects.Deployments)
-				}
-				if objects.MongoDBWorkloads != nil {
-					t.Errorf("MongoDBWorkloads 期望 nil, 实际 %v", objects.MongoDBWorkloads)
-				}
-				if objects.HTTPRoutes != nil {
-					t.Errorf("HTTPRoutes 期望 nil, 实际 %v", objects.HTTPRoutes)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: &DeployObjects{},
 		},
 		{
 			name: "service without ports",
@@ -458,33 +284,255 @@ func TestConvertToWorkloads(t *testing.T) {
 					},
 				},
 			}),
-			cfg:     newTestConfig(),
-			wantErr: false,
-			validate: func(t *testing.T, objects *DeployObjects) {
-				t.Helper()
-				if objects.Deployments[0].Ports != nil {
-					t.Errorf("Ports 期望 nil, 实际 %v", objects.Deployments[0].Ports)
-				}
-			},
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithoutPorts(),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ConvertToWorkloads(tt.env, tt.cfg)
-			if tt.wantErr && err == nil {
-				t.Fatalf("期望返回错误, 实际返回 nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("不期望返回错误, 实际返回: %v", err)
-			}
-			if tt.wantErr {
+			if tt.wantErrMessage != "" {
+				if err == nil {
+					t.Fatalf("期望返回错误 %q, 实际返回 nil", tt.wantErrMessage)
+				}
+				if err.Error() != tt.wantErrMessage {
+					t.Fatalf("错误信息期望 %q, 实际 %q", tt.wantErrMessage, err.Error())
+				}
 				return
 			}
-			if tt.validate != nil {
-				tt.validate(t, got)
+			if err != nil {
+				t.Fatalf("不期望返回错误, 实际返回: %v", err)
 			}
+			assertDeployObjectsEqual(t, got, tt.want)
 		})
+	}
+}
+
+func assertDeployObjectsEqual(t *testing.T, got *DeployObjects, want *DeployObjects) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ConvertToWorkloads() = %#v, want %#v", got, want)
+	}
+}
+
+func wantDeployObjectsWithServicesOnly() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "web",
+			EnvironmentName: "tstscope.dev",
+			App:             "webapp",
+			Image:           "webapp:v1",
+			Replicas:        3,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+		}},
+	}
+}
+
+func wantDeployObjectsWithTLSEnabled() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			TLSEnabled:      true,
+			ServiceName:     "secure-svc",
+			EnvironmentName: "tstscope.dev",
+			App:             "secureapp",
+			Image:           "secureapp:v1",
+			Replicas:        1,
+			Ports: []*DeploymentPort{{
+				Name: "https",
+				Port: 8443,
+			}},
+		}},
+	}
+}
+
+func wantDeployObjectsWithMongoDBInfra() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "svc1",
+			EnvironmentName: "tstscope.dev",
+			App:             "app1",
+			Image:           "app1:v1",
+			Replicas:        1,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+		}},
+		MongoDBWorkloads: []*MongoDBWorkload{{
+			ServiceName:     "mongo1",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true},
+		}},
+	}
+}
+
+func wantDeployObjectsWithMongoDBWithoutPersistence() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "svc1",
+			EnvironmentName: "tstscope.dev",
+			App:             "app1",
+			Image:           "app1:v1",
+			Replicas:        1,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+		}},
+		MongoDBWorkloads: []*MongoDBWorkload{{
+			ServiceName:     "cache",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: false},
+		}},
+	}
+}
+
+func wantDeployObjectsWithSingleRuleHTTPRoute() *DeployObjects {
+	deployment := &DeploymentWorkload{
+		ServiceName:     "api",
+		EnvironmentName: "tstscope.dev",
+		App:             "apiapp",
+		Image:           "apiapp:v1",
+		Replicas:        2,
+		Ports: []*DeploymentPort{{
+			Name: "http",
+			Port: 9090,
+		}},
+	}
+
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{deployment},
+		HTTPRoutes: []*HTTPRouteWorkload{{
+			ServiceName:      "api",
+			EnvironmentName:  "tstscope.dev",
+			App:              "apiapp",
+			Hostnames:        []string{"api.example.com"},
+			BackendService:   deployment.ServiceResourceName(),
+			GatewayName:      "test-gateway",
+			GatewayNamespace: "test-gw-ns",
+			Matches: []*HTTPRoutePathMatch{{
+				Type:        HTTPPathMatchTypePathPrefix,
+				Value:       "/v1",
+				BackendName: "http",
+				BackendPort: 9090,
+			}},
+		}},
+	}
+}
+
+func wantDeployObjectsWithMultipleRuleHTTPRoute() *DeployObjects {
+	firstDeployment := &DeploymentWorkload{
+		ServiceName:     "svc1",
+		EnvironmentName: "tstscope.dev",
+		App:             "app1",
+		Image:           "app1:v1",
+		Replicas:        1,
+		Ports: []*DeploymentPort{{
+			Name: "http",
+			Port: 8080,
+		}, {
+			Name: "grpc",
+			Port: 50051,
+		}},
+	}
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{firstDeployment},
+		HTTPRoutes: []*HTTPRouteWorkload{{
+			ServiceName:      "svc1",
+			EnvironmentName:  "tstscope.dev",
+			App:              "app1",
+			Hostnames:        []string{"multi.example.com"},
+			BackendService:   firstDeployment.ServiceResourceName(),
+			GatewayName:      "test-gateway",
+			GatewayNamespace: "test-gw-ns",
+			Matches: []*HTTPRoutePathMatch{
+				{
+					Type:        HTTPPathMatchTypePathPrefix,
+					Value:       "/api",
+					BackendName: "http",
+					BackendPort: 8080,
+				},
+				{
+					Type:        HTTPPathMatchTypePathPrefix,
+					Value:       "/grpc",
+					BackendName: "grpc",
+					BackendPort: 50051,
+				},
+			},
+		}},
+	}
+}
+
+func wantDeployObjectsWithAllWorkloadTypes() *DeployObjects {
+	webDeployment := &DeploymentWorkload{
+		ServiceName:     "web",
+		EnvironmentName: "tstscope.dev",
+		App:             "webapp",
+		Image:           "webapp:v1",
+		Replicas:        2,
+		Ports: []*DeploymentPort{{
+			Name: "http",
+			Port: 8080,
+		}},
+	}
+	apiDeployment := &DeploymentWorkload{
+		ServiceName:     "api",
+		EnvironmentName: "tstscope.dev",
+		App:             "apiapp",
+		Image:           "apiapp:v2",
+		Replicas:        1,
+		Ports: []*DeploymentPort{{
+			Name: "grpc",
+			Port: 50051,
+		}},
+	}
+
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{webDeployment, apiDeployment},
+		MongoDBWorkloads: []*MongoDBWorkload{{
+			ServiceName:     "mongo",
+			EnvironmentName: "tstscope.dev",
+			App:             "webapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true},
+		}},
+		HTTPRoutes: []*HTTPRouteWorkload{{
+			ServiceName:      "web",
+			EnvironmentName:  "tstscope.dev",
+			App:              "webapp",
+			Hostnames:        []string{"web.example.com"},
+			BackendService:   webDeployment.ServiceResourceName(),
+			GatewayName:      "test-gateway",
+			GatewayNamespace: "test-gw-ns",
+			Matches: []*HTTPRoutePathMatch{{
+				Type:        HTTPPathMatchTypePathPrefix,
+				Value:       "/",
+				BackendName: "http",
+				BackendPort: 8080,
+			}},
+		}},
+	}
+}
+
+func wantDeployObjectsWithoutPorts() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "worker",
+			EnvironmentName: "tstscope.dev",
+			App:             "workerapp",
+			Image:           "workerapp:v1",
+			Replicas:        1,
+			Ports:           nil,
+		}},
 	}
 }
 

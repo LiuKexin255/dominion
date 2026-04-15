@@ -33,7 +33,7 @@
       "variant": "xhigh"
     },
     "atlas": {
-      "model": "opencode-go/kimi-k2.5"
+      "model": "zai-coding-plan/glm-5.1"
     },
     "sisyphus-junior": {
       "model": "zai-coding-plan/glm-5.1"

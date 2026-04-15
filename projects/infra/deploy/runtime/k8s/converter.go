@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"fmt"
+	"strings"
 
 	"dominion/projects/infra/deploy/domain"
 )
@@ -22,91 +23,118 @@ type DeployObjects struct {
 // 和 HTTPRouteWorkload。cfg 提供网关等静态配置。
 func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects, error) {
 	desiredState := env.DesiredState()
-	envName := env.Name().String()
-	objects := new(DeployObjects)
-
-	// 构建服务名到 DeploymentWorkload 和 ServiceSpec 的映射，供 HTTPRoute 解析后端使用。
-	deploymentMap := make(map[string]*DeploymentWorkload)
-	serviceSpecMap := make(map[string]*domain.ServiceSpec)
+	envName := env.Name().Label()
+	objects := &DeployObjects{}
+	deploymentMap := make(map[string]*DeploymentWorkload, len(desiredState.Services))
+	serviceSpecMap := make(map[string]*domain.ServiceSpec, len(desiredState.Services))
 
 	for _, svc := range desiredState.Services {
-		workload := &DeploymentWorkload{
-			ServiceName:     svc.Name,
-			EnvironmentName: envName,
-			App:             svc.App,
-			Image:           svc.Image,
-			Replicas:        svc.Replicas,
-			TLSEnabled:      svc.TLSEnabled,
-			Ports:           convertPorts(svc.Ports),
-		}
+		workload := convertServiceToWorkload(svc, envName)
 		objects.Deployments = append(objects.Deployments, workload)
 		deploymentMap[svc.Name] = workload
 		serviceSpecMap[svc.Name] = svc
 	}
 
 	for _, infra := range desiredState.Infras {
-		switch infra.Resource {
-		case infraResourceMongoDB:
-			workload := &MongoDBWorkload{
-				ServiceName:     infra.Name,
-				EnvironmentName: envName,
-				App:             infra.App,
-				ProfileName:     infra.Profile,
-				Persistence:     PersistenceConfig{Enabled: infra.PersistenceEnabled},
-			}
-			objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, workload)
-		default:
-			return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
+		workload, err := convertInfraToMongoWorkload(infra, envName)
+		if err != nil {
+			return nil, err
 		}
+		objects.MongoDBWorkloads = append(objects.MongoDBWorkloads, workload)
 	}
 
 	for _, route := range desiredState.HTTPRoutes {
 		if len(route.Rules) == 0 {
 			continue
 		}
-
-		primaryBackend := route.Rules[0].Backend
-		primaryDeployment, ok := deploymentMap[primaryBackend]
+		deployment, ok := deploymentMap[route.ServiceName]
 		if !ok {
-			return nil, fmt.Errorf("HTTPRoute 后端服务 %q 未找到对应的 Deployment", primaryBackend)
+			return nil, fmt.Errorf("HTTPRoute service %q 未找到对应的 Deployment", route.ServiceName)
 		}
-		primarySpec := serviceSpecMap[primaryBackend]
+		spec := serviceSpecMap[route.ServiceName]
 
-		matches := make([]*HTTPRoutePathMatch, 0, len(route.Rules))
-		for _, rule := range route.Rules {
-			dep, ok := deploymentMap[rule.Backend]
-			if !ok {
-				return nil, fmt.Errorf("HTTPRoute 后端服务 %q 未找到对应的 Deployment", rule.Backend)
-			}
-			spec := serviceSpecMap[rule.Backend]
-
-			var backendPort int
-			if len(spec.Ports) > 0 {
-				backendPort = int(spec.Ports[0].Port)
-			}
-
-			matches = append(matches, &HTTPRoutePathMatch{
-				Type:        convertPathType(rule.Path.Type),
-				Value:       rule.Path.Value,
-				BackendName: dep.ServiceResourceName(),
-				BackendPort: backendPort,
-			})
+		workload, err := convertHTTPRouteToWorkload(route, envName, cfg, deployment, spec)
+		if err != nil {
+			return nil, err
 		}
-
-		routeWorkload := &HTTPRouteWorkload{
-			ServiceName:      primaryBackend,
-			EnvironmentName:  envName,
-			App:              primarySpec.App,
-			Hostnames:        route.Hostnames,
-			Matches:          matches,
-			BackendService:   primaryDeployment.ServiceResourceName(),
-			GatewayName:      cfg.Gateway.Name,
-			GatewayNamespace: cfg.Gateway.Namespace,
-		}
-		objects.HTTPRoutes = append(objects.HTTPRoutes, routeWorkload)
+		objects.HTTPRoutes = append(objects.HTTPRoutes, workload)
 	}
 
 	return objects, nil
+}
+
+func convertServiceToWorkload(svc *domain.ServiceSpec, envName string) *DeploymentWorkload {
+	return &DeploymentWorkload{
+		ServiceName:     svc.Name,
+		EnvironmentName: envName,
+		App:             svc.App,
+		Image:           svc.Image,
+		Replicas:        svc.Replicas,
+		TLSEnabled:      svc.TLSEnabled,
+		Ports:           convertPorts(svc.Ports),
+	}
+}
+
+func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*MongoDBWorkload, error) {
+	switch infra.Resource {
+	case infraResourceMongoDB:
+		return &MongoDBWorkload{
+			ServiceName:     infra.Name,
+			EnvironmentName: envName,
+			App:             infra.App,
+			ProfileName:     infra.Profile,
+			Persistence:     PersistenceConfig{Enabled: infra.PersistenceEnabled},
+		}, nil
+	default:
+		return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
+	}
+}
+
+func convertHTTPRouteToWorkload(route *domain.HTTPRouteSpec, envName string, cfg *K8sConfig, deployment *DeploymentWorkload, spec *domain.ServiceSpec) (*HTTPRouteWorkload, error) {
+	matches, err := convertHTTPRouteMatches(spec.Ports, route.Rules)
+	if err != nil {
+		return nil, err
+	}
+
+	return &HTTPRouteWorkload{
+		ServiceName:      route.ServiceName,
+		EnvironmentName:  envName,
+		App:              spec.App,
+		Hostnames:        route.Hostnames,
+		Matches:          matches,
+		BackendService:   deployment.ServiceResourceName(),
+		GatewayName:      cfg.Gateway.Name,
+		GatewayNamespace: cfg.Gateway.Namespace,
+	}, nil
+}
+
+func convertHTTPRouteMatches(ports []domain.ServicePortSpec, rules []domain.HTTPRouteRule) ([]*HTTPRoutePathMatch, error) {
+	backendPortMap := make(map[string]int, len(ports))
+	for _, port := range ports {
+		key := strings.ToLower(strings.TrimSpace(port.Name))
+		if key == "" {
+			continue
+		}
+		backendPortMap[key] = int(port.Port)
+	}
+
+	matches := make([]*HTTPRoutePathMatch, 0, len(rules))
+	for _, rule := range rules {
+		backend := strings.TrimSpace(rule.Backend)
+		backendPort, ok := backendPortMap[strings.ToLower(backend)]
+		if !ok {
+			return nil, fmt.Errorf("HTTPRoute backend %q 未找到对应端口", backend)
+		}
+
+		matches = append(matches, &HTTPRoutePathMatch{
+			Type:        convertPathType(rule.Path.Type),
+			Value:       rule.Path.Value,
+			BackendName: backend,
+			BackendPort: backendPort,
+		})
+	}
+
+	return matches, nil
 }
 
 // convertPorts 将领域模型端口列表转换为部署端口列表。

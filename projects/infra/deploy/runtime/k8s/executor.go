@@ -79,8 +79,78 @@ func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment) error {
 			return err
 		}
 	}
+	if err := r.pruneResources(ctx, env.Name().Label(), objects); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (r *K8sRuntime) pruneResources(ctx context.Context, fullEnvName string, objects *DeployObjects) error {
+	namespace := r.client.K8sConfig.Namespace
+	matchLabels := buildLabels(
+		withDominionEnvironment(fullEnvName),
+		withManagedBy(r.client.K8sConfig.ManagedBy),
+	)
+	expected := buildExpectedApplyResources(objects)
+
+	if err := r.pruneHTTPRoutes(ctx, namespace, matchLabels, expected.httpRoutes); err != nil {
+		return err
+	}
+	if err := r.pruneServices(ctx, namespace, matchLabels, expected.services); err != nil {
+		return err
+	}
+	if err := r.pruneDeployments(ctx, namespace, matchLabels, expected.deployments); err != nil {
+		return err
+	}
+	if err := r.pruneSecrets(ctx, namespace, matchLabels, expected.secrets); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type expectedApplyResources struct {
+	deployments map[string]struct{}
+	services    map[string]struct{}
+	httpRoutes  map[string]struct{}
+	secrets     map[string]struct{}
+}
+
+func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources {
+	resources := &expectedApplyResources{
+		deployments: make(map[string]struct{}),
+		services:    make(map[string]struct{}),
+		httpRoutes:  make(map[string]struct{}),
+		secrets:     make(map[string]struct{}),
+	}
+	if objects == nil {
+		return resources
+	}
+
+	for _, workload := range objects.Deployments {
+		if workload == nil {
+			continue
+		}
+		resources.deployments[workload.WorkloadName()] = struct{}{}
+		resources.services[workload.ServiceResourceName()] = struct{}{}
+	}
+	for _, workload := range objects.HTTPRoutes {
+		if workload == nil {
+			continue
+		}
+		resources.httpRoutes[workload.ResourceName()] = struct{}{}
+	}
+	for _, workload := range objects.MongoDBWorkloads {
+		if workload == nil {
+			continue
+		}
+		resources.deployments[workload.ResourceName()] = struct{}{}
+		resources.services[workload.ServiceResourceName()] = struct{}{}
+		resources.secrets[workload.SecretResourceName()] = struct{}{}
+	}
+
+	return resources
 }
 
 // Delete removes all owned runtime resources for the target environment.
@@ -89,7 +159,7 @@ func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName)
 		return fmt.Errorf("runtime client 为空")
 	}
 
-	fullEnvName := envName.String()
+	fullEnvName := envName.Label()
 	namespace := r.client.K8sConfig.Namespace
 	matchLabels := buildLabels(
 		withDominionEnvironment(fullEnvName),
@@ -266,6 +336,32 @@ func (r *K8sRuntime) deleteHTTPRoutes(ctx context.Context, namespace string, mat
 	return nil
 }
 
+func (r *K8sRuntime) pruneHTTPRoutes(ctx context.Context, namespace string, matchLabels labels.Set, expected map[string]struct{}) error {
+	client := r.client.DynamicClient.Resource(httpRouteGVR()).Namespace(namespace)
+	routes, err := client.List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindHTTPRoute, namespace, err)
+	}
+
+	for _, route := range routes.Items {
+		if !hasAllLabels(route.GetLabels(), matchLabels) {
+			continue
+		}
+		if _, ok := expected[route.GetName()]; ok {
+			continue
+		}
+		if err := r.deleteHTTPRoutes(ctx, namespace, labels.Set(route.GetLabels())); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (r *K8sRuntime) deleteServices(ctx context.Context, namespace string, matchLabels labels.Set) error {
 	services, err := r.client.TypedClient.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
 	if err != nil {
@@ -282,6 +378,31 @@ func (r *K8sRuntime) deleteServices(ctx context.Context, namespace string, match
 		}
 		if err := r.client.TypedClient.CoreV1().Services(namespace).Delete(ctx, service.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("删除 %s %s/%s 失败: %w", resourceKindService, namespace, service.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *K8sRuntime) pruneServices(ctx context.Context, namespace string, matchLabels labels.Set, expected map[string]struct{}) error {
+	services, err := r.client.TypedClient.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindService, namespace, err)
+	}
+
+	for _, service := range services.Items {
+		if !hasAllLabels(service.Labels, matchLabels) {
+			continue
+		}
+		if _, ok := expected[service.Name]; ok {
+			continue
+		}
+		if err := r.deleteServices(ctx, namespace, labels.Set(service.Labels)); err != nil {
+			return err
 		}
 	}
 
@@ -310,6 +431,31 @@ func (r *K8sRuntime) deleteDeployments(ctx context.Context, namespace string, ma
 	return nil
 }
 
+func (r *K8sRuntime) pruneDeployments(ctx context.Context, namespace string, matchLabels labels.Set, expected map[string]struct{}) error {
+	deployments, err := r.client.TypedClient.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindDeployment, namespace, err)
+	}
+
+	for _, deployment := range deployments.Items {
+		if !hasAllLabels(deployment.Labels, matchLabels) {
+			continue
+		}
+		if _, ok := expected[deployment.Name]; ok {
+			continue
+		}
+		if err := r.deleteDeployments(ctx, namespace, labels.Set(deployment.Labels)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (r *K8sRuntime) deleteSecrets(ctx context.Context, namespace string, matchLabels labels.Set) error {
 	secrets, err := r.client.TypedClient.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
 	if err != nil {
@@ -326,6 +472,31 @@ func (r *K8sRuntime) deleteSecrets(ctx context.Context, namespace string, matchL
 		}
 		if err := r.client.TypedClient.CoreV1().Secrets(namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("删除 %s %s/%s 失败: %w", resourceKindSecret, namespace, secret.Name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *K8sRuntime) pruneSecrets(ctx context.Context, namespace string, matchLabels labels.Set, expected map[string]struct{}) error {
+	secrets, err := r.client.TypedClient.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: buildLabelSelector(matchLabels)})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+
+		return fmt.Errorf("列出 %s %s 失败: %w", resourceKindSecret, namespace, err)
+	}
+
+	for _, secret := range secrets.Items {
+		if !hasAllLabels(secret.Labels, matchLabels) {
+			continue
+		}
+		if _, ok := expected[secret.Name]; ok {
+			continue
+		}
+		if err := r.deleteSecrets(ctx, namespace, labels.Set(secret.Labels)); err != nil {
+			return err
 		}
 	}
 

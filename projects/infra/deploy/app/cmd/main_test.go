@@ -11,7 +11,7 @@ import (
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 )
 
-func TestNewRepository_UsesDeployMongoTarget(t *testing.T) {
+func Test_newRepository_UsesDeployMongoTarget(t *testing.T) {
 	wantRepo := &stubRepository{}
 	client := new(mongodriver.Client)
 	var gotTarget string
@@ -39,7 +39,7 @@ func TestNewRepository_UsesDeployMongoTarget(t *testing.T) {
 	}
 }
 
-func TestNewRepository_FailsFastWhenMongoClientErrors(t *testing.T) {
+func Test_newRepository_FailsFastWhenMongoClientErrors(t *testing.T) {
 	wantErr := errors.New("mongo unavailable")
 
 	_, err := newRepository(

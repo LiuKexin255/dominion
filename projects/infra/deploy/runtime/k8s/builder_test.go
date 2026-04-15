@@ -497,6 +497,41 @@ func TestBuildMongoDBDeployment_UnknownProfile(t *testing.T) {
 	}
 }
 
+func TestBuildMongoDBDeployment_WithoutPersistenceUsesEmptyDir(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testMongoDBWorkload()
+	w.Persistence.Enabled = false
+
+	deploy, err := BuildMongoDBDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildMongoDBDeployment() error: %v", err)
+	}
+
+	if len(deploy.Spec.Template.Spec.Volumes) != 1 {
+		t.Fatalf("Volumes count = %d, want 1", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	vol := deploy.Spec.Template.Spec.Volumes[0]
+	if vol.EmptyDir == nil {
+		t.Fatalf("Volume should use emptyDir when persistence is disabled")
+	}
+	if vol.PersistentVolumeClaim != nil {
+		t.Fatalf("Volume should not reference PVC when persistence is disabled")
+	}
+
+	if len(deploy.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("InitContainers count = %d, want 1", len(deploy.Spec.Template.Spec.InitContainers))
+	}
+	initContainer := deploy.Spec.Template.Spec.InitContainers[0]
+	if len(initContainer.VolumeMounts) != 1 || initContainer.VolumeMounts[0].MountPath != mongoDataMountPath {
+		t.Fatalf("InitContainer should keep shared data volume mount at %q", mongoDataMountPath)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != mongoDataMountPath {
+		t.Fatalf("Container should keep shared data volume mount at %q", mongoDataMountPath)
+	}
+}
+
 // --- BuildMongoDBService ---
 
 func TestBuildMongoDBService(t *testing.T) {
@@ -618,6 +653,17 @@ func TestBuildMongoDBPVC_UnknownProfile(t *testing.T) {
 	_, err := BuildMongoDBPVC(w, cfg)
 	if err == nil {
 		t.Fatalf("BuildMongoDBPVC() expected error for unknown profile")
+	}
+}
+
+func TestBuildMongoDBPVC_PersistenceDisabled(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testMongoDBWorkload()
+	w.Persistence.Enabled = false
+
+	_, err := BuildMongoDBPVC(w, cfg)
+	if err == nil || !strings.Contains(err.Error(), "未启用持久化") {
+		t.Fatalf("BuildMongoDBPVC() expected persistence disabled error, got: %v", err)
 	}
 }
 
@@ -765,7 +811,7 @@ func TestCheckPVCCompatibility_MissingStorageRequest(t *testing.T) {
 
 // --- generateStablePassword ---
 
-func TestGenerateStablePassword(t *testing.T) {
+func Test_generateStablePassword(t *testing.T) {
 	// Deterministic.
 	p1 := generateStablePassword("app", "env", "svc")
 	p2 := generateStablePassword("app", "env", "svc")

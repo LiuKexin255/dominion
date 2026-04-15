@@ -208,12 +208,22 @@ func (e *Environment) Validate() error {
 	var errs []string
 
 	serviceNames := make(map[string]struct{})
+	servicePortNames := make(map[string]map[string]struct{})
 	for i, svc := range e.desiredState.Services {
 		if err := svc.Validate(); err != nil {
 			errs = append(errs, fmt.Sprintf("services[%d]: %s", i, err.Error()))
 			continue
 		}
 		serviceNames[svc.Name] = struct{}{}
+		portNames := make(map[string]struct{}, len(svc.Ports))
+		for _, port := range svc.Ports {
+			name := strings.TrimSpace(port.Name)
+			if name == "" {
+				continue
+			}
+			portNames[name] = struct{}{}
+		}
+		servicePortNames[svc.Name] = portNames
 	}
 
 	for i, infra := range e.desiredState.Infras {
@@ -227,10 +237,15 @@ func (e *Environment) Validate() error {
 			errs = append(errs, fmt.Sprintf("http_routes[%d]: %s", i, err.Error()))
 			continue
 		}
+		if _, ok := serviceNames[route.ServiceName]; !ok {
+			errs = append(errs, fmt.Sprintf("http_routes[%d]: service_name %q does not reference an existing service", i, route.ServiceName))
+			continue
+		}
 
+		portNames := servicePortNames[route.ServiceName]
 		for j, rule := range route.Rules {
-			if _, ok := serviceNames[rule.Backend]; !ok {
-				errs = append(errs, fmt.Sprintf("http_routes[%d].rules[%d]: backend %q does not reference an existing service", i, j, rule.Backend))
+			if _, ok := portNames[rule.Backend]; !ok {
+				errs = append(errs, fmt.Sprintf("http_routes[%d].rules[%d]: backend %q does not reference service %q port", i, j, rule.Backend, route.ServiceName))
 			}
 		}
 	}

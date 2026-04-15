@@ -5,14 +5,17 @@
 
 ## Preconditions
 
-- 已安装 `deploy` 工具：`bazel run //:deploy_install`。
+- 已安装 `deploy` v2 工具：`bazel run //tools/deploy/v2:install`。
+- `deploy` 服务已启动并可访问。
+- 可选：通过 `--endpoint` 指定服务地址（默认为 `http://infra.liukexin.com:8081`），通过 `--timeout` 指定超时时间。
 
 ## Automated procedure
 
 ### 1. 部署 Mongo 与 deploy 服务
 
 ```bash
-deploy apply //projects/infra/deploy/test_deploy.yaml
+# 使用 v2 版本的 deploy 工具进行部署
+deploy apply //projects/infra/deploy/testplan/test_deploy.yaml
 ```
 
 Expected outcome:

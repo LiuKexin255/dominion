@@ -3,7 +3,6 @@ package k8s
 import (
 	"os"
 	"reflect"
-	"sync"
 	"testing"
 )
 
@@ -54,7 +53,7 @@ func TestLoadK8sConfigMongoProfile(t *testing.T) {
 	}
 }
 
-func TestParseK8sConfig(t *testing.T) {
+func Test_parseK8sConfig(t *testing.T) {
 	tests := []struct {
 		name    string
 		raw     func(t *testing.T) []byte
@@ -184,7 +183,7 @@ func TestParseK8sConfig(t *testing.T) {
 	}
 }
 
-func TestLoadMongoProfile(t *testing.T) {
+func TestK8sConfig_MongoProfile(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     *K8sConfig
@@ -238,21 +237,10 @@ func TestLoadMongoProfile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stubLoadK8sConfig(t, tt.cfg)
-
-			t.Run("standalone", func(t *testing.T) {
-				got := tt.cfg.MongoProfile(tt.profile)
-				if !reflect.DeepEqual(got, tt.want) {
-					t.Fatalf("LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
-				}
-			})
-
-			t.Run("method", func(t *testing.T) {
-				got := tt.cfg.MongoProfile(tt.profile)
-				if !reflect.DeepEqual(got, tt.want) {
-					t.Fatalf("(*K8sConfig).LoadMongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
-				}
-			})
+			got := tt.cfg.MongoProfile(tt.profile)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("(*K8sConfig).MongoProfile(%q) = %#v, want %#v", tt.profile, got, tt.want)
+			}
 		})
 	}
 }
@@ -266,24 +254,4 @@ func mustReadStaticConfigTestdata(t *testing.T, name string) []byte {
 	}
 
 	return raw
-}
-
-func stubLoadK8sConfig(t *testing.T, cfg *K8sConfig) {
-	t.Helper()
-
-	originalLoadFunc := loadK8sConfigFunc
-	originalReadFile := readStaticConfigFile
-	originalLoadedConfig := loadedK8sConfig
-	t.Cleanup(func() {
-		loadK8sConfigFunc = originalLoadFunc
-		readStaticConfigFile = originalReadFile
-		loadedK8sConfig = originalLoadedConfig
-		loadK8sConfigOnce = sync.Once{}
-	})
-
-	loadK8sConfigOnce = sync.Once{}
-	loadedK8sConfig = nil
-	loadK8sConfigFunc = func() *K8sConfig {
-		return cfg
-	}
 }

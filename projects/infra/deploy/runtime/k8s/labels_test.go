@@ -27,7 +27,7 @@ func TestLabelConstants(t *testing.T) {
 	}
 }
 
-func TestBuildLabels(t *testing.T) {
+func Test_buildLabels(t *testing.T) {
 	tests := []struct {
 		name    string
 		options []labelOption
@@ -86,7 +86,7 @@ func TestBuildLabels(t *testing.T) {
 	}
 }
 
-func TestHasAllLabels(t *testing.T) {
+func Test_hasAllLabels(t *testing.T) {
 	tests := []struct {
 		name    string
 		current map[string]string
@@ -122,7 +122,7 @@ func TestHasAllLabels(t *testing.T) {
 	}
 }
 
-func TestBuildLabelSelector(t *testing.T) {
+func Test_buildLabelSelector(t *testing.T) {
 	selector := buildLabelSelector(labels.Set{
 		appLabelKey:                 "grpc-hello-world",
 		serviceLabelKey:             "gateway",
@@ -143,7 +143,7 @@ func TestBuildLabelSelector(t *testing.T) {
 	}
 }
 
-func TestIsValidLabelValue(t *testing.T) {
+func Test_isValidLabelValue(t *testing.T) {
 	tests := []struct {
 		value string
 		want  bool
@@ -167,7 +167,7 @@ func TestIsValidLabelValue(t *testing.T) {
 	}
 }
 
-func TestIsValidLabelValueChar(t *testing.T) {
+func Test_isValidLabelValueChar(t *testing.T) {
 	tests := []struct {
 		r    rune
 		want bool
@@ -191,7 +191,7 @@ func TestIsValidLabelValueChar(t *testing.T) {
 	}
 }
 
-func TestIsASCIIAlphaNumeric(t *testing.T) {
+func Test_isASCIIAlphaNumeric(t *testing.T) {
 	tests := []struct {
 		r    rune
 		want bool

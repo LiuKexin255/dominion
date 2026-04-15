@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestNewObjectName(t *testing.T) {
+func Test_newObjectName(t *testing.T) {
 	tests := []struct {
 		name        string
 		kind        WorkloadKind
@@ -65,7 +65,7 @@ func TestNewObjectName(t *testing.T) {
 	}
 }
 
-func TestNewObjectName_MaxLength(t *testing.T) {
+func Test_newObjectName_MaxLength(t *testing.T) {
 	got := newObjectName(
 		WorkloadKindDeployment,
 		strings.Repeat("a", 25),
@@ -79,7 +79,7 @@ func TestNewObjectName_MaxLength(t *testing.T) {
 	}
 }
 
-func TestShortNameHash(t *testing.T) {
+func Test_shortNameHash(t *testing.T) {
 	input := "GRPC_HELLO_WORLD"
 	sum := sha256.Sum256([]byte(strings.TrimSpace(input)))
 	want := hex.EncodeToString(sum[:4])

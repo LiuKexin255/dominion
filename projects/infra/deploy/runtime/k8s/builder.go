@@ -315,9 +315,13 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		withDominionEnvironment(workload.EnvironmentName),
 	)
 	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
-	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName(), cfg)
+	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
 	runAsUser := profile.Security.RunAsUser
 	runAsGroup := profile.Security.RunAsGroup
+	volumes := []corev1.Volume{{
+		Name:         mongoDataVolumeName,
+		VolumeSource: buildMongoDBDataVolumeSource(workload),
+	}}
 	volumeMounts := []corev1.VolumeMount{{
 		Name:      mongoDataVolumeName,
 		MountPath: mongoDataMountPath,
@@ -326,14 +330,6 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		RunAsUser:  &runAsUser,
 		RunAsGroup: &runAsGroup,
 	}
-	volumes := []corev1.Volume{{
-		Name: mongoDataVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: workload.PVCResourceName(),
-			},
-		},
-	}}
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(mongoPortName)},
@@ -435,6 +431,9 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 	}
 	if err := workload.Validate(); err != nil {
 		return nil, err
+	}
+	if !workload.Persistence.Enabled {
+		return nil, fmt.Errorf("mongo workload 未启用持久化")
 	}
 
 	profile := cfg.MongoProfile(workload.ProfileName)
@@ -627,7 +626,7 @@ func buildServicePorts(ports []*DeploymentPort) ([]corev1.ServicePort, error) {
 	return servicePorts, nil
 }
 
-func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string, cfg *K8sConfig) []corev1.EnvVar {
+func buildMongoDBContainerEnv(workload *MongoDBWorkload, secretName string) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: reservedEnvNameServiceApp, Value: workload.App},
 		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
@@ -669,6 +668,20 @@ func buildMongoDBPVCAccessModes(accessModes []string) []corev1.PersistentVolumeA
 	}
 
 	return result
+}
+
+func buildMongoDBDataVolumeSource(workload *MongoDBWorkload) corev1.VolumeSource {
+	if workload != nil && workload.Persistence.Enabled {
+		return corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: workload.PVCResourceName(),
+			},
+		}
+	}
+
+	return corev1.VolumeSource{
+		EmptyDir: &corev1.EmptyDirVolumeSource{},
+	}
 }
 
 func stringPtrValue(value *string) string {

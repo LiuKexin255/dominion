@@ -414,8 +414,9 @@ func toProtoHTTPRoutes(routes []*domain.HTTPRouteSpec) []*HTTPRouteSpec {
 	result := make([]*HTTPRouteSpec, 0, len(routes))
 	for _, route := range routes {
 		result = append(result, &HTTPRouteSpec{
-			Hostnames: append([]string(nil), route.Hostnames...),
-			Matches:   toProtoHTTPRouteRules(route.Rules),
+			ServiceName: route.ServiceName,
+			Hostnames:   append([]string(nil), route.Hostnames...),
+			Matches:     toProtoHTTPRouteRules(route.Rules),
 		})
 	}
 
@@ -433,8 +434,9 @@ func fromProtoHTTPRoutes(routes []*HTTPRouteSpec) ([]*domain.HTTPRouteSpec, erro
 			return nil, domain.ErrInvalidSpec
 		}
 		result = append(result, &domain.HTTPRouteSpec{
-			Hostnames: append([]string(nil), route.GetHostnames()...),
-			Rules:     fromProtoHTTPRouteRules(route.GetMatches()),
+			ServiceName: route.GetServiceName(),
+			Hostnames:   append([]string(nil), route.GetHostnames()...),
+			Rules:       fromProtoHTTPRouteRules(route.GetMatches()),
 		})
 	}
 

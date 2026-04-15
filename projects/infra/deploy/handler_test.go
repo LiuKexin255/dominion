@@ -653,9 +653,10 @@ func newDesiredState() domain.DesiredState {
 			PersistenceEnabled: true,
 		}},
 		HTTPRoutes: []*domain.HTTPRouteSpec{{
-			Hostnames: []string{"dev.example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"dev.example.com"},
 			Rules: []domain.HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path: domain.HTTPPathRule{
 					Type:  domain.HTTPPathRuleTypePathPrefix,
 					Value: "/",
@@ -690,9 +691,10 @@ func newProtoDesiredState() *EnvironmentDesiredState {
 			PersistenceEnabled: true,
 		}},
 		HttpRoutes: []*HTTPRouteSpec{{
-			Hostnames: []string{"dev.example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"dev.example.com"},
 			Matches: []*HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path: &HTTPPathRule{
 					Type:  HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
 					Value: "/",

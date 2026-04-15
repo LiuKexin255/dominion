@@ -1,0 +1,13 @@
+name: service-a
+app: alpha
+desc: service a
+artifacts:
+  - name: service-a
+    type: deployment
+    target: :service_a_image
+    tls: true
+    ports:
+      - name: grpc
+        port: 50051
+      - name: http
+        port: 8080

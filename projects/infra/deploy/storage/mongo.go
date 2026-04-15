@@ -152,8 +152,9 @@ type mongoHTTPRouteRule struct {
 
 // mongoHTTPRouteSpec is the BSON representation of domain.HTTPRouteSpec.
 type mongoHTTPRouteSpec struct {
-	Hostnames []string             `bson:"hostnames"`
-	Rules     []mongoHTTPRouteRule `bson:"rules"`
+	ServiceName string               `bson:"service_name"`
+	Hostnames   []string             `bson:"hostnames"`
+	Rules       []mongoHTTPRouteRule `bson:"rules"`
 }
 
 // mongoStatus is the BSON representation of domain.EnvironmentStatus.
@@ -412,8 +413,9 @@ func httpRouteSpecsToMongo(specs []*domain.HTTPRouteSpec) []mongoHTTPRouteSpec {
 	result := make([]mongoHTTPRouteSpec, len(specs))
 	for i, s := range specs {
 		result[i] = mongoHTTPRouteSpec{
-			Hostnames: s.Hostnames,
-			Rules:     httpRouteRulesToMongo(s.Rules),
+			ServiceName: s.ServiceName,
+			Hostnames:   s.Hostnames,
+			Rules:       httpRouteRulesToMongo(s.Rules),
 		}
 	}
 	return result
@@ -548,8 +550,9 @@ func httpRouteSpecsFromMongo(specs []mongoHTTPRouteSpec) []*domain.HTTPRouteSpec
 	result := make([]*domain.HTTPRouteSpec, len(specs))
 	for i, s := range specs {
 		result[i] = &domain.HTTPRouteSpec{
-			Hostnames: s.Hostnames,
-			Rules:     httpRouteRulesFromMongo(s.Rules),
+			ServiceName: s.ServiceName,
+			Hostnames:   s.Hostnames,
+			Rules:       httpRouteRulesFromMongo(s.Rules),
 		}
 	}
 	return result

@@ -159,6 +159,8 @@ message InfraSpec {
 }
 
 message HTTPRouteSpec {
+  string service_name = 3;
+
   repeated string hostnames = 1;
 
   repeated HTTPRouteRule matches = 2;

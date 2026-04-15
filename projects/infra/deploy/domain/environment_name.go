@@ -9,6 +9,7 @@ import (
 const (
 	environmentNamePattern = `^[a-z][a-z0-9]{0,7}$`
 	environmentNameFormat  = "deploy/scopes/%s/environments/%s"
+	environmentLabelFormat = "%s.%s"
 )
 
 var (
@@ -47,6 +48,11 @@ func NewEnvironmentName(scope, envName string) (EnvironmentName, error) {
 // String returns the canonical resource name deploy/scopes/{scope}/environments/{env_name}.
 func (n EnvironmentName) String() string {
 	return fmt.Sprintf(environmentNameFormat, n.scope, n.envName)
+}
+
+// Label 标签名
+func (n EnvironmentName) Label() string {
+	return fmt.Sprintf(environmentLabelFormat, n.scope, n.envName)
 }
 
 // Scope returns the scope segment of the environment resource name.

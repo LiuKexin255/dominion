@@ -65,8 +65,9 @@ type infraSpecJSON struct {
 }
 
 type httpRouteSpecJSON struct {
-	Hostnames []string            `json:"hostnames,omitempty"`
-	Matches   []httpRouteRuleJSON `json:"matches,omitempty"`
+	ServiceName string              `json:"serviceName,omitempty"`
+	Hostnames   []string            `json:"hostnames,omitempty"`
+	Matches     []httpRouteRuleJSON `json:"matches,omitempty"`
 }
 
 type httpRouteRuleJSON struct {
@@ -121,9 +122,10 @@ func newDesiredStateJSON() desiredStateJSON {
 			PersistenceEnabled: true,
 		}},
 		HTTPRoutes: []httpRouteSpecJSON{{
-			Hostnames: []string{"dev.example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"dev.example.com"},
 			Matches: []httpRouteRuleJSON{{
-				Backend: "api",
+				Backend: "http",
 				Path: httpPathRuleJSON{
 					Type:  "HTTP_PATH_RULE_TYPE_PATH_PREFIX",
 					Value: "/",

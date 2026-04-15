@@ -33,9 +33,10 @@ func TestNewEnvironment(t *testing.T) {
 					Name:     "cache",
 				}},
 				HTTPRoutes: []*HTTPRouteSpec{{
-					Hostnames: []string{"example.com"},
+					ServiceName: "api",
+					Hostnames:   []string{"example.com"},
 					Rules: []HTTPRouteRule{{
-						Backend: "api",
+						Backend: "http",
 						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
 					}},
 				}},
@@ -114,9 +115,10 @@ func TestEnvironment_UpdateDesiredState(t *testing.T) {
 			Replicas: 2,
 		}},
 		HTTPRoutes: []*HTTPRouteSpec{{
-			Hostnames: []string{"example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"example.com"},
 			Rules: []HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/v2"},
 			}},
 		}},
@@ -449,7 +451,7 @@ func TestEnvironment_Validate(t *testing.T) {
 		wantContains string
 	}{
 		{
-			name: "backend references existing service",
+			name: "backend references existing service port",
 			desiredState: DesiredState{
 				Services: []*ServiceSpec{{
 					Name:     "api",
@@ -459,16 +461,17 @@ func TestEnvironment_Validate(t *testing.T) {
 					Replicas: 1,
 				}},
 				HTTPRoutes: []*HTTPRouteSpec{{
-					Hostnames: []string{"example.com"},
+					ServiceName: "api",
+					Hostnames:   []string{"example.com"},
 					Rules: []HTTPRouteRule{{
-						Backend: "api",
+						Backend: "http",
 						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
 					}},
 				}},
 			},
 		},
 		{
-			name: "backend reference missing service",
+			name: "backend reference missing service port",
 			desiredState: DesiredState{
 				Services: []*ServiceSpec{{
 					Name:     "api",
@@ -478,7 +481,8 @@ func TestEnvironment_Validate(t *testing.T) {
 					Replicas: 1,
 				}},
 				HTTPRoutes: []*HTTPRouteSpec{{
-					Hostnames: []string{"example.com"},
+					ServiceName: "api",
+					Hostnames:   []string{"example.com"},
 					Rules: []HTTPRouteRule{{
 						Backend: "worker",
 						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
@@ -486,7 +490,7 @@ func TestEnvironment_Validate(t *testing.T) {
 				}},
 			},
 			wantErr:      ErrInvalidSpec,
-			wantContains: `backend "worker" does not reference an existing service`,
+			wantContains: `backend "worker" does not reference service "api" port`,
 		},
 	}
 
@@ -546,9 +550,10 @@ func TestRehydrateEnvironment(t *testing.T) {
 			Replicas: 1,
 		}},
 		HTTPRoutes: []*HTTPRouteSpec{{
-			Hostnames: []string{"example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"example.com"},
 			Rules: []HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
 			}},
 		}},
@@ -620,9 +625,10 @@ func TestRehydrateEnvironmentRejectsNilStatus(t *testing.T) {
 				Replicas: 1,
 			}},
 			HTTPRoutes: []*HTTPRouteSpec{{
-				Hostnames: []string{"example.com"},
+				ServiceName: "api",
+				Hostnames:   []string{"example.com"},
 				Rules: []HTTPRouteRule{{
-					Backend: "api",
+					Backend: "http",
 					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
 				}},
 			}},
@@ -650,9 +656,10 @@ func mustNewEnvironment(t *testing.T) *Environment {
 			Replicas: 1,
 		}},
 		HTTPRoutes: []*HTTPRouteSpec{{
-			Hostnames: []string{"example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"example.com"},
 			Rules: []HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
 			}},
 		}},

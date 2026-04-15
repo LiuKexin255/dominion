@@ -99,7 +99,7 @@ func TestNewRuntimeClient(t *testing.T) {
 	}
 }
 
-func TestLoadRuntimeRESTConfig(t *testing.T) {
+func Test_runtimeRESTConfigLoader(t *testing.T) {
 	tests := []struct {
 		name                string
 		inClusterConfig     *rest.Config

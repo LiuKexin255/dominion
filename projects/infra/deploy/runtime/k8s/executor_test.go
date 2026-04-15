@@ -144,6 +144,158 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 	}
 }
 
+func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		seedState    *domain.DesiredState
+		desiredState *domain.DesiredState
+		wantPresent  pruneResourcePresence
+		wantAbsent   pruneResourcePresence
+	}{
+		{
+			name: "remove service prunes deployment and service only",
+			seedState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("api", "demo", 8080),
+					newExecutorTestServiceSpec("worker", "demo", 9090),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("worker", "demo", 9090),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "worker")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "worker")},
+			},
+			wantAbsent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "api")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "api")},
+			},
+		},
+		{
+			name: "remove infra prunes deployment service secret but preserves pvc",
+			seedState: &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					newExecutorTestMongoInfraSpec("mongo", "demo"),
+					newExecutorTestMongoInfraSpec("mongo-keep", "demo"),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Infras: []*domain.InfraSpec{
+					newExecutorTestMongoInfraSpec("mongo-keep", "demo"),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindMongoDB, "demo", "mongo-keep")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "mongo-keep")},
+				Secrets:     []string{newObjectName(WorkloadKindSecret, "demo", "mongo-keep")},
+				PVCs:        []string{newObjectName(WorkloadKindPVC, "demo", "mongo"), newObjectName(WorkloadKindPVC, "demo", "mongo-keep")},
+			},
+			wantAbsent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindMongoDB, "demo", "mongo")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "mongo")},
+				Secrets:     []string{newObjectName(WorkloadKindSecret, "demo", "mongo")},
+			},
+		},
+		{
+			name: "remove httproute prunes route and preserves backend service",
+			seedState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("api", "demo", 8080),
+				},
+				HTTPRoutes: []*domain.HTTPRouteSpec{
+					newExecutorTestHTTPRouteSpec("demo.example.com", "api", "http", "/"),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("api", "demo", 8080),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "api")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "api")},
+			},
+			wantAbsent: pruneResourcePresence{
+				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, "demo", "api")},
+			},
+		},
+		{
+			name: "empty desired state prunes all running resources except pvc",
+			seedState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("api", "demo", 8080),
+				},
+				Infras: []*domain.InfraSpec{
+					newExecutorTestMongoInfraSpec("mongo", "demo"),
+				},
+				HTTPRoutes: []*domain.HTTPRouteSpec{
+					newExecutorTestHTTPRouteSpec("demo.example.com", "api", "http", "/"),
+				},
+			},
+			desiredState: &domain.DesiredState{},
+			wantPresent: pruneResourcePresence{
+				PVCs: []string{newObjectName(WorkloadKindPVC, "demo", "mongo")},
+			},
+			wantAbsent: pruneResourcePresence{
+				Deployments: []string{
+					newObjectName(WorkloadKindDeployment, "demo", "api"),
+					newObjectName(WorkloadKindMongoDB, "demo", "mongo"),
+				},
+				Services: []string{
+					newObjectName(WorkloadKindService, "demo", "api"),
+					newObjectName(WorkloadKindService, "demo", "mongo"),
+				},
+				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, "demo", "api")},
+				Secrets:    []string{newObjectName(WorkloadKindSecret, "demo", "mongo")},
+			},
+		},
+		{
+			name: "add new service while pruning old service",
+			seedState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("old-api", "demo", 8080),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Services: []*domain.ServiceSpec{
+					newExecutorTestServiceSpec("new-api", "demo", 8081),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "new-api")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "new-api")},
+			},
+			wantAbsent: pruneResourcePresence{
+				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "old-api")},
+				Services:    []string{newObjectName(WorkloadKindService, "demo", "old-api")},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := newTestK8sRuntime(t)
+			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
+			if err := runtime.Apply(ctx, seedEnv); err != nil {
+				t.Fatalf("seed Apply() failed: %v", err)
+			}
+
+			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
+			if err := runtime.Apply(ctx, desiredEnv); err != nil {
+				t.Fatalf("Apply() failed: %v", err)
+			}
+
+			assertPruneResourcePresence(t, runtime, tt.wantPresent)
+			assertPruneResourceAbsence(t, runtime, tt.wantAbsent)
+		})
+	}
+}
+
 func TestK8sRuntimeDeleteDeletesOwnedResourcesInFixedOrder(t *testing.T) {
 	ctx := context.Background()
 	runtime := newTestK8sRuntime(t)
@@ -152,7 +304,7 @@ func TestK8sRuntimeDeleteDeletesOwnedResourcesInFixedOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertToWorkloads() failed: %v", err)
 	}
-	fullEnvName := env.Name().String()
+	fullEnvName := env.Name().Label()
 
 	route, _ := BuildHTTPRoute(objects.HTTPRoutes[0], runtime.client.K8sConfig)
 	svc, _ := BuildService(objects.Deployments[0], runtime.client.K8sConfig)
@@ -222,12 +374,8 @@ func TestK8sRuntimeDeleteDeletesOwnedResourcesInFixedOrder(t *testing.T) {
 
 func newExecutorTestEnvironment(t *testing.T) *domain.Environment {
 	t.Helper()
-	envName, err := domain.NewEnvironmentName("tstscope", "dev")
-	if err != nil {
-		t.Fatalf("NewEnvironmentName() failed: %v", err)
-	}
 
-	env, err := domain.NewEnvironment(envName, "executor test environment", &domain.DesiredState{
+	return newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
 		Services: []*domain.ServiceSpec{{
 			Name:       "api",
 			App:        "demo",
@@ -244,9 +392,10 @@ func newExecutorTestEnvironment(t *testing.T) *domain.Environment {
 			PersistenceEnabled: true,
 		}},
 		HTTPRoutes: []*domain.HTTPRouteSpec{{
-			Hostnames: []string{"demo.example.com"},
+			ServiceName: "api",
+			Hostnames:   []string{"demo.example.com"},
 			Rules: []domain.HTTPRouteRule{{
-				Backend: "api",
+				Backend: "http",
 				Path: domain.HTTPPathRule{
 					Type:  domain.HTTPPathRuleTypePathPrefix,
 					Value: "/",
@@ -254,11 +403,119 @@ func newExecutorTestEnvironment(t *testing.T) *domain.Environment {
 			}},
 		}},
 	})
+}
+
+func newExecutorTestEnvironmentWithState(t *testing.T, state *domain.DesiredState) *domain.Environment {
+	t.Helper()
+	envName, err := domain.NewEnvironmentName("tstscope", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() failed: %v", err)
+	}
+
+	env, err := domain.NewEnvironment(envName, "executor test environment", state)
 	if err != nil {
 		t.Fatalf("NewEnvironment() failed: %v", err)
 	}
 
 	return env
+}
+
+type pruneResourcePresence struct {
+	Deployments []string
+	Services    []string
+	HTTPRoutes  []string
+	Secrets     []string
+	PVCs        []string
+}
+
+func newExecutorTestServiceSpec(name string, app string, port int32) *domain.ServiceSpec {
+	return &domain.ServiceSpec{
+		Name:       name,
+		App:        app,
+		Image:      "repo/" + app + ":v1",
+		Replicas:   1,
+		TLSEnabled: true,
+		Ports:      []domain.ServicePortSpec{{Name: "http", Port: port}},
+	}
+}
+
+func newExecutorTestMongoInfraSpec(name string, app string) *domain.InfraSpec {
+	return &domain.InfraSpec{
+		Resource:           infraResourceMongoDB,
+		Profile:            "dev-single",
+		Name:               name,
+		App:                app,
+		PersistenceEnabled: true,
+	}
+}
+
+func newExecutorTestHTTPRouteSpec(hostname string, serviceName string, backend string, path string) *domain.HTTPRouteSpec {
+	return &domain.HTTPRouteSpec{
+		ServiceName: serviceName,
+		Hostnames:   []string{hostname},
+		Rules: []domain.HTTPRouteRule{{
+			Backend: backend,
+			Path: domain.HTTPPathRule{
+				Type:  domain.HTTPPathRuleTypePathPrefix,
+				Value: path,
+			},
+		}},
+	}
+}
+
+func assertPruneResourcePresence(t *testing.T, runtime *K8sRuntime, want pruneResourcePresence) {
+	t.Helper()
+	ctx := context.Background()
+	namespace := runtime.client.K8sConfig.Namespace
+
+	for _, name := range want.Deployments {
+		if _, err := runtime.client.TypedClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("deployment %s should exist: %v", name, err)
+		}
+	}
+	for _, name := range want.Services {
+		if _, err := runtime.client.TypedClient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("service %s should exist: %v", name, err)
+		}
+	}
+	for _, name := range want.HTTPRoutes {
+		if _, err := runtime.client.DynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("httproute %s should exist: %v", name, err)
+		}
+	}
+	for _, name := range want.Secrets {
+		if _, err := runtime.client.TypedClient.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("secret %s should exist: %v", name, err)
+		}
+	}
+	for _, name := range want.PVCs {
+		if _, err := runtime.client.TypedClient.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("pvc %s should exist: %v", name, err)
+		}
+	}
+}
+
+func assertPruneResourceAbsence(t *testing.T, runtime *K8sRuntime, want pruneResourcePresence) {
+	t.Helper()
+	ctx := context.Background()
+	namespace := runtime.client.K8sConfig.Namespace
+
+	for _, name := range want.Deployments {
+		_, err := runtime.client.TypedClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for _, name := range want.Services {
+		_, err := runtime.client.TypedClient.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for _, name := range want.HTTPRoutes {
+		_, err := runtime.client.DynamicClient.Resource(httpRouteGVR()).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for _, name := range want.Secrets {
+		_, err := runtime.client.TypedClient.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
 }
 
 func newTestK8sRuntime(t *testing.T) *K8sRuntime {

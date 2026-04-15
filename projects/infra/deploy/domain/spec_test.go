@@ -93,7 +93,7 @@ func TestHTTPRouteRule_Validate(t *testing.T) {
 		rule    HTTPRouteRule
 		wantErr bool
 	}{
-		{name: "valid http route rule", rule: HTTPRouteRule{Backend: "api", Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}},
+		{name: "valid http route rule", rule: HTTPRouteRule{Backend: "http", Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}},
 		{name: "missing backend", rule: HTTPRouteRule{Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}, wantErr: true},
 	}
 
@@ -129,13 +129,15 @@ func TestHTTPRouteSpec_Validate(t *testing.T) {
 		{
 			name: "valid http route spec",
 			spec: HTTPRouteSpec{
-				Hostnames: []string{"example.com"},
-				Rules:     []HTTPRouteRule{{Backend: "api", Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}},
+				ServiceName: "api",
+				Hostnames:   []string{"example.com"},
+				Rules:       []HTTPRouteRule{{Backend: "http", Path: HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"}}},
 			},
 		},
-		{name: "missing hostnames", spec: HTTPRouteSpec{Rules: []HTTPRouteRule{{Backend: "api"}}}, wantErr: true},
-		{name: "missing rules", spec: HTTPRouteSpec{Hostnames: []string{"example.com"}}, wantErr: true},
-		{name: "invalid nested rule", spec: HTTPRouteSpec{Hostnames: []string{"example.com"}, Rules: []HTTPRouteRule{{}}}, wantErr: true},
+		{name: "missing hostnames", spec: HTTPRouteSpec{ServiceName: "api", Rules: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
+		{name: "missing service name", spec: HTTPRouteSpec{Hostnames: []string{"example.com"}, Rules: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
+		{name: "missing rules", spec: HTTPRouteSpec{ServiceName: "api", Hostnames: []string{"example.com"}}, wantErr: true},
+		{name: "invalid nested rule", spec: HTTPRouteSpec{ServiceName: "api", Hostnames: []string{"example.com"}, Rules: []HTTPRouteRule{{}}}, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -48,14 +48,15 @@ type HTTPPathRule struct {
 
 // HTTPRouteRule describes a single routing rule with a backend and path match.
 type HTTPRouteRule struct {
-	Backend string
+	Backend string // 后端的端口名
 	Path    HTTPPathRule
 }
 
 // HTTPRouteSpec describes an HTTP routing configuration.
 type HTTPRouteSpec struct {
-	Hostnames []string
-	Rules     []HTTPRouteRule
+	ServiceName string
+	Hostnames   []string
+	Rules       []HTTPRouteRule
 }
 
 // Validate checks that the ServiceSpec contains valid field values.
@@ -107,11 +108,14 @@ func (s *InfraSpec) Validate() error {
 }
 
 // Validate checks that the HTTPRouteSpec contains valid field values.
-// It verifies that hostnames and rules are non-empty, and each rule has
-// a non-empty backend.
+// It verifies that service name, hostnames and rules are non-empty, and each
+// rule has a non-empty backend.
 func (s *HTTPRouteSpec) Validate() error {
 	var errs []string
 
+	if s.ServiceName == "" {
+		errs = append(errs, "service_name must not be empty")
+	}
 	if len(s.Hostnames) == 0 {
 		errs = append(errs, "hostnames must not be empty")
 	}
