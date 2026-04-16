@@ -41,6 +41,38 @@ func TestWorkerProcess_ReconcilingApplySuccess(t *testing.T) {
 	}
 }
 
+func TestWorkerProcess_ContextCancelledDuringApply(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	env := mustReconcilingEnvironment(t, "dev", "alpha")
+	repo := newFakeWorkerRepository(env)
+	runtime := &fakeEnvironmentRuntime{
+		applyFn: func(_ context.Context, _ *Environment, _ func(msg string)) error {
+			cancel()
+			return fmt.Errorf("apply canceled: %w", context.Canceled)
+		},
+	}
+	worker := NewWorker(repo, NewQueue(), runtime)
+
+	err := worker.process(ctx, env.Name())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("process() error = %v, want wrapped %v", err, context.Canceled)
+	}
+
+	got, getErr := repo.Get(context.Background(), env.Name())
+	if getErr != nil {
+		t.Fatalf("Get() error = %v", getErr)
+	}
+	if got.Status().State != StateReconciling {
+		t.Fatalf("state = %v, want %v", got.Status().State, StateReconciling)
+	}
+	if got.Status().Message != "" {
+		t.Fatalf("message = %q, want empty", got.Status().Message)
+	}
+	if len(repo.savedEnvs) != 0 {
+		t.Fatalf("Save() calls = %d, want 0", len(repo.savedEnvs))
+	}
+}
+
 func TestWorkerProcess_ReconcilingApplyFailure(t *testing.T) {
 	ctx := context.Background()
 	env := mustReconcilingEnvironment(t, "dev", "alpha")
@@ -61,6 +93,87 @@ func TestWorkerProcess_ReconcilingApplyFailure(t *testing.T) {
 	}
 	if got.Status().Message != "apply failed" {
 		t.Fatalf("message = %q, want %q", got.Status().Message, "apply failed")
+	}
+}
+
+func TestWorkerProcess_ProgressCallbackUpdatesMessage(t *testing.T) {
+	ctx := context.Background()
+	env := mustReconcilingEnvironment(t, "dev", "alpha")
+	repo := newFakeWorkerRepository(env)
+	runtime := &fakeEnvironmentRuntime{
+		applyFn: func(_ context.Context, _ *Environment, progress func(msg string)) error {
+			if progress == nil {
+				t.Fatal("progress callback = nil, want non-nil")
+			}
+			progress("applying deployment")
+			return nil
+		},
+	}
+	worker := NewWorker(repo, NewQueue(), runtime)
+
+	if err := worker.process(ctx, env.Name()); err != nil {
+		t.Fatalf("process() error = %v", err)
+	}
+
+	if runtime.applyProgress == nil {
+		t.Fatal("Apply() progress callback = nil, want non-nil")
+	}
+	if len(repo.savedEnvs) < 2 {
+		t.Fatalf("Save() calls = %d, want at least 2", len(repo.savedEnvs))
+	}
+	progressSaved := repo.savedEnvs[0]
+	if progressSaved.Status().State != StateReconciling {
+		t.Fatalf("progress save state = %v, want %v", progressSaved.Status().State, StateReconciling)
+	}
+	if progressSaved.Status().Message != "applying deployment" {
+		t.Fatalf("progress save message = %q, want %q", progressSaved.Status().Message, "applying deployment")
+	}
+	got, err := repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status().State != StateReady {
+		t.Fatalf("state = %v, want %v", got.Status().State, StateReady)
+	}
+	if got.Status().Message != "" {
+		t.Fatalf("message = %q, want empty", got.Status().Message)
+	}
+}
+
+func TestWorkerProcess_ProgressCallbackSaveError(t *testing.T) {
+	ctx := context.Background()
+	env := mustReconcilingEnvironment(t, "dev", "alpha")
+	repo := newFakeWorkerRepository(env)
+	repo.saveFn = func(env *Environment) error {
+		if env.Status().State == StateReconciling && env.Status().Message == "applying deployment" {
+			return errors.New("save failed")
+		}
+		return nil
+	}
+	runtime := &fakeEnvironmentRuntime{
+		applyFn: func(_ context.Context, _ *Environment, progress func(msg string)) error {
+			if progress == nil {
+				t.Fatal("progress callback = nil, want non-nil")
+			}
+			progress("applying deployment")
+			return nil
+		},
+	}
+	worker := NewWorker(repo, NewQueue(), runtime)
+
+	if err := worker.process(ctx, env.Name()); err != nil {
+		t.Fatalf("process() error = %v", err)
+	}
+
+	if len(repo.savedEnvs) != 1 {
+		t.Fatalf("successful Save() calls = %d, want 1", len(repo.savedEnvs))
+	}
+	got, err := repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status().State != StateReady {
+		t.Fatalf("state = %v, want %v", got.Status().State, StateReady)
 	}
 }
 
@@ -200,6 +313,7 @@ type fakeWorkerRepository struct {
 	savedEnvs    []*Environment
 	deletedNames []EnvironmentName
 	onGet        func()
+	saveFn       func(env *Environment) error
 	getErr       error
 	saveErr      error
 	deleteErr    error
@@ -240,6 +354,11 @@ func (r *fakeWorkerRepository) ListByScope(_ context.Context, _ string, _ int32,
 }
 
 func (r *fakeWorkerRepository) Save(_ context.Context, env *Environment) error {
+	if r.saveFn != nil {
+		if err := r.saveFn(env); err != nil {
+			return err
+		}
+	}
 	if r.saveErr != nil {
 		return r.saveErr
 	}
@@ -267,18 +386,27 @@ func (r *fakeWorkerRepository) Delete(_ context.Context, name EnvironmentName) e
 }
 
 type fakeEnvironmentRuntime struct {
-	mu          sync.Mutex
-	applyEnvs   []*Environment
-	deleteNames []EnvironmentName
-	applyErr    error
-	deleteErr   error
+	mu            sync.Mutex
+	applyEnvs     []*Environment
+	applyFn       func(ctx context.Context, env *Environment, progress func(msg string)) error
+	applyProgress func(msg string)
+	deleteNames   []EnvironmentName
+	applyErr      error
+	deleteErr     error
 }
 
-func (r *fakeEnvironmentRuntime) Apply(_ context.Context, env *Environment) error {
+func (r *fakeEnvironmentRuntime) Apply(ctx context.Context, env *Environment, progress func(msg string)) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.applyEnvs = append(r.applyEnvs, cloneEnvironmentOrPanic(env))
-	return r.applyErr
+	r.applyProgress = progress
+	applyFn := r.applyFn
+	applyErr := r.applyErr
+	r.mu.Unlock()
+
+	if applyFn != nil {
+		return applyFn(ctx, env, progress)
+	}
+	return applyErr
 }
 
 func (r *fakeEnvironmentRuntime) Delete(_ context.Context, envName EnvironmentName) error {

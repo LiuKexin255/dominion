@@ -24,7 +24,7 @@ func TestK8sRuntimeApplyCreatesResources(t *testing.T) {
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironment(t)
 
-	if err := runtime.Apply(ctx, env); err != nil {
+	if err := runtime.Apply(ctx, env, nil); err != nil {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 		return false, nil, nil
 	})
 
-	if err := runtime.Apply(ctx, env); err != nil {
+	if err := runtime.Apply(ctx, env, nil); err != nil {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
@@ -293,12 +293,12 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runtime := newTestK8sRuntime(t)
 			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
-			if err := runtime.Apply(ctx, seedEnv); err != nil {
+			if err := runtime.Apply(ctx, seedEnv, nil); err != nil {
 				t.Fatalf("seed Apply() failed: %v", err)
 			}
 
 			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
-			if err := runtime.Apply(ctx, desiredEnv); err != nil {
+			if err := runtime.Apply(ctx, desiredEnv, nil); err != nil {
 				t.Fatalf("Apply() failed: %v", err)
 			}
 
@@ -533,10 +533,28 @@ func newTestK8sRuntime(t *testing.T) *K8sRuntime {
 		t.Fatalf("add gateway scheme failed: %v", err)
 	}
 
+	config := newExecutorTestConfig()
+	typedClient := kubernetesfake.NewSimpleClientset()
+	typedClient.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
+		name := action.(k8stesting.GetAction).GetName()
+		obj, err := typedClient.Tracker().Get(appsv1.SchemeGroupVersion.WithResource("deployments"), config.Namespace, name)
+		if err != nil {
+			return false, nil, nil
+		}
+		dep := obj.(*appsv1.Deployment)
+		replicas := deploymentSpecReplicas(dep)
+		dep.Status = appsv1.DeploymentStatus{
+			ObservedGeneration: dep.Generation,
+			UpdatedReplicas:    replicas,
+			AvailableReplicas:  replicas,
+		}
+		return true, dep, nil
+	})
+
 	return NewK8sRuntime(&RuntimeClient{
-		TypedClient:   kubernetesfake.NewSimpleClientset(),
+		TypedClient:   typedClient,
 		DynamicClient: dynamicfake.NewSimpleDynamicClient(scheme),
-		K8sConfig:     newExecutorTestConfig(),
+		K8sConfig:     config,
 	})
 }
 

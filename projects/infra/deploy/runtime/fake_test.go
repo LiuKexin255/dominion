@@ -17,7 +17,7 @@ func TestNewFakeRuntime_DefaultBehavior(t *testing.T) {
 	env := mustFakeEnvironment(t)
 	name := env.Name()
 
-	if err := fr.Apply(context.Background(), env); err != nil {
+	if err := fr.Apply(context.Background(), env, nil); err != nil {
 		t.Fatalf("Apply() unexpected error: %v", err)
 	}
 	if err := fr.Delete(context.Background(), name); err != nil {
@@ -46,12 +46,12 @@ func TestNewFakeRuntime_DefaultBehavior(t *testing.T) {
 
 func TestFakeRuntime_CustomFuncsAndDynamicErrors(t *testing.T) {
 	fr := NewFakeRuntime()
-	fr.ApplyFunc = func(context.Context, *domain.Environment) error { return errors.New("apply func") }
+	fr.ApplyFunc = func(context.Context, *domain.Environment, func(string)) error { return errors.New("apply func") }
 	fr.DeleteFunc = func(context.Context, domain.EnvironmentName) error { return errors.New("delete func") }
 	env := mustFakeEnvironment(t)
 	name := env.Name()
 
-	if err := fr.Apply(context.Background(), env); err == nil || err.Error() != "apply func" {
+	if err := fr.Apply(context.Background(), env, nil); err == nil || err.Error() != "apply func" {
 		t.Fatalf("Apply() error = %v, want apply func", err)
 	}
 	if err := fr.Delete(context.Background(), name); err == nil || err.Error() != "delete func" {
@@ -60,7 +60,7 @@ func TestFakeRuntime_CustomFuncsAndDynamicErrors(t *testing.T) {
 
 	fr.SetApplyError(errors.New("apply boom"))
 	fr.SetDeleteError(errors.New("delete boom"))
-	if err := fr.Apply(context.Background(), env); err == nil || err.Error() != "apply boom" {
+	if err := fr.Apply(context.Background(), env, nil); err == nil || err.Error() != "apply boom" {
 		t.Fatalf("Apply() error = %v, want apply boom", err)
 	}
 	if err := fr.Delete(context.Background(), name); err == nil || err.Error() != "delete boom" {
@@ -69,7 +69,7 @@ func TestFakeRuntime_CustomFuncsAndDynamicErrors(t *testing.T) {
 
 	fr.SetApplyError(nil)
 	fr.SetDeleteError(nil)
-	if err := fr.Apply(context.Background(), env); err == nil || err.Error() != "apply func" {
+	if err := fr.Apply(context.Background(), env, nil); err == nil || err.Error() != "apply func" {
 		t.Fatalf("Apply() after restore error = %v, want apply func", err)
 	}
 	if err := fr.Delete(context.Background(), name); err == nil || err.Error() != "delete func" {
@@ -93,7 +93,7 @@ func TestFakeRuntime_AdminHandler(t *testing.T) {
 	if rr := record(http.MethodPost, "/admin/fake/apply-error", "apply via admin"); rr.Code != http.StatusOK {
 		t.Fatalf("POST apply-error status = %d, want %d", rr.Code, http.StatusOK)
 	}
-	if err := fr.Apply(context.Background(), env); err == nil || err.Error() != "apply via admin" {
+	if err := fr.Apply(context.Background(), env, nil); err == nil || err.Error() != "apply via admin" {
 		t.Fatalf("Apply() error = %v, want apply via admin", err)
 	}
 
@@ -115,7 +115,7 @@ func TestFakeRuntime_AdminHandler(t *testing.T) {
 	if rr := record(http.MethodPost, "/admin/fake/restore", ""); rr.Code != http.StatusOK {
 		t.Fatalf("POST restore status = %d, want %d", rr.Code, http.StatusOK)
 	}
-	if err := fr.Apply(context.Background(), env); err != nil {
+	if err := fr.Apply(context.Background(), env, nil); err != nil {
 		t.Fatalf("Apply() after restore unexpected error: %v", err)
 	}
 	if err := fr.Delete(context.Background(), name); err != nil {

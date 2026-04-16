@@ -35,7 +35,7 @@ func NewK8sRuntime(client *RuntimeClient) *K8sRuntime {
 }
 
 // Apply converts an environment into workloads and applies all owned resources.
-func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment) error {
+func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progress func(msg string)) error {
 	if r == nil || r.client == nil {
 		return fmt.Errorf("runtime client 为空")
 	}
@@ -80,6 +80,33 @@ func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment) error {
 		}
 	}
 	if err := r.pruneResources(ctx, env.Name().Label(), objects); err != nil {
+		return err
+	}
+
+	var deploymentNames []string
+	for _, workload := range objects.Deployments {
+		if workload == nil {
+			continue
+		}
+		deploymentNames = append(deploymentNames, workload.WorkloadName())
+	}
+	for _, workload := range objects.MongoDBWorkloads {
+		if workload == nil {
+			continue
+		}
+		deploymentNames = append(deploymentNames, workload.ResourceName())
+	}
+	if len(deploymentNames) == 0 {
+		return nil
+	}
+
+	if err := waitForRollout(
+		ctx,
+		r.client.TypedClient,
+		r.client.K8sConfig.Namespace,
+		deploymentNames,
+		progress,
+	); err != nil {
 		return err
 	}
 

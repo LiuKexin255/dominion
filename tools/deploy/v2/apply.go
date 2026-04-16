@@ -80,6 +80,8 @@ func applyCommand(opts *options) error {
 		}
 	}
 
+	fmt.Fprintf(stdout, "环境 %s 已提交，等待启动...\n", fullEnvName)
+
 	readyEnv, err := pollUntilReady(context.Background(), opts.apiClient, environmentName, applyPollInterval, opts.timeout)
 	if err != nil {
 		return err

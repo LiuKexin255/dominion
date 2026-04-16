@@ -390,6 +390,69 @@ func TestEnvironment_SetStatusMessage(t *testing.T) {
 	}
 }
 
+func TestSetReconcilingMessage_ReconcilingState(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() unexpected error: %v", err)
+	}
+
+	// when
+	err := env.SetReconcilingMessage("applying deployment")
+
+	// then
+	if err != nil {
+		t.Fatalf("SetReconcilingMessage() unexpected error: %v", err)
+	}
+	if env.status.State != StateReconciling {
+		t.Fatalf("status.State = %v, want %v", env.status.State, StateReconciling)
+	}
+	if env.status.Message != "applying deployment" {
+		t.Fatalf("status.Message = %q, want %q", env.status.Message, "applying deployment")
+	}
+}
+
+func TestSetReconcilingMessage_NonReconcilingState(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+
+	// when
+	err := env.SetReconcilingMessage("applying deployment")
+
+	// then
+	if err != ErrInvalidState {
+		t.Fatalf("SetReconcilingMessage() error = %v, want %v", err, ErrInvalidState)
+	}
+	if env.status.State != StatePending {
+		t.Fatalf("status.State = %v, want %v", env.status.State, StatePending)
+	}
+	if env.status.Message != "" {
+		t.Fatalf("status.Message = %q, want empty", env.status.Message)
+	}
+}
+
+func TestSetReconcilingMessage_ReconcilingState_OverridesMessage(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() unexpected error: %v", err)
+	}
+	if err := env.SetReconcilingMessage("step 1"); err != nil {
+		t.Fatalf("SetReconcilingMessage() unexpected error = %v", err)
+	}
+
+	// when
+	err := env.SetReconcilingMessage("step 2")
+
+	// then
+	if err != nil {
+		t.Fatalf("SetReconcilingMessage() unexpected error: %v", err)
+	}
+	if env.status.Message != "step 2" {
+		t.Fatalf("status.Message = %q, want %q", env.status.Message, "step 2")
+	}
+}
+
 func TestEnvironment_MarkDeleting(t *testing.T) {
 	tests := []struct {
 		name      string

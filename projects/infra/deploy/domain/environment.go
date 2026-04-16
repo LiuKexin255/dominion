@@ -202,6 +202,16 @@ func (e *Environment) SetStatusMessage(msg string) error {
 	return nil
 }
 
+// SetReconcilingMessage records a status message while the environment remains reconciling.
+func (e *Environment) SetReconcilingMessage(msg string) error {
+	if e.status.State != StateReconciling {
+		return ErrInvalidState
+	}
+
+	e.status.Message = msg
+	return nil
+}
+
 // Validate checks the desired state and cross-object references.
 func (e *Environment) Validate() error {
 	var errs []error
