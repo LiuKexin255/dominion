@@ -22,7 +22,7 @@ type FakeRuntime struct {
 	AppliedEnvs  []*domain.Environment
 	DeletedEnvs  []domain.EnvironmentName
 
-	ApplyFunc  func(context.Context, *domain.Environment) error
+	ApplyFunc  func(context.Context, *domain.Environment, func(string)) error
 	DeleteFunc func(context.Context, domain.EnvironmentName) error
 
 	applyErr  error
@@ -35,7 +35,7 @@ func NewFakeRuntime() *FakeRuntime {
 }
 
 // Apply records the call and delegates to the configured behavior.
-func (f *FakeRuntime) Apply(ctx context.Context, env *domain.Environment) error {
+func (f *FakeRuntime) Apply(ctx context.Context, env *domain.Environment, progress func(msg string)) error {
 	f.mu.Lock()
 	f.ApplyCalled++
 	f.AppliedEnvs = append(f.AppliedEnvs, env)
@@ -47,7 +47,7 @@ func (f *FakeRuntime) Apply(ctx context.Context, env *domain.Environment) error 
 		return applyErr
 	}
 	if applyFunc != nil {
-		return applyFunc(ctx, env)
+		return applyFunc(ctx, env, progress)
 	}
 	return nil
 }

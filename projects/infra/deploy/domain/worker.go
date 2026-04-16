@@ -7,7 +7,7 @@ import (
 
 // EnvironmentRuntime reconciles domain environments with the runtime.
 type EnvironmentRuntime interface {
-	Apply(ctx context.Context, env *Environment) error
+	Apply(ctx context.Context, env *Environment, progress func(msg string)) error
 	Delete(ctx context.Context, envName EnvironmentName) error
 }
 
@@ -73,7 +73,19 @@ func (w *Worker) handleDelete(ctx context.Context, env *Environment) error {
 }
 
 func (w *Worker) handleApply(ctx context.Context, env *Environment) error {
-	if err := w.runtime.Apply(ctx, env); err != nil {
+	progress := func(msg string) {
+		if err := env.SetReconcilingMessage(msg); err != nil {
+			return
+		}
+		if err := w.repo.Save(ctx, env); err != nil {
+			return
+		}
+	}
+
+	if err := w.runtime.Apply(ctx, env, progress); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
 		if markErr := env.MarkFailed(err.Error()); markErr != nil {
 			return markErr
 		}

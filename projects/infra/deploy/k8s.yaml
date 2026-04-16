@@ -202,7 +202,7 @@ spec:
     spec:
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:b8e61f3315babf6138c7508ad611edb97aa8ae5f2be5f61b1cbc93d9af2a1b17
+          image: registry.liukexin.com/projects/infra/deploy@sha256:efcaa12d72d651844a67f68c4779c60088ac6fc0a6adc396b0f7e250a7087f58
           ports:
             - name: grpc
               containerPort: 8080
