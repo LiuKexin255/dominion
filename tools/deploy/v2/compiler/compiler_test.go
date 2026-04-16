@@ -11,6 +11,7 @@ import (
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/imagepush"
 	"dominion/tools/deploy/pkg/workspace"
+
 	"google.golang.org/protobuf/proto"
 )
 
@@ -485,4 +486,121 @@ func withWorkingDir(t *testing.T, dir string) {
 			t.Fatalf("restore working dir failed: %v", err)
 		}
 	})
+}
+
+func TestCompile_ReplicasFromConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		wantReplicas   int32
+	}{
+		{
+			name: "config specifies replicas 3",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path:     testServiceAPath,
+						Name:     "service-a",
+						Replicas: 3,
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantReplicas: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if got.Artifacts[0].Replicas != tt.wantReplicas {
+				t.Errorf("Compile() Replicas = %d, want %d", got.Artifacts[0].Replicas, tt.wantReplicas)
+			}
+		})
+	}
+}
+
+func TestCompile_DefaultReplicas(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		wantReplicas   int32
+	}{
+		{
+			name: "config without replicas defaults to 1",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantReplicas: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if got.Artifacts[0].Replicas != tt.wantReplicas {
+				t.Errorf("Compile() Replicas = %d, want %d", got.Artifacts[0].Replicas, tt.wantReplicas)
+			}
+		})
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
 }

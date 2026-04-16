@@ -18,4 +18,7 @@ var (
 
 	// ErrInvalidSpec indicates that the deployment spec is invalid.
 	ErrInvalidSpec = errors.New("invalid deployment spec")
+
+	// ErrInvalidType indicates that the environment type is invalid.
+	ErrInvalidType = errors.New("invalid environment type")
 )

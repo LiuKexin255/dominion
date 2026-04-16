@@ -154,7 +154,7 @@ func mustFakeEnvironment(t *testing.T) *domain.Environment {
 	if err != nil {
 		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
 	}
-	env, err := domain.NewEnvironment(name, "demo", &domain.DesiredState{})
+	env, err := domain.NewEnvironment(name, domain.EnvironmentTypeProd, "demo", &domain.DesiredState{})
 	if err != nil {
 		t.Fatalf("NewEnvironment() unexpected error: %v", err)
 	}

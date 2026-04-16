@@ -15,6 +15,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+type EnvironmentType string
+
 const (
 	// DatabaseName is the MongoDB database used by the deploy service.
 	DatabaseName = "deploy"
@@ -25,6 +27,7 @@ const (
 	mongoFieldName         = "name"
 	mongoFieldScope        = "scope"
 	mongoFieldEnvName      = "env_name"
+	mongoFieldEnvType      = "env_type"
 	mongoFieldDescription  = "description"
 	mongoFieldDesiredState = "desired_state"
 	mongoFieldStatus       = "status"
@@ -32,6 +35,11 @@ const (
 	mongoFieldCreateTime   = "create_time"
 	mongoFieldUpdateTime   = "update_time"
 	mongoFieldETag         = "etag"
+
+	EnvironmentTypeProd        = "prod"
+	EnvironmentTypeDev         = "dev"
+	EnvironmentTypeTest        = "test"
+	EnvironmentTypeUnspecified = "unspecified"
 )
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
@@ -98,6 +106,7 @@ type mongoEnvironment struct {
 	Name         string             `bson:"name"`
 	Scope        string             `bson:"scope"`
 	EnvName      string             `bson:"env_name"`
+	EnvType      EnvironmentType    `bson:"env_type"`
 	Description  string             `bson:"description"`
 	DesiredState *mongoDesiredState `bson:"desired_state"`
 	Status       *mongoStatus       `bson:"status"`
@@ -339,11 +348,38 @@ func (r *MongoRepository) Delete(ctx context.Context, name domain.EnvironmentNam
 	return nil
 }
 
+func envTypeToEnum(t domain.EnvironmentType) EnvironmentType {
+	switch t {
+	case domain.EnvironmentTypeProd:
+		return EnvironmentTypeProd
+	case domain.EnvironmentTypeTest:
+		return EnvironmentTypeTest
+	case domain.EnvironmentTypeDev:
+		return EnvironmentTypeDev
+	default:
+		return EnvironmentTypeUnspecified
+	}
+}
+
+func envTypeFromEnum(s EnvironmentType) domain.EnvironmentType {
+	switch s {
+	case EnvironmentTypeProd:
+		return domain.EnvironmentTypeProd
+	case EnvironmentTypeTest:
+		return domain.EnvironmentTypeTest
+	case EnvironmentTypeDev:
+		return domain.EnvironmentTypeDev
+	default:
+		return domain.EnvironmentTypeUnspecified
+	}
+}
+
 func mongoEnvironmentFromDomain(env *domain.Environment) (*mongoEnvironment, error) {
 	return &mongoEnvironment{
 		Name:         env.Name().String(),
 		Scope:        env.Name().Scope(),
 		EnvName:      env.Name().EnvName(),
+		EnvType:      envTypeToEnum(env.Type()),
 		Description:  env.Description(),
 		DesiredState: desiredStateToMongo(env.DesiredState()),
 		Status:       statusToMongo(env.Status()),
@@ -464,6 +500,7 @@ func (m *mongoEnvironment) insertDocument() bson.M {
 		mongoFieldName:       m.Name,
 		mongoFieldScope:      m.Scope,
 		mongoFieldEnvName:    m.EnvName,
+		mongoFieldEnvType:    m.EnvType,
 		mongoFieldCreateTime: m.CreateTime,
 	}
 }
@@ -476,6 +513,7 @@ func (m *mongoEnvironment) toDomain() (*domain.Environment, error) {
 
 	return domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
 		Name:         name,
+		EnvType:      envTypeFromEnum(m.EnvType),
 		Description:  m.Description,
 		DesiredState: desiredStateFromMongo(m.DesiredState),
 		Status:       statusFromMongo(m.Status),

@@ -3,6 +3,8 @@ package k8s
 import (
 	"fmt"
 	"strings"
+
+	"dominion/projects/infra/deploy/domain"
 )
 
 // DeploymentPort 定义 deployment 暴露端口。
@@ -107,6 +109,7 @@ type HTTPRouteWorkload struct {
 	BackendService   string
 	GatewayName      string
 	GatewayNamespace string
+	EnvType          domain.EnvironmentType
 }
 
 // ResourceName 返回 HTTPRoute 对应的资源名。

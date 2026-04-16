@@ -60,7 +60,7 @@ func TestNewEnvironment(t *testing.T) {
 			desiredState := tt.desiredState
 
 			// when
-			env, err := NewEnvironment(name, "demo environment", &desiredState)
+			env, err := NewEnvironment(name, EnvironmentTypeProd, "demo environment", &desiredState)
 
 			// then
 			if tt.wantErr != nil {
@@ -92,6 +92,90 @@ func TestNewEnvironment(t *testing.T) {
 				t.Fatalf("description = %q, want %q", env.description, "demo environment")
 			}
 		})
+	}
+}
+
+func TestNewEnvironment_WithValidTypes(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		envType EnvironmentType
+	}{
+		{name: "prod", envType: EnvironmentTypeProd},
+		{name: "test", envType: EnvironmentTypeTest},
+		{name: "dev", envType: EnvironmentTypeDev},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			desiredState := &DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v1",
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
+					Replicas: 1,
+				}},
+			}
+
+			// when
+			env, err := NewEnvironment(name, tt.envType, "demo environment", desiredState)
+
+			// then
+			if err != nil {
+				t.Fatalf("NewEnvironment() unexpected error: %v", err)
+			}
+			if got := env.Type(); got != tt.envType {
+				t.Fatalf("Type() = %v, want %v", got, tt.envType)
+			}
+		})
+	}
+}
+
+func TestNewEnvironment_RejectUnspecified(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	// given
+	desiredState := &DesiredState{
+		Artifacts: []*ArtifactSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v1",
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
+			Replicas: 1,
+		}},
+	}
+
+	// when
+	env, err := NewEnvironment(name, EnvironmentTypeUnspecified, "demo environment", desiredState)
+
+	// then
+	if !errors.Is(err, ErrInvalidType) {
+		t.Fatalf("NewEnvironment() error = %v, want %v", err, ErrInvalidType)
+	}
+	if env != nil {
+		t.Fatalf("NewEnvironment() env = %#v, want nil", env)
+	}
+}
+
+func TestEnvironment_Type(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+
+	// when
+	got := env.Type()
+
+	// then
+	if got != EnvironmentTypeProd {
+		t.Fatalf("Type() = %v, want %v", got, EnvironmentTypeProd)
 	}
 }
 
@@ -168,6 +252,37 @@ func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
 	}
 	if env.status.State != StateDeleting {
 		t.Fatalf("status.State = %v, want %v", env.status.State, StateDeleting)
+	}
+}
+
+func TestUpdateDesiredState_TypeImmutable(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() unexpected error: %v", err)
+	}
+	if err := env.MarkReady(); err != nil {
+		t.Fatalf("MarkReady() unexpected error: %v", err)
+	}
+	newState := &DesiredState{
+		Artifacts: []*ArtifactSpec{{
+			Name:     "api",
+			App:      "demo",
+			Image:    "repo/demo:v2",
+			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
+			Replicas: 2,
+		}},
+	}
+
+	// when
+	err := env.UpdateDesiredState(newState)
+
+	// then
+	if err != nil {
+		t.Fatalf("UpdateDesiredState() unexpected error: %v", err)
+	}
+	if got := env.Type(); got != EnvironmentTypeProd {
+		t.Fatalf("Type() = %v, want %v", got, EnvironmentTypeProd)
 	}
 }
 
@@ -696,6 +811,7 @@ func TestRehydrateEnvironment(t *testing.T) {
 
 	env, err := RehydrateEnvironment(EnvironmentSnapshot{
 		Name:         name,
+		EnvType:      EnvironmentTypeTest,
 		Description:  "demo environment",
 		DesiredState: desiredState,
 		Status:       status,
@@ -712,6 +828,9 @@ func TestRehydrateEnvironment(t *testing.T) {
 	}
 	if env.description != "demo environment" {
 		t.Fatalf("description = %q, want %q", env.description, "demo environment")
+	}
+	if env.envType != EnvironmentTypeTest {
+		t.Fatalf("envType = %v, want %v", env.envType, EnvironmentTypeTest)
 	}
 	if env.status == status {
 		t.Fatalf("status pointer should be cloned")
@@ -743,6 +862,41 @@ func TestRehydrateEnvironment(t *testing.T) {
 	}
 	if env.status.Message != "ready" {
 		t.Fatalf("status should be cloned")
+	}
+}
+
+func TestRehydrateEnvironment_WithType(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	// given
+	snapshot := EnvironmentSnapshot{
+		Name:        name,
+		EnvType:     EnvironmentTypeDev,
+		Description: "demo environment",
+		DesiredState: &DesiredState{
+			Artifacts: []*ArtifactSpec{{
+				Name:     "api",
+				App:      "demo",
+				Image:    "repo/demo:v1",
+				Ports:    []ArtifactPortSpec{{Name: "http", Port: 8080}},
+				Replicas: 1,
+			}},
+		},
+		Status: &EnvironmentStatus{State: StateReady},
+	}
+
+	// when
+	env, err := RehydrateEnvironment(snapshot)
+
+	// then
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() unexpected error: %v", err)
+	}
+	if got := env.Type(); got != EnvironmentTypeDev {
+		t.Fatalf("Type() = %v, want %v", got, EnvironmentTypeDev)
 	}
 }
 
@@ -810,7 +964,7 @@ func mustNewEnvironment(t *testing.T) *Environment {
 		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
 	}
 
-	env, err := NewEnvironment(name, "demo environment", &DesiredState{
+	env, err := NewEnvironment(name, EnvironmentTypeProd, "demo environment", &DesiredState{
 		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "demo",

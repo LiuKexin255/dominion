@@ -428,7 +428,7 @@ func mustWorkerEnvName(t *testing.T, scope, env string) EnvironmentName {
 func mustNewWorkerEnvironment(t *testing.T, scope, env string) *Environment {
 	t.Helper()
 	name := mustWorkerEnvName(t, scope, env)
-	environment, err := NewEnvironment(name, env, &DesiredState{
+	environment, err := NewEnvironment(name, EnvironmentTypeProd, env, &DesiredState{
 		Artifacts: []*ArtifactSpec{{
 			Name:     "api",
 			App:      "gateway",
@@ -480,6 +480,7 @@ func mustDeletingEnvironment(t *testing.T, scope, env string) *Environment {
 func cloneEnvironmentOrPanic(env *Environment) *Environment {
 	cloned, err := RehydrateEnvironment(EnvironmentSnapshot{
 		Name:         env.Name(),
+		EnvType:      env.Type(),
 		Description:  env.Description(),
 		DesiredState: env.DesiredState(),
 		Status: &EnvironmentStatus{

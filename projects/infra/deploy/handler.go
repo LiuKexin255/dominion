@@ -104,6 +104,7 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		Name:         envName.String(),
 		Description:  req.GetEnvironment().GetDescription(),
 		DesiredState: req.GetEnvironment().GetDesiredState(),
+		Type:         req.GetEnvironment().GetType(),
 	})
 	if err != nil {
 		return nil, toStatusError(err)
@@ -128,6 +129,10 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentRequest) (*Environment, error) {
 	if req.GetEnvironment() == nil {
 		return nil, status.Error(codes.InvalidArgument, "environment is required")
+	}
+
+	if req.GetEnvironment().GetType() != EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED {
+		return nil, status.Error(codes.InvalidArgument, "type is immutable")
 	}
 
 	envName, err := domain.ParseResourceName(req.GetEnvironment().GetName())
@@ -193,6 +198,7 @@ func toProtoEnvironment(env *domain.Environment) *Environment {
 
 	return &Environment{
 		Name:         env.Name().String(),
+		Type:         toProtoEnvironmentType(env.Type()),
 		Description:  env.Description(),
 		DesiredState: toProtoDesiredState(env.DesiredState()),
 		Status:       toProtoStatus(env.Status()),
@@ -217,7 +223,7 @@ func fromProtoEnvironment(env *Environment) (*domain.Environment, error) {
 		return nil, err
 	}
 
-	return domain.NewEnvironment(envName, env.GetDescription(), desiredState)
+	return domain.NewEnvironment(envName, fromProtoEnvironmentType(env.GetType()), env.GetDescription(), desiredState)
 }
 
 func toProtoState(state domain.EnvironmentState) EnvironmentState {
@@ -234,6 +240,32 @@ func toProtoState(state domain.EnvironmentState) EnvironmentState {
 		return EnvironmentState_ENVIRONMENT_STATE_DELETING
 	default:
 		return EnvironmentState_ENVIRONMENT_STATE_UNSPECIFIED
+	}
+}
+
+func fromProtoEnvironmentType(t EnvironmentType) domain.EnvironmentType {
+	switch t {
+	case EnvironmentType_ENVIRONMENT_TYPE_PROD:
+		return domain.EnvironmentTypeProd
+	case EnvironmentType_ENVIRONMENT_TYPE_TEST:
+		return domain.EnvironmentTypeTest
+	case EnvironmentType_ENVIRONMENT_TYPE_DEV:
+		return domain.EnvironmentTypeDev
+	default:
+		return domain.EnvironmentTypeUnspecified
+	}
+}
+
+func toProtoEnvironmentType(t domain.EnvironmentType) EnvironmentType {
+	switch t {
+	case domain.EnvironmentTypeProd:
+		return EnvironmentType_ENVIRONMENT_TYPE_PROD
+	case domain.EnvironmentTypeTest:
+		return EnvironmentType_ENVIRONMENT_TYPE_TEST
+	case domain.EnvironmentTypeDev:
+		return EnvironmentType_ENVIRONMENT_TYPE_DEV
+	default:
+		return EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED
 	}
 }
 
@@ -528,7 +560,7 @@ func toStatusError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, domain.ErrInvalidState):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidSpec):
+	case errors.Is(err, domain.ErrInvalidName), errors.Is(err, domain.ErrInvalidSpec), errors.Is(err, domain.ErrInvalidType):
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Error(codes.Internal, fmt.Sprintf("deploy handler: %v", err))

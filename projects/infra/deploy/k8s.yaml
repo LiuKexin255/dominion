@@ -213,7 +213,7 @@ spec:
                       path: ca.crt
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:efcaa12d72d651844a67f68c4779c60088ac6fc0a6adc396b0f7e250a7087f58
+          image: registry.liukexin.com/projects/infra/deploy@sha256:2abe5d5d9231866972f46061ea3092fa1a121543bcb788174041ac1f5160024b
           ports:
             - name: grpc
               containerPort: 8080

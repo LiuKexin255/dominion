@@ -14,10 +14,24 @@ func newTestEnv(t *testing.T, desiredState *domain.DesiredState) *domain.Environ
 	if err != nil {
 		t.Fatalf("创建环境名失败: %v", err)
 	}
-	env, err := domain.NewEnvironment(envName, "test environment", desiredState)
+	env, err := domain.NewEnvironment(envName, domain.EnvironmentTypeProd, "test environment", desiredState)
 	if err != nil {
 		t.Fatalf("创建环境失败: %v", err)
 	}
+	return env
+}
+
+func newTestEnvWithType(t *testing.T, envType domain.EnvironmentType, desiredState *domain.DesiredState) *domain.Environment {
+	t.Helper()
+	envName, err := domain.NewEnvironmentName("tstscope", "dev")
+	if err != nil {
+		t.Fatalf("创建环境名失败: %v", err)
+	}
+	env, err := domain.NewEnvironment(envName, envType, "test environment", desiredState)
+	if err != nil {
+		t.Fatalf("创建环境失败: %v", err)
+	}
+
 	return env
 }
 
@@ -303,6 +317,63 @@ func TestConvertToWorkloads(t *testing.T) {
 	}
 }
 
+func TestConvertToWorkloads_EnvTypePassthrough(t *testing.T) {
+	tests := []struct {
+		name        string
+		envType     domain.EnvironmentType
+		wantEnvType domain.EnvironmentType
+		wantLabel   string
+	}{
+		{
+			name:        "test env passes through",
+			envType:     domain.EnvironmentTypeTest,
+			wantEnvType: domain.EnvironmentTypeTest,
+			wantLabel:   "tstscope.dev",
+		},
+		{
+			name:        "dev env passes through",
+			envType:     domain.EnvironmentTypeDev,
+			wantEnvType: domain.EnvironmentTypeDev,
+			wantLabel:   "tstscope.dev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnvWithType(t, tt.envType, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:     "api",
+					App:      "apiapp",
+					Image:    "apiapp:v1",
+					Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 9090}},
+					Replicas: 1,
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"api.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path: domain.HTTPPathRule{
+								Type:  domain.HTTPPathRuleTypePathPrefix,
+								Value: "/",
+							},
+						}},
+					},
+				}},
+			})
+
+			got, err := ConvertToWorkloads(env, newTestConfig())
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			if len(got.HTTPRoutes) != 1 {
+				t.Fatalf("HTTPRoutes count = %d, want 1", len(got.HTTPRoutes))
+			}
+			if got.HTTPRoutes[0].EnvType != tt.wantEnvType {
+				t.Fatalf("EnvType = %v, want %v", got.HTTPRoutes[0].EnvType, tt.wantEnvType)
+			}
+		})
+	}
+}
+
 func assertDeployObjectsEqual(t *testing.T, got *DeployObjects, want *DeployObjects) {
 	t.Helper()
 
@@ -409,6 +480,7 @@ func wantDeployObjectsWithSingleRuleHTTPRoute() *DeployObjects {
 			ServiceName:      "api",
 			EnvironmentName:  "tstscope.dev",
 			App:              "apiapp",
+			EnvType:          domain.EnvironmentTypeProd,
 			Hostnames:        []string{"api.example.com"},
 			BackendService:   deployment.ServiceResourceName(),
 			GatewayName:      "test-gateway",
@@ -444,6 +516,7 @@ func wantDeployObjectsWithMultipleRuleHTTPRoute() *DeployObjects {
 			ServiceName:      "svc1",
 			EnvironmentName:  "tstscope.dev",
 			App:              "app1",
+			EnvType:          domain.EnvironmentTypeProd,
 			Hostnames:        []string{"multi.example.com"},
 			BackendService:   firstDeployment.ServiceResourceName(),
 			GatewayName:      "test-gateway",
@@ -503,6 +576,7 @@ func wantDeployObjectsWithAllWorkloadTypes() *DeployObjects {
 			ServiceName:      "web",
 			EnvironmentName:  "tstscope.dev",
 			App:              "webapp",
+			EnvType:          domain.EnvironmentTypeProd,
 			Hostnames:        []string{"web.example.com"},
 			BackendService:   webDeployment.ServiceResourceName(),
 			GatewayName:      "test-gateway",

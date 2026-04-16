@@ -66,6 +66,7 @@ func applyCommand(opts *options) error {
 		createRequest := &deploy.Environment{
 			Description:  deployConfig.Desc,
 			DesiredState: desiredState,
+			Type:         environmentTypeFromEnum(deployConfig.Type),
 		}
 		if _, err := opts.apiClient.CreateEnvironment(context.Background(), parentName, envName, createRequest); err != nil {
 			return err
@@ -152,5 +153,19 @@ func formatState(s deploy.EnvironmentState) string {
 		return "删除中"
 	default:
 		return ""
+	}
+}
+
+// environmentTypeFromString 将配置文件中的类型字符串转换为 proto 枚举值。
+func environmentTypeFromEnum(s config.EnvironmentType) deploy.EnvironmentType {
+	switch s {
+	case config.EnvironmentTypeProd:
+		return deploy.EnvironmentType_ENVIRONMENT_TYPE_PROD
+	case config.EnvironmentTypeTest:
+		return deploy.EnvironmentType_ENVIRONMENT_TYPE_TEST
+	case config.EnvironmentTypeDev:
+		return deploy.EnvironmentType_ENVIRONMENT_TYPE_DEV
+	default:
+		return deploy.EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED
 	}
 }

@@ -425,7 +425,7 @@ func newExecutorTestEnvironmentWithState(t *testing.T, state *domain.DesiredStat
 		t.Fatalf("NewEnvironmentName() failed: %v", err)
 	}
 
-	env, err := domain.NewEnvironment(envName, "executor test environment", state)
+	env, err := domain.NewEnvironment(envName, domain.EnvironmentTypeProd, "executor test environment", state)
 	if err != nil {
 		t.Fatalf("NewEnvironment() failed: %v", err)
 	}

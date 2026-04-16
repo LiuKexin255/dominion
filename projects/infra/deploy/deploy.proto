@@ -97,6 +97,8 @@ message Environment {
   google.protobuf.Timestamp update_time = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   string etag = 7;
+
+  EnvironmentType type = 8;
 }
 
 message EnvironmentDesiredState {
@@ -122,6 +124,13 @@ enum EnvironmentState {
   ENVIRONMENT_STATE_READY = 3;
   ENVIRONMENT_STATE_FAILED = 4;
   ENVIRONMENT_STATE_DELETING = 5;
+}
+
+enum EnvironmentType {
+  ENVIRONMENT_TYPE_UNSPECIFIED = 0;
+  ENVIRONMENT_TYPE_PROD = 1;
+  ENVIRONMENT_TYPE_TEST = 2;
+  ENVIRONMENT_TYPE_DEV = 3;
 }
 
 message ArtifactSpec {

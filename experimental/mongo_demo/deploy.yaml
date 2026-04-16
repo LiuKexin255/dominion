@@ -1,5 +1,6 @@
 name: liukexin.demo
 desc: "Mongo Demo CRUD 服务"
+type: test
 services:
   - infra:
       app: mongo-demo

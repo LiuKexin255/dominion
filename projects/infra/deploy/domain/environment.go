@@ -12,6 +12,7 @@ import (
 // domain encapsulation.
 type EnvironmentSnapshot struct {
 	Name         EnvironmentName
+	EnvType      EnvironmentType
 	Description  string
 	DesiredState *DesiredState
 	Status       *EnvironmentStatus
@@ -23,6 +24,7 @@ type EnvironmentSnapshot struct {
 // Environment is the aggregate root for a deploy environment.
 type Environment struct {
 	name         EnvironmentName
+	envType      EnvironmentType
 	description  string
 	desiredState *DesiredState
 	status       *EnvironmentStatus
@@ -46,13 +48,17 @@ type EnvironmentStatus struct {
 }
 
 // NewEnvironment validates and constructs an environment in the pending state.
-func NewEnvironment(name EnvironmentName, description string, desiredState *DesiredState) (*Environment, error) {
+func NewEnvironment(name EnvironmentName, envType EnvironmentType, description string, desiredState *DesiredState) (*Environment, error) {
+	if envType == EnvironmentTypeUnspecified {
+		return nil, ErrInvalidType
+	}
 	if desiredState == nil {
 		return nil, ErrInvalidSpec
 	}
 
 	env := &Environment{
 		name:         name,
+		envType:      envType,
 		description:  description,
 		desiredState: cloneDesiredState(desiredState),
 		status: &EnvironmentStatus{
@@ -84,6 +90,7 @@ func RehydrateEnvironment(snapshot EnvironmentSnapshot) (*Environment, error) {
 
 	env := &Environment{
 		name:         snapshot.Name,
+		envType:      snapshot.EnvType,
 		description:  snapshot.Description,
 		desiredState: cloneDesiredState(snapshot.DesiredState),
 		status:       cloneStatus(snapshot.Status),
@@ -97,6 +104,11 @@ func RehydrateEnvironment(snapshot EnvironmentSnapshot) (*Environment, error) {
 	}
 
 	return env, nil
+}
+
+// Type returns the environment type.
+func (e *Environment) Type() EnvironmentType {
+	return e.envType
 }
 
 // Name returns the canonical resource name of the environment.
