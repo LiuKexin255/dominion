@@ -3,9 +3,11 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -179,7 +181,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
-				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
 			wantState:    EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
 			wantEnqueued: 1,
@@ -191,7 +193,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
-				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
 			wantCode: codes.AlreadyExists,
 		},
@@ -209,7 +211,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/INVALID",
 				EnvName:     "alpha",
-				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
 			wantCode: codes.InvalidArgument,
 		},
@@ -221,7 +223,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
-				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
 			wantCode: codes.Internal,
 		},
@@ -231,7 +233,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
-				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
 			wantCode: codes.Internal,
 		},
@@ -277,7 +279,7 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 	createReq := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
-		Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState()},
+		Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 	}
 
 	// when
@@ -500,6 +502,193 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 	}
 }
 
+func TestCreateEnvironment_WithValidType(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		envType  EnvironmentType
+		wantType EnvironmentType
+	}{
+		{
+			name:     "prod type",
+			envType:  EnvironmentType_ENVIRONMENT_TYPE_PROD,
+			wantType: EnvironmentType_ENVIRONMENT_TYPE_PROD,
+		},
+		{
+			name:     "test type",
+			envType:  EnvironmentType_ENVIRONMENT_TYPE_TEST,
+			wantType: EnvironmentType_ENVIRONMENT_TYPE_TEST,
+		},
+		{
+			name:     "dev type",
+			envType:  EnvironmentType_ENVIRONMENT_TYPE_DEV,
+			wantType: EnvironmentType_ENVIRONMENT_TYPE_DEV,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newFakeRepository()
+			handler := NewHandler(repo, newFakeQueue())
+			req := &CreateEnvironmentRequest{
+				Parent:      "deploy/scopes/dev",
+				EnvName:     "alpha",
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: tt.envType},
+			}
+
+			// when
+			got, err := handler.CreateEnvironment(ctx, req)
+
+			// then
+			if err != nil {
+				t.Fatalf("CreateEnvironment() error = %v", err)
+			}
+			if got.GetType() != tt.wantType {
+				t.Fatalf("CreateEnvironment() type = %v, want %v", got.GetType(), tt.wantType)
+			}
+		})
+	}
+}
+
+func TestCreateEnvironment_RejectUnspecified(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newFakeRepository()
+	handler := NewHandler(repo, newFakeQueue())
+	req := &CreateEnvironmentRequest{
+		Parent:      "deploy/scopes/dev",
+		EnvName:     "alpha",
+		Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED},
+	}
+
+	// when
+	_, err := handler.CreateEnvironment(ctx, req)
+
+	// then
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestUpdateEnvironment_RejectTypeModification(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newFakeRepository()
+	seed := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+	if err := seed.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() error = %v", err)
+	}
+	if err := seed.MarkReady(); err != nil {
+		t.Fatalf("MarkReady() error = %v", err)
+	}
+	if err := repo.Save(ctx, seed); err != nil {
+		t.Fatalf("repo.Save() error = %v", err)
+	}
+	handler := NewHandler(repo, newFakeQueue())
+	req := &UpdateEnvironmentRequest{
+		Environment: &Environment{
+			Name:         "deploy/scopes/dev/environments/alpha",
+			DesiredState: newUpdatedProtoDesiredState(),
+			Type:         EnvironmentType_ENVIRONMENT_TYPE_TEST,
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
+	}
+
+	// when
+	_, err := handler.UpdateEnvironment(ctx, req)
+
+	// then
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestUpdateEnvironment_AllowWithoutType(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newFakeRepository()
+	seed := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+	if err := seed.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() error = %v", err)
+	}
+	if err := seed.MarkReady(); err != nil {
+		t.Fatalf("MarkReady() error = %v", err)
+	}
+	if err := repo.Save(ctx, seed); err != nil {
+		t.Fatalf("repo.Save() error = %v", err)
+	}
+	handler := NewHandler(repo, newFakeQueue())
+	req := &UpdateEnvironmentRequest{
+		Environment: &Environment{
+			Name:         "deploy/scopes/dev/environments/alpha",
+			DesiredState: newUpdatedProtoDesiredState(),
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
+	}
+
+	// when
+	got, err := handler.UpdateEnvironment(ctx, req)
+
+	// then
+	if err != nil {
+		t.Fatalf("UpdateEnvironment() error = %v", err)
+	}
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
+		t.Fatalf("UpdateEnvironment() state = %v, want RECONCILING", got.GetStatus().GetState())
+	}
+}
+
+func Test_fromProtoEnvironmentType(t *testing.T) {
+	tests := []struct {
+		input EnvironmentType
+		want  domain.EnvironmentType
+	}{
+		{EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED, domain.EnvironmentTypeUnspecified},
+		{EnvironmentType_ENVIRONMENT_TYPE_PROD, domain.EnvironmentTypeProd},
+		{EnvironmentType_ENVIRONMENT_TYPE_TEST, domain.EnvironmentTypeTest},
+		{EnvironmentType_ENVIRONMENT_TYPE_DEV, domain.EnvironmentTypeDev},
+		{EnvironmentType(99), domain.EnvironmentTypeUnspecified},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("proto_%d", tt.input), func(t *testing.T) {
+			// when
+			got := fromProtoEnvironmentType(tt.input)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("fromProtoEnvironmentType(%v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_toProtoEnvironmentType(t *testing.T) {
+	tests := []struct {
+		input domain.EnvironmentType
+		want  EnvironmentType
+	}{
+		{domain.EnvironmentTypeUnspecified, EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED},
+		{domain.EnvironmentTypeProd, EnvironmentType_ENVIRONMENT_TYPE_PROD},
+		{domain.EnvironmentTypeTest, EnvironmentType_ENVIRONMENT_TYPE_TEST},
+		{domain.EnvironmentTypeDev, EnvironmentType_ENVIRONMENT_TYPE_DEV},
+		{domain.EnvironmentType(99), EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("domain_%d", tt.input), func(t *testing.T) {
+			// when
+			got := toProtoEnvironmentType(tt.input)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("toProtoEnvironmentType(%v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandler_errorMapping(t *testing.T) {
 	ctx := context.Background()
 
@@ -522,7 +711,7 @@ func TestHandler_errorMapping(t *testing.T) {
 			name:    "already exists maps to already exists",
 			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, newFakeQueue()),
 			call: func(ctx context.Context, handler *Handler) error {
-				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{DesiredState: newProtoDesiredState()}})
+				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD}})
 				return err
 			},
 			wantCode: codes.AlreadyExists,
@@ -616,7 +805,7 @@ func mustNewDomainEnvironment(t *testing.T, scope, envName string, desiredState 
 		t.Fatalf("NewEnvironmentName() error = %v", err)
 	}
 
-	env, err := domain.NewEnvironment(name, envName, &desiredState)
+	env, err := domain.NewEnvironment(name, domain.EnvironmentTypeProd, envName, &desiredState)
 	if err != nil {
 		t.Fatalf("NewEnvironment() error = %v", err)
 	}

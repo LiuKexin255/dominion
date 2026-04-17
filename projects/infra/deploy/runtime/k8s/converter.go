@@ -24,6 +24,7 @@ type DeployObjects struct {
 func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects, error) {
 	desiredState := env.DesiredState()
 	envName := env.Name().Label()
+	envType := env.Type()
 	objects := &DeployObjects{}
 
 	for _, artifact := range desiredState.Artifacts {
@@ -31,7 +32,7 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 		objects.Deployments = append(objects.Deployments, deployment)
 
 		if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
-			route, err := convertArtifactHTTPToRoute(artifact, envName, cfg, deployment)
+			route, err := convertArtifactHTTPToRoute(artifact, envName, cfg, deployment, envType)
 			if err != nil {
 				return nil, err
 			}
@@ -77,7 +78,13 @@ func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*Mong
 	}
 }
 
-func convertArtifactHTTPToRoute(artifact *domain.ArtifactSpec, envName string, cfg *K8sConfig, deployment *DeploymentWorkload) (*HTTPRouteWorkload, error) {
+func convertArtifactHTTPToRoute(
+	artifact *domain.ArtifactSpec,
+	envName string,
+	cfg *K8sConfig,
+	deployment *DeploymentWorkload,
+	envType domain.EnvironmentType,
+) (*HTTPRouteWorkload, error) {
 	matches, err := convertHTTPRouteMatches(artifact.Ports, artifact.HTTP.Matches)
 	if err != nil {
 		return nil, err
@@ -92,6 +99,7 @@ func convertArtifactHTTPToRoute(artifact *domain.ArtifactSpec, envName string, c
 		BackendService:   deployment.ServiceResourceName(),
 		GatewayName:      cfg.Gateway.Name,
 		GatewayNamespace: cfg.Gateway.Namespace,
+		EnvType:          envType,
 	}, nil
 }
 

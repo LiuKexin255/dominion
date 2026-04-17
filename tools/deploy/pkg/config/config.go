@@ -18,16 +18,18 @@ var (
 	ErrNotFound = errors.New("未找到")
 )
 
+type EnvironmentType string
 type HTTPPathMatchType string
-
-const (
-	HTTPPathMatchTypePrefix = "PathPrefix"
-)
-
 type ServiceArtifactType string
 
 const (
+	HTTPPathMatchTypePrefix       = "PathPrefix"
 	ServiceArtifactTypeDeployment = "deployment"
+
+	EnvironmentTypeProd        = "prod"
+	EnvironmentTypeDev         = "dev"
+	EnvironmentTypeTest        = "test"
+	EnvironmentTypeUnspecified = "unspecified"
 )
 
 // Validate 校验服务产物类型是否合法。
@@ -44,6 +46,7 @@ func (t ServiceArtifactType) Validate() error {
 type DeployConfig struct {
 	Name     string           `yaml:"name"`
 	Desc     string           `yaml:"desc"`
+	Type     EnvironmentType  `yaml:"type"`
 	Services []*DeployService `yaml:"services"`
 
 	// URI 资源标识符，如果读取时为空，读取时写入
@@ -59,6 +62,8 @@ type DeployService struct {
 type DeployArtifact struct {
 	Path string `yaml:"path"`
 	Name string `yaml:"name"`
+	// Replicas 指定该产物的部署副本数，未设置时由编译器使用默认值。
+	Replicas int `yaml:"replicas,omitempty"`
 }
 
 // DeployInfra 表示基于基础设施的部署定义。

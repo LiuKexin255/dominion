@@ -1,0 +1,7 @@
+name: grpc.dev
+desc: "开发环境"
+type: test
+services:
+  - artifact:
+      path: service/service.yaml
+      name: service

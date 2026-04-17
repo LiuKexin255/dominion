@@ -1,14 +1,19 @@
 package k8s
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"dominion/projects/infra/deploy/domain"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 func testK8sConfig() *K8sConfig {
@@ -62,15 +67,16 @@ func testDeploymentWorkload() *DeploymentWorkload {
 	}
 }
 
-func testHTTPRouteWorkload() *HTTPRouteWorkload {
+func testHTTPRouteWorkload(envType domain.EnvironmentType, envLabel string) *HTTPRouteWorkload {
 	return &HTTPRouteWorkload{
 		ServiceName:      "myservice",
-		EnvironmentName:  "dev",
+		EnvironmentName:  envLabel,
 		App:              "myapp",
 		Hostnames:        []string{"myapp.example.com"},
 		BackendService:   "myservice-backend",
 		GatewayName:      "test-gateway",
 		GatewayNamespace: "ingress",
+		EnvType:          envType,
 		Matches: []*HTTPRoutePathMatch{
 			{Type: HTTPPathMatchTypePathPrefix, Value: "/v1", BackendPort: 8080},
 		},
@@ -343,7 +349,7 @@ func TestBuildService_NilPort(t *testing.T) {
 
 func TestBuildHTTPRoute(t *testing.T) {
 	cfg := testK8sConfig()
-	w := testHTTPRouteWorkload()
+	w := testHTTPRouteWorkload(domain.EnvironmentTypeProd, "tstscope.prod")
 
 	route, err := BuildHTTPRoute(w, cfg)
 	if err != nil {
@@ -369,6 +375,51 @@ func TestBuildHTTPRoute(t *testing.T) {
 	if labels[managedByLabelKey] != cfg.ManagedBy {
 		t.Fatalf("Label[%q] = %q, want %q", managedByLabelKey, labels[managedByLabelKey], cfg.ManagedBy)
 	}
+}
+
+func TestBuildHTTPRoute_Prod_NoHeaderMatch(t *testing.T) {
+	cfg := testK8sConfig()
+	workload := testHTTPRouteWorkload(domain.EnvironmentTypeProd, "tstscope.prod")
+
+	route, err := BuildHTTPRoute(workload, cfg)
+	if err != nil {
+		t.Fatalf("BuildHTTPRoute() error: %v", err)
+	}
+
+	typedRoute := decodeHTTPRoute(t, route)
+	if len(typedRoute.Spec.Rules) != 1 {
+		t.Fatalf("Rules count = %d, want 1", len(typedRoute.Spec.Rules))
+	}
+	if len(typedRoute.Spec.Rules[0].Matches) != 1 {
+		t.Fatalf("Matches count = %d, want 1", len(typedRoute.Spec.Rules[0].Matches))
+	}
+	if len(typedRoute.Spec.Rules[0].Matches[0].Headers) != 0 {
+		t.Fatalf("Headers count = %d, want 0", len(typedRoute.Spec.Rules[0].Matches[0].Headers))
+	}
+}
+
+func TestBuildHTTPRoute_Test_HasEnvHeader(t *testing.T) {
+	cfg := testK8sConfig()
+	workload := testHTTPRouteWorkload(domain.EnvironmentTypeTest, "tstscope.test")
+
+	route, err := BuildHTTPRoute(workload, cfg)
+	if err != nil {
+		t.Fatalf("BuildHTTPRoute() error: %v", err)
+	}
+
+	assertHTTPRouteEnvHeader(t, decodeHTTPRoute(t, route), "tstscope.test")
+}
+
+func TestBuildHTTPRoute_Dev_HasEnvHeader(t *testing.T) {
+	cfg := testK8sConfig()
+	workload := testHTTPRouteWorkload(domain.EnvironmentTypeDev, "tstscope.dev")
+
+	route, err := BuildHTTPRoute(workload, cfg)
+	if err != nil {
+		t.Fatalf("BuildHTTPRoute() error: %v", err)
+	}
+
+	assertHTTPRouteEnvHeader(t, decodeHTTPRoute(t, route), "tstscope.dev")
 }
 
 // --- BuildMongoDBDeployment ---
@@ -848,6 +899,47 @@ func envVarsToMap(envs []corev1.EnvVar) map[string]string {
 		}
 	}
 	return m
+}
+
+func decodeHTTPRoute(t *testing.T, route *unstructured.Unstructured) *gatewayv1.HTTPRoute {
+	t.Helper()
+
+	raw, err := json.Marshal(route.Object)
+	if err != nil {
+		t.Fatalf("Marshal(route.Object) error: %v", err)
+	}
+
+	typedRoute := new(gatewayv1.HTTPRoute)
+	if err := json.Unmarshal(raw, typedRoute); err != nil {
+		t.Fatalf("Unmarshal(route.Object) error: %v", err)
+	}
+
+	return typedRoute
+}
+
+func assertHTTPRouteEnvHeader(t *testing.T, route *gatewayv1.HTTPRoute, wantLabel string) {
+	t.Helper()
+
+	if len(route.Spec.Rules) != 1 {
+		t.Fatalf("Rules count = %d, want 1", len(route.Spec.Rules))
+	}
+	if len(route.Spec.Rules[0].Matches) != 1 {
+		t.Fatalf("Matches count = %d, want 1", len(route.Spec.Rules[0].Matches))
+	}
+
+	headers := route.Spec.Rules[0].Matches[0].Headers
+	if len(headers) != 1 {
+		t.Fatalf("Headers count = %d, want 1", len(headers))
+	}
+	if headers[0].Type == nil || *headers[0].Type != gatewayv1.HeaderMatchExact {
+		t.Fatalf("Header type = %v, want %q", headers[0].Type, gatewayv1.HeaderMatchExact)
+	}
+	if headers[0].Name != EnvHeaderMatchName {
+		t.Fatalf("Header name = %v, want %q", headers[0].Name, EnvHeaderMatchName)
+	}
+	if headers[0].Value != wantLabel {
+		t.Fatalf("Header value = %q, want %q", headers[0].Value, wantLabel)
+	}
 }
 
 // verify that MongoDB resources implement the compile-time interface checks.

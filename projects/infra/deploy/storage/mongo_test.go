@@ -622,6 +622,51 @@ func TestMongoRepository_NewMongoRepository_ReturnsIndexError(t *testing.T) {
 	}
 }
 
+func Test_envTypeToString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input domain.EnvironmentType
+		want  EnvironmentType
+	}{
+		{name: "prod", input: domain.EnvironmentTypeProd, want: "prod"},
+		{name: "test", input: domain.EnvironmentTypeTest, want: "test"},
+		{name: "dev", input: domain.EnvironmentTypeDev, want: "dev"},
+		{name: "unknown", input: domain.EnvironmentTypeUnspecified, want: "unspecified"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := envTypeToEnum(tt.input)
+			if got != tt.want {
+				t.Fatalf("envTypeToString(%v) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_envTypeFromString(t *testing.T) {
+	tests := []struct {
+		name  string
+		input EnvironmentType
+		want  domain.EnvironmentType
+	}{
+		{name: "prod", input: "prod", want: domain.EnvironmentTypeProd},
+		{name: "test", input: "test", want: domain.EnvironmentTypeTest},
+		{name: "dev", input: "dev", want: domain.EnvironmentTypeDev},
+		{name: "empty", input: "", want: domain.EnvironmentTypeUnspecified},
+		{name: "unknown", input: "unknown", want: domain.EnvironmentTypeUnspecified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := envTypeFromEnum(tt.input)
+			if got != tt.want {
+				t.Fatalf("envTypeFromString(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func assertIndexModel(t *testing.T, model mongodriver.IndexModel, wantKeys bson.D, wantUnique bool) {
 	t.Helper()
 
@@ -944,7 +989,7 @@ func newMongoSaveTestEnv(t *testing.T, scope, envName, description, image, etag 
 		t.Fatalf("NewEnvironmentName() error = %v", err)
 	}
 	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
-	env, err := domain.NewEnvironment(name, description, &domain.DesiredState{
+	env, err := domain.NewEnvironment(name, domain.EnvironmentTypeProd, description, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
 			{
 				Name:     "svc1",
@@ -960,6 +1005,7 @@ func newMongoSaveTestEnv(t *testing.T, scope, envName, description, image, etag 
 
 	rehydrated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
 		Name:         name,
+		EnvType:      domain.EnvironmentTypeProd,
 		Description:  description,
 		DesiredState: env.DesiredState(),
 		Status: &domain.EnvironmentStatus{
@@ -987,7 +1033,7 @@ func newMongoStateTestEnv(t *testing.T, scope, envName, description string, stat
 		t.Fatalf("NewEnvironmentName() error = %v", err)
 	}
 	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
-	env, err := domain.NewEnvironment(name, description, &domain.DesiredState{
+	env, err := domain.NewEnvironment(name, domain.EnvironmentTypeProd, description, &domain.DesiredState{
 		Artifacts: []*domain.ArtifactSpec{
 			{
 				Name:     "svc1",
@@ -1003,6 +1049,7 @@ func newMongoStateTestEnv(t *testing.T, scope, envName, description string, stat
 
 	rehydrated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
 		Name:         name,
+		EnvType:      domain.EnvironmentTypeProd,
 		Description:  description,
 		DesiredState: env.DesiredState(),
 		Status: &domain.EnvironmentStatus{
@@ -1027,6 +1074,9 @@ func assertEnvironmentEqual(t *testing.T, got *domain.Environment, want *domain.
 
 	if got.Name().String() != want.Name().String() {
 		t.Fatalf("Name() = %q, want %q", got.Name().String(), want.Name().String())
+	}
+	if got.Type() != want.Type() {
+		t.Fatalf("Type() = %v, want %v", got.Type(), want.Type())
 	}
 	if got.Description() != want.Description() {
 		t.Fatalf("Description() = %q, want %q", got.Description(), want.Description())

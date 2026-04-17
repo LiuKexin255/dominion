@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"dominion/projects/infra/deploy/domain"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -47,6 +49,8 @@ const (
 
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
+
+	EnvHeaderMatchName = "env"
 
 	// MongoDB 相关常量。
 	mongoPasswordHMACKey   = "dominion-mongo-stable-password"
@@ -232,14 +236,24 @@ func BuildHTTPRoute(workload *HTTPRouteWorkload, cfg *K8sConfig) (*unstructured.
 		pathValue := match.Value
 		backendName := gatewayv1.ObjectName(workload.BackendService)
 		backendPort := gatewayv1.PortNumber(match.BackendPort)
+		httpMatch := gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  &pathType,
+				Value: &pathValue,
+			},
+		}
+
+		if workload.EnvType == domain.EnvironmentTypeTest || workload.EnvType == domain.EnvironmentTypeDev {
+			headerMatchType := gatewayv1.HeaderMatchExact
+			httpMatch.Headers = []gatewayv1.HTTPHeaderMatch{{
+				Name:  EnvHeaderMatchName,
+				Type:  &headerMatchType,
+				Value: workload.EnvironmentName,
+			}}
+		}
 
 		rules = append(rules, gatewayv1.HTTPRouteRule{
-			Matches: []gatewayv1.HTTPRouteMatch{{
-				Path: &gatewayv1.HTTPPathMatch{
-					Type:  &pathType,
-					Value: &pathValue,
-				},
-			}},
+			Matches: []gatewayv1.HTTPRouteMatch{httpMatch},
 			BackendRefs: []gatewayv1.HTTPBackendRef{{
 				BackendRef: gatewayv1.BackendRef{
 					BackendObjectReference: gatewayv1.BackendObjectReference{

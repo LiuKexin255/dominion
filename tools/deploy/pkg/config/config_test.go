@@ -23,6 +23,7 @@ func TestParseDeployConfig(t *testing.T) {
 			want: &DeployConfig{
 				Name: "grpc.dev",
 				Desc: "开发环境",
+				Type: "dev",
 				URI:  "//testdata/deploy.yaml",
 				Services: []*DeployService{
 					{
@@ -58,6 +59,7 @@ func TestParseDeployConfig(t *testing.T) {
 			want: &DeployConfig{
 				Name: "grpc.dev",
 				Desc: "开发环境",
+				Type: "dev",
 				URI:  "//testdata/deploy.infra.yaml",
 				Services: []*DeployService{{
 					Infra: DeployInfra{
@@ -86,6 +88,43 @@ func TestParseDeployConfig(t *testing.T) {
 			name:    "部署配置拒绝 tls 字段",
 			path:    filepath.Join(root, "testdata", "deploy.tls.error.yaml"),
 			wantErr: true,
+		},
+		{
+			name: "读取包含 replicas 的部署配置成功",
+			path: filepath.Join(root, "testdata", "deploy.replicas.yaml"),
+			want: &DeployConfig{
+				Name: "grpc.dev",
+				Desc: "开发环境",
+				Type: "dev",
+				URI:  "//testdata/deploy.replicas.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path:     "//testdata/service/service.yaml",
+							Name:     "service",
+							Replicas: 3,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "读取包含 type 的部署配置成功",
+			path: filepath.Join(root, "testdata", "deploy.type.yaml"),
+			want: &DeployConfig{
+				Name: "grpc.dev",
+				Desc: "开发环境",
+				Type: "test",
+				URI:  "//testdata/deploy.type.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/service/service.yaml",
+							Name: "service",
+						},
+					},
+				},
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -449,6 +488,10 @@ func withWorkingDir(t *testing.T, dir string) {
 			t.Fatalf("restore working dir failed: %v", err)
 		}
 	})
+}
+
+func intPtr(v int) *int {
+	return &v
 }
 
 func Test_uriDir(t *testing.T) {

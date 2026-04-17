@@ -13,6 +13,7 @@ func TestValidateDeployYAML(t *testing.T) {
 			name: "valid deploy yaml",
 			raw: []byte(`name: grpc.dev
 desc: 开发环境
+type: dev
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml
@@ -23,6 +24,7 @@ services:
 			name: "valid infra deploy yaml",
 			raw: []byte(`name: grpc.dev
 desc: 开发环境
+type: dev
 services:
   - infra:
       resource: mongodb

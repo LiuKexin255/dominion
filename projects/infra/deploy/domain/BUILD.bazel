@@ -6,6 +6,7 @@ go_library(
     srcs = [
         "environment.go",
         "environment_name.go",
+        "environment_type.go",
         "errors.go",
         "queue.go",
         "recovery.go",

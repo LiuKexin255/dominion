@@ -53,7 +53,7 @@ func TestRecover_RequeuesReconcilingAndDeletingEnvironments(t *testing.T) {
 		t.Fatalf("NewEnvironmentName deleting failed: %v", err)
 	}
 
-	reconcilingEnv, err := NewEnvironment(reconcilingName, "", &DesiredState{})
+	reconcilingEnv, err := NewEnvironment(reconcilingName, EnvironmentTypeProd, "", &DesiredState{})
 	if err != nil {
 		t.Fatalf("NewEnvironment reconciling failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestRecover_RequeuesReconcilingAndDeletingEnvironments(t *testing.T) {
 		t.Fatalf("MarkReconciling failed: %v", err)
 	}
 
-	deletingEnv, err := NewEnvironment(deletingName, "", &DesiredState{})
+	deletingEnv, err := NewEnvironment(deletingName, EnvironmentTypeProd, "", &DesiredState{})
 	if err != nil {
 		t.Fatalf("NewEnvironment deleting failed: %v", err)
 	}

@@ -61,11 +61,16 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			return nil, fmt.Errorf("build image ref for %s failed: %w", artifact.Target, err)
 		}
 
+		replicas := defaultServiceReplicas
+		if deployService.Artifact.Replicas != 0 {
+			replicas = int32(deployService.Artifact.Replicas)
+		}
+
 		compiledArtifact := &deploy.ArtifactSpec{
 			Name:       serviceConfig.Name,
 			App:        serviceConfig.App,
 			Image:      imageRef,
-			Replicas:   defaultServiceReplicas,
+			Replicas:   replicas,
 			TlsEnabled: artifact.TLS,
 		}
 		for _, port := range artifact.Ports {

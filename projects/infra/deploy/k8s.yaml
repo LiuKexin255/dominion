@@ -6,7 +6,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: secret-deploy-mongo-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
@@ -21,7 +21,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: pvc-deploy-mongo-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
@@ -40,7 +40,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mongo-deploy-mongo-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
@@ -159,7 +159,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: svc-deploy-mongo-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
@@ -179,7 +179,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: dp-deploy-manager-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
@@ -200,9 +200,20 @@ spec:
         dominion.io/environment: infra.default
         app.kubernetes.io/managed-by: dominion.io
     spec:
+      volumes:
+        - name: tls
+          projected:
+            sources:
+              - secret:
+                  name: my-https-cert
+              - configMap:
+                  name: my-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:efcaa12d72d651844a67f68c4779c60088ac6fc0a6adc396b0f7e250a7087f58
+          image: registry.liukexin.com/projects/infra/deploy@sha256:2abe5d5d9231866972f46061ea3092fa1a121543bcb788174041ac1f5160024b
           ports:
             - name: grpc
               containerPort: 8080
@@ -214,13 +225,25 @@ spec:
             - name: DOMINION_ENVIRONMENT
               value: infra.default
             - name: POD_NAMESPACE
-              value: default
+              value: kube-public
+            - name: TLS_CERT_FILE
+              value: /etc/tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /etc/tls/tls.key
+            - name: TLS_CA_FILE
+              value: /etc/tls/ca.crt
+            - name: TLS_SERVER_NAME
+              value: tls.liukexin.com
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls
+              readOnly: true
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: svc-deploy-manager-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
@@ -243,7 +266,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: route-deploy-manager-847070f8
-  namespace: default
+  namespace: kube-public
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager

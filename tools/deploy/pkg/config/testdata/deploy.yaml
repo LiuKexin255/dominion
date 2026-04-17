@@ -1,5 +1,6 @@
 name: grpc.dev
 desc: "开发环境"
+type: dev
 services:
   - artifact: 
       path: service/service.yaml

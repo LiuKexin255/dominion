@@ -16,8 +16,10 @@ import (
 	"time"
 
 	deploy "dominion/projects/infra/deploy"
+	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/imagepush"
 	clientpkg "dominion/tools/deploy/v2/client"
+
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -77,6 +79,7 @@ func TestApplyCommand(t *testing.T) {
 			deployYAML: strings.Join([]string{
 				"name: team.dev",
 				"desc: alpha env",
+				"type: prod",
 				"services:",
 				"  - artifact:",
 				"      path: //tools/deploy/v2/compiler/testdata/service-a.yaml",
@@ -110,6 +113,7 @@ func TestApplyCommand(t *testing.T) {
 						EnvName: "dev",
 						Environment: &deploy.Environment{
 							Description: "alpha env",
+							Type:        deploy.EnvironmentType_ENVIRONMENT_TYPE_PROD,
 							DesiredState: &deploy.EnvironmentDesiredState{
 								Artifacts: []*deploy.ArtifactSpec{{
 									Name:       "service-a",
@@ -145,10 +149,66 @@ func TestApplyCommand(t *testing.T) {
 			wantRequestCount: 3,
 		},
 		{
+			name: "new environment creation with type",
+			deployYAML: strings.Join([]string{
+				"name: team.dev",
+				"desc: test env",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			imageOutputs: map[string]*imagepush.PushOutput{
+				"//tools/deploy/v2/compiler/testdata:service_b_image_push": {Repository: "registry.example.com/service-b", Digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+			},
+			serverSteps: []applyResponseStep{
+				{
+					method: http.MethodGet,
+					path:   "/v1/deploy/scopes/team/environments/dev",
+					status: http.StatusNotFound,
+					body:   map[string]any{"code": 5, "message": "not found"},
+				},
+				{
+					method: http.MethodPost,
+					path:   "/v1/deploy/scopes/team/environments",
+					status: http.StatusOK,
+					body:   &deploy.Environment{Name: "deploy/scopes/team/environments/dev", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+					assertBody: &deploy.CreateEnvironmentRequest{
+						Parent:  "deploy/scopes/team",
+						EnvName: "dev",
+						Environment: &deploy.Environment{
+							Description: "test env",
+							Type:        deploy.EnvironmentType_ENVIRONMENT_TYPE_TEST,
+							DesiredState: &deploy.EnvironmentDesiredState{
+								Artifacts: []*deploy.ArtifactSpec{{
+									Name:     "service-b",
+									App:      "beta",
+									Image:    "registry.example.com/service-b@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+									Replicas: 1,
+									Ports:    []*deploy.ArtifactPortSpec{{Name: "http", Port: 8080}},
+								}},
+							},
+						},
+					},
+				},
+				{
+					method: http.MethodGet,
+					path:   "/v1/deploy/scopes/team/environments/dev",
+					status: http.StatusOK,
+					body:   &deploy.Environment{Name: "deploy/scopes/team/environments/dev", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+				},
+			},
+			pollTimeout:      50 * time.Millisecond,
+			wantOutputSubstr: "环境 team.dev 已应用",
+			wantRequestCount: 3,
+		},
+		{
 			name: "environment update",
 			deployYAML: strings.Join([]string{
 				"name: team.dev",
 				"desc: beta env",
+				"type: prod",
 				"services:",
 				"  - artifact:",
 				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
@@ -209,6 +269,7 @@ func TestApplyCommand(t *testing.T) {
 			deployYAML: strings.Join([]string{
 				"name: team.dev",
 				"desc: alpha env",
+				"type: prod",
 				"services:",
 				"  - artifact:",
 				"      path: //tools/deploy/v2/compiler/testdata/service-a.yaml",
@@ -227,6 +288,7 @@ func TestApplyCommand(t *testing.T) {
 			deployYAML: strings.Join([]string{
 				"name: team.dev",
 				"desc: alpha env",
+				"type: prod",
 				"services:",
 				"  - artifact:",
 				"      path: //tools/deploy/v2/compiler/testdata/service-a.yaml",
@@ -250,6 +312,7 @@ func TestApplyCommand(t *testing.T) {
 			deployYAML: strings.Join([]string{
 				"name: team.dev",
 				"desc: alpha env",
+				"type: prod",
 				"services:",
 				"  - artifact:",
 				"      path: //tools/deploy/v2/compiler/testdata/service-a.yaml",
@@ -466,4 +529,27 @@ func withApplyWorkingDir(t *testing.T, dir string) {
 			t.Fatalf("restore working dir failed: %v", err)
 		}
 	})
+}
+
+func Test_environmentTypeFromString(t *testing.T) {
+	tests := []struct {
+		name string
+		s    config.EnvironmentType
+		want deploy.EnvironmentType
+	}{
+		{name: "prod", s: "prod", want: deploy.EnvironmentType_ENVIRONMENT_TYPE_PROD},
+		{name: "test", s: "test", want: deploy.EnvironmentType_ENVIRONMENT_TYPE_TEST},
+		{name: "dev", s: "dev", want: deploy.EnvironmentType_ENVIRONMENT_TYPE_DEV},
+		{name: "empty", s: "", want: deploy.EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED},
+		{name: "unknown", s: "staging", want: deploy.EnvironmentType_ENVIRONMENT_TYPE_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := environmentTypeFromEnum(tt.s)
+			if got != tt.want {
+				t.Errorf("environmentTypeFromString(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
 }
