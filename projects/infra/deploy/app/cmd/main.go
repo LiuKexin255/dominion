@@ -67,7 +67,7 @@ func main() {
 }
 
 func newRepository(newClient mongoClientFactory, newMongoRepository repositoryFactory) (domain.Repository, error) {
-	client, err := newClient(deployMongoTarget)
+	client, err := newClient(deployMongoTarget, mongo.WithK8sResolver())
 	if err != nil {
 		return nil, err
 	}

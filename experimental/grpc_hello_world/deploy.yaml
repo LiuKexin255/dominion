@@ -1,5 +1,5 @@
-app: grpc-hello-world
-template: deploy
+name: liukexin.demo
+type: test
 desc: "开发环境"
 services:
   - artifact: 

@@ -15,7 +15,7 @@ func Test_generateStablePassword(t *testing.T) {
 		{name: "trimmed inputs", inputs: []string{" grpc-hello-world ", " Dev ", " mongo-main "}, want: "20nwLsJo0pHPDaexxh7EdzwF7iV3lTKX"},
 		{name: "empty inputs", inputs: []string{"", "", ""}, want: "FOa0JUWqbmTlXnNU7UpqWknphFv38Dqe"},
 		{name: "special characters", inputs: []string{"catalog", "prod", "mongo@primary"}, want: "XINACh6gJae2eLOGymkK9AKHEdP7lIE7"},
-		{name: "special characters", inputs: []string{"deploy", "infra.deploy", "mongo"}, want: "XINACh6gJae2eLOGymkK9AKHEdP7lIE7"},
+		{name: "special characters with dot", inputs: []string{"deploy", "infra.deploy", "mongo"}, want: "9MCUxre8tzlVz6iGCD4rLK4Z9uMy3j0L"},
 	}
 
 	for _, tt := range tests {

@@ -1,10 +1,11 @@
 package solver
 
 import (
-	"dominion/pkg/solver"
 	"fmt"
 	"sync"
 	"time"
+
+	"dominion/pkg/solver"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -62,5 +63,5 @@ func URI(raw string) string {
 		return raw
 	}
 
-	return fmt.Sprintf("%s:///%s/%s:%d", Scheme, target.App, target.Service, target.Port)
+	return fmt.Sprintf("%s:///%s/%s:%s", Scheme, target.App, target.Service, target.PortSelector.String())
 }

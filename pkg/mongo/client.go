@@ -21,9 +21,6 @@ var (
 	newMongoClient = func(uri string) (*mongodriver.Client, error) {
 		return mongodriver.Connect(context.Background(), options.Client().ApplyURI(uri))
 	}
-	newResolver = func() (solver.Resolver, error) {
-		return solver.NewK8sResolver()
-	}
 )
 
 const (
@@ -31,16 +28,38 @@ const (
 )
 
 // ClientOption configures NewClient.
-type ClientOption func()
+type ClientOption func(opts *ClientOptions)
+
+type ClientOptions struct {
+	resolverBuilder func() (solver.Resolver, error)
+}
+
+func defaultOptions() *ClientOptions {
+	return &ClientOptions{
+		resolverBuilder: solver.NewDeployResolver,
+	}
+}
+
+// WithNewResolver configures NewClient to use the legacy Kubernetes resolver.
+func WithK8sResolver() ClientOption {
+	return func(opts *ClientOptions) {
+		opts.resolverBuilder = solver.NewK8sResolver
+	}
+}
 
 // NewClient creates a MongoDB client for the given dominion target.
 func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, error) {
-	target, err := solver.ParseTarget(rawTarget)
+	options := defaultOptions()
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	target, err := parseMongoTarget(rawTarget)
 	if err != nil {
 		return nil, fmt.Errorf("invalid target %q: want app/name", rawTarget)
 	}
 
-	resolver, err := newResolver()
+	resolver, err := options.resolverBuilder()
 	if err != nil {
 		return nil, err
 	}
@@ -63,8 +82,31 @@ func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, err
 	return client, nil
 }
 
+func parseMongoTarget(rawTarget string) (*solver.Target, error) {
+	trimmed := strings.TrimSpace(rawTarget)
+	app, service, ok := strings.Cut(trimmed, "/")
+	if !ok {
+		return nil, fmt.Errorf("split target %q", rawTarget)
+	}
+
+	app = strings.TrimSpace(app)
+	service = strings.TrimSpace(service)
+	if app == "" || service == "" || strings.Contains(service, "/") {
+		return nil, fmt.Errorf("invalid target %q", rawTarget)
+	}
+
+	return &solver.Target{
+		App:          app,
+		Service:      service,
+		PortSelector: solver.NumericPort(defaultMongoPort),
+	}, nil
+}
+
 func buildMongoURI(target *solver.Target, address string) string {
-	envName := lookupEnvOrDefault(dominionEnvironmentEnvKey, "default")
+	envName := "default"
+	if value, ok := lookupEnv(dominionEnvironmentEnvKey); ok && strings.TrimSpace(value) != "" {
+		envName = strings.TrimSpace(value)
+	}
 	password := generateStablePassword(target.App, envName, target.Service)
 
 	return fmt.Sprintf(
@@ -77,11 +119,12 @@ func buildMongoURI(target *solver.Target, address string) string {
 	)
 }
 
-func lookupEnvOrDefault(key, defaultValue string) string {
+func envOrDefault(key, fallback string) string {
 	if value, ok := lookupEnv(key); ok && strings.TrimSpace(value) != "" {
 		return strings.TrimSpace(value)
 	}
-	return defaultValue
+
+	return fallback
 }
 
 func newObjectName(kind string, app string, dominionApp string, serviceName string, environmentName string) string {

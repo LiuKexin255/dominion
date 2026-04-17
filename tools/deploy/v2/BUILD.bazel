@@ -42,6 +42,7 @@ go_unittest(
     embed = [":deploy_lib"],
     deps = [
         "//projects/infra/deploy",
+        "//tools/deploy/pkg/config",
         "//tools/deploy/pkg/imagepush",
         "//tools/deploy/v2/client",
         "@org_golang_google_protobuf//encoding/protojson",

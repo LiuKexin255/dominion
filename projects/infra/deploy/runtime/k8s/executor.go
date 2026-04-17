@@ -3,11 +3,15 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"net"
+	"sort"
+	"strconv"
 
 	"dominion/projects/infra/deploy/domain"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -207,6 +211,96 @@ func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName)
 	}
 
 	return nil
+}
+
+// QueryServiceEndpoints queries Kubernetes Services and EndpointSlices
+// to resolve service ports and endpoint addresses.
+func (r *K8sRuntime) QueryServiceEndpoints(ctx context.Context, envLabel string, app string, service string) (*domain.ServiceQueryResult, error) {
+	matchLabels := buildLabels(withApp(app), withService(service), withDominionEnvironment(envLabel))
+	selector := buildLabelSelector(matchLabels)
+	namespace := r.client.K8sConfig.Namespace
+
+	services, err := r.client.TypedClient.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list services: %w", err)
+	}
+
+	if len(services.Items) == 0 {
+		return nil, domain.ErrServiceNotFound
+	}
+
+	if len(services.Items) > 1 {
+		return nil, fmt.Errorf("expected exactly one Service, found %d matching labels %s", len(services.Items), selector)
+	}
+
+	svc := services.Items[0]
+	ports := make(map[string]int32)
+	for _, port := range svc.Spec.Ports {
+		if port.Name == "" {
+			continue
+		}
+		ports[port.Name] = port.Port
+	}
+
+	if len(ports) == 0 {
+		return nil, domain.ErrServicePortMapUnavailable
+	}
+
+	serviceSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: svc.Name}).String()
+	endpointSlices, err := r.client.TypedClient.DiscoveryV1().EndpointSlices(namespace).List(
+		ctx,
+		metav1.ListOptions{LabelSelector: serviceSelector},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list endpoint slices: %w", err)
+	}
+
+	return &domain.ServiceQueryResult{
+		Ports:     ports,
+		Endpoints: expandServiceEndpoints(endpointSlices.Items, ports),
+	}, nil
+}
+
+func expandServiceEndpoints(endpointSlices []discoveryv1.EndpointSlice, ports map[string]int32) []string {
+	if len(endpointSlices) == 0 {
+		return nil
+	}
+
+	addresses := make(map[string]struct{})
+	for _, slice := range endpointSlices {
+		for _, endpoint := range slice.Endpoints {
+			if !includeEndpoint(endpoint) {
+				continue
+			}
+			for _, ip := range endpoint.Addresses {
+				for _, port := range ports {
+					addresses[net.JoinHostPort(ip, strconv.Itoa(int(port)))] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if len(addresses) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(addresses))
+	for addr := range addresses {
+		result = append(result, addr)
+	}
+	sort.Strings(result)
+
+	return result
+}
+
+func includeEndpoint(endpoint discoveryv1.Endpoint) bool {
+	if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
+		return false
+	}
+	if endpoint.Conditions.Terminating != nil && *endpoint.Conditions.Terminating {
+		return false
+	}
+	return true
 }
 
 func (r *K8sRuntime) applyDeployment(ctx context.Context, workload *DeploymentWorkload) error {

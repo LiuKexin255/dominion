@@ -27,21 +27,14 @@ func TestURI(t *testing.T) {
 			raw:  "  app/service:8080  ",
 			want: "dominion:///app/service:8080",
 		},
-		{
-			name: "empty target falls back to original raw value",
-			raw:  "   ",
-			want: "   ",
-		},
+		{name: "empty target falls back to original raw value", raw: "   ", want: "   "},
 		{
 			name: "non dominion scheme falls back to original raw value",
 			raw:  "dns:///app/service:8080",
 			want: "dns:///app/service:8080",
 		},
-		{
-			name: "non numeric port falls back to original raw value",
-			raw:  "app/service:http",
-			want: "app/service:http",
-		},
+		{name: "named port converts to dominion URI", raw: "app/service:http", want: "dominion:///app/service:http"},
+		{name: "missing port falls back to original raw value", raw: "app/service", want: "app/service"},
 		{
 			name: "port out of range falls back to original raw value",
 			raw:  "app/service:65536",

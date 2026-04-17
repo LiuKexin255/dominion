@@ -245,14 +245,6 @@ type fakeResolverClient struct {
 	calls   int
 }
 
-func (c *fakeResolverClient) Lookup(context.Context, *solver.Target) (string, error) {
-	return "", nil
-}
-
-func (c *fakeResolverClient) ResolveEndpoints(context.Context, *solver.Target, string) ([]string, error) {
-	return nil, nil
-}
-
 func (c *fakeResolverClient) Resolve(context.Context, *solver.Target) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
