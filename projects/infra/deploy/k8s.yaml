@@ -213,10 +213,8 @@ spec:
                       path: ca.crt
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:2abe5d5d9231866972f46061ea3092fa1a121543bcb788174041ac1f5160024b
+          image: registry.liukexin.com/projects/infra/deploy@sha256:68dfb1be4f8d30b64d39290c5409c2ef9c134fa631b94a84e068d464fe2df995
           ports:
-            - name: grpc
-              containerPort: 8080
             - name: http
               containerPort: 8081
           env:
@@ -255,9 +253,6 @@ spec:
     app.kubernetes.io/component: manager
     dominion.io/environment: infra.default
   ports:
-    - name: grpc
-      port: 8080
-      targetPort: grpc
     - name: http
       port: 8081
       targetPort: http
