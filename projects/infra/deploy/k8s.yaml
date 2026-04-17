@@ -10,12 +10,12 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 type: Opaque
 data:
   username: YWRtaW4=
-  password: Y2RYVWo3U25TeDZucm5GQ0lrdmkyQXB4Q2ZzYjFNSVk=
+  password: OU1DVXhyZTh0emxWejZpR0NENHJMSzRaOXVNeTNqMEw=
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -25,7 +25,7 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   storageClassName: nfs-csi
@@ -44,7 +44,7 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   replicas: 1
@@ -52,13 +52,13 @@ spec:
     matchLabels:
       app.kubernetes.io/name: deploy
       app.kubernetes.io/component: mongo
-      dominion.io/environment: infra.default
+      dominion.io/environment: infra.deploy
   template:
     metadata:
       labels:
         app.kubernetes.io/name: deploy
         app.kubernetes.io/component: mongo
-        dominion.io/environment: infra.default
+        dominion.io/environment: infra.deploy
         app.kubernetes.io/managed-by: dominion.io
     spec:
       securityContext:
@@ -102,7 +102,7 @@ spec:
             - name: SERVICE_APP
               value: deploy
             - name: DOMINION_ENVIRONMENT
-              value: infra.default
+              value: infra.deploy
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -130,7 +130,7 @@ spec:
             - name: SERVICE_APP
               value: deploy
             - name: DOMINION_ENVIRONMENT
-              value: infra.default
+              value: infra.deploy
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -163,13 +163,13 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   selector:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: mongo
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
   ports:
     - name: mongo
       port: 27017
@@ -183,7 +183,7 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   replicas: 1
@@ -191,13 +191,13 @@ spec:
     matchLabels:
       app.kubernetes.io/name: deploy
       app.kubernetes.io/component: manager
-      dominion.io/environment: infra.default
+      dominion.io/environment: infra.deploy
   template:
     metadata:
       labels:
         app.kubernetes.io/name: deploy
         app.kubernetes.io/component: manager
-        dominion.io/environment: infra.default
+        dominion.io/environment: infra.deploy
         app.kubernetes.io/managed-by: dominion.io
     spec:
       volumes:
@@ -221,7 +221,7 @@ spec:
             - name: SERVICE_APP
               value: deploy
             - name: DOMINION_ENVIRONMENT
-              value: infra.default
+              value: infra.deploy
             - name: POD_NAMESPACE
               value: kube-public
             - name: TLS_CERT_FILE
@@ -245,13 +245,13 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   selector:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
   ports:
     - name: http
       port: 8081
@@ -265,7 +265,7 @@ metadata:
   labels:
     app.kubernetes.io/name: deploy
     app.kubernetes.io/component: manager
-    dominion.io/environment: infra.default
+    dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
   hostnames:
