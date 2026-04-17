@@ -231,6 +231,61 @@ artifacts:
 `),
 			wantErr: true,
 		},
+		{
+			name: "valid service yaml with top-level ports",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service with ports
+ports:
+  - name: admin
+    port: 9090
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+    ports:
+      - name: grpc
+        port: 50051
+`),
+		},
+		{
+			name: "service yaml with invalid top-level port structure",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+ports:
+  - name: admin
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml with empty top-level ports array",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+ports: []
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "service yaml without top-level ports is still valid",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+artifacts:
+  - name: service
+    type: deployment
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

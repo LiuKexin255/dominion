@@ -13,12 +13,14 @@ go_library(
     importpath = "dominion/pkg/solver",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/infra/deploy",
         "@io_k8s_api//discovery/v1:discovery",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/labels",
         "@io_k8s_client_go//kubernetes",
         "@io_k8s_client_go//rest",
+        "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
 

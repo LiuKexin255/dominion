@@ -318,6 +318,269 @@ func TestCompile(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "service ports merged with artifact ports",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:     "service-a",
+					App:      "alpha",
+					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas: 1,
+					Ports: []*deploy.ArtifactPortSpec{
+						{Name: "admin", Port: 9090},
+						{Name: "grpc", Port: 50051},
+					},
+				}},
+			},
+		},
+		{
+			name: "service ports conflict with artifact ports",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: []*config.ServiceArtifactPort{{Name: "grpc", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantErr: "duplicate port name \"grpc\"",
+		},
+		{
+			name: "service ports only, artifact has no ports",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports:  nil,
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:     "service-a",
+					App:      "alpha",
+					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas: 1,
+					Ports: []*deploy.ArtifactPortSpec{
+						{Name: "admin", Port: 9090},
+					},
+				}},
+			},
+		},
+		{
+			name: "empty service ports, artifact has ports",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: nil,
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:     "service-a",
+					App:      "alpha",
+					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas: 1,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "http backend referencing service port",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+					HTTP: config.DeployHTTP{
+						Hostnames: []string{"service-a.example.com"},
+						Matches: []*config.DeployHTTPMatch{{
+							Backend: "admin",
+							Path: config.DeployHTTPPathMatch{
+								Type:  config.HTTPPathMatchTypePrefix,
+								Value: "/admin",
+							},
+						}},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:     "service-a",
+					App:      "alpha",
+					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas: 1,
+					Ports: []*deploy.ArtifactPortSpec{
+						{Name: "admin", Port: 9090},
+						{Name: "grpc", Port: 50051},
+					},
+					Http: &deploy.ArtifactHTTPSpec{
+						Hostnames: []string{"service-a.example.com"},
+						Matches: []*deploy.HTTPRouteRule{{
+							Backend: "admin",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/admin",
+							},
+						}},
+					},
+				}},
+			},
+		},
+		{
+			name: "multiple artifacts share service ports",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{
+					{Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"}},
+					{Artifact: config.DeployArtifact{Path: testServiceBPath, Name: "service-b"}},
+				},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:  "service-a",
+					App:   "alpha",
+					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+				testServiceBPath: {
+					Name:  "service-b",
+					App:   "beta",
+					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-b",
+						Type:   config.ServiceArtifactTypeDeployment,
+						Target: "//apps/service-b:image",
+						Ports:  nil,
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				"//apps/service-b:image": {URL: "registry.example.com/service-b", Dest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{
+					{
+						Name:     "service-a",
+						App:      "alpha",
+						Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						Replicas: 1,
+						Ports: []*deploy.ArtifactPortSpec{
+							{Name: "admin", Port: 9090},
+							{Name: "grpc", Port: 50051},
+						},
+					},
+					{
+						Name:     "service-b",
+						App:      "beta",
+						Image:    "registry.example.com/service-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						Replicas: 1,
+						Ports: []*deploy.ArtifactPortSpec{
+							{Name: "admin", Port: 9090},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

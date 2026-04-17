@@ -2,11 +2,13 @@ package solver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+
+	"dominion/projects/infra/deploy"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // ErrServiceNotFound indicates that the requested deploy resource does not exist.
@@ -55,19 +57,18 @@ func (c *DeployHTTPClient) GetServiceEndpoints(ctx context.Context, name string)
 		return nil, fmt.Errorf("get service endpoints: status %d: %s", resp.StatusCode, string(body))
 	}
 
-	result := new(serviceEndpointsResponse)
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read service endpoints: %w", err)
+	}
+
+	result := new(deploy.ServiceEndpoints)
+	if err := protojson.Unmarshal(body, result); err != nil {
 		return nil, fmt.Errorf("decode service endpoints: %w", err)
 	}
 
 	return &ServiceEndpointsInfo{
-		Endpoints: result.Endpoints,
-		Ports:     result.Ports,
+		Endpoints: result.GetEndpoints(),
+		Ports:     result.GetPorts(),
 	}, nil
-}
-
-// serviceEndpointsResponse maps the JSON response from the deploy service.
-type serviceEndpointsResponse struct {
-	Endpoints []string         `json:"endpoints"`
-	Ports     map[string]int32 `json:"ports"`
 }

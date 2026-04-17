@@ -102,6 +102,9 @@ type ServiceConfig struct {
 	Desc      string             `yaml:"desc"`
 	Artifacts []*ServiceArtifact `yaml:"artifacts"`
 
+	// Ports 所有 artifact 共有的默认端口。
+	Ports []*ServiceArtifactPort `yaml:"ports,omitempty"`
+
 	// URI 资源标识符，如果读取时为空，读取时写入
 	URI string `yaml:"uri,omitempty"`
 }

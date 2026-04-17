@@ -73,7 +73,12 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			Replicas:   replicas,
 			TlsEnabled: artifact.TLS,
 		}
-		for _, port := range artifact.Ports {
+		mergedPorts, err := mergePorts(serviceConfig.Ports, artifact.Ports, artifact.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, port := range mergedPorts {
 			if port == nil {
 				return nil, fmt.Errorf("service artifact %s has nil port", artifact.Name)
 			}
@@ -83,7 +88,7 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			})
 		}
 
-		compiledArtifactHTTP, err := compileArtifactHTTP(deployService, artifact)
+		compiledArtifactHTTP, err := compileArtifactHTTP(deployService, mergedPorts, artifact.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -171,8 +176,8 @@ func ReadServiceConfigs(deployConfig *config.DeployConfig) (map[string]*config.S
 	return serviceConfigs, nil
 }
 
-func compileArtifactHTTP(deployService *config.DeployService, artifact *config.ServiceArtifact) (*deploy.ArtifactHTTPSpec, error) {
-	if deployService == nil || artifact == nil {
+func compileArtifactHTTP(deployService *config.DeployService, mergedPorts []*config.ServiceArtifactPort, artifactName string) (*deploy.ArtifactHTTPSpec, error) {
+	if deployService == nil {
 		return nil, nil
 	}
 	if len(deployService.HTTP.Hostnames) == 0 && len(deployService.HTTP.Matches) == 0 {
@@ -184,10 +189,10 @@ func compileArtifactHTTP(deployService *config.DeployService, artifact *config.S
 	}
 	for _, match := range deployService.HTTP.Matches {
 		if match == nil {
-			return nil, fmt.Errorf("http match is nil for service %s", artifact.Name)
+			return nil, fmt.Errorf("http match is nil for service %s", artifactName)
 		}
-		if !artifactHasPort(artifact, match.Backend) {
-			return nil, fmt.Errorf("http backend %s not found in service %s", match.Backend, artifact.Name)
+		if !artifactHasPort(mergedPorts, match.Backend) {
+			return nil, fmt.Errorf("http backend %s not found in service %s", match.Backend, artifactName)
 		}
 		if err := validateHTTPPathType(match.Path.Type); err != nil {
 			return nil, err
@@ -205,8 +210,8 @@ func compileArtifactHTTP(deployService *config.DeployService, artifact *config.S
 	return route, nil
 }
 
-func artifactHasPort(artifact *config.ServiceArtifact, portName string) bool {
-	for _, port := range artifact.Ports {
+func artifactHasPort(ports []*config.ServiceArtifactPort, portName string) bool {
+	for _, port := range ports {
 		if port == nil {
 			continue
 		}
@@ -224,6 +229,33 @@ func validateHTTPPathType(pathType config.HTTPPathMatchType) error {
 	default:
 		return fmt.Errorf("unsupported http path type %s", pathType)
 	}
+}
+
+// mergePorts 合并 service 级 ports 和 artifact 级 ports，返回合并后的列表。
+// 如果发现同名 port，返回错误。合并顺序：service 级在前，artifact 级在后。
+func mergePorts(servicePorts []*config.ServiceArtifactPort, artifactPorts []*config.ServiceArtifactPort, artifactName string) ([]*config.ServiceArtifactPort, error) {
+	nameSet := make(map[string]struct{})
+	merged := make([]*config.ServiceArtifactPort, 0, len(servicePorts)+len(artifactPorts))
+
+	for _, port := range servicePorts {
+		if port == nil {
+			return nil, fmt.Errorf("service port is nil for service artifact %q", artifactName)
+		}
+		nameSet[port.Name] = struct{}{}
+		merged = append(merged, port)
+	}
+
+	for _, port := range artifactPorts {
+		if port == nil {
+			return nil, fmt.Errorf("service artifact %q has nil port", artifactName)
+		}
+		if _, exists := nameSet[port.Name]; exists {
+			return nil, fmt.Errorf("duplicate port name %q between service ports and service artifact %q", port.Name, artifactName)
+		}
+		merged = append(merged, port)
+	}
+
+	return merged, nil
 }
 
 func isInfraService(deployService *config.DeployService) bool {
