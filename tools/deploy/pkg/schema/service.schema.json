@@ -31,6 +31,28 @@
       "minLength": 1,
       "description": "服务配置资源标识"
     },
+    "ports": {
+      "type": "array",
+      "description": "所有 artifact 共有的默认端口",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "port"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "port": {
+            "type": "integer"
+          }
+        }
+      }
+    },
     "artifacts": {
       "type": "array",
       "description": "服务产物 target 列表，必须为 oci_image 对象，并且以 {artifact}_push 作为推送 target",

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
 
+	errdetails "google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -69,7 +71,7 @@ func TestHandler_GetEnvironment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, newFakeQueue())
+			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 
 			// when
 			got, err := handler.GetEnvironment(ctx, tt.request)
@@ -139,7 +141,7 @@ func TestHandler_ListEnvironments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, newFakeQueue())
+			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 
 			// when
 			got, err := handler.ListEnvironments(ctx, tt.request)
@@ -250,7 +252,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			if tt.name == "enqueue error" {
 				q.err = errors.New("queue full")
 			}
-			handler := NewHandler(repo, q)
+			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
 
 			// when
 			got, err := handler.CreateEnvironment(ctx, tt.request)
@@ -275,7 +277,7 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 
 	// given
 	repo := newFakeRepository()
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 	createReq := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
@@ -367,7 +369,7 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 				}
 			}
 			q := newFakeQueue()
-			handler := NewHandler(repo, q)
+			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
 
 			// when
 			got, err := handler.UpdateEnvironment(ctx, tt.request)
@@ -402,7 +404,7 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("repo.Save() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 	updateReq := &UpdateEnvironmentRequest{
 		Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()},
 		UpdateMask:  &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
@@ -458,7 +460,7 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
 			q := newFakeQueue()
-			handler := NewHandler(repo, q)
+			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
 
 			// when
 			got, err := handler.DeleteEnvironment(ctx, tt.request)
@@ -484,7 +486,7 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 	// given
 	env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
 	repo := newFakeRepository(env)
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 
 	// when
 	_, err := handler.DeleteEnvironment(ctx, &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
@@ -500,6 +502,219 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 	if got.Status().State != domain.StateDeleting {
 		t.Fatalf("env state = %v, want %v", got.Status().State, domain.StateDeleting)
 	}
+}
+
+func TestGetServiceEndpoints_SameEnv(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustReadyDomainEnvironment(t, "prod", "alpha")
+	query := &fakeServiceEndpointQuery{
+		results: map[string]*domain.ServiceQueryResult{
+			serviceQueryKey("prod.alpha", "gateway", "api"): {
+				Endpoints: []string{"10.0.0.1:8080", "10.0.0.2:8080"},
+				Ports: map[string]int32{
+					"http": 8080,
+				},
+			},
+		},
+	}
+	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	req := &GetServiceEndpointsRequest{
+		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
+	}
+
+	// when
+	got, err := handler.GetServiceEndpoints(ctx, req)
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got.GetName() != req.GetName() {
+		t.Fatalf("GetServiceEndpoints() name = %q, want %q", got.GetName(), req.GetName())
+	}
+	if len(got.GetEndpoints()) != 2 {
+		t.Fatalf("GetServiceEndpoints() endpoints = %v, want 2 entries", got.GetEndpoints())
+	}
+	if got.GetPorts()["http"] != 8080 {
+		t.Fatalf("GetServiceEndpoints() ports[http] = %d, want 8080", got.GetPorts()["http"])
+	}
+	if got.GetResolutionMode() != ResolutionMode(0) {
+		t.Fatalf("GetServiceEndpoints() resolution_mode = %v, want unspecified for basic view", got.GetResolutionMode())
+	}
+	if len(query.calls) != 1 {
+		t.Fatalf("QueryServiceEndpoints() call count = %d, want 1", len(query.calls))
+	}
+}
+
+func TestGetServiceEndpoints_ProdFallback(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	primary := mustReadyDomainEnvironment(t, "prod", "alpha")
+	fallbackA := mustReadyDomainEnvironment(t, "prod", "beta")
+	fallbackB := mustReadyDomainEnvironment(t, "prod", "aardvark")
+	query := &fakeServiceEndpointQuery{
+		results: map[string]*domain.ServiceQueryResult{
+			serviceQueryKey("prod.aardvark", "gateway", "api"): {
+				Endpoints: []string{"10.1.0.1:9090"},
+				Ports: map[string]int32{
+					"grpc": 9090,
+				},
+			},
+		},
+		errs: map[string]error{
+			serviceQueryKey("prod.alpha", "gateway", "api"):    domain.ErrServiceNotFound,
+			serviceQueryKey("prod.beta", "gateway", "api"):     domain.ErrServiceNotFound,
+			serviceQueryKey("prod.aardvark", "gateway", "api"): nil,
+		},
+	}
+	handler := NewHandler(newFakeRepository(primary, fallbackA, fallbackB), newFakeQueue(), query)
+	req := &GetServiceEndpointsRequest{
+		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
+		View: ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION,
+	}
+
+	// when
+	got, err := handler.GetServiceEndpoints(ctx, req)
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got.GetResolutionMode() != ResolutionMode_RESOLUTION_MODE_PROD_FALLBACK {
+		t.Fatalf("GetServiceEndpoints() resolution_mode = %v, want PROD_FALLBACK", got.GetResolutionMode())
+	}
+	if got.GetResolvedScope() != "prod" {
+		t.Fatalf("GetServiceEndpoints() resolved_scope = %q, want %q", got.GetResolvedScope(), "prod")
+	}
+	if got.GetResolvedEnvironment() != "aardvark" {
+		t.Fatalf("GetServiceEndpoints() resolved_environment = %q, want %q", got.GetResolvedEnvironment(), "aardvark")
+	}
+	if got.GetPorts()["grpc"] != 9090 {
+		t.Fatalf("GetServiceEndpoints() ports[grpc] = %d, want 9090", got.GetPorts()["grpc"])
+	}
+	if len(query.calls) != 2 {
+		t.Fatalf("QueryServiceEndpoints() call count = %d, want 2", len(query.calls))
+	}
+	if query.calls[1].envLabel != "prod.aardvark" {
+		t.Fatalf("QueryServiceEndpoints() fallback first env = %q, want %q", query.calls[1].envLabel, "prod.aardvark")
+	}
+}
+
+func TestGetServiceEndpoints_NonProdNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustReadyDomainEnvironmentWithType(t, "dev", "alpha", domain.EnvironmentTypeDev)
+	query := &fakeServiceEndpointQuery{
+		errs: map[string]error{
+			serviceQueryKey("dev.alpha", "gateway", "api"): domain.ErrServiceNotFound,
+		},
+	}
+	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+
+	// when
+	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/dev/environments/alpha/apps/gateway/services/api/endpoints"})
+
+	// then
+	assertStatusCode(t, err, codes.NotFound)
+	assertErrorInfo(t, err, "SERVICE_ENDPOINTS_NOT_FOUND", nil)
+	if len(query.calls) != 1 {
+		t.Fatalf("QueryServiceEndpoints() call count = %d, want 1", len(query.calls))
+	}
+}
+
+func TestGetServiceEndpoints_ResolutionView(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustReadyDomainEnvironment(t, "prod", "alpha")
+	query := &fakeServiceEndpointQuery{
+		results: map[string]*domain.ServiceQueryResult{
+			serviceQueryKey("prod.alpha", "gateway", "api"): {
+				Endpoints: []string{"10.0.0.1:8080"},
+				Ports: map[string]int32{
+					"http": 8080,
+				},
+			},
+		},
+	}
+	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	req := &GetServiceEndpointsRequest{
+		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
+		View: ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION,
+	}
+
+	// when
+	got, err := handler.GetServiceEndpoints(ctx, req)
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got.GetResolvedScope() != "prod" {
+		t.Fatalf("GetServiceEndpoints() resolved_scope = %q, want %q", got.GetResolvedScope(), "prod")
+	}
+	if got.GetResolvedEnvironment() != "alpha" {
+		t.Fatalf("GetServiceEndpoints() resolved_environment = %q, want %q", got.GetResolvedEnvironment(), "alpha")
+	}
+	if got.GetResolutionMode() != ResolutionMode_RESOLUTION_MODE_SAME_ENV {
+		t.Fatalf("GetServiceEndpoints() resolution_mode = %v, want SAME_ENV", got.GetResolutionMode())
+	}
+}
+
+func TestGetServiceEndpoints_InvalidName(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	handler := NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{})
+
+	// when
+	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "bad-name"})
+
+	// then
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestGetServiceEndpoints_FallbackNoCandidates(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	primary := mustReadyDomainEnvironment(t, "prod", "alpha")
+	query := &fakeServiceEndpointQuery{
+		errs: map[string]error{
+			serviceQueryKey("prod.alpha", "gateway", "api"): domain.ErrServiceNotFound,
+		},
+	}
+	handler := NewHandler(newFakeRepository(primary), newFakeQueue(), query)
+
+	// when
+	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
+
+	// then
+	assertStatusCode(t, err, codes.NotFound)
+	assertErrorInfo(t, err, "SERVICE_ENDPOINTS_NOT_FOUND", map[string]string{
+		"resource_name": "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
+		"app":           "gateway",
+		"service":       "api",
+		"environment":   "alpha",
+	})
+}
+
+func TestGetServiceEndpoints_ServicePortMapUnavailable(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustReadyDomainEnvironment(t, "prod", "alpha")
+	query := &fakeServiceEndpointQuery{
+		errs: map[string]error{
+			serviceQueryKey("prod.alpha", "gateway", "api"): domain.ErrServicePortMapUnavailable,
+		},
+	}
+	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+
+	// when
+	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
+
+	// then
+	assertStatusCode(t, err, codes.FailedPrecondition)
+	assertErrorInfo(t, err, "SERVICE_PORT_MAP_UNAVAILABLE", nil)
 }
 
 func TestCreateEnvironment_WithValidType(t *testing.T) {
@@ -531,7 +746,7 @@ func TestCreateEnvironment_WithValidType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository()
-			handler := NewHandler(repo, newFakeQueue())
+			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 			req := &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
@@ -557,7 +772,7 @@ func TestCreateEnvironment_RejectUnspecified(t *testing.T) {
 
 	// given
 	repo := newFakeRepository()
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 	req := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
@@ -586,7 +801,7 @@ func TestUpdateEnvironment_RejectTypeModification(t *testing.T) {
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("repo.Save() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 	req := &UpdateEnvironmentRequest{
 		Environment: &Environment{
 			Name:         "deploy/scopes/dev/environments/alpha",
@@ -618,7 +833,7 @@ func TestUpdateEnvironment_AllowWithoutType(t *testing.T) {
 	if err := repo.Save(ctx, seed); err != nil {
 		t.Fatalf("repo.Save() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue())
+	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
 	req := &UpdateEnvironmentRequest{
 		Environment: &Environment{
 			Name:         "deploy/scopes/dev/environments/alpha",
@@ -700,7 +915,7 @@ func TestHandler_errorMapping(t *testing.T) {
 	}{
 		{
 			name:    "not found maps to not found",
-			handler: NewHandler(&errorRepository{getErr: domain.ErrNotFound}, newFakeQueue()),
+			handler: NewHandler(&errorRepository{getErr: domain.ErrNotFound}, newFakeQueue(), &fakeServiceEndpointQuery{}),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
 				return err
@@ -709,7 +924,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "already exists maps to already exists",
-			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, newFakeQueue()),
+			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, newFakeQueue(), &fakeServiceEndpointQuery{}),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD}})
 				return err
@@ -718,7 +933,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid state maps to failed precondition",
-			handler: NewHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, newFakeQueue()),
+			handler: NewHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, newFakeQueue(), &fakeServiceEndpointQuery{}),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.UpdateEnvironment(ctx, &UpdateEnvironmentRequest{Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()}})
 				return err
@@ -727,7 +942,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid name maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), newFakeQueue()),
+			handler: NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{}),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "bad-name"})
 				return err
@@ -736,7 +951,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid spec maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), newFakeQueue()),
+			handler: NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{}),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{}})
 				return err
@@ -763,6 +978,56 @@ type errorRepository struct {
 	listErr   error
 	saveErr   error
 	deleteErr error
+}
+
+type fakeServiceEndpointQuery struct {
+	results map[string]*domain.ServiceQueryResult
+	errs    map[string]error
+	err     error
+	calls   []serviceEndpointQueryCall
+}
+
+type serviceEndpointQueryCall struct {
+	envLabel string
+	app      string
+	service  string
+}
+
+func (q *fakeServiceEndpointQuery) QueryServiceEndpoints(_ context.Context, envLabel string, app string, service string) (*domain.ServiceQueryResult, error) {
+	q.calls = append(q.calls, serviceEndpointQueryCall{
+		envLabel: envLabel,
+		app:      app,
+		service:  service,
+	})
+
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	key := serviceQueryKey(envLabel, app, service)
+	if err, ok := q.errs[key]; ok {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if result, ok := q.results[key]; ok {
+		return result, nil
+	}
+
+	return nil, domain.ErrServiceNotFound
+}
+
+func (q *fakeServiceEndpointQuery) Apply(_ context.Context, _ *domain.Environment, _ func(msg string)) error {
+	return nil
+}
+
+func (q *fakeServiceEndpointQuery) Delete(_ context.Context, _ domain.EnvironmentName) error {
+	return nil
+}
+
+func serviceQueryKey(envLabel, app, service string) string {
+	return fmt.Sprintf("%s/%s/%s", envLabel, app, service)
 }
 
 func (r *errorRepository) Get(_ context.Context, _ domain.EnvironmentName) (*domain.Environment, error) {
@@ -819,6 +1084,37 @@ func mustDeletingEnvironment(t *testing.T, scope, envName string) *domain.Enviro
 	env := mustNewDomainEnvironment(t, scope, envName, newDesiredState())
 	if err := env.MarkDeleting(); err != nil {
 		t.Fatalf("MarkDeleting() error = %v", err)
+	}
+
+	return env
+}
+
+func mustReadyDomainEnvironment(t *testing.T, scope, envName string) *domain.Environment {
+	t.Helper()
+
+	return mustReadyDomainEnvironmentWithType(t, scope, envName, domain.EnvironmentTypeProd)
+}
+
+func mustReadyDomainEnvironmentWithType(t *testing.T, scope, envName string, envType domain.EnvironmentType) *domain.Environment {
+	t.Helper()
+
+	name, err := domain.NewEnvironmentName(scope, envName)
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() error = %v", err)
+	}
+
+	env, err := domain.NewEnvironment(name, envType, envName, &domain.DesiredState{
+		Artifacts: newDesiredState().Artifacts,
+		Infras:    newDesiredState().Infras,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvironment() error = %v", err)
+	}
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() error = %v", err)
+	}
+	if err := env.MarkReady(); err != nil {
+		t.Fatalf("MarkReady() error = %v", err)
 	}
 
 	return env
@@ -914,4 +1210,33 @@ func assertStatusCode(t *testing.T, err error, want codes.Code) {
 	if !errors.As(err, new(interface{ GRPCStatus() *status.Status })) {
 		_ = err
 	}
+}
+
+func assertStatusMessageContains(t *testing.T, err error, wantSubstring string) {
+	t.Helper()
+
+	st := status.Convert(err)
+	if !strings.Contains(st.Message(), wantSubstring) {
+		t.Fatalf("status message = %q, want substring %q", st.Message(), wantSubstring)
+	}
+}
+
+func assertErrorInfo(t *testing.T, err error, wantReason string, wantMetadata map[string]string) {
+	t.Helper()
+
+	st := status.Convert(err)
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok {
+			if info.Reason != wantReason {
+				t.Fatalf("ErrorInfo.Reason = %q, want %q", info.Reason, wantReason)
+			}
+			for k, v := range wantMetadata {
+				if got, ok := info.Metadata[k]; !ok || got != v {
+					t.Fatalf("ErrorInfo.Metadata[%q] = %q, want %q", k, got, v)
+				}
+			}
+			return
+		}
+	}
+	t.Fatalf("status details do not contain ErrorInfo")
 }

@@ -31,7 +31,6 @@ type mongoClientFactory func(target string, opts ...mongo.ClientOption) (*mongod
 type repositoryFactory func(client *mongodriver.Client) (domain.Repository, error)
 
 var (
-	grpcPort = flag.String("grpc-port", listenAddrFromEnv("PORT", defaultGRPCListenAddr), "gRPC port or listen address")
 	httpPort = flag.String("http-port", listenAddrFromEnv("HTTP_PORT", defaultHTTPListenAddr), "HTTP port or listen address")
 )
 
@@ -59,7 +58,7 @@ func main() {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- app.Serve(ctx, bootstrap.Handler, normalizeListenAddr(*grpcPort), normalizeListenAddr(*httpPort))
+		errCh <- app.Serve(ctx, bootstrap.Handler, normalizeListenAddr(*httpPort))
 	}()
 
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -68,7 +67,7 @@ func main() {
 }
 
 func newRepository(newClient mongoClientFactory, newMongoRepository repositoryFactory) (domain.Repository, error) {
-	client, err := newClient(deployMongoTarget)
+	client, err := newClient(deployMongoTarget, mongo.WithK8sResolver())
 	if err != nil {
 		return nil, err
 	}

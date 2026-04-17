@@ -21,7 +21,7 @@ type Bootstrap struct {
 // The runtime parameter is the infrastructure runtime implementation (e.g. k8s or fake).
 func NewBootstrap(ctx context.Context, repo domain.Repository, runtime domain.EnvironmentRuntime) (*Bootstrap, error) {
 	queue := domain.NewQueue()
-	handler := deploy.NewHandler(repo, queue)
+	handler := deploy.NewHandler(repo, queue, runtime)
 
 	if err := domain.Recover(ctx, repo, queue); err != nil {
 		return nil, fmt.Errorf("recover deploy environments: %w", err)

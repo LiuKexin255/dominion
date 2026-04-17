@@ -1,0 +1,11 @@
+load("//tools/go:defs.bzl", "go_largetest")
+
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = ["interface_test.go"],
+    env = {
+        "SUT_HOST_URL": "https://hello.liukexin.com",
+        "SUT_ENV_NAME": "liukexin.demo",
+    },
+)

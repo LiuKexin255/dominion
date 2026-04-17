@@ -1,12 +1,11 @@
 name: gateway
 app: grpc-hello-world
 desc: grpc hello world gateway
+ports:
+  - name: http
+    port: 80
 artifacts:
   - name: gateway
     type: deployment
     target: :gateway_image
     tls: true
-    ports: 
-      - name: http 
-        port: 80
- 

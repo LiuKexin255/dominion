@@ -240,6 +240,30 @@ func TestParseServiceConfig(t *testing.T) {
 			path:    filepath.Join(root, "testdata", "service.runtime-tls.error.yaml"),
 			wantErr: true,
 		},
+		{
+			name: "读取包含顶层 ports 的服务配置成功",
+			path: filepath.Join(root, "testdata", "service.ports.yaml"),
+			want: &ServiceConfig{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc hello world service with ports",
+				URI:  "//testdata/service.ports.yaml",
+				Ports: []*ServiceArtifactPort{{
+					Name: "admin",
+					Port: 9090,
+				}},
+				Artifacts: []*ServiceArtifact{{
+					Name:   "service",
+					Type:   ServiceArtifactTypeDeployment,
+					Target: "//testdata:service_image",
+					TLS:    false,
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

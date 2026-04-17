@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"time"
 
@@ -27,12 +26,7 @@ func SetAdminHTTPHandler(handler http.Handler) {
 }
 
 // Serve starts the deploy gRPC and HTTP gateway servers.
-func Serve(ctx context.Context, handler *deploy.Handler, grpcAddr, httpAddr string) error {
-	grpcListener, err := net.Listen("tcp", grpcAddr)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %w", grpcAddr, err)
-	}
-
+func Serve(ctx context.Context, handler *deploy.Handler, httpAddr string) error {
 	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
 	deploy.RegisterDeployServiceServer(grpcServer, handler)
 
@@ -57,10 +51,6 @@ func Serve(ctx context.Context, handler *deploy.Handler, grpcAddr, httpAddr stri
 		if err := httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("shutdown HTTP gateway: %w", err)
 		}
-	}()
-
-	go func() {
-		errCh <- grpcServer.Serve(grpcListener)
 	}()
 
 	go func() {

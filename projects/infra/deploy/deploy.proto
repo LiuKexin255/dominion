@@ -29,6 +29,16 @@ service DeployService {
     option (google.api.method_signature) = "name";
   }
 
+  // GetServiceEndpoints resolves the effective endpoints resource for an
+  // app/service from the perspective of a specific environment.
+  rpc GetServiceEndpoints(GetServiceEndpointsRequest) returns (ServiceEndpoints) {
+    option (google.api.http) = {
+      get: "/v1/{name=deploy/scopes/*/environments/*/apps/*/services/*/endpoints}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
   // ListEnvironments lists Environment resources under a scope.
   rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse) {
     option (google.api.http) = {
@@ -101,6 +111,30 @@ message Environment {
   EnvironmentType type = 8;
 }
 
+// ServiceEndpoints is a computed resource that describes the currently
+// effective runtime endpoints and service port map for a logical app/service
+// from the perspective of an environment.
+message ServiceEndpoints {
+  option (google.api.resource) = {
+    type: "infra.liukexin.com/deploy/ServiceEndpoints"
+    pattern: "deploy/scopes/{scope}/environments/{env_name}/apps/{app}/services/{service}/endpoints"
+    plural: "serviceEndpoints"
+    singular: "serviceEndpoints"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  repeated string endpoints = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  map<string, int32> ports = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string resolved_scope = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string resolved_environment = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  ResolutionMode resolution_mode = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
 message EnvironmentDesiredState {
   repeated ArtifactSpec artifacts = 1;
 
@@ -131,6 +165,18 @@ enum EnvironmentType {
   ENVIRONMENT_TYPE_PROD = 1;
   ENVIRONMENT_TYPE_TEST = 2;
   ENVIRONMENT_TYPE_DEV = 3;
+}
+
+enum ServiceEndpointsView {
+  SERVICE_ENDPOINTS_VIEW_UNSPECIFIED = 0;
+  SERVICE_ENDPOINTS_VIEW_BASIC = 1;
+  SERVICE_ENDPOINTS_VIEW_RESOLUTION = 2;
+}
+
+enum ResolutionMode {
+  RESOLUTION_MODE_UNSPECIFIED = 0;
+  RESOLUTION_MODE_SAME_ENV = 1;
+  RESOLUTION_MODE_PROD_FALLBACK = 2;
 }
 
 message ArtifactSpec {
@@ -201,6 +247,17 @@ message GetEnvironmentRequest {
       type: "infra.liukexin.com/deploy/Environment"
     }
   ];
+}
+
+message GetServiceEndpointsRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "infra.liukexin.com/deploy/ServiceEndpoints"
+    }
+  ];
+
+  ServiceEndpointsView view = 2 [(google.api.field_behavior) = OPTIONAL];
 }
 
 message ListEnvironmentsRequest {

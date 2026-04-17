@@ -9,6 +9,7 @@ import (
 type EnvironmentRuntime interface {
 	Apply(ctx context.Context, env *Environment, progress func(msg string)) error
 	Delete(ctx context.Context, envName EnvironmentName) error
+	QueryServiceEndpoints(ctx context.Context, envLabel string, app string, service string) (*ServiceQueryResult, error)
 }
 
 // Worker drains the queue and reconciles the latest environment snapshot.

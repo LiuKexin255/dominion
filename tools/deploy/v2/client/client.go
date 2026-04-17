@@ -4,7 +4,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"dominion/projects/infra/deploy"
+	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -39,12 +39,6 @@ var (
 type Client struct {
 	endpoint   string
 	httpClient *http.Client
-}
-
-type gatewayError struct {
-	Code    int    `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
 }
 
 // APIError captures an HTTP status with a parsed error message.
@@ -183,15 +177,10 @@ func decodeAPIError(response *http.Response) error {
 		return &APIError{StatusCode: response.StatusCode, Message: response.Status, Err: classifyHTTPError(response.StatusCode)}
 	}
 
-	parsed := new(gatewayError)
+	parsed := new(status.Status)
 	message := ""
-	if len(body) > 0 && json.Unmarshal(body, parsed) == nil {
-		switch {
-		case parsed.Message != "":
-			message = parsed.Message
-		case parsed.Error != "":
-			message = parsed.Error
-		}
+	if len(body) > 0 && jsonUnmarshaler.Unmarshal(body, parsed) == nil {
+		message = parsed.GetMessage()
 	}
 	if message == "" {
 		message = strings.TrimSpace(string(body))

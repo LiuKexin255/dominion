@@ -10,15 +10,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
-	k8stesting "k8s.io/client-go/testing"
 )
 
 var (
@@ -161,7 +158,11 @@ func TestNewK8sResolver(t *testing.T) {
 			if got == nil {
 				t.Fatal("NewK8sResolver() returned nil client")
 			}
-			if got.clientset == nil {
+			k8sResolver, ok := got.(*K8sResolver)
+			if !ok {
+				t.Fatalf("NewK8sResolver() type = %T, want *K8sResolver", got)
+			}
+			if k8sResolver.clientset == nil {
 				t.Fatal("NewK8sResolver() returned nil clientset")
 			}
 			if configCalls != 1 {
@@ -169,252 +170,6 @@ func TestNewK8sResolver(t *testing.T) {
 			}
 			if clientsetCalls != 1 {
 				t.Fatalf("newClientsetForConfig calls = %d, want 1", clientsetCalls)
-			}
-		})
-	}
-}
-
-func TestK8sResolverLookup(t *testing.T) {
-	tests := []struct {
-		name  string
-		given struct {
-			services []runtime.Object
-			reactor  func(*fake.Clientset)
-		}
-		want    string
-		wantErr string
-	}{
-		{
-			name: "single matching service",
-			given: struct {
-				services []runtime.Object
-				reactor  func(*fake.Clientset)
-			}{
-				services: []runtime.Object{
-					serviceObject("target-service", map[string]string{
-						ServiceAppLabelKey:                 "billing",
-						ServiceComponentLabelKey:           "api",
-						ServiceDominionEnvironmentLabelKey: "dev",
-					}),
-				},
-			},
-			want: "target-service",
-		},
-		{
-			name:    "no matching services",
-			wantErr: "no Services matched selector",
-		},
-		{
-			name: "multiple matching services",
-			given: struct {
-				services []runtime.Object
-				reactor  func(*fake.Clientset)
-			}{
-				services: []runtime.Object{
-					serviceObject("service-b", map[string]string{
-						ServiceAppLabelKey:                 "billing",
-						ServiceComponentLabelKey:           "api",
-						ServiceDominionEnvironmentLabelKey: "dev",
-					}),
-					serviceObject("service-a", map[string]string{
-						ServiceAppLabelKey:                 "billing",
-						ServiceComponentLabelKey:           "api",
-						ServiceDominionEnvironmentLabelKey: "dev",
-					}),
-				},
-			},
-			wantErr: "found 2 (service-a, service-b)",
-		},
-		{
-			name: "permission denied",
-			given: struct {
-				services []runtime.Object
-				reactor  func(*fake.Clientset)
-			}{
-				reactor: func(clientset *fake.Clientset) {
-					clientset.PrependReactor("list", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
-						return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "services"}, "", errors.New("denied"))
-					})
-				},
-			},
-			wantErr: "permission denied",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			originalLookupEnv := lookupEnv
-			t.Cleanup(func() {
-				lookupEnv = originalLookupEnv
-			})
-			lookupEnv = func(key string) (string, bool) {
-				switch key {
-				case serviceAppEnvKey:
-					return "billing", true
-				case dominionEnvironmentEnvKey:
-					return "dev", true
-				case podNamespaceEnvKey:
-					return "default", true
-				default:
-					return "", false
-				}
-			}
-
-			// given
-			clientset := fake.NewSimpleClientset()
-			for _, object := range tt.given.services {
-				if err := clientset.Tracker().Add(object); err != nil {
-					t.Fatalf("Tracker().Add() error = %v", err)
-				}
-			}
-			if tt.given.reactor != nil {
-				tt.given.reactor(clientset)
-			}
-
-			client := &K8sResolver{clientset: clientset}
-			target := &Target{App: "billing", Service: "api"}
-
-			// when
-			got, err := client.Lookup(context.Background(), target)
-
-			// then
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("Lookup() error = %v, want substring %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Lookup() unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Fatalf("Lookup() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestK8sResolverResolveEndpoints(t *testing.T) {
-	tests := []struct {
-		name  string
-		given struct {
-			targetPort     int
-			endpointSlices []runtime.Object
-			reactor        func(*fake.Clientset)
-		}
-		want    []string
-		wantErr string
-	}{
-		{
-			name: "ready endpoints use target port and are deduplicated and sorted",
-			given: struct {
-				targetPort     int
-				endpointSlices []runtime.Object
-				reactor        func(*fake.Clientset)
-			}{
-				targetPort: 8443,
-				endpointSlices: []runtime.Object{
-					endpointSliceObject("service-a", []int32{50051}, []discoveryv1.Endpoint{
-						{Addresses: []string{"10.0.0.2", "10.0.0.1"}},
-						{Addresses: []string{"10.0.0.1"}},
-						{Addresses: []string{"10.0.0.3"}, Conditions: discoveryv1.EndpointConditions{Ready: boolValuePtr(false)}},
-						{Addresses: []string{"10.0.0.4"}, Conditions: discoveryv1.EndpointConditions{Terminating: boolValuePtr(true)}},
-					}),
-				},
-			},
-			want: []string{"10.0.0.1:8443", "10.0.0.2:8443"},
-		},
-		{
-			name: "target port zero uses endpoint slice ports",
-			given: struct {
-				targetPort     int
-				endpointSlices []runtime.Object
-				reactor        func(*fake.Clientset)
-			}{
-				endpointSlices: []runtime.Object{
-					endpointSliceObject("service-a", []int32{27017}, []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.10"}}}),
-					endpointSliceObject("service-a", []int32{27018}, []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.11"}}}),
-				},
-			},
-			want: []string{"10.0.0.10:27017", "10.0.0.11:27018"},
-		},
-		{
-			name: "no ready endpoints returns nil",
-			given: struct {
-				targetPort     int
-				endpointSlices []runtime.Object
-				reactor        func(*fake.Clientset)
-			}{
-				endpointSlices: []runtime.Object{
-					endpointSliceObject("service-a", []int32{8080}, []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.5"}, Conditions: discoveryv1.EndpointConditions{Ready: boolValuePtr(false)}}}),
-				},
-			},
-		},
-		{
-			name: "permission denied",
-			given: struct {
-				targetPort     int
-				endpointSlices []runtime.Object
-				reactor        func(*fake.Clientset)
-			}{
-				reactor: func(clientset *fake.Clientset) {
-					clientset.PrependReactor("list", "endpointslices", func(action k8stesting.Action) (bool, runtime.Object, error) {
-						return true, nil, apierrors.NewUnauthorized("denied")
-					})
-				},
-			},
-			wantErr: "permission denied",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			originalLookupEnv := lookupEnv
-			t.Cleanup(func() {
-				lookupEnv = originalLookupEnv
-			})
-			lookupEnv = func(key string) (string, bool) {
-				switch key {
-				case serviceAppEnvKey:
-					return "billing", true
-				case dominionEnvironmentEnvKey:
-					return "dev", true
-				case podNamespaceEnvKey:
-					return "default", true
-				default:
-					return "", false
-				}
-			}
-
-			// given
-			clientset := fake.NewSimpleClientset()
-			for _, object := range tt.given.endpointSlices {
-				if err := clientset.Tracker().Add(object); err != nil {
-					t.Fatalf("Tracker().Add() error = %v", err)
-				}
-			}
-			if tt.given.reactor != nil {
-				tt.given.reactor(clientset)
-			}
-
-			client := &K8sResolver{clientset: clientset}
-			target := &Target{App: "billing", Service: "api", Port: tt.given.targetPort}
-
-			// when
-			got, err := client.ResolveEndpoints(context.Background(), target, "service-a")
-
-			// then
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("ResolveEndpoints() error = %v, want substring %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ResolveEndpoints() unexpected error: %v", err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("ResolveEndpoints() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}
@@ -430,7 +185,7 @@ func TestK8sResolverResolve(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "lookup then resolve endpoints",
+			name: "resolves service endpoints",
 			given: struct{ objects []runtime.Object }{objects: []runtime.Object{
 				serviceObject("service-a", map[string]string{
 					ServiceAppLabelKey:                 "billing",
@@ -475,7 +230,7 @@ func TestK8sResolverResolve(t *testing.T) {
 			}
 
 			client := &K8sResolver{clientset: clientset}
-			target := &Target{App: "billing", Service: "api"}
+			target := &Target{App: "billing", Service: "api", PortSelector: NumericPort(50051)}
 
 			// when
 			got, err := client.Resolve(context.Background(), target)
@@ -522,6 +277,39 @@ func Test_includeEndpoint(t *testing.T) {
 	}
 }
 
+func Test_endpointSlicePorts(t *testing.T) {
+	httpName := "http"
+	metricsName := "metrics"
+	httpPort := int32(8080)
+	metricsPort := int32(9090)
+	defaultPort := int32(7070)
+	endpointSlice := endpointSliceWithPorts([]discoveryv1.EndpointPort{
+		{Name: &httpName, Port: &httpPort},
+		{Name: &metricsName, Port: &metricsPort},
+		{Port: &defaultPort},
+	})
+
+	tests := []struct {
+		name         string
+		portSelector PortSelector
+		want         []int
+	}{
+		{name: "numeric port selected directly", portSelector: NumericPort(7070), want: []int{7070}},
+		{name: "named port found", portSelector: NamedPort("metrics"), want: []int{9090}},
+		{name: "named port not found", portSelector: NamedPort("admin"), want: nil},
+		{name: "empty selector returns all ports", portSelector: PortSelector{}, want: []int{8080, 9090, 7070}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := endpointSlicePorts(endpointSlice, tt.portSelector)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("endpointSlicePorts() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func serviceObject(name string, labels map[string]string) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -533,12 +321,6 @@ func serviceObject(name string, labels map[string]string) *corev1.Service {
 }
 
 func endpointSliceObject(serviceName string, ports []int32, endpoints []discoveryv1.Endpoint) *discoveryv1.EndpointSlice {
-	endpointPorts := make([]discoveryv1.EndpointPort, 0, len(ports))
-	for i := range ports {
-		port := ports[i]
-		endpointPorts = append(endpointPorts, discoveryv1.EndpointPort{Port: &port})
-	}
-
 	return &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      endpointSliceName(serviceName, ports),
@@ -548,9 +330,23 @@ func endpointSliceObject(serviceName string, ports []int32, endpoints []discover
 			},
 		},
 		AddressType: discoveryv1.AddressTypeIPv4,
-		Ports:       endpointPorts,
+		Ports:       endpointSlicePortsFromInts(ports),
 		Endpoints:   endpoints,
 	}
+}
+
+func endpointSliceWithPorts(ports []discoveryv1.EndpointPort) discoveryv1.EndpointSlice {
+	return discoveryv1.EndpointSlice{Ports: ports}
+}
+
+func endpointSlicePortsFromInts(ports []int32) []discoveryv1.EndpointPort {
+	endpointPorts := make([]discoveryv1.EndpointPort, 0, len(ports))
+	for i := range ports {
+		port := ports[i]
+		endpointPorts = append(endpointPorts, discoveryv1.EndpointPort{Port: &port})
+	}
+
+	return endpointPorts
 }
 
 func endpointSliceName(serviceName string, ports []int32) string {

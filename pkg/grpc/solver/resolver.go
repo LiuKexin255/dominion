@@ -2,10 +2,11 @@ package solver
 
 import (
 	"context"
-	"dominion/pkg/solver"
 	"fmt"
 	"sync"
 	"time"
+
+	"dominion/pkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
 )
@@ -47,7 +48,7 @@ type BuilderOption func(*Builder)
 func NewBuilder(opts ...BuilderOption) *Builder {
 	b := &Builder{
 		NewResolver: func() (solver.Resolver, error) {
-			return solver.NewK8sResolver()
+			return solver.NewDeployResolver()
 		},
 		NewTicker: func(d time.Duration) refreshTicker {
 			return &runtimeTicker{timeticker: time.NewTicker(d)}
@@ -92,7 +93,7 @@ func WithRefreshInterval(refreshInterval time.Duration) BuilderOption {
 	}
 }
 
-// Resolver polls Kubernetes EndpointSlices and publishes grpc resolver state.
+// Resolver polls service endpoints and publishes grpc resolver state.
 type Resolver struct {
 	cc              grpcresolver.ClientConn
 	target          *solver.Target

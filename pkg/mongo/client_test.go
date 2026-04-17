@@ -8,35 +8,28 @@ import (
 	"testing"
 
 	"dominion/pkg/solver"
+
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 )
 
 type stubResolver struct {
-	lookupServiceName string
-	resolveAddresses  []string
-	err               error
+	resolveAddresses []string
+	err              error
 }
 
-func (s *stubResolver) Lookup(ctx context.Context, target *solver.Target) (string, error) {
-	if s.err != nil {
-		return "", s.err
-	}
-	return s.lookupServiceName, nil
+func (s *stubResolver) Resolve(_ context.Context, _ *solver.Target) ([]string, error) {
+	return s.resolveAddresses, s.err
 }
 
-func (s *stubResolver) ResolveEndpoints(ctx context.Context, target *solver.Target, serviceName string) ([]string, error) {
-	if s.err != nil {
-		return nil, s.err
+func withStubResolver(r solver.Resolver) ClientOption {
+	return func(opts *ClientOptions) {
+		opts.resolverBuilder = func() (solver.Resolver, error) {
+			if r == nil {
+				return nil, errors.New("missing resolver")
+			}
+			return r, nil
+		}
 	}
-	return s.resolveAddresses, nil
-}
-
-func (s *stubResolver) Resolve(ctx context.Context, target *solver.Target) ([]string, error) {
-	serviceName, err := s.Lookup(ctx, target)
-	if err != nil {
-		return nil, err
-	}
-	return s.ResolveEndpoints(ctx, target, serviceName)
 }
 
 func TestNewClient(t *testing.T) {
@@ -44,7 +37,8 @@ func TestNewClient(t *testing.T) {
 		name      string
 		rawTarget string
 		env       map[string]string
-		resolver  solver.Resolver
+
+		options   []ClientOption
 		clientErr error
 		wantURI   string
 		wantErr   bool
@@ -54,26 +48,100 @@ func TestNewClient(t *testing.T) {
 			name:      "success",
 			rawTarget: "app/mongo-main",
 			env:       map[string]string{dominionEnvironmentEnvKey: "dev"},
-			resolver:  &stubResolver{lookupServiceName: "svc-dev-mongo-main-bfc75601", resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")}},
-			wantURI:   "mongodb://admin:ZOp8SzWTYjjDRAtgSa3MgPeRQ8Zp3aZQ@10.0.0.12:27017/admin?authSource=admin",
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return &stubResolver{resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")}}, nil
+
+					}
+				},
+			},
+			wantURI: "mongodb://admin:ZOp8SzWTYjjDRAtgSa3MgPeRQ8Zp3aZQ@10.0.0.12:27017/admin?authSource=admin",
 		},
 		{
 			name:      "sanitized service name",
 			rawTarget: " GRPC_HELLO.WORLD / mongo@main ",
 			env:       map[string]string{dominionEnvironmentEnvKey: " Dev "},
-			resolver:  &stubResolver{lookupServiceName: "svc-dev-mongo-main-395bea0a", resolveAddresses: []string{net.JoinHostPort("10.0.0.34", "27017")}},
-			wantURI:   "mongodb://admin:lJnPUcMYMLzwulQenzwZDlPgim1pydYM@10.0.0.34:27017/admin?authSource=admin",
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return &stubResolver{resolveAddresses: []string{net.JoinHostPort("10.0.0.34", "27017")}}, nil
+
+					}
+				},
+			},
+			wantURI: "mongodb://admin:lJnPUcMYMLzwulQenzwZDlPgim1pydYM@10.0.0.34:27017/admin?authSource=admin",
 		},
-		{name: "invalid target", rawTarget: "app", wantErr: true, errSubstr: "want app/name"},
-		{name: "resolve error", rawTarget: "app/mongo-main", env: map[string]string{dominionEnvironmentEnvKey: "dev"}, resolver: &stubResolver{err: errors.New("resolve failed")}, wantErr: true, errSubstr: "resolve failed"},
-		{name: "client creation error", rawTarget: "app/mongo-main", env: map[string]string{dominionEnvironmentEnvKey: "dev"}, resolver: &stubResolver{lookupServiceName: "svc-dev-mongo-main-bfc75601", resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")}}, clientErr: errors.New("connect failed"), wantErr: true, errSubstr: "connect failed"},
-		{name: "no ready endpoints", rawTarget: "app/mongo-main", env: map[string]string{dominionEnvironmentEnvKey: "dev"}, resolver: &stubResolver{lookupServiceName: "svc-dev-mongo-main-bfc75601"}, wantErr: true, errSubstr: "no ready endpoints found"},
+		{
+			name:      "invalid target",
+			rawTarget: "app",
+			wantErr:   true,
+			errSubstr: "want app/name"},
+		{
+			name:      "resolve error",
+			rawTarget: "app/mongo-main",
+			env:       map[string]string{dominionEnvironmentEnvKey: "dev"},
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return &stubResolver{err: errors.New("resolve failed")}, nil
+
+					}
+				},
+			},
+			wantErr:   true,
+			errSubstr: "resolve failed",
+		},
+		{
+			name:      "client creation error",
+			rawTarget: "app/mongo-main",
+			env:       map[string]string{dominionEnvironmentEnvKey: "dev"},
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return &stubResolver{resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")}}, nil
+
+					}
+				},
+			},
+			clientErr: errors.New("connect failed"),
+			wantErr:   true,
+			errSubstr: "connect failed",
+		},
+		{
+			name:      "no ready endpoints",
+			rawTarget: "app/mongo-main",
+			env:       map[string]string{dominionEnvironmentEnvKey: "dev"},
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return new(stubResolver), nil
+
+					}
+				},
+			},
+			wantErr:   true,
+			errSubstr: "no ready endpoints found",
+		},
+		{
+			name:      "with injected resolver option",
+			rawTarget: "app/mongo-main",
+			env:       map[string]string{dominionEnvironmentEnvKey: "dev"},
+			options: []ClientOption{
+				func(opts *ClientOptions) {
+					opts.resolverBuilder = func() (solver.Resolver, error) {
+						return &stubResolver{resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")}}, nil
+
+					}
+				},
+			},
+			wantURI: "mongodb://admin:ZOp8SzWTYjjDRAtgSa3MgPeRQ8Zp3aZQ@10.0.0.12:27017/admin?authSource=admin",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			originalLookupEnv := lookupEnv
-			originalNewResolver := newResolver
 			originalNewMongoClient := newMongoClient
 			var gotURI string
 			lookupEnv = func(key string) (string, bool) {
@@ -82,12 +150,6 @@ func TestNewClient(t *testing.T) {
 				}
 				value, ok := tt.env[key]
 				return value, ok
-			}
-			newResolver = func() (solver.Resolver, error) {
-				if tt.resolver == nil {
-					return nil, errors.New("missing resolver")
-				}
-				return tt.resolver, nil
 			}
 			newMongoClient = func(uri string) (*mongodriver.Client, error) {
 				gotURI = uri
@@ -98,12 +160,11 @@ func TestNewClient(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				lookupEnv = originalLookupEnv
-				newResolver = originalNewResolver
 				newMongoClient = originalNewMongoClient
 			})
 
 			// when
-			got, err := NewClient(tt.rawTarget)
+			got, err := NewClient(tt.rawTarget, tt.options...)
 
 			// then
 			if tt.wantErr {
@@ -125,6 +186,19 @@ func TestNewClient(t *testing.T) {
 				t.Fatalf("NewClient(%q) uri = %q, want %q", tt.rawTarget, gotURI, tt.wantURI)
 			}
 		})
+	}
+}
+
+func TestWithK8sResolver(t *testing.T) {
+	// given
+	opts := defaultOptions()
+
+	// when
+	WithK8sResolver()(opts)
+
+	// then
+	if opts.resolverBuilder == nil {
+		t.Fatal("WithK8sResolver() did not set resolverBuilder")
 	}
 }
 
@@ -166,7 +240,7 @@ func Test_buildMongoURI(t *testing.T) {
 	}
 }
 
-func Test_lookupEnvOrDefault(t *testing.T) {
+func Test_envOrDefault(t *testing.T) {
 	originalLookupEnv := lookupEnv
 	t.Cleanup(func() {
 		lookupEnv = originalLookupEnv
@@ -194,11 +268,11 @@ func Test_lookupEnvOrDefault(t *testing.T) {
 			}
 
 			// when
-			got := lookupEnvOrDefault(dominionEnvironmentEnvKey, tt.defaultVal)
+			got := envOrDefault(dominionEnvironmentEnvKey, tt.defaultVal)
 
 			// then
 			if got != tt.want {
-				t.Fatalf("lookupEnvOrDefault(%q, %q) = %q, want %q", dominionEnvironmentEnvKey, tt.defaultVal, got, tt.want)
+				t.Fatalf("envOrDefault(%q, %q) = %q, want %q", dominionEnvironmentEnvKey, tt.defaultVal, got, tt.want)
 			}
 		})
 	}

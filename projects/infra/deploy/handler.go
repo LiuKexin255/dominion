@@ -5,18 +5,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"dominion/projects/infra/deploy/domain"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const deployParentPrefix = "deploy/scopes/"
+const (
+	deployParentPrefix              = "deploy/scopes/"
+	errorDomain                     = "infra.liukexin.com"
+	invalidViewReason               = "INVALID_VIEW"
+	serviceEndpointsNotFoundReason  = "SERVICE_ENDPOINTS_NOT_FOUND"
+	servicePortMapUnavailableReason = "SERVICE_PORT_MAP_UNAVAILABLE"
+)
 
 type Enqueuer interface {
 	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
@@ -27,15 +35,17 @@ type Enqueuer interface {
 type Handler struct {
 	UnimplementedDeployServiceServer
 
-	repo  domain.Repository
-	queue Enqueuer
+	repo    domain.Repository
+	queue   Enqueuer
+	runtime domain.EnvironmentRuntime
 }
 
 // NewHandler creates a deploy gRPC handler.
-func NewHandler(repo domain.Repository, queue Enqueuer) *Handler {
+func NewHandler(repo domain.Repository, queue Enqueuer, runtime domain.EnvironmentRuntime) *Handler {
 	return &Handler{
-		repo:  repo,
-		queue: queue,
+		repo:    repo,
+		queue:   queue,
+		runtime: runtime,
 	}
 }
 
@@ -52,6 +62,74 @@ func (h *Handler) GetEnvironment(ctx context.Context, req *GetEnvironmentRequest
 	}
 
 	return toProtoEnvironment(env), nil
+}
+
+// GetServiceEndpoints returns the effective runtime endpoints for a logical service.
+func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpointsRequest) (*ServiceEndpoints, error) {
+	name, err := domain.ParseServiceEndpointsName(req.GetName())
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	view, err := normalizeServiceEndpointsView(req.GetView())
+	if err != nil {
+		return nil, err
+	}
+
+	envName, err := name.EnvironmentName()
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	env, err := h.repo.Get(ctx, envName)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	result, err := h.runtime.QueryServiceEndpoints(ctx, name.EnvLabel(), name.App(), name.Service())
+	if err == nil {
+		return newServiceEndpointsResponse(name, result, env.Name(), ResolutionMode_RESOLUTION_MODE_SAME_ENV, view), nil
+	}
+	if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+		return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
+	}
+
+	switch {
+	case !errors.Is(err, domain.ErrServiceNotFound):
+		return nil, toStatusError(err)
+	case env.Type() != domain.EnvironmentTypeProd:
+		return nil, newServiceEndpointsNotFoundError(name)
+	}
+
+	fallbackEnvs, err := h.repo.ListByStates(ctx, domain.StateReady)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	prodCandidates := filterProdCandidates(fallbackEnvs, env.Name())
+	if len(prodCandidates) == 0 {
+		return nil, newServiceEndpointsNotFoundError(name)
+	}
+
+	sort.Slice(prodCandidates, func(i, j int) bool {
+		return prodCandidates[i].Name().String() < prodCandidates[j].Name().String()
+	})
+
+	for _, candidate := range prodCandidates {
+		result, err = h.runtime.QueryServiceEndpoints(ctx, candidate.Name().Label(), name.App(), name.Service())
+		if err == nil {
+			return newServiceEndpointsResponse(name, result, candidate.Name(), ResolutionMode_RESOLUTION_MODE_PROD_FALLBACK, view), nil
+		}
+		if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+			return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
+		}
+		if errors.Is(err, domain.ErrServiceNotFound) {
+			continue
+		}
+		return nil, toStatusError(err)
+	}
+
+	return nil, newServiceEndpointsNotFoundError(name)
 }
 
 // ListEnvironments lists environments under a scope.
@@ -565,4 +643,93 @@ func toStatusError(err error) error {
 	default:
 		return status.Error(codes.Internal, fmt.Sprintf("deploy handler: %v", err))
 	}
+}
+
+func normalizeServiceEndpointsView(view ServiceEndpointsView) (ServiceEndpointsView, error) {
+	switch view {
+	case ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_UNSPECIFIED:
+		return ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_BASIC, nil
+	case ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_BASIC, ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION:
+		return view, nil
+	default:
+		return ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_UNSPECIFIED, newStatusErrorWithReason(codes.InvalidArgument, invalidViewReason, fmt.Sprintf("invalid service endpoints view: %v", view), nil)
+	}
+}
+
+func newServiceEndpointsResponse(name domain.ServiceEndpointsName, result *domain.ServiceQueryResult, resolvedEnv domain.EnvironmentName, mode ResolutionMode, view ServiceEndpointsView) *ServiceEndpoints {
+	resp := &ServiceEndpoints{
+		Name:      name.String(),
+		Endpoints: cloneStringSlice(result.Endpoints),
+		Ports:     cloneInt32Map(result.Ports),
+	}
+
+	if view == ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION {
+		resp.ResolvedScope = resolvedEnv.Scope()
+		resp.ResolvedEnvironment = resolvedEnv.EnvName()
+		resp.ResolutionMode = mode
+	}
+
+	return resp
+}
+
+func newServiceEndpointsNotFoundError(name domain.ServiceEndpointsName) error {
+	return newStatusErrorWithReason(
+		codes.NotFound,
+		serviceEndpointsNotFoundReason,
+		fmt.Sprintf("service endpoints not found for %s", name.String()),
+		map[string]string{
+			"resource_name": name.String(),
+			"app":           name.App(),
+			"service":       name.Service(),
+			"environment":   name.EnvName(),
+		},
+	)
+}
+
+func filterProdCandidates(envs []*domain.Environment, self domain.EnvironmentName) []*domain.Environment {
+	var candidates []*domain.Environment
+	for _, env := range envs {
+		if env == nil {
+			continue
+		}
+		if env.Type() != domain.EnvironmentTypeProd || env.Name() == self {
+			continue
+		}
+		candidates = append(candidates, env)
+	}
+
+	return candidates
+}
+
+func newStatusErrorWithReason(code codes.Code, reason string, message string, metadata map[string]string) error {
+	st, err := status.New(code, message).WithDetails(&errdetails.ErrorInfo{
+		Reason:   reason,
+		Domain:   errorDomain,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return status.Error(code, message)
+	}
+	return st.Err()
+}
+
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	return append([]string(nil), values...)
+}
+
+func cloneInt32Map(values map[string]int32) map[string]int32 {
+	if len(values) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]int32, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+
+	return cloned
 }
