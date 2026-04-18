@@ -1,0 +1,7 @@
+{
+    "name": "@dominion/hello_world",
+    "private": true,
+    "devDependencies": {
+        "typescript": "workspace:*"
+    }
+}

@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "storage",
+    srcs = [
+        "fake.go",
+        "model.go",
+        "mongo.go",
+        "storage.go",
+    ],
+    importpath = "dominion/experimental/golang/mongo_demo/storage",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//experimental/golang/mongo_demo",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
+
+go_unittest(
+    name = "storage_test",
+    srcs = [
+        "mongo_test.go",
+        "storage_test.go",
+    ],
+    embed = [":storage"],
+    deps = [
+        "//experimental/golang/mongo_demo",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)

@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "mongo_demo_proto",
+    srcs = ["mongo_demo.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:field_mask_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:client_proto",
+        "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
+    ],
+)
+
+go_proto_library(
+    name = "mongo_demo_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+    ],
+    importpath = "dominion/experimental/golang/mongo_demo",
+    proto = ":mongo_demo_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:annotations_go_proto",
+        "@googleapis//google/api:client_go_proto",
+        "@googleapis//google/api:field_behavior_go_proto",
+        "@googleapis//google/api:resource_go_proto",
+    ],
+)
+
+go_library(
+    name = "mongo_demo",
+    embed = [":mongo_demo_go_proto"],
+    importpath = "dominion/experimental/golang/mongo_demo",
+    visibility = ["//visibility:public"],
+)
