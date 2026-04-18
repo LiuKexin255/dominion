@@ -33,3 +33,8 @@ alias(
     name = "deploy_install",
     actual = "//tools/deploy/v2:install",
 )
+
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# 生成 node_modules（运行时需要）
+npm_link_all_packages()
