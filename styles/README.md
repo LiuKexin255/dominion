@@ -16,7 +16,9 @@
 
 * API 接口：`api.md`
 
-## 外部引用
+## 引用
+
+> 外部的规范引用，可作为规范参考
 
 * [Google Go Style](https://google.github.io/styleguide/go/)
 * [Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
