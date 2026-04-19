@@ -9,7 +9,7 @@ import (
 
 	"dominion/projects/infra/deploy/domain"
 
-	errdetails "google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -504,7 +504,7 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 	}
 }
 
-func TestGetServiceEndpoints_SameEnv(t *testing.T) {
+func TestHandler_GetServiceEndpoints_SameEnv(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -544,9 +544,62 @@ func TestGetServiceEndpoints_SameEnv(t *testing.T) {
 	if len(query.calls) != 1 {
 		t.Fatalf("QueryServiceEndpoints() call count = %d, want 1", len(query.calls))
 	}
+	if len(query.statefulCalls) != 0 {
+		t.Fatalf("QueryStatefulServiceEndpoints() call count = %d, want 0", len(query.statefulCalls))
+	}
 }
 
-func TestGetServiceEndpoints_ProdFallback(t *testing.T) {
+func TestHandler_GetServiceEndpoints_StatefulSameEnv(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	env := mustReadyDomainEnvironmentWithDesiredState(t, "prod", "alpha", domain.EnvironmentTypeProd, domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{
+			Name:         "api",
+			App:          "gateway",
+			Image:        "example.com/gateway:v1",
+			Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+			Replicas:     1,
+			WorkloadKind: domain.WorkloadKindStateful,
+		}},
+	})
+	query := &fakeServiceEndpointQuery{
+		statefulResults: map[string]*domain.ServiceQueryResult{
+			serviceQueryKey("prod.alpha", "gateway", "api"): {
+				Endpoints: []string{"10.0.0.1:8080"},
+				Ports: map[string]int32{
+					"http": 8080,
+				},
+				IsStateful: true,
+				StatefulInstances: []*domain.StatefulInstance{{
+					Index:     0,
+					Endpoints: []string{"10.0.0.1:8080"},
+				}},
+			},
+		},
+	}
+	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+
+	// when
+	got, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if !got.GetIsStateful() {
+		t.Fatal("GetServiceEndpoints() is_stateful = false, want true")
+	}
+	if len(got.GetStatefulInstances()) != 1 {
+		t.Fatalf("GetServiceEndpoints() stateful_instances len = %d, want 1", len(got.GetStatefulInstances()))
+	}
+	if len(query.calls) != 0 {
+		t.Fatalf("QueryServiceEndpoints() call count = %d, want 0", len(query.calls))
+	}
+	if len(query.statefulCalls) != 1 {
+		t.Fatalf("QueryStatefulServiceEndpoints() call count = %d, want 1", len(query.statefulCalls))
+	}
+}
+
+func TestHandler_GetServiceEndpoints_ProdFallback(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -594,12 +647,63 @@ func TestGetServiceEndpoints_ProdFallback(t *testing.T) {
 	if len(query.calls) != 2 {
 		t.Fatalf("QueryServiceEndpoints() call count = %d, want 2", len(query.calls))
 	}
+	if len(query.statefulCalls) != 0 {
+		t.Fatalf("QueryStatefulServiceEndpoints() call count = %d, want 0", len(query.statefulCalls))
+	}
 	if query.calls[1].envLabel != "prod.aardvark" {
 		t.Fatalf("QueryServiceEndpoints() fallback first env = %q, want %q", query.calls[1].envLabel, "prod.aardvark")
 	}
 }
 
-func TestGetServiceEndpoints_NonProdNotFound(t *testing.T) {
+func TestHandler_GetServiceEndpoints_StatefulProdFallback(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	primary := mustReadyDomainEnvironment(t, "prod", "alpha")
+	fallback := mustReadyDomainEnvironmentWithDesiredState(t, "prod", "beta", domain.EnvironmentTypeProd, domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{
+			Name:         "api",
+			App:          "gateway",
+			Image:        "example.com/gateway:v1",
+			Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+			Replicas:     1,
+			WorkloadKind: domain.WorkloadKindStateful,
+		}},
+	})
+	query := &fakeServiceEndpointQuery{
+		errs: map[string]error{
+			serviceQueryKey("prod.alpha", "gateway", "api"): domain.ErrServiceNotFound,
+		},
+		statefulResults: map[string]*domain.ServiceQueryResult{
+			serviceQueryKey("prod.beta", "gateway", "api"): {
+				Ports:      map[string]int32{"http": 8080},
+				Endpoints:  []string{"10.0.0.2:8080"},
+				IsStateful: true,
+			},
+		},
+	}
+	handler := NewHandler(newFakeRepository(primary, fallback), newFakeQueue(), query)
+
+	// when
+	got, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{
+		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
+		View: ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION,
+	})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got.GetResolvedEnvironment() != "beta" {
+		t.Fatalf("GetServiceEndpoints() resolved_environment = %q, want %q", got.GetResolvedEnvironment(), "beta")
+	}
+	if len(query.calls) != 1 {
+		t.Fatalf("QueryServiceEndpoints() call count = %d, want 1", len(query.calls))
+	}
+	if len(query.statefulCalls) != 1 {
+		t.Fatalf("QueryStatefulServiceEndpoints() call count = %d, want 1", len(query.statefulCalls))
+	}
+}
+
+func TestHandler_GetServiceEndpoints_NonProdNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -620,9 +724,12 @@ func TestGetServiceEndpoints_NonProdNotFound(t *testing.T) {
 	if len(query.calls) != 1 {
 		t.Fatalf("QueryServiceEndpoints() call count = %d, want 1", len(query.calls))
 	}
+	if len(query.statefulCalls) != 0 {
+		t.Fatalf("QueryStatefulServiceEndpoints() call count = %d, want 0", len(query.statefulCalls))
+	}
 }
 
-func TestGetServiceEndpoints_ResolutionView(t *testing.T) {
+func TestHandler_GetServiceEndpoints_ResolutionView(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -659,7 +766,123 @@ func TestGetServiceEndpoints_ResolutionView(t *testing.T) {
 	}
 }
 
-func TestGetServiceEndpoints_InvalidName(t *testing.T) {
+func Test_newServiceEndpointsResponse_StatefulInstances(t *testing.T) {
+	name, err := domain.NewServiceEndpointsName("prod", "alpha", "gateway", "api")
+	if err != nil {
+		t.Fatalf("NewServiceEndpointsName() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		result         *domain.ServiceQueryResult
+		wantIsStateful bool
+		wantInstances  []*StatefulServiceInstance
+	}{
+		{
+			name: "stateful result",
+			result: &domain.ServiceQueryResult{
+				IsStateful: true,
+				StatefulInstances: []*domain.StatefulInstance{
+					{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
+					{Index: 1, Endpoints: nil},
+				},
+			},
+			wantIsStateful: true,
+			wantInstances: []*StatefulServiceInstance{
+				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
+				{Index: 1, Endpoints: nil},
+			},
+		},
+		{
+			name:           "non-stateful result",
+			result:         &domain.ServiceQueryResult{IsStateful: false},
+			wantIsStateful: false,
+			wantInstances:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := newServiceEndpointsResponse(name, tt.result, domain.EnvironmentName{}, ResolutionMode(0), ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_BASIC)
+
+			if got.IsStateful != tt.wantIsStateful {
+				t.Fatalf("newServiceEndpointsResponse() is_stateful = %v, want %v", got.IsStateful, tt.wantIsStateful)
+			}
+			if tt.wantInstances == nil {
+				if got.StatefulInstances != nil {
+					t.Fatalf("newServiceEndpointsResponse() stateful_instances = %v, want nil", got.StatefulInstances)
+				}
+				return
+			}
+			if len(got.StatefulInstances) != len(tt.wantInstances) {
+				t.Fatalf("newServiceEndpointsResponse() stateful_instances len = %d, want %d", len(got.StatefulInstances), len(tt.wantInstances))
+			}
+			for i := range tt.wantInstances {
+				if got.StatefulInstances[i].Index != tt.wantInstances[i].Index {
+					t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].index = %d, want %d", i, got.StatefulInstances[i].Index, tt.wantInstances[i].Index)
+				}
+				if len(got.StatefulInstances[i].Endpoints) != len(tt.wantInstances[i].Endpoints) {
+					t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].endpoints = %v, want %v", i, got.StatefulInstances[i].Endpoints, tt.wantInstances[i].Endpoints)
+				}
+				for j := range tt.wantInstances[i].Endpoints {
+					if got.StatefulInstances[i].Endpoints[j] != tt.wantInstances[i].Endpoints[j] {
+						t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].endpoints[%d] = %q, want %q", i, j, got.StatefulInstances[i].Endpoints[j], tt.wantInstances[i].Endpoints[j])
+					}
+				}
+			}
+		})
+	}
+}
+
+func Test_isStatefulService(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     *domain.Environment
+		app     string
+		service string
+		want    bool
+	}{
+		{
+			name: "matches stateful artifact",
+			env: mustReadyDomainEnvironmentWithDesiredState(t, "prod", "alpha", domain.EnvironmentTypeProd, domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "api",
+					App:          "gateway",
+					Image:        "example.com/gateway:v1",
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					WorkloadKind: domain.WorkloadKindStateful,
+				}},
+			}),
+			app:     "gateway",
+			service: "api",
+			want:    true,
+		},
+		{
+			name:    "stateless artifact",
+			env:     mustReadyDomainEnvironment(t, "prod", "alpha"),
+			app:     "gateway",
+			service: "api",
+			want:    false,
+		},
+		{
+			name:    "missing artifact",
+			env:     mustReadyDomainEnvironment(t, "prod", "alpha"),
+			app:     "gateway",
+			service: "worker",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStatefulService(tt.env, tt.app, tt.service); got != tt.want {
+				t.Fatalf("isStatefulService() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandler_GetServiceEndpoints_InvalidName(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -672,7 +895,7 @@ func TestGetServiceEndpoints_InvalidName(t *testing.T) {
 	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
-func TestGetServiceEndpoints_FallbackNoCandidates(t *testing.T) {
+func TestHandler_GetServiceEndpoints_FallbackNoCandidates(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -697,7 +920,7 @@ func TestGetServiceEndpoints_FallbackNoCandidates(t *testing.T) {
 	})
 }
 
-func TestGetServiceEndpoints_ServicePortMapUnavailable(t *testing.T) {
+func TestHandler_GetServiceEndpoints_ServicePortMapUnavailable(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -717,7 +940,7 @@ func TestGetServiceEndpoints_ServicePortMapUnavailable(t *testing.T) {
 	assertErrorInfo(t, err, "SERVICE_PORT_MAP_UNAVAILABLE", nil)
 }
 
-func TestCreateEnvironment_WithValidType(t *testing.T) {
+func TestHandler_CreateEnvironment_WithValidType(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
@@ -767,7 +990,7 @@ func TestCreateEnvironment_WithValidType(t *testing.T) {
 	}
 }
 
-func TestCreateEnvironment_RejectUnspecified(t *testing.T) {
+func TestHandler_CreateEnvironment_RejectUnspecified(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -786,7 +1009,7 @@ func TestCreateEnvironment_RejectUnspecified(t *testing.T) {
 	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
-func TestUpdateEnvironment_RejectTypeModification(t *testing.T) {
+func TestHandler_UpdateEnvironment_RejectTypeModification(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -818,7 +1041,7 @@ func TestUpdateEnvironment_RejectTypeModification(t *testing.T) {
 	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
-func TestUpdateEnvironment_AllowWithoutType(t *testing.T) {
+func TestHandler_UpdateEnvironment_AllowWithoutType(t *testing.T) {
 	ctx := context.Background()
 
 	// given
@@ -981,10 +1204,13 @@ type errorRepository struct {
 }
 
 type fakeServiceEndpointQuery struct {
-	results map[string]*domain.ServiceQueryResult
-	errs    map[string]error
-	err     error
-	calls   []serviceEndpointQueryCall
+	results         map[string]*domain.ServiceQueryResult
+	errs            map[string]error
+	statefulResults map[string]*domain.ServiceQueryResult
+	statefulErrs    map[string]error
+	err             error
+	calls           []serviceEndpointQueryCall
+	statefulCalls   []serviceEndpointQueryCall
 }
 
 type serviceEndpointQueryCall struct {
@@ -1012,6 +1238,31 @@ func (q *fakeServiceEndpointQuery) QueryServiceEndpoints(_ context.Context, envL
 	}
 
 	if result, ok := q.results[key]; ok {
+		return result, nil
+	}
+
+	return nil, domain.ErrServiceNotFound
+}
+
+func (q *fakeServiceEndpointQuery) QueryStatefulServiceEndpoints(_ context.Context, envLabel string, app string, service string) (*domain.ServiceQueryResult, error) {
+	q.statefulCalls = append(q.statefulCalls, serviceEndpointQueryCall{
+		envLabel: envLabel,
+		app:      app,
+		service:  service,
+	})
+
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	key := serviceQueryKey(envLabel, app, service)
+	if err, ok := q.statefulErrs[key]; ok {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if result, ok := q.statefulResults[key]; ok {
 		return result, nil
 	}
 
@@ -1097,6 +1348,16 @@ func mustReadyDomainEnvironment(t *testing.T, scope, envName string) *domain.Env
 
 func mustReadyDomainEnvironmentWithType(t *testing.T, scope, envName string, envType domain.EnvironmentType) *domain.Environment {
 	t.Helper()
+	desiredState := newDesiredState()
+
+	return mustReadyDomainEnvironmentWithDesiredState(t, scope, envName, envType, domain.DesiredState{
+		Artifacts: desiredState.Artifacts,
+		Infras:    desiredState.Infras,
+	})
+}
+
+func mustReadyDomainEnvironmentWithDesiredState(t *testing.T, scope, envName string, envType domain.EnvironmentType, desiredState domain.DesiredState) *domain.Environment {
+	t.Helper()
 
 	name, err := domain.NewEnvironmentName(scope, envName)
 	if err != nil {
@@ -1104,8 +1365,8 @@ func mustReadyDomainEnvironmentWithType(t *testing.T, scope, envName string, env
 	}
 
 	env, err := domain.NewEnvironment(name, envType, envName, &domain.DesiredState{
-		Artifacts: newDesiredState().Artifacts,
-		Infras:    newDesiredState().Infras,
+		Artifacts: desiredState.Artifacts,
+		Infras:    desiredState.Infras,
 	})
 	if err != nil {
 		t.Fatalf("NewEnvironment() error = %v", err)

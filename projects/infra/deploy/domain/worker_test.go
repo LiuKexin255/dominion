@@ -420,6 +420,10 @@ func (r *fakeEnvironmentRuntime) QueryServiceEndpoints(_ context.Context, _, _, 
 	return nil, nil
 }
 
+func (r *fakeEnvironmentRuntime) QueryStatefulServiceEndpoints(_ context.Context, _, _, _ string) (*ServiceQueryResult, error) {
+	return nil, nil
+}
+
 func mustWorkerEnvName(t *testing.T, scope, env string) EnvironmentName {
 	t.Helper()
 	name, err := NewEnvironmentName(scope, env)

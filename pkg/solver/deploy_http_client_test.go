@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"dominion/projects/infra/deploy"
 )
 
 func TestNewDeployHTTPClient(t *testing.T) {
@@ -39,8 +41,38 @@ func TestDeployHTTPClient_GetServiceEndpoints(t *testing.T) {
 			responseBody:   `{"name":"deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints","endpoints":["10.0.0.1:8080"],"ports":{"http":8080}}`,
 			wantPath:       "/v1/deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints",
 			want: &ServiceEndpointsInfo{
-				Endpoints: []string{"10.0.0.1:8080"},
+				Endpoints:         []string{"10.0.0.1:8080"},
+				Ports:             map[string]int32{"http": 8080},
+				StatefulInstances: nil,
+				IsStateful:        false,
+			},
+		},
+		{
+			name:           "success with stateful instances parses and sorts by index",
+			responseStatus: http.StatusOK,
+			responseBody:   `{"endpoints":["10.0.0.1:8080","10.0.0.2:8080","10.0.0.3:8080"],"ports":{"http":8080},"is_stateful":true,"stateful_instances":[{"index":2,"endpoints":["10.0.0.3:8080"]},{"index":0,"endpoints":["10.0.0.1:8080"]},{"index":1,"endpoints":["10.0.0.2:8080"]}]}`,
+			wantPath:       "/v1/deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints",
+			want: &ServiceEndpointsInfo{
+				Endpoints: []string{"10.0.0.1:8080", "10.0.0.2:8080", "10.0.0.3:8080"},
 				Ports:     map[string]int32{"http": 8080},
+				StatefulInstances: []*StatefulInstance{
+					{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+					{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
+					{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
+				},
+				IsStateful: true,
+			},
+		},
+		{
+			name:           "success with empty stateful instances returns nil",
+			responseStatus: http.StatusOK,
+			responseBody:   `{"endpoints":["10.0.0.1:8080"],"ports":{"http":8080},"is_stateful":true,"stateful_instances":[]}`,
+			wantPath:       "/v1/deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints",
+			want: &ServiceEndpointsInfo{
+				Endpoints:         []string{"10.0.0.1:8080"},
+				Ports:             map[string]int32{"http": 8080},
+				StatefulInstances: nil,
+				IsStateful:        true,
 			},
 		},
 		{
@@ -105,6 +137,56 @@ func TestDeployHTTPClient_GetServiceEndpoints(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("GetServiceEndpoints() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_convertStatefulInstances(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []*deploy.StatefulServiceInstance
+		want []*StatefulInstance
+	}{
+		{
+			name: "nil input returns nil",
+			in:   nil,
+			want: nil,
+		},
+		{
+			name: "empty slice returns nil",
+			in:   []*deploy.StatefulServiceInstance{},
+			want: nil,
+		},
+		{
+			name: "single instance",
+			in: []*deploy.StatefulServiceInstance{
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+			},
+			want: []*StatefulInstance{
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+			},
+		},
+		{
+			name: "multiple instances sorted by index",
+			in: []*deploy.StatefulServiceInstance{
+				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
+			},
+			want: []*StatefulInstance{
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
+				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertStatefulInstances(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("convertStatefulInstances() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

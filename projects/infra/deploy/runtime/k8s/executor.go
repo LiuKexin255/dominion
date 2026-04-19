@@ -6,6 +6,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 
 	"dominion/projects/infra/deploy/domain"
 
@@ -292,12 +293,12 @@ func (r *K8sRuntime) QueryServiceEndpoints(ctx context.Context, envLabel string,
 	if len(services.Items) == 0 {
 		return nil, domain.ErrServiceNotFound
 	}
-
-	if len(services.Items) > 1 {
+	if len(services.Items) != 1 {
 		return nil, fmt.Errorf("expected exactly one Service, found %d matching labels %s", len(services.Items), selector)
 	}
 
-	svc := services.Items[0]
+	svc := &services.Items[0]
+
 	ports := make(map[string]int32)
 	for _, port := range svc.Spec.Ports {
 		if port.Name == "" {
@@ -310,7 +311,106 @@ func (r *K8sRuntime) QueryServiceEndpoints(ctx context.Context, envLabel string,
 		return nil, domain.ErrServicePortMapUnavailable
 	}
 
-	serviceSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: svc.Name}).String()
+	endpointSlices, err := r.listServiceEndpointSlices(ctx, namespace, svc.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &domain.ServiceQueryResult{
+		Ports:     ports,
+		Endpoints: expandServiceEndpoints(endpointSlices.Items, ports),
+	}, nil
+}
+
+// QueryStatefulServiceEndpoints queries governing and per-instance Services plus EndpointSlices
+// to resolve stateful service ports and endpoint addresses.
+func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel string, app string, service string) (*domain.ServiceQueryResult, error) {
+	matchLabels := buildLabels(withApp(app), withService(service), withDominionEnvironment(envLabel))
+	selector := buildLabelSelector(matchLabels)
+	namespace := r.client.K8sConfig.Namespace
+
+	services, err := r.client.TypedClient.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list services: %w", err)
+	}
+
+	if len(services.Items) == 0 {
+		return nil, domain.ErrServiceNotFound
+	}
+
+	var governingSvc *corev1.Service
+	var perInstanceSvcs []*corev1.Service
+	for i := range services.Items {
+		svc := &services.Items[i]
+		if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.ClusterIP == "" {
+			if governingSvc != nil {
+				return nil, fmt.Errorf("expected exactly one governing Service, found multiple matching labels %s", selector)
+			}
+			governingSvc = svc
+			continue
+		}
+		perInstanceSvcs = append(perInstanceSvcs, svc)
+	}
+	if governingSvc == nil {
+		return nil, fmt.Errorf("expected exactly one governing Service, found none matching labels %s", selector)
+	}
+
+	ports := make(map[string]int32)
+	for _, port := range governingSvc.Spec.Ports {
+		if port.Name == "" {
+			continue
+		}
+		ports[port.Name] = port.Port
+	}
+
+	if len(ports) == 0 {
+		return nil, domain.ErrServicePortMapUnavailable
+	}
+
+	endpointSlices, err := r.listServiceEndpointSlices(ctx, namespace, governingSvc.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &domain.ServiceQueryResult{
+		Ports:      ports,
+		Endpoints:  expandServiceEndpoints(endpointSlices.Items, ports),
+		IsStateful: true,
+	}
+	for _, svc := range perInstanceSvcs {
+		podName, ok := svc.Spec.Selector[statefulSetPodNameLabelKey]
+		if !ok {
+			continue
+		}
+		instanceIndex, err := parseStatefulInstanceIndex(podName)
+		if err != nil {
+			return nil, fmt.Errorf("parse stateful instance index from service %s selector %q: %w", svc.Name, podName, err)
+		}
+
+		// TODO: batch EndpointSlice reads if stateful service queries become latency-sensitive.
+		instanceSlices, err := r.listServiceEndpointSlices(ctx, namespace, svc.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		instanceEndpoints := expandServiceEndpoints(instanceSlices.Items, ports)
+
+		result.StatefulInstances = append(result.StatefulInstances, &domain.StatefulInstance{
+			Index:     instanceIndex,
+			Endpoints: instanceEndpoints,
+		})
+	}
+
+	sort.Slice(result.StatefulInstances, func(i int, j int) bool {
+		return result.StatefulInstances[i].Index < result.StatefulInstances[j].Index
+	})
+
+	return result, nil
+}
+
+func (r *K8sRuntime) listServiceEndpointSlices(ctx context.Context, namespace string, serviceName string) (*discoveryv1.EndpointSliceList, error) {
+	serviceSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: serviceName}).String()
+
 	endpointSlices, err := r.client.TypedClient.DiscoveryV1().EndpointSlices(namespace).List(
 		ctx,
 		metav1.ListOptions{LabelSelector: serviceSelector},
@@ -319,10 +419,21 @@ func (r *K8sRuntime) QueryServiceEndpoints(ctx context.Context, envLabel string,
 		return nil, fmt.Errorf("list endpoint slices: %w", err)
 	}
 
-	return &domain.ServiceQueryResult{
-		Ports:     ports,
-		Endpoints: expandServiceEndpoints(endpointSlices.Items, ports),
-	}, nil
+	return endpointSlices, nil
+}
+
+func parseStatefulInstanceIndex(podName string) (int, error) {
+	lastHyphen := strings.LastIndex(podName, "-")
+	if lastHyphen < 0 || lastHyphen == len(podName)-1 {
+		return 0, fmt.Errorf("missing ordinal suffix")
+	}
+
+	index, err := strconv.Atoi(podName[lastHyphen+1:])
+	if err != nil {
+		return 0, fmt.Errorf("invalid ordinal suffix: %w", err)
+	}
+
+	return index, nil
 }
 
 func expandServiceEndpoints(endpointSlices []discoveryv1.EndpointSlice, ports map[string]int32) []string {

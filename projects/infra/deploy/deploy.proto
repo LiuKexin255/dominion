@@ -133,6 +133,18 @@ message ServiceEndpoints {
   string resolved_environment = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   ResolutionMode resolution_mode = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  repeated StatefulServiceInstance stateful_instances = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bool is_stateful = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// StatefulServiceInstance describes a single instance of a stateful service,
+// identified by its ordinal index within the StatefulSet.
+message StatefulServiceInstance {
+  int32 index = 1;
+
+  repeated string endpoints = 2;
 }
 
 message EnvironmentDesiredState {

@@ -77,4 +77,4 @@ Golang 代码格式化与依赖更新步骤如下：
 * 服务代码需要进行大型测试。先编写测试计划并放到 `testplan` 目录，然后按计划部署服务、执行测试用例。
 * 更多大型测试信息参阅 `style` 目录。
 
-> FOR `Prometheus`: 使用 `test-plan` SKILL 执行测试计划。
+> FOR `Prometheus`: 使用 `testplan` SKILL 执行测试计划。

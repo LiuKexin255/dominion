@@ -1,5 +1,5 @@
 ---
-name: test-plan
+name: testplan
 description: Execute large test plans in this repository by parsing a testplan markdown file, deploying the SUT, running Bazel cases, and cleaning up the environment.
 compatibility: opencode
 metadata:
@@ -7,7 +7,7 @@ metadata:
   scope: large-test
 ---
 
-# test-plan
+# testplan
 
 使用这个 skill 执行仓库里的大型测试计划。
 
@@ -36,6 +36,7 @@ metadata:
 - 计划至少包含：`name`、`deploy`、`cases`。
 - `deploy` 指向部署配置，使用 `deploy(//tools/deploy)` 工具链执行部署。
 - `cases` 中的每个条目通常都是一个 `bazel test` 目标。
+- 执行大型测试时，统一使用 `bazel test --config=largetest <target>`。
 - 常用环境变量：`SUT_HOST_URL`。
 
 ## 测试计划格式
@@ -92,6 +93,7 @@ deploy apply <deploy-path>
 ### 4. 执行测试用例
 
 - 对 `cases` 中每个 Bazel target 逐个执行。
+- 执行命令使用 `bazel test --config=largetest <target>`，不要直接省略 `--config=largetest`。
 - 如果同一计划包含多个 case，除非计划明确要求并行，否则按顺序执行，便于定位失败点。
 - 如果遇到 `503`、`no available server`、`connection refused` 等未就绪信号，允许在**有限等待**后重跑一次对应 case；若仍失败，再按真实失败上报，最多 3 次，不要无限重试。
 - 某个 case 失败时，记录失败目标与关键信息。如果是被测系统有问题，清理 SUT，尝试 fix 后再次进行测试；如果是测试代码，可以直接 fix 后再次运行（无需重新部署）。如果尝试 fix **3** 次仍无法修复，中止测试，整理失败信息返回。
@@ -132,4 +134,4 @@ deploy del <env-name>
 
 - `styles/large_test.md`
 - `tools/deploy/README.md`
-- `projects/infra/deploy/testplan/interface_test.md`
+- `projects/game/testplan/interface_test.md`
