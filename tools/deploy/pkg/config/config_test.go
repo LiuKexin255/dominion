@@ -167,7 +167,6 @@ func TestParseServiceConfig(t *testing.T) {
 				Artifacts: []*ServiceArtifact{
 					{
 						Name:   "service",
-						Type:   ServiceArtifactTypeDeployment,
 						Target: "//testdata:service_image",
 						TLS:    false,
 						Ports: []*ServiceArtifactPort{
@@ -178,6 +177,7 @@ func TestParseServiceConfig(t *testing.T) {
 						},
 					},
 				},
+				Kind: WorkloadKindStateless,
 			},
 		},
 		{
@@ -190,7 +190,6 @@ func TestParseServiceConfig(t *testing.T) {
 				URI:  "//testdata/service.tls.true.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
-					Type:   ServiceArtifactTypeDeployment,
 					Target: "//testdata:service_image",
 					TLS:    true,
 					Ports: []*ServiceArtifactPort{{
@@ -198,6 +197,7 @@ func TestParseServiceConfig(t *testing.T) {
 						Port: 50051,
 					}},
 				}},
+				Kind: WorkloadKindStateless,
 			},
 		},
 		{
@@ -210,7 +210,6 @@ func TestParseServiceConfig(t *testing.T) {
 				URI:  "//testdata/service.tls.false.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
-					Type:   ServiceArtifactTypeDeployment,
 					Target: "//testdata:service_image",
 					TLS:    false,
 					Ports: []*ServiceArtifactPort{{
@@ -218,6 +217,7 @@ func TestParseServiceConfig(t *testing.T) {
 						Port: 50051,
 					}},
 				}},
+				Kind: WorkloadKindStateless,
 			},
 		},
 		{
@@ -254,7 +254,6 @@ func TestParseServiceConfig(t *testing.T) {
 				}},
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
-					Type:   ServiceArtifactTypeDeployment,
 					Target: "//testdata:service_image",
 					TLS:    false,
 					Ports: []*ServiceArtifactPort{{
@@ -262,6 +261,45 @@ func TestParseServiceConfig(t *testing.T) {
 						Port: 50051,
 					}},
 				}},
+				Kind: WorkloadKindStateless,
+			},
+		},
+		{
+			name: "读取 stateful 工作负载配置成功",
+			path: filepath.Join(root, "testdata", "service.workload-stateful.yaml"),
+			want: &ServiceConfig{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc hello world stateful service",
+				URI:  "//testdata/service.workload-stateful.yaml",
+				Artifacts: []*ServiceArtifact{{
+					Name:   "service",
+					Target: "//testdata:service_image",
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+				Kind: WorkloadKindStateful,
+			},
+		},
+		{
+			name: "读取显式 stateless 工作负载配置成功",
+			path: filepath.Join(root, "testdata", "service.workload-stateless.yaml"),
+			want: &ServiceConfig{
+				Name: "service",
+				App:  "grpc-hello-world",
+				Desc: "grpc hello world service",
+				URI:  "//testdata/service.workload-stateless.yaml",
+				Artifacts: []*ServiceArtifact{{
+					Name:   "service",
+					Target: "//testdata:service_image",
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+				Kind: WorkloadKindStateless,
 			},
 		},
 	}
@@ -297,7 +335,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: app/cmd:deploy_image
     ports:
       - name: grpc
@@ -329,7 +366,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: app/cmd:
     ports:
       - name: grpc
@@ -361,7 +397,6 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 			artifactName: "service",
 			want: &ServiceArtifact{
 				Name:   "service",
-				Type:   "deployment",
 				Target: "//testdata:service_image",
 				TLS:    false,
 				Ports: []*ServiceArtifactPort{
@@ -395,33 +430,6 @@ func TestServiceConfig_GetArtifact(t *testing.T) {
 		})
 	}
 }
-
-func TestServiceArtifactType_Validate(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   ServiceArtifactType
-		wantErr bool
-	}{
-		{name: "deployment", value: ServiceArtifactTypeDeployment},
-		{name: "unsupported", value: ServiceArtifactType("job"), wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.value.Validate()
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("Validate() succeeded unexpectedly")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Validate() failed: %v", err)
-			}
-		})
-	}
-}
-
 func TestParseServiceConfig_RejectsUnsupportedArtifactType(t *testing.T) {
 	root := newBazelWorkspace(t)
 

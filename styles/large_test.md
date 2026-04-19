@@ -29,6 +29,7 @@
 
 * 大型测试的 `target` 使用专用的 `bazel rule`，例如 `golang` 使用 `go_largetest(//tools/go:defs.bzl)`。
 * 大型测试的 `target` 名最好使用 `gazelle` 生成的默认名称（`{package_name}_test`），以防止重复生成 `go_unittest`。
+* 测试用例需要根据实际情况设置 `size`。
 
 ## SUT
 

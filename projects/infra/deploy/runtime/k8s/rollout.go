@@ -21,9 +21,10 @@ func waitForRollout(
 	client kubernetes.Interface,
 	namespace string,
 	deploymentNames []string,
+	statefulSetNames []string,
 	progress func(string),
 ) error {
-	if len(deploymentNames) == 0 {
+	if len(deploymentNames) == 0 && len(statefulSetNames) == 0 {
 		return nil
 	}
 	if client == nil {
@@ -55,6 +56,21 @@ func waitForRollout(
 			allReady = false
 			if progress != nil {
 				progress(deploymentNotReadyMessage(dep))
+			}
+		}
+		for _, statefulSetName := range statefulSetNames {
+			sts, err := client.AppsV1().StatefulSets(namespace).Get(rolloutCtx, statefulSetName, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("获取 StatefulSet %s/%s 失败: %w", namespace, statefulSetName, err)
+			}
+
+			if isStatefulSetReady(sts) {
+				continue
+			}
+
+			allReady = false
+			if progress != nil {
+				progress(statefulSetNotReadyMessage(sts))
 			}
 		}
 		if allReady {
@@ -165,6 +181,64 @@ func deploymentSpecReplicas(dep *appsv1.Deployment) int32 {
 	}
 
 	return *dep.Spec.Replicas
+}
+
+func isStatefulSetReady(sts *appsv1.StatefulSet) bool {
+	if sts == nil {
+		return false
+	}
+	if sts.Status.ObservedGeneration < sts.Generation {
+		return false
+	}
+
+	replicas := statefulSetSpecReplicas(sts)
+	if replicas == 0 {
+		return true
+	}
+	if sts.Status.ReadyReplicas != replicas {
+		return false
+	}
+
+	return true
+}
+
+func statefulSetSpecReplicas(sts *appsv1.StatefulSet) int32 {
+	if sts == nil || sts.Spec.Replicas == nil {
+		return 1
+	}
+
+	return *sts.Spec.Replicas
+}
+
+func statefulSetNotReadyMessage(sts *appsv1.StatefulSet) string {
+	if sts == nil {
+		return "StatefulSet 为空"
+	}
+	if sts.Status.ObservedGeneration < sts.Generation {
+		return fmt.Sprintf(
+			"StatefulSet %s/%s 尚未观察到最新 generation（当前: %d，期望: %d）",
+			sts.Namespace,
+			sts.Name,
+			sts.Status.ObservedGeneration,
+			sts.Generation,
+		)
+	}
+
+	replicas := statefulSetSpecReplicas(sts)
+	if replicas == 0 {
+		return fmt.Sprintf("StatefulSet %s/%s 等待控制器观察到最新 generation", sts.Namespace, sts.Name)
+	}
+	if sts.Status.ReadyReplicas != replicas {
+		return fmt.Sprintf(
+			"StatefulSet %s/%s 就绪副本不足（ready: %d/%d）",
+			sts.Namespace,
+			sts.Name,
+			sts.Status.ReadyReplicas,
+			replicas,
+		)
+	}
+
+	return fmt.Sprintf("StatefulSet %s/%s 尚未就绪", sts.Namespace, sts.Name)
 }
 
 func deploymentFailureMessage(condition appsv1.DeploymentCondition, fallback string) string {

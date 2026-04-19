@@ -50,6 +50,58 @@ func TestArtifactSpec_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "stateful valid with full matches",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+					Matches: []HTTPRouteRule{{
+						Backend: "http",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				},
+			},
+		},
+		{
+			name: "stateful valid without http",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+			},
+		},
+		{
+			name: "stateful with hostnames but no matches rejected",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "stateful with empty backend rejected",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+					Matches:   []HTTPRouteRule{{}},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -147,13 +199,17 @@ func TestHTTPRouteRule_Validate(t *testing.T) {
 }
 
 func TestArtifactHTTPSpec_Validate(t *testing.T) {
+	// given
 	tests := []struct {
 		name    string
+		kind    WorkloadKind
 		spec    ArtifactHTTPSpec
 		wantErr bool
 	}{
+		// stateless: hostnames AND matches must be non-empty
 		{
-			name: "valid artifact http spec",
+			name: "stateless valid with hostnames and matches",
+			kind: WorkloadKindStateless,
 			spec: ArtifactHTTPSpec{
 				Hostnames: []string{"example.com"},
 				Matches: []HTTPRouteRule{{
@@ -162,18 +218,84 @@ func TestArtifactHTTPSpec_Validate(t *testing.T) {
 				}},
 			},
 		},
-		{name: "missing hostnames", spec: ArtifactHTTPSpec{Matches: []HTTPRouteRule{{Backend: "http"}}}, wantErr: true},
-		{name: "missing matches", spec: ArtifactHTTPSpec{Hostnames: []string{"example.com"}}, wantErr: true},
-		{name: "invalid nested rule", spec: ArtifactHTTPSpec{Hostnames: []string{"example.com"}, Matches: []HTTPRouteRule{{}}}, wantErr: true},
+		{
+			name:    "stateless missing hostnames",
+			kind:    WorkloadKindStateless,
+			spec:    ArtifactHTTPSpec{Matches: []HTTPRouteRule{{Backend: "http"}}},
+			wantErr: true,
+		},
+		{
+			name:    "stateless missing matches",
+			kind:    WorkloadKindStateless,
+			spec:    ArtifactHTTPSpec{Hostnames: []string{"example.com"}},
+			wantErr: true,
+		},
+		{
+			name:    "stateless invalid nested rule",
+			kind:    WorkloadKindStateless,
+			spec:    ArtifactHTTPSpec{Hostnames: []string{"example.com"}, Matches: []HTTPRouteRule{{}}},
+			wantErr: true,
+		},
+		// stateful: validation path matches stateless
+		{
+			name: "stateful valid with full matches",
+			kind: WorkloadKindStateful,
+			spec: ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
+		},
+		{
+			name:    "stateful missing matches",
+			kind:    WorkloadKindStateful,
+			spec:    ArtifactHTTPSpec{Hostnames: []string{"example.com"}},
+			wantErr: true,
+		},
+		{
+			name: "stateful multiple matches",
+			kind: WorkloadKindStateful,
+			spec: ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/api"},
+				}, {
+					Backend: "grpc",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/grpc"},
+				}},
+			},
+		},
+		{
+			name:    "stateful missing hostnames",
+			kind:    WorkloadKindStateful,
+			spec:    ArtifactHTTPSpec{Matches: []HTTPRouteRule{{Backend: "http"}}},
+			wantErr: true,
+		},
+		// default (zero value = WorkloadKindStateless)
+		{
+			name: "default kind treated as stateless valid",
+			spec: ArtifactHTTPSpec{
+				Hostnames: []string{"example.com"},
+				Matches: []HTTPRouteRule{{
+					Backend: "http",
+					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
+		},
+		{
+			name:    "default kind treated as stateless missing matches",
+			spec:    ArtifactHTTPSpec{Hostnames: []string{"example.com"}},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
-			spec := tt.spec
-
 			// when
-			err := spec.Validate()
+			err := tt.spec.Validate()
 
 			// then
 			if tt.wantErr {

@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	testServiceAPath = "//tools/deploy/v2/compiler/testdata/service-a.yaml"
-	testServiceBPath = "//tools/deploy/v2/compiler/testdata/service-b.yaml"
-	testServiceCPath = "//tools/deploy/v2/compiler/testdata/service-c.yaml"
+	testServiceAPath        = "//tools/deploy/v2/compiler/testdata/service-a.yaml"
+	testServiceBPath        = "//tools/deploy/v2/compiler/testdata/service-b.yaml"
+	testServiceCPath        = "//tools/deploy/v2/compiler/testdata/service-c.yaml"
+	testServiceStatefulPath = "//tools/deploy/v2/compiler/testdata/service-stateful.yaml"
 )
 
 func TestCompile(t *testing.T) {
@@ -43,7 +44,6 @@ func TestCompile(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						TLS:    true,
 						Ports: []*config.ServiceArtifactPort{{
@@ -58,11 +58,12 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:       "service-a",
-					App:        "alpha",
-					Image:      "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					Replicas:   1,
-					TlsEnabled: true,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					TlsEnabled:   true,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "grpc",
 						Port: 50051,
@@ -120,7 +121,6 @@ func TestCompile(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -134,10 +134,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-a",
-					App:      "alpha",
-					Image:    "registry.example.com/service-a@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-					Replicas: 1,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "grpc",
 						Port: 50051,
@@ -178,7 +179,6 @@ func TestCompile(t *testing.T) {
 					App:  "beta",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-b",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-b:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "http",
@@ -192,10 +192,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-b",
-					App:      "beta",
-					Image:    "registry.example.com/service-b@sha256:cccccccccccccccccccccccccccccccc",
-					Replicas: 1,
+					Name:         "service-b",
+					App:          "beta",
+					Image:        "registry.example.com/service-b@sha256:cccccccccccccccccccccccccccccccc",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "http",
 						Port: 8080,
@@ -232,7 +233,6 @@ func TestCompile(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -267,7 +267,6 @@ func TestCompile(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -280,7 +279,6 @@ func TestCompile(t *testing.T) {
 					App:  "gamma",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-c",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-c:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "http",
@@ -296,20 +294,22 @@ func TestCompile(t *testing.T) {
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{
 					{
-						Name:     "service-a",
-						App:      "alpha",
-						Image:    "registry.example.com/service-a@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-						Replicas: 1,
+						Name:         "service-a",
+						App:          "alpha",
+						Image:        "registry.example.com/service-a@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+						Replicas:     1,
+						WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 						Ports: []*deploy.ArtifactPortSpec{{
 							Name: "grpc",
 							Port: 50051,
 						}},
 					},
 					{
-						Name:     "service-c",
-						App:      "gamma",
-						Image:    "registry.example.com/service-c@sha256:ffffffffffffffffffffffffffffffff",
-						Replicas: 1,
+						Name:         "service-c",
+						App:          "gamma",
+						Image:        "registry.example.com/service-c@sha256:ffffffffffffffffffffffffffffffff",
+						Replicas:     1,
+						WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 						Ports: []*deploy.ArtifactPortSpec{{
 							Name: "http",
 							Port: 8081,
@@ -332,7 +332,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -346,10 +345,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-a",
-					App:      "alpha",
-					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					Replicas: 1,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{
 						{Name: "admin", Port: 9090},
 						{Name: "grpc", Port: 50051},
@@ -371,7 +371,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "grpc", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -399,7 +398,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports:  nil,
 					}},
@@ -410,10 +408,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-a",
-					App:      "alpha",
-					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					Replicas: 1,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{
 						{Name: "admin", Port: 9090},
 					},
@@ -434,7 +433,6 @@ func TestCompile(t *testing.T) {
 					Ports: nil,
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -448,10 +446,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-a",
-					App:      "alpha",
-					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					Replicas: 1,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{{
 						Name: "grpc",
 						Port: 50051,
@@ -483,7 +482,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -497,10 +495,11 @@ func TestCompile(t *testing.T) {
 			},
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{{
-					Name:     "service-a",
-					App:      "alpha",
-					Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-					Replicas: 1,
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 					Ports: []*deploy.ArtifactPortSpec{
 						{Name: "admin", Port: 9090},
 						{Name: "grpc", Port: 50051},
@@ -533,7 +532,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -547,7 +545,6 @@ func TestCompile(t *testing.T) {
 					Ports: []*config.ServiceArtifactPort{{Name: "admin", Port: 9090}},
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-b",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-b:image",
 						Ports:  nil,
 					}},
@@ -560,25 +557,333 @@ func TestCompile(t *testing.T) {
 			want: &deploy.EnvironmentDesiredState{
 				Artifacts: []*deploy.ArtifactSpec{
 					{
-						Name:     "service-a",
-						App:      "alpha",
-						Image:    "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-						Replicas: 1,
+						Name:         "service-a",
+						App:          "alpha",
+						Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						Replicas:     1,
+						WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 						Ports: []*deploy.ArtifactPortSpec{
 							{Name: "admin", Port: 9090},
 							{Name: "grpc", Port: 50051},
 						},
 					},
 					{
-						Name:     "service-b",
-						App:      "beta",
-						Image:    "registry.example.com/service-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-						Replicas: 1,
+						Name:         "service-b",
+						App:          "beta",
+						Image:        "registry.example.com/service-b@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						Replicas:     1,
+						WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
 						Ports: []*deploy.ArtifactPortSpec{
 							{Name: "admin", Port: 9090},
 						},
 					},
 				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("Compile() expected error containing %q", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Compile() error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if !proto.Equal(tt.want, got) {
+				t.Fatalf("Compile() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompile_StatefulWorkload(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		want           *deploy.EnvironmentDesiredState
+		wantErr        string
+	}{
+		{
+			name: "stateful with full matches compiles correctly",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceStatefulPath, Name: "service-stateful"},
+					HTTP: config.DeployHTTP{
+						Hostnames: []string{"stateful.example.com", "stateful-alt.example.com"},
+						Matches: []*config.DeployHTTPMatch{{
+							Backend: "grpc",
+							Path: config.DeployHTTPPathMatch{
+								Type:  config.HTTPPathMatchTypePrefix,
+								Value: "/v1",
+							},
+						}},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name: "service-stateful",
+					App:  "stateful-app",
+					Kind: config.WorkloadKindStateful,
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-stateful:image": {URL: "registry.example.com/service-stateful", Dest: "sha256:11111111111111111111111111111111"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-stateful",
+					App:          "stateful-app",
+					Image:        "registry.example.com/service-stateful@sha256:11111111111111111111111111111111",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+					Http: &deploy.ArtifactHTTPSpec{
+						Hostnames: []string{"stateful.example.com", "stateful-alt.example.com"},
+						Matches: []*deploy.HTTPRouteRule{{
+							Backend: "grpc",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/v1",
+							},
+						}},
+					},
+				}},
+			},
+		},
+		{
+			name: "stateful without http is valid",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceStatefulPath, Name: "service-stateful"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name: "service-stateful",
+					App:  "stateful-app",
+					Kind: config.WorkloadKindStateful,
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-stateful:image": {URL: "registry.example.com/service-stateful", Dest: "sha256:22222222222222222222222222222222"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-stateful",
+					App:          "stateful-app",
+					Image:        "registry.example.com/service-stateful@sha256:22222222222222222222222222222222",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "stateful with multiple full matches compiles correctly",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceStatefulPath, Name: "service-stateful"},
+					HTTP: config.DeployHTTP{
+						Hostnames: []string{"stateful.example.com"},
+						Matches: []*config.DeployHTTPMatch{{
+							Backend: "grpc",
+							Path: config.DeployHTTPPathMatch{
+								Type:  config.HTTPPathMatchTypePrefix,
+								Value: "/grpc",
+							},
+						}, {
+							Backend: "admin",
+							Path: config.DeployHTTPPathMatch{
+								Type:  config.HTTPPathMatchTypePrefix,
+								Value: "/admin",
+							},
+						}},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name: "service-stateful",
+					App:  "stateful-app",
+					Kind: config.WorkloadKindStateful,
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}, {
+							Name: "admin",
+							Port: 9090,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-stateful:image": {URL: "registry.example.com/service-stateful", Dest: "sha256:45454545454545454545454545454545"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-stateful",
+					App:          "stateful-app",
+					Image:        "registry.example.com/service-stateful@sha256:45454545454545454545454545454545",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}, {
+						Name: "admin",
+						Port: 9090,
+					}},
+					Http: &deploy.ArtifactHTTPSpec{
+						Hostnames: []string{"stateful.example.com"},
+						Matches: []*deploy.HTTPRouteRule{{
+							Backend: "grpc",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/grpc",
+							},
+						}, {
+							Backend: "admin",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/admin",
+							},
+						}},
+					},
+				}},
+			},
+		},
+		{
+			name: "default workload kind treated as stateless",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:55555555555555555555555555555555"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:55555555555555555555555555555555",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "stateless with hostnames and matches compiles both",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+					HTTP: config.DeployHTTP{
+						Hostnames: []string{"service-a.example.com"},
+						Matches: []*config.DeployHTTPMatch{{
+							Backend: "grpc",
+							Path: config.DeployHTTPPathMatch{
+								Type:  config.HTTPPathMatchTypePrefix,
+								Value: "/v1",
+							},
+						}},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Kind: config.WorkloadKindStateless,
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:66666666666666666666666666666666"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:66666666666666666666666666666666",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+					Http: &deploy.ArtifactHTTPSpec{
+						Hostnames: []string{"service-a.example.com"},
+						Matches: []*deploy.HTTPRouteRule{{
+							Backend: "grpc",
+							Path: &deploy.HTTPPathRule{
+								Type:  deploy.HTTPPathRuleType_HTTP_PATH_RULE_TYPE_PATH_PREFIX,
+								Value: "/v1",
+							},
+						}},
+					},
+				}},
 			},
 		},
 	}
@@ -621,7 +926,6 @@ func TestResolveArtifactTargets(t *testing.T) {
 			Name: "service-a",
 			Artifacts: []*config.ServiceArtifact{{
 				Name:   "service-a",
-				Type:   config.ServiceArtifactTypeDeployment,
 				Target: "//apps/service-a:image",
 			}},
 		},
@@ -629,7 +933,6 @@ func TestResolveArtifactTargets(t *testing.T) {
 			Name: "service-b",
 			Artifacts: []*config.ServiceArtifact{{
 				Name:   "service-b",
-				Type:   config.ServiceArtifactTypeDeployment,
 				Target: "//apps/service-b:image",
 			}},
 		},
@@ -776,7 +1079,6 @@ func TestCompile_ReplicasFromConfig(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",
@@ -832,7 +1134,6 @@ func TestCompile_DefaultReplicas(t *testing.T) {
 					App:  "alpha",
 					Artifacts: []*config.ServiceArtifact{{
 						Name:   "service-a",
-						Type:   config.ServiceArtifactTypeDeployment,
 						Target: "//apps/service-a:image",
 						Ports: []*config.ServiceArtifactPort{{
 							Name: "grpc",

@@ -1,0 +1,10 @@
+name: service-stateful
+app: stateful-app
+desc: stateful service
+kind: stateful
+artifacts:
+  - name: service-stateful
+    target: :service_stateful_image
+    ports:
+      - name: grpc
+        port: 50051

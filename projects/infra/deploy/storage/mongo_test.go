@@ -219,6 +219,86 @@ func TestRepositoryContract_MongoRepository_Ordering(t *testing.T) {
 	assertFindOptions(t, collection.lastFindOptions, 0, 10, bson.D{{Key: "name", Value: 1}})
 }
 
+func TestArtifactSpecs_WorkloadKindPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.ArtifactSpec
+		mongo      mongoArtifactSpec
+		wantKind   domain.WorkloadKind
+		checkRound bool
+	}{
+		{
+			name: "stateless round trip",
+			source: &domain.ArtifactSpec{
+				Name:         "svc",
+				App:          "app",
+				Image:        "image:v1",
+				Replicas:     1,
+				WorkloadKind: domain.WorkloadKindStateless,
+			},
+			wantKind:   domain.WorkloadKindStateless,
+			checkRound: true,
+		},
+		{
+			name: "stateful round trip",
+			source: &domain.ArtifactSpec{
+				Name:         "svc",
+				App:          "app",
+				Image:        "image:v1",
+				Replicas:     1,
+				WorkloadKind: domain.WorkloadKindStateful,
+			},
+			wantKind:   domain.WorkloadKindStateful,
+			checkRound: true,
+		},
+		{
+			name: "old mongo document defaults to stateless",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			wantKind: domain.WorkloadKindStateless,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoArtifactSpec
+			if tt.source != nil {
+				// when
+				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
+
+				// then
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+				if mongoSpecs[0].WorkloadKind != int(tt.wantKind) {
+					t.Fatalf("artifactSpecsToMongo() workload_kind = %d, want %d", mongoSpecs[0].WorkloadKind, tt.wantKind)
+				}
+			} else {
+				// when
+				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+			}
+
+			got := artifactSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if got[0].WorkloadKind != tt.wantKind {
+				t.Fatalf("artifactSpecsFromMongo() workload kind = %d, want %d", got[0].WorkloadKind, tt.wantKind)
+			}
+			if tt.checkRound && got[0].WorkloadKind != tt.source.WorkloadKind {
+				t.Fatalf("round trip workload kind = %d, want %d", got[0].WorkloadKind, tt.source.WorkloadKind)
+			}
+		})
+	}
+}
+
 func TestMongoRepository_Save(t *testing.T) {
 	ctx := context.Background()
 

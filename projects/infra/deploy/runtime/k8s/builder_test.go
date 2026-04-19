@@ -67,6 +67,20 @@ func testDeploymentWorkload() *DeploymentWorkload {
 	}
 }
 
+func testStatefulWorkload() *StatefulWorkload {
+	return &StatefulWorkload{
+		ServiceName:     "myservice",
+		EnvironmentName: "dev",
+		App:             "myapp",
+		Image:           "repo/myapp:v1",
+		Replicas:        3,
+		Ports: []*DeploymentPort{
+			{Name: "http", Port: 8080},
+			{Name: "grpc", Port: 9090},
+		},
+	}
+}
+
 func testHTTPRouteWorkload(envType domain.EnvironmentType, envLabel string) *HTTPRouteWorkload {
 	return &HTTPRouteWorkload{
 		ServiceName:      "myservice",
@@ -270,6 +284,347 @@ func TestBuildDeployment_NilPort(t *testing.T) {
 	_, err := BuildDeployment(w, cfg)
 	if err == nil {
 		t.Fatalf("BuildDeployment() expected error for nil port")
+	}
+}
+
+// --- BuildStatefulSet ---
+
+func TestBuildStatefulSet(t *testing.T) {
+	tests := []struct {
+		name  string
+		given func() (*StatefulWorkload, *K8sConfig)
+		then  func(*testing.T, *appsv1.StatefulSet, *StatefulWorkload, *K8sConfig)
+	}{
+		{
+			name: "builds statefulset with deployment-equivalent pod template",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				return testStatefulWorkload(), testK8sConfig()
+			},
+			then: func(t *testing.T, sts *appsv1.StatefulSet, workload *StatefulWorkload, cfg *K8sConfig) {
+				t.Helper()
+
+				if sts.Namespace != cfg.Namespace {
+					t.Fatalf("Namespace = %q, want %q", sts.Namespace, cfg.Namespace)
+				}
+				if sts.Name != workload.WorkloadName() {
+					t.Fatalf("Name = %q, want %q", sts.Name, workload.WorkloadName())
+				}
+				if sts.Spec.ServiceName != workload.ServiceResourceName() {
+					t.Fatalf("ServiceName = %q, want %q", sts.Spec.ServiceName, workload.ServiceResourceName())
+				}
+				if sts.Spec.Replicas == nil || *sts.Spec.Replicas != workload.Replicas {
+					t.Fatalf("Replicas = %v, want %d", sts.Spec.Replicas, workload.Replicas)
+				}
+				if len(sts.Spec.VolumeClaimTemplates) != 0 {
+					t.Fatalf("VolumeClaimTemplates count = %d, want 0", len(sts.Spec.VolumeClaimTemplates))
+				}
+
+				wantObjectLabels := buildLabels(
+					withApp(workload.App),
+					withService(workload.ServiceName),
+					withDominionEnvironment(workload.EnvironmentName),
+					withManagedBy(cfg.ManagedBy),
+				)
+				for key, want := range wantObjectLabels {
+					if got := sts.Labels[key]; got != want {
+						t.Fatalf("Label[%q] = %q, want %q", key, got, want)
+					}
+					if got := sts.Spec.Template.Labels[key]; got != want {
+						t.Fatalf("Template Label[%q] = %q, want %q", key, got, want)
+					}
+				}
+
+				wantSelectorLabels := buildLabels(
+					withApp(workload.App),
+					withService(workload.ServiceName),
+					withDominionEnvironment(workload.EnvironmentName),
+				)
+				for key, want := range wantSelectorLabels {
+					if got := sts.Spec.Selector.MatchLabels[key]; got != want {
+						t.Fatalf("Selector[%q] = %q, want %q", key, got, want)
+					}
+				}
+				if sts.Spec.Selector.MatchLabels[managedByLabelKey] != "" {
+					t.Fatalf("Selector should not contain managed-by")
+				}
+
+				if len(sts.Spec.Template.Spec.Containers) != 1 {
+					t.Fatalf("Containers count = %d, want 1", len(sts.Spec.Template.Spec.Containers))
+				}
+				container := sts.Spec.Template.Spec.Containers[0]
+				if container.Name != workload.WorkloadName() {
+					t.Fatalf("Container Name = %q, want %q", container.Name, workload.WorkloadName())
+				}
+				if container.Image != workload.Image {
+					t.Fatalf("Container Image = %q, want %q", container.Image, workload.Image)
+				}
+				if len(container.Ports) != 2 {
+					t.Fatalf("Ports count = %d, want 2", len(container.Ports))
+				}
+
+				envMap := envVarsToMap(container.Env)
+				if envMap[reservedEnvNameServiceApp] != workload.App {
+					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameServiceApp, envMap[reservedEnvNameServiceApp], workload.App)
+				}
+				if envMap[reservedEnvNameDominionEnvironment] != workload.EnvironmentName {
+					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNameDominionEnvironment, envMap[reservedEnvNameDominionEnvironment], workload.EnvironmentName)
+				}
+				if envMap[reservedEnvNamePodNamespace] != cfg.Namespace {
+					t.Fatalf("Env[%q] = %q, want %q", reservedEnvNamePodNamespace, envMap[reservedEnvNamePodNamespace], cfg.Namespace)
+				}
+				if len(sts.Spec.Template.Spec.Volumes) != 0 {
+					t.Fatalf("Volumes count = %d, want 0", len(sts.Spec.Template.Spec.Volumes))
+				}
+				if len(container.VolumeMounts) != 0 {
+					t.Fatalf("VolumeMounts count = %d, want 0", len(container.VolumeMounts))
+				}
+			},
+		},
+		{
+			name: "injects tls settings like deployment",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				workload := testStatefulWorkload()
+				workload.TLSEnabled = true
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, sts *appsv1.StatefulSet, workload *StatefulWorkload, cfg *K8sConfig) {
+				t.Helper()
+
+				if len(sts.Spec.Template.Spec.Volumes) != 1 {
+					t.Fatalf("Volumes count = %d, want 1", len(sts.Spec.Template.Spec.Volumes))
+				}
+				volume := sts.Spec.Template.Spec.Volumes[0]
+				if volume.Name != tlsVolumeName {
+					t.Fatalf("Volume Name = %q, want %q", volume.Name, tlsVolumeName)
+				}
+				if volume.Projected == nil || len(volume.Projected.Sources) != 2 {
+					t.Fatalf("Projected sources count = %d, want 2", len(volume.Projected.Sources))
+				}
+				if volume.Projected.Sources[0].Secret == nil || volume.Projected.Sources[0].Secret.Name != cfg.TLS.Secret {
+					t.Fatalf("Secret projection mismatch")
+				}
+				if volume.Projected.Sources[1].ConfigMap == nil || volume.Projected.Sources[1].ConfigMap.Name != cfg.TLS.CAConfigMap.Name {
+					t.Fatalf("ConfigMap projection mismatch")
+				}
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				if len(container.VolumeMounts) != 1 {
+					t.Fatalf("VolumeMounts count = %d, want 1", len(container.VolumeMounts))
+				}
+				mount := container.VolumeMounts[0]
+				if mount.Name != tlsVolumeName || mount.MountPath != tlsMountPath || !mount.ReadOnly {
+					t.Fatalf("VolumeMount = %#v, want TLS mount", mount)
+				}
+
+				envMap := envVarsToMap(container.Env)
+				if envMap[envTLSCertFile] != filepath.Join(tlsMountPath, tlsCertFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", envTLSCertFile, envMap[envTLSCertFile], filepath.Join(tlsMountPath, tlsCertFileName))
+				}
+				if envMap[envTLSKeyFile] != filepath.Join(tlsMountPath, tlsKeyFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", envTLSKeyFile, envMap[envTLSKeyFile], filepath.Join(tlsMountPath, tlsKeyFileName))
+				}
+				if envMap[envTLSCAFile] != filepath.Join(tlsMountPath, tlsCAFileName) {
+					t.Fatalf("Env[%q] = %q, want %q", envTLSCAFile, envMap[envTLSCAFile], filepath.Join(tlsMountPath, tlsCAFileName))
+				}
+				if envMap[envTLSDomain] != cfg.TLS.Domain {
+					t.Fatalf("Env[%q] = %q, want %q", envTLSDomain, envMap[envTLSDomain], cfg.TLS.Domain)
+				}
+				if workload == nil {
+					t.Fatalf("workload should not be nil")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			workload, cfg := tt.given()
+
+			// when
+			sts, err := BuildStatefulSet(workload, cfg)
+			if err != nil {
+				t.Fatalf("BuildStatefulSet() error: %v", err)
+			}
+
+			// then
+			tt.then(t, sts, workload, cfg)
+		})
+	}
+}
+
+// --- BuildGoverningService ---
+
+func TestBuildGoverningService(t *testing.T) {
+	tests := []struct {
+		name  string
+		given func() (*StatefulWorkload, *K8sConfig)
+	}{
+		{
+			name: "builds headless service for all statefulset pods",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				return testStatefulWorkload(), testK8sConfig()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			workload, cfg := tt.given()
+
+			// when
+			svc, err := BuildGoverningService(workload, cfg)
+			if err != nil {
+				t.Fatalf("BuildGoverningService() error: %v", err)
+			}
+
+			// then
+			if svc.Name != workload.ServiceResourceName() {
+				t.Fatalf("Name = %q, want %q", svc.Name, workload.ServiceResourceName())
+			}
+			if svc.Spec.ClusterIP != corev1.ClusterIPNone {
+				t.Fatalf("ClusterIP = %q, want %q", svc.Spec.ClusterIP, corev1.ClusterIPNone)
+			}
+			wantSelector := buildLabels(
+				withApp(workload.App),
+				withService(workload.ServiceName),
+				withDominionEnvironment(workload.EnvironmentName),
+			)
+			for key, want := range wantSelector {
+				if got := svc.Spec.Selector[key]; got != want {
+					t.Fatalf("Selector[%q] = %q, want %q", key, got, want)
+				}
+			}
+			if len(svc.Spec.Ports) != 2 {
+				t.Fatalf("Ports count = %d, want 2", len(svc.Spec.Ports))
+			}
+		})
+	}
+}
+
+// --- BuildPerInstanceService ---
+
+func TestBuildPerInstanceService(t *testing.T) {
+	tests := []struct {
+		name          string
+		instanceIndex int
+		given         func() (*StatefulWorkload, *K8sConfig)
+	}{
+		{
+			name:          "selects a single pod by pod-name label",
+			instanceIndex: 2,
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				return testStatefulWorkload(), testK8sConfig()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			workload, cfg := tt.given()
+
+			// when
+			svc, err := BuildPerInstanceService(workload, cfg, tt.instanceIndex)
+			if err != nil {
+				t.Fatalf("BuildPerInstanceService() error: %v", err)
+			}
+
+			// then
+			wantName := newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, tt.instanceIndex)
+			if svc.Name != wantName {
+				t.Fatalf("Name = %q, want %q", svc.Name, wantName)
+			}
+			wantPodName := workload.WorkloadName() + "-2"
+			if svc.Spec.Selector["statefulset.kubernetes.io/pod-name"] != wantPodName {
+				t.Fatalf("Selector[pod-name] = %q, want %q", svc.Spec.Selector["statefulset.kubernetes.io/pod-name"], wantPodName)
+			}
+			if len(svc.Spec.Ports) != 2 {
+				t.Fatalf("Ports count = %d, want 2", len(svc.Spec.Ports))
+			}
+		})
+	}
+}
+
+// --- BuildPerInstanceHTTPRoute ---
+
+func TestBuildPerInstanceHTTPRoute(t *testing.T) {
+	tests := []struct {
+		name          string
+		instanceIndex int
+		given         func() (*HTTPRouteWorkload, *K8sConfig)
+		then          func(*testing.T, *gatewayv1.HTTPRoute, *HTTPRouteWorkload)
+	}{
+		{
+			name:          "builds catch-all route for prod instance",
+			instanceIndex: 1,
+			given: func() (*HTTPRouteWorkload, *K8sConfig) {
+				workload := testHTTPRouteWorkload(domain.EnvironmentTypeProd, "tstscope.prod")
+				workload.BackendService = newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, 1)
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, route *gatewayv1.HTTPRoute, workload *HTTPRouteWorkload) {
+				t.Helper()
+
+				if route.Name != newInstanceObjectName(WorkloadKindInstanceRoute, workload.EnvironmentName, workload.ServiceName, 1) {
+					t.Fatalf("Name = %q, want %q", route.Name, newInstanceObjectName(WorkloadKindInstanceRoute, workload.EnvironmentName, workload.ServiceName, 1))
+				}
+				if len(route.Spec.Hostnames) != 1 || string(route.Spec.Hostnames[0]) != workload.Hostnames[0] {
+					t.Fatalf("Hostnames = %v, want %v", route.Spec.Hostnames, workload.Hostnames)
+				}
+				if len(route.Spec.Rules) != 1 || len(route.Spec.Rules[0].Matches) != 1 {
+					t.Fatalf("Rules or matches count mismatch")
+				}
+				match := route.Spec.Rules[0].Matches[0]
+				if match.Path == nil || match.Path.Type == nil || *match.Path.Type != gatewayv1.PathMatchPathPrefix || match.Path.Value == nil || *match.Path.Value != "/" {
+					t.Fatalf("Path match = %#v, want catch-all prefix '/'", match.Path)
+				}
+				if len(match.Headers) != 0 {
+					t.Fatalf("Headers count = %d, want 0", len(match.Headers))
+				}
+				backendRef := route.Spec.Rules[0].BackendRefs[0].BackendRef.BackendObjectReference
+				if string(backendRef.Name) != workload.BackendService {
+					t.Fatalf("Backend name = %q, want %q", backendRef.Name, workload.BackendService)
+				}
+				if backendRef.Port == nil || int(*backendRef.Port) != workload.Matches[0].BackendPort {
+					t.Fatalf("Backend port = %v, want %d", backendRef.Port, workload.Matches[0].BackendPort)
+				}
+			},
+		},
+		{
+			name:          "adds env header match outside prod",
+			instanceIndex: 0,
+			given: func() (*HTTPRouteWorkload, *K8sConfig) {
+				workload := testHTTPRouteWorkload(domain.EnvironmentTypeDev, "tstscope.dev")
+				workload.BackendService = newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, 0)
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, route *gatewayv1.HTTPRoute, workload *HTTPRouteWorkload) {
+				t.Helper()
+				assertHTTPRouteEnvHeader(t, route, workload.EnvironmentName)
+				match := route.Spec.Rules[0].Matches[0]
+				if match.Path == nil || match.Path.Value == nil || *match.Path.Value != "/" {
+					t.Fatalf("Path value = %v, want /", match.Path)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			workload, cfg := tt.given()
+
+			// when
+			route, err := BuildPerInstanceHTTPRoute(workload, cfg, tt.instanceIndex)
+			if err != nil {
+				t.Fatalf("BuildPerInstanceHTTPRoute() error: %v", err)
+			}
+
+			// then
+			tt.then(t, decodeHTTPRoute(t, route), workload)
+		})
 	}
 }
 

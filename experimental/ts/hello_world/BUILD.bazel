@@ -6,9 +6,9 @@ load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 ts_project(
     name = "lib",
     srcs = ["src/main.ts"],
+    declaration = True,
     transpiler = swc,
     tsconfig = ":tsconfig.json",
-    declaration = True,
 )
 
 # 运行入口

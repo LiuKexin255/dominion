@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -374,6 +375,291 @@ func TestConvertToWorkloads_EnvTypePassthrough(t *testing.T) {
 	}
 }
 
+func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *domain.Environment
+		want *DeployObjects
+	}{
+		{
+			name: "stateful artifact creates stateful workload and instance routes",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     3,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: wantDeployObjectsWithStatefulArtifact(
+				domain.EnvironmentTypeProd,
+				3,
+				[]string{"gateway.example.com"},
+				[]*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}},
+			),
+		},
+		{
+			name: "stateful artifact expands all hostnames per instance",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com", "gateway.internal.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: wantDeployObjectsWithStatefulArtifact(
+				domain.EnvironmentTypeProd,
+				2,
+				[]string{"gateway.example.com", "gateway.internal.example.com"},
+				[]*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}},
+			),
+		},
+		{
+			name: "stateful artifact without http only creates stateful workload",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "queue",
+					App:          "worker",
+					Image:        "worker:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "grpc", Port: 50051}},
+				}},
+			}),
+			want: &DeployObjects{
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "queue",
+					EnvironmentName: "tstscope.dev",
+					App:             "worker",
+					Image:           "worker:v1",
+					Replicas:        2,
+					Ports: []*DeploymentPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "stateful artifact scales down instance routes with replicas",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     1,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: wantDeployObjectsWithStatefulArtifact(
+				domain.EnvironmentTypeProd,
+				1,
+				[]string{"gateway.example.com"},
+				[]*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}},
+			),
+		},
+		{
+			name: "mixed stateless and stateful artifacts use separate paths",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "api",
+						App:      "platform",
+						Image:    "platform:v1",
+						Replicas: 2,
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 9090}},
+						HTTP: &domain.ArtifactHTTPSpec{
+							Hostnames: []string{"api.example.com"},
+							Matches: []domain.HTTPRouteRule{{
+								Backend: "http",
+								Path: domain.HTTPPathRule{
+									Type:  domain.HTTPPathRuleTypePathPrefix,
+									Value: "/",
+								},
+							}},
+						},
+					},
+					{
+						Name:         "game-gateway",
+						App:          "game",
+						Image:        "game:v1",
+						Replicas:     2,
+						WorkloadKind: domain.WorkloadKindStateful,
+						Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+						HTTP: &domain.ArtifactHTTPSpec{
+							Hostnames: []string{"gateway.example.com"},
+							Matches: []domain.HTTPRouteRule{{
+								Backend: "http",
+								Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+							}},
+						},
+					},
+				},
+			}),
+			want: &DeployObjects{
+				Deployments: []*DeploymentWorkload{{
+					ServiceName:     "api",
+					EnvironmentName: "tstscope.dev",
+					App:             "platform",
+					Image:           "platform:v1",
+					Replicas:        2,
+					Ports: []*DeploymentPort{{
+						Name: "http",
+						Port: 9090,
+					}},
+				}},
+				HTTPRoutes: []*HTTPRouteWorkload{{
+					ServiceName:      "api",
+					EnvironmentName:  "tstscope.dev",
+					App:              "platform",
+					EnvType:          domain.EnvironmentTypeProd,
+					Hostnames:        []string{"api.example.com"},
+					BackendService:   newObjectName(WorkloadKindService, "platform", "api"),
+					GatewayName:      "test-gateway",
+					GatewayNamespace: "test-gw-ns",
+					Matches: []*HTTPRoutePathMatch{{
+						Type:        HTTPPathMatchTypePathPrefix,
+						Value:       "/",
+						BackendName: "http",
+						BackendPort: 9090,
+					}},
+				}},
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "game-gateway",
+					EnvironmentName: "tstscope.dev",
+					App:             "game",
+					Image:           "game:v1",
+					Replicas:        2,
+					Ports: []*DeploymentPort{{
+						Name: "http",
+						Port: 8080,
+					}},
+					Hostnames: []string{"gateway.example.com"},
+				}},
+				InstanceRoutes: buildWantStatefulInstanceRoutes(domain.EnvironmentTypeProd, 2, []string{"gateway.example.com"}, []*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}}),
+			},
+		},
+		{
+			name: "non-prod stateful artifact keeps env type on instance routes",
+			env: newTestEnvWithType(t, domain.EnvironmentTypeTest, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: wantDeployObjectsWithStatefulArtifact(
+				domain.EnvironmentTypeTest,
+				2,
+				[]string{"gateway.example.com"},
+				[]*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			cfg := newTestConfig()
+
+			// when
+			got, err := ConvertToWorkloads(tt.env, cfg)
+
+			// then
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			assertDeployObjectsEqual(t, got, tt.want)
+		})
+	}
+}
+
+func TestConvertToWorkloads_StatefulArtifactUsesMatchedBackendPort(t *testing.T) {
+	// given
+	env := newTestEnv(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{
+			Name:         "game-gateway",
+			App:          "game",
+			Image:        "game:v1",
+			Replicas:     2,
+			WorkloadKind: domain.WorkloadKindStateful,
+			Ports:        []domain.ArtifactPortSpec{{Name: "metrics", Port: 9090}, {Name: "grpc", Port: 50051}},
+			HTTP: &domain.ArtifactHTTPSpec{
+				Hostnames: []string{"gateway.example.com"},
+				Matches: []domain.HTTPRouteRule{{
+					Backend: "grpc",
+					Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/rpc"},
+				}},
+			},
+		}},
+	})
+
+	// when
+	got, err := ConvertToWorkloads(env, newTestConfig())
+
+	// then
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+	}
+	if len(got.InstanceRoutes) != 2 {
+		t.Fatalf("InstanceRoutes count = %d, want 2", len(got.InstanceRoutes))
+	}
+	for i, route := range got.InstanceRoutes {
+		if len(route.Matches) != 1 {
+			t.Fatalf("InstanceRoutes[%d].Matches count = %d, want 1", i, len(route.Matches))
+		}
+		if route.Matches[0].BackendName != "grpc" {
+			t.Fatalf("InstanceRoutes[%d].Matches[0].BackendName = %s, want grpc", i, route.Matches[0].BackendName)
+		}
+		if route.Matches[0].BackendPort != 50051 {
+			t.Fatalf("InstanceRoutes[%d].Matches[0].BackendPort = %d, want 50051", i, route.Matches[0].BackendPort)
+		}
+		if route.Matches[0].Type != HTTPPathMatchTypePathPrefix {
+			t.Fatalf("InstanceRoutes[%d].Matches[0].Type = %v, want %v", i, route.Matches[0].Type, HTTPPathMatchTypePathPrefix)
+		}
+		if route.Matches[0].Value != "/rpc" {
+			t.Fatalf("InstanceRoutes[%d].Matches[0].Value = %s, want /rpc", i, route.Matches[0].Value)
+		}
+	}
+}
+
 func assertDeployObjectsEqual(t *testing.T, got *DeployObjects, want *DeployObjects) {
 	t.Helper()
 
@@ -602,6 +888,60 @@ func wantDeployObjectsWithoutPorts() *DeployObjects {
 			Ports:           nil,
 		}},
 	}
+}
+
+func wantDeployObjectsWithStatefulArtifact(envType domain.EnvironmentType, replicas int32, hostnames []string, matches []*HTTPRoutePathMatch) *DeployObjects {
+	return &DeployObjects{
+		StatefulWorkloads: []*StatefulWorkload{{
+			ServiceName:     "game-gateway",
+			EnvironmentName: "tstscope.dev",
+			App:             "game",
+			Image:           "game:v1",
+			Replicas:        replicas,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+			Hostnames: hostnames,
+		}},
+		InstanceRoutes: buildWantStatefulInstanceRoutes(envType, replicas, hostnames, matches),
+	}
+}
+
+func buildWantStatefulInstanceRoutes(envType domain.EnvironmentType, replicas int32, hostnames []string, matches []*HTTPRoutePathMatch) []*HTTPRouteWorkload {
+	if replicas == 0 {
+		return nil
+	}
+
+	routes := make([]*HTTPRouteWorkload, 0, replicas)
+	for i := 0; i < int(replicas); i++ {
+		routes = append(routes, &HTTPRouteWorkload{
+			ServiceName:      "game-gateway",
+			EnvironmentName:  "tstscope.dev",
+			App:              "game",
+			Hostnames:        buildExpandedHostnames("game-gateway", i, hostnames),
+			BackendService:   newInstanceObjectName(WorkloadKindInstanceService, "tstscope.dev", "game-gateway", i),
+			GatewayName:      "test-gateway",
+			GatewayNamespace: "test-gw-ns",
+			EnvType:          envType,
+			Matches:          matches,
+		})
+	}
+
+	return routes
+}
+
+func buildExpandedHostnames(serviceName string, instanceIndex int, hostnames []string) []string {
+	if len(hostnames) == 0 {
+		return nil
+	}
+
+	expandedHostnames := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		expandedHostnames = append(expandedHostnames, fmt.Sprintf("%s-%d.%s", serviceName, instanceIndex, hostname))
+	}
+
+	return expandedHostnames
 }
 
 func Test_convertPorts(t *testing.T) {

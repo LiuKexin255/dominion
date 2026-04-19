@@ -3,6 +3,7 @@ package k8s
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,67 @@ func Test_newObjectName_MaxLength(t *testing.T) {
 	}
 	if len(got) != maxK8sResourceNameSize {
 		t.Fatalf("newObjectName() length = %d, want %d", len(got), maxK8sResourceNameSize)
+	}
+}
+
+func Test_newInstanceObjectName(t *testing.T) {
+	tests := []struct {
+		name          string
+		kind          WorkloadKind
+		fullEnvName   string
+		serviceName   string
+		instanceIndex int
+		wantSuffix    string
+	}{
+		{
+			name:          "normal instance",
+			kind:          WorkloadKindInstanceService,
+			fullEnvName:   "grpc-hello-world",
+			serviceName:   "gateway",
+			instanceIndex: 0,
+			wantSuffix:    "-0",
+		},
+		{
+			name:          "instance index greater than 9",
+			kind:          WorkloadKindInstanceRoute,
+			fullEnvName:   "grpc-hello-world",
+			serviceName:   "gateway",
+			instanceIndex: 12,
+			wantSuffix:    "-12",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := newInstanceObjectName(tt.kind, tt.fullEnvName, tt.serviceName, tt.instanceIndex)
+			if !strings.HasSuffix(got, tt.wantSuffix) {
+				t.Fatalf("newInstanceObjectName() = %q, want suffix %q", got, tt.wantSuffix)
+			}
+			if len(got) > maxK8sResourceNameSize {
+				t.Fatalf("newInstanceObjectName() length = %d, want <= %d", len(got), maxK8sResourceNameSize)
+			}
+			base := newObjectName(tt.kind, tt.fullEnvName, tt.serviceName)
+			suffix := fmt.Sprintf("-%d", tt.instanceIndex)
+			maxBase := maxK8sResourceNameSize - len(suffix)
+			if len(base) <= maxBase {
+				want := base + suffix
+				if got != want {
+					t.Fatalf("newInstanceObjectName() = %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func Test_newInstanceObjectName_MaxLength(t *testing.T) {
+	got := newInstanceObjectName(
+		WorkloadKindInstanceService,
+		strings.Repeat("a", 25),
+		strings.Repeat("b", 25),
+		99,
+	)
+	if len(got) > maxK8sResourceNameSize {
+		t.Fatalf("newInstanceObjectName() length = %d, want <= %d", len(got), maxK8sResourceNameSize)
 	}
 }
 

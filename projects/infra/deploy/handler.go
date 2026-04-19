@@ -398,13 +398,14 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 	result := make([]*ArtifactSpec, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		result = append(result, &ArtifactSpec{
-			Name:       artifact.Name,
-			App:        artifact.App,
-			Image:      artifact.Image,
-			Ports:      toProtoArtifactPorts(artifact.Ports),
-			Replicas:   artifact.Replicas,
-			TlsEnabled: artifact.TLSEnabled,
-			Http:       toProtoArtifactHTTP(artifact.HTTP),
+			Name:         artifact.Name,
+			App:          artifact.App,
+			Image:        artifact.Image,
+			Ports:        toProtoArtifactPorts(artifact.Ports),
+			Replicas:     artifact.Replicas,
+			TlsEnabled:   artifact.TLSEnabled,
+			WorkloadKind: workloadKindToProto(artifact.WorkloadKind),
+			Http:         toProtoArtifactHTTP(artifact.HTTP),
 		})
 	}
 
@@ -422,17 +423,36 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			return nil, domain.ErrInvalidSpec
 		}
 		result = append(result, &domain.ArtifactSpec{
-			Name:       artifact.GetName(),
-			App:        artifact.GetApp(),
-			Image:      artifact.GetImage(),
-			Ports:      fromProtoArtifactPorts(artifact.GetPorts()),
-			Replicas:   artifact.GetReplicas(),
-			TLSEnabled: artifact.GetTlsEnabled(),
-			HTTP:       fromProtoArtifactHTTP(artifact.GetHttp()),
+			Name:         artifact.GetName(),
+			App:          artifact.GetApp(),
+			Image:        artifact.GetImage(),
+			Ports:        fromProtoArtifactPorts(artifact.GetPorts()),
+			Replicas:     artifact.GetReplicas(),
+			TLSEnabled:   artifact.GetTlsEnabled(),
+			WorkloadKind: workloadKindFromProto(artifact.GetWorkloadKind()),
+			HTTP:         fromProtoArtifactHTTP(artifact.GetHttp()),
 		})
 	}
 
 	return result, nil
+}
+
+func workloadKindToProto(kind domain.WorkloadKind) WorkloadKind {
+	switch kind {
+	case domain.WorkloadKindStateful:
+		return WorkloadKind_WORKLOAD_KIND_STATEFUL
+	default:
+		return WorkloadKind_WORKLOAD_KIND_STATELESS
+	}
+}
+
+func workloadKindFromProto(kind WorkloadKind) domain.WorkloadKind {
+	switch kind {
+	case WorkloadKind_WORKLOAD_KIND_STATEFUL:
+		return domain.WorkloadKindStateful
+	default:
+		return domain.WorkloadKindStateless
+	}
 }
 
 func toProtoArtifactPorts(ports []domain.ArtifactPortSpec) []*ArtifactPortSpec {

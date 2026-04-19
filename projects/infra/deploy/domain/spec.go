@@ -15,6 +15,16 @@ const (
 	HTTPPathRuleTypePathPrefix HTTPPathRuleType = 1
 )
 
+// WorkloadKind defines whether a workload is stateless or stateful.
+type WorkloadKind int
+
+const (
+	// WorkloadKindStateless indicates a stateless workload (default).
+	WorkloadKindStateless WorkloadKind = 0
+	// WorkloadKindStateful indicates a stateful workload.
+	WorkloadKindStateful WorkloadKind = 1
+)
+
 // ArtifactPortSpec describes a single port exposed by an artifact.
 type ArtifactPortSpec struct {
 	Name string
@@ -29,13 +39,14 @@ type ArtifactHTTPSpec struct {
 
 // ArtifactSpec describes the desired state of a deployable application artifact.
 type ArtifactSpec struct {
-	Name       string
-	App        string
-	Image      string
-	Ports      []ArtifactPortSpec
-	Replicas   int32
-	TLSEnabled bool
-	HTTP       *ArtifactHTTPSpec
+	Name         string
+	App          string
+	Image        string
+	Ports        []ArtifactPortSpec
+	Replicas     int32
+	TLSEnabled   bool
+	WorkloadKind WorkloadKind
+	HTTP         *ArtifactHTTPSpec
 }
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
@@ -118,13 +129,14 @@ func (s *InfraSpec) Validate() error {
 }
 
 // Validate checks that the ArtifactHTTPSpec contains valid field values.
-// It verifies that hostnames and matches are non-empty, and each rule is valid.
+// It verifies that hostnames and matches are non-empty, and each nested match is valid.
 func (s *ArtifactHTTPSpec) Validate() error {
 	var errs []error
 
 	if len(s.Hostnames) == 0 {
 		errs = append(errs, errors.New("hostnames must not be empty"))
 	}
+
 	if len(s.Matches) == 0 {
 		errs = append(errs, errors.New("matches must not be empty"))
 	}

@@ -3,7 +3,6 @@ app: alpha
 desc: service a
 artifacts:
   - name: service-a
-    type: deployment
     target: :service_a_image
     tls: true
     ports:

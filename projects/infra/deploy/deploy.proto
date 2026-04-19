@@ -193,6 +193,8 @@ message ArtifactSpec {
   bool tls_enabled = 6;
 
   ArtifactHTTPSpec http = 7;
+
+  WorkloadKind workload_kind = 8;
 }
 
 message ArtifactPortSpec {
@@ -238,6 +240,12 @@ message HTTPPathRule {
 enum HTTPPathRuleType {
   HTTP_PATH_RULE_TYPE_UNSPECIFIED = 0;
   HTTP_PATH_RULE_TYPE_PATH_PREFIX = 1;
+}
+
+enum WorkloadKind {
+  WORKLOAD_KIND_UNSPECIFIED = 0;
+  WORKLOAD_KIND_STATELESS = 1;
+  WORKLOAD_KIND_STATEFUL = 2;
 }
 
 message GetEnvironmentRequest {

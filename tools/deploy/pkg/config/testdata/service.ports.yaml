@@ -6,7 +6,6 @@ ports:
     port: 9090
 artifacts:
   - name: service
-    type: deployment
     target: :service_image
     ports:
       - name: grpc
