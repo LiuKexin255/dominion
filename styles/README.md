@@ -15,3 +15,8 @@
 ## 其他
 
 * API 接口：`api.md`
+
+## 外部引用
+
+* [Google Go Style](https://google.github.io/styleguide/go/)
+* [Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
