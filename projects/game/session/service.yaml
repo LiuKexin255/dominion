@@ -1,0 +1,11 @@
+name: session
+app: game
+desc: game session service
+kind: stateless
+artifacts:
+  - name: cmd
+    target: app/cmd:cmd_image
+    tls: true
+    ports:
+      - name: http
+        port: 8081

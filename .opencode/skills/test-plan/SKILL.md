@@ -82,7 +82,6 @@ deploy apply <deploy-path>
 ```
 
 - 如果用户或环境已经提供 `KUBECONFIG`，沿用它；不要擅自改写 kubeconfig。
-- `deploy apply` 成功后等待 `30s` 再运行测试用例
 
 ### 3. 采集测试运行所需上下文
 

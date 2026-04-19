@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "gateway",
+    srcs = ["registry.go"],
+    importpath = "dominion/projects/game/session/runtime/gateway",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "gateway_test",
+    srcs = ["registry_test.go"],
+    embed = [":gateway"],
+)
