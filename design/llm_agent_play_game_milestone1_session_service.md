@@ -55,6 +55,7 @@
 建议最小字段如下：
 
 * `id`
+* `type`：当前会话对应的游戏类型。milestone 1 先固定支持 `saolei`
 * `status`：`pending | active | disconnected | ended | failed`
 * `gateway_id`
 * `created_at`
@@ -66,8 +67,22 @@
 
 设计原则：
 
-* `session` 只回答“当前是什么会话、处于哪个生命周期、当前应连接哪个 gateway”。
+* `session` 只回答“当前是什么会话、是什么游戏类型、处于哪个生命周期、当前应连接哪个 gateway”。
 * 不在 `session` 中保存视频流状态、截图内容、缓存运行态或长连接细节。
+
+### Create 请求模型
+
+创建 `session` 时，请求中需要显式指定 `type`。
+
+milestone 1 先支持：
+
+* `saolei`
+
+设计原则：
+
+* `session service` 不根据客户端上下文隐式推断游戏类型。
+* `type` 是 `session` 资源模型的一部分，而不只是创建时的临时参数。
+* 后续若支持其他游戏类型，可在不改变 `Session` 主资源模型的前提下扩展枚举值。
 
 ### token 模型
 
@@ -111,7 +126,6 @@ milestone 1 使用随机分配策略。
 
 `session service` 直接返回：
 
-* `web_connect_url`
 * `agent_connect_url`
 
 要求：
@@ -152,7 +166,7 @@ milestone 1 使用随机分配策略。
 原因：
 
 * 降低客户端复杂度
-* 避免 web 与 `windows agent` 自行拼 token 或 gateway 信息
+* 避免 `windows agent` 自行拼 token 或 gateway 信息
 * 让连接入口保持单一、明确
 
 ### 决策 3：重建请求重新分配 gateway
