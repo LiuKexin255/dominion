@@ -1,6 +1,7 @@
 name: cmd
 app: mongo-demo
 desc: mongo demo gRPC service and HTTP gateway
+kind: stateless
 ports:
   - name: grpc
     port: 50051
@@ -8,6 +9,5 @@ ports:
     port: 80
 artifacts:
   - name: cmd
-    type: deployment
     target: :cmd_image
     tls: true
