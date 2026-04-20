@@ -21,6 +21,42 @@ services:
 `),
 		},
 		{
+			name: "valid deploy yaml with http match path",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+    http:
+      hostnames:
+        - hello.example.com
+      matches:
+        - backend: grpc
+          path:
+            type: PathPrefix
+            value: /v1
+`),
+		},
+		{
+			name: "deploy yaml rejects match without path",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+    http:
+      hostnames:
+        - hello.example.com
+      matches:
+        - backend: grpc
+`),
+			wantErr: true,
+		},
+		{
 			name: "valid infra deploy yaml",
 			raw: []byte(`name: grpc.dev
 desc: 开发环境
@@ -163,7 +199,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
     tls: true
     ports:
@@ -178,11 +213,21 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
     ports:
       - name: grpc
         port: 50051
+`),
+		},
+		{
+			name: "valid service yaml with stateful workload",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+kind: stateful
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
 `),
 		},
 		{
@@ -191,8 +236,19 @@ artifacts:
 app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
+  - name: ""
+    target: //experimental/grpc_hello_world/service:service_image
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid service yaml workload kind",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+kind: invalid_value
+artifacts:
   - name: service
-    type: invalid
     target: //experimental/grpc_hello_world/service:service_image
 `),
 			wantErr: true,
@@ -204,7 +260,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
     tls: enabled
     ports:
@@ -220,7 +275,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
     tls: true
     secret_name: grpc-hello-world-service-tls
@@ -241,7 +295,6 @@ ports:
     port: 9090
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
     ports:
       - name: grpc
@@ -257,7 +310,6 @@ ports:
   - name: admin
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
 `),
 			wantErr: true,
@@ -270,7 +322,6 @@ desc: grpc hello world service
 ports: []
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
 `),
 			wantErr: true,
@@ -282,7 +333,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: //experimental/grpc_hello_world/service:service_image
 `),
 		},

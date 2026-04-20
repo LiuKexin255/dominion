@@ -82,6 +82,76 @@ func (w *DeploymentWorkload) Validate() error {
 	return nil
 }
 
+// StatefulWorkload 描述 statefulset 生成所需字段。
+type StatefulWorkload struct {
+	TLSEnabled      bool
+	ServiceName     string
+	EnvironmentName string
+	App             string
+	Image           string
+	Replicas        int32
+	Ports           []*DeploymentPort
+	Hostnames       []string
+}
+
+// WorkloadName 返回 statefulset 对应的资源名。
+func (w *StatefulWorkload) WorkloadName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindStatefulSet, w.App, w.ServiceName)
+}
+
+// ServiceResourceName 返回 statefulset 对应 governing headless service 的资源名。
+func (w *StatefulWorkload) ServiceResourceName() string {
+	if w == nil {
+		return ""
+	}
+
+	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
+}
+
+// Validate 校验 stateful workload 字段是否合法。
+func (w *StatefulWorkload) Validate() error {
+	if w == nil {
+		return fmt.Errorf("stateful workload 为空")
+	}
+
+	if strings.TrimSpace(w.ServiceName) == "" {
+		return fmt.Errorf("stateful workload 缺少 service name")
+	}
+	if strings.TrimSpace(w.EnvironmentName) == "" {
+		return fmt.Errorf("stateful workload 缺少 environment name")
+	}
+	if strings.TrimSpace(w.App) == "" {
+		return fmt.Errorf("stateful workload 缺少 app")
+	}
+	if strings.TrimSpace(w.Image) == "" {
+		return fmt.Errorf("stateful workload 缺少 image")
+	}
+	if len(w.WorkloadName()) > maxK8sResourceNameSize {
+		return fmt.Errorf("stateful workload name 超过 63 字符")
+	}
+	if w.Replicas < 0 {
+		return fmt.Errorf("stateful workload replicas 不能小于 0")
+	}
+
+	for _, port := range w.Ports {
+		if port == nil {
+			return fmt.Errorf("stateful workload 存在空端口")
+		}
+		if strings.TrimSpace(port.Name) == "" {
+			return fmt.Errorf("stateful workload 存在空端口名")
+		}
+		if port.Port < 1 || port.Port > 65535 {
+			return fmt.Errorf("stateful workload 端口 %d 非法", port.Port)
+		}
+	}
+
+	return nil
+}
+
 // HTTPPathMatchType 表示 HTTP path 匹配类型。
 type HTTPPathMatchType string
 

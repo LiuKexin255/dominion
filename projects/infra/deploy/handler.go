@@ -26,6 +26,7 @@ const (
 	servicePortMapUnavailableReason = "SERVICE_PORT_MAP_UNAVAILABLE"
 )
 
+// Enqueuer enqueues environment reconciliation requests.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
 	EnqueueWithPriority(ctx context.Context, envName domain.EnvironmentName) error
@@ -86,7 +87,12 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 		return nil, toStatusError(err)
 	}
 
-	result, err := h.runtime.QueryServiceEndpoints(ctx, name.EnvLabel(), name.App(), name.Service())
+	queryEndpoints := h.runtime.QueryServiceEndpoints
+	if isStatefulService(env, name.App(), name.Service()) {
+		queryEndpoints = h.runtime.QueryStatefulServiceEndpoints
+	}
+
+	result, err := queryEndpoints(ctx, name.EnvLabel(), name.App(), name.Service())
 	if err == nil {
 		return newServiceEndpointsResponse(name, result, env.Name(), ResolutionMode_RESOLUTION_MODE_SAME_ENV, view), nil
 	}
@@ -116,7 +122,12 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 	})
 
 	for _, candidate := range prodCandidates {
-		result, err = h.runtime.QueryServiceEndpoints(ctx, candidate.Name().Label(), name.App(), name.Service())
+		candidateQuery := h.runtime.QueryServiceEndpoints
+		if isStatefulService(candidate, name.App(), name.Service()) {
+			candidateQuery = h.runtime.QueryStatefulServiceEndpoints
+		}
+
+		result, err = candidateQuery(ctx, candidate.Name().Label(), name.App(), name.Service())
 		if err == nil {
 			return newServiceEndpointsResponse(name, result, candidate.Name(), ResolutionMode_RESOLUTION_MODE_PROD_FALLBACK, view), nil
 		}
@@ -243,6 +254,7 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 	return toProtoEnvironment(env), nil
 }
 
+// DeleteEnvironment marks an environment for deletion and enqueues priority reconciliation.
 func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentRequest) (*emptypb.Empty, error) {
 	envName, err := domain.ParseResourceName(req.GetName())
 	if err != nil {
@@ -398,13 +410,14 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 	result := make([]*ArtifactSpec, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		result = append(result, &ArtifactSpec{
-			Name:       artifact.Name,
-			App:        artifact.App,
-			Image:      artifact.Image,
-			Ports:      toProtoArtifactPorts(artifact.Ports),
-			Replicas:   artifact.Replicas,
-			TlsEnabled: artifact.TLSEnabled,
-			Http:       toProtoArtifactHTTP(artifact.HTTP),
+			Name:         artifact.Name,
+			App:          artifact.App,
+			Image:        artifact.Image,
+			Ports:        toProtoArtifactPorts(artifact.Ports),
+			Replicas:     artifact.Replicas,
+			TlsEnabled:   artifact.TLSEnabled,
+			WorkloadKind: workloadKindToProto(artifact.WorkloadKind),
+			Http:         toProtoArtifactHTTP(artifact.HTTP),
 		})
 	}
 
@@ -422,17 +435,36 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			return nil, domain.ErrInvalidSpec
 		}
 		result = append(result, &domain.ArtifactSpec{
-			Name:       artifact.GetName(),
-			App:        artifact.GetApp(),
-			Image:      artifact.GetImage(),
-			Ports:      fromProtoArtifactPorts(artifact.GetPorts()),
-			Replicas:   artifact.GetReplicas(),
-			TLSEnabled: artifact.GetTlsEnabled(),
-			HTTP:       fromProtoArtifactHTTP(artifact.GetHttp()),
+			Name:         artifact.GetName(),
+			App:          artifact.GetApp(),
+			Image:        artifact.GetImage(),
+			Ports:        fromProtoArtifactPorts(artifact.GetPorts()),
+			Replicas:     artifact.GetReplicas(),
+			TLSEnabled:   artifact.GetTlsEnabled(),
+			WorkloadKind: workloadKindFromProto(artifact.GetWorkloadKind()),
+			HTTP:         fromProtoArtifactHTTP(artifact.GetHttp()),
 		})
 	}
 
 	return result, nil
+}
+
+func workloadKindToProto(kind domain.WorkloadKind) WorkloadKind {
+	switch kind {
+	case domain.WorkloadKindStateful:
+		return WorkloadKind_WORKLOAD_KIND_STATEFUL
+	default:
+		return WorkloadKind_WORKLOAD_KIND_STATELESS
+	}
+}
+
+func workloadKindFromProto(kind WorkloadKind) domain.WorkloadKind {
+	switch kind {
+	case WorkloadKind_WORKLOAD_KIND_STATEFUL:
+		return domain.WorkloadKindStateful
+	default:
+		return domain.WorkloadKindStateless
+	}
 }
 
 func toProtoArtifactPorts(ports []domain.ArtifactPortSpec) []*ArtifactPortSpec {
@@ -658,9 +690,11 @@ func normalizeServiceEndpointsView(view ServiceEndpointsView) (ServiceEndpointsV
 
 func newServiceEndpointsResponse(name domain.ServiceEndpointsName, result *domain.ServiceQueryResult, resolvedEnv domain.EnvironmentName, mode ResolutionMode, view ServiceEndpointsView) *ServiceEndpoints {
 	resp := &ServiceEndpoints{
-		Name:      name.String(),
-		Endpoints: cloneStringSlice(result.Endpoints),
-		Ports:     cloneInt32Map(result.Ports),
+		Name:              name.String(),
+		Endpoints:         cloneStringSlice(result.Endpoints),
+		Ports:             cloneInt32Map(result.Ports),
+		StatefulInstances: cloneStatefulInstances(result.StatefulInstances),
+		IsStateful:        result.IsStateful,
 	}
 
 	if view == ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION {
@@ -701,6 +735,27 @@ func filterProdCandidates(envs []*domain.Environment, self domain.EnvironmentNam
 	return candidates
 }
 
+func isStatefulService(env *domain.Environment, app string, service string) bool {
+	if env == nil {
+		return false
+	}
+	state := env.DesiredState()
+	if state == nil {
+		return false
+	}
+
+	for _, artifact := range state.Artifacts {
+		if artifact == nil {
+			continue
+		}
+		if artifact.App == app && artifact.Name == service {
+			return artifact.WorkloadKind == domain.WorkloadKindStateful
+		}
+	}
+
+	return false
+}
+
 func newStatusErrorWithReason(code codes.Code, reason string, message string, metadata map[string]string) error {
 	st, err := status.New(code, message).WithDetails(&errdetails.ErrorInfo{
 		Reason:   reason,
@@ -732,4 +787,23 @@ func cloneInt32Map(values map[string]int32) map[string]int32 {
 	}
 
 	return cloned
+}
+
+func cloneStatefulInstances(in []*domain.StatefulInstance) []*StatefulServiceInstance {
+	if in == nil {
+		return nil
+	}
+
+	out := make([]*StatefulServiceInstance, 0, len(in))
+	for _, inst := range in {
+		if inst == nil {
+			continue
+		}
+		out = append(out, &StatefulServiceInstance{
+			Index:     int32(inst.Index),
+			Endpoints: cloneStringSlice(inst.Endpoints),
+		})
+	}
+
+	return out
 }

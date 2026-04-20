@@ -1,0 +1,20 @@
+name: game.lt
+desc: "game-session HTTP interface large test"
+type: test
+services:
+  - infra:
+      app: game
+      resource: mongodb
+      profile: dev-single
+      name: mongo
+  - artifact:
+      path: //projects/game/session/service.yaml
+      name: cmd
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1

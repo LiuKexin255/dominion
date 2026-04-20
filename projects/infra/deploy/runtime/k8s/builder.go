@@ -49,6 +49,8 @@ const (
 
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
+	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
+	statefulSetPodNameLabelKey = "statefulset.kubernetes.io/pod-name"
 
 	EnvHeaderMatchName = "env"
 
@@ -183,6 +185,278 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			},
 		},
 	}, nil
+}
+
+// BuildStatefulSet 将 stateful workload 构造成可直接下发的 StatefulSet 对象。
+func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.StatefulSet, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("stateful workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	selectorLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+	)
+	ports, err := buildContainerPorts(workload.Ports)
+	if err != nil {
+		return nil, fmt.Errorf("构建 statefulset ports 失败: %w", err)
+	}
+
+	replicas := workload.Replicas
+	containerEnv := []corev1.EnvVar{
+		{Name: reservedEnvNameServiceApp, Value: workload.App},
+		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+	}
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+	if workload.TLSEnabled {
+		volumes = []corev1.Volume{{
+			Name: tlsVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
+						{ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
+							Items: []corev1.KeyToPath{{
+								Key:  cfg.TLS.CAConfigMap.Key,
+								Path: tlsCAFileName,
+							}},
+						}},
+					},
+				},
+			},
+		}}
+		volumeMounts = []corev1.VolumeMount{{
+			Name:      tlsVolumeName,
+			MountPath: tlsMountPath,
+			ReadOnly:  true,
+		}}
+		containerEnv = append(containerEnv,
+			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
+			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
+			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+		)
+	}
+
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workload.WorkloadName(),
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: appsv1.StatefulSetSpec{
+			ServiceName: workload.ServiceResourceName(),
+			Replicas:    &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string(selectorLabels),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string(objectLabels),
+				},
+				Spec: corev1.PodSpec{
+					Volumes: volumes,
+					Containers: []corev1.Container{{
+						Name:         workload.WorkloadName(),
+						Image:        workload.Image,
+						Ports:        ports,
+						VolumeMounts: volumeMounts,
+						Env:          containerEnv,
+					}},
+				},
+			},
+		},
+	}, nil
+}
+
+// BuildGoverningService 将 stateful workload 构造成 governing headless Service 对象。
+func BuildGoverningService(workload *StatefulWorkload, cfg *K8sConfig) (*corev1.Service, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("stateful workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	selectorLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+	)
+	ports, err := buildServicePorts(workload.Ports)
+	if err != nil {
+		return nil, fmt.Errorf("构建 governing service ports 失败: %w", err)
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workload.ServiceResourceName(),
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: corev1.ClusterIPNone,
+			Selector:  map[string]string(selectorLabels),
+			Ports:     ports,
+		},
+	}, nil
+}
+
+// BuildPerInstanceService 将 stateful workload 构造成单实例 Service 对象。
+func BuildPerInstanceService(workload *StatefulWorkload, cfg *K8sConfig, instanceIndex int) (*corev1.Service, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("stateful workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+	if instanceIndex < 0 {
+		return nil, fmt.Errorf("stateful workload 实例索引不能小于 0")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	ports, err := buildServicePorts(workload.Ports)
+	if err != nil {
+		return nil, fmt.Errorf("构建 instance service ports 失败: %w", err)
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, instanceIndex),
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				statefulSetPodNameLabelKey: fmt.Sprintf("%s-%d", workload.WorkloadName(), instanceIndex),
+			},
+			Ports: ports,
+		},
+	}, nil
+}
+
+// BuildPerInstanceHTTPRoute 将 stateful workload 实例构造成单实例 HTTPRoute 对象。
+func BuildPerInstanceHTTPRoute(workload *HTTPRouteWorkload, cfg *K8sConfig, instanceIndex int) (*unstructured.Unstructured, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("http route workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+	if instanceIndex < 0 {
+		return nil, fmt.Errorf("http route 实例索引不能小于 0")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	var hostnames []gatewayv1.Hostname
+	for _, hostname := range workload.Hostnames {
+		hostnames = append(hostnames, gatewayv1.Hostname(hostname))
+	}
+
+	pathType := gatewayv1.PathMatchPathPrefix
+	pathValue := "/"
+	backendName := gatewayv1.ObjectName(workload.BackendService)
+	backendPort := gatewayv1.PortNumber(workload.Matches[0].BackendPort)
+	httpMatch := gatewayv1.HTTPRouteMatch{
+		Path: &gatewayv1.HTTPPathMatch{
+			Type:  &pathType,
+			Value: &pathValue,
+		},
+	}
+	if workload.EnvType == domain.EnvironmentTypeTest || workload.EnvType == domain.EnvironmentTypeDev {
+		headerMatchType := gatewayv1.HeaderMatchExact
+		httpMatch.Headers = []gatewayv1.HTTPHeaderMatch{{
+			Name:  EnvHeaderMatchName,
+			Type:  &headerMatchType,
+			Value: workload.EnvironmentName,
+		}}
+	}
+
+	gatewayNamespace := gatewayv1.Namespace(workload.GatewayNamespace)
+	typedRoute := &gatewayv1.HTTPRoute{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: gatewayv1.GroupVersion.String(),
+			Kind:       httpRouteKind,
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      newInstanceObjectName(WorkloadKindInstanceRoute, workload.EnvironmentName, workload.ServiceName, instanceIndex),
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: hostnames,
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{
+					Name:      gatewayv1.ObjectName(workload.GatewayName),
+					Namespace: &gatewayNamespace,
+				}},
+			},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				Matches: []gatewayv1.HTTPRouteMatch{httpMatch},
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: backendName,
+							Port: &backendPort,
+						},
+					},
+				}},
+			}},
+		},
+	}
+
+	rawBytes, err := json.Marshal(typedRoute)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 instance http route 失败: %w", err)
+	}
+
+	rawMap := make(map[string]any)
+	if err := json.Unmarshal(rawBytes, &rawMap); err != nil {
+		return nil, fmt.Errorf("反序列化 instance http route 失败: %w", err)
+	}
+
+	return &unstructured.Unstructured{Object: rawMap}, nil
 }
 
 // BuildService 将 deployment workload 构造成可直接下发的 Service 对象。

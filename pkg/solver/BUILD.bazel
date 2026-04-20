@@ -6,8 +6,10 @@ go_library(
     srcs = [
         "deploy_http_client.go",
         "deploy_resolver.go",
+        "deploy_stateful_resolver.go",
         "env.go",
         "k8s.go",
+        "stateful_resolver.go",
         "target.go",
     ],
     importpath = "dominion/pkg/solver",
@@ -29,12 +31,14 @@ go_unittest(
     srcs = [
         "deploy_http_client_test.go",
         "deploy_resolver_test.go",
+        "deploy_stateful_resolver_test.go",
         "env_test.go",
         "k8s_test.go",
         "target_test.go",
     ],
     embed = [":solver"],
     deps = [
+        "//projects/infra/deploy",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_api//discovery/v1:discovery",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",

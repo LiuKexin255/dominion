@@ -1,0 +1,51 @@
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@tar.bzl", "mutate", "tar")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/session/app/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/mongo",
+        "//projects/game/pkg/token",
+        "//projects/game/session/app",
+        "//projects/game/session/runtime/gateway",
+        "//projects/game/session/runtime/storage",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+tar(
+    name = "cmd_tar",
+    srcs = [":cmd"],
+    mutate = mutate(strip_prefix = package_name() + "/cmd_"),
+)
+
+oci_image(
+    name = "cmd_image",
+    base = "@distroless_base",
+    entrypoint = ["/cmd"],
+    tars = [":cmd_tar"],
+)
+
+expand_template(
+    name = "stamped",
+    out = "_stamped.tags.txt",
+    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
+    template = ["dev"],
+)
+
+oci_push(
+    name = "cmd_image_push",
+    image = ":cmd_image",
+    remote_tags = ":stamped",
+    repository = "registry.liukexin.com/projects/game/session",
+)

@@ -1,0 +1,10 @@
+name: service
+app: grpc-hello-world
+desc: grpc hello world stateful service
+kind: stateful
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051

@@ -344,6 +344,10 @@ func TestK8sRuntimeDeleteDeletesOwnedResourcesInFixedOrder(t *testing.T) {
 		deleteOrder = append(deleteOrder, resourceKindService)
 		return false, nil, nil
 	})
+	runtime.client.TypedClient.(*kubernetesfake.Clientset).PrependReactor("delete", "statefulsets", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
+		deleteOrder = append(deleteOrder, resourceKindStatefulSet)
+		return false, nil, nil
+	})
 	runtime.client.TypedClient.(*kubernetesfake.Clientset).PrependReactor("delete", "deployments", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
 		deleteOrder = append(deleteOrder, resourceKindDeployment)
 		return false, nil, nil
@@ -418,6 +422,264 @@ func newExecutorTestEnvironment(t *testing.T) *domain.Environment {
 	})
 }
 
+func TestK8sRuntimeApplyCreatesStatefulResources(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{
+			Name:         "cache",
+			App:          "demo",
+			Image:        "repo/cache:v1",
+			Replicas:     2,
+			TLSEnabled:   true,
+			WorkloadKind: domain.WorkloadKindStateful,
+			Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 6379}},
+			HTTP: &domain.ArtifactHTTPSpec{
+				Hostnames: []string{"cache.example.com"},
+				Matches: []domain.HTTPRouteRule{{
+					Backend: "http",
+					Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
+		}},
+	})
+
+	if err := runtime.Apply(ctx, env, nil); err != nil {
+		t.Fatalf("Apply() failed: %v", err)
+	}
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+
+	govSvc, err := BuildGoverningService(objects.StatefulWorkloads[0], runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("BuildGoverningService() failed: %v", err)
+	}
+	if _, err := runtime.client.TypedClient.CoreV1().Services(govSvc.Namespace).Get(ctx, govSvc.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("governing service not created: %v", err)
+	}
+
+	sts, err := BuildStatefulSet(objects.StatefulWorkloads[0], runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() failed: %v", err)
+	}
+	if _, err := runtime.client.TypedClient.AppsV1().StatefulSets(sts.Namespace).Get(ctx, sts.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("statefulset not created: %v", err)
+	}
+
+	for i := range 2 {
+		perInstanceSvc, err := BuildPerInstanceService(objects.StatefulWorkloads[0], runtime.client.K8sConfig, i)
+		if err != nil {
+			t.Fatalf("BuildPerInstanceService(%d) failed: %v", i, err)
+		}
+		if _, err := runtime.client.TypedClient.CoreV1().Services(perInstanceSvc.Namespace).Get(ctx, perInstanceSvc.Name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("per-instance service %d not created: %v", i, err)
+		}
+	}
+
+	for i := range 2 {
+		perInstanceRouteName := newInstanceObjectName(WorkloadKindInstanceRoute, objects.InstanceRoutes[i].EnvironmentName, objects.InstanceRoutes[i].ServiceName, i)
+		if _, err := runtime.client.DynamicClient.Resource(httpRouteGVR()).Namespace(runtime.client.K8sConfig.Namespace).Get(ctx, perInstanceRouteName, metav1.GetOptions{}); err != nil {
+			t.Fatalf("per-instance httproute %d not created: %v", i, err)
+		}
+	}
+}
+
+func TestK8sRuntimeDeleteDeletesStatefulSetResources(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+	env := newExecutorTestEnvironmentWithState(t, &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{
+			Name:         "cache",
+			App:          "demo",
+			Image:        "repo/cache:v1",
+			Replicas:     2,
+			TLSEnabled:   true,
+			WorkloadKind: domain.WorkloadKindStateful,
+			Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 6379}},
+			HTTP: &domain.ArtifactHTTPSpec{
+				Hostnames: []string{"cache.example.com"},
+				Matches: []domain.HTTPRouteRule{{
+					Backend: "http",
+					Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+				}},
+			},
+		}},
+	})
+
+	objects, err := ConvertToWorkloads(env, runtime.client.K8sConfig)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+
+	govSvc, _ := BuildGoverningService(objects.StatefulWorkloads[0], runtime.client.K8sConfig)
+	seedTypedObject(t, runtime, govSvc)
+
+	sts, _ := BuildStatefulSet(objects.StatefulWorkloads[0], runtime.client.K8sConfig)
+	seedTypedObject(t, runtime, sts)
+
+	for i := range 2 {
+		perInstanceSvc, _ := BuildPerInstanceService(objects.StatefulWorkloads[0], runtime.client.K8sConfig, i)
+		seedTypedObject(t, runtime, perInstanceSvc)
+	}
+	for i := range 2 {
+		perInstanceRoute, _ := BuildPerInstanceHTTPRoute(objects.InstanceRoutes[i], runtime.client.K8sConfig, i)
+		seedDynamicObject(t, runtime, perInstanceRoute)
+	}
+
+	if err := runtime.Delete(ctx, env.Name()); err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	_, err = runtime.client.TypedClient.AppsV1().StatefulSets(sts.Namespace).Get(ctx, sts.Name, metav1.GetOptions{})
+	assertNotFound(t, err)
+	_, err = runtime.client.TypedClient.CoreV1().Services(govSvc.Namespace).Get(ctx, govSvc.Name, metav1.GetOptions{})
+	assertNotFound(t, err)
+	for i := range 2 {
+		perInstanceSvcName := newInstanceObjectName(WorkloadKindInstanceService, objects.StatefulWorkloads[0].EnvironmentName, objects.StatefulWorkloads[0].ServiceName, i)
+		_, err = runtime.client.TypedClient.CoreV1().Services(runtime.client.K8sConfig.Namespace).Get(ctx, perInstanceSvcName, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for i := range 2 {
+		perInstanceRouteName := newInstanceObjectName(WorkloadKindInstanceRoute, objects.InstanceRoutes[i].EnvironmentName, objects.InstanceRoutes[i].ServiceName, i)
+		_, err = runtime.client.DynamicClient.Resource(httpRouteGVR()).Namespace(runtime.client.K8sConfig.Namespace).Get(ctx, perInstanceRouteName, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+}
+
+func Test_buildExpectedApplyResources_includesStatefulResources(t *testing.T) {
+	envName := "demo"
+	objects := &DeployObjects{
+		StatefulWorkloads: []*StatefulWorkload{
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", Replicas: 3, Image: "img", Ports: []*DeploymentPort{{Name: "http", Port: 8080}}},
+		},
+		InstanceRoutes: []*HTTPRouteWorkload{
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", BackendService: "backend-0", GatewayName: "gw", GatewayNamespace: "ns",
+				Matches: []*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendPort: 8080}}},
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", BackendService: "backend-1", GatewayName: "gw", GatewayNamespace: "ns",
+				Matches: []*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendPort: 8080}}},
+			{ServiceName: "cache", EnvironmentName: envName, App: "demo", BackendService: "backend-2", GatewayName: "gw", GatewayNamespace: "ns",
+				Matches: []*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendPort: 8080}}},
+		},
+	}
+
+	resources := buildExpectedApplyResources(objects)
+
+	stsName := newObjectName(WorkloadKindStatefulSet, "demo", "cache")
+	if _, ok := resources.statefulSets[stsName]; !ok {
+		t.Fatalf("expected statefulset %q in expected resources", stsName)
+	}
+
+	govSvcName := newObjectName(WorkloadKindService, "demo", "cache")
+	if _, ok := resources.services[govSvcName]; !ok {
+		t.Fatalf("expected governing service %q in expected resources", govSvcName)
+	}
+
+	for i := range 3 {
+		perInstanceSvcName := newInstanceObjectName(WorkloadKindInstanceService, envName, "cache", i)
+		if _, ok := resources.services[perInstanceSvcName]; !ok {
+			t.Fatalf("expected per-instance service %q in expected resources", perInstanceSvcName)
+		}
+	}
+
+	for i := 0; i < len(objects.InstanceRoutes); i++ {
+		instanceRouteName := newInstanceObjectName(WorkloadKindInstanceRoute, envName, "cache", i)
+		if _, ok := resources.httpRoutes[instanceRouteName]; !ok {
+			t.Fatalf("expected instance route %q in expected resources", instanceRouteName)
+		}
+	}
+}
+
+func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		seedState    *domain.DesiredState
+		desiredState *domain.DesiredState
+		wantPresent  pruneResourcePresence
+		wantAbsent   pruneResourcePresence
+	}{
+		{
+			name: "remove stateful workload prunes statefulset and services but not instance routes without replicas",
+			seedState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestStatefulArtifactSpec("cache", "demo", 6379, 2, []string{"cache.example.com"}),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{},
+			},
+			wantPresent: pruneResourcePresence{},
+			wantAbsent: pruneResourcePresence{
+				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, "demo", "cache")},
+				Services: []string{
+					newObjectName(WorkloadKindService, "demo", "cache"),
+					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 0),
+					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 1),
+				},
+				HTTPRoutes: []string{
+					newInstanceObjectName(WorkloadKindInstanceRoute, executorTestEnvName(), "cache", 0),
+					newInstanceObjectName(WorkloadKindInstanceRoute, executorTestEnvName(), "cache", 1),
+				},
+			},
+		},
+		{
+			name: "scale down stateful workload prunes excess instance services",
+			seedState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestStatefulArtifactSpec("cache", "demo", 6379, 3, []string{"cache.example.com"}),
+				},
+			},
+			desiredState: &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					newExecutorTestStatefulArtifactSpec("cache", "demo", 6379, 1, []string{"cache.example.com"}),
+				},
+			},
+			wantPresent: pruneResourcePresence{
+				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, "demo", "cache")},
+				Services: []string{
+					newObjectName(WorkloadKindService, "demo", "cache"),
+					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 0),
+				},
+				HTTPRoutes: []string{
+					newInstanceObjectName(WorkloadKindInstanceRoute, executorTestEnvName(), "cache", 0),
+				},
+			},
+			wantAbsent: pruneResourcePresence{
+				Services: []string{
+					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 1),
+					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 2),
+				},
+				HTTPRoutes: []string{
+					newInstanceObjectName(WorkloadKindInstanceRoute, executorTestEnvName(), "cache", 1),
+					newInstanceObjectName(WorkloadKindInstanceRoute, executorTestEnvName(), "cache", 2),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := newTestK8sRuntime(t)
+			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
+			if err := runtime.Apply(ctx, seedEnv, nil); err != nil {
+				t.Fatalf("seed Apply() failed: %v", err)
+			}
+
+			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
+			if err := runtime.Apply(ctx, desiredEnv, nil); err != nil {
+				t.Fatalf("Apply() failed: %v", err)
+			}
+
+			assertPruneResourcePresence(t, runtime, tt.wantPresent)
+			assertPruneResourceAbsence(t, runtime, tt.wantAbsent)
+		})
+	}
+}
+
 func newExecutorTestEnvironmentWithState(t *testing.T, state *domain.DesiredState) *domain.Environment {
 	t.Helper()
 	envName, err := domain.NewEnvironmentName("tstscope", "dev")
@@ -434,11 +696,12 @@ func newExecutorTestEnvironmentWithState(t *testing.T, state *domain.DesiredStat
 }
 
 type pruneResourcePresence struct {
-	Deployments []string
-	Services    []string
-	HTTPRoutes  []string
-	Secrets     []string
-	PVCs        []string
+	Deployments  []string
+	Services     []string
+	HTTPRoutes   []string
+	Secrets      []string
+	PVCs         []string
+	StatefulSets []string
 }
 
 func newExecutorTestArtifactSpec(name string, app string, port int32, http *domain.ArtifactHTTPSpec) *domain.ArtifactSpec {
@@ -450,6 +713,25 @@ func newExecutorTestArtifactSpec(name string, app string, port int32, http *doma
 		TLSEnabled: true,
 		Ports:      []domain.ArtifactPortSpec{{Name: "http", Port: port}},
 		HTTP:       http,
+	}
+}
+
+func newExecutorTestStatefulArtifactSpec(name string, app string, port int32, replicas int32, hostnames []string) *domain.ArtifactSpec {
+	return &domain.ArtifactSpec{
+		Name:         name,
+		App:          app,
+		Image:        "repo/" + app + ":v1",
+		Replicas:     replicas,
+		TLSEnabled:   true,
+		WorkloadKind: domain.WorkloadKindStateful,
+		Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: port}},
+		HTTP: &domain.ArtifactHTTPSpec{
+			Hostnames: hostnames,
+			Matches: []domain.HTTPRouteRule{{
+				Backend: "http",
+				Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+			}},
+		},
 	}
 }
 
@@ -495,6 +777,11 @@ func assertPruneResourcePresence(t *testing.T, runtime *K8sRuntime, want pruneRe
 			t.Fatalf("pvc %s should exist: %v", name, err)
 		}
 	}
+	for _, name := range want.StatefulSets {
+		if _, err := runtime.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Fatalf("statefulset %s should exist: %v", name, err)
+		}
+	}
 }
 
 func assertPruneResourceAbsence(t *testing.T, runtime *K8sRuntime, want pruneResourcePresence) {
@@ -516,6 +803,10 @@ func assertPruneResourceAbsence(t *testing.T, runtime *K8sRuntime, want pruneRes
 	}
 	for _, name := range want.Secrets {
 		_, err := runtime.client.TypedClient.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+		assertNotFound(t, err)
+	}
+	for _, name := range want.StatefulSets {
+		_, err := runtime.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 		assertNotFound(t, err)
 	}
 }
@@ -549,6 +840,20 @@ func newTestK8sRuntime(t *testing.T) *K8sRuntime {
 			AvailableReplicas:  replicas,
 		}
 		return true, dep, nil
+	})
+	typedClient.PrependReactor("get", "statefulsets", func(action k8stesting.Action) (bool, apiRuntime.Object, error) {
+		name := action.(k8stesting.GetAction).GetName()
+		obj, err := typedClient.Tracker().Get(appsv1.SchemeGroupVersion.WithResource("statefulsets"), config.Namespace, name)
+		if err != nil {
+			return false, nil, nil
+		}
+		sts := obj.(*appsv1.StatefulSet)
+		replicas := statefulSetSpecReplicas(sts)
+		sts.Status = appsv1.StatefulSetStatus{
+			ObservedGeneration: sts.Generation,
+			ReadyReplicas:      replicas,
+		}
+		return true, sts, nil
 	})
 
 	return NewK8sRuntime(&RuntimeClient{
@@ -614,4 +919,8 @@ func assertNotFound(t *testing.T, err error) {
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("expected not found error, got %v", err)
 	}
+}
+
+func executorTestEnvName() string {
+	return "tstscope.dev"
 }

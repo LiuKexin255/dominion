@@ -3,7 +3,6 @@ app: grpc-hello-world
 desc: grpc hello world service
 artifacts:
   - name: service
-    type: deployment
     target: :service_image
     tls: false
     ports:

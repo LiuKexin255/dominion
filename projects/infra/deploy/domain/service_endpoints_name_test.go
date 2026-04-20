@@ -180,3 +180,74 @@ func TestServiceEndpointsName_EnvLabel(t *testing.T) {
 		t.Fatalf("EnvLabel() = %q, want %q", got, want)
 	}
 }
+
+func TestServiceQueryResult_StatefulInstances(t *testing.T) {
+	tests := []struct {
+		name               string
+		input              ServiceQueryResult
+		wantStatefulNil    bool
+		wantIsStateful     bool
+		wantFirstIndex     int
+		wantFirstEndpoints []string
+	}{
+		{
+			name:            "default zero value",
+			input:           ServiceQueryResult{},
+			wantStatefulNil: true,
+			wantIsStateful:  false,
+		},
+		{
+			name: "populated stateful result",
+			input: ServiceQueryResult{
+				StatefulInstances: []*StatefulInstance{{
+					Index:     2,
+					Endpoints: []string{"10.0.0.2:8080", "10.0.0.2:8443"},
+				}},
+				IsStateful: true,
+			},
+			wantStatefulNil:    false,
+			wantIsStateful:     true,
+			wantFirstIndex:     2,
+			wantFirstEndpoints: []string{"10.0.0.2:8080", "10.0.0.2:8443"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			got := tt.input
+
+			// when
+			statefulInstances := got.StatefulInstances
+
+			// then
+			if tt.wantStatefulNil {
+				if statefulInstances != nil {
+					t.Fatalf("StatefulInstances = %#v, want nil", statefulInstances)
+				}
+			} else {
+				if statefulInstances == nil {
+					t.Fatalf("StatefulInstances = nil, want non-nil")
+				}
+				if len(statefulInstances) != 1 {
+					t.Fatalf("len(StatefulInstances) = %d, want 1", len(statefulInstances))
+				}
+				if statefulInstances[0].Index != tt.wantFirstIndex {
+					t.Fatalf("StatefulInstances[0].Index = %d, want %d", statefulInstances[0].Index, tt.wantFirstIndex)
+				}
+				if len(statefulInstances[0].Endpoints) != len(tt.wantFirstEndpoints) {
+					t.Fatalf("len(StatefulInstances[0].Endpoints) = %d, want %d", len(statefulInstances[0].Endpoints), len(tt.wantFirstEndpoints))
+				}
+				for i := range tt.wantFirstEndpoints {
+					if statefulInstances[0].Endpoints[i] != tt.wantFirstEndpoints[i] {
+						t.Fatalf("StatefulInstances[0].Endpoints[%d] = %q, want %q", i, statefulInstances[0].Endpoints[i], tt.wantFirstEndpoints[i])
+					}
+				}
+			}
+
+			if got.IsStateful != tt.wantIsStateful {
+				t.Fatalf("IsStateful = %v, want %v", got.IsStateful, tt.wantIsStateful)
+			}
+		})
+	}
+}

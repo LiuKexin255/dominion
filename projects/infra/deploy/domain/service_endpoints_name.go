@@ -26,10 +26,18 @@ var (
 	ErrServicePortMapUnavailable = errors.New("service port map unavailable")
 )
 
+// StatefulInstance represents a single instance of a stateful service.
+type StatefulInstance struct {
+	Index     int
+	Endpoints []string
+}
+
 // ServiceQueryResult holds the resolved ports map and endpoint addresses.
 type ServiceQueryResult struct {
-	Ports     map[string]int32
-	Endpoints []string
+	Ports             map[string]int32
+	Endpoints         []string
+	StatefulInstances []*StatefulInstance
+	IsStateful        bool
 }
 
 // ServiceEndpointsName represents the canonical resource name for service endpoints.

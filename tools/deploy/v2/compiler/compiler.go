@@ -93,6 +93,7 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			return nil, err
 		}
 		compiledArtifact.Http = compiledArtifactHTTP
+		compiledArtifact.WorkloadKind = mapWorkloadKind(serviceConfig.Kind)
 
 		desiredState.Artifacts = append(desiredState.Artifacts, compiledArtifact)
 	}
@@ -176,6 +177,15 @@ func ReadServiceConfigs(deployConfig *config.DeployConfig) (map[string]*config.S
 	return serviceConfigs, nil
 }
 
+func mapWorkloadKind(kind config.WorkloadKind) deploy.WorkloadKind {
+	switch kind {
+	case config.WorkloadKindStateful:
+		return deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL
+	default:
+		return deploy.WorkloadKind_WORKLOAD_KIND_STATELESS
+	}
+}
+
 func compileArtifactHTTP(deployService *config.DeployService, mergedPorts []*config.ServiceArtifactPort, artifactName string) (*deploy.ArtifactHTTPSpec, error) {
 	if deployService == nil {
 		return nil, nil
@@ -187,6 +197,7 @@ func compileArtifactHTTP(deployService *config.DeployService, mergedPorts []*con
 	route := &deploy.ArtifactHTTPSpec{
 		Hostnames: append([]string(nil), deployService.HTTP.Hostnames...),
 	}
+
 	for _, match := range deployService.HTTP.Matches {
 		if match == nil {
 			return nil, fmt.Errorf("http match is nil for service %s", artifactName)

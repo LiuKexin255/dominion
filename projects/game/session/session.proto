@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package projects.game.session;
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "dominion/projects/game/session";
+
+// SessionService exposes the control-plane API for game sessions.
+//
+// Prefix Path: /v1
+//
+// The service manages Session as the system-of-record resource for a game
+// runtime binding. It allocates a healthy game gateway, issues a short-lived
+// agent connection URL, and supports reconnect by reallocating the gateway and
+// rotating the reconnect generation.
+service SessionService {
+  // GetSession returns the latest persisted Session resource.
+  rpc GetSession(GetSessionRequest) returns (Session) {
+    option (google.api.http) = {
+      get: "/v1/{name=sessions/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // CreateSession creates a new Session, allocates a healthy game gateway,
+  // and returns the complete agent connection URL with an embedded token.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/sessions"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "type,session_id";
+  }
+
+  // DeleteSession ends a Session and removes it from the control plane.
+  rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/{name=sessions/*}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // ReconnectSession reallocates a healthy game gateway for an existing
+  // Session, increments reconnect_generation, and returns a new complete agent
+  // connection URL.
+  rpc ReconnectSession(ReconnectSessionRequest) returns (ReconnectSessionResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=sessions/*}:reconnect"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+}
+
+// Session is the control-plane resource for a single game runtime binding.
+message Session {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/session/Session"
+    pattern: "sessions/{session}"
+    plural: "sessions"
+    singular: "session"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  SessionType type = 2 [(google.api.field_behavior) = IMMUTABLE];
+
+  SessionStatus status = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string gateway_id = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp create_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp update_time = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp end_time = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp last_seen_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 reconnect_generation = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string last_error = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+enum SessionType {
+  SESSION_TYPE_UNSPECIFIED = 0;
+  SESSION_TYPE_SAOLEI = 1;
+}
+
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_PENDING = 1;
+  SESSION_STATUS_ACTIVE = 2;
+  SESSION_STATUS_DISCONNECTED = 3;
+  SESSION_STATUS_ENDED = 4;
+  SESSION_STATUS_FAILED = 5;
+}
+
+message GetSessionRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+}
+
+message CreateSessionRequest {
+  SessionType type = 1 [(google.api.field_behavior) = REQUIRED];
+
+  // session_id optionally lets the caller supply the terminal resource ID.
+  // When omitted, the server may generate one.
+  string session_id = 2 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message CreateSessionResponse {
+  Session session = 1 [(google.api.field_behavior) = REQUIRED];
+
+  string agent_connect_url = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DeleteSessionRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+}
+
+message ReconnectSessionRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+}
+
+message ReconnectSessionResponse {
+  Session session = 1 [(google.api.field_behavior) = REQUIRED];
+
+  string agent_connect_url = 2 [(google.api.field_behavior) = REQUIRED];
+}

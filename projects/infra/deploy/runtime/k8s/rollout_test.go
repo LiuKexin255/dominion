@@ -172,21 +172,21 @@ func Test_waitForRollout_AllReady(t *testing.T) {
 		appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
 	))
 
-	err := waitForRollout(context.Background(), client, testRolloutNamespace, []string{"api", "worker"}, nil)
+	err := waitForRollout(context.Background(), client, testRolloutNamespace, []string{"api", "worker"}, nil, nil)
 	if err != nil {
 		t.Fatalf("waitForRollout() failed: %v", err)
 	}
 }
 
 func Test_waitForRollout_EmptyList(t *testing.T) {
-	err := waitForRollout(context.Background(), kubernetesfake.NewSimpleClientset(), testRolloutNamespace, nil, nil)
+	err := waitForRollout(context.Background(), kubernetesfake.NewSimpleClientset(), testRolloutNamespace, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("waitForRollout() failed: %v", err)
 	}
 }
 
 func Test_waitForRollout_DeploymentNotFound(t *testing.T) {
-	err := waitForRollout(context.Background(), kubernetesfake.NewSimpleClientset(), testRolloutNamespace, []string{"missing"}, nil)
+	err := waitForRollout(context.Background(), kubernetesfake.NewSimpleClientset(), testRolloutNamespace, []string{"missing"}, nil, nil)
 	if err == nil {
 		t.Fatalf("waitForRollout() expected error")
 	}
@@ -208,7 +208,7 @@ func Test_waitForRollout_DeploymentFailed(t *testing.T) {
 		}}},
 	))
 
-	err := waitForRollout(context.Background(), client, testRolloutNamespace, []string{"api"}, nil)
+	err := waitForRollout(context.Background(), client, testRolloutNamespace, []string{"api"}, nil, nil)
 	if err == nil {
 		t.Fatalf("waitForRollout() expected error")
 	}
@@ -229,7 +229,7 @@ func Test_waitForRollout_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, nil)
+	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, nil, nil)
 	if err == nil {
 		t.Fatalf("waitForRollout() expected error")
 	}
@@ -250,7 +250,7 @@ func Test_waitForRollout_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, nil)
+	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, nil, nil)
 	if err == nil {
 		t.Fatalf("waitForRollout() expected error")
 	}
@@ -272,7 +272,7 @@ func Test_waitForRollout_ProgressCallback(t *testing.T) {
 	defer cancel()
 
 	var messages []string
-	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, func(message string) {
+	err := waitForRollout(ctx, client, testRolloutNamespace, []string{"api"}, nil, func(message string) {
 		messages = append(messages, message)
 	})
 	if err == nil {
@@ -283,6 +283,134 @@ func Test_waitForRollout_ProgressCallback(t *testing.T) {
 	}
 	if !strings.Contains(messages[0], "不可用副本") {
 		t.Fatalf("progress callback message = %q, want blocking reason", messages[0])
+	}
+}
+
+func Test_isStatefulSetReady(t *testing.T) {
+	tests := []struct {
+		name string
+		sts  *appsv1.StatefulSet
+		want bool
+	}{
+		{
+			name: "all conditions met",
+			sts: newRolloutTestStatefulSet(
+				"ready",
+				3,
+				1,
+				appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+			),
+			want: true,
+		},
+		{
+			name: "replicas zero only requires generation observed",
+			sts: newRolloutTestStatefulSet(
+				"scaled-down",
+				0,
+				2,
+				appsv1.StatefulSetStatus{ObservedGeneration: 2},
+			),
+			want: true,
+		},
+		{
+			name: "observed generation stale",
+			sts: newRolloutTestStatefulSet(
+				"stale-generation",
+				3,
+				2,
+				appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+			),
+			want: false,
+		},
+		{
+			name: "ready replicas insufficient",
+			sts: newRolloutTestStatefulSet(
+				"not-ready",
+				3,
+				1,
+				appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 2},
+			),
+			want: false,
+		},
+		{
+			name: "nil statefulset",
+			sts:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isStatefulSetReady(tt.sts)
+			if got != tt.want {
+				t.Fatalf("isStatefulSetReady() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_waitForRollout_StatefulSetReady(t *testing.T) {
+	client := kubernetesfake.NewSimpleClientset()
+	seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+		"cache",
+		3,
+		1,
+		appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+	))
+
+	err := waitForRollout(context.Background(), client, testRolloutNamespace, nil, []string{"cache"}, nil)
+	if err != nil {
+		t.Fatalf("waitForRollout() failed: %v", err)
+	}
+}
+
+func Test_waitForRollout_StatefulSetNotFound(t *testing.T) {
+	err := waitForRollout(context.Background(), kubernetesfake.NewSimpleClientset(), testRolloutNamespace, nil, []string{"missing"}, nil)
+	if err == nil {
+		t.Fatalf("waitForRollout() expected error")
+	}
+	if !strings.Contains(err.Error(), "获取 StatefulSet") || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("waitForRollout() error = %q, want statefulset get failure", err)
+	}
+}
+
+func Test_waitForRollout_StatefulSetNotReady(t *testing.T) {
+	client := kubernetesfake.NewSimpleClientset()
+	seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+		"cache",
+		3,
+		1,
+		appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 2},
+	))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := waitForRollout(ctx, client, testRolloutNamespace, nil, []string{"cache"}, nil)
+	if err == nil {
+		t.Fatalf("waitForRollout() expected error")
+	}
+}
+
+func newRolloutTestStatefulSet(name string, replicas int32, generation int64, status appsv1.StatefulSetStatus) *appsv1.StatefulSet {
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  testRolloutNamespace,
+			Generation: generation,
+		},
+		Spec:   appsv1.StatefulSetSpec{},
+		Status: status,
+	}
+	sts.Spec.Replicas = &replicas
+
+	return sts
+}
+
+func seedRolloutTestStatefulSet(t *testing.T, client *kubernetesfake.Clientset, sts *appsv1.StatefulSet) {
+	t.Helper()
+	if err := client.Tracker().Add(sts); err != nil {
+		t.Fatalf("seed statefulset failed: %v", err)
 	}
 }
 

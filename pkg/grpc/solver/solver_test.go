@@ -2,14 +2,16 @@ package solver
 
 import (
 	"context"
-	"dominion/pkg/solver"
 	"errors"
+	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"dominion/pkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/serviceconfig"
@@ -19,9 +21,11 @@ func TestRegister(t *testing.T) {
 	registerOnce = sync.Once{}
 	originalRegisterResolver := registerResolver
 	originalNewResolverBuilder := newResolverBuilder
+	originalNewStatefulResolverBuilder := newStatefulResolverBuilder
 	t.Cleanup(func() {
 		registerResolver = originalRegisterResolver
 		newResolverBuilder = originalNewResolverBuilder
+		newStatefulResolverBuilder = originalNewStatefulResolverBuilder
 	})
 
 	var gotBuilders []grpcresolver.Builder
@@ -31,17 +35,121 @@ func TestRegister(t *testing.T) {
 	newResolverBuilder = func() grpcresolver.Builder {
 		return fakeBuilder{scheme: Scheme}
 	}
+	newStatefulResolverBuilder = func() grpcresolver.Builder {
+		return fakeBuilder{scheme: StatefulScheme}
+	}
 
 	// when
 	Register()
 	Register()
 
 	// then
-	if len(gotBuilders) != 1 {
-		t.Fatalf("Register() call count = %d, want 1", len(gotBuilders))
+	if len(gotBuilders) != 2 {
+		t.Fatalf("Register() call count = %d, want 2", len(gotBuilders))
 	}
 	if gotBuilders[0].Scheme() != Scheme {
 		t.Fatalf("Register() scheme = %q, want %q", gotBuilders[0].Scheme(), Scheme)
+	}
+	if gotBuilders[1].Scheme() != StatefulScheme {
+		t.Fatalf("Register() stateful scheme = %q, want %q", gotBuilders[1].Scheme(), StatefulScheme)
+	}
+}
+
+func TestStatefulBuilder_Scheme(t *testing.T) {
+	builder := NewStatefulBuilder()
+
+	if got := builder.Scheme(); got != StatefulScheme {
+		t.Fatalf("Scheme() = %q, want %q", got, StatefulScheme)
+	}
+}
+
+func TestStatefulBuilder_Build_Success(t *testing.T) {
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeStatefulResolver{
+		results: []statefulResolveResult{{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.2:50051"}}}}},
+	}
+	builder := NewStatefulBuilder(WithStatefulResolver(client))
+	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
+	builder.RefreshInterval = time.Hour
+
+	got, err := builder.Build(newStatefulResolverTarget("catalog/grpc:50051", 0), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+
+	if len(cc.states()) != 1 {
+		t.Fatalf("Build() update count = %d, want 1", len(cc.states()))
+	}
+	if gotState := cc.states()[0]; !reflect.DeepEqual(addressStrings(gotState.Addresses), []string{"10.0.0.1:50051"}) {
+		t.Fatalf("Build() published addresses = %#v, want %#v", addressStrings(gotState.Addresses), []string{"10.0.0.1:50051"})
+	}
+}
+
+func TestStatefulBuilder_InstanceNotFound(t *testing.T) {
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeStatefulResolver{
+		results: []statefulResolveResult{
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 5, Endpoints: []string{"10.0.0.5:50051"}}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.2:50051"}}}},
+		},
+	}
+	builder := NewStatefulBuilder(WithStatefulResolver(client))
+	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
+	builder.RefreshInterval = time.Hour
+
+	got, err := builder.Build(newStatefulResolverTarget("catalog/grpc:50051", 5), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+	cc.drainUpdateSignals()
+
+	got.ResolveNow(grpcresolver.ResolveNowOptions{})
+	reportedErr := cc.waitForError(time.Second)
+	if reportedErr == nil {
+		t.Fatal("ReportError() = nil, want stateful instance not found")
+	}
+	if !errors.Is(reportedErr, solver.ErrInstanceNotFound) {
+		t.Fatalf("ReportError() = %v, want error wrapping %v", reportedErr, solver.ErrInstanceNotFound)
+	}
+	if len(cc.states()) != 1 {
+		t.Fatalf("after error update count = %d, want 1", len(cc.states()))
+	}
+}
+
+func TestStatefulBuilder_InstanceNoReadyEndpoints(t *testing.T) {
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeStatefulResolver{
+		results: []statefulResolveResult{
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.1:50051"}}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1}}},
+		},
+	}
+	builder := NewStatefulBuilder(WithStatefulResolver(client))
+	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
+	builder.RefreshInterval = time.Hour
+
+	got, err := builder.Build(newStatefulResolverTarget("catalog/grpc:50051", 1), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+	cc.drainUpdateSignals()
+
+	got.ResolveNow(grpcresolver.ResolveNowOptions{})
+	reportedErr := cc.waitForError(time.Second)
+	if reportedErr == nil {
+		t.Fatal("ReportError() = nil, want stateful instance has no ready endpoints")
+	}
+	if !errors.Is(reportedErr, solver.ErrInstanceNoReadyEndpoints) {
+		t.Fatalf("ReportError() = %v, want error wrapping %v", reportedErr, solver.ErrInstanceNoReadyEndpoints)
+	}
+	if len(cc.states()) != 1 {
+		t.Fatalf("after error update count = %d, want 1", len(cc.states()))
 	}
 }
 
@@ -245,6 +353,17 @@ type fakeResolverClient struct {
 	calls   int
 }
 
+type statefulResolveResult struct {
+	instances []*solver.StatefulInstance
+	err       error
+}
+
+type fakeStatefulResolver struct {
+	mu      sync.Mutex
+	results []statefulResolveResult
+	calls   int
+}
+
 func (c *fakeResolverClient) Resolve(context.Context, *solver.Target) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -278,6 +397,35 @@ func (c *fakeResolverClient) callCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls
+}
+
+func (r *fakeStatefulResolver) Resolve(context.Context, *solver.Target) ([]*solver.StatefulInstance, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.results) == 0 {
+		r.calls++
+		return nil, nil
+	}
+
+	index := r.calls
+	if index >= len(r.results) {
+		index = len(r.results) - 1
+	}
+	result := r.results[index]
+	r.calls++
+
+	if result.err != nil {
+		return nil, result.err
+	}
+
+	if len(result.instances) == 0 {
+		return nil, nil
+	}
+
+	instances := make([]*solver.StatefulInstance, len(result.instances))
+	copy(instances, result.instances)
+	return instances, nil
 }
 
 type fakeTicker struct {
@@ -429,6 +577,11 @@ func addressStrings(addresses []grpcresolver.Address) []string {
 
 func newResolverTarget(endpoint string) grpcresolver.Target {
 	return grpcresolver.Target{URL: *mustParseResolverURL(Scheme + ":///" + endpoint)}
+}
+
+func newStatefulResolverTarget(endpoint string, instance int) grpcresolver.Target {
+	u := mustParseResolverURL(fmt.Sprintf("%s:///%s?%s=%d", StatefulScheme, endpoint, instanceQueryParam, instance))
+	return grpcresolver.Target{URL: *u}
 }
 
 func mustParseResolverURL(raw string) *url.URL {

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "token",
+    srcs = ["token.go"],
+    importpath = "dominion/projects/game/pkg/token",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "token_test",
+    srcs = ["token_test.go"],
+    embed = [":token"],
+)

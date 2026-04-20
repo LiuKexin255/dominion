@@ -1,6 +1,55 @@
 package k8s
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestStatefulWorkload_Validate(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload StatefulWorkload
+		wantErr  bool
+	}{
+		{name: "valid", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 3, Ports: []*DeploymentPort{{Name: "http", Port: 8080}}}},
+		{name: "zero replicas", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 0}},
+		{name: "missing service", workload: StatefulWorkload{EnvironmentName: "dev", App: "app", Image: "repo/app:v1"}, wantErr: true},
+		{name: "missing env", workload: StatefulWorkload{ServiceName: "svc", App: "app", Image: "repo/app:v1"}, wantErr: true},
+		{name: "missing app", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", Image: "repo/app:v1"}, wantErr: true},
+		{name: "missing image", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app"}, wantErr: true},
+		{name: "negative replicas", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: -1}, wantErr: true},
+		{name: "invalid port", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Ports: []*DeploymentPort{{Name: "http", Port: 0}}}, wantErr: true},
+		{name: "nil port", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Ports: []*DeploymentPort{nil}}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.workload.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestStatefulWorkload_Validate_NameTooLong(t *testing.T) {
+	workload := StatefulWorkload{
+		ServiceName:     strings.Repeat("s", 60),
+		EnvironmentName: "dev",
+		App:             "app",
+		Image:           "repo/app:v1",
+	}
+	err := workload.Validate()
+	if err == nil {
+		t.Fatalf("Validate() expected error for long name")
+	}
+}
 
 func TestDeploymentWorkload_Validate(t *testing.T) {
 	tests := []struct {
@@ -106,5 +155,24 @@ func TestWorkloadNameMethods(t *testing.T) {
 	}
 	if got := (&MongoDBWorkload{ServiceName: "mongo", App: "app"}).ResourceName(); got == "" {
 		t.Fatalf("ResourceName() = empty")
+	}
+	if got := (&StatefulWorkload{ServiceName: "svc", App: "app"}).WorkloadName(); got == "" {
+		t.Fatalf("WorkloadName() = empty")
+	}
+	if got := (&StatefulWorkload{ServiceName: "svc", App: "app"}).ServiceResourceName(); got == "" {
+		t.Fatalf("ServiceResourceName() = empty")
+	}
+}
+
+func TestStatefulWorkload_NilReceiver(t *testing.T) {
+	var w *StatefulWorkload
+	if got := w.WorkloadName(); got != "" {
+		t.Fatalf("nil WorkloadName() = %q, want empty", got)
+	}
+	if got := w.ServiceResourceName(); got != "" {
+		t.Fatalf("nil ServiceResourceName() = %q, want empty", got)
+	}
+	if err := w.Validate(); err == nil {
+		t.Fatalf("nil Validate() expected error")
 	}
 }

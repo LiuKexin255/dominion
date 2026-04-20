@@ -129,13 +129,14 @@ type mongoArtifactPortSpec struct {
 
 // mongoArtifactSpec is the BSON representation of domain.ArtifactSpec.
 type mongoArtifactSpec struct {
-	Name       string                  `bson:"name"`
-	App        string                  `bson:"app"`
-	Image      string                  `bson:"image"`
-	Ports      []mongoArtifactPortSpec `bson:"ports"`
-	Replicas   int32                   `bson:"replicas"`
-	TLSEnabled bool                    `bson:"tls_enabled"`
-	HTTP       *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
+	Name         string                  `bson:"name"`
+	App          string                  `bson:"app"`
+	Image        string                  `bson:"image"`
+	Ports        []mongoArtifactPortSpec `bson:"ports"`
+	Replicas     int32                   `bson:"replicas"`
+	TLSEnabled   bool                    `bson:"tls_enabled"`
+	WorkloadKind int                     `bson:"workload_kind"`
+	HTTP         *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
@@ -406,13 +407,14 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 	result := make([]mongoArtifactSpec, len(specs))
 	for i, s := range specs {
 		result[i] = mongoArtifactSpec{
-			Name:       s.Name,
-			App:        s.App,
-			Image:      s.Image,
-			Ports:      artifactPortSpecsToMongo(s.Ports),
-			Replicas:   s.Replicas,
-			TLSEnabled: s.TLSEnabled,
-			HTTP:       artifactHTTPSpecToMongo(s.HTTP),
+			Name:         s.Name,
+			App:          s.App,
+			Image:        s.Image,
+			Ports:        artifactPortSpecsToMongo(s.Ports),
+			Replicas:     s.Replicas,
+			TLSEnabled:   s.TLSEnabled,
+			WorkloadKind: int(s.WorkloadKind),
+			HTTP:         artifactHTTPSpecToMongo(s.HTTP),
 		}
 	}
 	return result
@@ -540,13 +542,14 @@ func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 	result := make([]*domain.ArtifactSpec, len(specs))
 	for i, s := range specs {
 		result[i] = &domain.ArtifactSpec{
-			Name:       s.Name,
-			App:        s.App,
-			Image:      s.Image,
-			Ports:      artifactPortSpecsFromMongo(s.Ports),
-			Replicas:   s.Replicas,
-			TLSEnabled: s.TLSEnabled,
-			HTTP:       artifactHTTPSpecFromMongo(s.HTTP),
+			Name:         s.Name,
+			App:          s.App,
+			Image:        s.Image,
+			Ports:        artifactPortSpecsFromMongo(s.Ports),
+			Replicas:     s.Replicas,
+			TLSEnabled:   s.TLSEnabled,
+			WorkloadKind: domain.WorkloadKind(s.WorkloadKind),
+			HTTP:         artifactHTTPSpecFromMongo(s.HTTP),
 		}
 	}
 	return result

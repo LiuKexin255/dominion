@@ -27,7 +27,7 @@ services:
 
 #### 1. `artifact`：部署服务产物
 
-`artifact` 用于引用一个 `service.yaml` 中定义的产物。当前服务产物类型使用 `type: deployment` 表示会生成常规的 Kubernetes Deployment/Service。
+`artifact` 用于引用一个 `service.yaml` 中定义的产物。通过 `service.yaml` 顶层 `kind` 字段定义运行时工作负载类型。
 
 `deploy.yaml` 示例：
 
@@ -54,9 +54,9 @@ services:
 name: service
 app: grpc-hello-world
 desc: grpc hello world service
+kind: stateless
 artifacts:
   - name: service
-    type: deployment
     target: :service_image
     tls: true
     ports:
@@ -72,10 +72,73 @@ artifacts:
 
 说明：
 
-- `type: deployment` 配置在 `service.yaml` 中，而不是 `deploy.yaml` 中。
-- deploy 工具会先读取 `service.yaml`，找到对应 `artifact.name`，再根据其 `target` 解析镜像并生成 Deployment/Service。
+- `kind` 配置在 `service.yaml` 中，可选值为 `stateless` (默认) 或 `stateful`。
+- `artifacts[].type` 字段已被移除，请使用 `kind` 代替。
+- deploy 工具会先读取 `service.yaml`，找到对应 `artifact.name`，再根据其 `target` 解析镜像并根据 `kind` 生成对应的 Kubernetes 资源。
 
-#### 2. `infra`：部署基础设施实例
+#### 2. `stateful`：部署有状态服务
+
+当 `service.yaml` 中配置 `kind: stateful` 时，deploy 工具会生成 Kubernetes StatefulSet 及其配套资源。
+
+`deploy.yaml` 示例：
+
+```yaml
+name: game.prod
+services:
+  - artifact:
+      path: //projects/game/service.yaml
+      name: gateway
+    replicas: 3
+	    http:
+	      hostnames:
+	        - gateway.example.com
+	      matches:
+	        - backend: tcp
+	          path:
+	            type: PathPrefix
+	            value: /v1
+```
+
+对应的 `service.yaml` 示例：
+
+```yaml
+name: gateway
+app: game-gateway
+kind: stateful
+artifacts:
+  - name: gateway
+    target: :gateway_image
+    ports:
+      - name: tcp
+        port: 8080
+```
+
+**生成的资源：**
+
+- **StatefulSet**：管理有状态 Pod 实例。
+- **Governing Service**：Headless Service，用于维护 Pod 的稳定网络身份。
+- **Per-instance Service**：为每个 Pod 实例生成一个独立的 Service（如 `game-gateway-0`），通过标签精确选中对应 Pod。
+- **Per-instance HTTPRoute**：为每个实例生成独立的路由规则。
+
+**域名展开规则：**
+
+对于 `stateful` 服务，`http.hostnames` 中配置的是**基础域名**。deploy service 会根据副本数自动展开为实例域名：
+`{service_name}-{N}.{hostname}` (N 为从 0 开始的实例索引)
+
+例如上述配置（3 副本）将生成以下域名：
+- `game-gateway-0.gateway.example.com`
+- `game-gateway-1.gateway.example.com`
+- `game-gateway-2.gateway.example.com`
+
+若配置了多个基础域名，则每个实例都会对应多个展开后的域名。
+
+**限制与说明：**
+
+- `stateful` 的 `http` 配置格式与 `stateless` 完全一致，均需提供 `hostnames` 和完整的 `matches` 规则。
+- **缩容行为**：当 `replicas` 减小时，被移除实例对应的 Service 和 HTTPRoute 会立即被删除，相关域名立即失效。
+- **域名展开时机**：域名展开由 deploy service 端在生成资源时完成，CLI 编译器仅负责校验和传输基础域名。
+
+#### 3. `infra`：部署基础设施实例
 
 `infra` 用于在环境中声明基础设施资源。当前仅支持 `resource: mongodb`。
 
@@ -107,7 +170,7 @@ services:
 - `infra` 不依赖 `service.yaml`。
 - 对于 MongoDB，deploy 工具会基于 profile 直接生成所需资源；当 `persistence.enabled: true` 时会额外创建持久化存储相关资源。
 
-#### 3. `artifact` 与 `infra` 组合示例
+#### 4. `artifact` 与 `infra` 组合示例
 
 同一个环境中可以同时包含基础设施和业务服务，例如先声明 MongoDB，再部署依赖它的服务：
 

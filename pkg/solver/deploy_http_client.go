@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 
 	"dominion/projects/infra/deploy"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -68,7 +69,27 @@ func (c *DeployHTTPClient) GetServiceEndpoints(ctx context.Context, name string)
 	}
 
 	return &ServiceEndpointsInfo{
-		Endpoints: result.GetEndpoints(),
-		Ports:     result.GetPorts(),
+		Endpoints:         result.GetEndpoints(),
+		Ports:             result.GetPorts(),
+		StatefulInstances: convertStatefulInstances(result.GetStatefulInstances()),
+		IsStateful:        result.GetIsStateful(),
 	}, nil
+}
+
+// convertStatefulInstances converts proto StatefulServiceInstance messages to solver types.
+func convertStatefulInstances(in []*deploy.StatefulServiceInstance) []*StatefulInstance {
+	if len(in) == 0 {
+		return nil
+	}
+	instances := make([]*StatefulInstance, 0, len(in))
+	for _, si := range in {
+		instances = append(instances, &StatefulInstance{
+			Index:     int(si.GetIndex()),
+			Endpoints: si.GetEndpoints(),
+		})
+	}
+	sort.Slice(instances, func(i, j int) bool {
+		return instances[i].Index < instances[j].Index
+	})
+	return instances
 }

@@ -11,9 +11,11 @@ const infraResourceMongoDB = "mongodb"
 
 // DeployObjects 表示一次部署所需的 Kubernetes 工作负载对象集合。
 type DeployObjects struct {
-	Deployments      []*DeploymentWorkload
-	HTTPRoutes       []*HTTPRouteWorkload
-	MongoDBWorkloads []*MongoDBWorkload
+	Deployments       []*DeploymentWorkload
+	HTTPRoutes        []*HTTPRouteWorkload
+	MongoDBWorkloads  []*MongoDBWorkload
+	StatefulWorkloads []*StatefulWorkload
+	InstanceRoutes    []*HTTPRouteWorkload
 }
 
 // ConvertToWorkloads 将领域模型 Environment 转换为 Kubernetes 工作负载对象。
@@ -28,15 +30,27 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 	objects := &DeployObjects{}
 
 	for _, artifact := range desiredState.Artifacts {
-		deployment := convertArtifactToDeployment(artifact, envName)
-		objects.Deployments = append(objects.Deployments, deployment)
+		switch artifact.WorkloadKind {
+		case domain.WorkloadKindStateful:
+			statefulWorkload := convertArtifactToStatefulWorkload(artifact, envName)
+			objects.StatefulWorkloads = append(objects.StatefulWorkloads, statefulWorkload)
 
-		if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
-			route, err := convertArtifactHTTPToRoute(artifact, envName, cfg, deployment, envType)
+			instanceRoutes, err := convertArtifactHTTPToInstanceRoutes(artifact, envName, cfg, envType)
 			if err != nil {
 				return nil, err
 			}
-			objects.HTTPRoutes = append(objects.HTTPRoutes, route)
+			objects.InstanceRoutes = append(objects.InstanceRoutes, instanceRoutes...)
+		default:
+			deployment := convertArtifactToDeployment(artifact, envName)
+			objects.Deployments = append(objects.Deployments, deployment)
+
+			if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
+				route, err := convertArtifactHTTPToRoute(artifact, envName, cfg, deployment, envType)
+				if err != nil {
+					return nil, err
+				}
+				objects.HTTPRoutes = append(objects.HTTPRoutes, route)
+			}
 		}
 	}
 
@@ -49,6 +63,24 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 	}
 
 	return objects, nil
+}
+
+func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName string) *StatefulWorkload {
+	var hostnames []string
+	if artifact.HTTP != nil {
+		hostnames = artifact.HTTP.Hostnames
+	}
+
+	return &StatefulWorkload{
+		ServiceName:     artifact.Name,
+		EnvironmentName: envName,
+		App:             artifact.App,
+		Image:           artifact.Image,
+		Replicas:        artifact.Replicas,
+		TLSEnabled:      artifact.TLSEnabled,
+		Ports:           convertPorts(artifact.Ports),
+		Hostnames:       hostnames,
+	}
 }
 
 func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) *DeploymentWorkload {
@@ -103,6 +135,49 @@ func convertArtifactHTTPToRoute(
 	}, nil
 }
 
+func convertArtifactHTTPToInstanceRoutes(
+	artifact *domain.ArtifactSpec,
+	envName string,
+	cfg *K8sConfig,
+	envType domain.EnvironmentType,
+) ([]*HTTPRouteWorkload, error) {
+	if artifact.HTTP == nil || len(artifact.HTTP.Hostnames) == 0 || artifact.Replicas == 0 {
+		return nil, nil
+	}
+	matches, err := convertHTTPRouteMatches(artifact.Ports, artifact.HTTP.Matches)
+	if err != nil {
+		return nil, err
+	}
+
+	instanceRoutes := make([]*HTTPRouteWorkload, 0, artifact.Replicas)
+	for i := 0; i < int(artifact.Replicas); i++ {
+		instanceRoutes = append(instanceRoutes, &HTTPRouteWorkload{
+			ServiceName:      artifact.Name,
+			EnvironmentName:  envName,
+			App:              artifact.App,
+			Hostnames:        expandStatefulHostnames(artifact.Name, i, artifact.HTTP.Hostnames),
+			Matches:          matches,
+			BackendService:   newInstanceObjectName(WorkloadKindInstanceService, envName, artifact.Name, i),
+			GatewayName:      cfg.Gateway.Name,
+			GatewayNamespace: cfg.Gateway.Namespace,
+			EnvType:          envType,
+		})
+	}
+
+	return instanceRoutes, nil
+}
+func expandStatefulHostnames(serviceName string, instanceIndex int, hostnames []string) []string {
+	if len(hostnames) == 0 {
+		return nil
+	}
+
+	expandedHostnames := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		expandedHostnames = append(expandedHostnames, fmt.Sprintf("%s-%d.%s", serviceName, instanceIndex, hostname))
+	}
+
+	return expandedHostnames
+}
 func convertHTTPRouteMatches(ports []domain.ArtifactPortSpec, rules []domain.HTTPRouteRule) ([]*HTTPRoutePathMatch, error) {
 	backendPortMap := make(map[string]int, len(ports))
 	for _, port := range ports {

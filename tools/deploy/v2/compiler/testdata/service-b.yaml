@@ -3,7 +3,6 @@ app: beta
 desc: service b
 artifacts:
   - name: service-b
-    type: deployment
     target: :service_b_image
     ports:
       - name: http

@@ -9,7 +9,7 @@ go_largetest(
         "SUT_ENV_NAME": "liukexin.demo",
     },
     deps = [
-        "//experimental/mongo_demo",
+        "//experimental/golang/mongo_demo",
         "@org_golang_google_protobuf//encoding/protojson",
     ],
 )

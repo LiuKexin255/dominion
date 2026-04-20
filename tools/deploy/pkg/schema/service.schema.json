@@ -11,6 +11,14 @@
     "artifacts"
   ],
   "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "stateless",
+        "stateful"
+      ],
+      "description": "工作负载类型，默认 stateless"
+    },
     "name": {
       "type": "string",
       "minLength": 1,
@@ -62,7 +70,6 @@
         "additionalProperties": false,
         "required": [
           "name",
-          "type",
           "target"
         ],
         "properties": {
@@ -70,14 +77,6 @@
             "type": "string",
             "minLength": 1,
             "description": "产物别名，用于在部署配置中引用"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "deployment",
-              "stateful"
-            ],
-            "description": "产物类型"
           },
           "target": {
             "type": "string",

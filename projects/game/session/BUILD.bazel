@@ -1,0 +1,67 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+proto_library(
+    name = "session_proto",
+    srcs = ["session.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@googleapis//google/api:annotations_proto",
+        "@googleapis//google/api:client_proto",
+        "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
+    ],
+)
+
+go_proto_library(
+    name = "session_go_proto",
+    compilers = [
+        "@rules_go//proto:go_grpc_v2",
+        "@rules_go//proto:go_proto",
+        "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+    ],
+    importpath = "dominion/projects/game/session",
+    proto = ":session_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:annotations_go_proto",
+        "@googleapis//google/api:client_go_proto",
+        "@googleapis//google/api:field_behavior_go_proto",
+        "@googleapis//google/api:resource_go_proto",
+    ],
+)
+
+go_library(
+    name = "session",
+    srcs = ["handler.go"],
+    embed = [":session_go_proto"],
+    importpath = "dominion/projects/game/session",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/session/domain",
+        "//projects/game/session/service",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_unittest(
+    name = "session_test",
+    srcs = ["handler_test.go"],
+    embed = [":session"],
+    deps = [
+        "//projects/game/pkg/token",
+        "//projects/game/session/domain",
+        "//projects/game/session/runtime/gateway",
+        "//projects/game/session/runtime/storage",
+        "//projects/game/session/service",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+    ],
+)

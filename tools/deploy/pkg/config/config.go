@@ -20,7 +20,7 @@ var (
 
 type EnvironmentType string
 type HTTPPathMatchType string
-type ServiceArtifactType string
+type WorkloadKind string
 
 const (
 	HTTPPathMatchTypePrefix       = "PathPrefix"
@@ -30,18 +30,10 @@ const (
 	EnvironmentTypeDev         = "dev"
 	EnvironmentTypeTest        = "test"
 	EnvironmentTypeUnspecified = "unspecified"
+
+	WorkloadKindStateless WorkloadKind = "stateless"
+	WorkloadKindStateful  WorkloadKind = "stateful"
 )
-
-// Validate 校验服务产物类型是否合法。
-func (t ServiceArtifactType) Validate() error {
-	switch t {
-	case ServiceArtifactTypeDeployment:
-		return nil
-	default:
-		return fmt.Errorf("不支持的产物类型 %s", t)
-	}
-}
-
 // DeployConfig 部署配置
 type DeployConfig struct {
 	Name     string           `yaml:"name"`
@@ -107,11 +99,12 @@ type ServiceConfig struct {
 
 	// URI 资源标识符，如果读取时为空，读取时写入
 	URI string `yaml:"uri,omitempty"`
+
+	Kind WorkloadKind `yaml:"kind,omitempty"`
 }
 
 type ServiceArtifact struct {
 	Name   string                 `yaml:"name"`
-	Type   ServiceArtifactType    `yaml:"type"`
 	Target string                 `yaml:"target"`
 	TLS    bool                   `yaml:"tls,omitempty"`
 	Ports  []*ServiceArtifactPort `yaml:"ports"`
@@ -189,14 +182,15 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 	}
 
 	for _, artifact := range c.Artifacts {
-		if err := artifact.Type.Validate(); err != nil {
-			return nil, err
-		}
 		normalized, err := normalizeArtifactTarget(artifact.Target, configURI)
 		if err != nil {
 			return nil, fmt.Errorf("标准化产物 target 失败: %w", err)
 		}
 		artifact.Target = normalized
+	}
+
+	if c.Kind == "" {
+		c.Kind = WorkloadKindStateless
 	}
 
 	return c, nil

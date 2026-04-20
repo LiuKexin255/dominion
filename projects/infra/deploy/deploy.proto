@@ -133,6 +133,18 @@ message ServiceEndpoints {
   string resolved_environment = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   ResolutionMode resolution_mode = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  repeated StatefulServiceInstance stateful_instances = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bool is_stateful = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// StatefulServiceInstance describes a single instance of a stateful service,
+// identified by its ordinal index within the StatefulSet.
+message StatefulServiceInstance {
+  int32 index = 1;
+
+  repeated string endpoints = 2;
 }
 
 message EnvironmentDesiredState {
@@ -193,6 +205,8 @@ message ArtifactSpec {
   bool tls_enabled = 6;
 
   ArtifactHTTPSpec http = 7;
+
+  WorkloadKind workload_kind = 8;
 }
 
 message ArtifactPortSpec {
@@ -238,6 +252,12 @@ message HTTPPathRule {
 enum HTTPPathRuleType {
   HTTP_PATH_RULE_TYPE_UNSPECIFIED = 0;
   HTTP_PATH_RULE_TYPE_PATH_PREFIX = 1;
+}
+
+enum WorkloadKind {
+  WORKLOAD_KIND_UNSPECIFIED = 0;
+  WORKLOAD_KIND_STATELESS = 1;
+  WORKLOAD_KIND_STATEFUL = 2;
 }
 
 message GetEnvironmentRequest {

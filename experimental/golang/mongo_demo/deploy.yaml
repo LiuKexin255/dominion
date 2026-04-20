@@ -8,7 +8,7 @@ services:
       profile: dev-single
       name: mongo
   - artifact:
-      path: //experimental/mongo_demo/cmd/service.yaml
+      path: //experimental/golang/mongo_demo/cmd/service.yaml
       name: cmd
     http:
       hostnames:

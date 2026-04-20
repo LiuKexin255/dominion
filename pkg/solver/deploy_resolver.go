@@ -15,6 +15,10 @@ type ServiceEndpointsInfo struct {
 	Endpoints []string
 	// Ports maps named ports to their numeric port values.
 	Ports map[string]int32
+	// StatefulInstances holds per-instance endpoints for stateful services.
+	StatefulInstances []*StatefulInstance
+	// IsStateful indicates whether the service is a stateful service.
+	IsStateful bool
 }
 
 // DeployEndpointClient fetches service endpoints from the deploy service.
@@ -60,7 +64,10 @@ func (r *DeployResolver) Resolve(ctx context.Context, target *Target) ([]string,
 	if err != nil {
 		return nil, fmt.Errorf("deploy GetServiceEndpoints(%q): %w", name, err)
 	}
-	return filterEndpoints(info, target.PortSelector)
+	if info == nil {
+		return nil, nil
+	}
+	return filterEndpoints(info.Endpoints, info.Ports, target.PortSelector)
 }
 
 // buildResourceName constructs the deploy resource name for a target.
@@ -69,12 +76,7 @@ func (r *DeployResolver) buildResourceName(target *Target) string {
 }
 
 // filterEndpoints applies port selection to the resolved endpoints.
-func filterEndpoints(info *ServiceEndpointsInfo, ps PortSelector) ([]string, error) {
-	if info == nil {
-		return nil, nil
-	}
-
-	endpoints := info.Endpoints
+func filterEndpoints(endpoints []string, ports map[string]int32, ps PortSelector) ([]string, error) {
 	if len(endpoints) == 0 {
 		return nil, nil
 	}
@@ -84,7 +86,7 @@ func filterEndpoints(info *ServiceEndpointsInfo, ps PortSelector) ([]string, err
 	}
 
 	if ps.IsNamed() {
-		portValue, ok := info.Ports[ps.Name()]
+		portValue, ok := ports[ps.Name()]
 		if !ok {
 			return nil, fmt.Errorf("named port %q not found in service endpoints", ps.Name())
 		}
