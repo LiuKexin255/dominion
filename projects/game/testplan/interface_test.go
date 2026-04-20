@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"dominion/pkg/testtool"
 	session "dominion/projects/game/session"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const (
-	envSUTHostURL          = "SUT_HOST_URL"
-	envSUTEnvName          = "SUT_ENV_NAME"
 	headerEnv              = "env"
 	sessionPath            = "/v1/sessions"
 	minReconnectGeneration = int64(1)
@@ -31,17 +29,6 @@ var (
 	testInvalidType = session.SessionType_SESSION_TYPE_UNSPECIFIED
 )
 
-func requireEnv(t *testing.T, name string) string {
-	t.Helper()
-
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		t.Fatalf("environment variable %s is required", name)
-	}
-
-	return value
-}
-
 func uniqueSessionID() string {
 	return fmt.Sprintf("session-%d", time.Now().UnixNano())
 }
@@ -49,7 +36,7 @@ func uniqueSessionID() string {
 func doRequest(t *testing.T, method, url string, body io.Reader) *http.Response {
 	t.Helper()
 
-	sutEnvName := requireEnv(t, envSUTEnvName)
+	sutEnvName := testtool.MustEnv()
 
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
@@ -199,7 +186,7 @@ func requireAgentConnectURL(t *testing.T, got, gatewayID string) {
 }
 
 func TestInterface_CreateSession(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	created := createSession(t, sutHostURL)
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
@@ -215,7 +202,7 @@ func TestInterface_CreateSession(t *testing.T) {
 }
 
 func TestInterface_GetSession(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	created := createSession(t, sutHostURL)
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
@@ -236,7 +223,7 @@ func TestInterface_GetSession(t *testing.T) {
 }
 
 func TestInterface_ReconnectSession(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	created := createSession(t, sutHostURL)
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
@@ -265,7 +252,7 @@ func TestInterface_ReconnectSession(t *testing.T) {
 }
 
 func TestInterface_DeleteSession(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	created := createSession(t, sutHostURL)
 
@@ -287,7 +274,7 @@ func TestInterface_DeleteSession(t *testing.T) {
 }
 
 func TestInterface_GetSession_NotFound(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	resp := doRequest(t, http.MethodGet, sutHostURL+"/v1/sessions/nonexistent", nil)
 	defer resp.Body.Close()
@@ -299,7 +286,7 @@ func TestInterface_GetSession_NotFound(t *testing.T) {
 }
 
 func TestInterface_CreateSession_InvalidType(t *testing.T) {
-	sutHostURL := requireEnv(t, envSUTHostURL)
+	sutHostURL := testtool.MustEndpoint("http", "public")
 
 	reqBody, err := jsonMarshaler.Marshal(&session.CreateSessionRequest{
 		Type: testInvalidType,

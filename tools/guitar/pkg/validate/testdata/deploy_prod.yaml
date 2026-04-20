@@ -1,0 +1,15 @@
+name: game.prod
+desc: prod deploy
+type: prod
+services:
+  - artifact:
+      path: //projects/game/session/service.yaml
+      name: cmd
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1

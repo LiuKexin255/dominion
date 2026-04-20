@@ -36,5 +36,10 @@ alias(
     actual = "//tools/deploy/v2:install",
 )
 
+alias(
+    name = "guitar_install",
+    actual = "//tools/guitar:install",
+)
+
 # 生成 node_modules（运行时需要）
 npm_link_all_packages()
