@@ -1,0 +1,16 @@
+name: 大型测试名称 
+description: 测试说明
+suites: # 测试套件
+  - name: 测试套件名称
+    env: "{scope}.{env}"
+    deploy: 部署配置，相对目录或 // 开头的项目完整路径
+    case: # 大型测试用例 target
+      - foo:foo_test
+      - //abc/aaa:aaa_test
+    endpoint:
+      http: 
+        abc: host.com
+  - name: 测试套件名称
+    deploy: 部署配置，相对目录或 // 开头的项目完整路径
+    cases: # 大型测试用例 target
+      - xyz:xyz_test
