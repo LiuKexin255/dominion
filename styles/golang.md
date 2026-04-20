@@ -190,3 +190,9 @@ func TestParseOptions(t *testing.T) {
 ### 不能访问外部依赖
 
 单测代码不能通过网络访问非本机的依赖，例如数据库、http 网站或者部署在其他机器上的服务。
+
+## 引用
+
+> 外部的规范引用，可作为规范参考
+
+* [Google Go Style](https://google.github.io/styleguide/go/)
