@@ -23,18 +23,21 @@ const (
 	// CollectionName is the MongoDB collection used for environments.
 	CollectionName = "environments"
 	// mongoDefaultPageSize is the default number of environments returned by ListByScope.
-	mongoDefaultPageSize   = 100
-	mongoFieldName         = "name"
-	mongoFieldScope        = "scope"
-	mongoFieldEnvName      = "env_name"
-	mongoFieldEnvType      = "env_type"
-	mongoFieldDescription  = "description"
-	mongoFieldDesiredState = "desired_state"
-	mongoFieldStatus       = "status"
-	mongoFieldStatusState  = "status.state"
-	mongoFieldCreateTime   = "create_time"
-	mongoFieldUpdateTime   = "update_time"
-	mongoFieldETag         = "etag"
+	mongoDefaultPageSize        = 100
+	mongoFieldName              = "name"
+	mongoFieldScope             = "scope"
+	mongoFieldEnvName           = "env_name"
+	mongoFieldEnvType           = "env_type"
+	mongoFieldDescription       = "description"
+	mongoFieldDesiredState      = "desired_state"
+	mongoFieldStatus            = "status"
+	mongoFieldStatusState       = "status.state"
+	mongoFieldStatusDesired     = "status.desired"
+	mongoFieldStatusObservedGen = "status.observed_generation"
+	mongoFieldGeneration        = "generation"
+	mongoFieldCreateTime        = "create_time"
+	mongoFieldUpdateTime        = "update_time"
+	mongoFieldETag              = "etag"
 
 	EnvironmentTypeProd        = "prod"
 	EnvironmentTypeDev         = "dev"
@@ -110,6 +113,7 @@ type mongoEnvironment struct {
 	Description  string             `bson:"description"`
 	DesiredState *mongoDesiredState `bson:"desired_state"`
 	Status       *mongoStatus       `bson:"status"`
+	Generation   int64              `bson:"generation"`
 	CreateTime   time.Time          `bson:"create_time"`
 	UpdateTime   time.Time          `bson:"update_time"`
 	ETag         string             `bson:"etag"`
@@ -173,10 +177,12 @@ type mongoArtifactHTTPSpec struct {
 
 // mongoStatus is the BSON representation of domain.EnvironmentStatus.
 type mongoStatus struct {
-	State             int       `bson:"state"`
-	Message           string    `bson:"message"`
-	LastReconcileTime time.Time `bson:"last_reconcile_time"`
-	LastSuccessTime   time.Time `bson:"last_success_time"`
+	Desired            int       `bson:"desired"`
+	State              int       `bson:"state"`
+	ObservedGeneration int64     `bson:"observed_generation"`
+	Message            string    `bson:"message"`
+	LastReconcileTime  time.Time `bson:"last_reconcile_time"`
+	LastSuccessTime    time.Time `bson:"last_success_time"`
 }
 
 // MongoRepository stores deploy environments in MongoDB.
@@ -261,6 +267,59 @@ func (r *MongoRepository) ListByStates(ctx context.Context, states ...domain.Env
 	return envs, nil
 }
 
+// ListNeedingReconcile lists environments that still need reconciliation.
+func (r *MongoRepository) ListNeedingReconcile(ctx context.Context) ([]*domain.Environment, error) {
+	filter := bson.D{
+		{
+			Key: "$or",
+			Value: bson.A{
+				// Condition 1: desired == Present && observed_generation < generation
+				bson.D{
+					{Key: mongoFieldStatusDesired, Value: int(domain.DesiredPresent)},
+					{Key: "$expr", Value: bson.D{
+						{Key: "$lt", Value: bson.A{"$" + mongoFieldStatusObservedGen, "$" + mongoFieldGeneration}},
+					}},
+				},
+				// Condition 2: desired == Present && state == Failed && observed_generation == generation
+				bson.D{
+					{Key: mongoFieldStatusDesired, Value: int(domain.DesiredPresent)},
+					{Key: mongoFieldStatusState, Value: int(domain.StateFailed)},
+					{Key: "$expr", Value: bson.D{
+						{Key: "$eq", Value: bson.A{"$" + mongoFieldStatusObservedGen, "$" + mongoFieldGeneration}},
+					}},
+				},
+				// Condition 3: desired == Absent
+				bson.D{
+					{Key: mongoFieldStatusDesired, Value: int(domain.DesiredAbsent)},
+				},
+			},
+		},
+	}
+
+	findOpts := options.Find().SetSort(bson.D{{Key: mongoFieldName, Value: 1}})
+	cur, err := r.collection.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var docs []*mongoEnvironment
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+
+	envs := make([]*domain.Environment, 0, len(docs))
+	for _, doc := range docs {
+		env, err := doc.toDomain()
+		if err != nil {
+			return nil, err
+		}
+		envs = append(envs, env)
+	}
+
+	return envs, nil
+}
+
 // ListByScope lists environments in a scope with stable name ordering.
 func (r *MongoRepository) ListByScope(ctx context.Context, scope string, pageSize int32, pageToken string) ([]*domain.Environment, string, error) {
 	if pageSize <= 0 {
@@ -317,9 +376,9 @@ func (r *MongoRepository) Save(ctx context.Context, env *domain.Environment) err
 		return err
 	}
 
-	_, err = r.collection.UpdateOne(
+	result, err := r.collection.UpdateOne(
 		ctx,
-		bson.M{mongoFieldName: doc.Name},
+		bson.M{mongoFieldName: doc.Name, mongoFieldGeneration: bson.M{"$lte": doc.Generation}},
 		bson.M{
 			"$set":         doc.updateDocument(),
 			"$setOnInsert": doc.insertDocument(),
@@ -328,9 +387,12 @@ func (r *MongoRepository) Save(ctx context.Context, env *domain.Environment) err
 	)
 	if err != nil {
 		if mongodriver.IsDuplicateKeyError(err) {
-			return domain.ErrAlreadyExists
+			return nil
 		}
 		return err
+	}
+	if result.MatchedCount == 0 {
+		return nil
 	}
 
 	return nil
@@ -384,6 +446,7 @@ func mongoEnvironmentFromDomain(env *domain.Environment) (*mongoEnvironment, err
 		Description:  env.Description(),
 		DesiredState: desiredStateToMongo(env.DesiredState()),
 		Status:       statusToMongo(env.Status()),
+		Generation:   env.Generation(),
 		CreateTime:   env.CreateTime(),
 		UpdateTime:   env.UpdateTime(),
 		ETag:         env.ETag(),
@@ -480,10 +543,12 @@ func statusToMongo(s *domain.EnvironmentStatus) *mongoStatus {
 		return nil
 	}
 	return &mongoStatus{
-		State:             int(s.State),
-		Message:           s.Message,
-		LastReconcileTime: s.LastReconcileTime,
-		LastSuccessTime:   s.LastSuccessTime,
+		Desired:            int(s.Desired),
+		State:              int(s.State),
+		ObservedGeneration: s.ObservedGeneration,
+		Message:            s.Message,
+		LastReconcileTime:  s.LastReconcileTime,
+		LastSuccessTime:    s.LastSuccessTime,
 	}
 }
 
@@ -492,6 +557,7 @@ func (m *mongoEnvironment) updateDocument() bson.M {
 		mongoFieldDescription:  m.Description,
 		mongoFieldDesiredState: m.DesiredState,
 		mongoFieldStatus:       m.Status,
+		mongoFieldGeneration:   m.Generation,
 		mongoFieldUpdateTime:   m.UpdateTime,
 		mongoFieldETag:         m.ETag,
 	}
@@ -519,6 +585,7 @@ func (m *mongoEnvironment) toDomain() (*domain.Environment, error) {
 		Description:  m.Description,
 		DesiredState: desiredStateFromMongo(m.DesiredState),
 		Status:       statusFromMongo(m.Status),
+		Generation:   m.Generation,
 		CreateTime:   m.CreateTime,
 		UpdateTime:   m.UpdateTime,
 		ETag:         m.ETag,
@@ -615,9 +682,11 @@ func statusFromMongo(ms *mongoStatus) *domain.EnvironmentStatus {
 		return nil
 	}
 	return &domain.EnvironmentStatus{
-		State:             domain.EnvironmentState(ms.State),
-		Message:           ms.Message,
-		LastReconcileTime: ms.LastReconcileTime,
-		LastSuccessTime:   ms.LastSuccessTime,
+		Desired:            domain.EnvironmentDesired(ms.Desired),
+		State:              domain.EnvironmentState(ms.State),
+		ObservedGeneration: ms.ObservedGeneration,
+		Message:            ms.Message,
+		LastReconcileTime:  ms.LastReconcileTime,
+		LastSuccessTime:    ms.LastSuccessTime,
 	}
 }

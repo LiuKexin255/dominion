@@ -66,6 +66,10 @@ func (r *stubRepository) ListByStates(context.Context, ...domain.EnvironmentStat
 	return nil, nil
 }
 
+func (r *stubRepository) ListNeedingReconcile(context.Context) ([]*domain.Environment, error) {
+	return nil, nil
+}
+
 func (r *stubRepository) ListByScope(context.Context, string, int32, string) ([]*domain.Environment, string, error) {
 	return nil, "", nil
 }

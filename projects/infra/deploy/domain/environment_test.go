@@ -76,8 +76,17 @@ func TestNewEnvironment(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewEnvironment() unexpected error: %v", err)
 			}
+			if got := env.Generation(); got != 1 {
+				t.Fatalf("Generation() = %d, want 1", got)
+			}
+			if env.status.Desired != DesiredPresent {
+				t.Fatalf("status.Desired = %v, want %v", env.status.Desired, DesiredPresent)
+			}
 			if env.status.State != StatePending {
 				t.Fatalf("status.State = %v, want %v", env.status.State, StatePending)
+			}
+			if env.status.ObservedGeneration != 0 {
+				t.Fatalf("status.ObservedGeneration = %d, want 0", env.status.ObservedGeneration)
 			}
 			if env.createTime.IsZero() {
 				t.Fatalf("createTime should be set")
@@ -179,110 +188,223 @@ func TestEnvironment_Type(t *testing.T) {
 	}
 }
 
-func TestEnvironment_UpdateDesiredState(t *testing.T) {
-	// given
-	env := mustNewEnvironment(t)
-	if err := env.MarkReconciling(); err != nil {
-		t.Fatalf("MarkReconciling() unexpected error: %v", err)
-	}
-	if err := env.MarkReady(); err != nil {
-		t.Fatalf("MarkReady() unexpected error: %v", err)
-	}
-	previousLastSuccessTime := env.status.LastSuccessTime
-	newState := DesiredState{
-		Artifacts: []*ArtifactSpec{{
-			Name:     "api",
-			App:      "demo",
-			Image:    "repo/demo:v2",
-			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
-			Replicas: 2,
-			HTTP: &ArtifactHTTPSpec{
-				Hostnames: []string{"example.com"},
-				Matches: []HTTPRouteRule{{
-					Backend: "http",
-					Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/v2"},
+func TestEnvironment_SetDesiredPresent(t *testing.T) {
+	tests := []struct {
+		name              string
+		prepare           func(*testing.T, *Environment)
+		newDesiredState   *DesiredState
+		wantErr           error
+		wantGeneration    int64
+		wantDesired       EnvironmentDesired
+		wantState         EnvironmentState
+		wantImage         string
+		wantMessage       string
+		wantPreserveReady bool
+	}{
+		{
+			name: "ready environment accepts new desired state",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkReady(env.Generation()); err != nil {
+					t.Fatalf("MarkReady() unexpected error: %v", err)
+				}
+				env.status.Message = "stale error"
+			},
+			newDesiredState: &DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v2",
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
+					Replicas: 2,
 				}},
 			},
-		}},
+			wantGeneration:    2,
+			wantDesired:       DesiredPresent,
+			wantState:         StatePending,
+			wantImage:         "repo/demo:v2",
+			wantMessage:       "",
+			wantPreserveReady: true,
+		},
+		{
+			name: "nil desired state keeps original content",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkFailed(env.Generation(), "apply failed"); err != nil {
+					t.Fatalf("MarkFailed() unexpected error: %v", err)
+				}
+			},
+			wantGeneration: 2,
+			wantDesired:    DesiredPresent,
+			wantState:      StatePending,
+			wantImage:      "repo/demo:v1",
+			wantMessage:    "",
+		},
+		{
+			name: "desired absent rejects present update",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.SetDesiredAbsent(); err != nil {
+					t.Fatalf("SetDesiredAbsent() unexpected error: %v", err)
+				}
+			},
+			newDesiredState: &DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name:     "api",
+					App:      "demo",
+					Image:    "repo/demo:v3",
+					Ports:    []ArtifactPortSpec{{Name: "http", Port: 7070}},
+					Replicas: 3,
+				}},
+			},
+			wantErr:        ErrInvalidState,
+			wantGeneration: 2,
+			wantDesired:    DesiredAbsent,
+			wantState:      StatePending,
+			wantImage:      "repo/demo:v1",
+		},
 	}
 
-	// when
-	err := env.UpdateDesiredState(&newState)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+			previousGeneration := env.Generation()
+			previousUpdateTime := env.UpdateTime()
+			previousLastSuccessTime := env.Status().LastSuccessTime
 
-	// then
-	if err != nil {
-		t.Fatalf("UpdateDesiredState() unexpected error: %v", err)
-	}
-	if env.status.State != StateReconciling {
-		t.Fatalf("status.State = %v, want %v", env.status.State, StateReconciling)
-	}
-	if env.status.LastReconcileTime.IsZero() {
-		t.Fatalf("LastReconcileTime should be set")
-	}
-	if env.status.LastSuccessTime != previousLastSuccessTime {
-		t.Fatalf("LastSuccessTime = %v, want %v", env.status.LastSuccessTime, previousLastSuccessTime)
-	}
-	if got := env.desiredState.Artifacts[0].Image; got != "repo/demo:v2" {
-		t.Fatalf("desiredState.Artifacts[0].Image = %q, want %q", got, "repo/demo:v2")
+			// when
+			err := env.SetDesiredPresent(tt.newDesiredState)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("SetDesiredPresent() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("SetDesiredPresent() unexpected error: %v", err)
+			}
+			if got := env.Generation(); got != tt.wantGeneration {
+				t.Fatalf("Generation() = %d, want %d", got, tt.wantGeneration)
+			}
+			if env.Status().Desired != tt.wantDesired {
+				t.Fatalf("status.Desired = %v, want %v", env.Status().Desired, tt.wantDesired)
+			}
+			if env.Status().State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.Status().State, tt.wantState)
+			}
+			if env.Status().Message != tt.wantMessage {
+				t.Fatalf("status.Message = %q, want %q", env.Status().Message, tt.wantMessage)
+			}
+			if got := env.DesiredState().Artifacts[0].Image; got != tt.wantImage {
+				t.Fatalf("DesiredState().Artifacts[0].Image = %q, want %q", got, tt.wantImage)
+			}
+			if tt.wantErr == nil && !env.UpdateTime().After(previousUpdateTime) {
+				t.Fatalf("UpdateTime() = %v, want after %v", env.UpdateTime(), previousUpdateTime)
+			}
+			if tt.wantErr != nil && env.UpdateTime() != previousUpdateTime {
+				t.Fatalf("UpdateTime() = %v, want %v", env.UpdateTime(), previousUpdateTime)
+			}
+			if tt.wantPreserveReady && env.Status().LastSuccessTime != previousLastSuccessTime {
+				t.Fatalf("LastSuccessTime = %v, want %v", env.Status().LastSuccessTime, previousLastSuccessTime)
+			}
+			if tt.wantErr != nil && env.Generation() != previousGeneration {
+				t.Fatalf("Generation() = %d, want unchanged %d", env.Generation(), previousGeneration)
+			}
+			if got := env.Type(); got != EnvironmentTypeProd {
+				t.Fatalf("Type() = %v, want %v", got, EnvironmentTypeProd)
+			}
+		})
 	}
 }
 
-func TestEnvironment_UpdateDesiredStateRejectsDeleting(t *testing.T) {
-	// given
-	env := mustNewEnvironment(t)
-	if err := env.MarkDeleting(); err != nil {
-		t.Fatalf("MarkDeleting() unexpected error: %v", err)
-	}
-	newState := DesiredState{
-		Artifacts: []*ArtifactSpec{{
-			Name:     "api",
-			App:      "demo",
-			Image:    "repo/demo:v2",
-			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
-			Replicas: 2,
-		}},
-	}
-
-	// when
-	err := env.UpdateDesiredState(&newState)
-
-	// then
-	if err != ErrInvalidState {
-		t.Fatalf("UpdateDesiredState() error = %v, want %v", err, ErrInvalidState)
-	}
-	if env.status.State != StateDeleting {
-		t.Fatalf("status.State = %v, want %v", env.status.State, StateDeleting)
-	}
-}
-
-func TestUpdateDesiredState_TypeImmutable(t *testing.T) {
-	// given
-	env := mustNewEnvironment(t)
-	if err := env.MarkReconciling(); err != nil {
-		t.Fatalf("MarkReconciling() unexpected error: %v", err)
-	}
-	if err := env.MarkReady(); err != nil {
-		t.Fatalf("MarkReady() unexpected error: %v", err)
-	}
-	newState := &DesiredState{
-		Artifacts: []*ArtifactSpec{{
-			Name:     "api",
-			App:      "demo",
-			Image:    "repo/demo:v2",
-			Ports:    []ArtifactPortSpec{{Name: "http", Port: 9090}},
-			Replicas: 2,
-		}},
+func TestEnvironment_SetDesiredAbsent(t *testing.T) {
+	tests := []struct {
+		name           string
+		prepare        func(*testing.T, *Environment)
+		wantGeneration int64
+		wantState      EnvironmentState
+		wantDesired    EnvironmentDesired
+		wantImage      string
+	}{
+		{
+			name:           "ready environment becomes pending absent",
+			wantGeneration: 2,
+			wantState:      StatePending,
+			wantDesired:    DesiredAbsent,
+			wantImage:      "repo/demo:v1",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkReady(env.Generation()); err != nil {
+					t.Fatalf("MarkReady() unexpected error: %v", err)
+				}
+				env.status.Message = "old message"
+			},
+		},
+		{
+			name:           "failed environment keeps desired state content",
+			wantGeneration: 2,
+			wantState:      StatePending,
+			wantDesired:    DesiredAbsent,
+			wantImage:      "repo/demo:v1",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkFailed(env.Generation(), "apply failed"); err != nil {
+					t.Fatalf("MarkFailed() unexpected error: %v", err)
+				}
+			},
+		},
 	}
 
-	// when
-	err := env.UpdateDesiredState(newState)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+			previousLastSuccessTime := env.Status().LastSuccessTime
+			previousUpdateTime := env.UpdateTime()
 
-	// then
-	if err != nil {
-		t.Fatalf("UpdateDesiredState() unexpected error: %v", err)
-	}
-	if got := env.Type(); got != EnvironmentTypeProd {
-		t.Fatalf("Type() = %v, want %v", got, EnvironmentTypeProd)
+			// when
+			err := env.SetDesiredAbsent()
+
+			// then
+			if err != nil {
+				t.Fatalf("SetDesiredAbsent() unexpected error: %v", err)
+			}
+			if got := env.Generation(); got != tt.wantGeneration {
+				t.Fatalf("Generation() = %d, want %d", got, tt.wantGeneration)
+			}
+			if env.Status().Desired != tt.wantDesired {
+				t.Fatalf("status.Desired = %v, want %v", env.Status().Desired, tt.wantDesired)
+			}
+			if env.Status().State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.Status().State, tt.wantState)
+			}
+			if env.Status().Message != "" {
+				t.Fatalf("status.Message = %q, want empty", env.Status().Message)
+			}
+			if got := env.DesiredState().Artifacts[0].Image; got != tt.wantImage {
+				t.Fatalf("DesiredState().Artifacts[0].Image = %q, want %q", got, tt.wantImage)
+			}
+			if !env.UpdateTime().After(previousUpdateTime) {
+				t.Fatalf("UpdateTime() = %v, want after %v", env.UpdateTime(), previousUpdateTime)
+			}
+			if env.Status().LastSuccessTime != previousLastSuccessTime {
+				t.Fatalf("LastSuccessTime = %v, want %v", env.Status().LastSuccessTime, previousLastSuccessTime)
+			}
+		})
 	}
 }
 
@@ -337,10 +459,12 @@ func TestEnvironment_MarkReconciling(t *testing.T) {
 
 func TestEnvironment_MarkReady(t *testing.T) {
 	tests := []struct {
-		name      string
-		prepare   func(*testing.T, *Environment)
-		wantErr   error
-		wantState EnvironmentState
+		name                   string
+		prepare                func(*testing.T, *Environment)
+		processedGeneration    int64
+		wantErr                error
+		wantState              EnvironmentState
+		wantObservedGeneration int64
 	}{
 		{
 			name: "reconciling to ready",
@@ -349,9 +473,11 @@ func TestEnvironment_MarkReady(t *testing.T) {
 					t.Fatalf("MarkReconciling() unexpected error: %v", err)
 				}
 			},
-			wantState: StateReady,
+			processedGeneration:    7,
+			wantState:              StateReady,
+			wantObservedGeneration: 7,
 		},
-		{name: "pending to ready is invalid", wantErr: ErrInvalidState, wantState: StatePending},
+		{name: "pending to ready is invalid", processedGeneration: 7, wantErr: ErrInvalidState, wantState: StatePending},
 	}
 
 	for _, tt := range tests {
@@ -363,7 +489,7 @@ func TestEnvironment_MarkReady(t *testing.T) {
 			}
 
 			// when
-			err := env.MarkReady()
+			err := env.MarkReady(tt.processedGeneration)
 
 			// then
 			if tt.wantErr != nil {
@@ -379,18 +505,23 @@ func TestEnvironment_MarkReady(t *testing.T) {
 			if tt.wantErr == nil && env.status.LastSuccessTime.IsZero() {
 				t.Fatalf("LastSuccessTime should be set")
 			}
+			if env.status.ObservedGeneration != tt.wantObservedGeneration {
+				t.Fatalf("status.ObservedGeneration = %d, want %d", env.status.ObservedGeneration, tt.wantObservedGeneration)
+			}
 		})
 	}
 }
 
 func TestEnvironment_MarkFailed(t *testing.T) {
 	tests := []struct {
-		name        string
-		prepare     func(*testing.T, *Environment)
-		message     string
-		wantErr     error
-		wantState   EnvironmentState
-		wantMessage string
+		name                   string
+		prepare                func(*testing.T, *Environment)
+		processedGeneration    int64
+		message                string
+		wantErr                error
+		wantState              EnvironmentState
+		wantMessage            string
+		wantObservedGeneration int64
 	}{
 		{
 			name: "reconciling to failed",
@@ -399,16 +530,19 @@ func TestEnvironment_MarkFailed(t *testing.T) {
 					t.Fatalf("MarkReconciling() unexpected error: %v", err)
 				}
 			},
-			message:     "apply failed",
-			wantState:   StateFailed,
-			wantMessage: "apply failed",
+			processedGeneration:    7,
+			message:                "apply failed",
+			wantState:              StateFailed,
+			wantMessage:            "apply failed",
+			wantObservedGeneration: 7,
 		},
 		{
-			name:        "pending to failed is invalid",
-			message:     "apply failed",
-			wantErr:     ErrInvalidState,
-			wantState:   StatePending,
-			wantMessage: "",
+			name:                "pending to failed is invalid",
+			processedGeneration: 7,
+			message:             "apply failed",
+			wantErr:             ErrInvalidState,
+			wantState:           StatePending,
+			wantMessage:         "",
 		},
 	}
 
@@ -421,7 +555,7 @@ func TestEnvironment_MarkFailed(t *testing.T) {
 			}
 
 			// when
-			err := env.MarkFailed(tt.message)
+			err := env.MarkFailed(tt.processedGeneration, tt.message)
 
 			// then
 			if tt.wantErr != nil {
@@ -436,6 +570,9 @@ func TestEnvironment_MarkFailed(t *testing.T) {
 			}
 			if env.status.Message != tt.wantMessage {
 				t.Fatalf("status.Message = %q, want %q", env.status.Message, tt.wantMessage)
+			}
+			if env.status.ObservedGeneration != tt.wantObservedGeneration {
+				t.Fatalf("status.ObservedGeneration = %d, want %d", env.status.ObservedGeneration, tt.wantObservedGeneration)
 			}
 		})
 	}
@@ -783,10 +920,12 @@ func TestRehydrateEnvironment(t *testing.T) {
 	createTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	updateTime := createTime.Add(5 * time.Minute)
 	status := &EnvironmentStatus{
-		State:             StateReady,
-		Message:           "ready",
-		LastReconcileTime: createTime.Add(2 * time.Minute),
-		LastSuccessTime:   createTime.Add(3 * time.Minute),
+		Desired:            DesiredPresent,
+		State:              StateReady,
+		ObservedGeneration: 3,
+		Message:            "ready",
+		LastReconcileTime:  createTime.Add(2 * time.Minute),
+		LastSuccessTime:    createTime.Add(3 * time.Minute),
 	}
 	desiredState := &DesiredState{
 		Artifacts: []*ArtifactSpec{{
@@ -815,6 +954,7 @@ func TestRehydrateEnvironment(t *testing.T) {
 		Description:  "demo environment",
 		DesiredState: desiredState,
 		Status:       status,
+		Generation:   3,
 		CreateTime:   createTime,
 		UpdateTime:   updateTime,
 		ETag:         "etag-1",
@@ -832,11 +972,20 @@ func TestRehydrateEnvironment(t *testing.T) {
 	if env.envType != EnvironmentTypeTest {
 		t.Fatalf("envType = %v, want %v", env.envType, EnvironmentTypeTest)
 	}
+	if env.Generation() != 3 {
+		t.Fatalf("Generation() = %d, want 3", env.Generation())
+	}
 	if env.status == status {
 		t.Fatalf("status pointer should be cloned")
 	}
+	if env.status.Desired != DesiredPresent {
+		t.Fatalf("status.Desired = %v, want %v", env.status.Desired, DesiredPresent)
+	}
 	if env.status.State != StateReady {
 		t.Fatalf("status.State = %v, want %v", env.status.State, StateReady)
+	}
+	if env.status.ObservedGeneration != 3 {
+		t.Fatalf("status.ObservedGeneration = %d, want 3", env.status.ObservedGeneration)
 	}
 	if env.status.Message != "ready" {
 		t.Fatalf("status.Message = %q, want %q", env.status.Message, "ready")
@@ -885,7 +1034,7 @@ func TestRehydrateEnvironment_WithType(t *testing.T) {
 				Replicas: 1,
 			}},
 		},
-		Status: &EnvironmentStatus{State: StateReady},
+		Status: &EnvironmentStatus{Desired: DesiredPresent, State: StateReady},
 	}
 
 	// when

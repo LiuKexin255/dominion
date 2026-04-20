@@ -17,9 +17,8 @@ import (
 )
 
 type fakeQueue struct {
-	normalEnqueued   []domain.EnvironmentName
-	priorityEnqueued []domain.EnvironmentName
-	err              error
+	enqueued []domain.EnvironmentName
+	err      error
 }
 
 func newFakeQueue() *fakeQueue {
@@ -30,15 +29,7 @@ func (q *fakeQueue) Enqueue(_ context.Context, envName domain.EnvironmentName) e
 	if q.err != nil {
 		return q.err
 	}
-	q.normalEnqueued = append(q.normalEnqueued, envName)
-	return nil
-}
-
-func (q *fakeQueue) EnqueueWithPriority(_ context.Context, envName domain.EnvironmentName) error {
-	if q.err != nil {
-		return q.err
-	}
-	q.priorityEnqueued = append(q.priorityEnqueued, envName)
+	q.enqueued = append(q.enqueued, envName)
 	return nil
 }
 
@@ -179,13 +170,13 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 		wantCode     codes.Code
 	}{
 		{
-			name: "success returns reconciling and enqueues",
+			name: "success returns pending desired present and enqueues",
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
 				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
-			wantState:    EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+			wantState:    EnvironmentState_ENVIRONMENT_STATE_PENDING,
 			wantEnqueued: 1,
 			wantCode:     codes.OK,
 		},
@@ -265,8 +256,21 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			if got.GetStatus().GetState() != tt.wantState {
 				t.Fatalf("CreateEnvironment() state = %v, want %v", got.GetStatus().GetState(), tt.wantState)
 			}
-			if len(q.normalEnqueued) != tt.wantEnqueued {
-				t.Fatalf("CreateEnvironment() enqueued = %d, want %d", len(q.normalEnqueued), tt.wantEnqueued)
+			if len(q.enqueued) != tt.wantEnqueued {
+				t.Fatalf("CreateEnvironment() enqueued = %d, want %d", len(q.enqueued), tt.wantEnqueued)
+			}
+			if got.GetDesiredState() == nil {
+				t.Fatal("CreateEnvironment() desired_state = nil, want non-nil")
+			}
+			stored, err := repo.Get(ctx, q.enqueued[0])
+			if err != nil {
+				t.Fatalf("repo.Get() error = %v", err)
+			}
+			if stored.Status().State != domain.StatePending {
+				t.Fatalf("stored env state = %v, want %v", stored.Status().State, domain.StatePending)
+			}
+			if stored.Status().Desired != domain.DesiredPresent {
+				t.Fatalf("stored env desired = %v, want %v", stored.Status().Desired, domain.DesiredPresent)
 			}
 		})
 	}
@@ -295,11 +299,22 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEnvironment() error = %v", err)
 	}
-	if created.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
-		t.Fatalf("CreateEnvironment() state = %v, want %v", created.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
+	if created.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
+		t.Fatalf("CreateEnvironment() state = %v, want %v", created.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
 	}
-	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
-		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
+		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
+	}
+	envName, err := domain.ParseResourceName("deploy/scopes/dev/environments/alpha")
+	if err != nil {
+		t.Fatalf("ParseResourceName() error = %v", err)
+	}
+	stored, err := repo.Get(ctx, envName)
+	if err != nil {
+		t.Fatalf("repo.Get() error = %v", err)
+	}
+	if stored.Status().Desired != domain.DesiredPresent {
+		t.Fatalf("stored env desired = %v, want %v", stored.Status().Desired, domain.DesiredPresent)
 	}
 }
 
@@ -315,13 +330,13 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 		wantCode     codes.Code
 	}{
 		{
-			name: "success returns reconciling and enqueues",
+			name: "success returns pending desired present and enqueues",
 			seed: func(t *testing.T) *domain.Environment {
 				env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
 				if err := env.MarkReconciling(); err != nil {
 					t.Fatalf("MarkReconciling() error = %v", err)
 				}
-				if err := env.MarkReady(); err != nil {
+				if err := env.MarkReady(env.Generation()); err != nil {
 					t.Fatalf("MarkReady() error = %v", err)
 				}
 				return env
@@ -330,7 +345,7 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 				Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()},
 				UpdateMask:  &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
 			},
-			wantState:    EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+			wantState:    EnvironmentState_ENVIRONMENT_STATE_PENDING,
 			wantEnqueued: 1,
 			wantCode:     codes.OK,
 		},
@@ -382,8 +397,21 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 			if got.GetStatus().GetState() != tt.wantState {
 				t.Fatalf("UpdateEnvironment() state = %v, want %v", got.GetStatus().GetState(), tt.wantState)
 			}
-			if len(q.normalEnqueued) != tt.wantEnqueued {
-				t.Fatalf("UpdateEnvironment() enqueued = %d, want %d", len(q.normalEnqueued), tt.wantEnqueued)
+			if len(q.enqueued) != tt.wantEnqueued {
+				t.Fatalf("UpdateEnvironment() enqueued = %d, want %d", len(q.enqueued), tt.wantEnqueued)
+			}
+			stored, err := repo.Get(ctx, q.enqueued[0])
+			if err != nil {
+				t.Fatalf("repo.Get() error = %v", err)
+			}
+			if stored.Status().State != domain.StatePending {
+				t.Fatalf("stored env state = %v, want %v", stored.Status().State, domain.StatePending)
+			}
+			if stored.Status().Desired != domain.DesiredPresent {
+				t.Fatalf("stored env desired = %v, want %v", stored.Status().Desired, domain.DesiredPresent)
+			}
+			if stored.DesiredState().Artifacts[0].Image != "example.com/gateway:v2" {
+				t.Fatalf("stored env artifact image = %q, want %q", stored.DesiredState().Artifacts[0].Image, "example.com/gateway:v2")
 			}
 		})
 	}
@@ -398,7 +426,7 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if err := seed.MarkReconciling(); err != nil {
 		t.Fatalf("MarkReconciling() error = %v", err)
 	}
-	if err := seed.MarkReady(); err != nil {
+	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
 	if err := repo.Save(ctx, seed); err != nil {
@@ -421,11 +449,14 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEnvironment() error = %v", err)
 	}
-	if updated.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
-		t.Fatalf("UpdateEnvironment() state = %v, want %v", updated.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
+	if updated.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
+		t.Fatalf("UpdateEnvironment() state = %v, want %v", updated.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
 	}
-	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
-		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_RECONCILING)
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
+		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
+	}
+	if got.GetDesiredState().GetArtifacts()[0].GetImage() != "example.com/gateway:v2" {
+		t.Fatalf("GetEnvironment() desired_state.artifacts[0].image = %q, want %q", got.GetDesiredState().GetArtifacts()[0].GetImage(), "example.com/gateway:v2")
 	}
 }
 
@@ -441,7 +472,7 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 		wantCode     codes.Code
 	}{
 		{
-			name:         "success marks deleting and enqueues with priority",
+			name:         "success marks pending desired absent and enqueues",
 			seed:         []*domain.Environment{mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())},
 			request:      &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"},
 			wantResp:     new(emptypb.Empty),
@@ -473,8 +504,18 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 			if got == nil || tt.wantResp == nil {
 				t.Fatalf("DeleteEnvironment() got = %v, want non-nil empty response", got)
 			}
-			if len(q.priorityEnqueued) != tt.wantEnqueued {
-				t.Fatalf("DeleteEnvironment() priority enqueued = %d, want %d", len(q.priorityEnqueued), tt.wantEnqueued)
+			if len(q.enqueued) != tt.wantEnqueued {
+				t.Fatalf("DeleteEnvironment() enqueued = %d, want %d", len(q.enqueued), tt.wantEnqueued)
+			}
+			stored, err := repo.Get(ctx, q.enqueued[0])
+			if err != nil {
+				t.Fatalf("repo.Get() error = %v", err)
+			}
+			if stored.Status().State != domain.StatePending {
+				t.Fatalf("stored env state = %v, want %v", stored.Status().State, domain.StatePending)
+			}
+			if stored.Status().Desired != domain.DesiredAbsent {
+				t.Fatalf("stored env desired = %v, want %v", stored.Status().Desired, domain.DesiredAbsent)
 			}
 		})
 	}
@@ -494,13 +535,16 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 		t.Fatalf("DeleteEnvironment() error = %v", err)
 	}
 
-	// then - env still exists with deleting state
+	// then - env still exists with pending state until worker starts deleting
 	got, err := repo.Get(ctx, env.Name())
 	if err != nil {
 		t.Fatalf("Get() error = %v, want env to still exist in repo", err)
 	}
-	if got.Status().State != domain.StateDeleting {
-		t.Fatalf("env state = %v, want %v", got.Status().State, domain.StateDeleting)
+	if got.Status().State != domain.StatePending {
+		t.Fatalf("env state = %v, want %v", got.Status().State, domain.StatePending)
+	}
+	if got.Status().Desired != domain.DesiredAbsent {
+		t.Fatalf("env desired = %v, want %v", got.Status().Desired, domain.DesiredAbsent)
 	}
 }
 
@@ -1018,7 +1062,7 @@ func TestHandler_UpdateEnvironment_RejectTypeModification(t *testing.T) {
 	if err := seed.MarkReconciling(); err != nil {
 		t.Fatalf("MarkReconciling() error = %v", err)
 	}
-	if err := seed.MarkReady(); err != nil {
+	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
 	if err := repo.Save(ctx, seed); err != nil {
@@ -1050,7 +1094,7 @@ func TestHandler_UpdateEnvironment_AllowWithoutType(t *testing.T) {
 	if err := seed.MarkReconciling(); err != nil {
 		t.Fatalf("MarkReconciling() error = %v", err)
 	}
-	if err := seed.MarkReady(); err != nil {
+	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
 	if err := repo.Save(ctx, seed); err != nil {
@@ -1072,8 +1116,8 @@ func TestHandler_UpdateEnvironment_AllowWithoutType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateEnvironment() error = %v", err)
 	}
-	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_RECONCILING {
-		t.Fatalf("UpdateEnvironment() state = %v, want RECONCILING", got.GetStatus().GetState())
+	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
+		t.Fatalf("UpdateEnvironment() state = %v, want PENDING", got.GetStatus().GetState())
 	}
 }
 
@@ -1298,6 +1342,13 @@ func (r *errorRepository) ListByStates(_ context.Context, _ ...domain.Environmen
 	return r.listEnvs, nil
 }
 
+func (r *errorRepository) ListNeedingReconcile(_ context.Context) ([]*domain.Environment, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	return r.listEnvs, nil
+}
+
 func (r *errorRepository) ListByScope(_ context.Context, _ string, _ int32, _ string) ([]*domain.Environment, string, error) {
 	if r.listErr != nil {
 		return nil, "", r.listErr
@@ -1333,6 +1384,9 @@ func mustDeletingEnvironment(t *testing.T, scope, envName string) *domain.Enviro
 	t.Helper()
 
 	env := mustNewDomainEnvironment(t, scope, envName, newDesiredState())
+	if err := env.SetDesiredAbsent(); err != nil {
+		t.Fatalf("SetDesiredAbsent() error = %v", err)
+	}
 	if err := env.MarkDeleting(); err != nil {
 		t.Fatalf("MarkDeleting() error = %v", err)
 	}
@@ -1374,7 +1428,7 @@ func mustReadyDomainEnvironmentWithDesiredState(t *testing.T, scope, envName str
 	if err := env.MarkReconciling(); err != nil {
 		t.Fatalf("MarkReconciling() error = %v", err)
 	}
-	if err := env.MarkReady(); err != nil {
+	if err := env.MarkReady(env.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
 

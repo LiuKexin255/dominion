@@ -16,6 +16,9 @@ type Repository interface {
 	// ListByStates lists environments matching any of the provided states.
 	ListByStates(ctx context.Context, states ...EnvironmentState) ([]*Environment, error)
 
+	// ListNeedingReconcile lists environments that still need reconciliation.
+	ListNeedingReconcile(ctx context.Context) ([]*Environment, error)
+
 	// ListByScope lists environments under a scope with pagination.
 	// It returns the matching environments, the next page token, and an error.
 	ListByScope(ctx context.Context, scope string, pageSize int32, pageToken string) ([]*Environment, string, error)

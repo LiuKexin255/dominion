@@ -9,44 +9,40 @@ const (
 	maxQueueCap = 256
 )
 
-// queueItem represents an item in the queue with a priority flag.
-type queueItem struct {
-	envName  EnvironmentName
-	priority bool
+type enqueueSource int
+
+const (
+	enqueueSourceRetry enqueueSource = iota
+	enqueueSourceUser
+)
+
+// WorkItem is a single in-memory queue item for an environment.
+type WorkItem struct {
+	EnvName    EnvironmentName
+	RetryCount int
+	Source     enqueueSource
 }
 
-// Queue is an in-memory priority queue for environment operations.
-//
-// It guarantees:
-//   - Priority items (delete) are dequeued before normal items (reconcile).
-//   - The same EnvironmentName is not duplicated in the queue; enqueuing an
-//     already-queued envName is a no-op (idempotent). If the envName is already
-//     present as a normal item and EnqueueWithPriority is called, it is upgraded
-//     to priority. Normal enqueue of an already-priority item is a no-op.
-//   - After an envName is dequeued, it can be re-enqueued.
+// Queue is an in-memory single-lane queue for environment operations.
 type Queue struct {
 	mu sync.Mutex
 
-	// pending tracks envNames currently waiting in the queue.
-	// Value is true if the item is in the priority lane.
-	pending map[EnvironmentName]bool
+	items     map[EnvironmentName]*WorkItem
+	followUps map[EnvironmentName]*WorkItem
+	inFlight  map[EnvironmentName]bool
 
-	// normalCh receives normal-priority items.
-	normalCh chan EnvironmentName
-	// priorityCh receives priority items.
-	priorityCh chan EnvironmentName
-
-	// done is closed when Stop is called.
-	done chan struct{}
+	pendingCh chan EnvironmentName
+	done      chan struct{}
 }
 
 // NewQueue creates a new Queue.
 func NewQueue() *Queue {
 	return &Queue{
-		pending:    map[EnvironmentName]bool{},
-		normalCh:   make(chan EnvironmentName, maxQueueCap),
-		priorityCh: make(chan EnvironmentName, maxQueueCap),
-		done:       make(chan struct{}),
+		items:     map[EnvironmentName]*WorkItem{},
+		followUps: map[EnvironmentName]*WorkItem{},
+		inFlight:  map[EnvironmentName]bool{},
+		pendingCh: make(chan EnvironmentName, maxQueueCap),
+		done:      make(chan struct{}),
 	}
 }
 
@@ -62,116 +58,114 @@ func (q *Queue) Stop() {
 	close(q.done)
 }
 
-// Enqueue adds an envName to the normal-priority queue. If the envName is
-// already pending, this is a no-op. If it is already pending as a priority
-// item, the priority is preserved.
+// Enqueue adds a user work item for envName.
 func (q *Queue) Enqueue(_ context.Context, envName EnvironmentName) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	_, exists := q.pending[envName]
-	if exists {
-		// Already pending; if already priority, keep it. Normal stays normal.
+	item := &WorkItem{EnvName: envName, RetryCount: 0, Source: enqueueSourceUser}
+
+	if _, ok := q.items[envName]; ok {
+		q.items[envName] = item
 		return nil
 	}
 
-	q.pending[envName] = false
-	q.normalCh <- envName
+	if q.inFlight[envName] {
+		q.followUps[envName] = item
+		return nil
+	}
+
+	q.enqueueLocked(item)
 	return nil
 }
 
-// EnqueueWithPriority adds an envName to the priority queue. If the envName
-// is already pending as a normal item, it is upgraded to priority.
-func (q *Queue) EnqueueWithPriority(_ context.Context, envName EnvironmentName) error {
+// EnqueueRetry adds a retry work item.
+func (q *Queue) EnqueueRetry(_ context.Context, item *WorkItem) error {
+	envName := item.EnvName
+	item.Source = enqueueSourceRetry
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	isPriority, exists := q.pending[envName]
-	if exists {
-		if !isPriority {
-			// Upgrade: move from normal to priority.
-			// Drain the normal channel for this item.
-			q.upgradeToPriority(envName)
-			q.pending[envName] = true
+	if queuedItem, ok := q.items[envName]; ok {
+		if queuedItem.Source == enqueueSourceUser {
+			return nil
 		}
+
+		q.items[envName] = item
 		return nil
 	}
 
-	q.pending[envName] = true
-	q.priorityCh <- envName
+	if q.inFlight[envName] {
+		if followUpItem, ok := q.followUps[envName]; ok && followUpItem.Source == enqueueSourceUser {
+			return nil
+		}
+
+		q.followUps[envName] = item
+		return nil
+	}
+
+	q.enqueueLocked(item)
 	return nil
 }
 
-// Dequeue retrieves the next envName. Priority items are served first.
+// Dequeue retrieves the next work item.
 // It blocks until an item is available, the context is cancelled, or Stop is called.
-func (q *Queue) Dequeue(ctx context.Context) (EnvironmentName, bool) {
-	// Fast-path: try priority channel first (non-blocking).
-	select {
-	case envName := <-q.priorityCh:
-		q.removeFromPending(envName)
-		return envName, true
-	default:
-	}
-
-	// Slow-path: wait for any item or cancellation.
+func (q *Queue) Dequeue(ctx context.Context) (*WorkItem, bool) {
 	for {
 		select {
 		case <-ctx.Done():
-			return EnvironmentName{}, false
+			return nil, false
 		case <-q.done:
-			return EnvironmentName{}, false
-		case envName := <-q.priorityCh:
-			q.removeFromPending(envName)
-			return envName, true
-		case envName := <-q.normalCh:
-			// Check if this was upgraded to priority while waiting.
-			q.mu.Lock()
-			isPriority := q.pending[envName]
-			q.mu.Unlock()
-			if isPriority {
-				// This item was upgraded; skip it and wait for the priority version.
+			return nil, false
+		case envName := <-q.pendingCh:
+			item, ok := q.markInFlight(envName)
+			if !ok {
 				continue
 			}
-			q.removeFromPending(envName)
-			return envName, true
+			return item, true
 		}
 	}
 }
 
-// upgradeToPriority drains a specific envName from the normal channel.
-// Caller must hold q.mu.
-func (q *Queue) upgradeToPriority(target EnvironmentName) {
-	// Drain normalCh into a temp buffer, skipping the target, then put back.
-	var buf []EnvironmentName
-	for {
-		select {
-		case item := <-q.normalCh:
-			if item == target {
-				// Found and removed; put the rest back.
-				for _, remaining := range buf {
-					q.normalCh <- remaining
-				}
-				// Now send to priority channel.
-				q.priorityCh <- target
-				return
-			}
-			buf = append(buf, item)
-		default:
-			// Target not found in channel buffer; it may have been consumed
-			// already. Send to priority channel and let Dequeue handle it.
-			q.priorityCh <- target
-			for _, remaining := range buf {
-				q.normalCh <- remaining
-			}
-			return
-		}
-	}
-}
-
-// removeFromPending removes the envName from the pending set, allowing it
-// to be re-enqueued.
-func (q *Queue) removeFromPending(envName EnvironmentName) {
+// Complete marks the current in-flight item as finished and schedules any follow-up item.
+func (q *Queue) Complete(envName EnvironmentName) {
 	q.mu.Lock()
-	delete(q.pending, envName)
-	q.mu.Unlock()
+	defer q.mu.Unlock()
+
+	delete(q.inFlight, envName)
+
+	followUpItem, ok := q.followUps[envName]
+	if !ok {
+		return
+	}
+
+	delete(q.followUps, envName)
+
+	if _, ok := q.items[envName]; ok || q.inFlight[envName] {
+		return
+	}
+
+	q.enqueueLocked(followUpItem)
+}
+
+func (q *Queue) enqueueLocked(item *WorkItem) {
+	envName := item.EnvName
+	q.items[envName] = item
+	q.pendingCh <- envName
+}
+
+func (q *Queue) markInFlight(envName EnvironmentName) (*WorkItem, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	item, ok := q.items[envName]
+	if !ok {
+		return nil, false
+	}
+
+	delete(q.items, envName)
+	q.inFlight[envName] = true
+
+	return item, true
 }
