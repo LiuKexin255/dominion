@@ -34,6 +34,7 @@ const (
 	WorkloadKindStateless WorkloadKind = "stateless"
 	WorkloadKindStateful  WorkloadKind = "stateful"
 )
+
 // DeployConfig 部署配置
 type DeployConfig struct {
 	Name     string           `yaml:"name"`
@@ -56,6 +57,8 @@ type DeployArtifact struct {
 	Name string `yaml:"name"`
 	// Replicas 指定该产物的部署副本数，未设置时由编译器使用默认值。
 	Replicas int `yaml:"replicas,omitempty"`
+	// Env 指定该产物的环境变量。
+	Env map[string]string `yaml:"env,omitempty"`
 }
 
 // DeployInfra 表示基于基础设施的部署定义。

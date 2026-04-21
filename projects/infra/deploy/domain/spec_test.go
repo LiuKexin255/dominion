@@ -102,6 +102,62 @@ func TestArtifactSpec_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "valid env keys",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				Env: map[string]string{
+					"FOO":      "bar",
+					"_PRIVATE": "secret",
+					"ABC123":   "value",
+				},
+			},
+		},
+		{
+			name: "lowercase env key accepted",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				Env:   map[string]string{"my_var": "value"},
+			},
+		},
+		{
+			name: "empty env value allowed",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				Env:   map[string]string{"EMPTY": ""},
+			},
+		},
+		{
+			name:    "empty env key rejected",
+			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"": "value"}},
+			wantErr: true,
+		},
+		{
+			name:    "env key starting with digit rejected",
+			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"1FOO": "bar"}},
+			wantErr: true,
+		},
+		{
+			name:    "env key with hyphen rejected",
+			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"FOO-BAR": "baz"}},
+			wantErr: true,
+		},
+		{
+			name:    "env key with space rejected",
+			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"FOO BAR": "baz"}},
+			wantErr: true,
+		},
+		{
+			name:    "env key with dot rejected",
+			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"FOO.BAR": "baz"}},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

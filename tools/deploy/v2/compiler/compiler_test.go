@@ -1165,6 +1165,121 @@ func TestCompile_DefaultReplicas(t *testing.T) {
 	}
 }
 
+func TestCompile_EnvFromConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		wantEnv        map[string]string
+	}{
+		{
+			name: "config specifies env vars",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+						Env: map[string]string{
+							"FOO": "bar",
+							"BAZ": "qux",
+						},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantEnv: map[string]string{
+				"FOO": "bar",
+				"BAZ": "qux",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if !reflect.DeepEqual(got.Artifacts[0].Env, tt.wantEnv) {
+				t.Errorf("Compile() Env = %v, want %v", got.Artifacts[0].Env, tt.wantEnv)
+			}
+		})
+	}
+}
+
+func TestCompile_WithoutEnv(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+	}{
+		{
+			name: "config without env leaves Env nil",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if got.Artifacts[0].Env != nil {
+				t.Errorf("Compile() Env = %v, want nil", got.Artifacts[0].Env)
+			}
+		})
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }

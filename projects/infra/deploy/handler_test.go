@@ -1171,6 +1171,282 @@ func Test_toProtoEnvironmentType(t *testing.T) {
 	}
 }
 
+func Test_normalizeEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want map[string]string
+	}{
+		{
+			name: "nil maps to nil",
+			env:  nil,
+			want: nil,
+		},
+		{
+			name: "empty map normalizes to nil",
+			env:  map[string]string{},
+			want: nil,
+		},
+		{
+			name: "non-empty map preserved",
+			env:  map[string]string{"FOO": "bar", "BAZ": "qux"},
+			want: map[string]string{"FOO": "bar", "BAZ": "qux"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeEnv(tt.env)
+			if (got == nil) != (tt.want == nil) {
+				t.Fatalf("normalizeEnv() = %v, want %v", got, tt.want)
+			}
+			if got != nil && len(got) != len(tt.want) {
+				t.Fatalf("normalizeEnv() len = %d, want %d", len(got), len(tt.want))
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Fatalf("normalizeEnv()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func Test_toProtoArtifacts_fromProtoArtifacts_envRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		domain  []*domain.ArtifactSpec
+		wantEnv map[string]string
+	}{
+		{
+			name: "env round-trip preserves values",
+			domain: []*domain.ArtifactSpec{{
+				Name:  "api",
+				App:   "gateway",
+				Image: "example.com/gateway:v1",
+				Env:   map[string]string{"LOG_LEVEL": "debug", "PORT": "8080"},
+			}},
+			wantEnv: map[string]string{"LOG_LEVEL": "debug", "PORT": "8080"},
+		},
+		{
+			name: "nil env stays nil through round-trip",
+			domain: []*domain.ArtifactSpec{{
+				Name:  "api",
+				App:   "gateway",
+				Image: "example.com/gateway:v1",
+				Env:   nil,
+			}},
+			wantEnv: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proto := toProtoArtifacts(tt.domain)
+			got, err := fromProtoArtifacts(proto)
+			if err != nil {
+				t.Fatalf("fromProtoArtifacts() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("fromProtoArtifacts() len = %d, want 1", len(got))
+			}
+			if (got[0].Env == nil) != (tt.wantEnv == nil) {
+				t.Fatalf("env nil-ness = %v, want %v", got[0].Env == nil, tt.wantEnv == nil)
+			}
+			for k, v := range tt.wantEnv {
+				if got[0].Env[k] != v {
+					t.Fatalf("env[%q] = %q, want %q", k, got[0].Env[k], v)
+				}
+			}
+		})
+	}
+}
+
+func Test_fromProtoArtifacts_emptyEnvMapNormalizedToNil(t *testing.T) {
+	proto := []*ArtifactSpec{{
+		Name:  "api",
+		App:   "gateway",
+		Image: "example.com/gateway:v1",
+		Env:   map[string]string{},
+	}}
+
+	got, err := fromProtoArtifacts(proto)
+	if err != nil {
+		t.Fatalf("fromProtoArtifacts() error = %v", err)
+	}
+	if got[0].Env != nil {
+		t.Fatalf("env = %v, want nil (empty proto map should normalize to nil)", got[0].Env)
+	}
+}
+
+func TestHandler_CreateEnvironment_ReservedEnvConflict(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		reserved    []string
+		reservedErr error
+		wantCode    codes.Code
+		wantSaved   bool
+	}{
+		{
+			name:      "reserved var conflict returns invalid argument and does not save",
+			reserved:  []string{"PORT"},
+			wantCode:  codes.InvalidArgument,
+			wantSaved: false,
+		},
+		{
+			name:      "no conflict succeeds and saves",
+			reserved:  []string{"RESERVED_VAR"},
+			wantCode:  codes.OK,
+			wantSaved: true,
+		},
+		{
+			name:        "reserved var lookup error returns internal error",
+			reservedErr: errors.New("runtime unavailable"),
+			wantCode:    codes.Internal,
+			wantSaved:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newFakeRepository()
+			runtime := &fakeServiceEndpointQuery{
+				reservedVars: tt.reserved,
+				reservedErr:  tt.reservedErr,
+			}
+			handler := NewHandler(repo, newFakeQueue(), runtime)
+			req := &CreateEnvironmentRequest{
+				Parent:  "deploy/scopes/dev",
+				EnvName: "alpha",
+				Environment: &Environment{
+					Description: "test env with env vars",
+					DesiredState: &EnvironmentDesiredState{
+						Artifacts: []*ArtifactSpec{{
+							Name:     "api",
+							App:      "gateway",
+							Image:    "example.com/gateway:v1",
+							Ports:    []*ArtifactPortSpec{{Name: "http", Port: 8080}},
+							Replicas: 1,
+							Env:      map[string]string{"PORT": "9090"},
+						}},
+					},
+					Type: EnvironmentType_ENVIRONMENT_TYPE_PROD,
+				},
+			}
+
+			// when
+			_, err := handler.CreateEnvironment(ctx, req)
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
+			envName, _ := domain.NewEnvironmentName("dev", "alpha")
+			_, getErr := repo.Get(ctx, envName)
+			saved := getErr == nil
+			if saved != tt.wantSaved {
+				t.Fatalf("saved = %v, want %v", saved, tt.wantSaved)
+			}
+		})
+	}
+}
+
+func TestHandler_UpdateEnvironment_ReservedEnvConflict(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		reserved    []string
+		reservedErr error
+		wantCode    codes.Code
+		wantSaves   int
+	}{
+		{
+			name:      "reserved var conflict returns invalid argument and does not save",
+			reserved:  []string{"PORT"},
+			wantCode:  codes.InvalidArgument,
+			wantSaves: 1,
+		},
+		{
+			name:      "no conflict succeeds and saves",
+			reserved:  []string{"RESERVED_VAR"},
+			wantCode:  codes.OK,
+			wantSaves: 2,
+		},
+		{
+			name:        "reserved var lookup error returns internal error",
+			reservedErr: errors.New("runtime unavailable"),
+			wantCode:    codes.Internal,
+			wantSaves:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newFakeRepository()
+			seed := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+			if err := seed.MarkReconciling(); err != nil {
+				t.Fatalf("MarkReconciling() error = %v", err)
+			}
+			if err := seed.MarkReady(seed.Generation()); err != nil {
+				t.Fatalf("MarkReady() error = %v", err)
+			}
+			if err := repo.Save(ctx, seed); err != nil {
+				t.Fatalf("repo.Save() error = %v", err)
+			}
+			runtime := &fakeServiceEndpointQuery{
+				reservedVars: tt.reserved,
+				reservedErr:  tt.reservedErr,
+			}
+			handler := NewHandler(repo, newFakeQueue(), runtime)
+			req := &UpdateEnvironmentRequest{
+				Environment: &Environment{
+					Name: "deploy/scopes/dev/environments/alpha",
+					DesiredState: &EnvironmentDesiredState{
+						Artifacts: []*ArtifactSpec{{
+							Name:     "api",
+							App:      "gateway",
+							Image:    "example.com/gateway:v2",
+							Ports:    []*ArtifactPortSpec{{Name: "http", Port: 8080}},
+							Replicas: 2,
+							Env:      map[string]string{"PORT": "9090"},
+						}},
+					},
+				},
+				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
+			}
+
+			// when
+			_, err := handler.UpdateEnvironment(ctx, req)
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
+			if repo.saveCalls != tt.wantSaves {
+				t.Fatalf("saveCalls = %d, want %d", repo.saveCalls, tt.wantSaves)
+			}
+		})
+	}
+}
+
+func Test_toProtoArtifacts_envNilBackwardCompatible(t *testing.T) {
+	artifacts := []*domain.ArtifactSpec{{
+		Name:  "api",
+		App:   "gateway",
+		Image: "example.com/gateway:v1",
+		Env:   nil,
+	}}
+
+	proto := toProtoArtifacts(artifacts)
+	if len(proto) != 1 {
+		t.Fatalf("len = %d, want 1", len(proto))
+	}
+	if proto[0].Env != nil {
+		t.Fatalf("proto env = %v, want nil for nil domain env", proto[0].Env)
+	}
+}
+
 func TestHandler_errorMapping(t *testing.T) {
 	ctx := context.Background()
 
@@ -1255,6 +1531,8 @@ type fakeServiceEndpointQuery struct {
 	err             error
 	calls           []serviceEndpointQueryCall
 	statefulCalls   []serviceEndpointQueryCall
+	reservedVars    []string
+	reservedErr     error
 }
 
 type serviceEndpointQueryCall struct {
@@ -1319,6 +1597,13 @@ func (q *fakeServiceEndpointQuery) Apply(_ context.Context, _ *domain.Environmen
 
 func (q *fakeServiceEndpointQuery) Delete(_ context.Context, _ domain.EnvironmentName) error {
 	return nil
+}
+
+func (q *fakeServiceEndpointQuery) ReservedEnvironmentVariableNames(_ context.Context) ([]string, error) {
+	if q.reservedErr != nil {
+		return nil, q.reservedErr
+	}
+	return q.reservedVars, nil
 }
 
 func serviceQueryKey(envLabel, app, service string) string {

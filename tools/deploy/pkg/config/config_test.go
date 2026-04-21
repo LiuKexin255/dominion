@@ -109,6 +109,28 @@ func TestParseDeployConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "读取包含 env 的部署配置成功",
+			path: filepath.Join(root, "testdata", "deploy.env.yaml"),
+			want: &DeployConfig{
+				Name: "grpc.dev",
+				Desc: "开发环境",
+				Type: "dev",
+				URI:  "//testdata/deploy.env.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/service/service.yaml",
+							Name: "service",
+							Env: map[string]string{
+								"FOO": "bar",
+								"BAZ": "qux",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "读取包含 type 的部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.type.yaml"),
 			want: &DeployConfig{

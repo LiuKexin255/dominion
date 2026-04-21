@@ -198,6 +198,14 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
+	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	if err != nil {
+		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
+	}
+	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
+		return nil, toStatusError(err)
+	}
+
 	if err := h.repo.Save(ctx, env); err != nil {
 		return nil, toStatusError(err)
 	}
@@ -238,6 +246,14 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 	}
 
 	if err := env.SetDesiredPresent(desiredState); err != nil {
+		return nil, toStatusError(err)
+	}
+
+	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	if err != nil {
+		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
+	}
+	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -416,6 +432,7 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 			TlsEnabled:   artifact.TLSEnabled,
 			WorkloadKind: workloadKindToProto(artifact.WorkloadKind),
 			Http:         toProtoArtifactHTTP(artifact.HTTP),
+			Env:          artifact.Env,
 		})
 	}
 
@@ -441,10 +458,19 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			TLSEnabled:   artifact.GetTlsEnabled(),
 			WorkloadKind: workloadKindFromProto(artifact.GetWorkloadKind()),
 			HTTP:         fromProtoArtifactHTTP(artifact.GetHttp()),
+			Env:          normalizeEnv(artifact.GetEnv()),
 		})
 	}
 
 	return result, nil
+}
+
+// normalizeEnv 将 proto map 转为 domain env，空 map 归一化为 nil。
+func normalizeEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func workloadKindToProto(kind domain.WorkloadKind) WorkloadKind {

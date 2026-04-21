@@ -207,6 +207,8 @@ message ArtifactSpec {
   ArtifactHTTPSpec http = 7;
 
   WorkloadKind workload_kind = 8;
+
+  map<string, string> env = 9;
 }
 
 message ArtifactPortSpec {

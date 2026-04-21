@@ -299,6 +299,98 @@ func TestArtifactSpecs_WorkloadKindPersistence(t *testing.T) {
 	}
 }
 
+func TestArtifactSpecs_EnvPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.ArtifactSpec
+		mongo      mongoArtifactSpec
+		wantEnv    map[string]string
+		checkRound bool
+	}{
+		{
+			name: "env round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+				Env: map[string]string{
+					"FOO": "bar",
+					"BAZ": "qux",
+				},
+			},
+			wantEnv: map[string]string{
+				"FOO": "bar",
+				"BAZ": "qux",
+			},
+			checkRound: true,
+		},
+		{
+			name: "nil env round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			wantEnv:    nil,
+			checkRound: true,
+		},
+		{
+			name: "empty map from mongo normalizes to nil",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+				Env:      map[string]string{},
+			},
+			wantEnv: nil,
+		},
+		{
+			name: "old mongo document without env defaults to nil",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			wantEnv: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoArtifactSpec
+			if tt.source != nil {
+				// when
+				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
+
+				// then
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+			} else {
+				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+			}
+
+			got := artifactSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if !reflect.DeepEqual(got[0].Env, tt.wantEnv) {
+				t.Fatalf("artifactSpecsFromMongo() env = %v, want %v", got[0].Env, tt.wantEnv)
+			}
+			if tt.checkRound && !reflect.DeepEqual(got[0].Env, tt.source.Env) {
+				t.Fatalf("round trip env = %v, want %v", got[0].Env, tt.source.Env)
+			}
+		})
+	}
+}
+
 func TestMongoRepository_Save(t *testing.T) {
 	ctx := context.Background()
 

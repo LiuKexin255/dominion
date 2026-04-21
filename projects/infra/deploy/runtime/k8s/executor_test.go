@@ -924,3 +924,32 @@ func assertNotFound(t *testing.T, err error) {
 func executorTestEnvName() string {
 	return "tstscope.dev"
 }
+
+func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
+	ctx := context.Background()
+	runtime := newTestK8sRuntime(t)
+
+	names, err := runtime.ReservedEnvironmentVariableNames(ctx)
+	if err != nil {
+		t.Fatalf("ReservedEnvironmentVariableNames() error: %v", err)
+	}
+
+	want := []string{
+		reservedEnvNameServiceApp,
+		reservedEnvNameDominionEnvironment,
+		reservedEnvNamePodNamespace,
+		envTLSCertFile,
+		envTLSKeyFile,
+		envTLSCAFile,
+		envTLSDomain,
+	}
+	if len(names) != len(want) {
+		t.Fatalf("names count = %d, want %d", len(names), len(want))
+	}
+
+	for i, w := range want {
+		if names[i] != w {
+			t.Fatalf("names[%d] = %q, want %q", i, names[i], w)
+		}
+	}
+}

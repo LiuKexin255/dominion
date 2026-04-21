@@ -22,6 +22,7 @@ type DeploymentWorkload struct {
 	Image           string
 	Replicas        int32
 	Ports           []*DeploymentPort
+	Env             map[string]string
 }
 
 // WorkloadName 返回 deployment 对应的资源名。
@@ -92,6 +93,7 @@ type StatefulWorkload struct {
 	Replicas        int32
 	Ports           []*DeploymentPort
 	Hostnames       []string
+	Env             map[string]string
 }
 
 // WorkloadName 返回 statefulset 对应的资源名。

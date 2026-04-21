@@ -119,11 +119,12 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 	}
 
 	replicas := workload.Replicas
-	containerEnv := []corev1.EnvVar{
-		{Name: reservedEnvNameServiceApp, Value: workload.App},
-		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
-		{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
-	}
+	containerEnv := buildSortedUserEnv(workload.Env)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+	)
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 	if workload.TLSEnabled {
@@ -216,11 +217,12 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 	}
 
 	replicas := workload.Replicas
-	containerEnv := []corev1.EnvVar{
-		{Name: reservedEnvNameServiceApp, Value: workload.App},
-		{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
-		{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
-	}
+	containerEnv := buildSortedUserEnv(workload.Env)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
+		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
+		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
+	)
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 	if workload.TLSEnabled {
@@ -871,6 +873,26 @@ func generateStablePassword(inputs ...string) string {
 	}
 
 	return string(encoded)
+}
+
+// buildSortedUserEnv 将用户环境变量按 key 字典序排列后返回。
+func buildSortedUserEnv(env map[string]string) []corev1.EnvVar {
+	if len(env) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	result := make([]corev1.EnvVar, 0, len(env))
+	for _, k := range keys {
+		result = append(result, corev1.EnvVar{Name: k, Value: env[k]})
+	}
+
+	return result
 }
 
 func buildContainerPorts(ports []*DeploymentPort) ([]corev1.ContainerPort, error) {

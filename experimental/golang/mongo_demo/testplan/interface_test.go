@@ -22,7 +22,7 @@ const (
 
 var (
 	jsonMarshaler   = protojson.MarshalOptions{}
-	jsonUnmarshaler = protojson.UnmarshalOptions{}
+	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
 // requireEnv reads an environment variable or fails the test.

@@ -172,6 +172,45 @@ services:
 `),
 			wantErr: true,
 		},
+		{
+			name: "valid deploy yaml with artifact env",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      env:
+        FOO: bar
+        BAZ: qux
+`),
+		},
+		{
+			name: "deploy yaml rejects non-string env value",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      env:
+        FOO: 123
+`),
+			wantErr: true,
+		},
+		{
+			name: "valid deploy yaml without env",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // HTTPPathRuleType defines the type of HTTP path matching rule.
@@ -37,6 +38,10 @@ type ArtifactHTTPSpec struct {
 	Matches   []HTTPRouteRule
 }
 
+// envKeyPattern defines the format for valid environment variable keys.
+// Keys must start with a letter or underscore, followed by letters, digits, or underscores.
+var envKeyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
 // ArtifactSpec describes the desired state of a deployable application artifact.
 type ArtifactSpec struct {
 	Name         string
@@ -47,6 +52,7 @@ type ArtifactSpec struct {
 	TLSEnabled   bool
 	WorkloadKind WorkloadKind
 	HTTP         *ArtifactHTTPSpec
+	Env          map[string]string
 }
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
@@ -97,6 +103,15 @@ func (s *ArtifactSpec) Validate() error {
 	}
 	if s.Replicas < 0 {
 		errs = append(errs, errors.New("replicas must be non-negative"))
+	}
+	for key := range s.Env {
+		if key == "" {
+			errs = append(errs, errors.New("env key must not be empty"))
+			continue
+		}
+		if !envKeyPattern.MatchString(key) {
+			errs = append(errs, fmt.Errorf("env key %q must match pattern %s", key, envKeyPattern))
+		}
 	}
 	if s.HTTP != nil {
 		if err := s.HTTP.Validate(); err != nil {

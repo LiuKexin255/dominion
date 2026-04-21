@@ -12,6 +12,7 @@ func TestStatefulWorkload_Validate(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "valid", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 3, Ports: []*DeploymentPort{{Name: "http", Port: 8080}}}},
+		{name: "valid with env", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 3, Env: map[string]string{"FOO": "bar", "BAZ": "qux"}}},
 		{name: "zero replicas", workload: StatefulWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 0}},
 		{name: "missing service", workload: StatefulWorkload{EnvironmentName: "dev", App: "app", Image: "repo/app:v1"}, wantErr: true},
 		{name: "missing env", workload: StatefulWorkload{ServiceName: "svc", App: "app", Image: "repo/app:v1"}, wantErr: true},
@@ -58,6 +59,7 @@ func TestDeploymentWorkload_Validate(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "valid", workload: DeploymentWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 1, Ports: []*DeploymentPort{{Name: "http", Port: 8080}}}},
+		{name: "valid with env", workload: DeploymentWorkload{ServiceName: "svc", EnvironmentName: "dev", App: "app", Image: "repo/app:v1", Replicas: 1, Env: map[string]string{"FOO": "bar", "BAZ": "qux"}}},
 		{name: "missing service", workload: DeploymentWorkload{EnvironmentName: "dev", App: "app", Image: "repo/app:v1"}, wantErr: true},
 		{name: "missing env", workload: DeploymentWorkload{ServiceName: "svc", App: "app", Image: "repo/app:v1"}, wantErr: true},
 		{name: "missing app", workload: DeploymentWorkload{ServiceName: "svc", EnvironmentName: "dev", Image: "repo/app:v1"}, wantErr: true},

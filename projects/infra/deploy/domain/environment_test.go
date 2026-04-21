@@ -1105,6 +1105,171 @@ func TestDesiredState_InfraPersistenceZeroValue(t *testing.T) {
 	}
 }
 
+func TestEnvironment_ValidateEnvConflict(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		desiredState DesiredState
+		reserved     []string
+		wantErr      bool
+		wantContains string
+	}{
+		{
+			name: "no conflict when no env",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+				}},
+			},
+			reserved: []string{"PORT", "HOST"},
+		},
+		{
+			name: "no conflict with different keys",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"MY_VAR": "value"},
+				}},
+			},
+			reserved: []string{"PORT", "HOST"},
+		},
+		{
+			name: "conflict with reserved variable",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"PORT": "8080"},
+				}},
+			},
+			reserved:     []string{"PORT", "HOST"},
+			wantErr:      true,
+			wantContains: `artifacts[0].env["PORT"]: conflicts with reserved environment variable`,
+		},
+		{
+			name: "conflict is case-sensitive",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"port": "8080"},
+				}},
+			},
+			reserved: []string{"PORT"},
+		},
+		{
+			name: "multiple conflicts collected",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{
+					{
+						Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+						Env: map[string]string{"PORT": "8080"},
+					},
+					{
+						Name: "worker", App: "demo", Image: "repo/worker:v1", Replicas: 1,
+						Env: map[string]string{"HOST": "localhost"},
+					},
+				},
+			},
+			reserved:     []string{"PORT", "HOST"},
+			wantErr:      true,
+			wantContains: `artifacts[0].env["PORT"]`,
+		},
+		{
+			name: "empty reserved list allows all",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"ANYTHING": "goes"},
+				}},
+			},
+			reserved: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := &Environment{
+				name:         name,
+				description:  "demo environment",
+				desiredState: cloneDesiredState(&tt.desiredState),
+				status:       &EnvironmentStatus{State: StatePending},
+			}
+
+			// when
+			err := env.ValidateEnvConflict(tt.reserved)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ValidateEnvConflict() expected error")
+				}
+				if !strings.Contains(err.Error(), tt.wantContains) {
+					t.Fatalf("ValidateEnvConflict() error = %q, want substring %q", err.Error(), tt.wantContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateEnvConflict() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloneArtifacts_DeepCopyEnv(t *testing.T) {
+	// given
+	original := []*ArtifactSpec{
+		{
+			Name: "api", App: "demo", Image: "repo/demo:v1",
+			Env: map[string]string{"FOO": "bar", "BAZ": "qux"},
+		},
+		{
+			Name: "worker", App: "demo", Image: "repo/worker:v1",
+		},
+	}
+
+	// when
+	cloned := cloneArtifacts(original)
+
+	// then
+	if len(cloned) != 2 {
+		t.Fatalf("len(cloned) = %d, want 2", len(cloned))
+	}
+	if cloned[0].Env["FOO"] != "bar" {
+		t.Fatalf(`cloned[0].Env["FOO"] = %q, want "bar"`, cloned[0].Env["FOO"])
+	}
+
+	// when - mutate original
+	original[0].Env["FOO"] = "changed"
+	original[0].Env["NEW"] = "added"
+
+	// then - clone unaffected
+	if cloned[0].Env["FOO"] != "bar" {
+		t.Fatalf(`cloned[0].Env["FOO"] = %q, want "bar" (deep copy failed)`, cloned[0].Env["FOO"])
+	}
+	if _, ok := cloned[0].Env["NEW"]; ok {
+		t.Fatalf("cloned[0].Env should not contain 'NEW' (deep copy failed)")
+	}
+}
+
+func TestCloneArtifacts_NilEnv(t *testing.T) {
+	// given
+	original := []*ArtifactSpec{
+		{Name: "api", App: "demo", Image: "repo/demo:v1"},
+	}
+
+	// when
+	cloned := cloneArtifacts(original)
+
+	// then
+	if cloned[0].Env != nil {
+		t.Fatalf("cloned[0].Env = %v, want nil", cloned[0].Env)
+	}
+}
+
 func mustNewEnvironment(t *testing.T) *Environment {
 	t.Helper()
 

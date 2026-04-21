@@ -59,6 +59,13 @@
                 "type": "integer",
                 "minimum": 1,
                 "description": "部署副本数，未设置时使用默认值"
+              },
+              "env": {
+                "type": "object",
+                "description": "产物环境变量",
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           },
