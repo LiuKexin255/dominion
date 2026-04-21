@@ -17,14 +17,6 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
-var adminHTTPHandler http.Handler
-
-// SetAdminHTTPHandler installs an optional HTTP handler mounted under /admin/.
-// It is intended for test-only wiring.
-func SetAdminHTTPHandler(handler http.Handler) {
-	adminHTTPHandler = handler
-}
-
 // Serve starts the deploy gRPC and HTTP gateway servers.
 func Serve(ctx context.Context, handler *deploy.Handler, httpAddr string) error {
 	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
@@ -34,12 +26,7 @@ func Serve(ctx context.Context, handler *deploy.Handler, httpAddr string) error 
 	if err := deploy.RegisterDeployServiceHandlerServer(context.Background(), httpMux, handler); err != nil {
 		return fmt.Errorf("register HTTP gateway: %w", err)
 	}
-	rootMux := http.NewServeMux()
-	rootMux.Handle("/", httpMux)
-	if adminHTTPHandler != nil {
-		rootMux.Handle("/admin/", adminHTTPHandler)
-	}
-	httpServer := &http.Server{Addr: httpAddr, Handler: rootMux}
+	httpServer := &http.Server{Addr: httpAddr, Handler: httpMux}
 
 	errCh := make(chan error, 2)
 	go func() {

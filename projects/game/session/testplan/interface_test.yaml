@@ -16,9 +16,9 @@ description: |
 suites:
   - name: default
     env: game.lt
-    deploy: //projects/game/testplan/test_deploy.yaml
+    deploy: //projects/game/session/testplan/test_deploy.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:testplan_test
+      - //projects/game/session/testplan:testplan_test
