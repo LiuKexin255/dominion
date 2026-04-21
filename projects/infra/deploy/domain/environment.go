@@ -358,6 +358,12 @@ func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
 			}
 			spec.HTTP = &httpSpec
 		}
+		if len(artifact.Env) > 0 {
+			spec.Env = make(map[string]string, len(artifact.Env))
+			for k, v := range artifact.Env {
+				spec.Env[k] = v
+			}
+		}
 		cloned[i] = &spec
 	}
 
@@ -375,4 +381,26 @@ func cloneInfras(infras []*InfraSpec) []*InfraSpec {
 		cloned[i] = &cp
 	}
 	return cloned
+}
+
+// ValidateEnvConflict checks that no artifact env key conflicts with a reserved variable name.
+func (e *Environment) ValidateEnvConflict(reservedEnvVars []string) error {
+	reserved := make(map[string]struct{}, len(reservedEnvVars))
+	for _, v := range reservedEnvVars {
+		reserved[v] = struct{}{}
+	}
+
+	var errs []error
+	for i, artifact := range e.desiredState.Artifacts {
+		for key := range artifact.Env {
+			if _, ok := reserved[key]; ok {
+				errs = append(errs, fmt.Errorf("artifacts[%d].env[%q]: conflicts with reserved environment variable", i, key))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
+	}
+	return nil
 }

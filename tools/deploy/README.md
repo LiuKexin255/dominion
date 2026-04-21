@@ -16,6 +16,20 @@ services:
       name: service
 ```
 
+带环境变量的 `deploy.yaml` 示例：
+
+```yaml
+name: alice.dev
+desc: "开发环境"
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      env:
+        LOG_LEVEL: debug
+        TIMEOUT_MS: "1500"
+```
+
 ### `deploy.yaml` 中的服务类型
 
 `services` 中的每一项只能二选一：
@@ -68,6 +82,7 @@ artifacts:
 
 - `artifact.path`：`service.yaml` 路径。
 - `artifact.name`：引用 `service.yaml` 中 `artifacts[].name` 的名称。
+- `artifact.env`：可选，为产物配置环境变量，key 为变量名，value 为明文值。
 - `http`：可选，为该服务额外生成 HTTPRoute；`backend` 需要填写产物里声明的端口名。
 
 说明：
@@ -307,3 +322,32 @@ tls:
 - `TLS_KEY_FILE`
 - `TLS_CA_FILE`
 - `TLS_SERVER_NAME`
+
+## 环境变量配置
+
+在 `deploy.yaml` 中，可以通过 `artifact.env` 字段为服务产物配置环境变量：
+
+```yaml
+name: alice.dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+      env:
+        LOG_LEVEL: debug
+        DATABASE_URL: "postgres://localhost:5432/mydb"
+```
+
+**说明：**
+
+- `env` 是一个 key-value 对象，key 为环境变量名，value 为明文值（必须为字符串类型）。
+- 环境变量名必须符合 POSIX 标准：`^[a-zA-Z_][a-zA-Z0-9_]*$`。
+- 以下环境变量名被平台保留，不可使用：
+  - `SERVICE_APP`
+  - `DOMINION_ENVIRONMENT`
+  - `POD_NAMESPACE`
+  - `TLS_CERT_FILE`
+  - `TLS_KEY_FILE`
+  - `TLS_CA_FILE`
+  - `TLS_SERVER_NAME`
+- 用户定义的环境变量会按 key 的字典序排列，并在保留变量之前注入容器。

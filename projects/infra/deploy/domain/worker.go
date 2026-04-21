@@ -19,6 +19,7 @@ type EnvironmentRuntime interface {
 	Delete(ctx context.Context, envName EnvironmentName) error
 	QueryServiceEndpoints(ctx context.Context, envLabel string, app string, service string) (*ServiceQueryResult, error)
 	QueryStatefulServiceEndpoints(ctx context.Context, envLabel string, app string, service string) (*ServiceQueryResult, error)
+	ReservedEnvironmentVariableNames(ctx context.Context) ([]string, error)
 }
 
 // Worker drains the queue and reconciles the latest environment snapshot.

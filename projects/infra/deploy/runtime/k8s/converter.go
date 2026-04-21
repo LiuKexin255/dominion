@@ -80,6 +80,7 @@ func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName st
 		TLSEnabled:      artifact.TLSEnabled,
 		Ports:           convertPorts(artifact.Ports),
 		Hostnames:       hostnames,
+		Env:             artifact.Env,
 	}
 }
 
@@ -92,6 +93,7 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) 
 		Replicas:        artifact.Replicas,
 		TLSEnabled:      artifact.TLSEnabled,
 		Ports:           convertPorts(artifact.Ports),
+		Env:             artifact.Env,
 	}
 }
 

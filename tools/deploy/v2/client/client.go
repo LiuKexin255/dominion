@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"dominion/projects/infra/deploy"
+
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -20,8 +21,8 @@ import (
 const basePath = "/v1/"
 
 var (
-	jsonMarshaler   = protojson.MarshalOptions{EmitUnpopulated: true}
-	jsonUnmarshaler = protojson.UnmarshalOptions{}
+	jsonMarshaler   = protojson.MarshalOptions{}
+	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
 var (

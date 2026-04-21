@@ -11,6 +11,7 @@ import (
 
 	"dominion/pkg/testtool"
 	session "dominion/projects/game/session"
+
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -24,7 +25,7 @@ const (
 var (
 	httpClient      = &http.Client{Timeout: httpClientTimeout}
 	jsonMarshaler   = protojson.MarshalOptions{}
-	jsonUnmarshaler = protojson.UnmarshalOptions{}
+	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 	testSessionType = session.SessionType_SESSION_TYPE_SAOLEI
 	testInvalidType = session.SessionType_SESSION_TYPE_UNSPECIFIED
 )

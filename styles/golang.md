@@ -103,7 +103,7 @@ func foo() []string {
 
 ## 结构体
 
-* `HTTP` 请求如果是同仓库内的 `grpc` 接口（通常都是 `grpc proto` 定义，使用 `grpc-gateway` 转换），其入参出参使用 `proto` 对象，并使用 `protojson` 进行序列化和反序列化 
+* `HTTP` 请求如果是同仓库内的 `grpc` 接口（通常都是 `grpc proto` 定义，使用 `grpc-gateway` 转换），其入参出参使用 `proto` 对象，并使用 `protojson` 进行序列化和反序列化（反序列化开启 `DiscardUnknown`）。 
 
 ## 单元测试 
 

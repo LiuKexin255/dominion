@@ -18,6 +18,7 @@ type fakeRepository struct {
 	listErr   error
 	saveErr   error
 	deleteErr error
+	saveCalls int
 }
 
 func newFakeRepository(seed ...*domain.Environment) *fakeRepository {
@@ -159,6 +160,7 @@ func (r *fakeRepository) Save(_ context.Context, env *domain.Environment) error 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.saveCalls++
 	r.envs[env.Name().String()] = env
 	return nil
 }

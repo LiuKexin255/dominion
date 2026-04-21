@@ -287,6 +287,137 @@ func TestBuildDeployment_NilPort(t *testing.T) {
 	}
 }
 
+func TestBuildDeployment_UserEnvSortedBeforeReserved(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.Env = map[string]string{
+		"Z_VAR": "z",
+		"A_VAR": "a",
+		"M_VAR": "m",
+		"B_VAR": "b",
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// User env sorted: A_VAR, B_VAR, M_VAR, Z_VAR.
+	// Reserved: SERVICE_APP, DOMINION_ENVIRONMENT, POD_NAMESPACE.
+	// Total: 7 env vars.
+	if len(envs) != 7 {
+		t.Fatalf("Env count = %d, want 7", len(envs))
+	}
+
+	wantOrder := []struct{ name, value string }{
+		{"A_VAR", "a"},
+		{"B_VAR", "b"},
+		{"M_VAR", "m"},
+		{"Z_VAR", "z"},
+		{reservedEnvNameServiceApp, w.App},
+		{reservedEnvNameDominionEnvironment, w.EnvironmentName},
+		{reservedEnvNamePodNamespace, cfg.Namespace},
+	}
+	for i, want := range wantOrder {
+		if envs[i].Name != want.name || envs[i].Value != want.value {
+			t.Fatalf("Env[%d] = {Name: %q, Value: %q}, want {Name: %q, Value: %q}", i, envs[i].Name, envs[i].Value, want.name, want.value)
+		}
+	}
+}
+
+func TestBuildDeployment_UserEnvWithTLS_ReservedAfterUserBeforeTLS(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.TLSEnabled = true
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+		"LOG_LEVEL": "info",
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// APP_DEBUG, LOG_LEVEL, SERVICE_APP, DOMINION_ENVIRONMENT, POD_NAMESPACE, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CA_FILE, TLS_SERVER_NAME.
+	if len(envs) != 9 {
+		t.Fatalf("Env count = %d, want 9", len(envs))
+	}
+
+	// Verify user env comes first, sorted.
+	if envs[0].Name != "APP_DEBUG" || envs[1].Name != "LOG_LEVEL" {
+		t.Fatalf("User env order = [%q, %q], want [APP_DEBUG, LOG_LEVEL]", envs[0].Name, envs[1].Name)
+	}
+
+	// Verify reserved env after user.
+	if envs[2].Name != reservedEnvNameServiceApp {
+		t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, reservedEnvNameServiceApp)
+	}
+
+	// Verify TLS env last.
+	if envs[5].Name != envTLSCertFile {
+		t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, envTLSCertFile)
+	}
+	if envs[8].Name != envTLSDomain {
+		t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envTLSDomain)
+	}
+}
+
+func TestBuildDeployment_NilEnv_BackwardCompatible(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.Env = nil
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	// Only reserved env, no user env.
+	if len(container.Env) != 3 {
+		t.Fatalf("Env count = %d, want 3", len(container.Env))
+	}
+	if container.Env[0].Name != reservedEnvNameServiceApp {
+		t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, reservedEnvNameServiceApp)
+	}
+}
+
+func TestBuildDeployment_UserEnvSortStability(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.Env = map[string]string{
+		"FOO": "1",
+		"BAR": "2",
+		"BAZ": "3",
+	}
+
+	deploy1, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+	deploy2, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	envs1 := deploy1.Spec.Template.Spec.Containers[0].Env
+	envs2 := deploy2.Spec.Template.Spec.Containers[0].Env
+
+	for i := range envs1 {
+		if envs1[i].Name != envs2[i].Name || envs1[i].Value != envs2[i].Value {
+			t.Fatalf("Env[%d] differs between builds: %q/%q vs %q/%q", i, envs1[i].Name, envs1[i].Value, envs2[i].Name, envs2[i].Value)
+		}
+	}
+}
+
 // --- BuildStatefulSet ---
 
 func TestBuildStatefulSet(t *testing.T) {
@@ -431,6 +562,102 @@ func TestBuildStatefulSet(t *testing.T) {
 				}
 				if workload == nil {
 					t.Fatalf("workload should not be nil")
+				}
+			},
+		},
+		{
+			name: "injects user env sorted before reserved",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				workload := testStatefulWorkload()
+				workload.Env = map[string]string{
+					"Z_VAR": "z",
+					"A_VAR": "a",
+				}
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, sts *appsv1.StatefulSet, workload *StatefulWorkload, cfg *K8sConfig) {
+				t.Helper()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				envs := container.Env
+				if len(envs) != 5 {
+					t.Fatalf("Env count = %d, want 5", len(envs))
+				}
+
+				// User env sorted first.
+				if envs[0].Name != "A_VAR" || envs[0].Value != "a" {
+					t.Fatalf("Env[0] = {Name: %q, Value: %q}, want A_VAR/a", envs[0].Name, envs[0].Value)
+				}
+				if envs[1].Name != "Z_VAR" || envs[1].Value != "z" {
+					t.Fatalf("Env[1] = {Name: %q, Value: %q}, want Z_VAR/z", envs[1].Name, envs[1].Value)
+				}
+
+				// Reserved after user.
+				if envs[2].Name != reservedEnvNameServiceApp {
+					t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, reservedEnvNameServiceApp)
+				}
+				if envs[3].Name != reservedEnvNameDominionEnvironment {
+					t.Fatalf("Env[3] Name = %q, want %q", envs[3].Name, reservedEnvNameDominionEnvironment)
+				}
+				if envs[4].Name != reservedEnvNamePodNamespace {
+					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, reservedEnvNamePodNamespace)
+				}
+			},
+		},
+		{
+			name: "injects user env sorted before reserved with tls",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				workload := testStatefulWorkload()
+				workload.TLSEnabled = true
+				workload.Env = map[string]string{
+					"LOG_LEVEL": "debug",
+				}
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, sts *appsv1.StatefulSet, workload *StatefulWorkload, cfg *K8sConfig) {
+				t.Helper()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				envs := container.Env
+				if len(envs) != 8 {
+					t.Fatalf("Env count = %d, want 8", len(envs))
+				}
+
+				// User env first.
+				if envs[0].Name != "LOG_LEVEL" || envs[0].Value != "debug" {
+					t.Fatalf("Env[0] = {Name: %q, Value: %q}, want LOG_LEVEL/debug", envs[0].Name, envs[0].Value)
+				}
+
+				// Reserved after user.
+				if envs[1].Name != reservedEnvNameServiceApp {
+					t.Fatalf("Env[1] Name = %q, want %q", envs[1].Name, reservedEnvNameServiceApp)
+				}
+
+				// TLS last.
+				if envs[4].Name != envTLSCertFile {
+					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, envTLSCertFile)
+				}
+				if envs[7].Name != envTLSDomain {
+					t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, envTLSDomain)
+				}
+			},
+		},
+		{
+			name: "nil env only reserved",
+			given: func() (*StatefulWorkload, *K8sConfig) {
+				workload := testStatefulWorkload()
+				workload.Env = nil
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, sts *appsv1.StatefulSet, workload *StatefulWorkload, cfg *K8sConfig) {
+				t.Helper()
+
+				container := sts.Spec.Template.Spec.Containers[0]
+				if len(container.Env) != 3 {
+					t.Fatalf("Env count = %d, want 3", len(container.Env))
+				}
+				if container.Env[0].Name != reservedEnvNameServiceApp {
+					t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, reservedEnvNameServiceApp)
 				}
 			},
 		},

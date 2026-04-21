@@ -1032,3 +1032,123 @@ func Test_convertPathType(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertToWorkloads_DeploymentEnvPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *domain.Environment
+		want map[string]string
+	}{
+		{
+			name: "deployment with env vars",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "web",
+						App:      "webapp",
+						Image:    "webapp:v1",
+						Replicas: 1,
+						Env:      map[string]string{"DATABASE_URL": "postgres://localhost", "LOG_LEVEL": "debug"},
+					},
+				},
+			}),
+			want: map[string]string{"DATABASE_URL": "postgres://localhost", "LOG_LEVEL": "debug"},
+		},
+		{
+			name: "deployment with nil env",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "web",
+						App:      "webapp",
+						Image:    "webapp:v1",
+						Replicas: 1,
+					},
+				},
+			}),
+			want: nil,
+		},
+		{
+			name: "deployment with empty env",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "web",
+						App:      "webapp",
+						Image:    "webapp:v1",
+						Replicas: 1,
+						Env:      map[string]string{},
+					},
+				},
+			}),
+			want: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ConvertToWorkloads(tt.env, newTestConfig())
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			if len(got.Deployments) != 1 {
+				t.Fatalf("Deployments count = %d, want 1", len(got.Deployments))
+			}
+			if !reflect.DeepEqual(got.Deployments[0].Env, tt.want) {
+				t.Fatalf("Env = %#v, want %#v", got.Deployments[0].Env, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertToWorkloads_StatefulEnvPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *domain.Environment
+		want map[string]string
+	}{
+		{
+			name: "stateful with env vars",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					Env:          map[string]string{"GAME_MODE": "production", "MAX_PLAYERS": "100"},
+				}},
+			}),
+			want: map[string]string{"GAME_MODE": "production", "MAX_PLAYERS": "100"},
+		},
+		{
+			name: "stateful with nil env",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "queue",
+					App:          "worker",
+					Image:        "worker:v1",
+					Replicas:     1,
+					WorkloadKind: domain.WorkloadKindStateful,
+				}},
+			}),
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ConvertToWorkloads(tt.env, newTestConfig())
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			if len(got.StatefulWorkloads) != 1 {
+				t.Fatalf("StatefulWorkloads count = %d, want 1", len(got.StatefulWorkloads))
+			}
+			if !reflect.DeepEqual(got.StatefulWorkloads[0].Env, tt.want) {
+				t.Fatalf("Env = %#v, want %#v", got.StatefulWorkloads[0].Env, tt.want)
+			}
+		})
+	}
+}

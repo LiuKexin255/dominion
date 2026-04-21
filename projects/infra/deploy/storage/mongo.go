@@ -141,6 +141,7 @@ type mongoArtifactSpec struct {
 	TLSEnabled   bool                    `bson:"tls_enabled"`
 	WorkloadKind int                     `bson:"workload_kind"`
 	HTTP         *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
+	Env          map[string]string       `bson:"env,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
@@ -478,6 +479,7 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 			TLSEnabled:   s.TLSEnabled,
 			WorkloadKind: int(s.WorkloadKind),
 			HTTP:         artifactHTTPSpecToMongo(s.HTTP),
+			Env:          s.Env,
 		}
 	}
 	return result
@@ -617,9 +619,17 @@ func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 			TLSEnabled:   s.TLSEnabled,
 			WorkloadKind: domain.WorkloadKind(s.WorkloadKind),
 			HTTP:         artifactHTTPSpecFromMongo(s.HTTP),
+			Env:          normalizeEnv(s.Env),
 		}
 	}
 	return result
+}
+
+func normalizeEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func artifactPortSpecsFromMongo(specs []mongoArtifactPortSpec) []domain.ArtifactPortSpec {

@@ -408,6 +408,19 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 	return result, nil
 }
 
+// ReservedEnvironmentVariableNames returns environment variable names reserved by the Kubernetes runtime.
+func (r *K8sRuntime) ReservedEnvironmentVariableNames(_ context.Context) ([]string, error) {
+	return []string{
+		reservedEnvNameServiceApp,
+		reservedEnvNameDominionEnvironment,
+		reservedEnvNamePodNamespace,
+		envTLSCertFile,
+		envTLSKeyFile,
+		envTLSCAFile,
+		envTLSDomain,
+	}, nil
+}
+
 func (r *K8sRuntime) listServiceEndpointSlices(ctx context.Context, namespace string, serviceName string) (*discoveryv1.EndpointSliceList, error) {
 	serviceSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: serviceName}).String()
 
