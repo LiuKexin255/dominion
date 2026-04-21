@@ -6,17 +6,16 @@ import (
 )
 
 type recoveryRepository interface {
-	ListByStates(context.Context, ...EnvironmentState) ([]*Environment, error)
+	ListNeedingReconcile(context.Context) ([]*Environment, error)
 }
 
 type recoveryQueue interface {
 	Enqueue(context.Context, EnvironmentName) error
-	EnqueueWithPriority(context.Context, EnvironmentName) error
 }
 
 // Recover reloads in-flight environments and requeues them at startup.
 func Recover(ctx context.Context, repo recoveryRepository, queue recoveryQueue) error {
-	envs, err := repo.ListByStates(ctx, StateReconciling, StateDeleting)
+	envs, err := repo.ListNeedingReconcile(ctx)
 	if err != nil {
 		return err
 	}
@@ -28,18 +27,10 @@ func Recover(ctx context.Context, repo recoveryRepository, queue recoveryQueue) 
 		}
 
 		name := env.Name()
-		switch env.Status().State {
-		case StateReconciling:
-			if err := queue.Enqueue(ctx, name); err != nil {
-				return err
-			}
-			log.Printf("recovery: requeued %s for reconciliation", name.String())
-		case StateDeleting:
-			if err := queue.EnqueueWithPriority(ctx, name); err != nil {
-				return err
-			}
-			log.Printf("recovery: requeued %s for deletion", name.String())
+		if err := queue.Enqueue(ctx, name); err != nil {
+			return err
 		}
+		log.Printf("recovery: requeued %s", name.String())
 	}
 
 	return nil

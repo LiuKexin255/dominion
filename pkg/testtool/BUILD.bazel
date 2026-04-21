@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "testtool",
+    srcs = ["testtool.go"],
+    importpath = "dominion/pkg/testtool",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "testtool_test",
+    srcs = ["testtool_test.go"],
+    embed = [":testtool"],
+)

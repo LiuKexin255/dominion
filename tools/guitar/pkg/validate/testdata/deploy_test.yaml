@@ -1,0 +1,15 @@
+name: game.lt
+desc: test deploy
+type: test
+services:
+  - artifact:
+      path: //projects/game/session/service.yaml
+      name: cmd
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1

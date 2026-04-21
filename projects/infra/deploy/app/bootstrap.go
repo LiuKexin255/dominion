@@ -44,11 +44,7 @@ func (b *Bootstrap) Start(ctx context.Context) error {
 		b.Queue.Stop()
 	}()
 
-	go func() {
-		if err := b.Worker.Run(ctx); err != nil {
-			panic(fmt.Sprintf("worker run: %v", err))
-		}
-	}()
+	go b.Worker.Run()
 
 	return nil
 }

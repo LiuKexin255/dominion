@@ -1,0 +1,7 @@
+description: missing name
+suites:
+  - name: default
+    env: game.lt
+    deploy: //projects/game/testplan/test_deploy.yaml
+    cases:
+      - //projects/game/testplan:testplan_test

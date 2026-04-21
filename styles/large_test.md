@@ -9,28 +9,41 @@
 
 ## 测试计划
 
-大型测试通过`测试计划`进行编排。测试计划通常与其使用物料（例如部署配置和测试用例）用**一起**放在 `testplan` 目录，并包含以下内容：
+大型测试通过`测试计划`进行编排。测试计划通常与其使用物料（例如部署配置和测试用例）**一起**放在 `testplan` 目录，使用 YAML 格式定义，通过 `guitar` 工具执行。
+
+测试计划包含以下内容：
 
 * name：测试计划名
-* deploy：被测系统部署配置配置，通过 `deploy(//tools/deploy)` 工具进行部署，测试完成后移除。
-* cases: 测试用例列表，在部署完成后执行。
+* suites：测试套件列表，每个 suite 包含：
+  * env：测试环境标识（格式：scope.env，如 game.lt）
+  * deploy：被测系统部署配置，通过 `deploy(//tools/deploy)` 工具进行部署，测试完成后移除
+  * endpoint：测试入口 URL 映射（可选）
+  * cases：测试用例列表，在部署完成后执行
 
-```markdown
-# 测试计划样例
+```yaml
+name: game-session-large-test
+description: game-session HTTP REST 接口测试
 
-* name：deploy 服务接口测试
-* deploy：//projects/infra/deploy/testplan/test_deploy.yaml # 最好是完整路径，并且放到 `testplan` 目录
-
-## Test cases
-* //projects/infra/deploy/testplan:integration_test # 最好把接口测试也跟测试计划放进一个目录
+suites:
+  - name: default
+    env: game.lt
+    deploy: //projects/game/testplan/test_deploy.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test
 ```
+
+详见 `design/guitar_yaml_testplan.md`。
 
 ## 测试用例
 
 * 大型测试的 `target` 使用专用的 `bazel rule`，例如 `golang` 使用 `go_largetest(//tools/go:defs.bzl)`。
 * 大型测试的 `target` 名最好使用 `gazelle` 生成的默认名称（`{package_name}_test`），以防止重复生成 `go_unittest`。
 * 测试用例需要根据实际情况设置 `size`。
-* 执行大型测试时，统一使用 `bazel test --config=largetest <target>`。
+* 使用 `guitar run <plan.yaml>` 执行测试计划，自动完成部署、测试、清理闭环。
+* 测试代码通过 `pkg/testtool` 读取环境变量获取 SUT 信息。
 
 > FOR Agent: 使用 `testplan` SKILL 来执行大型测试。
 
@@ -43,9 +56,18 @@
 * 使用 `http` 接口对 `grpc` 系统进行测试。
 * 可以使用 `grpc-gateway` 组件为 `grpc` 服务提供 `http` 服务。
 
+### 环境变量
 
-#### 常用环境变量
+使用 `guitar run` 执行测试计划时，环境变量由 guitar 自动注入，测试代码通过 `pkg/testtool` 读取：
 
-以下为 `grpc&http` 大型测试时常用环境变量，通过在 `BUILD.bazel` 中添加环境变量名注入变量。
+* `TESTTOOL_ENV`：测试环境标识
+* `TESTTOOL_ENDPOINT_<PROTOCOL>_<NAME>`：测试入口 URL（如 `TESTTOOL_ENDPOINT_HTTP_PUBLIC`）
 
-* `SUT_HOST_URL`: 被测系统域名
+```go
+import "dominion/pkg/testtool"
+
+sutHostURL := testtool.MustEndpoint("http", "public")
+envName := testtool.MustEnv()
+```
+
+旧的 `SUT_HOST_URL` / `SUT_ENV_NAME` 环境变量已废弃。

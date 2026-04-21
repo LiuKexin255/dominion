@@ -317,8 +317,9 @@ func TestMongoRepository_Save(t *testing.T) {
 		if collection.lastUpdateFilter == nil {
 			t.Fatal("Save() did not call UpdateOne")
 		}
-		if !reflect.DeepEqual(collection.lastUpdateFilter, bson.M{"name": env.Name().String()}) {
-			t.Fatalf("UpdateOne() filter = %#v, want %#v", collection.lastUpdateFilter, bson.M{"name": env.Name().String()})
+		wantFilter := bson.M{"name": env.Name().String(), "generation": bson.M{"$lte": env.Generation()}}
+		if !reflect.DeepEqual(collection.lastUpdateFilter, wantFilter) {
+			t.Fatalf("UpdateOne() filter = %#v, want %#v", collection.lastUpdateFilter, wantFilter)
 		}
 		if collection.lastUpdateUpsert == nil || !*collection.lastUpdateUpsert {
 			t.Fatalf("UpdateOne() upsert = %v, want true", collection.lastUpdateUpsert)
@@ -348,6 +349,10 @@ func TestMongoRepository_Save(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Save() overwrite unexpected error: %v", err)
 		}
+		wantFilter := bson.M{"name": updated.Name().String(), "generation": bson.M{"$lte": updated.Generation()}}
+		if !reflect.DeepEqual(collection.lastUpdateFilter, wantFilter) {
+			t.Fatalf("UpdateOne() filter = %#v, want %#v", collection.lastUpdateFilter, wantFilter)
+		}
 		assertSaveUpdateDocument(t, collection.lastUpdateUpdate, updated)
 		got, err := repo.Get(ctx, updated.Name())
 		if err != nil {
@@ -356,7 +361,7 @@ func TestMongoRepository_Save(t *testing.T) {
 		assertEnvironmentEqual(t, got, updated)
 	})
 
-	t.Run("duplicate key maps to already exists", func(t *testing.T) {
+	t.Run("duplicate key generation conflict is ignored", func(t *testing.T) {
 		// given
 		repo := &MongoRepository{
 			collection: &fakeCollectionOps{
@@ -371,9 +376,32 @@ func TestMongoRepository_Save(t *testing.T) {
 		err := repo.Save(ctx, env)
 
 		// then
-		if !errors.Is(err, domain.ErrAlreadyExists) {
-			t.Fatalf("Save() error = %v, want %v", err, domain.ErrAlreadyExists)
+		if err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
 		}
+	})
+
+	t.Run("stale generation update is ignored", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		current := newMongoSaveTestEnv(t, "dev", "env1", "current environment", "image:v2", "etag-current")
+		if err := repo.Save(ctx, current); err != nil {
+			t.Fatalf("Save() current unexpected error: %v", err)
+		}
+		stale := cloneEnvironmentWithGeneration(t, current, current.Generation()-1)
+
+		// when
+		err := repo.Save(ctx, stale)
+
+		// then
+		if err != nil {
+			t.Fatalf("Save() stale unexpected error: %v", err)
+		}
+		got, getErr := repo.Get(ctx, current.Name())
+		if getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
+		assertEnvironmentEqual(t, got, current)
 	})
 }
 
@@ -642,6 +670,124 @@ func TestMongoRepository_ListByStates(t *testing.T) {
 	})
 }
 
+func TestMongoRepository_ListNeedingReconcile(t *testing.T) {
+	ctx := context.Background()
+	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	tests := []struct {
+		name               string
+		envName            string
+		desired            domain.EnvironmentDesired
+		state              domain.EnvironmentState
+		observedGeneration int64
+		generation         int64
+		wantNames          []string
+	}{
+		{
+			name:               "returns env with desired=Present and observed_generation < generation",
+			envName:            "alpha",
+			desired:            domain.DesiredPresent,
+			state:              domain.StatePending,
+			observedGeneration: 0,
+			generation:         2,
+			wantNames:          []string{"alpha"},
+		},
+		{
+			name:               "returns env with desired=Present and state=Failed and observed_generation == generation",
+			envName:            "bravo",
+			desired:            domain.DesiredPresent,
+			state:              domain.StateFailed,
+			observedGeneration: 1,
+			generation:         1,
+			wantNames:          []string{"bravo"},
+		},
+		{
+			name:               "returns env with desired=Absent",
+			envName:            "charlie",
+			desired:            domain.DesiredAbsent,
+			state:              domain.StateDeleting,
+			observedGeneration: 1,
+			generation:         2,
+			wantNames:          []string{"charlie"},
+		},
+		{
+			name:               "excludes env with desired=Present and state=Ready and observed_generation == generation",
+			envName:            "delta",
+			desired:            domain.DesiredPresent,
+			state:              domain.StateReady,
+			observedGeneration: 1,
+			generation:         1,
+			wantNames:          nil,
+		},
+		{
+			name:               "returns env with desired=Present and state=Failed and observed_generation < generation (condition 1 covers it)",
+			envName:            "echo",
+			desired:            domain.DesiredPresent,
+			state:              domain.StateFailed,
+			observedGeneration: 1,
+			generation:         3,
+			wantNames:          []string{"echo"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo, _ := newMongoRepositoryForTest()
+			env := newReconcileTestEnv(t, tt.envName, tt.desired, tt.state, tt.observedGeneration, tt.generation, baseTime)
+			if err := repo.Save(ctx, env); err != nil {
+				t.Fatalf("Save() unexpected error: %v", err)
+			}
+
+			// when
+			got, err := repo.ListNeedingReconcile(ctx)
+
+			// then
+			if err != nil {
+				t.Fatalf("ListNeedingReconcile() unexpected error: %v", err)
+			}
+			assertEnvironmentNames(t, got, tt.wantNames)
+		})
+	}
+}
+
+func newReconcileTestEnv(t *testing.T, envName string, desired domain.EnvironmentDesired, state domain.EnvironmentState, observedGeneration, generation int64, baseTime time.Time) *domain.Environment {
+	t.Helper()
+
+	name, err := domain.NewEnvironmentName("dev", envName)
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() error = %v", err)
+	}
+	env, err := domain.NewEnvironment(name, domain.EnvironmentTypeProd, envName+" env", &domain.DesiredState{
+		Artifacts: []*domain.ArtifactSpec{{Name: "svc1", App: "app1", Image: "image:v1", Replicas: 1}},
+	})
+	if err != nil {
+		t.Fatalf("NewEnvironment() error = %v", err)
+	}
+
+	rehydrated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         name,
+		EnvType:      domain.EnvironmentTypeProd,
+		Description:  envName + " env",
+		DesiredState: env.DesiredState(),
+		Status: &domain.EnvironmentStatus{
+			Desired:            desired,
+			State:              state,
+			ObservedGeneration: observedGeneration,
+			Message:            "state",
+		},
+		Generation: generation,
+		CreateTime: baseTime,
+		UpdateTime: baseTime,
+		ETag:       "etag-" + envName,
+	})
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() error = %v", err)
+	}
+
+	return rehydrated
+}
+
 func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	originalNewCollection := newCollection
 	t.Cleanup(func() {
@@ -812,53 +958,10 @@ func (f *fakeCollectionOps) Find(_ context.Context, filter any, opts ...*options
 	if err != nil {
 		return nil, err
 	}
-	scope, _ := filterDoc["scope"].(string)
-	var stateSet map[int]struct{}
-	_, hasStateFilter := filterDoc["status.state"]
-	if hasStateFilter {
-		stateSet = make(map[int]struct{})
-		stateFilterDoc, err := anyToBSONMap(filterDoc["status.state"])
-		if err != nil {
-			return nil, err
-		}
-		if rawStates, ok := stateFilterDoc["$in"]; ok {
-			rv := reflect.ValueOf(rawStates)
-			addState := func(raw any) {
-				switch v := raw.(type) {
-				case int:
-					stateSet[v] = struct{}{}
-				case int32:
-					stateSet[int(v)] = struct{}{}
-				case int64:
-					stateSet[int(v)] = struct{}{}
-				case float64:
-					stateSet[int(v)] = struct{}{}
-				}
-			}
-			if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
-				for i := 0; i < rv.Len(); i++ {
-					addState(rv.Index(i).Interface())
-				}
-			} else {
-				addState(rawStates)
-			}
-		}
-	}
 
 	docs := make([]*mongoEnvironment, 0)
 	for _, doc := range f.docs {
-		if scope != "" && doc.Scope != scope {
-			continue
-		}
-		if hasStateFilter {
-			if doc.Status == nil {
-				continue
-			}
-			if _, ok := stateSet[doc.Status.State]; !ok {
-				continue
-			}
-		}
-		if scope != "" || hasStateFilter {
+		if matchesFilter(doc, filterDoc) {
 			copy := *doc
 			docs = append(docs, &copy)
 		}
@@ -885,6 +988,185 @@ func (f *fakeCollectionOps) Find(_ context.Context, filter any, opts ...*options
 	return fakeCursor{docs: docs[skip:end]}, nil
 }
 
+func matchesFilter(doc *mongoEnvironment, filter bson.M) bool {
+	for key, value := range filter {
+		switch key {
+		case "scope":
+			if doc.Scope != value.(string) {
+				return false
+			}
+		case "status.state":
+			if !matchesStateFilter(doc, value) {
+				return false
+			}
+		case "$or":
+			if !matchesOrFilter(doc, value) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func matchesStateFilter(doc *mongoEnvironment, value any) bool {
+	stateFilterDoc, ok := value.(bson.M)
+	if !ok {
+		return false
+	}
+	inVals, ok := stateFilterDoc["$in"]
+	if !ok {
+		return false
+	}
+	rv := reflect.ValueOf(inVals)
+	if !rv.IsValid() || rv.Kind() != reflect.Slice {
+		return false
+	}
+	if doc.Status == nil {
+		return false
+	}
+	for i := 0; i < rv.Len(); i++ {
+		if toInt(rv.Index(i).Interface()) == doc.Status.State {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesOrFilter(doc *mongoEnvironment, value any) bool {
+	conditions, ok := value.(bson.A)
+	if !ok {
+		return false
+	}
+	for _, cond := range conditions {
+		condMap, ok := cond.(bson.M)
+		if !ok {
+			continue
+		}
+		if matchesCondition(doc, condMap) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesCondition(doc *mongoEnvironment, cond bson.M) bool {
+	for key, value := range cond {
+		switch key {
+		case "status.desired":
+			if doc.Status == nil || doc.Status.Desired != toInt(value) {
+				return false
+			}
+		case "status.state":
+			if doc.Status == nil || doc.Status.State != toInt(value) {
+				return false
+			}
+		case "$expr":
+			if !matchesExpr(doc, value) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func matchesExpr(doc *mongoEnvironment, expr any) bool {
+	exprMap, ok := expr.(bson.M)
+	if !ok {
+		return false
+	}
+	for op, args := range exprMap {
+		argsArr, ok := args.(bson.A)
+		if !ok || len(argsArr) != 2 {
+			return false
+		}
+		left := resolveFieldPath(doc, toString(argsArr[0]))
+		right := resolveFieldPath(doc, toString(argsArr[1]))
+		switch op {
+		case "$lt":
+			if toInt64(left) >= toInt64(right) {
+				return false
+			}
+		case "$eq":
+			if toInt64(left) != toInt64(right) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func resolveFieldPath(doc *mongoEnvironment, path string) any {
+	if len(path) > 0 && path[0] == '$' {
+		path = path[1:]
+	}
+	switch path {
+	case "generation":
+		return doc.Generation
+	case "status.observed_generation":
+		if doc.Status != nil {
+			return doc.Status.ObservedGeneration
+		}
+		return int64(0)
+	case "status.desired":
+		if doc.Status != nil {
+			return doc.Status.Desired
+		}
+		return 0
+	case "status.state":
+		if doc.Status != nil {
+			return doc.Status.State
+		}
+		return 0
+	default:
+		return nil
+	}
+}
+
+func toInt(v any) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case int32:
+		return int(val)
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	default:
+		return 0
+	}
+}
+
+func toInt64(v any) int64 {
+	switch val := v.(type) {
+	case int:
+		return int64(val)
+	case int32:
+		return int64(val)
+	case int64:
+		return val
+	case float64:
+		return int64(val)
+	default:
+		return 0
+	}
+}
+
+func toString(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	default:
+		return ""
+	}
+}
+
 func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error) {
 	f.lastUpdateFilter = filter
 	f.lastUpdateUpdate = update
@@ -900,6 +1182,16 @@ func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any,
 		return nil, err
 	}
 	key, _ := filterDoc["name"].(string)
+	if generationFilter, ok := filterDoc[mongoFieldGeneration]; ok {
+		allowed, allowedOK := extractMaxGeneration(generationFilter)
+		if allowedOK {
+			if existing, exists := f.docs[key]; exists && existing.Generation > allowed {
+				return nil, mongodriver.WriteException{
+					WriteErrors: []mongodriver.WriteError{{Code: 11000, Message: "duplicate key"}},
+				}
+			}
+		}
+	}
 	updateDoc, err := anyToBSONMap(update)
 	if err != nil {
 		return nil, err
@@ -952,6 +1244,18 @@ func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any,
 		UpsertedCount: upsertedCount,
 		UpsertedID:    stored.ID,
 	}, nil
+}
+
+func extractMaxGeneration(v any) (int64, bool) {
+	generationDoc, err := anyToBSONMap(v)
+	if err != nil {
+		return 0, false
+	}
+	allowed, ok := generationDoc["$lte"]
+	if !ok {
+		return 0, false
+	}
+	return toInt64(allowed), true
 }
 
 func (f *fakeCollectionOps) DeleteOne(_ context.Context, filter any, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
@@ -1089,11 +1393,14 @@ func newMongoSaveTestEnv(t *testing.T, scope, envName, description, image, etag 
 		Description:  description,
 		DesiredState: env.DesiredState(),
 		Status: &domain.EnvironmentStatus{
-			State:             domain.StateReady,
-			Message:           "ready",
-			LastReconcileTime: baseTime.Add(2 * time.Minute),
-			LastSuccessTime:   baseTime.Add(3 * time.Minute),
+			Desired:            domain.DesiredPresent,
+			State:              domain.StateReady,
+			ObservedGeneration: 1,
+			Message:            "ready",
+			LastReconcileTime:  baseTime.Add(2 * time.Minute),
+			LastSuccessTime:    baseTime.Add(3 * time.Minute),
 		},
+		Generation: 1,
 		CreateTime: baseTime,
 		UpdateTime: baseTime.Add(5 * time.Minute),
 		ETag:       etag,
@@ -1133,14 +1440,45 @@ func newMongoStateTestEnv(t *testing.T, scope, envName, description string, stat
 		Description:  description,
 		DesiredState: env.DesiredState(),
 		Status: &domain.EnvironmentStatus{
-			State:             state,
-			Message:           "state",
-			LastReconcileTime: baseTime.Add(2 * time.Minute),
-			LastSuccessTime:   baseTime.Add(3 * time.Minute),
+			Desired:            domain.DesiredPresent,
+			State:              state,
+			ObservedGeneration: 1,
+			Message:            "state",
+			LastReconcileTime:  baseTime.Add(2 * time.Minute),
+			LastSuccessTime:    baseTime.Add(3 * time.Minute),
 		},
+		Generation: 1,
 		CreateTime: baseTime,
 		UpdateTime: baseTime.Add(5 * time.Minute),
 		ETag:       etag,
+	})
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() error = %v", err)
+	}
+
+	return rehydrated
+}
+
+func cloneEnvironmentWithGeneration(t *testing.T, env *domain.Environment, generation int64) *domain.Environment {
+	t.Helper()
+
+	rehydrated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         env.Name(),
+		EnvType:      env.Type(),
+		Description:  env.Description(),
+		DesiredState: env.DesiredState(),
+		Status: &domain.EnvironmentStatus{
+			Desired:            env.Status().Desired,
+			State:              env.Status().State,
+			ObservedGeneration: env.Status().ObservedGeneration,
+			Message:            env.Status().Message,
+			LastReconcileTime:  env.Status().LastReconcileTime,
+			LastSuccessTime:    env.Status().LastSuccessTime,
+		},
+		Generation: generation,
+		CreateTime: env.CreateTime(),
+		UpdateTime: env.UpdateTime(),
+		ETag:       env.ETag(),
 	})
 	if err != nil {
 		t.Fatalf("RehydrateEnvironment() error = %v", err)
@@ -1166,6 +1504,9 @@ func assertEnvironmentEqual(t *testing.T, got *domain.Environment, want *domain.
 	}
 	if !reflect.DeepEqual(got.Status(), want.Status()) {
 		t.Fatalf("Status() = %#v, want %#v", got.Status(), want.Status())
+	}
+	if got.Generation() != want.Generation() {
+		t.Fatalf("Generation() = %d, want %d", got.Generation(), want.Generation())
 	}
 	if !got.CreateTime().Equal(want.CreateTime()) {
 		t.Fatalf("CreateTime() = %v, want %v", got.CreateTime(), want.CreateTime())

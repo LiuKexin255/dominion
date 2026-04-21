@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "guitar_lib",
+    srcs = ["guitar.go"],
+    importpath = "dominion/tools/guitar/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//tools/guitar/pkg/config",
+        "//tools/guitar/pkg/run",
+        "//tools/guitar/pkg/validate",
+        "@com_github_spf13_pflag//:pflag",
+    ],
+)
+
+go_binary(
+    name = "guitar",
+    embed = [":guitar_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "guitar_test",
+    srcs = ["guitar_test.go"],
+    embed = [":guitar_lib"],
+    deps = ["//tools/guitar/pkg/config"],
+)

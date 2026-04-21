@@ -4,11 +4,8 @@ go_largetest(
     name = "testplan_test",
     size = "small",
     srcs = ["interface_test.go"],
-    env = {
-        "SUT_HOST_URL": "https://game.liukexin.com",
-        "SUT_ENV_NAME": "game.lt",
-    },
     deps = [
+        "//pkg/testtool",
         "//projects/game/session",
         "@org_golang_google_protobuf//encoding/protojson",
     ],

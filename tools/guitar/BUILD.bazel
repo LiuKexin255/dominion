@@ -1,0 +1,11 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+sh_binary(
+    name = "install",
+    srcs = ["install.sh"],
+    data = [
+        "//tools/guitar/cmd:guitar",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -29,7 +29,6 @@ const (
 // Enqueuer enqueues environment reconciliation requests.
 type Enqueuer interface {
 	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
-	EnqueueWithPriority(ctx context.Context, envName domain.EnvironmentName) error
 }
 
 // Handler implements DeployServiceServer.
@@ -199,10 +198,6 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if err := env.MarkReconciling(); err != nil {
-		return nil, toStatusError(err)
-	}
-
 	if err := h.repo.Save(ctx, env); err != nil {
 		return nil, toStatusError(err)
 	}
@@ -233,13 +228,16 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	if env.Status() != nil && env.Status().State == domain.StateDeleting {
+		return nil, toStatusError(domain.ErrInvalidState)
+	}
 
 	desiredState, err := fromProtoDesiredState(req.GetEnvironment().GetDesiredState())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := env.UpdateDesiredState(desiredState); err != nil {
+	if err := env.SetDesiredPresent(desiredState); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -254,7 +252,7 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 	return toProtoEnvironment(env), nil
 }
 
-// DeleteEnvironment marks an environment for deletion and enqueues priority reconciliation.
+// DeleteEnvironment marks an environment for deletion and enqueues reconciliation.
 func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentRequest) (*emptypb.Empty, error) {
 	envName, err := domain.ParseResourceName(req.GetName())
 	if err != nil {
@@ -266,7 +264,7 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if err := env.MarkDeleting(); err != nil {
+	if err := env.SetDesiredAbsent(); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -274,7 +272,7 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if err := h.queue.EnqueueWithPriority(ctx, envName); err != nil {
+	if err := h.queue.Enqueue(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 

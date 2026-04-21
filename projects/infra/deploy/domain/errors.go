@@ -21,4 +21,10 @@ var (
 
 	// ErrInvalidType indicates that the environment type is invalid.
 	ErrInvalidType = errors.New("invalid environment type")
+
+	// ErrRetryCounted indicates that the operation can be retried and should increment RetryCount.
+	ErrRetryCounted = errors.New("retryable error with counted retry")
+
+	// ErrWorkerFatal indicates that the worker must not swallow the error.
+	ErrWorkerFatal = errors.New("worker fatal error")
 )

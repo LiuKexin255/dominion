@@ -16,6 +16,7 @@ type EnvironmentSnapshot struct {
 	Description  string
 	DesiredState *DesiredState
 	Status       *EnvironmentStatus
+	Generation   int64
 	CreateTime   time.Time
 	UpdateTime   time.Time
 	ETag         string
@@ -28,6 +29,7 @@ type Environment struct {
 	description  string
 	desiredState *DesiredState
 	status       *EnvironmentStatus
+	generation   int64
 	createTime   time.Time
 	updateTime   time.Time
 	etag         string
@@ -41,10 +43,12 @@ type DesiredState struct {
 
 // EnvironmentStatus describes the observed reconciliation status.
 type EnvironmentStatus struct {
-	State             EnvironmentState
-	Message           string
-	LastReconcileTime time.Time
-	LastSuccessTime   time.Time
+	Desired            EnvironmentDesired
+	State              EnvironmentState
+	ObservedGeneration int64
+	Message            string
+	LastReconcileTime  time.Time
+	LastSuccessTime    time.Time
 }
 
 // NewEnvironment validates and constructs an environment in the pending state.
@@ -62,8 +66,11 @@ func NewEnvironment(name EnvironmentName, envType EnvironmentType, description s
 		description:  description,
 		desiredState: cloneDesiredState(desiredState),
 		status: &EnvironmentStatus{
-			State: StatePending,
+			Desired:            DesiredPresent,
+			State:              StatePending,
+			ObservedGeneration: 0,
 		},
+		generation: 1,
 	}
 
 	if err := env.Validate(); err != nil {
@@ -94,6 +101,7 @@ func RehydrateEnvironment(snapshot EnvironmentSnapshot) (*Environment, error) {
 		description:  snapshot.Description,
 		desiredState: cloneDesiredState(snapshot.DesiredState),
 		status:       cloneStatus(snapshot.Status),
+		generation:   snapshot.Generation,
 		createTime:   snapshot.CreateTime,
 		updateTime:   snapshot.UpdateTime,
 		etag:         snapshot.ETag,
@@ -131,6 +139,11 @@ func (e *Environment) Status() *EnvironmentStatus {
 	return e.status
 }
 
+// Generation returns the current desired-state version.
+func (e *Environment) Generation() int64 {
+	return e.generation
+}
+
 // CreateTime returns the creation timestamp.
 func (e *Environment) CreateTime() time.Time {
 	return e.createTime
@@ -146,25 +159,36 @@ func (e *Environment) ETag() string {
 	return e.etag
 }
 
-// UpdateDesiredState replaces the desired state and marks the environment reconciling.
-func (e *Environment) UpdateDesiredState(newState *DesiredState) error {
-	if e.status.State == StateDeleting {
+// SetDesiredPresent accepts a present target and resets actual state to pending.
+func (e *Environment) SetDesiredPresent(newDesiredState *DesiredState) error {
+	if e.status.Desired == DesiredAbsent {
 		return ErrInvalidState
 	}
 
 	previous := e.desiredState
-	e.desiredState = cloneDesiredState(newState)
-	if err := e.Validate(); err != nil {
-		e.desiredState = previous
-		return err
+	if newDesiredState != nil {
+		e.desiredState = cloneDesiredState(newDesiredState)
+		if err := e.Validate(); err != nil {
+			e.desiredState = previous
+			return err
+		}
 	}
 
-	if err := e.transitionTo(StateReconciling); err != nil {
-		e.desiredState = previous
-		return err
-	}
-
+	e.status.Desired = DesiredPresent
+	e.status.State = StatePending
 	e.status.Message = ""
+	e.generation++
+	e.updateTime = time.Now().UTC()
+	return nil
+}
+
+// SetDesiredAbsent accepts an absent target and resets actual state to pending.
+func (e *Environment) SetDesiredAbsent() error {
+	e.status.Desired = DesiredAbsent
+	e.status.State = StatePending
+	e.status.Message = ""
+	e.generation++
+	e.updateTime = time.Now().UTC()
 	return nil
 }
 
@@ -179,22 +203,24 @@ func (e *Environment) MarkReconciling() error {
 }
 
 // MarkReady transitions the environment to ready and records success time.
-func (e *Environment) MarkReady() error {
+func (e *Environment) MarkReady(processedGeneration int64) error {
 	if err := e.transitionTo(StateReady); err != nil {
 		return err
 	}
 
 	e.status.Message = ""
+	e.status.ObservedGeneration = processedGeneration
 	e.status.LastSuccessTime = time.Now().UTC()
 	return nil
 }
 
 // MarkFailed transitions the environment to failed and records the message.
-func (e *Environment) MarkFailed(msg string) error {
+func (e *Environment) MarkFailed(processedGeneration int64, msg string) error {
 	if err := e.transitionTo(StateFailed); err != nil {
 		return err
 	}
 
+	e.status.ObservedGeneration = processedGeneration
 	e.status.Message = msg
 	return nil
 }

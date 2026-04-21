@@ -1,0 +1,24 @@
+name: game-session-large-test
+description: |
+  game-session HTTP REST 接口测试
+
+  Service: game-session
+  Interface: grpc-gateway exposed HTTP REST API
+  Base path: /v1
+  Covered scenarios:
+    1. CreateSession — POST /v1/sessions with type=SESSION_TYPE_SAOLEI returns 200
+    2. GetSession — GET /v1/sessions/{id} returns 200
+    3. ReconnectSession — POST /v1/sessions/{id}:reconnect returns 200
+    4. DeleteSession — DELETE /v1/sessions/{id} returns 200
+    5. GetSession not found — GET /v1/sessions/nonexistent returns 404
+    6. CreateSession invalid type — POST /v1/sessions with type=SESSION_TYPE_UNSPECIFIED returns 400
+
+suites:
+  - name: default
+    env: game.lt
+    deploy: //projects/game/testplan/test_deploy.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test

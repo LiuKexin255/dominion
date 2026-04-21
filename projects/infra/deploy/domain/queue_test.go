@@ -15,221 +15,277 @@ func mustEnvName(t *testing.T, scope, env string) EnvironmentName {
 	return name
 }
 
-func TestQueue_Dequeue_BasicOrder(t *testing.T) {
+func assertWorkItemEqual(t *testing.T, got *WorkItem, want WorkItem) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("got nil WorkItem")
+	}
+	if got.EnvName != want.EnvName || got.RetryCount != want.RetryCount {
+		t.Fatalf("WorkItem = %+v, want %+v", *got, want)
+	}
+}
+
+func TestQueue_Dequeue_FIFO(t *testing.T) {
+	tests := []struct {
+		name string
+		envs []EnvironmentName
+		want []WorkItem
+	}{
+		{
+			name: "items come out in enqueue order",
+			envs: []EnvironmentName{
+				mustEnvName(t, "scope1", "env1"),
+				mustEnvName(t, "scope1", "env2"),
+			},
+			want: []WorkItem{
+				{EnvName: mustEnvName(t, "scope1", "env1"), RetryCount: 0},
+				{EnvName: mustEnvName(t, "scope1", "env2"), RetryCount: 0},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			q := NewQueue()
+			ctx := context.Background()
+
+			if err := q.Start(ctx); err != nil {
+				t.Fatalf("Start() failed: %v", err)
+			}
+			defer q.Stop()
+
+			// when
+			for _, envName := range tt.envs {
+				if err := q.Enqueue(ctx, envName); err != nil {
+					t.Fatalf("Enqueue(%v) failed: %v", envName, err)
+				}
+			}
+
+			// then
+			for i, want := range tt.want {
+				got, ok := q.Dequeue(ctx)
+				if !ok {
+					t.Fatalf("Dequeue() returned not ok at index %d", i)
+				}
+				assertWorkItemEqual(t, got, want)
+				q.Complete(got.EnvName)
+			}
+		})
+	}
+}
+
+func TestQueue_Enqueue_DedupQueued(t *testing.T) {
 	// given
 	q := NewQueue()
 	ctx := context.Background()
+	envName := mustEnvName(t, "scope1", "env")
 
-	env1 := mustEnvName(t, "scope1", "env1")
-	env2 := mustEnvName(t, "scope1", "env2")
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	defer q.Stop()
 
 	// when
-	_ = q.Start(ctx)
-	defer q.Stop()
-
-	if err := q.Enqueue(ctx, env1); err != nil {
-		t.Fatalf("Enqueue env1 failed: %v", err)
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("Enqueue() failed: %v", err)
 	}
-	if err := q.Enqueue(ctx, env2); err != nil {
-		t.Fatalf("Enqueue env2 failed: %v", err)
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("second Enqueue() failed: %v", err)
 	}
 
-	// then - items come out in FIFO order
-	got1, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("Dequeue returned not ok for first item")
-	}
-	if got1 != env1 {
-		t.Fatalf("first Dequeue = %v, want %v", got1, env1)
-	}
-
-	got2, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("Dequeue returned not ok for second item")
-	}
-	if got2 != env2 {
-		t.Fatalf("second Dequeue = %v, want %v", got2, env2)
-	}
-}
-
-func TestQueue_PriorityBeforeNormal(t *testing.T) {
-	// given
-	q := NewQueue()
-	ctx := context.Background()
-
-	normalEnv := mustEnvName(t, "scope1", "normal")
-	priorityEnv := mustEnvName(t, "scope1", "delete")
-
-	_ = q.Start(ctx)
-	defer q.Stop()
-
-	// when - enqueue normal first, then priority
-	if err := q.Enqueue(ctx, normalEnv); err != nil {
-		t.Fatalf("Enqueue normal failed: %v", err)
-	}
-	if err := q.EnqueueWithPriority(ctx, priorityEnv); err != nil {
-		t.Fatalf("EnqueueWithPriority failed: %v", err)
-	}
-
-	// then - priority item comes out first
+	// then
 	got, ok := q.Dequeue(ctx)
 	if !ok {
-		t.Fatal("Dequeue returned not ok")
+		t.Fatal("Dequeue() returned not ok")
 	}
-	if got != priorityEnv {
-		t.Fatalf("Dequeue = %v, want priority item %v", got, priorityEnv)
-	}
-}
+	assertWorkItemEqual(t, got, WorkItem{EnvName: envName, RetryCount: 0})
+	q.Complete(envName)
 
-func TestQueue_Dedup_SameEnvName(t *testing.T) {
-	// given
-	q := NewQueue()
-	ctx := context.Background()
-
-	env := mustEnvName(t, "scope1", "dup")
-
-	_ = q.Start(ctx)
-	defer q.Stop()
-
-	// when - enqueue same envName twice
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("first Enqueue failed: %v", err)
-	}
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("second Enqueue failed: %v", err)
-	}
-
-	// then - only one item in queue
-	got, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("Dequeue returned not ok")
-	}
-	if got != env {
-		t.Fatalf("Dequeue = %v, want %v", got, env)
-	}
-
-	// next Dequeue should block; verify with timeout
-	deepeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
-	_, ok = q.Dequeue(deepeCtx)
+	_, ok = q.Dequeue(timeoutCtx)
 	if ok {
-		t.Fatal("expected Dequeue to return false after dedup, but got item")
+		t.Fatal("expected no second item after dedup")
 	}
 }
 
-func TestQueue_Dedup_PriorityUpgrade(t *testing.T) {
+func TestQueue_Enqueue_UserOverridesQueuedRetry(t *testing.T) {
 	// given
 	q := NewQueue()
 	ctx := context.Background()
+	envName := mustEnvName(t, "scope1", "override")
+	retryItem := &WorkItem{EnvName: envName, RetryCount: 3}
 
-	env := mustEnvName(t, "scope1", "upgrade")
-
-	_ = q.Start(ctx)
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
 	defer q.Stop()
 
-	// when - enqueue normal, then priority for same envName
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("Enqueue failed: %v", err)
-	}
-	if err := q.EnqueueWithPriority(ctx, env); err != nil {
-		t.Fatalf("EnqueueWithPriority failed: %v", err)
+	if err := q.EnqueueRetry(ctx, retryItem); err != nil {
+		t.Fatalf("EnqueueRetry() failed: %v", err)
 	}
 
-	// then - env comes out (possibly upgraded to priority)
+	// when
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("Enqueue() failed: %v", err)
+	}
+
+	// then
 	got, ok := q.Dequeue(ctx)
 	if !ok {
-		t.Fatal("Dequeue returned not ok")
+		t.Fatal("Dequeue() returned not ok")
 	}
-	if got != env {
-		t.Fatalf("Dequeue = %v, want %v", got, env)
-	}
-
-	// should be deduplicated - only one item
-	deepeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-	_, ok = q.Dequeue(deepeCtx)
-	if ok {
-		t.Fatal("expected Dequeue to return false after dedup")
-	}
+	assertWorkItemEqual(t, got, WorkItem{EnvName: envName, RetryCount: 0})
 }
 
-func TestQueue_Dedup_NormalDoesNotUpgrade(t *testing.T) {
+func TestQueue_EnqueueRetry_DropsWhenUserTaskQueued(t *testing.T) {
 	// given
 	q := NewQueue()
 	ctx := context.Background()
+	envName := mustEnvName(t, "scope1", "userq")
 
-	env := mustEnvName(t, "scope1", "noup")
-
-	_ = q.Start(ctx)
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
 	defer q.Stop()
 
-	// when - enqueue priority first, then normal for same envName
-	if err := q.EnqueueWithPriority(ctx, env); err != nil {
-		t.Fatalf("EnqueueWithPriority failed: %v", err)
-	}
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("Enqueue failed: %v", err)
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("Enqueue() failed: %v", err)
 	}
 
-	// then - single item, still in priority lane
+	// when
+	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 5}); err != nil {
+		t.Fatalf("EnqueueRetry() failed: %v", err)
+	}
+
+	// then
 	got, ok := q.Dequeue(ctx)
 	if !ok {
-		t.Fatal("Dequeue returned not ok")
+		t.Fatal("Dequeue() returned not ok")
 	}
-	if got != env {
-		t.Fatalf("Dequeue = %v, want %v", got, env)
-	}
+	assertWorkItemEqual(t, got, WorkItem{EnvName: envName, RetryCount: 0})
+	q.Complete(envName)
 
-	deepeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
-	_, ok = q.Dequeue(deepeCtx)
+	_, ok = q.Dequeue(timeoutCtx)
 	if ok {
-		t.Fatal("expected Dequeue to return false after dedup")
+		t.Fatal("expected retry to be dropped when user task already queued")
 	}
 }
 
-func TestQueue_Dequeue_Blocking(t *testing.T) {
+func TestQueue_Complete_RequeuesFollowUpAfterInFlightUserEnqueue(t *testing.T) {
 	// given
 	q := NewQueue()
 	ctx := context.Background()
+	envName := mustEnvName(t, "scope1", "inflight")
 
-	_ = q.Start(ctx)
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
 	defer q.Stop()
 
-	// when - Dequeue on empty queue blocks until item arrives or context cancelled
-	done := make(chan struct{})
-	go func() {
-		_, _ = q.Dequeue(ctx)
-		close(done)
-	}()
+	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 2}); err != nil {
+		t.Fatalf("EnqueueRetry() failed: %v", err)
+	}
 
-	// then - Dequeue should still be blocking after a short wait
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case <-done:
-		t.Fatal("Dequeue should block when queue is empty")
-	default:
+	first, ok := q.Dequeue(ctx)
+	if !ok {
+		t.Fatal("first Dequeue() returned not ok")
+	}
+	assertWorkItemEqual(t, first, WorkItem{EnvName: envName, RetryCount: 2})
+
+	// when
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("Enqueue() while in flight failed: %v", err)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, ok = q.Dequeue(timeoutCtx)
+	if ok {
+		t.Fatal("expected no parallel dequeue while item is in flight")
+	}
+
+	q.Complete(envName)
+
+	// then
+	second, ok := q.Dequeue(ctx)
+	if !ok {
+		t.Fatal("second Dequeue() returned not ok")
+	}
+	assertWorkItemEqual(t, second, WorkItem{EnvName: envName, RetryCount: 0})
+}
+
+func TestQueue_EnqueueRetry_InFlightKeepsUserFollowUp(t *testing.T) {
+	// given
+	q := NewQueue()
+	ctx := context.Background()
+	envName := mustEnvName(t, "scope1", "followup")
+
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	defer q.Stop()
+
+	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 1}); err != nil {
+		t.Fatalf("EnqueueRetry() failed: %v", err)
+	}
+
+	first, ok := q.Dequeue(ctx)
+	if !ok {
+		t.Fatal("first Dequeue() returned not ok")
+	}
+
+	if err := q.Enqueue(ctx, envName); err != nil {
+		t.Fatalf("Enqueue() while in flight failed: %v", err)
+	}
+
+	// when
+	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 4}); err != nil {
+		t.Fatalf("second EnqueueRetry() failed: %v", err)
+	}
+
+	q.Complete(first.EnvName)
+
+	// then
+	second, ok := q.Dequeue(ctx)
+	if !ok {
+		t.Fatal("second Dequeue() returned not ok")
+	}
+	assertWorkItemEqual(t, second, WorkItem{EnvName: envName, RetryCount: 0})
+	q.Complete(second.EnvName)
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, ok = q.Dequeue(timeoutCtx)
+	if ok {
+		t.Fatal("expected retry follow-up to be dropped when user follow-up exists")
 	}
 }
 
 func TestQueue_Dequeue_ContextCancellation(t *testing.T) {
 	// given
 	q := NewQueue()
-	_ = q.Start(context.Background())
+	if err := q.Start(context.Background()); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
 	defer q.Stop()
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 
-	// when - cancel context while Dequeue is blocking
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
 
-	// then
+	// when
 	_, ok := q.Dequeue(cancelCtx)
+
+	// then
 	if ok {
-		t.Fatal("expected Dequeue to return false on context cancellation")
+		t.Fatal("expected Dequeue() to return false when context is cancelled")
 	}
 }
 
@@ -238,10 +294,13 @@ func TestQueue_Stop_DrainsDequeue(t *testing.T) {
 	q := NewQueue()
 	ctx := context.Background()
 
-	_ = q.Start(ctx)
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
 
-	// when - a goroutine is blocked on Dequeue, then Stop is called
 	done := make(chan struct{})
+
+	// when
 	go func() {
 		_, _ = q.Dequeue(ctx)
 		close(done)
@@ -250,72 +309,10 @@ func TestQueue_Stop_DrainsDequeue(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	q.Stop()
 
-	// then - Dequeue should return after Stop
+	// then
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Dequeue did not return after Stop")
-	}
-}
-
-func TestQueue_Requeue_AfterDequeue(t *testing.T) {
-	// given
-	q := NewQueue()
-	ctx := context.Background()
-
-	env := mustEnvName(t, "scope1", "requeue")
-
-	_ = q.Start(ctx)
-	defer q.Stop()
-
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("Enqueue failed: %v", err)
-	}
-
-	// when - dequeue then re-enqueue same envName
-	got, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("Dequeue returned not ok")
-	}
-	if got != env {
-		t.Fatalf("Dequeue = %v, want %v", got, env)
-	}
-
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("second Enqueue failed: %v", err)
-	}
-
-	// then - can dequeue again
-	got2, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("second Dequeue returned not ok")
-	}
-	if got2 != env {
-		t.Fatalf("second Dequeue = %v, want %v", got2, env)
-	}
-}
-
-func TestQueue_EnqueueBeforeStart(t *testing.T) {
-	// given
-	q := NewQueue()
-	ctx := context.Background()
-
-	env := mustEnvName(t, "scope1", "early")
-
-	// when - enqueue before Start
-	if err := q.Enqueue(ctx, env); err != nil {
-		t.Fatalf("Enqueue before Start failed: %v", err)
-	}
-
-	_ = q.Start(ctx)
-	defer q.Stop()
-
-	// then - item is available
-	got, ok := q.Dequeue(ctx)
-	if !ok {
-		t.Fatal("Dequeue returned not ok")
-	}
-	if got != env {
-		t.Fatalf("Dequeue = %v, want %v", got, env)
+		t.Fatal("Dequeue() did not return after Stop()")
 	}
 }

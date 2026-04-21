@@ -25,6 +25,7 @@ go_unittest(
     srcs = [
         "environment_name_test.go",
         "environment_test.go",
+        "errors_test.go",
         "queue_test.go",
         "recovery_test.go",
         "service_endpoints_name_test.go",

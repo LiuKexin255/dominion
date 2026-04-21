@@ -8,13 +8,13 @@ import (
 )
 
 type recoveryRepoFake struct {
-	requestedStates []EnvironmentState
-	envs            []*Environment
-	err             error
+	called bool
+	envs   []*Environment
+	err    error
 }
 
-func (r *recoveryRepoFake) ListByStates(ctx context.Context, states ...EnvironmentState) ([]*Environment, error) {
-	r.requestedStates = append([]EnvironmentState(nil), states...)
+func (r *recoveryRepoFake) ListNeedingReconcile(ctx context.Context) ([]*Environment, error) {
+	r.called = true
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -22,8 +22,7 @@ func (r *recoveryRepoFake) ListByStates(ctx context.Context, states ...Environme
 }
 
 type recoveryQueueCall struct {
-	envName  EnvironmentName
-	priority bool
+	envName EnvironmentName
 }
 
 type recoveryQueueFake struct {
@@ -36,12 +35,7 @@ func (q *recoveryQueueFake) Enqueue(ctx context.Context, envName EnvironmentName
 	return q.err
 }
 
-func (q *recoveryQueueFake) EnqueueWithPriority(ctx context.Context, envName EnvironmentName) error {
-	q.calls = append(q.calls, recoveryQueueCall{envName: envName, priority: true})
-	return q.err
-}
-
-func TestRecover_RequeuesReconcilingAndDeletingEnvironments(t *testing.T) {
+func TestRecover_RequeuesAllNeedingReconcileEnvironments(t *testing.T) {
 	ctx := context.Background()
 
 	reconcilingName, err := NewEnvironmentName("scope1", "recon")
@@ -76,13 +70,13 @@ func TestRecover_RequeuesReconcilingAndDeletingEnvironments(t *testing.T) {
 		t.Fatalf("Recover failed: %v", err)
 	}
 
-	if got, want := repo.requestedStates, []EnvironmentState{StateReconciling, StateDeleting}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("ListByStates states = %v, want %v", got, want)
+	if !repo.called {
+		t.Fatal("ListNeedingReconcile was not called")
 	}
 
 	if got, want := queue.calls, []recoveryQueueCall{
 		{envName: reconcilingName},
-		{envName: deletingName, priority: true},
+		{envName: deletingName},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("queue calls = %#v, want %#v", got, want)
 	}
@@ -95,7 +89,7 @@ func TestRecover_RequeuesReconcilingAndDeletingEnvironments(t *testing.T) {
 	}
 }
 
-func TestRecover_ReturnsListByStatesError(t *testing.T) {
+func TestRecover_ReturnsListNeedingReconcileError(t *testing.T) {
 	repo := &recoveryRepoFake{err: errors.New("boom")}
 	queue := &recoveryQueueFake{}
 
