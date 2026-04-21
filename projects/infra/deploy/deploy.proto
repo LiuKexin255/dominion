@@ -209,6 +209,8 @@ message ArtifactSpec {
   WorkloadKind workload_kind = 8;
 
   map<string, string> env = 9;
+
+  bool oss_enabled = 10;
 }
 
 message ArtifactPortSpec {
