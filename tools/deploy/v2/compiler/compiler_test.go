@@ -72,6 +72,47 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
+			name: "artifact with oss enabled",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: testServiceAPath, Name: "service-a"},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						OSS:    true,
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					TlsEnabled:   false,
+					OssEnabled:   true,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
 			name: "pure infra config",
 			deployConfig: &config.DeployConfig{
 				Services: []*config.DeployService{{
@@ -1275,6 +1316,92 @@ func TestCompile_WithoutEnv(t *testing.T) {
 			}
 			if got.Artifacts[0].Env != nil {
 				t.Errorf("Compile() Env = %v, want nil", got.Artifacts[0].Env)
+			}
+		})
+	}
+}
+
+func TestCompile_OssEnabled(t *testing.T) {
+	tests := []struct {
+		name           string
+		deployConfig   *config.DeployConfig
+		serviceConfigs map[string]*config.ServiceConfig
+		imageResults   map[string]*imagepush.Result
+		wantOssEnabled bool
+	}{
+		{
+			name: "oss true compiles to OssEnabled true",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						OSS:    true,
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantOssEnabled: true,
+		},
+		{
+			name: "oss false compiles to OssEnabled false",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						OSS:    false,
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantOssEnabled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Compile(tt.deployConfig, tt.serviceConfigs, tt.imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if got.Artifacts[0].OssEnabled != tt.wantOssEnabled {
+				t.Errorf("Compile() OssEnabled = %v, want %v", got.Artifacts[0].OssEnabled, tt.wantOssEnabled)
 			}
 		})
 	}

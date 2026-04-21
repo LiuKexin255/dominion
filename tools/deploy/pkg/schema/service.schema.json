@@ -87,6 +87,10 @@
             "type": "boolean",
             "description": "是否为该产物启用 TLS，默认 false"
           },
+          "oss": {
+            "type": "boolean",
+            "description": "是否为该产物启用 OSS，默认 false"
+          },
           "protocol": {
             "type": "string",
             "enum": [

@@ -418,6 +418,8 @@ func (r *K8sRuntime) ReservedEnvironmentVariableNames(_ context.Context) ([]stri
 		envTLSKeyFile,
 		envTLSCAFile,
 		envTLSDomain,
+		envS3AccessKey,
+		envS3SecretKey,
 	}, nil
 }
 

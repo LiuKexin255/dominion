@@ -16,6 +16,7 @@ type DeploymentPort struct {
 // DeploymentWorkload 描述 deployment 生成所需字段。
 type DeploymentWorkload struct {
 	TLSEnabled      bool
+	OSSEnabled      bool
 	ServiceName     string
 	EnvironmentName string
 	App             string
@@ -86,6 +87,7 @@ func (w *DeploymentWorkload) Validate() error {
 // StatefulWorkload 描述 statefulset 生成所需字段。
 type StatefulWorkload struct {
 	TLSEnabled      bool
+	OSSEnabled      bool
 	ServiceName     string
 	EnvironmentName string
 	App             string

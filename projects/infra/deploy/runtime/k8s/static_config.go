@@ -49,6 +49,12 @@ type TLSConfig struct {
 	CAConfigMap ConfigMapConfig `yaml:"ca_config_map"`
 }
 
+type OSSConfig struct {
+	Secret    string `yaml:"secret"`
+	AccessKey string `yaml:"access_key"`
+	SecretKey string `yaml:"secret_key"`
+}
+
 // MongoStorageConfig 定义 Mongo 默认持久化配置。
 type MongoStorageConfig struct {
 	StorageClassName string   `yaml:"storage_class_name"`
@@ -79,6 +85,7 @@ type K8sConfig struct {
 	ManagedBy string                         `yaml:"managed_by"`
 	Gateway   GatewayConfig                  `yaml:"gateway"`
 	TLS       TLSConfig                      `yaml:"tls,omitempty"`
+	OSS       OSSConfig                      `yaml:"oss,omitempty"`
 	MongoDB   map[string]*MongoProfileConfig `yaml:"mongodb,omitempty"`
 }
 
@@ -204,20 +211,34 @@ func (c *K8sConfig) Validate() error {
 	domain := strings.TrimSpace(c.TLS.Domain)
 	caConfigMapName := strings.TrimSpace(c.TLS.CAConfigMap.Name)
 	caConfigMapKey := strings.TrimSpace(c.TLS.CAConfigMap.Key)
-	if secret == "" && domain == "" && caConfigMapName == "" && caConfigMapKey == "" {
-		return nil
+	if secret != "" || domain != "" || caConfigMapName != "" || caConfigMapKey != "" {
+		if secret == "" {
+			return fmt.Errorf("静态配置缺少 tls.secret")
+		}
+		if domain == "" {
+			return fmt.Errorf("静态配置缺少 tls.domain")
+		}
+		if caConfigMapName == "" {
+			return fmt.Errorf("静态配置缺少 tls.ca_config_map.name")
+		}
+		if caConfigMapKey == "" {
+			return fmt.Errorf("静态配置缺少 tls.ca_config_map.key")
+		}
 	}
-	if secret == "" {
-		return fmt.Errorf("静态配置缺少 tls.secret")
-	}
-	if domain == "" {
-		return fmt.Errorf("静态配置缺少 tls.domain")
-	}
-	if caConfigMapName == "" {
-		return fmt.Errorf("静态配置缺少 tls.ca_config_map.name")
-	}
-	if caConfigMapKey == "" {
-		return fmt.Errorf("静态配置缺少 tls.ca_config_map.key")
+
+	ossSecret := strings.TrimSpace(c.OSS.Secret)
+	ossAccessKey := strings.TrimSpace(c.OSS.AccessKey)
+	ossSecretKey := strings.TrimSpace(c.OSS.SecretKey)
+	if ossSecret != "" || ossAccessKey != "" || ossSecretKey != "" {
+		if ossSecret == "" {
+			return fmt.Errorf("静态配置缺少 oss.secret")
+		}
+		if ossAccessKey == "" {
+			return fmt.Errorf("静态配置缺少 oss.access_key")
+		}
+		if ossSecretKey == "" {
+			return fmt.Errorf("静态配置缺少 oss.secret_key")
+		}
 	}
 
 	return nil

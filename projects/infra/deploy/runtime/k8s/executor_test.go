@@ -942,6 +942,8 @@ func TestK8sRuntime_ReservedEnvironmentVariableNames(t *testing.T) {
 		envTLSKeyFile,
 		envTLSCAFile,
 		envTLSDomain,
+		envS3AccessKey,
+		envS3SecretKey,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("names count = %d, want %d", len(names), len(want))

@@ -139,6 +139,7 @@ type mongoArtifactSpec struct {
 	Ports        []mongoArtifactPortSpec `bson:"ports"`
 	Replicas     int32                   `bson:"replicas"`
 	TLSEnabled   bool                    `bson:"tls_enabled"`
+	OSSEnabled   bool                    `bson:"oss_enabled"`
 	WorkloadKind int                     `bson:"workload_kind"`
 	HTTP         *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
 	Env          map[string]string       `bson:"env,omitempty"`
@@ -477,6 +478,7 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 			Ports:        artifactPortSpecsToMongo(s.Ports),
 			Replicas:     s.Replicas,
 			TLSEnabled:   s.TLSEnabled,
+			OSSEnabled:   s.OSSEnabled,
 			WorkloadKind: int(s.WorkloadKind),
 			HTTP:         artifactHTTPSpecToMongo(s.HTTP),
 			Env:          s.Env,
@@ -617,6 +619,7 @@ func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 			Ports:        artifactPortSpecsFromMongo(s.Ports),
 			Replicas:     s.Replicas,
 			TLSEnabled:   s.TLSEnabled,
+			OSSEnabled:   s.OSSEnabled,
 			WorkloadKind: domain.WorkloadKind(s.WorkloadKind),
 			HTTP:         artifactHTTPSpecFromMongo(s.HTTP),
 			Env:          normalizeEnv(s.Env),

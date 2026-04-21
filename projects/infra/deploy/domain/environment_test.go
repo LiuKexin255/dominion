@@ -1178,6 +1178,30 @@ func TestEnvironment_ValidateEnvConflict(t *testing.T) {
 			wantContains: `artifacts[0].env["PORT"]`,
 		},
 		{
+			name: "conflict with S3_ACCESS_KEY reserved variable",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"S3_ACCESS_KEY": "my-key"},
+				}},
+			},
+			reserved:     []string{"S3_ACCESS_KEY", "S3_SECRET_KEY"},
+			wantErr:      true,
+			wantContains: `artifacts[0].env["S3_ACCESS_KEY"]: conflicts with reserved environment variable`,
+		},
+		{
+			name: "conflict with S3_SECRET_KEY reserved variable",
+			desiredState: DesiredState{
+				Artifacts: []*ArtifactSpec{{
+					Name: "api", App: "demo", Image: "repo/demo:v1", Replicas: 1,
+					Env: map[string]string{"S3_SECRET_KEY": "my-secret"},
+				}},
+			},
+			reserved:     []string{"S3_ACCESS_KEY", "S3_SECRET_KEY"},
+			wantErr:      true,
+			wantContains: `artifacts[0].env["S3_SECRET_KEY"]: conflicts with reserved environment variable`,
+		},
+		{
 			name: "empty reserved list allows all",
 			desiredState: DesiredState{
 				Artifacts: []*ArtifactSpec{{

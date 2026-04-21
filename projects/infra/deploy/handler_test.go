@@ -1262,6 +1262,60 @@ func Test_toProtoArtifacts_fromProtoArtifacts_envRoundTrip(t *testing.T) {
 	}
 }
 
+func Test_toProtoArtifacts_fromProtoArtifacts_ossEnabledRoundTrip(t *testing.T) {
+	tests := []struct {
+		name       string
+		domain     []*domain.ArtifactSpec
+		wantOSS    bool
+		checkRound bool
+	}{
+		{
+			name: "oss enabled round-trip preserves true",
+			domain: []*domain.ArtifactSpec{{
+				Name:       "api",
+				App:        "gateway",
+				Image:      "example.com/gateway:v1",
+				OSSEnabled: true,
+			}},
+			wantOSS:    true,
+			checkRound: true,
+		},
+		{
+			name: "oss disabled round-trip preserves false",
+			domain: []*domain.ArtifactSpec{{
+				Name:       "api",
+				App:        "gateway",
+				Image:      "example.com/gateway:v1",
+				OSSEnabled: false,
+			}},
+			wantOSS:    false,
+			checkRound: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			proto := toProtoArtifacts(tt.domain)
+			got, err := fromProtoArtifacts(proto)
+
+			// then
+			if err != nil {
+				t.Fatalf("fromProtoArtifacts() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("fromProtoArtifacts() len = %d, want 1", len(got))
+			}
+			if got[0].OSSEnabled != tt.wantOSS {
+				t.Fatalf("OSSEnabled = %v, want %v", got[0].OSSEnabled, tt.wantOSS)
+			}
+			if tt.checkRound && got[0].OSSEnabled != tt.domain[0].OSSEnabled {
+				t.Fatalf("round trip OSSEnabled = %v, want %v", got[0].OSSEnabled, tt.domain[0].OSSEnabled)
+			}
+		})
+	}
+}
+
 func Test_fromProtoArtifacts_emptyEnvMapNormalizedToNil(t *testing.T) {
 	proto := []*ArtifactSpec{{
 		Name:  "api",
@@ -1297,7 +1351,7 @@ func TestHandler_CreateEnvironment_ReservedEnvConflict(t *testing.T) {
 		},
 		{
 			name:      "no conflict succeeds and saves",
-			reserved:  []string{"RESERVED_VAR"},
+			reserved:  []string{"RESERVED_VAR", "S3_ACCESS_KEY", "S3_SECRET_KEY"},
 			wantCode:  codes.OK,
 			wantSaved: true,
 		},
@@ -1370,7 +1424,7 @@ func TestHandler_UpdateEnvironment_ReservedEnvConflict(t *testing.T) {
 		},
 		{
 			name:      "no conflict succeeds and saves",
-			reserved:  []string{"RESERVED_VAR"},
+			reserved:  []string{"RESERVED_VAR", "S3_ACCESS_KEY", "S3_SECRET_KEY"},
 			wantCode:  codes.OK,
 			wantSaves: 2,
 		},

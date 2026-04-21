@@ -391,6 +391,85 @@ func TestArtifactSpecs_EnvPersistence(t *testing.T) {
 	}
 }
 
+func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.ArtifactSpec
+		mongo      mongoArtifactSpec
+		wantOSS    bool
+		checkRound bool
+	}{
+		{
+			name: "oss enabled round trip",
+			source: &domain.ArtifactSpec{
+				Name:       "svc",
+				App:        "app",
+				Image:      "image:v1",
+				Replicas:   1,
+				OSSEnabled: true,
+			},
+			wantOSS:    true,
+			checkRound: true,
+		},
+		{
+			name: "oss disabled round trip",
+			source: &domain.ArtifactSpec{
+				Name:       "svc",
+				App:        "app",
+				Image:      "image:v1",
+				Replicas:   1,
+				OSSEnabled: false,
+			},
+			wantOSS:    false,
+			checkRound: true,
+		},
+		{
+			name: "old mongo document defaults to false",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			wantOSS: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoArtifactSpec
+			if tt.source != nil {
+				// when
+				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
+
+				// then
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+				if mongoSpecs[0].OSSEnabled != tt.wantOSS {
+					t.Fatalf("artifactSpecsToMongo() oss_enabled = %v, want %v", mongoSpecs[0].OSSEnabled, tt.wantOSS)
+				}
+			} else {
+				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+			}
+
+			got := artifactSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if got[0].OSSEnabled != tt.wantOSS {
+				t.Fatalf("artifactSpecsFromMongo() oss_enabled = %v, want %v", got[0].OSSEnabled, tt.wantOSS)
+			}
+			if tt.checkRound && got[0].OSSEnabled != tt.source.OSSEnabled {
+				t.Fatalf("round trip oss_enabled = %v, want %v", got[0].OSSEnabled, tt.source.OSSEnabled)
+			}
+		})
+	}
+}
+
 func TestMongoRepository_Save(t *testing.T) {
 	ctx := context.Background()
 
