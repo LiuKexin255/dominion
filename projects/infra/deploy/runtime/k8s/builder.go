@@ -47,6 +47,11 @@ const (
 	// envTLSDomain 为 TLS 服务名环境变量名。
 	envTLSDomain = "TLS_SERVER_NAME"
 
+	// envS3AccessKey 为 S3 Access Key 环境变量名。
+	envS3AccessKey = "S3_ACCESS_KEY"
+	// envS3SecretKey 为 S3 Secret Key 环境变量名。
+	envS3SecretKey = "S3_SECRET_KEY"
+
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
@@ -157,6 +162,28 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 		)
 	}
+	if workload.OSSEnabled {
+		containerEnv = append(containerEnv,
+			corev1.EnvVar{
+				Name: envS3AccessKey,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
+						Key:                  cfg.OSS.AccessKey,
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: envS3SecretKey,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
+						Key:                  cfg.OSS.SecretKey,
+					},
+				},
+			},
+		)
+	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -253,6 +280,28 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
 			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
 			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+		)
+	}
+	if workload.OSSEnabled {
+		containerEnv = append(containerEnv,
+			corev1.EnvVar{
+				Name: envS3AccessKey,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
+						Key:                  cfg.OSS.AccessKey,
+					},
+				},
+			},
+			corev1.EnvVar{
+				Name: envS3SecretKey,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: cfg.OSS.Secret},
+						Key:                  cfg.OSS.SecretKey,
+					},
+				},
+			},
 		)
 	}
 

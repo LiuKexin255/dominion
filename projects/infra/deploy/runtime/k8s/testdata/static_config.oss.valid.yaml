@@ -1,0 +1,9 @@
+namespace: default
+managed_by: dominion
+gateway:
+  name: traefik-gateway
+  namespace: ingress
+oss:
+  secret: seaweedfs-s3-credentials
+  access_key: accessKey
+  secret_key: secretKey

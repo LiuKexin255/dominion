@@ -32,6 +32,11 @@ func testK8sConfig() *K8sConfig {
 				Key:  "ca.crt",
 			},
 		},
+		OSS: OSSConfig{
+			Secret:    "test-oss-secret",
+			AccessKey: "access_key",
+			SecretKey: "secret_key",
+		},
 		MongoDB: map[string]*MongoProfileConfig{
 			"dev-single": {
 				Image:         "mongo",
@@ -415,6 +420,166 @@ func TestBuildDeployment_UserEnvSortStability(t *testing.T) {
 		if envs1[i].Name != envs2[i].Name || envs1[i].Value != envs2[i].Value {
 			t.Fatalf("Env[%d] differs between builds: %q/%q vs %q/%q", i, envs1[i].Name, envs1[i].Value, envs2[i].Name, envs2[i].Value)
 		}
+	}
+}
+
+func TestBuildDeployment_WithOSS(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.OSSEnabled = true
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// 3 reserved + 2 OSS = 5.
+	if len(envs) != 5 {
+		t.Fatalf("Env count = %d, want 5", len(envs))
+	}
+
+	// Verify S3_ACCESS_KEY SecretKeyRef.
+	accessKeyEnv := envs[3]
+	if accessKeyEnv.Name != envS3AccessKey {
+		t.Fatalf("Env[3] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+	}
+	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("Env[3] should use SecretKeyRef")
+	}
+	if accessKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
+		t.Fatalf("SecretKeyRef Name = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
+	}
+	if accessKeyEnv.ValueFrom.SecretKeyRef.Key != cfg.OSS.AccessKey {
+		t.Fatalf("SecretKeyRef Key = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Key, cfg.OSS.AccessKey)
+	}
+
+	// Verify S3_SECRET_KEY SecretKeyRef.
+	secretKeyEnv := envs[4]
+	if secretKeyEnv.Name != envS3SecretKey {
+		t.Fatalf("Env[4] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+	}
+	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("Env[4] should use SecretKeyRef")
+	}
+	if secretKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
+		t.Fatalf("SecretKeyRef Name = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
+	}
+	if secretKeyEnv.ValueFrom.SecretKeyRef.Key != cfg.OSS.SecretKey {
+		t.Fatalf("SecretKeyRef Key = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Key, cfg.OSS.SecretKey)
+	}
+}
+
+func TestBuildDeployment_WithTLSAndOSS(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.TLSEnabled = true
+	w.OSSEnabled = true
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// 3 reserved + 4 TLS + 2 OSS = 9.
+	if len(envs) != 9 {
+		t.Fatalf("Env count = %d, want 9", len(envs))
+	}
+
+	// Verify OSS env comes after TLS env.
+	if envs[7].Name != envS3AccessKey {
+		t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, envS3AccessKey)
+	}
+	if envs[8].Name != envS3SecretKey {
+		t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envS3SecretKey)
+	}
+}
+
+func TestBuildDeployment_UserEnvWithOSS_ReservedAfterUserAfterTLS(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.TLSEnabled = true
+	w.OSSEnabled = true
+	w.Env = map[string]string{
+		"APP_DEBUG": "true",
+		"LOG_LEVEL": "info",
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// 2 user + 3 reserved + 4 TLS + 2 OSS = 11.
+	if len(envs) != 11 {
+		t.Fatalf("Env count = %d, want 11", len(envs))
+	}
+
+	wantOrder := []string{
+		"APP_DEBUG", "LOG_LEVEL",
+		reservedEnvNameServiceApp, reservedEnvNameDominionEnvironment, reservedEnvNamePodNamespace,
+		envTLSCertFile, envTLSKeyFile, envTLSCAFile, envTLSDomain,
+		envS3AccessKey, envS3SecretKey,
+	}
+	for i, want := range wantOrder {
+		if envs[i].Name != want {
+			t.Fatalf("Env[%d] Name = %q, want %q", i, envs[i].Name, want)
+		}
+	}
+}
+
+func TestBuildStatefulSet_WithOSS(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.OSSEnabled = true
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// 3 reserved + 2 OSS = 5.
+	if len(envs) != 5 {
+		t.Fatalf("Env count = %d, want 5", len(envs))
+	}
+
+	accessKeyEnv := envs[3]
+	if accessKeyEnv.Name != envS3AccessKey {
+		t.Fatalf("Env[3] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+	}
+	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("Env[3] should use SecretKeyRef")
+	}
+	if accessKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
+		t.Fatalf("SecretKeyRef Name = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
+	}
+	if accessKeyEnv.ValueFrom.SecretKeyRef.Key != cfg.OSS.AccessKey {
+		t.Fatalf("SecretKeyRef Key = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Key, cfg.OSS.AccessKey)
+	}
+
+	secretKeyEnv := envs[4]
+	if secretKeyEnv.Name != envS3SecretKey {
+		t.Fatalf("Env[4] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+	}
+	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("Env[4] should use SecretKeyRef")
+	}
+	if secretKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
+		t.Fatalf("SecretKeyRef Name = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
+	}
+	if secretKeyEnv.ValueFrom.SecretKeyRef.Key != cfg.OSS.SecretKey {
+		t.Fatalf("SecretKeyRef Key = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Key, cfg.OSS.SecretKey)
 	}
 }
 

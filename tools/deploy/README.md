@@ -73,6 +73,7 @@ artifacts:
   - name: service
     target: :service_image
     tls: true
+    oss: false
     ports:
       - name: grpc
         port: 50051
@@ -83,6 +84,8 @@ artifacts:
 - `artifact.path`：`service.yaml` 路径。
 - `artifact.name`：引用 `service.yaml` 中 `artifacts[].name` 的名称。
 - `artifact.env`：可选，为产物配置环境变量，key 为变量名，value 为明文值。
+- `artifacts[].tls`：可选，为产物启用 TLS，注入证书相关环境变量。
+- `artifacts[].oss`：可选，为产物启用 OSS（对象存储服务），注入 S3 凭证环境变量。
 - `http`：可选，为该服务额外生成 HTTPRoute；`backend` 需要填写产物里声明的端口名。
 
 说明：
@@ -323,6 +326,39 @@ tls:
 - `TLS_CA_FILE`
 - `TLS_SERVER_NAME`
 
+## OSS 配置
+
+服务可以通过在 `service.yaml` 的 `artifacts[].oss` 字段设置为 `true` 来启用 OSS（对象存储服务）：
+
+```yaml
+artifacts:
+  - name: service
+    target: :service_image
+    oss: true
+    ports:
+      - name: http
+        port: 8080
+```
+
+运行时 OSS 配置在 `static_config.yaml` 中定义：
+
+```yaml
+oss:
+  secret: "seaweedfs-s3-credentials"
+  access_key: "accessKey"
+  secret_key: "secretKey"
+```
+
+字段说明：
+
+- `oss.secret`：包含 S3 凭证的 Kubernetes Secret 名称。
+- `oss.access_key`：Secret 中 access key 的键名。
+- `oss.secret_key`：Secret 中 secret key 的键名。
+
+当 OSS 启用时，部署工具会注入以下环境变量（通过 SecretKeyRef）：
+- `S3_ACCESS_KEY`
+- `S3_SECRET_KEY`
+
 ## 环境变量配置
 
 在 `deploy.yaml` 中，可以通过 `artifact.env` 字段为服务产物配置环境变量：
@@ -350,4 +386,6 @@ services:
   - `TLS_KEY_FILE`
   - `TLS_CA_FILE`
   - `TLS_SERVER_NAME`
+  - `S3_ACCESS_KEY`
+  - `S3_SECRET_KEY`
 - 用户定义的环境变量会按 key 的字典序排列，并在保留变量之前注入容器。

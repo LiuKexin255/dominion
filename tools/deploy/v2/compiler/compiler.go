@@ -72,6 +72,7 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			Image:      imageRef,
 			Replicas:   replicas,
 			TlsEnabled: artifact.TLS,
+			OssEnabled: artifact.OSS,
 			Env:        deployService.Artifact.Env,
 		}
 		mergedPorts, err := mergePorts(serviceConfig.Ports, artifact.Ports, artifact.Name)

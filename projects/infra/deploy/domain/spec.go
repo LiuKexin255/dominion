@@ -50,6 +50,7 @@ type ArtifactSpec struct {
 	Ports        []ArtifactPortSpec
 	Replicas     int32
 	TLSEnabled   bool
+	OSSEnabled   bool
 	WorkloadKind WorkloadKind
 	HTTP         *ArtifactHTTPSpec
 	Env          map[string]string

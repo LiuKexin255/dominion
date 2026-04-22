@@ -20,6 +20,9 @@ func TestLoadK8sConfig(t *testing.T) {
 		{name: "tls.domain", want: "tls.liukexin.com", got: LoadK8sConfig().TLS.Domain},
 		{name: "tls.ca_config_map.name", want: "my-ca.crt", got: LoadK8sConfig().TLS.CAConfigMap.Name},
 		{name: "tls.ca_config_map.key", want: "ca.crt", got: LoadK8sConfig().TLS.CAConfigMap.Key},
+		{name: "oss.secret", want: "seaweedfs-s3-credentials", got: LoadK8sConfig().OSS.Secret},
+		{name: "oss.access_key", want: "accessKey", got: LoadK8sConfig().OSS.AccessKey},
+		{name: "oss.secret_key", want: "secretKey", got: LoadK8sConfig().OSS.SecretKey},
 		{name: "mongodb.dev-single.image", want: "mongo", got: LoadK8sConfig().MongoDB["dev-single"].Image},
 		{name: "mongodb.dev-single.version", want: "7.0", got: LoadK8sConfig().MongoDB["dev-single"].Version},
 		{name: "mongodb.dev-single.admin_username", want: "admin", got: LoadK8sConfig().MongoDB["dev-single"].AdminUsername},
@@ -158,6 +161,46 @@ func Test_parseK8sConfig(t *testing.T) {
 			name: "missing ca config map",
 			raw: func(t *testing.T) []byte {
 				return mustReadStaticConfigTestdata(t, "static_config.tls.missing-ca-file.yaml")
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid oss config",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.oss.valid.yaml")
+			},
+			want: &K8sConfig{
+				Namespace: "default",
+				ManagedBy: "dominion",
+				Gateway: GatewayConfig{
+					Name:      "traefik-gateway",
+					Namespace: "ingress",
+				},
+				OSS: OSSConfig{
+					Secret:    "seaweedfs-s3-credentials",
+					AccessKey: "accessKey",
+					SecretKey: "secretKey",
+				},
+			},
+		},
+		{
+			name: "missing oss secret",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.oss.missing-secret.yaml")
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing oss access key",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.oss.missing-access-key.yaml")
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing oss secret key",
+			raw: func(t *testing.T) []byte {
+				return mustReadStaticConfigTestdata(t, "static_config.oss.missing-secret-key.yaml")
 			},
 			wantErr: true,
 		},

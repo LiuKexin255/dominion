@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "s3",
+    srcs = ["s3.go"],
+    importpath = "dominion/pkg/s3",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_minio_minio_go_v7//:minio-go",
+        "@com_github_minio_minio_go_v7//pkg/credentials",
+    ],
+)
+
+go_unittest(
+    name = "s3_test",
+    srcs = ["s3_test.go"],
+    embed = [":s3"],
+    deps = ["@com_github_minio_minio_go_v7//:minio-go"],
+)
