@@ -1,0 +1,296 @@
+syntax = "proto3";
+
+package projects.game.gateway;
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "dominion/projects/game/gateway";
+
+// GameGatewayService exposes the read-side HTTP API for a session-bound game
+// gateway.
+//
+// Prefix Path: /v1
+//
+// The WebSocket hot path stays outside grpc/gRPC-Gateway by design. Clients
+// upgrade through GET /v1/sessions/{session}/game/connect?token=... and then
+// exchange the typed WebSocket messages defined in this file.
+service GameGatewayService {
+  // GetGameSnapshot returns the latest available snapshot for a session game
+  // runtime. The gateway may synchronously refresh the cached snapshot before
+  // replying when the current snapshot is stale.
+  rpc GetGameSnapshot(GetGameSnapshotRequest) returns (GameSnapshot) {
+    option (google.api.http) = {
+      get: "/v1/{name=sessions/*/game/snapshot}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // GetGameRuntime returns the current in-memory runtime summary for a session
+  // on the gateway instance.
+  rpc GetGameRuntime(GetGameRuntimeRequest) returns (GameRuntime) {
+    option (google.api.http) = {
+      get: "/v1/{name=sessions/*/game/runtime}"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
+}
+
+// GameSnapshot is the read-side singleton snapshot resource for a session game
+// runtime.
+message GameSnapshot {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/gateway/GameSnapshot"
+    pattern: "sessions/{session}/game/snapshot"
+    plural: "gameSnapshots"
+    singular: "gameSnapshot"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  string session = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+
+  string snapshot_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string mime_type = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bytes image = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bool cached = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp capture_time = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// GameRuntime is the read-side singleton runtime summary resource for a
+// session game runtime.
+message GameRuntime {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/gateway/GameRuntime"
+    pattern: "sessions/{session}/game/runtime"
+    plural: "gameRuntimes"
+    singular: "gameRuntime"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  string session = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+
+  string gateway_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bool agent_connected = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int32 web_connection_count = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  GameStreamStatus stream_status = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp last_media_time = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp last_snapshot_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  GameOperation inflight_operation = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string last_error = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 reconnect_generation = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message GetGameSnapshotRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/gateway/GameSnapshot"
+    }
+  ];
+}
+
+message GetGameRuntimeRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/gateway/GameRuntime"
+    }
+  ];
+}
+
+enum GameStreamStatus {
+  GAME_STREAM_STATUS_UNSPECIFIED = 0;
+  GAME_STREAM_STATUS_ACTIVE = 1;
+  GAME_STREAM_STATUS_PAUSED = 2;
+  GAME_STREAM_STATUS_UNAVAILABLE = 3;
+}
+
+enum GameClientRole {
+  GAME_CLIENT_ROLE_UNSPECIFIED = 0;
+  GAME_CLIENT_ROLE_WINDOWS_AGENT = 1;
+  GAME_CLIENT_ROLE_WEB = 2;
+}
+
+enum GameControlOperationKind {
+  GAME_CONTROL_OPERATION_KIND_UNSPECIFIED = 0;
+  GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK = 1;
+  GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK = 2;
+  GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG = 3;
+  GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER = 4;
+  GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD = 5;
+}
+
+enum GameControlResultStatus {
+  GAME_CONTROL_RESULT_STATUS_UNSPECIFIED = 0;
+  GAME_CONTROL_RESULT_STATUS_SUCCEEDED = 1;
+  GAME_CONTROL_RESULT_STATUS_FAILED = 2;
+  GAME_CONTROL_RESULT_STATUS_TIMED_OUT = 3;
+}
+
+enum GameMouseButton {
+  GAME_MOUSE_BUTTON_UNSPECIFIED = 0;
+  GAME_MOUSE_BUTTON_LEFT = 1;
+  GAME_MOUSE_BUTTON_RIGHT = 2;
+  GAME_MOUSE_BUTTON_MIDDLE = 3;
+}
+
+// GameWebSocketEnvelope is the typed in-memory contract for the gateway
+// WebSocket protocol.
+//
+// The on-wire JSON envelope remains:
+// {
+//   "type": "...",
+//   "session_id": "...",
+//   "message_id": "...",
+//   "payload": { ... }
+// }
+//
+// The active oneof arm determines the wire-level type. Transport adapters are
+// responsible for mapping between the stable JSON envelope shape and this typed
+// representation.
+message GameWebSocketEnvelope {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  string message_id = 2 [(google.api.field_behavior) = REQUIRED];
+
+  oneof payload {
+    GameHello hello = 3;
+    GameMediaInit media_init = 4;
+    GameMediaSegment media_segment = 5;
+    GameControlRequest control_request = 6;
+    GameControlAck control_ack = 7;
+    GameControlResult control_result = 8;
+    GameError error = 9;
+    GamePing ping = 10;
+    GamePong pong = 11;
+  }
+}
+
+// GameHello is the first business message sent after a successful WebSocket
+// upgrade.
+message GameHello {
+  GameClientRole role = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// GameMediaInit carries the latest fMP4 initialization segment.
+message GameMediaInit {
+  string mime_type = 1 [(google.api.field_behavior) = REQUIRED];
+
+  bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+// GameMediaSegment carries one fMP4 media segment. key_frame marks the segment
+// that starts from a replayable key frame boundary for late-joining web
+// clients.
+message GameMediaSegment {
+  string segment_id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
+
+  bool key_frame = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp media_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// GameControlRequest requests one complete mouse action from web to agent.
+message GameControlRequest {
+  string operation_id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  GameControlOperationKind kind = 2 [(google.api.field_behavior) = REQUIRED];
+
+  bool flash_snapshot = 3 [(google.api.field_behavior) = OPTIONAL];
+
+  GameMouseAction mouse = 4 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GameControlAck {
+  string operation_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GameControlResult {
+  string operation_id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  GameControlResultStatus status = 2 [(google.api.field_behavior) = REQUIRED];
+
+  string error_message = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message GameError {
+  string code = 1 [(google.api.field_behavior) = REQUIRED];
+
+  string message = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message GamePing {
+  string nonce = 1 [(google.api.field_behavior) = OPTIONAL];
+}
+
+message GamePong {
+  string nonce = 1 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// GameMouseAction describes the coordinate payload for one complete mouse
+// action.
+//
+// kind=*_CLICK and kind=*_HOVER use x/y.
+// kind=MOUSE_DRAG uses from_x/from_y/to_x/to_y and optional duration_ms.
+// kind=MOUSE_HOLD uses x/y and requires duration_ms. The server must reject a
+// hold duration longer than 30 seconds.
+message GameMouseAction {
+  GameMouseButton button = 1 [(google.api.field_behavior) = REQUIRED];
+
+  int32 x = 2 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 y = 3 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 from_x = 4 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 from_y = 5 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 to_x = 6 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 to_y = 7 [(google.api.field_behavior) = OPTIONAL];
+
+  int32 duration_ms = 8 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// GameOperation summarizes the inflight control operation surfaced by the
+// runtime read model.
+message GameOperation {
+  string operation_id = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  GameControlOperationKind kind = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  bool flash_snapshot = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
