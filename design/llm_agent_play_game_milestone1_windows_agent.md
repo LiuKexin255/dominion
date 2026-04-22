@@ -91,7 +91,7 @@ milestone 1 收敛为：
 触发来源：
 
 * gateway 发起 snapshot 请求
-* 控制操作要求 `requires_snapshot = true`
+* 控制操作要求 `flash_snapshot = true`
 
 截图格式：
 
