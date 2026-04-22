@@ -23,14 +23,14 @@ func TestDeployStatefulResolver_Resolve(t *testing.T) {
 			response: &ServiceEndpointsInfo{
 				IsStateful: true,
 				StatefulInstances: []*StatefulInstance{
-					{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
-					{Index: 1, Endpoints: []string{"10.0.0.2:50051"}},
+					{Index: 0, Endpoints: []string{"10.0.0.1:50051"}, Hostname: "svc-0"},
+					{Index: 1, Endpoints: []string{"10.0.0.2:50051"}, Hostname: "svc-1"},
 				},
 			},
 			target: &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
 			want: []*StatefulInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
-				{Index: 1, Endpoints: []string{"10.0.0.2:50051"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}, Hostname: "svc-0"},
+				{Index: 1, Endpoints: []string{"10.0.0.2:50051"}, Hostname: "svc-1"},
 			},
 		},
 		{
@@ -57,14 +57,14 @@ func TestDeployStatefulResolver_Resolve(t *testing.T) {
 				IsStateful: true,
 				Ports:      map[string]int32{"grpc": 50051, "http": 8080},
 				StatefulInstances: []*StatefulInstance{
-					{Index: 0, Endpoints: []string{"10.0.0.1:50051", "10.0.0.1:8080"}},
-					{Index: 1, Endpoints: []string{"10.0.0.2:50051", "10.0.0.2:8080"}},
+					{Index: 0, Endpoints: []string{"10.0.0.1:50051", "10.0.0.1:8080"}, Hostname: "svc-0"},
+					{Index: 1, Endpoints: []string{"10.0.0.2:50051", "10.0.0.2:8080"}, Hostname: "svc-1"},
 				},
 			},
 			target: &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
 			want: []*StatefulInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
-				{Index: 1, Endpoints: []string{"10.0.0.2:50051"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}, Hostname: "svc-0"},
+				{Index: 1, Endpoints: []string{"10.0.0.2:50051"}, Hostname: "svc-1"},
 			},
 		},
 		{

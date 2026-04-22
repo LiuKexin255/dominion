@@ -13,10 +13,10 @@
       "variant": "high"
     },
     "explore": {
-      "model": "opencode-go/minimax-m2.7"
+      "model": "openai/gpt-5.4-mini-fast"
     },
     "librarian": {
-      "model": "opencode-go/minimax-m2.7"
+      "model": "openai/gpt-5.4-mini-fast"
     },
     "multimodal-looker": {
       "model": "openai/gpt-5.4",

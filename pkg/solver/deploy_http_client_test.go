@@ -50,15 +50,15 @@ func TestDeployHTTPClient_GetServiceEndpoints(t *testing.T) {
 		{
 			name:           "success with stateful instances parses and sorts by index",
 			responseStatus: http.StatusOK,
-			responseBody:   `{"endpoints":["10.0.0.1:8080","10.0.0.2:8080","10.0.0.3:8080"],"ports":{"http":8080},"is_stateful":true,"stateful_instances":[{"index":2,"endpoints":["10.0.0.3:8080"]},{"index":0,"endpoints":["10.0.0.1:8080"]},{"index":1,"endpoints":["10.0.0.2:8080"]}]}`,
+			responseBody:   `{"endpoints":["10.0.0.1:8080","10.0.0.2:8080","10.0.0.3:8080"],"ports":{"http":8080},"is_stateful":true,"stateful_instances":[{"index":2,"endpoints":["10.0.0.3:8080"],"hostname":"svc-2"},{"index":0,"endpoints":["10.0.0.1:8080"],"hostname":"svc-0"},{"index":1,"endpoints":["10.0.0.2:8080"],"hostname":"svc-1"}]}`,
 			wantPath:       "/v1/deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints",
 			want: &ServiceEndpointsInfo{
 				Endpoints: []string{"10.0.0.1:8080", "10.0.0.2:8080", "10.0.0.3:8080"},
 				Ports:     map[string]int32{"http": 8080},
 				StatefulInstances: []*StatefulInstance{
-					{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
-					{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
-					{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
+					{Index: 0, Endpoints: []string{"10.0.0.1:8080"}, Hostname: "svc-0"},
+					{Index: 1, Endpoints: []string{"10.0.0.2:8080"}, Hostname: "svc-1"},
+					{Index: 2, Endpoints: []string{"10.0.0.3:8080"}, Hostname: "svc-2"},
 				},
 				IsStateful: true,
 			},
@@ -161,23 +161,23 @@ func Test_convertStatefulInstances(t *testing.T) {
 		{
 			name: "single instance",
 			in: []*deploy.StatefulServiceInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}, Hostname: "svc-0"},
 			},
 			want: []*StatefulInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}, Hostname: "svc-0"},
 			},
 		},
 		{
 			name: "multiple instances sorted by index",
 			in: []*deploy.StatefulServiceInstance{
-				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
-				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
-				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
+				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}, Hostname: "svc-2"},
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}, Hostname: "svc-0"},
+				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}, Hostname: "svc-1"},
 			},
 			want: []*StatefulInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}},
-				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}},
-				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}},
+				{Index: 0, Endpoints: []string{"10.0.0.1:8080"}, Hostname: "svc-0"},
+				{Index: 1, Endpoints: []string{"10.0.0.2:8080"}, Hostname: "svc-1"},
+				{Index: 2, Endpoints: []string{"10.0.0.3:8080"}, Hostname: "svc-2"},
 			},
 		},
 	}

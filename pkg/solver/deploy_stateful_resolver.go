@@ -63,6 +63,7 @@ func (r *DeployStatefulResolver) Resolve(ctx context.Context, target *Target) ([
 		filtered = append(filtered, &StatefulInstance{
 			Index:     instance.Index,
 			Endpoints: filteredEndpoints,
+			Hostname:  instance.Hostname,
 		})
 	}
 

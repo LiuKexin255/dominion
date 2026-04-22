@@ -261,7 +261,7 @@ func TestK8sRuntime_QueryStatefulServiceEndpoints(t *testing.T) {
 				Ports:             map[string]int32{"grpc": 50051},
 				Endpoints:         []string{"10.0.0.10:50051", "10.0.0.11:50051", "10.0.0.12:50051"},
 				IsStateful:        true,
-				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Endpoints: []string{"10.0.0.11:50051"}}, {Index: 2, Endpoints: []string{"10.0.0.12:50051"}}},
+				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "demo-api-1", Endpoints: []string{"10.0.0.11:50051"}}, {Index: 2, Hostname: "demo-api-2", Endpoints: []string{"10.0.0.12:50051"}}},
 			},
 		},
 		{
@@ -301,7 +301,7 @@ func TestK8sRuntime_QueryStatefulServiceEndpoints(t *testing.T) {
 				Ports:             map[string]int32{"grpc": 50051},
 				Endpoints:         []string{"10.0.0.10:50051"},
 				IsStateful:        true,
-				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Endpoints: nil}},
+				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "demo-api-1", Endpoints: nil}},
 			},
 		},
 		{

@@ -12,6 +12,9 @@ type StatefulInstance struct {
 	Index int
 	// Endpoints holds the ready endpoint addresses for this instance.
 	Endpoints []string
+	// Hostname is the hostname of the stateful pod, matching the HOSTNAME
+	// environment variable on the pod.
+	Hostname string
 }
 
 // StatefulResolver discovers all instances of a stateful service.

@@ -30,6 +30,7 @@ var (
 type StatefulInstance struct {
 	Index     int
 	Endpoints []string
+	Hostname  string
 }
 
 // ServiceQueryResult holds the resolved ports map and endpoint addresses.
