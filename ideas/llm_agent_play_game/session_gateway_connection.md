@@ -73,6 +73,8 @@ instances, err := resolver.Resolve(ctx, target)
 DOMINION_ENVIRONMENT={scope}.{envName}
 ```
 
+该环境变量由部署工具负责注入，服务代码只使用 `solver.NewDeployStatefulResolver()`，不自行解析或兜底处理部署环境。
+
 解析结果中的 `StatefulInstance` 包含：
 
 * `Index`：有状态服务实例序号。
@@ -90,7 +92,7 @@ DOMINION_ENVIRONMENT={scope}.{envName}
 
 deploy 部署工具会为有状态服务的每个节点配置固定外部域名。session service 不再使用 `ip:port` 生成连接 URL，而是按实例序号拼接外部域名。
 
-建议新增配置：
+外部域名规则固定为：
 
 ```text
 GAME_GATEWAY_PUBLIC_HOST_PATTERN=gateway-%d-game.liukexin.com
@@ -165,6 +167,7 @@ type Registry interface {
 * 内部持有 public host pattern
 * `Resolve` 后只从有 ready endpoint 的实例中选择
 * `PickRandomExcluding` 在只剩一个实例时允许回退到原实例，保持当前行为
+* resolver 访问 deploy service 失败时直接返回错误，不 fallback 到静态配置
 
 单测继续保留一个 fake registry 或 fake resolver，避免 service 单测依赖真实 deploy service。
 
@@ -185,10 +188,10 @@ type Registry interface {
 
 * 引入 `solver.NewDeployStatefulResolver()`。
 * 解析 `solver.ParseTarget("game/gateway:http")`。
-* 新增 `GAME_GATEWAY_PUBLIC_HOST_PATTERN`。
-* 废弃 `GAME_GATEWAY_IDS` 与 `GAME_GATEWAY_DOMAIN`，或仅作为本地开发 fallback。
+* 使用固定 public host pattern：`gateway-%d-game.liukexin.com`。
+* 删除 `GAME_GATEWAY_IDS` 与 `GAME_GATEWAY_DOMAIN` 的正式 fallback 路径。
 
-本地开发 fallback 可以保留，但正式环境应使用 deploy resolver。
+正式实现不再保留 fallback：如果无法创建 resolver、无法解析 target、无法访问 deploy service、没有可用 gateway 实例，session service 应返回错误，避免生成不可连接的 URL。
 
 ## 测试方案
 
@@ -210,9 +213,9 @@ type Registry interface {
 * `session/handler`：
   * 不只检查 URL 包含 gateway/token，还应解析 URL 并校验 scheme、host、path、token query。
 
-### 大型测试
+### game 系统级大型测试
 
-建议增加 session 与 gateway 的联合契约测试：
+需要增加 game 系统级大型测试，覆盖 `session service` 与 `game gateway` 的协作，而不是只分别验证单个服务接口。
 
 1. 部署 session service、gateway service 和必要依赖。
 2. 调用 `CreateSession`。
@@ -220,12 +223,17 @@ type Registry interface {
 4. 使用该 URL 建立 WebSocket。
 5. 发送 `hello(role=windows_agent)`。
 6. 断言连接成功。
+7. 断言 session 返回的 `gateway_id` 等于实际接入 gateway 的 `HOSTNAME`。
+8. 断言 URL host 符合固定规则 `gateway-{index}-game.liukexin.com`。
+9. 断言 gateway 拒绝 path session 与 token session 不一致的连接。
+10. 调用 `ReconnectSession` 后再次使用新 URL 建连，验证新的 token 与 gateway 分配结果可用。
 
 该测试用于证明：
 
 * session 选择的 `gateway_id` 与 gateway `HOSTNAME` 一致。
 * session 拼出的 public host 能路由到同一 gateway 实例。
 * token 的 session/gateway claims 能通过 gateway 校验。
+* session 与 gateway 的协作链路在真实部署环境中可用。
 
 ## 兼容与迁移
 
@@ -235,16 +243,16 @@ type Registry interface {
 * 不修改 session API 响应字段名。
 * 旧 `/connect` 临时 URL 不建议长期兼容；若已有外部客户端依赖，可只在短期内由 gateway 或 ingress 做兼容转发。
 
-## 仍需确认的事项
+## 已收敛决策
 
-当前方案基本闭合，剩余需要确认的是部署配置细节：
+以下事项已明确：
 
-1. `GAME_GATEWAY_PUBLIC_HOST_PATTERN` 的正式值是否固定为 `gateway-%d-game.liukexin.com`。
-2. 本地开发环境是否需要保留 `GAME_GATEWAY_IDS/GAME_GATEWAY_DOMAIN` fallback。
-3. session service 无法访问 deploy service 时，是启动失败，还是降级到 fallback registry。
+1. `GAME_GATEWAY_PUBLIC_HOST_PATTERN` 固定为 `gateway-%d-game.liukexin.com`。
+2. `DOMINION_ENVIRONMENT` 由部署工具负责，session service 不自行处理该环境变量。
+3. session service 无法访问 deploy service 或解析不到可用 gateway 实例时不 fallback，直接返回错误。
+4. 必须增加 game 系统级大型测试，验证 session 与 gateway 在真实部署中的协作链路。
 
 推荐默认决策：
 
-* 正式环境必须配置 `DOMINION_ENVIRONMENT` 与 `GAME_GATEWAY_PUBLIC_HOST_PATTERN`。
-* 正式环境 resolver 初始化失败时直接启动失败，避免返回不可用 URL。
-* 本地开发可以保留静态 fallback，但测试需覆盖正式 resolver registry。
+* resolver 初始化或解析失败时启动失败；运行期访问 deploy service 失败时 Create/Reconnect 返回错误。
+* 不再保留 `GAME_GATEWAY_IDS/GAME_GATEWAY_DOMAIN` 作为正式 fallback。
