@@ -16,12 +16,14 @@ const (
 	envSessionTokenSecret = "SESSION_TOKEN_SECRET"
 
 	defaultHTTPListenAddr = ":8080"
-	defaultTokenSecret    = "dev-session-token-secret"
 )
 
 func main() {
 	httpPort := envOrDefault(envHTTPPort, defaultHTTPListenAddr)
-	tokenSecret := envOrDefault(envSessionTokenSecret, defaultTokenSecret)
+	tokenSecret := strings.TrimSpace(os.Getenv(envSessionTokenSecret))
+	if tokenSecret == "" {
+		log.Fatalf("missing required environment variable %s", envSessionTokenSecret)
+	}
 	gatewayID := os.Getenv("HOSTNAME")
 	if gatewayID == "" {
 		gatewayID = "game-gateway-0"

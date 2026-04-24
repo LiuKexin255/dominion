@@ -172,14 +172,11 @@ func requireValidSession(t *testing.T, got *session.Session, wantName string) {
 	}
 }
 
-func requireAgentConnectURL(t *testing.T, got, gatewayID string) {
+func requireAgentConnectURL(t *testing.T, got string) {
 	t.Helper()
 
 	if got == "" {
 		t.Fatal("agentConnectUrl is empty, want non-empty")
-	}
-	if !strings.Contains(got, gatewayID) {
-		t.Fatalf("agentConnectUrl = %q, want to contain gateway %q", got, gatewayID)
 	}
 	if !strings.Contains(got, "token=") {
 		t.Fatalf("agentConnectUrl = %q, want token query", got)
@@ -193,7 +190,7 @@ func TestInterface_CreateSession(t *testing.T) {
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
 
 	requireValidSession(t, created.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, created.GetAgentConnectUrl(), created.GetSession().GetGatewayId())
+	requireAgentConnectURL(t, created.GetAgentConnectUrl())
 	if created.GetSession().GetReconnectGeneration() != 0 {
 		t.Fatalf("session.ReconnectGeneration = %d, want 0", created.GetSession().GetReconnectGeneration())
 	}
@@ -246,7 +243,7 @@ func TestInterface_ReconnectSession(t *testing.T) {
 
 	got := decodeReconnectSessionResponse(t, resp)
 	requireValidSession(t, got.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, got.GetAgentConnectUrl(), got.GetSession().GetGatewayId())
+	requireAgentConnectURL(t, got.GetAgentConnectUrl())
 	if got.GetSession().GetReconnectGeneration() < created.GetSession().GetReconnectGeneration() {
 		t.Fatalf("session.ReconnectGeneration = %d, want >= %d", got.GetSession().GetReconnectGeneration(), created.GetSession().GetReconnectGeneration())
 	}

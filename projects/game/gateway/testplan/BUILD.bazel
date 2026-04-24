@@ -7,6 +7,7 @@ go_largetest(
     env = {
         "S3_ACCESS_KEY": "readonly",
         "S3_SECRET_KEY": "Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ",
+        "SESSION_TOKEN_SECRET": "dev-session-token-secret",
     },
     deps = [
         "//pkg/solver",

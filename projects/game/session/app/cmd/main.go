@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dominion/pkg/mongo"
+	"dominion/pkg/solver"
 	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/app"
 	"dominion/projects/game/session/runtime/gateway"
@@ -18,20 +19,16 @@ import (
 )
 
 const (
-	envHTTPPort            = "HTTP_PORT"
-	envSessionTokenSecret  = "SESSION_TOKEN_SECRET"
-	envSessionTokenTTL     = "SESSION_TOKEN_TTL"
-	envGameGatewayIDs      = "GAME_GATEWAY_IDS"
-	envGameGatewayDomain   = "GAME_GATEWAY_DOMAIN"
-	envSessionMongoTarget  = "SESSION_MONGO_TARGET"
+	envHTTPPort           = "HTTP_PORT"
+	envSessionTokenSecret = "SESSION_TOKEN_SECRET"
+	envSessionTokenTTL    = "SESSION_TOKEN_TTL"
+	envSessionMongoTarget = "SESSION_MONGO_TARGET"
 
-	defaultHTTPListenAddr      = ":8081"
-	defaultMongoTarget        = "game/mongo"
-	defaultTokenSecret        = "dev-session-token-secret"
-	defaultSessionTokenTTL    = "1h"
-	defaultGatewayIDs         = "game-gateway-0"
-	defaultGatewayDomain      = "gw.liukexin.com"
-	defaultShutdownDeadline   = 5 * time.Second
+	defaultHTTPListenAddr   = ":8081"
+	defaultMongoTarget      = "game/mongo"
+	defaultSessionTokenTTL  = "1h"
+	defaultShutdownDeadline = 5 * time.Second
+	publicHostPattern       = "gateway-%d-game.liukexin.com"
 )
 
 var httpPort = flag.String("http-port", envOrDefault(envHTTPPort, defaultHTTPListenAddr), "HTTP listen address")
@@ -39,15 +36,16 @@ var httpPort = flag.String("http-port", envOrDefault(envHTTPPort, defaultHTTPLis
 func main() {
 	flag.Parse()
 
-	tokenSecret := envOrDefault(envSessionTokenSecret, defaultTokenSecret)
+	tokenSecret := strings.TrimSpace(os.Getenv(envSessionTokenSecret))
+	if tokenSecret == "" {
+		log.Fatalf("missing required environment variable %s", envSessionTokenSecret)
+	}
 
 	tokenTTL, err := time.ParseDuration(envOrDefault(envSessionTokenTTL, defaultSessionTokenTTL))
 	if err != nil {
 		log.Fatalf("parse %s: %v", envSessionTokenTTL, err)
 	}
 
-	gatewayIDs := parseCSVEnvOrDefault(envGameGatewayIDs, defaultGatewayIDs)
-	gatewayDomain := envOrDefault(envGameGatewayDomain, defaultGatewayDomain)
 	mongoTarget := envOrDefault(envSessionMongoTarget, defaultMongoTarget)
 	httpAddr := normalizeListenAddr(*httpPort)
 
@@ -73,9 +71,17 @@ func main() {
 		log.Fatalf("create session repository: %v", err)
 	}
 
-	gatewayReg := gateway.NewStaticRegistry(gatewayIDs)
+	resolver, err := solver.NewDeployStatefulResolver()
+	if err != nil {
+		log.Fatalf("create deploy stateful resolver: %v", err)
+	}
+	target, err := solver.ParseTarget("game/gateway:http")
+	if err != nil {
+		log.Fatalf("parse gateway target: %v", err)
+	}
+	gatewayReg := gateway.NewDeployRegistry(resolver, target, publicHostPattern)
 	tokenIssuer := token.NewHMACSigner(tokenSecret, tokenTTL)
-	bootstrap := app.NewBootstrap(repo, tokenIssuer, gatewayReg, gatewayDomain)
+	bootstrap := app.NewBootstrap(repo, tokenIssuer, gatewayReg)
 
 	if err := app.Serve(ctx, bootstrap.Handler, httpAddr); err != nil {
 		log.Fatalf("serve session service: %v", err)
@@ -88,40 +94,6 @@ func envOrDefault(key, fallback string) string {
 	}
 
 	return fallback
-}
-
-func parseCSVEnvOrDefault(key, fallback string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return strings.Split(fallback, ",")
-	}
-
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if value := strings.TrimSpace(part); value != "" {
-			values = append(values, value)
-		}
-	}
-
-	return values
-}
-
-func parseCSVEnv(key string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if value := strings.TrimSpace(part); value != "" {
-			values = append(values, value)
-		}
-	}
-
-	return values
 }
 
 func normalizeListenAddr(value string) string {

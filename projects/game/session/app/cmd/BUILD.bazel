@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/mongo",
+        "//pkg/solver",
         "//projects/game/pkg/token",
         "//projects/game/session/app",
         "//projects/game/session/runtime/gateway",

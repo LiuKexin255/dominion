@@ -12,8 +12,8 @@ import (
 
 	"dominion/pkg/solver"
 	"dominion/pkg/testtool"
-	"dominion/projects/game/gateway/domain"
 	gw "dominion/projects/game/gateway"
+	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/testplan/fakeagent"
 	"dominion/projects/game/pkg/token"
 
@@ -35,8 +35,6 @@ const (
 
 	envTokenSecret = "SESSION_TOKEN_SECRET"
 
-	defaultTokenSecret = "dev-session-token-secret"
-
 	testVideoURL = "s3://s3.liukexin.com/buckets/common/video/IMG_6995.MP4"
 
 	mimeTypeMP4 = "video/mp4; codecs=\"avc1.64001f\""
@@ -55,7 +53,10 @@ func uniqueSessionID() string {
 
 func mustSigner(t *testing.T) *token.HMACSigner {
 	t.Helper()
-	secretKey := envOrDefault(envTokenSecret, defaultTokenSecret)
+	secretKey := strings.TrimSpace(os.Getenv(envTokenSecret))
+	if secretKey == "" {
+		t.Fatalf("missing required environment variable %s", envTokenSecret)
+	}
 	return token.NewHMACSigner(secretKey, tokenTTL)
 }
 
@@ -77,14 +78,6 @@ func mustGatewayID(t *testing.T) string {
 		t.Fatal("no gateway instances found")
 	}
 	return instances[0].Hostname
-}
-
-func envOrDefault(key, fallback string) string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v != "" {
-		return v
-	}
-	return fallback
 }
 
 func issueToken(t *testing.T, sessionID, gatewayID string) string {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -11,12 +12,15 @@ import (
 	"dominion/projects/game/session/runtime/gateway"
 )
 
+const testPublicHost = "gateway-0-game.liukexin.com"
+
 func TestSessionServiceCreateSession(t *testing.T) {
 	tests := []struct {
 		name           string
 		sessionType    domain.SessionType
 		sessionID      string
 		pickedGateway  string
+		pickedHost     string
 		pickErr        error
 		issuedToken    string
 		issueErr       error
@@ -32,19 +36,21 @@ func TestSessionServiceCreateSession(t *testing.T) {
 			sessionType:   domain.TypeSaolei,
 			sessionID:     "session-123",
 			pickedGateway: "gateway-a",
+			pickedHost:    testPublicHost,
 			issuedToken:   "token-abc",
 			wantSessionID: "session-123",
 			wantGatewayID: "gateway-a",
-			wantURL:       "wss://gateway-a.gateway.example/connect?token=token-abc",
+			wantURL:       "wss://" + testPublicHost + "/v1/sessions/session-123/game/connect?token=token-abc",
 			wantTokenCall: issueCall{sessionID: "session-123", gatewayID: "gateway-a", reconnectGeneration: 0},
 		},
 		{
 			name:           "generates session id when empty",
 			sessionType:    domain.TypeSaolei,
 			pickedGateway:  "gateway-b",
+			pickedHost:     "gateway-1-game.liukexin.com",
 			issuedToken:    "token-generated",
 			wantGatewayID:  "gateway-b",
-			wantURL:        "wss://gateway-b.gateway.example/connect?token=token-generated",
+			wantURL:        "wss://gateway-1-game.liukexin.com/v1/sessions/%s/game/connect?token=token-generated",
 			wantIDNonEmpty: true,
 		},
 		{
@@ -59,11 +65,20 @@ func TestSessionServiceCreateSession(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newFakeRepository()
 			issuer := &stubIssuer{token: tt.issuedToken, err: tt.issueErr}
-			registry := &stubRegistry{pickRandomGateway: tt.pickedGateway, pickRandomErr: tt.pickErr}
+			registry := &stubRegistry{
+				pickRandomAssignment: &gateway.Assignment{
+					GatewayID:  tt.pickedGateway,
+					PublicHost: tt.pickedHost,
+				},
+				pickRandomErr: tt.pickErr,
+			}
 
-			svc := NewSessionService(repo, issuer, registry, "gateway.example")
+			svc := NewSessionService(repo, issuer, registry)
 
+			// when
 			session, url, err := svc.CreateSession(context.Background(), tt.sessionType, tt.sessionID)
+
+			// then
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("CreateSession() error = %v, want %v", err, tt.wantErr)
 			}
@@ -81,8 +96,13 @@ func TestSessionServiceCreateSession(t *testing.T) {
 			if snapshot.GatewayID != tt.wantGatewayID {
 				t.Fatalf("CreateSession() gateway ID = %q, want %q", snapshot.GatewayID, tt.wantGatewayID)
 			}
-			if url != tt.wantURL {
-				t.Fatalf("CreateSession() URL = %q, want %q", url, tt.wantURL)
+
+			wantURL := tt.wantURL
+			if tt.wantIDNonEmpty {
+				wantURL = fmt.Sprintf(tt.wantURL, snapshot.ID)
+			}
+			if url != wantURL {
+				t.Fatalf("CreateSession() URL = %q, want %q", url, wantURL)
 			}
 
 			if len(issuer.calls) != 1 {
@@ -115,7 +135,7 @@ func TestSessionServiceGetSession(t *testing.T) {
 		}
 
 		repo := newFakeRepository(seed)
-		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{}, "gateway.example")
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
 		session, err := svc.GetSession(context.Background(), sessionName("session-1"))
 		if err != nil {
@@ -129,7 +149,7 @@ func TestSessionServiceGetSession(t *testing.T) {
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{}, "gateway.example")
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
 		_, err := svc.GetSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -147,7 +167,7 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 		seed.SetGatewayID("gateway-a")
 
 		repo := newFakeRepository(seed)
-		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{}, "gateway.example")
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
 		if err := svc.DeleteSession(context.Background(), sessionName("session-1")); err != nil {
 			t.Fatalf("DeleteSession() error = %v", err)
@@ -163,7 +183,7 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{}, "gateway.example")
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
 		err := svc.DeleteSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -177,6 +197,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		name          string
 		seedGatewayID string
 		pickedGateway string
+		pickedHost    string
 		pickErr       error
 		issuedToken   string
 		wantErr       error
@@ -187,17 +208,19 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 			name:          "reassigns to different gateway",
 			seedGatewayID: "gateway-a",
 			pickedGateway: "gateway-b",
+			pickedHost:    "gateway-1-game.liukexin.com",
 			issuedToken:   "token-next",
 			wantGatewayID: "gateway-b",
-			wantURL:       "wss://gateway-b.gateway.example/connect?token=token-next",
+			wantURL:       "wss://gateway-1-game.liukexin.com/v1/sessions/session-1/game/connect?token=token-next",
 		},
 		{
 			name:          "falls back to same gateway when single gateway available",
 			seedGatewayID: "gateway-a",
 			pickedGateway: "gateway-a",
+			pickedHost:    testPublicHost,
 			issuedToken:   "token-same",
 			wantGatewayID: "gateway-a",
-			wantURL:       "wss://gateway-a.gateway.example/connect?token=token-same",
+			wantURL:       "wss://" + testPublicHost + "/v1/sessions/session-1/game/connect?token=token-same",
 		},
 		{
 			name:    "no gateway available",
@@ -208,6 +231,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// given
 			seed, err := domain.NewSession(domain.TypeSaolei, "session-1")
 			if err != nil {
 				t.Fatalf("NewSession() error = %v", err)
@@ -222,10 +246,19 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 
 			repo := newFakeRepository(seed)
 			issuer := &stubIssuer{token: tt.issuedToken}
-			registry := &stubRegistry{pickExcludingGateway: tt.pickedGateway, pickExcludingErr: tt.pickErr}
-			svc := NewSessionService(repo, issuer, registry, "gateway.example")
+			registry := &stubRegistry{
+				pickExcludingAssignment: &gateway.Assignment{
+					GatewayID:  tt.pickedGateway,
+					PublicHost: tt.pickedHost,
+				},
+				pickExcludingErr: tt.pickErr,
+			}
+			svc := NewSessionService(repo, issuer, registry)
 
+			// when
 			session, url, err := svc.ReconnectSession(context.Background(), sessionName("session-1"))
+
+			// then
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("ReconnectSession() error = %v, want %v", err, tt.wantErr)
 			}
@@ -258,13 +291,47 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{}, "gateway.example")
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
 		_, _, err := svc.ReconnectSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("ReconnectSession() error = %v, want %v", err, domain.ErrNotFound)
 		}
 	})
+}
+
+func TestBuildConnectURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionID  string
+		publicHost string
+		token      string
+		wantURL    string
+	}{
+		{
+			name:       "simple token",
+			sessionID:  "session-123",
+			publicHost: testPublicHost,
+			token:      "token-abc",
+			wantURL:    "wss://" + testPublicHost + "/v1/sessions/session-123/game/connect?token=token-abc",
+		},
+		{
+			name:       "token with special characters is escaped",
+			sessionID:  "session-456",
+			publicHost: "gateway-1-game.liukexin.com",
+			token:      "tok+en&val=ue",
+			wantURL:    "wss://gateway-1-game.liukexin.com/v1/sessions/session-456/game/connect?token=tok%2Ben%26val%3Due",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildConnectURL(tt.sessionID, tt.publicHost, tt.token)
+			if got != tt.wantURL {
+				t.Fatalf("buildConnectURL() = %q, want %q", got, tt.wantURL)
+			}
+		})
+	}
 }
 
 type issueCall struct {
@@ -292,24 +359,24 @@ func (s *stubIssuer) Issue(sessionID, gatewayID string, reconnectGeneration int6
 }
 
 type stubRegistry struct {
-	pickRandomGateway    string
-	pickRandomErr        error
-	pickExcludingGateway string
-	pickExcludingErr     error
+	pickRandomAssignment    *gateway.Assignment
+	pickRandomErr           error
+	pickExcludingAssignment *gateway.Assignment
+	pickExcludingErr        error
 }
 
-func (s *stubRegistry) PickRandom() (string, error) {
+func (s *stubRegistry) PickRandom(_ context.Context) (*gateway.Assignment, error) {
 	if s.pickRandomErr != nil {
-		return "", s.pickRandomErr
+		return nil, s.pickRandomErr
 	}
-	return s.pickRandomGateway, nil
+	return s.pickRandomAssignment, nil
 }
 
-func (s *stubRegistry) PickRandomExcluding(_ string) (string, error) {
+func (s *stubRegistry) PickRandomExcluding(_ context.Context, _ string) (*gateway.Assignment, error) {
 	if s.pickExcludingErr != nil {
-		return "", s.pickExcludingErr
+		return nil, s.pickExcludingErr
 	}
-	return s.pickExcludingGateway, nil
+	return s.pickExcludingAssignment, nil
 }
 
 type fakeRepository struct {

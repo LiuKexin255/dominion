@@ -4,8 +4,12 @@ go_largetest(
     name = "testplan_test",
     size = "small",
     srcs = [
-        "interface_test.go",
+        "helpers.go",
+        "session_gateway_test.go",
     ],
+    env = {
+        "SESSION_TOKEN_SECRET": "dev-session-token-secret",
+    },
     deps = [
         "//pkg/solver",
         "//pkg/testtool",

@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -17,9 +19,8 @@ import (
 )
 
 const (
-	testSecret        = "test-secret-key-for-handler-tests"
-	testTokenTTL      = 10 * time.Minute
-	testGatewayDomain = "gateway.test"
+	testSecret   = "test-secret-key-for-handler-tests"
+	testTokenTTL = 10 * time.Minute
 )
 
 // sessionName returns the resource name in "sessions/{id}" format.
@@ -32,8 +33,16 @@ func sessionName(id string) string {
 func newTestHandler(gatewayIDs ...string) (*Handler, *storage.FakeStore) {
 	repo := storage.NewFakeStore()
 	issuer := token.NewHMACSigner(testSecret, testTokenTTL)
-	registry := gateway.NewStaticRegistry(gatewayIDs)
-	svc := service.NewSessionService(repo, issuer, registry, testGatewayDomain)
+	assignments := make([]*gateway.Assignment, len(gatewayIDs))
+	for i, id := range gatewayIDs {
+		assignments[i] = &gateway.Assignment{
+			GatewayID:  id,
+			Index:      i,
+			PublicHost: fmt.Sprintf("gateway-%d-game.liukexin.com", i),
+		}
+	}
+	registry := gateway.NewStaticRegistry(assignments)
+	svc := service.NewSessionService(repo, issuer, registry)
 	return NewHandler(svc), repo
 }
 
@@ -256,11 +265,27 @@ func TestHandler_CreateSession(t *testing.T) {
 			if connectURL == "" {
 				t.Fatal("CreateSession() agent_connect_url is empty")
 			}
-			if !strings.Contains(connectURL, tt.wantGatewayID) {
-				t.Fatalf("CreateSession() agent_connect_url = %q, want to contain gateway %q", connectURL, tt.wantGatewayID)
+			parsedURL, err := url.Parse(connectURL)
+			if err != nil {
+				t.Fatalf("CreateSession() agent_connect_url parse error = %v", err)
 			}
-			if !strings.Contains(connectURL, "token=") {
-				t.Fatalf("CreateSession() agent_connect_url = %q, want to contain token parameter", connectURL)
+			if parsedURL.Scheme != "wss" {
+				t.Fatalf("CreateSession() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
+			}
+			if parsedURL.Host == "" {
+				t.Fatal("CreateSession() agent_connect_url host is empty")
+			}
+			if !strings.HasPrefix(parsedURL.Host, "gateway-") || !strings.HasSuffix(parsedURL.Host, "-game.liukexin.com") {
+				t.Fatalf("CreateSession() agent_connect_url host = %q, want pattern gateway-{index}-game.liukexin.com", parsedURL.Host)
+			}
+			sessionID := strings.TrimPrefix(session.GetName(), "sessions/")
+			wantPath := "/v1/sessions/" + sessionID + "/game/connect"
+			if parsedURL.Path != wantPath {
+				t.Fatalf("CreateSession() agent_connect_url path = %q, want %q", parsedURL.Path, wantPath)
+			}
+			token := parsedURL.Query().Get("token")
+			if token == "" {
+				t.Fatalf("CreateSession() agent_connect_url token is empty")
 			}
 		})
 	}
@@ -413,11 +438,27 @@ func TestHandler_ReconnectSession(t *testing.T) {
 			if connectURL == "" {
 				t.Fatal("ReconnectSession() agent_connect_url is empty")
 			}
-			if !strings.Contains(connectURL, tt.wantGatewayID) {
-				t.Fatalf("ReconnectSession() agent_connect_url = %q, want to contain gateway %q", connectURL, tt.wantGatewayID)
+			parsedURL, err := url.Parse(connectURL)
+			if err != nil {
+				t.Fatalf("ReconnectSession() agent_connect_url parse error = %v", err)
 			}
-			if !strings.Contains(connectURL, "token=") {
-				t.Fatalf("ReconnectSession() agent_connect_url = %q, want to contain token parameter", connectURL)
+			if parsedURL.Scheme != "wss" {
+				t.Fatalf("ReconnectSession() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
+			}
+			if parsedURL.Host == "" {
+				t.Fatal("ReconnectSession() agent_connect_url host is empty")
+			}
+			if !strings.HasPrefix(parsedURL.Host, "gateway-") || !strings.HasSuffix(parsedURL.Host, "-game.liukexin.com") {
+				t.Fatalf("ReconnectSession() agent_connect_url host = %q, want pattern gateway-{index}-game.liukexin.com", parsedURL.Host)
+			}
+			sessionID := strings.TrimPrefix(session.GetName(), "sessions/")
+			wantPath := "/v1/sessions/" + sessionID + "/game/connect"
+			if parsedURL.Path != wantPath {
+				t.Fatalf("ReconnectSession() agent_connect_url path = %q, want %q", parsedURL.Path, wantPath)
+			}
+			token := parsedURL.Query().Get("token")
+			if token == "" {
+				t.Fatalf("ReconnectSession() agent_connect_url token is empty")
 			}
 		})
 	}

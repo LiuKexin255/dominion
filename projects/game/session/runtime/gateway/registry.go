@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"math/rand"
 )
@@ -8,47 +9,75 @@ import (
 // ErrNoGatewayAvailable is returned when no gateway IDs are registered.
 var ErrNoGatewayAvailable = errors.New("no gateway available")
 
-// Registry picks gateway IDs for session assignment.
+// Assignment represents a gateway instance selected for session routing.
+type Assignment struct {
+	// GatewayID is the unique identifier of the gateway instance.
+	GatewayID string
+	// Index is the ordinal index of the gateway instance.
+	Index int
+	// PublicHost is the public address clients use to reach this gateway.
+	PublicHost string
+}
+
+// Registry picks gateway assignments for session routing.
 type Registry interface {
-	PickRandom() (string, error)
-	PickRandomExcluding(gatewayID string) (string, error)
+	// PickRandom returns a random gateway assignment from the registry.
+	PickRandom(ctx context.Context) (*Assignment, error)
+	// PickRandomExcluding returns a random gateway assignment excluding the given gatewayID.
+	// When only one assignment exists, it falls back to returning that assignment.
+	PickRandomExcluding(ctx context.Context, gatewayID string) (*Assignment, error)
 }
 
 // StaticRegistry is a fixed registry backed by an in-memory list.
 type StaticRegistry struct {
-	gatewayIDs []string
+	assignments []*Assignment
 }
 
-// NewStaticRegistry creates a StaticRegistry from gateway IDs.
-func NewStaticRegistry(gatewayIDs []string) *StaticRegistry {
-	return &StaticRegistry{gatewayIDs: append([]string(nil), gatewayIDs...)}
+// NewStaticRegistry creates a StaticRegistry from gateway assignments.
+// It performs a defensive copy of the input slice and its elements.
+func NewStaticRegistry(assignments []*Assignment) *StaticRegistry {
+	copied := make([]*Assignment, len(assignments))
+	for i, a := range assignments {
+		copied[i] = &Assignment{
+			GatewayID:  a.GatewayID,
+			Index:      a.Index,
+			PublicHost: a.PublicHost,
+		}
+	}
+	return &StaticRegistry{assignments: copied}
 }
 
-// PickRandom returns a random gateway ID from the registry.
-func (r *StaticRegistry) PickRandom() (string, error) {
-	if len(r.gatewayIDs) == 0 {
-		return "", ErrNoGatewayAvailable
+// PickRandom returns a random gateway assignment from the registry.
+func (r *StaticRegistry) PickRandom(_ context.Context) (*Assignment, error) {
+	if len(r.assignments) == 0 {
+		return nil, ErrNoGatewayAvailable
 	}
 
-	return r.gatewayIDs[rand.Intn(len(r.gatewayIDs))], nil
+	return r.assignments[rand.Intn(len(r.assignments))], nil
 }
 
-// PickRandomExcluding returns a random gateway ID excluding gatewayID.
-func (r *StaticRegistry) PickRandomExcluding(gatewayID string) (string, error) {
-	if len(r.gatewayIDs) == 0 {
-		return "", ErrNoGatewayAvailable
+// PickRandomExcluding returns a random gateway assignment excluding the given gatewayID.
+// When all assignments are excluded (i.e. only one instance), it falls back to
+// returning the excluded gateway's assignment if it exists in the registry.
+func (r *StaticRegistry) PickRandomExcluding(_ context.Context, gatewayID string) (*Assignment, error) {
+	if len(r.assignments) == 0 {
+		return nil, ErrNoGatewayAvailable
 	}
 
-	var filtered []string
-	for _, id := range r.gatewayIDs {
-		if id == gatewayID {
+	var filtered []*Assignment
+	for _, a := range r.assignments {
+		if a.GatewayID == gatewayID {
 			continue
 		}
-		filtered = append(filtered, id)
+		filtered = append(filtered, a)
 	}
 
 	if len(filtered) == 0 {
-		return gatewayID, nil
+		for _, a := range r.assignments {
+			if a.GatewayID == gatewayID {
+				return a, nil
+			}
+		}
 	}
 
 	return filtered[rand.Intn(len(filtered))], nil

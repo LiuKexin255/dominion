@@ -5,6 +5,8 @@ services:
   - artifact:
       path: //projects/game/gateway/service.yaml
       name: cmd
+      env:
+        SESSION_TOKEN_SECRET: "dev-session-token-secret"
     http:
       hostnames:
         - game.liukexin.com
