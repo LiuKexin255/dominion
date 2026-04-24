@@ -617,6 +617,7 @@ func TestHandler_GetServiceEndpoints_StatefulSameEnv(t *testing.T) {
 				IsStateful: true,
 				StatefulInstances: []*domain.StatefulInstance{{
 					Index:     0,
+					Hostname:  "gateway-api-0",
 					Endpoints: []string{"10.0.0.1:8080"},
 				}},
 			},
@@ -827,14 +828,14 @@ func Test_newServiceEndpointsResponse_StatefulInstances(t *testing.T) {
 			result: &domain.ServiceQueryResult{
 				IsStateful: true,
 				StatefulInstances: []*domain.StatefulInstance{
-					{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
-					{Index: 1, Endpoints: nil},
+					{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.1:50051"}},
+					{Index: 1, Hostname: "demo-api-1", Endpoints: nil},
 				},
 			},
 			wantIsStateful: true,
 			wantInstances: []*StatefulServiceInstance{
-				{Index: 0, Endpoints: []string{"10.0.0.1:50051"}},
-				{Index: 1, Endpoints: nil},
+				{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.1:50051"}},
+				{Index: 1, Hostname: "demo-api-1", Endpoints: nil},
 			},
 		},
 		{
@@ -864,6 +865,9 @@ func Test_newServiceEndpointsResponse_StatefulInstances(t *testing.T) {
 			for i := range tt.wantInstances {
 				if got.StatefulInstances[i].Index != tt.wantInstances[i].Index {
 					t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].index = %d, want %d", i, got.StatefulInstances[i].Index, tt.wantInstances[i].Index)
+				}
+				if got.StatefulInstances[i].Hostname != tt.wantInstances[i].Hostname {
+					t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].hostname = %q, want %q", i, got.StatefulInstances[i].Hostname, tt.wantInstances[i].Hostname)
 				}
 				if len(got.StatefulInstances[i].Endpoints) != len(tt.wantInstances[i].Endpoints) {
 					t.Fatalf("newServiceEndpointsResponse() stateful_instances[%d].endpoints = %v, want %v", i, got.StatefulInstances[i].Endpoints, tt.wantInstances[i].Endpoints)

@@ -397,6 +397,7 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 
 		result.StatefulInstances = append(result.StatefulInstances, &domain.StatefulInstance{
 			Index:     instanceIndex,
+			Hostname:  podName,
 			Endpoints: instanceEndpoints,
 		})
 	}

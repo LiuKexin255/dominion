@@ -11,7 +11,7 @@ import (
 
 const (
 	// Endpoint is the SeaweedFS S3 gateway address.
-	Endpoint = "http://seaweedfs-s3:8333"
+	Endpoint = "s3.liukexin.com"
 
 	// S3AccessKeyEnv is the environment variable name for the S3 access key.
 	S3AccessKeyEnv = "S3_ACCESS_KEY"
@@ -52,9 +52,10 @@ func NewS3Client(region string) (*minio.Client, error) {
 	}
 
 	client, err := newMinioClient(Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: false,
-		Region: region,
+		Creds:         credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:        true,
+		Region:        region,
+		BucketLookup:  minio.BucketLookupPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create S3 client for endpoint %q: %w", Endpoint, err)

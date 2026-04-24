@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 
 	"dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/workspace"
@@ -61,7 +62,7 @@ func ValidateSuite(suite *guitarconfig.Suite) error {
 				return fmt.Errorf("endpoint http.%s: invalid URL %q: %w", name, rawURL, err)
 			}
 			host := u.Hostname()
-			if !hostnameSet[host] {
+			if !hostnameMatches(host, hostnameSet) {
 				return fmt.Errorf("endpoint http.%s host %q not found in deploy %s http.hostnames", name, host, suite.Deploy)
 			}
 		}
@@ -104,4 +105,16 @@ func collectHostnames(deployCfg *config.DeployConfig) map[string]bool {
 		}
 	}
 	return set
+}
+
+func hostnameMatches(host string, hostnameSet map[string]bool) bool {
+	if hostnameSet[host] {
+		return true
+	}
+	for h := range hostnameSet {
+		if strings.HasSuffix(host, "-"+h) {
+			return true
+		}
+	}
+	return false
 }

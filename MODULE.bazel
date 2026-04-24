@@ -25,6 +25,9 @@ go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 use_repo(
     go_deps,
+    "com_github_coder_websocket",
+    "com_github_eyevinn_hi264",
+    "com_github_eyevinn_mp4ff",
     "com_github_goccy_go_yaml",
     "com_github_minio_minio_go_v7",
     "com_github_santhosh_tekuri_jsonschema_v6",
@@ -33,6 +36,7 @@ use_repo(
     "io_k8s_apimachinery",
     "io_k8s_client_go",
     "io_k8s_sigs_gateway_api",
+    "io_nhooyr_websocket",
     "org_golang_google_genproto_googleapis_rpc",
     "org_golang_google_grpc",
     "org_golang_google_protobuf",

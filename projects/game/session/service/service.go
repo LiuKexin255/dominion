@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/domain"
@@ -15,19 +16,17 @@ const sessionNamePrefix = "sessions/"
 
 // SessionService orchestrates session lifecycle operations.
 type SessionService struct {
-	repo          domain.Repository
-	tokenIssuer   token.Issuer
-	gatewayReg    gateway.Registry
-	gatewayDomain string
+	repo        domain.Repository
+	tokenIssuer token.Issuer
+	gatewayReg  gateway.Registry
 }
 
 // NewSessionService creates a SessionService.
-func NewSessionService(repo domain.Repository, tokenIssuer token.Issuer, gatewayReg gateway.Registry, gatewayDomain string) *SessionService {
+func NewSessionService(repo domain.Repository, tokenIssuer token.Issuer, gatewayReg gateway.Registry) *SessionService {
 	return &SessionService{
-		repo:          repo,
-		tokenIssuer:   tokenIssuer,
-		gatewayReg:    gatewayReg,
-		gatewayDomain: gatewayDomain,
+		repo:        repo,
+		tokenIssuer: tokenIssuer,
+		gatewayReg:  gatewayReg,
 	}
 }
 
@@ -38,20 +37,20 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 		return nil, "", err
 	}
 
-	gatewayID, err := s.gatewayReg.PickRandom()
+	assignment, err := s.gatewayReg.PickRandom(ctx)
 	if err != nil {
 		return nil, "", normalizeGatewayError(err)
 	}
 
-	session.SetGatewayID(gatewayID)
+	session.SetGatewayID(assignment.GatewayID)
 
 	snapshot := session.Snapshot()
-	tok, err := s.tokenIssuer.Issue(snapshot.ID, gatewayID, snapshot.ReconnectGeneration)
+	tok, err := s.tokenIssuer.Issue(snapshot.ID, assignment.GatewayID, snapshot.ReconnectGeneration)
 	if err != nil {
 		return nil, "", err
 	}
 
-	connectURL := s.buildConnectURL(gatewayID, tok)
+	connectURL := buildConnectURL(snapshot.ID, assignment.PublicHost, tok)
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, "", err
 	}
@@ -77,23 +76,23 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	}
 
 	current := session.Snapshot()
-	gatewayID, err := s.gatewayReg.PickRandomExcluding(current.GatewayID)
+	assignment, err := s.gatewayReg.PickRandomExcluding(ctx, current.GatewayID)
 	if err != nil {
 		return nil, "", normalizeGatewayError(err)
 	}
 
-	session.SetGatewayID(gatewayID)
+	session.SetGatewayID(assignment.GatewayID)
 	if err := session.MarkActive(); err != nil {
 		return nil, "", err
 	}
 
 	snapshot := session.Snapshot()
-	tok, err := s.tokenIssuer.Issue(snapshot.ID, gatewayID, snapshot.ReconnectGeneration)
+	tok, err := s.tokenIssuer.Issue(snapshot.ID, assignment.GatewayID, snapshot.ReconnectGeneration)
 	if err != nil {
 		return nil, "", err
 	}
 
-	connectURL := s.buildConnectURL(gatewayID, tok)
+	connectURL := buildConnectURL(snapshot.ID, assignment.PublicHost, tok)
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, "", err
 	}
@@ -101,8 +100,8 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	return session, connectURL, nil
 }
 
-func (s *SessionService) buildConnectURL(gatewayID, tok string) string {
-	return fmt.Sprintf("wss://%s.%s/connect?token=%s", gatewayID, s.gatewayDomain, tok)
+func buildConnectURL(sessionID, publicHost, tok string) string {
+	return fmt.Sprintf("wss://%s/v1/sessions/%s/game/connect?token=%s", publicHost, sessionID, url.QueryEscape(tok))
 }
 
 func normalizeGatewayError(err error) error {

@@ -11,12 +11,15 @@ const (
 	envKeyPrefix = "TESTTOOL_ENV"
 	// endpointKeyPrefix is the prefix for endpoint environment variables.
 	endpointKeyPrefix = "TESTTOOL_ENDPOINT_"
+	// dominionEnvironmentKey is the env var for dominion environment identity.
+	dominionEnvironmentKey = "DOMINION_ENVIRONMENT"
 )
 
 // BuildEnvVars generates the environment variable map for a suite.
 func BuildEnvVars(suite *config.Suite) map[string]string {
 	envVars := map[string]string{
-		envKeyPrefix: suite.Env,
+		envKeyPrefix:           suite.Env,
+		dominionEnvironmentKey: suite.Env,
 	}
 
 	for protocol, endpoints := range suite.Endpoint {

@@ -86,6 +86,7 @@ func convertStatefulInstances(in []*deploy.StatefulServiceInstance) []*StatefulI
 		instances = append(instances, &StatefulInstance{
 			Index:     int(si.GetIndex()),
 			Endpoints: si.GetEndpoints(),
+			Hostname:  si.GetHostname(),
 		})
 	}
 	sort.Slice(instances, func(i, j int) bool {

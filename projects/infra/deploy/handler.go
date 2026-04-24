@@ -827,6 +827,7 @@ func cloneStatefulInstances(in []*domain.StatefulInstance) []*StatefulServiceIns
 		}
 		out = append(out, &StatefulServiceInstance{
 			Index:     int32(inst.Index),
+			Hostname:  inst.Hostname,
 			Endpoints: cloneStringSlice(inst.Endpoints),
 		})
 	}

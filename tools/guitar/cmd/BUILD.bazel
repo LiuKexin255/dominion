@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("//tools/go:defs.bzl", "go_unittest")
 
 go_library(
-    name = "guitar_lib",
+    name = "cmd_lib",
     srcs = ["guitar.go"],
     importpath = "dominion/tools/guitar/cmd",
     visibility = ["//visibility:private"],
@@ -16,13 +16,12 @@ go_library(
 
 go_binary(
     name = "guitar",
-    embed = [":guitar_lib"],
+    embed = [":cmd_lib"],
     visibility = ["//visibility:public"],
 )
 
 go_unittest(
-    name = "guitar_test",
+    name = "cmd_test",
     srcs = ["guitar_test.go"],
-    embed = [":guitar_lib"],
-    deps = ["//tools/guitar/pkg/config"],
+    embed = [":cmd_lib"],
 )

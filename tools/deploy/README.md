@@ -10,6 +10,7 @@
 ```yaml
 name: alice.dev
 desc: "开发环境"
+type: dev
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml
@@ -21,6 +22,7 @@ services:
 ```yaml
 name: alice.dev
 desc: "开发环境"
+type: dev
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml
@@ -29,6 +31,60 @@ services:
         LOG_LEVEL: debug
         TIMEOUT_MS: "1500"
 ```
+
+### `deploy.yaml` 中的环境类型
+
+`type` 是 `deploy.yaml` 的必填顶层字段，用于声明环境用途。可选值：
+
+- `prod`：生产环境。
+- `test`：测试环境。
+- `dev`：开发环境。
+
+示例：
+
+```yaml
+name: alice.dev
+desc: "开发环境"
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+```
+
+说明：
+
+- `type` 必须显式填写，不能省略。
+- `prod` 类型环境按域名和 path 访问即可。
+- `test` 和 `dev` 类型环境如果配置了 `http`，访问对应 HTTPRoute 时需要在请求中携带 `env` header，值为完整环境名。
+
+例如，下面的 `test` 环境：
+
+```yaml
+name: alice.test
+desc: "测试环境"
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+    http:
+      hostnames:
+        - hello.example.com
+      matches:
+        - backend: grpc
+          path:
+            type: PathPrefix
+            value: /v1
+```
+
+访问该 HTTPRoute 时，请求需要携带：
+
+```http
+env: alice.test
+```
+
+因此访问 `test` 或 `dev` 类型环境的 HTTPRoute 时，客户端需要在请求中带上 `env` header，且值等于完整环境名（如 `alice.test`、`alice.dev`）。
 
 ### `deploy.yaml` 中的服务类型
 
@@ -48,6 +104,7 @@ services:
 ```yaml
 name: alice.dev
 desc: "开发环境"
+type: dev
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml
@@ -102,19 +159,21 @@ artifacts:
 
 ```yaml
 name: game.prod
+desc: "生产环境"
+type: prod
 services:
   - artifact:
       path: //projects/game/service.yaml
       name: gateway
-    replicas: 3
-	    http:
-	      hostnames:
-	        - gateway.example.com
-	      matches:
-	        - backend: tcp
-	          path:
-	            type: PathPrefix
-	            value: /v1
+      replicas: 3
+    http:
+      hostnames:
+        - gateway.example.com
+      matches:
+        - backend: tcp
+          path:
+            type: PathPrefix
+            value: /v1
 ```
 
 对应的 `service.yaml` 示例：
@@ -165,6 +224,7 @@ artifacts:
 ```yaml
 name: alice.dev
 desc: "开发环境"
+type: dev
 services:
   - infra:
       resource: mongodb
@@ -195,6 +255,7 @@ services:
 ```yaml
 name: liukexin.demo
 desc: "Mongo Demo CRUD 服务"
+type: dev
 services:
   - infra:
       app: mongo-demo
@@ -365,6 +426,7 @@ oss:
 
 ```yaml
 name: alice.dev
+type: dev
 services:
   - artifact:
       path: //experimental/grpc_hello_world/service/service.yaml

@@ -3,13 +3,21 @@ load("//tools/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "gateway",
-    srcs = ["registry.go"],
+    srcs = [
+        "deploy.go",
+        "registry.go",
+    ],
     importpath = "dominion/projects/game/session/runtime/gateway",
     visibility = ["//visibility:public"],
+    deps = ["//pkg/solver"],
 )
 
 go_unittest(
     name = "gateway_test",
-    srcs = ["registry_test.go"],
+    srcs = [
+        "deploy_test.go",
+        "registry_test.go",
+    ],
     embed = [":gateway"],
+    deps = ["//pkg/solver"],
 )

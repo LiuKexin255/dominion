@@ -26,6 +26,7 @@ func TestBuildEnvVars(t *testing.T) {
 			},
 			want: map[string]string{
 				envKeyPrefix:                      "game.lt",
+				dominionEnvironmentKey:             "game.lt",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 			},
 		},
@@ -42,6 +43,7 @@ func TestBuildEnvVars(t *testing.T) {
 			},
 			want: map[string]string{
 				envKeyPrefix:                      "game.lt",
+				dominionEnvironmentKey:             "game.lt",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 				endpointKeyPrefix + "HTTP_ADMIN":  "https://admin.example.com",
 			},
@@ -61,6 +63,7 @@ func TestBuildEnvVars(t *testing.T) {
 			},
 			want: map[string]string{
 				envKeyPrefix:                      "game.lt",
+				dominionEnvironmentKey:             "game.lt",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 				endpointKeyPrefix + "GRPC_ADMIN":  "https://grpc.example.com",
 			},
@@ -69,7 +72,8 @@ func TestBuildEnvVars(t *testing.T) {
 			name:  "no endpoints",
 			given: &config.Suite{Env: "game.lt"},
 			want: map[string]string{
-				envKeyPrefix: "game.lt",
+				envKeyPrefix:           "game.lt",
+				dominionEnvironmentKey: "game.lt",
 			},
 		},
 	}
@@ -105,6 +109,7 @@ func TestBuildTestEnvFlags(t *testing.T) {
 			},
 			want: map[string]string{
 				envKeyPrefix:                      "game.lt",
+				dominionEnvironmentKey:             "game.lt",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 			},
 		},
@@ -112,7 +117,8 @@ func TestBuildTestEnvFlags(t *testing.T) {
 			name:  "env only",
 			given: &config.Suite{Env: "game.lt"},
 			want: map[string]string{
-				envKeyPrefix: "game.lt",
+				envKeyPrefix:           "game.lt",
+				dominionEnvironmentKey: "game.lt",
 			},
 		},
 	}

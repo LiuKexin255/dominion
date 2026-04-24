@@ -67,7 +67,7 @@ func TestStatefulBuilder_Build_Success(t *testing.T) {
 	cc := newFakeClientConn()
 	ticker := newFakeTicker()
 	client := &fakeStatefulResolver{
-		results: []statefulResolveResult{{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.2:50051"}}}}},
+		results: []statefulResolveResult{{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Hostname: "svc-0", Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.2:50051"}}}}},
 	}
 	builder := NewStatefulBuilder(WithStatefulResolver(client))
 	builder.NewTicker = func(time.Duration) refreshTicker { return ticker }
@@ -92,8 +92,8 @@ func TestStatefulBuilder_InstanceNotFound(t *testing.T) {
 	ticker := newFakeTicker()
 	client := &fakeStatefulResolver{
 		results: []statefulResolveResult{
-			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 5, Endpoints: []string{"10.0.0.5:50051"}}}},
-			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.2:50051"}}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 5, Hostname: "svc-5", Endpoints: []string{"10.0.0.5:50051"}}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 0, Hostname: "svc-0", Endpoints: []string{"10.0.0.1:50051"}}, &solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.2:50051"}}}},
 		},
 	}
 	builder := NewStatefulBuilder(WithStatefulResolver(client))
@@ -125,8 +125,8 @@ func TestStatefulBuilder_InstanceNoReadyEndpoints(t *testing.T) {
 	ticker := newFakeTicker()
 	client := &fakeStatefulResolver{
 		results: []statefulResolveResult{
-			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Endpoints: []string{"10.0.0.1:50051"}}}},
-			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Hostname: "svc-1", Endpoints: []string{"10.0.0.1:50051"}}}},
+			{instances: []*solver.StatefulInstance{&solver.StatefulInstance{Index: 1, Hostname: "svc-1"}}},
 		},
 	}
 	builder := NewStatefulBuilder(WithStatefulResolver(client))

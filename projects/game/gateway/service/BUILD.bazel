@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "service",
+    srcs = [
+        "control.go",
+        "gateway.go",
+    ],
+    importpath = "dominion/projects/game/gateway/service",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/gateway/domain",
+        "//projects/game/gateway/domain/mediacache",
+        "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/pkg/token",
+    ],
+)
+
+go_unittest(
+    name = "service_test",
+    srcs = [
+        "control_test.go",
+        "gateway_test.go",
+    ],
+    embed = [":service"],
+    deps = [
+        "//projects/game/gateway/domain",
+        "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/pkg/token",
+    ],
+)

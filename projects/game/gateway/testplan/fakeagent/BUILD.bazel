@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "fakeagent",
+    srcs = [
+        "agent.go",
+        "media.go",
+    ],
+    importpath = "dominion/projects/game/gateway/testplan/fakeagent",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/s3",
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain",
+        "@com_github_coder_websocket//:websocket",
+        "@com_github_eyevinn_mp4ff//mp4",
+        "@com_github_minio_minio_go_v7//:minio-go",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

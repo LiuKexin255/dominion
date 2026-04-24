@@ -188,6 +188,7 @@ func TestServiceQueryResult_StatefulInstances(t *testing.T) {
 		wantStatefulNil    bool
 		wantIsStateful     bool
 		wantFirstIndex     int
+		wantFirstHostname  string
 		wantFirstEndpoints []string
 	}{
 		{
@@ -201,6 +202,7 @@ func TestServiceQueryResult_StatefulInstances(t *testing.T) {
 			input: ServiceQueryResult{
 				StatefulInstances: []*StatefulInstance{{
 					Index:     2,
+					Hostname:  "demo-api-2",
 					Endpoints: []string{"10.0.0.2:8080", "10.0.0.2:8443"},
 				}},
 				IsStateful: true,
@@ -208,6 +210,7 @@ func TestServiceQueryResult_StatefulInstances(t *testing.T) {
 			wantStatefulNil:    false,
 			wantIsStateful:     true,
 			wantFirstIndex:     2,
+			wantFirstHostname:  "demo-api-2",
 			wantFirstEndpoints: []string{"10.0.0.2:8080", "10.0.0.2:8443"},
 		},
 	}
@@ -234,6 +237,9 @@ func TestServiceQueryResult_StatefulInstances(t *testing.T) {
 				}
 				if statefulInstances[0].Index != tt.wantFirstIndex {
 					t.Fatalf("StatefulInstances[0].Index = %d, want %d", statefulInstances[0].Index, tt.wantFirstIndex)
+				}
+				if statefulInstances[0].Hostname != tt.wantFirstHostname {
+					t.Fatalf("StatefulInstances[0].Hostname = %q, want %q", statefulInstances[0].Hostname, tt.wantFirstHostname)
 				}
 				if len(statefulInstances[0].Endpoints) != len(tt.wantFirstEndpoints) {
 					t.Fatalf("len(StatefulInstances[0].Endpoints) = %d, want %d", len(statefulInstances[0].Endpoints), len(tt.wantFirstEndpoints))

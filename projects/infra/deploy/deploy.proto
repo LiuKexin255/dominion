@@ -145,6 +145,8 @@ message StatefulServiceInstance {
   int32 index = 1;
 
   repeated string endpoints = 2;
+
+  string hostname = 3;
 }
 
 message EnvironmentDesiredState {

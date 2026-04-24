@@ -1,0 +1,14 @@
+name: game-session-gateway-integration-test
+description: |
+  System-level test for session-gateway integration.
+  Covers CreateSession, WebSocket connection, ReconnectSession.
+
+suites:
+  - name: default
+    env: game.glt
+    deploy: //projects/game/testplan/session_gateway_test_deploy.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test

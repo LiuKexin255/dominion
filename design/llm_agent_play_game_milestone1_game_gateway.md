@@ -86,6 +86,11 @@ milestone 1 采用两类协议：
 * `net/http`：承载 RESTful HTTP 与 WebSocket upgrade 入口
 * `nhooyr.io/websocket`：承载 `/connect` WebSocket 协议
 
+其中：
+
+* `snapshot` / `runtime` 接口走当前仓库既有的 `unary gRPC + grpc-gateway REST` 模式
+* `connect` WebSocket 接口不走 `gRPC`，由独立的 HTTP upgrade 入口直接承接
+
 原因：
 
 * 标准库适合 RESTful HTTP 接口
@@ -190,6 +195,23 @@ milestone 1 采用两类协议：
 * `message_id`
 * `payload`
 
+与当前 proto 的对应关系如下：
+
+* 顶层对象对应 `GameWebSocketEnvelope`
+* `session_id` 对应 `GameWebSocketEnvelope.session_id`
+* `message_id` 对应 `GameWebSocketEnvelope.message_id`
+* `payload` 对应 `GameWebSocketEnvelope` 的 `oneof payload`
+* `type` 用于表达当前命中的 `oneof payload` 分支：
+  * `hello` -> `GameHello`
+  * `media_init` -> `GameMediaInit`
+  * `media_segment` -> `GameMediaSegment`
+  * `control_request` -> `GameControlRequest`
+  * `control_ack` -> `GameControlAck`
+  * `control_result` -> `GameControlResult`
+  * `error` -> `GameError`
+  * `ping` -> `GamePing`
+  * `pong` -> `GamePong`
+
 本期最小消息集合：
 
 * `hello`
@@ -235,7 +257,7 @@ milestone 1 采用两类协议：
   "payload": {
     "operation_id": "op-1",
     "kind": "mouse_drag",
-    "requires_snapshot": true,
+    "flash_snapshot": true,
     "mouse": {
       "button": "left",
       "from_x": 100,
@@ -247,6 +269,11 @@ milestone 1 采用两类协议：
   }
 }
 ```
+
+其中：
+
+* `flash_snapshot = true` 表示该操作完成后，gateway 需要刷新当前 session 的最新截图缓存
+* `flash_snapshot` 只影响截图缓存刷新，不改变 `control_result` 的返回字段
 
 ### `control_ack`
 
@@ -275,9 +302,7 @@ milestone 1 采用两类协议：
   "payload": {
     "operation_id": "op-1",
     "status": "succeeded | failed | timed_out",
-    "error_message": "",
-    "snapshot_id": "snap-123",
-    "has_fresh_snapshot": true
+    "error_message": ""
   }
 }
 ```
@@ -285,7 +310,8 @@ milestone 1 采用两类协议：
 注意：
 
 * `snapshot` 已完全从 WebSocket 常态推送中移除
-* `control_result` 只返回截图标识或“存在新截图”的提示
+* `control_result` 不返回 `snapshot_id`、`has_fresh_snapshot` 等截图结果字段
+* 若调试方需要读取最新静态截图，统一走 `GET /v1/sessions/{session}/game/snapshot`
 
 ## RESTful 接口设计
 
@@ -504,7 +530,7 @@ gateway 失效时：
 * `GET /snapshot` 在无足够新截图时触发 fake-agent 生成并返回
 * `GET /runtime` 返回最小字段集
 * `control_request -> control_ack -> control_result` 走通
-* `requires_snapshot = true` 时结果中带 `snapshot_id` 或 `has_fresh_snapshot`
+* `flash_snapshot = true` 时，操作完成后会刷新截图缓存；操作链路与按需截图链路可同时工作，且操作结果本身不返回截图结果字段
 * 多 web 并发发起操作时，gateway 严格串行执行
 * click / drag / agent 无响应超时语义正确
 * fake-agent 断线时 inflight operation 被清理，鼠标状态重置逻辑被触发

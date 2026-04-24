@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -9,34 +10,35 @@ import (
 func TestStaticRegistry_PickRandom(t *testing.T) {
 	tests := []struct {
 		name string
-		ids  []string
-		want []string
-		err  error
+		// given
+		assignments []*Assignment
+		wantIDs     []string
+		err         error
 	}{
 		{
-			name: "multiple gateways returns one of them",
-			ids:  []string{"game-gateway-0", "game-gateway-1", "game-gateway-2"},
-			want: []string{"game-gateway-0", "game-gateway-1", "game-gateway-2"},
+			name:        "multiple gateways returns one of them",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}, {GatewayID: "gw-1", Index: 1, PublicHost: "host-1"}, {GatewayID: "gw-2", Index: 2, PublicHost: "host-2"}},
+			wantIDs:     []string{"gw-0", "gw-1", "gw-2"},
 		},
 		{
-			name: "single gateway always returns itself",
-			ids:  []string{"game-gateway-0"},
-			want: []string{"game-gateway-0"},
+			name:        "single gateway always returns itself",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}},
+			wantIDs:     []string{"gw-0"},
 		},
 		{
-			name: "empty list returns error",
-			ids:  nil,
-			err:  ErrNoGatewayAvailable,
+			name:        "empty list returns error",
+			assignments: nil,
+			err:         ErrNoGatewayAvailable,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			registry := NewStaticRegistry(tt.ids)
+			registry := NewStaticRegistry(tt.assignments)
 
 			// when
-			got, err := registry.PickRandom()
+			got, err := registry.PickRandom(context.Background())
 
 			// then
 			if !errors.Is(err, tt.err) {
@@ -45,8 +47,8 @@ func TestStaticRegistry_PickRandom(t *testing.T) {
 			if tt.err != nil {
 				return
 			}
-			if !slices.Contains(tt.want, got) {
-				t.Fatalf("PickRandom() = %q, want one of %v", got, tt.want)
+			if !slices.Contains(tt.wantIDs, got.GatewayID) {
+				t.Fatalf("PickRandom() = %q, want one of %v", got.GatewayID, tt.wantIDs)
 			}
 		})
 	}
@@ -55,44 +57,45 @@ func TestStaticRegistry_PickRandom(t *testing.T) {
 func TestStaticRegistry_PickRandomExcluding(t *testing.T) {
 	tests := []struct {
 		name      string
-		ids       []string
 		excluding string
-		want      []string
-		err       error
+		// given
+		assignments []*Assignment
+		wantIDs     []string
+		err         error
 	}{
 		{
-			name:      "multiple gateways excludes the requested one",
-			ids:       []string{"game-gateway-0", "game-gateway-1", "game-gateway-2"},
-			excluding: "game-gateway-1",
-			want:      []string{"game-gateway-0", "game-gateway-2"},
+			name:        "multiple gateways excludes the requested one",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}, {GatewayID: "gw-1", Index: 1, PublicHost: "host-1"}, {GatewayID: "gw-2", Index: 2, PublicHost: "host-2"}},
+			excluding:   "gw-1",
+			wantIDs:     []string{"gw-0", "gw-2"},
 		},
 		{
-			name:      "single gateway degrades to the same gateway",
-			ids:       []string{"game-gateway-0"},
-			excluding: "game-gateway-0",
-			want:      []string{"game-gateway-0"},
+			name:        "single gateway degrades to the same gateway",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}},
+			excluding:   "gw-0",
+			wantIDs:     []string{"gw-0"},
 		},
 		{
-			name:      "empty list returns error",
-			ids:       nil,
-			excluding: "game-gateway-0",
-			err:       ErrNoGatewayAvailable,
+			name:        "empty list returns error",
+			assignments: nil,
+			excluding:   "gw-0",
+			err:         ErrNoGatewayAvailable,
 		},
 		{
-			name:      "missing gateway returns from full list",
-			ids:       []string{"game-gateway-0", "game-gateway-1"},
-			excluding: "game-gateway-9",
-			want:      []string{"game-gateway-0", "game-gateway-1"},
+			name:        "missing gateway returns from full list",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}, {GatewayID: "gw-1", Index: 1, PublicHost: "host-1"}},
+			excluding:   "gw-9",
+			wantIDs:     []string{"gw-0", "gw-1"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			registry := NewStaticRegistry(tt.ids)
+			registry := NewStaticRegistry(tt.assignments)
 
 			// when
-			got, err := registry.PickRandomExcluding(tt.excluding)
+			got, err := registry.PickRandomExcluding(context.Background(), tt.excluding)
 
 			// then
 			if !errors.Is(err, tt.err) {
@@ -101,11 +104,8 @@ func TestStaticRegistry_PickRandomExcluding(t *testing.T) {
 			if tt.err != nil {
 				return
 			}
-			if !slices.Contains(tt.want, got) {
-				t.Fatalf("PickRandomExcluding() = %q, want one of %v", got, tt.want)
-			}
-			if !slices.Contains(tt.want, tt.excluding) && got == tt.excluding {
-				t.Fatalf("PickRandomExcluding() = %q, want excluded gateway %q to be avoided", got, tt.excluding)
+			if !slices.Contains(tt.wantIDs, got.GatewayID) {
+				t.Fatalf("PickRandomExcluding() = %q, want one of %v", got.GatewayID, tt.wantIDs)
 			}
 		})
 	}
@@ -113,18 +113,18 @@ func TestStaticRegistry_PickRandomExcluding(t *testing.T) {
 
 func TestStaticRegistry_ConstructorCopiesInput(t *testing.T) {
 	// given
-	ids := []string{"game-gateway-0", "game-gateway-1"}
-	registry := NewStaticRegistry(ids)
+	assignments := []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}, {GatewayID: "gw-1", Index: 1, PublicHost: "host-1"}}
+	registry := NewStaticRegistry(assignments)
 
 	// when
-	ids[0] = "mutated"
-	got, err := registry.PickRandomExcluding("mutated")
+	assignments[0].GatewayID = "mutated"
+	got, err := registry.PickRandomExcluding(context.Background(), "gw-1")
 
 	// then
 	if err != nil {
 		t.Fatalf("PickRandomExcluding() unexpected error = %v", err)
 	}
-	if got == "mutated" {
+	if got.GatewayID == "mutated" {
 		t.Fatalf("registry retained caller slice mutation")
 	}
 }

@@ -14,13 +14,13 @@ type Bootstrap struct {
 	Handler         *session.Handler
 	Service         *service.SessionService
 	Repo            domain.Repository
-	GatewayRegistry *gateway.StaticRegistry
+	GatewayRegistry gateway.Registry
 	TokenIssuer     *token.HMACSigner
 }
 
 // NewBootstrap assembles the session service from pre-created components.
-func NewBootstrap(repo domain.Repository, tokenIssuer *token.HMACSigner, gatewayReg *gateway.StaticRegistry, gatewayDomain string) *Bootstrap {
-	svc := service.NewSessionService(repo, tokenIssuer, gatewayReg, gatewayDomain)
+func NewBootstrap(repo domain.Repository, tokenIssuer *token.HMACSigner, gatewayReg gateway.Registry) *Bootstrap {
+	svc := service.NewSessionService(repo, tokenIssuer, gatewayReg)
 	handler := session.NewHandler(svc)
 
 	return &Bootstrap{
