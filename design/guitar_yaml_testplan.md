@@ -61,7 +61,6 @@ description: game-session HTTP REST 接口测试
 
 suites:
   - name: default
-    env: game.lt
     deploy: //projects/game/testplan/test_deploy.yaml
     endpoint:
       http:
@@ -81,7 +80,6 @@ suites:
 #### `suite` 字段
 
 * `name`：suite 名称
-* `env`：测试环境标识，由 `guitar` 注入测试进程环境变量，测试代码通过 `pkg/testtool` 读取
 * `deploy`：部署配置路径，支持相对路径或 `//` 开头的 workspace 完整路径
 * `endpoint`：测试入口集合，当前先支持 `http`
 * `cases`：大型测试 Bazel target 列表，保留顺序执行
@@ -147,9 +145,7 @@ endpoint:
 * path 是否匹配
 * backend 是否匹配
 * 是否存在默认入口
-* `env` 是否与 `deploy.name` 一致
-
-其中 `env` 与 `deploy.name` 仍要求使用者手工保持一致，但不在本期作为强校验规则。
+* `env` 字段是否存在（已移除，若存在则校验失败）
 
 ## `guitar run`
 
@@ -158,7 +154,7 @@ endpoint:
 1. 先执行与 `validate` 相同的校验
 2. 按 `suites` 顺序逐个执行
 3. 对每个 suite：
-   1. `deploy apply <deploy-path>`
+   1. `deploy apply <deploy-path> --run <run-name>`
    2. 为当前 suite 的每个 case 注入运行时环境变量
    3. 顺序执行 `bazel test --config=largetest <target>`
    4. 无论成功还是失败，都执行环境清理
@@ -197,20 +193,21 @@ endpoint:
 * `<PROTOCOL>` 使用大写协议名，如 `HTTP`
 * `<NAME>` 使用大写入口名
 
-例如：
+例如，以下 endpoint 配置：
 
 ```yaml
-env: game.lt
 endpoint:
   http:
     public: https://game.liukexin.com
     admin2: https://admin.game.liukexin.com
 ```
 
-展开为：
+其中 `TESTTOOL_ENV` 的值由 `guitar run` 为每个 suite 自动生成并注入，不再在 YAML 中声明。
+
+当 `guitar run` 为 suite 生成环境名 `game.lt3x8q2` 时，展开为：
 
 ```bash
-TESTTOOL_ENV=game.lt
+TESTTOOL_ENV=game.lt3x8q2
 TESTTOOL_ENDPOINT_HTTP_PUBLIC=https://game.liukexin.com
 TESTTOOL_ENDPOINT_HTTP_ADMIN2=https://admin.game.liukexin.com
 ```
@@ -332,7 +329,7 @@ func MustEndpoint(protocol, name string) string
 * 先让本地、CI、agent 共享同一执行器
 * skill 后续可以作为 CLI 的上层调用入口单独处理
 
-### 决策 2：YAML 只增加 `description`、`env`、`endpoint` 等已确认字段，不扩展执行策略字段
+### 决策 2：YAML 只增加 `description`、`endpoint` 等已确认字段，不扩展执行策略字段
 
 选择：不新增 retry、parallel、depends_on、cleanup_policy 等字段。
 
@@ -378,15 +375,15 @@ endpoint:
 * path、backend 等更细粒度语义不属于本期必要约束
 * 能在低复杂度下提前发现明显配置错误
 
-### 决策 6：`env` 与 `deploy.name` 本期手工保持一致
+### 决策 6：`env` 由 `guitar run` 自动生成
 
-选择：本期不做强校验。
+选择：`env` 不再作为 suite 字段，由 `guitar run` 为每个 suite 自动生成并注入测试进程。
 
 原因：
 
-* 后续 `deploy` 工具本身还可能调整环境名处理方式
-* 当前方案不应提前固化未来平台调整前的强约束
-* 使用者仍需手工保持一致，避免运行时语义分裂
+* 避免使用者在 YAML 中重复声明环境名，减少配置冗余
+* 确保测试进程拿到的环境名与 deploy 实际使用的运行名一致
+* 将环境名管理收敛到 `guitar run` 入口，便于统一管控
 
 ## 迁移规则
 
@@ -397,7 +394,7 @@ endpoint:
 3. `deploy` 原样迁移到 suite `deploy`
 4. `cases` 原样迁移到 suite `cases`
 5. 原先由 `BUILD.bazel` 维护的 `SUT_HOST_URL` / `SUT_ENV_NAME`，改为：
-   * suite 内定义 `env`
+   * 环境名由 `guitar run` 自动生成，通过 `TESTTOOL_ENV` 注入
    * suite 内定义 `endpoint.http.<NAME>`
    * 测试代码改用 `pkg/testtool`
 
@@ -419,5 +416,4 @@ endpoint:
 * `endpoint.grpc` 的具体落地
 * suite 级并行执行
 * retry / wait / cleanup 策略配置化
-* `env` 与 `deploy.name` 的自动对齐能力
 * skill 对 `guitar` 的调用集成

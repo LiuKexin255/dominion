@@ -26,6 +26,35 @@ func Test_parseOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "apply with run flag",
+			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--scope=team", "--run=abc123", "deploy.yaml"},
+			want: &options{
+				command:  commandApply,
+				target:   "deploy.yaml",
+				endpoint: "http://localhost:8081",
+				timeout:  30 * time.Second,
+				scope:    "team",
+				run:      "abc123",
+			},
+		},
+		{
+			name: "apply with run flag empty default",
+			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--scope=team", "deploy.yaml"},
+			want: &options{
+				command:  commandApply,
+				target:   "deploy.yaml",
+				endpoint: "http://localhost:8081",
+				timeout:  30 * time.Second,
+				scope:    "team",
+				run:      "",
+			},
+		},
+		{
+			name:    "del does not accept run flag",
+			args:    []string{"del", "--run=abc123", "team.dev"},
+			wantErr: true,
+		},
+		{
 			name: "delete target",
 			args: []string{"del", "team.dev"},
 			want: &options{
@@ -100,5 +129,8 @@ func TestRun_Help(t *testing.T) {
 	}
 	if !strings.Contains(got, "--timeout") {
 		t.Fatalf("run(--help) output = %q, want timeout flag", got)
+	}
+	if !strings.Contains(got, "--run") {
+		t.Fatalf("run(--help) output = %q, want run flag", got)
 	}
 }

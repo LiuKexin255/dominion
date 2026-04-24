@@ -13,7 +13,7 @@
   "properties": {
     "name": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9]{0,7}\\.[a-z][a-z0-9]{0,7}$",
+      "pattern": "^[a-z][a-z0-9]{0,7}\\.(\\{\\{run\\}\\}|[a-z][a-z0-9]{0,7})$",
       "description": "部署环境名称"
     },
     "desc": {

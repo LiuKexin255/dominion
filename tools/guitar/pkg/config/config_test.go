@@ -17,7 +17,6 @@ func TestParse(t *testing.T) {
 		Suites: []*Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//projects/game/testplan/test_deploy.yaml",
 				Endpoint: map[string]Endpoints{
 					"http": {
@@ -101,7 +100,6 @@ suites:
 			yaml: `name: test
 suites:
   - name: default
-    env: game.lt
     cases:
       - //test:test
 `,
@@ -111,7 +109,6 @@ suites:
 			yaml: `name: test
 suites:
   - name: default
-    env: game.lt
     deploy: //deploy.yaml
 `,
 		},
@@ -119,14 +116,23 @@ suites:
 			name: "missing suite name",
 			yaml: `name: test
 suites:
-  - env: game.lt
-    deploy: //deploy.yaml
+  - deploy: //deploy.yaml
     cases:
       - //test:test
 `,
 		},
 		{
 			name: "valid minimal suite",
+			yaml: `name: test
+suites:
+  - name: default
+    deploy: //deploy.yaml
+    cases:
+      - //test:test
+`,
+		},
+		{
+			name: "suite with env field",
 			yaml: `name: test
 suites:
   - name: default

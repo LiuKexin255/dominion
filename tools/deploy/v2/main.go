@@ -20,6 +20,7 @@ const (
 	flagEndpoint = "endpoint"
 	flagTimeout  = "timeout"
 	flagScope    = "scope"
+	flagRun      = "run"
 
 	defaultEndpoint = "http://infra.liukexin.com"
 	defaultTimeout  = 5 * time.Minute
@@ -31,6 +32,7 @@ type options struct {
 	endpoint  string
 	timeout   time.Duration
 	scope     string
+	run       string
 	apiClient *client.Client
 }
 
@@ -83,10 +85,18 @@ var flagSpecs = map[string]flagSpec{
 			fs.StringVar(&opts.scope, spec.name, spec.defaultValue.(string), spec.usage)
 		},
 	},
+	flagRun: {
+		name:         flagRun,
+		defaultValue: "",
+		usage:        "run identifier for {{run}} placeholder in deploy name (apply only)",
+		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
+			fs.StringVar(&opts.run, spec.name, spec.defaultValue.(string), spec.usage)
+		},
+	},
 }
 
 var commandFlagTable = map[string][]string{
-	commandApply: {flagEndpoint, flagTimeout, flagScope},
+	commandApply: {flagEndpoint, flagTimeout, flagScope, flagRun},
 	commandDel:   {flagEndpoint, flagTimeout, flagScope},
 	commandList:  {flagEndpoint, flagTimeout, flagScope},
 	commandScope: {flagEndpoint, flagTimeout, flagScope},
@@ -146,6 +156,7 @@ func parseOptions(args []string) (*options, error) {
 
 	opts.endpoint = strings.TrimSpace(opts.endpoint)
 	opts.scope = strings.TrimSpace(opts.scope)
+	opts.run = strings.TrimSpace(opts.run)
 
 	if err := validateOptions(opts); err != nil {
 		return nil, err
@@ -239,7 +250,7 @@ func usageText() string {
 		"Usage: deploy <command> [args]",
 		"",
 		"Commands:",
-		"  apply [--endpoint=url] [--timeout=5m] [--scope=name] <deploy.yaml>",
+		"  apply [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",
 		"  del [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
 		"  list [--endpoint=url] [--timeout=5m] [--scope=name]",
 		"  scope [scope-name]",

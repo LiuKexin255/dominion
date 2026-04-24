@@ -43,6 +43,14 @@ func (e *stubCommandExecutor) CombinedOutput(ctx context.Context, dir string, na
 	return e.runFunc(ctx, dir, name, args...)
 }
 
+func (e *stubCommandExecutor) Output(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	e.calls = append(e.calls, commandCall{dir: dir, name: name, args: append([]string(nil), args...)})
+	if e.runFunc == nil {
+		return nil, nil
+	}
+	return e.runFunc(ctx, dir, name, args...)
+}
+
 func TestResult_ImageRef(t *testing.T) {
 	tests := []struct {
 		name    string

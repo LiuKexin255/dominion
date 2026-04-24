@@ -86,6 +86,37 @@ env: alice.test
 
 因此访问 `test` 或 `dev` 类型环境的 HTTPRoute 时，客户端需要在请求中带上 `env` header，且值等于完整环境名（如 `alice.test`、`alice.dev`）。
 
+### 动态测试环境名
+
+`test` 类型 deploy 的 `name` 支持占位符 `{{run}}`，用于在部署时动态生成环境名。
+
+示例：
+
+```yaml
+name: game.{{run}}
+desc: "动态测试环境"
+type: test
+services:
+  - artifact:
+      path: //projects/game/service.yaml
+      name: gateway
+```
+
+使用 `deploy apply --run` 部署时，`{{run}}` 会被替换为传入的 run 标识：
+
+```bash
+deploy apply --run lt3x8q2 //projects/game/testplan/test_deploy.yaml
+```
+
+部署后的完整环境名为 `game.lt3x8q2`。
+
+约束：
+
+- 只有 `type: test` 允许使用 `{{run}}`，`prod` 和 `dev` 类型禁止使用。
+- `--run` 值须满足命名规则 `^[a-z][a-z0-9]{0,7}$`。
+- `deploy.yaml` 中不含 `{{run}}` 时传 `--run` 会报错。
+- 不支持多个 `{{run}}`，不支持其他占位符。
+
 ### `deploy.yaml` 中的服务类型
 
 `services` 中的每一项只能二选一：
@@ -304,11 +335,12 @@ bazel run //:deploy_install
 
 1. 部署/更新服务
 
-```bash 
-deploy apply {path-of-deploy.yaml}
+```bash
+deploy apply [--run <id>] {path-of-deploy.yaml}
 ```
 
 - 自动从 `deploy.yaml` 中读取完整环境名。
+- `--run`：当 `deploy.yaml` 的 `name` 包含 `{{run}}` 时，指定动态 run 标识。
 - CLI 解析配置并推送镜像后，将 desired state 发送给 deploy service。
 - CLI 会轮询环境状态，直到达到 `READY` 或 `FAILED` 终态，或操作超时。
 - `apply` 采用 **full desired-state replacement** 语义：配置中移除的服务或资源会被自动清理。
@@ -353,6 +385,7 @@ deploy scope {scope-name}   # 设置默认 scope
 
 ```bash
 deploy apply //experimental/grpc_hello_world/deploy.yaml
+deploy apply --run lt3x8q2 //projects/game/testplan/test_deploy.yaml
 deploy apply experimental/grpc_hello_world/deploy.yaml
 ```
 
@@ -361,6 +394,7 @@ deploy apply experimental/grpc_hello_world/deploy.yaml
 环境唯一标识为完整环境名：`{scope}.{env_name}` (如 `alice.dev`)。
 
 - **命名约束**：`scope` 和 `env_name` 均满足 `^[a-z][a-z0-9]{0,7}$`。
+- **动态环境名**：`test` 类型 deploy 支持使用 `{{run}}` 占位符，部署时由 `--run` 参数替换，最终完整环境名为 `{scope}.{run}`。
 - **简版名**：仅在 CLI 输入时使用，需要配置默认 scope。
 - **解析规则**：
   - 输入包含 `.` 时，视为完整环境名。

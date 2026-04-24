@@ -6,11 +6,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
+	deployconfig "dominion/tools/deploy/pkg/config"
 	"dominion/tools/deploy/pkg/workspace"
 	guitarconfig "dominion/tools/guitar/pkg/config"
 	"dominion/tools/guitar/pkg/env"
+	"dominion/tools/guitar/pkg/runid"
 	"dominion/tools/guitar/pkg/validate"
 )
 
@@ -30,6 +33,8 @@ var (
 	stderr io.Writer = os.Stderr
 	// runCommand executes external commands. Tests replace it with a stub.
 	runCommand = defaultRunCommand
+	// generateRunID creates the per-suite run identifier. Tests replace it with a stub.
+	generateRunID = runid.Generate
 )
 
 // options configures Run behavior.
@@ -73,33 +78,51 @@ func Run(ctx context.Context, cfg *guitarconfig.Config, opts ...Option) error {
 	return nil
 }
 
-func runSuite(ctx context.Context, suite *guitarconfig.Suite) error {
+func runSuite(ctx context.Context, suite *guitarconfig.Suite) (err error) {
 	deployPath := workspace.ResolvePath(suite.Deploy)
-
-	if err := runCommand(ctx, deployBinary, deployApplyCommand, deployPath); err != nil {
-		return fmt.Errorf("deploy apply %s: %w", suite.Deploy, err)
+	runID, genErr := generateRunID()
+	if genErr != nil {
+		return fmt.Errorf("generate run id for suite %q: %w", suite.Name, genErr)
 	}
 
-	testErr := runTests(ctx, suite)
-	cleanupErr := runCommand(ctx, deployBinary, deployDeleteCommand, suite.Env)
+	deployCfg, parseErr := deployconfig.ParseDeployConfig(deployPath)
+	if parseErr != nil {
+		return fmt.Errorf("parse deploy config %s: %w", suite.Deploy, parseErr)
+	}
+	scope, _, ok := strings.Cut(deployCfg.Name, ".")
+	if !ok {
+		return fmt.Errorf("deploy name %q must contain scope", deployCfg.Name)
+	}
+	fullEnvName := fmt.Sprintf("%s.%s", scope, runID)
+	fmt.Fprintf(stdout, "suite %s: run=%s env=%s deploy=%s\n", suite.Name, runID, fullEnvName, suite.Deploy)
 
-	if testErr != nil {
-		if cleanupErr != nil {
-			return fmt.Errorf("%w; cleanup failed: deploy del %s: %v", testErr, suite.Env, cleanupErr)
+	defer func() {
+		cleanupErr := runCommand(context.WithoutCancel(ctx), deployBinary, deployDeleteCommand, fullEnvName)
+		if err != nil {
+			if cleanupErr != nil {
+				err = fmt.Errorf("%w; cleanup failed: deploy del %s: %v", err, fullEnvName, cleanupErr)
+			}
+			return
 		}
-		return testErr
+		if cleanupErr != nil {
+			fmt.Fprintf(stderr, "warning: cleanup failed: deploy del %s: %v\n", fullEnvName, cleanupErr)
+		}
+	}()
+
+	if applyErr := runCommand(ctx, deployBinary, deployApplyCommand, "--run", runID, deployPath); applyErr != nil {
+		return fmt.Errorf("deploy apply %s: %w", suite.Deploy, applyErr)
 	}
-	if cleanupErr != nil {
-		fmt.Fprintf(stderr, "warning: cleanup failed: deploy del %s: %v\n", suite.Env, cleanupErr)
-		return nil
+
+	if testErr := runTests(ctx, suite, fullEnvName); testErr != nil {
+		return testErr
 	}
 
 	return nil
 }
 
-func runTests(ctx context.Context, suite *guitarconfig.Suite) error {
+func runTests(ctx context.Context, suite *guitarconfig.Suite, envName string) error {
 	args := []string{bazelTestCommand, bazelLargeTestConfig}
-	args = append(args, env.BuildTestEnvFlags(suite)...)
+	args = append(args, env.BuildTestEnvFlags(suite, envName)...)
 	args = append(args, suite.Cases...)
 
 	if err := runCommand(ctx, bazelBinary, args...); err != nil {

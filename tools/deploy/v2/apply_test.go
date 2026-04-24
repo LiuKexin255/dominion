@@ -458,8 +458,14 @@ func assertProtoJSONBody(t *testing.T, raw []byte, want proto.Message) {
 		t.Fatalf("protojson.Unmarshal() failed: %v", err)
 	}
 	if !proto.Equal(got, want) {
-		gotRaw, _ := protojson.Marshal(got)
-		wantRaw, _ := protojson.Marshal(want)
+		gotRaw, err := protojson.Marshal(got)
+		if err != nil {
+			t.Fatalf("marshal got proto: %v", err)
+		}
+		wantRaw, err := protojson.Marshal(want)
+		if err != nil {
+			t.Fatalf("marshal want proto: %v", err)
+		}
 		t.Fatalf("json body = %s, want %s", gotRaw, wantRaw)
 	}
 }
@@ -530,6 +536,266 @@ func withApplyWorkingDir(t *testing.T, dir string) {
 			t.Fatalf("restore working dir failed: %v", err)
 		}
 	})
+}
+
+func TestApplyCommand_RunPlaceholder(t *testing.T) {
+	tests := []struct {
+		name              string
+		deployYAML        string
+		run               string
+		imageOutputs      map[string]*imagepush.PushOutput
+		serverSteps       []applyResponseStep
+		pollTimeout       time.Duration
+		wantOutputSubstr  string
+		wantErrSubstr     string
+		wantNoServerCalls bool
+		wantRequestCount  int32
+	}{
+		{
+			name: "run placeholder success",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run: "lt3x8q2",
+			imageOutputs: map[string]*imagepush.PushOutput{
+				"//tools/deploy/v2/compiler/testdata:service_b_image_push": {Repository: "registry.example.com/service-b", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			serverSteps: []applyResponseStep{
+				{
+					method: http.MethodGet,
+					path:   "/v1/deploy/scopes/game/environments/lt3x8q2",
+					status: http.StatusNotFound,
+					body:   map[string]any{"code": 5, "message": "not found"},
+				},
+				{
+					method: http.MethodPost,
+					path:   "/v1/deploy/scopes/game/environments",
+					status: http.StatusOK,
+					body:   &deploy.Environment{Name: "deploy/scopes/game/environments/lt3x8q2", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+				},
+				{
+					method: http.MethodGet,
+					path:   "/v1/deploy/scopes/game/environments/lt3x8q2",
+					status: http.StatusOK,
+					body:   &deploy.Environment{Name: "deploy/scopes/game/environments/lt3x8q2", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+				},
+			},
+			pollTimeout:      50 * time.Millisecond,
+			wantOutputSubstr: "环境 game.lt3x8q2 已应用",
+			wantRequestCount: 3,
+		},
+		{
+			name: "run placeholder missing run flag",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "--run",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder uppercase rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "LT3X8Q2",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "--run",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder starts with digit rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "123abc",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "--run",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder too long rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "lt3x8q299",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "--run",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run flag without placeholder rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.dev",
+				"desc: dev env",
+				"type: dev",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "lt3x8q2",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "--run",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder with non-test type rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}",
+				"desc: dev env",
+				"type: dev",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "lt3x8q2",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "test 类型",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder multiple occurrences rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{run}}{{run}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "lt3x8q2",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "does not match pattern",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "run placeholder unknown placeholder rejected",
+			deployYAML: strings.Join([]string{
+				"name: game.{{env}}",
+				"desc: run test",
+				"type: test",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			run:               "lt3x8q2",
+			imageOutputs:      map[string]*imagepush.PushOutput{},
+			pollTimeout:       50 * time.Millisecond,
+			wantErrSubstr:     "does not match pattern",
+			wantNoServerCalls: true,
+		},
+		{
+			name: "no placeholder no run flag works normally",
+			deployYAML: strings.Join([]string{
+				"name: game.dev",
+				"desc: dev env",
+				"type: dev",
+				"services:",
+				"  - artifact:",
+				"      path: //tools/deploy/v2/compiler/testdata/service-b.yaml",
+				"      name: service-b",
+			}, "\n") + "\n",
+			imageOutputs: map[string]*imagepush.PushOutput{
+				"//tools/deploy/v2/compiler/testdata:service_b_image_push": {Repository: "registry.example.com/service-b", Digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+			},
+			serverSteps: []applyResponseStep{
+				{method: http.MethodGet, path: "/v1/deploy/scopes/game/environments/dev", status: http.StatusNotFound, body: map[string]any{"code": 5, "message": "not found"}},
+				{method: http.MethodPost, path: "/v1/deploy/scopes/game/environments", status: http.StatusOK, body: &deploy.Environment{Name: "deploy/scopes/game/environments/dev", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}}},
+				{method: http.MethodGet, path: "/v1/deploy/scopes/game/environments/dev", status: http.StatusOK, body: &deploy.Environment{Name: "deploy/scopes/game/environments/dev", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}}},
+			},
+			pollTimeout:      50 * time.Millisecond,
+			wantOutputSubstr: "环境 game.dev 已应用",
+			wantRequestCount: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, deployPath := newApplyWorkspace(t, tt.deployYAML)
+
+			server, requestCount := newApplyTestServer(t, tt.serverSteps)
+			defer server.Close()
+
+			oldRunner := newImageRunner
+			newImageRunner = func() (imagepush.Runner, error) {
+				return &fakeImageRunner{outputs: tt.imageOutputs, errs: nil}, nil
+			}
+			defer func() { newImageRunner = oldRunner }()
+
+			var out bytes.Buffer
+			oldStdout := stdout
+			stdout = &out
+			defer func() { stdout = oldStdout }()
+
+			err := applyCommand(&options{
+				target:    deployPath,
+				endpoint:  server.URL,
+				timeout:   tt.pollTimeout,
+				scope:     "game",
+				run:       tt.run,
+				apiClient: clientpkg.NewClient(server.URL),
+			})
+
+			if tt.wantErrSubstr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
+					t.Fatalf("applyCommand() error = %v, want substring %q", err, tt.wantErrSubstr)
+				}
+			} else if err != nil {
+				t.Fatalf("applyCommand() unexpected error: %v", err)
+			}
+
+			if tt.wantOutputSubstr != "" && !strings.Contains(out.String(), tt.wantOutputSubstr) {
+				t.Fatalf("applyCommand() output = %q, want substring %q", out.String(), tt.wantOutputSubstr)
+			}
+			if tt.wantNoServerCalls && requestCount.Load() != 0 {
+				t.Fatalf("server request count = %d, want 0", requestCount.Load())
+			}
+			if tt.wantRequestCount > 0 && requestCount.Load() != tt.wantRequestCount {
+				t.Fatalf("server request count = %d, want %d", requestCount.Load(), tt.wantRequestCount)
+			}
+		})
+	}
 }
 
 func Test_environmentTypeFromString(t *testing.T) {

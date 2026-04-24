@@ -7,9 +7,11 @@ go_library(
     importpath = "dominion/tools/guitar/pkg/run",
     visibility = ["//visibility:public"],
     deps = [
+        "//tools/deploy/pkg/config",
         "//tools/deploy/pkg/workspace",
         "//tools/guitar/pkg/config",
         "//tools/guitar/pkg/env",
+        "//tools/guitar/pkg/runid",
         "//tools/guitar/pkg/validate",
     ],
 )

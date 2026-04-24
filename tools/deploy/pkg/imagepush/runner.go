@@ -36,6 +36,7 @@ var fixedArgPattern = regexp.MustCompile(`"([^"]*)"`)
 // commandExecutor executes external commands for the production runner.
 type commandExecutor interface {
 	CombinedOutput(ctx context.Context, dir string, name string, args ...string) ([]byte, error)
+	Output(ctx context.Context, dir string, name string, args ...string) ([]byte, error)
 }
 
 // osCommandExecutor runs commands with os/exec.
@@ -45,6 +46,12 @@ func (osCommandExecutor) CombinedOutput(ctx context.Context, dir string, name st
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	return cmd.CombinedOutput()
+}
+
+func (osCommandExecutor) Output(ctx context.Context, dir string, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	return cmd.Output()
 }
 
 // bazelRunner executes bazel push targets and parses the stable push contract.
@@ -99,7 +106,7 @@ func (r *bazelRunner) Run(ctx context.Context, pushTarget string) (*PushOutput, 
 }
 
 func (r *bazelRunner) pushScriptPath(ctx context.Context, pushTarget string) (string, error) {
-	output, err := r.exec.CombinedOutput(
+	output, err := r.exec.Output(
 		ctx,
 		r.workspaceRoot,
 		bazelBinary,
