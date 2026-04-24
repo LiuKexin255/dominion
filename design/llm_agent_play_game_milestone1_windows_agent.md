@@ -373,10 +373,75 @@ Linux CI 需要产出至少一种可运行制品：
 建议使用：
 
 * `pnpm` 管理 TypeScript/Electron 依赖。
+* Bazel 负责编译 TypeScript、收集资源、封装 Electron 打包动作和统一发布入口。
 * `electron-builder` 打包 Windows 制品。
 * `electronuserland/builder:wine` 作为 CI 容器或参考环境。
 
-本仓库标准编译工具是 Bazel；Electron 应用可以继续使用 pnpm/electron-builder 完成前端生态打包，但发布入口应收敛到 `bazel run`，避免每个开发者或 CI 直接拼接临时脚本。
+本仓库标准编译工具是 Bazel。Electron 应用可以继续使用 pnpm/electron-builder 完成 Electron 生态打包，但 TypeScript 编译、Electron 打包动作和发布入口都应由 Bazel target 封装，避免每个开发者或 CI 直接拼接临时脚本。
+
+### TypeScript 编译
+
+TypeScript 应使用 Bazel 规则编译，沿用仓库当前 `experimental/ts/hello_world/BUILD.bazel` 中的模式：
+
+* `ts_project` 负责 TypeScript 编译和类型产物。
+* `swc` 作为 transpiler。
+* `js_binary` 可用于本地开发或工具入口。
+
+Electron 项目建议拆分为多个 Bazel target：
+
+* `main_lib`：Electron main process。
+* `preload_lib`：preload 和 `contextBridge` API。
+* `renderer_lib` 或 `renderer_bundle`：React renderer。
+* `package_json` / `resources` / `runtime_bins`：打包所需元数据和资源。
+
+这样可以在打包前通过 Bazel 明确验证 TS 编译、类型检查和资源依赖，而不是把 TS 编译隐式藏在 electron-builder 命令里。
+
+### Electron 打包封装
+
+Electron 打包仍使用 `electron-builder`，但应封装为 Bazel rule 或 macro，例如：
+
+```starlark
+electron_builder_package(
+    name = "windows_agent_win_zip",
+    app_dir = ":app_dir",
+    config = ":electron-builder.yml",
+    platform = "win",
+    targets = ["portable", "nsis"],
+    outs = [
+        "windows-agent-0.1.0-win32-x64.zip",
+        "windows-agent-0.1.0-win32-x64.exe",
+    ],
+)
+```
+
+该 Bazel 封装层负责：
+
+1. 依赖 TS 编译 target。
+2. 准备 electron-builder 所需的 app 目录。
+3. 复制 `ffmpeg.exe`、`input-helper.exe`、icon、license 等 resources。
+4. 调用 `electron-builder --win portable nsis`。
+5. 将输出产物声明为 Bazel outputs。
+
+该 rule 不重写 Electron 打包逻辑，只把 electron-builder 作为底层工具调用，从而保留 Electron 生态兼容性，同时让仓库入口保持 Bazel 化。
+
+### Linux 到 Windows 打包可行性与风险
+
+Electron Windows 制品可以在 Linux 上打包。推荐 CI 使用 `electronuserland/builder:wine` 或等价包含 Wine、Node、pnpm 和 electron-builder 依赖的固定镜像。
+
+Linux 打 Windows 的可行范围：
+
+* portable Windows `.exe` / `.zip`：作为 milestone 1 主目标。
+* NSIS installer：可选目标。
+* Windows Electron runtime：由 electron-builder 下载和组装。
+
+主要风险：
+
+* **native addon 风险**：如果 npm 依赖需要 `node-gyp` 编译 Windows native addon，会引入 Windows SDK、Visual Studio Build Tools、Electron ABI rebuild 等问题。milestone 1 禁止这类依赖进入主链路。
+* **代码签名风险**：普通 pfx/OV 证书可后续在 Linux 上处理；EV/HSM 证书和 SmartScreen 规避不作为 milestone 1 阻塞项。
+* **electron-builder 下载与缓存风险**：electron-builder 会下载 Electron runtime、NSIS 等工具。milestone 1 可通过固定 CI 镜像和锁定依赖版本降低风险；后续再评估更 hermetic 的 Bazel repository 管理。
+* **跨平台范围风险**：Linux 打 Windows 可行；Linux 打 macOS 不作为本项目目标。
+
+因此 milestone 1 的构建原则是：**Bazel 编译 TS + Bazel 封装 electron-builder + Bazel run 发布 S3**。不要尝试绕开 electron-builder 自己实现 Electron 打包，也不要引入需要 Linux 编译 Windows native addon 的 npm 依赖。
 
 本地开发构建命令方向：
 
