@@ -1,6 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
+load("//tools/go:defs.bzl", "go_unittest")
 
 proto_library(
     name = "gateway_proto",
@@ -35,7 +36,39 @@ go_proto_library(
 
 go_library(
     name = "gateway",
+    srcs = [
+        "handler.go",
+        "ws.go",
+    ],
     embed = [":gateway_go_proto"],
     importpath = "dominion/projects/game/gateway",
     visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/gateway/domain",
+        "//projects/game/pkg/token",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_unittest(
+    name = "gateway_test",
+    srcs = [
+        "handler_test.go",
+        "ws_test.go",
+    ],
+    embed = [":gateway"],
+    deps = [
+        "//projects/game/gateway/domain",
+        "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/gateway/service",
+        "//projects/game/pkg/token",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
 )

@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "app",
+    srcs = [
+        "bootstrap.go",
+        "server.go",
+    ],
+    importpath = "dominion/projects/game/gateway/app",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/grpc",
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/gateway/service",
+        "//projects/game/pkg/token",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)

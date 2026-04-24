@@ -3,6 +3,7 @@ module dominion
 go 1.26.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.6
 	github.com/spf13/pflag v1.0.10
 	go.mongodb.org/mongo-driver v1.17.9
@@ -67,6 +68,8 @@ require (
 )
 
 require (
+	github.com/Eyevinn/hi264 v0.9.0
+	github.com/Eyevinn/mp4ff v0.51.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -78,4 +81,5 @@ require (
 	google.golang.org/protobuf v1.36.11
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
+	nhooyr.io/websocket v1.8.17
 )

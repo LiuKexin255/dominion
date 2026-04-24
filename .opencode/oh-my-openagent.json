@@ -51,8 +51,7 @@
       "model": "zai-coding-plan/glm-5.1"
     },
     "artistry": {
-      "model": "zai-coding-plan/glm-5.1",
-      "variant": "high"
+      "model": "zai-coding-plan/glm-5.1"
     },
     "quick": {
       "model": "kimi-for-coding/k2p6"

@@ -1,0 +1,21 @@
+load("//tools/go:defs.bzl", "go_largetest")
+
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = ["interface_test.go"],
+    env = {
+        "S3_ACCESS_KEY": "readonly",
+        "S3_SECRET_KEY": "Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ",
+    },
+    deps = [
+        "//pkg/solver",
+        "//pkg/testtool",
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain",
+        "//projects/game/gateway/testplan/fakeagent",
+        "//projects/game/pkg/token",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

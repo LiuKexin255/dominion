@@ -7,9 +7,9 @@
 
 ## 部署信息
 
-* host: gw-{*}.game.liukexin.com 
+* host: gateway-{*}-game.liukexin.com 
 * prefix: /
 
 ## 测试数据
 
-* 视频：s3://s3.liukexin.com/common/testdata/video/IMG_6995.MP4
+* 视频：s3://s3.liukexin.com/buckets/common/video/IMG_6995.MP4

@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	envKeyName        = "TESTTOOL_ENV"
-	endpointKeyPrefix = "TESTTOOL_ENDPOINT_"
-	endpointNameExpr  = `^[a-zA-Z][a-zA-Z0-9]*$`
-	missingEnvMessage = "missing required env %s"
+	envKeyName                 = "TESTTOOL_ENV"
+	endpointKeyPrefix          = "TESTTOOL_ENDPOINT_"
+	dominionEnvironmentKeyName = "DOMINION_ENVIRONMENT"
+	endpointNameExpr           = `^[a-zA-Z][a-zA-Z0-9]*$`
+	missingEnvMessage          = "missing required env %s"
 )
 
 // lookupEnv is the function used to look up environment variables.
@@ -55,6 +56,25 @@ func Endpoint(protocol, name string) (string, error) {
 // MustEndpoint returns the URL for the given protocol and endpoint name, panicking if missing.
 func MustEndpoint(protocol, name string) string {
 	value, err := Endpoint(protocol, name)
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+// DominionEnvironmentKey returns the env var name for the dominion environment identifier.
+func DominionEnvironmentKey() string {
+	return dominionEnvironmentKeyName
+}
+
+// DominionEnvironment returns the current dominion environment identifier.
+func DominionEnvironment() (string, error) {
+	return lookupRequiredEnv(dominionEnvironmentKeyName)
+}
+
+// MustDominionEnvironment returns the current dominion environment identifier, panicking if missing.
+func MustDominionEnvironment() string {
+	value, err := DominionEnvironment()
 	if err != nil {
 		panic(err)
 	}

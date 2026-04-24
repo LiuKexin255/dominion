@@ -1,0 +1,11 @@
+name: gateway
+app: game
+desc: game gateway service
+kind: stateful
+artifacts:
+  - name: cmd
+    target: app/cmd:cmd_image
+    tls: true
+    ports:
+      - name: http
+        port: 8080

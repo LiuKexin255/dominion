@@ -205,6 +205,7 @@ message GameHello {
 message GameMediaInit {
   string mime_type = 1 [(google.api.field_behavior) = REQUIRED];
 
+  // fMP4 init segment bytes. Maximum 1 MiB (see domain.MaxSegmentSize).
   bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
@@ -214,6 +215,7 @@ message GameMediaInit {
 message GameMediaSegment {
   string segment_id = 1 [(google.api.field_behavior) = REQUIRED];
 
+  // fMP4 media segment bytes. Maximum 1 MiB (see domain.MaxSegmentSize).
   bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
 
   bool key_frame = 3 [(google.api.field_behavior) = OUTPUT_ONLY];

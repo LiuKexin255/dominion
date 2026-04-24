@@ -177,7 +177,7 @@ func expandStatefulHostnames(serviceName string, instanceIndex int, hostnames []
 
 	expandedHostnames := make([]string, 0, len(hostnames))
 	for _, hostname := range hostnames {
-		expandedHostnames = append(expandedHostnames, fmt.Sprintf("%s-%d.%s", serviceName, instanceIndex, hostname))
+		expandedHostnames = append(expandedHostnames, fmt.Sprintf("%s-%d-%s", serviceName, instanceIndex, hostname))
 	}
 
 	return expandedHostnames

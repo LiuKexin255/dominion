@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "sessionmanager",
+    srcs = ["manager.go"],
+    importpath = "dominion/projects/game/gateway/domain/sessionmanager",
+    visibility = ["//visibility:public"],
+    deps = ["//projects/game/gateway/domain"],
+)
+
+go_unittest(
+    name = "session_test",
+    srcs = ["session_test.go"],
+    embed = [":sessionmanager"],
+    deps = ["//projects/game/gateway/domain"],
+)
+
+go_unittest(
+    name = "sessionmanager_test",
+    srcs = ["session_test.go"],
+    embed = [":sessionmanager"],
+    deps = ["//projects/game/gateway/domain"],
+)

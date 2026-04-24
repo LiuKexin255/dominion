@@ -1,0 +1,32 @@
+name: game-gateway-interface-test
+description: |
+  game-gateway HTTP REST + WebSocket 接口测试
+
+  Service: game-gateway
+  Interface: grpc-gateway exposed HTTP REST API + WebSocket
+  Base path: /v1
+  Covered scenarios:
+    1. WebConnect_Success — web client connects via WebSocket
+    2. AgentConnect_Success — fake-agent connects via WebSocket
+    3. PathSessionMismatch_Rejected — path session != token session rejected
+    4. DuplicateAgent_Rejected — second agent connection rejected
+    5. MediaDelivery — media_init + media_segment forwarded to web
+    6. CatchupFromKeyframe — new web connection receives cached media
+    7. Snapshot_Cached — fresh cached snapshot returned
+    8. Snapshot_Refresh — stale snapshot triggers refresh
+    9. Runtime_Fields — GET /runtime returns state fields
+    10. ControlRoundtrip — control_request → ack → result
+    11. FlashSnapshot — flash_snapshot refreshes cache
+    12. ConcurrentOperations — multiple web ops are serialized
+    13. TimeoutSemantics — click/drag timeouts work correctly
+    14. AgentDisconnect_Cleanup — agent disconnect clears inflight
+
+suites:
+  - name: default
+    env: game.glt
+    deploy: //projects/game/gateway/testplan/test_deploy.yaml
+    endpoint:
+      http:
+        public: https://gateway-0-game.liukexin.com
+    cases:
+      - //projects/game/gateway/testplan:testplan_test

@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "mediacache",
+    srcs = [
+        "cache.go",
+        "errors.go",
+        "snapshot.go",
+    ],
+    importpath = "dominion/projects/game/gateway/domain/mediacache",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/gateway/domain",
+        "@com_github_eyevinn_hi264//pkg/decoder",
+        "@com_github_eyevinn_hi264//pkg/frame",
+        "@com_github_eyevinn_hi264//pkg/yuv",
+        "@com_github_eyevinn_mp4ff//mp4",
+    ],
+)
+
+go_unittest(
+    name = "media_test",
+    srcs = ["media_test.go"],
+    embed = [":mediacache"],
+    deps = ["//projects/game/gateway/domain"],
+)
+
+go_unittest(
+    name = "mediacache_test",
+    srcs = ["media_test.go"],
+    embed = [":mediacache"],
+    deps = ["//projects/game/gateway/domain"],
+)
