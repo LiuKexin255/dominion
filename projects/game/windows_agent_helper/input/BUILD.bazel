@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "input_helper_lib",
+    srcs = [
+        "command.go",
+        "executor_other.go",
+        "main.go",
+        "windows_executor.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent_helper/input",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "input_helper",
+    embed = [":input_helper_lib"],
+    goarch = "amd64",
+    goos = "windows",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "input_helper_test",
+    srcs = ["command_test.go"],
+    embed = [":input_helper_lib"],
+)

@@ -373,6 +373,32 @@ func toProtoOperationKindWS(kind domain.OperationKind) GameControlOperationKind 
 	}
 }
 
+func mouseButtonToString(btn GameMouseButton) string {
+	switch btn {
+	case GameMouseButton_GAME_MOUSE_BUTTON_LEFT:
+		return "left"
+	case GameMouseButton_GAME_MOUSE_BUTTON_RIGHT:
+		return "right"
+	case GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE:
+		return "middle"
+	default:
+		return ""
+	}
+}
+
+func stringToMouseButton(s string) GameMouseButton {
+	switch strings.ToLower(s) {
+	case "left":
+		return GameMouseButton_GAME_MOUSE_BUTTON_LEFT
+	case "right":
+		return GameMouseButton_GAME_MOUSE_BUTTON_RIGHT
+	case "middle":
+		return GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE
+	default:
+		return GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED
+	}
+}
+
 func toDomainMessage(env *GameWebSocketEnvelope) *domain.Message {
 	if env == nil {
 		return nil
@@ -409,8 +435,13 @@ func toDomainPayload(env *GameWebSocketEnvelope) domain.MessagePayload {
 		return domain.ControlRequestPayload{
 			RequestID:     req.GetOperationId(),
 			Kind:          toDomainOperationKind(req.GetKind()),
+			Button:        mouseButtonToString(mouse.GetButton()),
 			X:             mouse.GetX(),
 			Y:             mouse.GetY(),
+			FromX:         mouse.GetFromX(),
+			FromY:         mouse.GetFromY(),
+			ToX:           mouse.GetToX(),
+			ToY:           mouse.GetToY(),
 			DurationMs:    mouse.GetDurationMs(),
 			FlashSnapshot: req.GetFlashSnapshot(),
 		}
@@ -483,8 +514,13 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 				Kind:          toProtoOperationKindWS(p.Kind),
 				FlashSnapshot: p.FlashSnapshot,
 				Mouse: &GameMouseAction{
+					Button:     stringToMouseButton(p.Button),
 					X:          p.X,
 					Y:          p.Y,
+					FromX:      p.FromX,
+					FromY:      p.FromY,
+					ToX:        p.ToX,
+					ToY:        p.ToY,
 					DurationMs: p.DurationMs,
 				},
 			},

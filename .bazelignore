@@ -1,1 +1,3 @@
 node_modules/
+experimental/ts/hello_world/node_modules
+projects/game/windows_agent/node_modules

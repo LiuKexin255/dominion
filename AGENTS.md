@@ -51,6 +51,11 @@ Golang 代码格式化与依赖更新步骤如下：
 3. step 3：使用 `gazelle` 命令更新 `BUILD.bazel` 文件。
 4. step 4：使用 `bazel mod tidy` 更新 `bazel` 依赖。
 
+#### Typescript/Javascript
+
+1. `npnm` 使用 `bazel run @pnpm --dir {project_path}` 来执行。
+2. `ts/js` 项目使用 `npnm` monorepo 仓库来管理依赖，并且子包的依赖全部是 `workspace:*` 以保持和主包版本一致。
+
 ## 开发计划
 
 开发计划应满足以下要求

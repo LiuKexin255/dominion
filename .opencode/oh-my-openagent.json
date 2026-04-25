@@ -14,11 +14,11 @@
     },
     "explore": {
       "model": "opencode-go/deepseek-v4-flash",
-      "variant": "high"
+      "variant": "medium"
     },
     "librarian": {
       "model": "opencode-go/deepseek-v4-flash",
-      "variant": "high"
+      "variant": "medium"
     },
     "multimodal-looker": {
       "model": "openai/gpt-5.5",

@@ -1,0 +1,19 @@
+appId: com.dominion.windows-agent
+productName: Dominion Windows Agent
+directories:
+  output: release
+  buildResources: resources
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - "**/*"

@@ -1,4 +1,5 @@
 packages:
   - experimental/ts/*
+  - projects/game/windows_agent
 
 onlyBuiltDependencies: []

@@ -1,0 +1,44 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load(":protobuf_ts_codegen.bzl", "protobuf_ts_codegen")
+
+js_binary(
+    name = "protoc_gen_ts",
+    data = ["//:node_modules/@protobuf-ts/plugin"],
+    entry_point = "protoc_gen_ts_entry.cjs",
+)
+
+protobuf_ts_codegen(
+    name = "proto_types",
+    outs = [
+        "google/protobuf/descriptor.ts",
+        "google/protobuf/duration.ts",
+        "google/protobuf/timestamp.ts",
+        "projects/game/gateway/gateway.ts",
+    ],
+    plugin = ":protoc_gen_ts",
+    proto = "//projects/game/gateway:gateway_proto",
+    protoc = "@com_google_protobuf//:protoc",
+    visibility = ["//visibility:public"],
+)
+
+npm_package(
+    name = "proto_types_package",
+    srcs = [":proto_types"],
+    package = "@dominion/windows-agent-proto-types",
+    visibility = ["//visibility:public"],
+)
+
+ts_project(
+    name = "import_test",
+    srcs = [
+        "src/import_test.ts",
+        ":proto_types",
+    ],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    deps = ["//:node_modules/@protobuf-ts/runtime"],
+)
