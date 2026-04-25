@@ -3,6 +3,7 @@ package validate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	guitarconfig "dominion/tools/guitar/pkg/config"
@@ -16,7 +17,6 @@ func TestValidate(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {
@@ -42,7 +42,6 @@ func TestValidate_MissingName(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Cases:  []string{"//test:test"},
 			},
@@ -77,7 +76,6 @@ func TestValidate_NonTestDeployType(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_prod.yaml",
 				Cases:  []string{"//test:test"},
 			},
@@ -87,6 +85,9 @@ func TestValidate_NonTestDeployType(t *testing.T) {
 	err := Validate(cfg)
 	if err == nil {
 		t.Fatal("Validate() succeeded unexpectedly, expected non-test deploy type error")
+	}
+	if !strings.Contains(err.Error(), "type must be") {
+		t.Fatalf("Validate() error = %q, want non-test deploy type error", err)
 	}
 }
 
@@ -98,7 +99,6 @@ func TestValidate_HostnameMismatch(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {
@@ -124,7 +124,6 @@ func TestValidate_HostnameMatch(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {
@@ -142,43 +141,7 @@ func TestValidate_HostnameMatch(t *testing.T) {
 	}
 }
 
-func TestValidate_InvalidEnvFormat(t *testing.T) {
-	_ = newBazelWorkspace(t)
-
-	tests := []struct {
-		name string
-		env  string
-	}{
-		{name: "no dot", env: "game"},
-		{name: "trailing dot", env: "game."},
-		{name: "leading dot", env: ".lt"},
-		{name: "trailing extra dot", env: "game.lt."},
-		{name: "empty", env: ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := &guitarconfig.Config{
-				Name: "test",
-				Suites: []*guitarconfig.Suite{
-					{
-						Name:   "default",
-						Env:    tt.env,
-						Deploy: "//testdata/deploy_test.yaml",
-						Cases:  []string{"//test:test"},
-					},
-				},
-			}
-
-			err := Validate(cfg)
-			if err == nil {
-				t.Fatal("Validate() succeeded unexpectedly, expected env format error")
-			}
-		})
-	}
-}
-
-func TestValidate_ValidEnvFormat(t *testing.T) {
+func TestValidate_EnvFieldRejected(t *testing.T) {
 	_ = newBazelWorkspace(t)
 
 	cfg := &guitarconfig.Config{
@@ -194,8 +157,102 @@ func TestValidate_ValidEnvFormat(t *testing.T) {
 	}
 
 	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() succeeded unexpectedly, expected env field rejected error")
+	}
+	if !strings.Contains(err.Error(), "env field is no longer supported") {
+		t.Fatalf("Validate() error = %q, want error containing 'env field is no longer supported'", err)
+	}
+}
+
+func TestValidate_NoEnvWithRunDeploy(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:   "default",
+				Deploy: "//testdata/deploy_test.yaml",
+				Cases:  []string{"//test:test"},
+			},
+		},
+	}
+
+	err := Validate(cfg)
 	if err != nil {
 		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_StaticDeployName(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:   "default",
+				Deploy: "//testdata/deploy_static.yaml",
+				Cases:  []string{"//test:test"},
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() succeeded unexpectedly, expected deploy name format error")
+	}
+	if !strings.Contains(err.Error(), "deploy name must be") {
+		t.Fatalf("Validate() error = %q, want error containing 'deploy name must be'", err)
+	}
+}
+
+func TestValidate_DeployNameUppercaseRun(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "testdata"), os.ModePerm); err != nil {
+		t.Fatalf("MkdirAll() failed: %v", err)
+	}
+	deployContent := `name: game.{{RUN}}
+desc: uppercase run placeholder
+type: test
+services:
+  - artifact:
+      path: //projects/game/session/service.yaml
+      name: cmd
+    http:
+      hostnames:
+        - game.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /v1
+`
+	if err := os.WriteFile(filepath.Join(root, "testdata", "deploy_upper.yaml"), []byte(deployContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+	withWorkingDir(t, root)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:   "default",
+				Deploy: "//testdata/deploy_upper.yaml",
+				Cases:  []string{"//test:test"},
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() succeeded unexpectedly, expected deploy name format error")
 	}
 }
 
@@ -207,7 +264,6 @@ func TestValidate_InvalidEndpointName(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {
@@ -233,7 +289,6 @@ func TestValidate_StatefulHostnameSuffixMatch(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {
@@ -259,7 +314,6 @@ func TestValidate_StatefulHostnameSuffixMismatch(t *testing.T) {
 		Suites: []*guitarconfig.Suite{
 			{
 				Name:   "default",
-				Env:    "game.lt",
 				Deploy: "//testdata/deploy_test.yaml",
 				Endpoint: map[string]guitarconfig.Endpoints{
 					"http": {

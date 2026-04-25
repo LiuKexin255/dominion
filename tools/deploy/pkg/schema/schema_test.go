@@ -201,6 +201,65 @@ services:
 			wantErr: true,
 		},
 		{
+			name: "valid deploy yaml with run placeholder",
+			raw: []byte(`name: game.{{run}}
+desc: 动态环境
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+		},
+		{
+			name: "invalid deploy yaml uppercase run placeholder",
+			raw: []byte(`name: game.{{RUN}}
+desc: 动态环境
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid deploy yaml unknown placeholder",
+			raw: []byte(`name: game.{{other}}
+desc: 动态环境
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid deploy yaml multiple dots with run placeholder",
+			raw: []byte(`name: game.{{run}}.extra
+desc: 动态环境
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
+			name: "invalid deploy yaml multiple run placeholders",
+			raw: []byte(`name: game.{{run}}{{run}}
+desc: 动态环境
+type: test
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+			wantErr: true,
+		},
+		{
 			name: "valid deploy yaml without env",
 			raw: []byte(`name: grpc.dev
 desc: 开发环境

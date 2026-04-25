@@ -10,30 +10,30 @@ import (
 
 func TestBuildEnvVars(t *testing.T) {
 	tests := []struct {
-		name  string
-		given *config.Suite
-		want  map[string]string
+		name    string
+		given   *config.Suite
+		envName string
+		want    map[string]string
 	}{
 		{
 			name: "single endpoint",
 			given: &config.Suite{
-				Env: "game.lt",
 				Endpoint: map[string]config.Endpoints{
 					"http": {
 						"public": "https://example.com",
 					},
 				},
 			},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:                      "game.lt",
-				dominionEnvironmentKey:             "game.lt",
+				envKeyPrefix:                      "game.lt3x8q2",
+				dominionEnvironmentKey:            "game.lt3x8q2",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 			},
 		},
 		{
 			name: "multiple endpoints in same protocol",
 			given: &config.Suite{
-				Env: "game.lt",
 				Endpoint: map[string]config.Endpoints{
 					"http": {
 						"public": "https://example.com",
@@ -41,9 +41,10 @@ func TestBuildEnvVars(t *testing.T) {
 					},
 				},
 			},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:                      "game.lt",
-				dominionEnvironmentKey:             "game.lt",
+				envKeyPrefix:                      "game.lt3x8q2",
+				dominionEnvironmentKey:            "game.lt3x8q2",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 				endpointKeyPrefix + "HTTP_ADMIN":  "https://admin.example.com",
 			},
@@ -51,7 +52,6 @@ func TestBuildEnvVars(t *testing.T) {
 		{
 			name: "multiple protocols",
 			given: &config.Suite{
-				Env: "game.lt",
 				Endpoint: map[string]config.Endpoints{
 					"http": {
 						"public": "https://example.com",
@@ -61,19 +61,21 @@ func TestBuildEnvVars(t *testing.T) {
 					},
 				},
 			},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:                      "game.lt",
-				dominionEnvironmentKey:             "game.lt",
+				envKeyPrefix:                      "game.lt3x8q2",
+				dominionEnvironmentKey:            "game.lt3x8q2",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 				endpointKeyPrefix + "GRPC_ADMIN":  "https://grpc.example.com",
 			},
 		},
 		{
-			name:  "no endpoints",
-			given: &config.Suite{Env: "game.lt"},
+			name:    "no endpoints",
+			given:   &config.Suite{},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:           "game.lt",
-				dominionEnvironmentKey: "game.lt",
+				envKeyPrefix:           "game.lt3x8q2",
+				dominionEnvironmentKey: "game.lt3x8q2",
 			},
 		},
 	}
@@ -81,7 +83,7 @@ func TestBuildEnvVars(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			got := BuildEnvVars(tt.given)
+			got := BuildEnvVars(tt.given, tt.envName)
 
 			// then
 			if !reflect.DeepEqual(got, tt.want) {
@@ -93,32 +95,34 @@ func TestBuildEnvVars(t *testing.T) {
 
 func TestBuildTestEnvFlags(t *testing.T) {
 	tests := []struct {
-		name  string
-		given *config.Suite
-		want  map[string]string
+		name    string
+		given   *config.Suite
+		envName string
+		want    map[string]string
 	}{
 		{
 			name: "env and one endpoint",
 			given: &config.Suite{
-				Env: "game.lt",
 				Endpoint: map[string]config.Endpoints{
 					"http": {
 						"public": "https://example.com",
 					},
 				},
 			},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:                      "game.lt",
-				dominionEnvironmentKey:             "game.lt",
+				envKeyPrefix:                      "game.lt3x8q2",
+				dominionEnvironmentKey:            "game.lt3x8q2",
 				endpointKeyPrefix + "HTTP_PUBLIC": "https://example.com",
 			},
 		},
 		{
-			name:  "env only",
-			given: &config.Suite{Env: "game.lt"},
+			name:    "env only",
+			given:   &config.Suite{},
+			envName: "game.lt3x8q2",
 			want: map[string]string{
-				envKeyPrefix:           "game.lt",
-				dominionEnvironmentKey: "game.lt",
+				envKeyPrefix:           "game.lt3x8q2",
+				dominionEnvironmentKey: "game.lt3x8q2",
 			},
 		},
 	}
@@ -126,7 +130,7 @@ func TestBuildTestEnvFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			flags := BuildTestEnvFlags(tt.given)
+			flags := BuildTestEnvFlags(tt.given, tt.envName)
 
 			// then
 			if len(flags) != len(tt.want) {

@@ -15,8 +15,8 @@ import (
 // followed by zero or more alphanumeric characters.
 var endpointNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*$`)
 
-// envPattern validates suite env format: scope.env (e.g., "game.lt").
-var envPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9]*$`)
+// deployNamePattern validates deploy config names: must be {scope}.{{run}} format.
+var deployNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,7}\.\{\{run\}\}$`)
 
 // Validate performs static validation on the entire testplan config.
 // It checks required fields and validates each suite including its deploy config.
@@ -48,6 +48,10 @@ func ValidateSuite(suite *guitarconfig.Suite) error {
 		return fmt.Errorf("parse deploy config %s: %w", suite.Deploy, err)
 	}
 
+	if !deployNamePattern.MatchString(deployCfg.Name) {
+		return fmt.Errorf("suite %q: deploy name must be {scope}.{{run}} format, got %q", suite.Name, deployCfg.Name)
+	}
+
 	if deployCfg.Type != config.EnvironmentTypeTest {
 		return fmt.Errorf("deploy %s type must be %q, got %q", suite.Deploy, config.EnvironmentTypeTest, deployCfg.Type)
 	}
@@ -75,11 +79,8 @@ func validateSuiteFields(index int, s *guitarconfig.Suite) error {
 	if s.Name == "" {
 		return fmt.Errorf("suite[%d]: name is required", index)
 	}
-	if s.Env == "" {
-		return fmt.Errorf("suite[%d]: env is required", index)
-	}
-	if !envPattern.MatchString(s.Env) {
-		return fmt.Errorf("suite[%d]: env %q must be in scope.env format (e.g., game.lt)", index, s.Env)
+	if s.Env != "" {
+		return fmt.Errorf("suite[%d]: env field is no longer supported, remove it from testplan", index)
 	}
 	if s.Deploy == "" {
 		return fmt.Errorf("suite[%d]: deploy is required", index)

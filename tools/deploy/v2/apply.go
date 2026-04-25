@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,6 +29,11 @@ func applyCommand(opts *options) error {
 		return err
 	}
 
+	envName, err := resolvePlaceholders(deployConfig.Name, deployConfig.Type, opts.run)
+	if err != nil {
+		return err
+	}
+
 	serviceConfigs, err := compiler.ReadServiceConfigs(deployConfig)
 	if err != nil {
 		return err
@@ -47,7 +53,7 @@ func applyCommand(opts *options) error {
 		return err
 	}
 
-	fullEnvName, err := NewFullEnvName(opts.scope, strings.TrimSpace(deployConfig.Name))
+	fullEnvName, err := NewFullEnvName(opts.scope, strings.TrimSpace(envName))
 	if err != nil {
 		return err
 	}
@@ -99,6 +105,52 @@ func applyCommand(opts *options) error {
 
 	fmt.Fprintf(stdout, "环境 %s 已应用，状态: %s\n", fullEnvName, state)
 	return nil
+}
+
+const (
+	placeholderRun     = "{{run}}"
+	placeholderPattern = `\{\{[^}]+\}\}`
+)
+
+var placeholderRegexp = regexp.MustCompile(placeholderPattern)
+
+// resolvePlaceholders 处理 deploy config name 中的占位符。
+// 只有 type=test 允许使用 {{run}} 占位符，且必须通过 --run 传入替换值。
+func resolvePlaceholders(name string, envType config.EnvironmentType, run string) (string, error) {
+	hasRun := strings.Contains(name, placeholderRun)
+
+	if !hasRun && run == "" {
+		return name, nil
+	}
+
+	if !hasRun && run != "" {
+		return "", fmt.Errorf("--run 仅用于含 %s 的 deploy 配置", placeholderRun)
+	}
+
+	// name contains {{run}} from here
+	if envType != config.EnvironmentTypeTest {
+		return "", fmt.Errorf("只有 test 类型允许使用 %s 占位符", placeholderRun)
+	}
+
+	if run == "" {
+		return "", fmt.Errorf("deploy 配置含 %s 但未传 --run 参数", placeholderRun)
+	}
+
+	if strings.Count(name, placeholderRun) > 1 {
+		return "", fmt.Errorf("deploy 配置中 %s 占位符出现多次", placeholderRun)
+	}
+
+	// 检测非 {{run}} 的未知占位符
+	withoutRun := strings.ReplaceAll(name, placeholderRun, "")
+	if matches := placeholderRegexp.FindString(withoutRun); matches != "" {
+		return "", fmt.Errorf("deploy 配置含未知占位符 %q，仅支持 %s", matches, placeholderRun)
+	}
+
+	if !envPartRegexp.MatchString(run) {
+		return "", fmt.Errorf("--run 值 %q 不合法，须匹配 %s", run, envPartRegexp.String())
+	}
+
+	return strings.ReplaceAll(name, placeholderRun, run), nil
 }
 
 func resolveImages(ctx context.Context, artifactTargets []string) (map[string]*imagepush.Result, error) {
@@ -156,7 +208,7 @@ func formatState(s deploy.EnvironmentState) string {
 	}
 }
 
-// environmentTypeFromString 将配置文件中的类型字符串转换为 proto 枚举值。
+// environmentTypeFromEnum 将配置文件中的环境类型转换为 proto 枚举值。
 func environmentTypeFromEnum(s config.EnvironmentType) deploy.EnvironmentType {
 	switch s {
 	case config.EnvironmentTypeProd:

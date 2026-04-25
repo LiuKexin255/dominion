@@ -1,4 +1,4 @@
-name: game.lt
+name: game.{{run}}
 desc: "game-session HTTP interface large test"
 type: test
 services:

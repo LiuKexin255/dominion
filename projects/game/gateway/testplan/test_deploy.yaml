@@ -1,4 +1,4 @@
-name: game.glt
+name: game.{{run}}
 desc: "game-gateway interface large test"
 type: test
 services:

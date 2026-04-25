@@ -146,22 +146,22 @@ func TestMongoDBWorkload_Validate(t *testing.T) {
 }
 
 func TestWorkloadNameMethods(t *testing.T) {
-	if got := (&DeploymentWorkload{ServiceName: "svc", App: "app"}).WorkloadName(); got == "" {
+	if got := (&DeploymentWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).WorkloadName(); got == "" {
 		t.Fatalf("WorkloadName() = empty")
 	}
-	if got := (&DeploymentWorkload{ServiceName: "svc", App: "app"}).ServiceResourceName(); got == "" {
+	if got := (&DeploymentWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).ServiceResourceName(); got == "" {
 		t.Fatalf("ServiceResourceName() = empty")
 	}
-	if got := (&HTTPRouteWorkload{ServiceName: "svc", App: "app"}).ResourceName(); got == "" {
+	if got := (&HTTPRouteWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).ResourceName(); got == "" {
 		t.Fatalf("ResourceName() = empty")
 	}
-	if got := (&MongoDBWorkload{ServiceName: "mongo", App: "app"}).ResourceName(); got == "" {
+	if got := (&MongoDBWorkload{ServiceName: "mongo", EnvironmentName: "game.lt", App: "app"}).ResourceName(); got == "" {
 		t.Fatalf("ResourceName() = empty")
 	}
-	if got := (&StatefulWorkload{ServiceName: "svc", App: "app"}).WorkloadName(); got == "" {
+	if got := (&StatefulWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).WorkloadName(); got == "" {
 		t.Fatalf("WorkloadName() = empty")
 	}
-	if got := (&StatefulWorkload{ServiceName: "svc", App: "app"}).ServiceResourceName(); got == "" {
+	if got := (&StatefulWorkload{ServiceName: "svc", EnvironmentName: "game.lt", App: "app"}).ServiceResourceName(); got == "" {
 		t.Fatalf("ServiceResourceName() = empty")
 	}
 }

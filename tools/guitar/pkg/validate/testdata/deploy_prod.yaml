@@ -1,4 +1,4 @@
-name: game.prod
+name: game.{{run}}
 desc: prod deploy
 type: prod
 services:

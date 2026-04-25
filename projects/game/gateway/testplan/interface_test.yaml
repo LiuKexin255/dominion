@@ -23,7 +23,6 @@ description: |
 
 suites:
   - name: default
-    env: game.glt
     deploy: //projects/game/gateway/testplan/test_deploy.yaml
     endpoint:
       http:

@@ -32,7 +32,7 @@ func (w *DeploymentWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindDeployment, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindDeployment, w.EnvironmentName, w.ServiceName)
 }
 
 // ServiceResourceName 返回 deployment 对应 service 的资源名。
@@ -41,7 +41,7 @@ func (w *DeploymentWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
 }
 
 // Validate 校验 deployment workload 字段是否合法。
@@ -104,7 +104,7 @@ func (w *StatefulWorkload) WorkloadName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindStatefulSet, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindStatefulSet, w.EnvironmentName, w.ServiceName)
 }
 
 // ServiceResourceName 返回 statefulset 对应 governing headless service 的资源名。
@@ -113,7 +113,7 @@ func (w *StatefulWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
 }
 
 // Validate 校验 stateful workload 字段是否合法。
@@ -192,7 +192,7 @@ func (w *HTTPRouteWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindHTTPRoute, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindHTTPRoute, w.EnvironmentName, w.ServiceName)
 }
 
 // Validate 校验 HTTPRoute workload 字段是否合法。
@@ -262,7 +262,7 @@ func (w *MongoDBWorkload) ResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindMongoDB, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindMongoDB, w.EnvironmentName, w.ServiceName)
 }
 
 // ServiceResourceName 返回 MongoDB Service 对应的资源名。
@@ -271,7 +271,7 @@ func (w *MongoDBWorkload) ServiceResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindService, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
 }
 
 // SecretResourceName 返回 MongoDB Secret 对应的资源名。
@@ -280,7 +280,7 @@ func (w *MongoDBWorkload) SecretResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindSecret, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindSecret, w.EnvironmentName, w.ServiceName)
 }
 
 // PVCResourceName 返回 MongoDB PVC 对应的资源名。
@@ -289,7 +289,7 @@ func (w *MongoDBWorkload) PVCResourceName() string {
 		return ""
 	}
 
-	return newObjectName(WorkloadKindPVC, w.App, w.ServiceName)
+	return newObjectName(WorkloadKindPVC, w.EnvironmentName, w.ServiceName)
 }
 
 // Validate 校验 MongoDB workload 字段是否合法。

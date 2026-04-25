@@ -2,7 +2,6 @@ name: game-session-large-test
 description: game-session HTTP REST interface test
 suites:
   - name: default
-    env: game.lt
     deploy: //projects/game/testplan/test_deploy.yaml
     endpoint:
       http:

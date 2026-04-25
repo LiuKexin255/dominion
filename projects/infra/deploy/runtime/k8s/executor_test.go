@@ -168,12 +168,12 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 				},
 			},
 			wantPresent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "worker")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "worker")},
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "worker")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "worker")},
 			},
 			wantAbsent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "api")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "api")},
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "api")},
 			},
 		},
 		{
@@ -190,15 +190,15 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 				},
 			},
 			wantPresent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindMongoDB, "demo", "mongo-keep")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "mongo-keep")},
-				Secrets:     []string{newObjectName(WorkloadKindSecret, "demo", "mongo-keep")},
-				PVCs:        []string{newObjectName(WorkloadKindPVC, "demo", "mongo"), newObjectName(WorkloadKindPVC, "demo", "mongo-keep")},
+				Deployments: []string{newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo-keep")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "mongo-keep")},
+				Secrets:     []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo-keep")},
+				PVCs:        []string{newObjectName(WorkloadKindPVC, executorTestEnvName(), "mongo"), newObjectName(WorkloadKindPVC, executorTestEnvName(), "mongo-keep")},
 			},
 			wantAbsent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindMongoDB, "demo", "mongo")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "mongo")},
-				Secrets:     []string{newObjectName(WorkloadKindSecret, "demo", "mongo")},
+				Deployments: []string{newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "mongo")},
+				Secrets:     []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo")},
 			},
 		},
 		{
@@ -223,11 +223,11 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 				},
 			},
 			wantPresent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "api")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "api")},
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "api")},
 			},
 			wantAbsent: pruneResourcePresence{
-				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, "demo", "api")},
+				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, executorTestEnvName(), "api")},
 			},
 		},
 		{
@@ -251,19 +251,19 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 			},
 			desiredState: &domain.DesiredState{},
 			wantPresent: pruneResourcePresence{
-				PVCs: []string{newObjectName(WorkloadKindPVC, "demo", "mongo")},
+				PVCs: []string{newObjectName(WorkloadKindPVC, executorTestEnvName(), "mongo")},
 			},
 			wantAbsent: pruneResourcePresence{
 				Deployments: []string{
-					newObjectName(WorkloadKindDeployment, "demo", "api"),
-					newObjectName(WorkloadKindMongoDB, "demo", "mongo"),
+					newObjectName(WorkloadKindDeployment, executorTestEnvName(), "api"),
+					newObjectName(WorkloadKindMongoDB, executorTestEnvName(), "mongo"),
 				},
 				Services: []string{
-					newObjectName(WorkloadKindService, "demo", "api"),
-					newObjectName(WorkloadKindService, "demo", "mongo"),
+					newObjectName(WorkloadKindService, executorTestEnvName(), "api"),
+					newObjectName(WorkloadKindService, executorTestEnvName(), "mongo"),
 				},
-				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, "demo", "api")},
-				Secrets:    []string{newObjectName(WorkloadKindSecret, "demo", "mongo")},
+				HTTPRoutes: []string{newObjectName(WorkloadKindHTTPRoute, executorTestEnvName(), "api")},
+				Secrets:    []string{newObjectName(WorkloadKindSecret, executorTestEnvName(), "mongo")},
 			},
 		},
 		{
@@ -279,12 +279,12 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 				},
 			},
 			wantPresent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "new-api")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "new-api")},
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "new-api")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "new-api")},
 			},
 			wantAbsent: pruneResourcePresence{
-				Deployments: []string{newObjectName(WorkloadKindDeployment, "demo", "old-api")},
-				Services:    []string{newObjectName(WorkloadKindService, "demo", "old-api")},
+				Deployments: []string{newObjectName(WorkloadKindDeployment, executorTestEnvName(), "old-api")},
+				Services:    []string{newObjectName(WorkloadKindService, executorTestEnvName(), "old-api")},
 			},
 		},
 	}
@@ -614,9 +614,9 @@ func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
 			},
 			wantPresent: pruneResourcePresence{},
 			wantAbsent: pruneResourcePresence{
-				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, "demo", "cache")},
+				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, executorTestEnvName(), "cache")},
 				Services: []string{
-					newObjectName(WorkloadKindService, "demo", "cache"),
+					newObjectName(WorkloadKindService, executorTestEnvName(), "cache"),
 					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 0),
 					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 1),
 				},
@@ -639,9 +639,9 @@ func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
 				},
 			},
 			wantPresent: pruneResourcePresence{
-				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, "demo", "cache")},
+				StatefulSets: []string{newObjectName(WorkloadKindStatefulSet, executorTestEnvName(), "cache")},
 				Services: []string{
-					newObjectName(WorkloadKindService, "demo", "cache"),
+					newObjectName(WorkloadKindService, executorTestEnvName(), "cache"),
 					newInstanceObjectName(WorkloadKindInstanceService, executorTestEnvName(), "cache", 0),
 				},
 				HTTPRoutes: []string{

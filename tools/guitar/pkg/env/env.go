@@ -16,10 +16,10 @@ const (
 )
 
 // BuildEnvVars generates the environment variable map for a suite.
-func BuildEnvVars(suite *config.Suite) map[string]string {
+func BuildEnvVars(suite *config.Suite, envName string) map[string]string {
 	envVars := map[string]string{
-		envKeyPrefix:           suite.Env,
-		dominionEnvironmentKey: suite.Env,
+		envKeyPrefix:           envName,
+		dominionEnvironmentKey: envName,
 	}
 
 	for protocol, endpoints := range suite.Endpoint {
@@ -33,8 +33,8 @@ func BuildEnvVars(suite *config.Suite) map[string]string {
 }
 
 // BuildTestEnvFlags generates bazel test --test_env flags for a suite.
-func BuildTestEnvFlags(suite *config.Suite) []string {
-	envVars := BuildEnvVars(suite)
+func BuildTestEnvFlags(suite *config.Suite, envName string) []string {
+	envVars := BuildEnvVars(suite, envName)
 	if len(envVars) == 0 {
 		return nil
 	}

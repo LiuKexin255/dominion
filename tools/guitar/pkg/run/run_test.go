@@ -1,9 +1,11 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -23,11 +25,12 @@ func TestRun(t *testing.T) {
 		run         func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error
 		assertError func(t *testing.T, err error)
 		assertCalls func(t *testing.T, calls []commandCall)
+		assertLog   func(t *testing.T, output string, calls []commandCall)
 	}{
 		{
 			name: "deploy failure",
 			config: func(t *testing.T, root string) *guitarconfig.Config {
-				return newConfig(t, newSuite(t, root, "suite-a", "alpha.dev", "//case:a"))
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
 				return func(_ context.Context, name string, args ...string) error {
@@ -44,16 +47,18 @@ func TestRun(t *testing.T) {
 				}
 			},
 			assertCalls: func(t *testing.T, calls []commandCall) {
-				if len(calls) != 1 {
-					t.Fatalf("calls = %d, want 1", len(calls))
+				if len(calls) != 2 {
+					t.Fatalf("calls = %d, want 2", len(calls))
 				}
 				assertCommand(t, calls[0], deployBinary, deployApplyCommand)
+				runID := assertDeployApplyWithRun(t, calls[0])
+				assertCleanupEnv(t, calls[1], "game."+runID)
 			},
 		},
 		{
 			name: "test failure with cleanup",
 			config: func(t *testing.T, root string) *guitarconfig.Config {
-				return newConfig(t, newSuite(t, root, "suite-a", "alpha.dev", "//case:a"))
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
 				return func(_ context.Context, name string, args ...string) error {
@@ -75,13 +80,15 @@ func TestRun(t *testing.T) {
 				}
 				assertCommand(t, calls[0], deployBinary, deployApplyCommand)
 				assertCommand(t, calls[1], bazelBinary, bazelTestCommand)
-				assertCommand(t, calls[2], deployBinary, deployDeleteCommand)
+				runID := assertDeployApplyWithRun(t, calls[0])
+				assertTestEnv(t, calls[1], "game."+runID)
+				assertCleanupEnv(t, calls[2], "game."+runID)
 			},
 		},
 		{
 			name: "cleanup failure",
 			config: func(t *testing.T, root string) *guitarconfig.Config {
-				return newConfig(t, newSuite(t, root, "suite-a", "alpha.dev", "//case:a"))
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
 				return func(_ context.Context, name string, args ...string) error {
@@ -101,7 +108,8 @@ func TestRun(t *testing.T) {
 				if len(calls) != 3 {
 					t.Fatalf("calls = %d, want 3", len(calls))
 				}
-				assertCommand(t, calls[2], deployBinary, deployDeleteCommand)
+				runID := assertDeployApplyWithRun(t, calls[0])
+				assertCleanupEnv(t, calls[2], "game."+runID)
 			},
 		},
 		{
@@ -109,8 +117,8 @@ func TestRun(t *testing.T) {
 			config: func(t *testing.T, root string) *guitarconfig.Config {
 				return newConfig(
 					t,
-					newSuite(t, root, "suite-a", "alpha.dev", "//case:a"),
-					newSuite(t, root, "suite-b", "beta.dev", "//case:b"),
+					newSuite(t, root, "suite-a", "//case:a"),
+					newSuite(t, root, "suite-b", "//case:b"),
 				)
 			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
@@ -167,7 +175,7 @@ func TestRun(t *testing.T) {
 		{
 			name: "success",
 			config: func(t *testing.T, root string) *guitarconfig.Config {
-				return newConfig(t, newSuite(t, root, "suite-a", "alpha.dev", "//case:a"))
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
 				return func(_ context.Context, name string, args ...string) error {
@@ -186,18 +194,45 @@ func TestRun(t *testing.T) {
 				}
 				assertCommand(t, calls[0], deployBinary, deployApplyCommand)
 				assertCommand(t, calls[1], bazelBinary, bazelTestCommand)
-				assertCommand(t, calls[2], deployBinary, deployDeleteCommand)
+				runID := assertDeployApplyWithRun(t, calls[0])
+				fullEnvName := "game." + runID
+				assertCleanupEnv(t, calls[2], fullEnvName)
 				if !slices.Contains(calls[1].args, bazelLargeTestConfig) {
 					t.Fatalf("bazel args = %v, want %q", calls[1].args, bazelLargeTestConfig)
 				}
-				if !slices.Contains(calls[1].args, "--test_env=TESTTOOL_ENV=test.env") {
-					t.Fatalf("bazel args = %v, want TESTTOOL_ENV flag", calls[1].args)
-				}
+				assertTestEnv(t, calls[1], fullEnvName)
 				if !slices.Contains(calls[1].args, "//case:a") {
 					t.Fatalf("bazel args = %v, want test target", calls[1].args)
 				}
-				if !slices.Contains(calls[2].args, "test.env") {
-					t.Fatalf("cleanup args = %v, want env name", calls[2].args)
+			},
+			assertLog: func(t *testing.T, output string, calls []commandCall) {
+				runID := deployRunID(t, calls[0])
+				for _, want := range []string{"suite suite-a:", "run=" + runID, "env=game." + runID, "deploy="} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("log output = %q, want %q", output, want)
+					}
+				}
+			},
+		},
+		{
+			name: "run id failure",
+			config: func(t *testing.T, root string) *guitarconfig.Config {
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
+			},
+			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
+				return func(_ context.Context, name string, args ...string) error {
+					*calls = append(*calls, commandCall{name: name, args: append([]string(nil), args...)})
+					return nil
+				}
+			},
+			assertError: func(t *testing.T, err error) {
+				if err == nil || !strings.Contains(err.Error(), "generate run id") {
+					t.Fatalf("Run() error = %v, want run id error", err)
+				}
+			},
+			assertCalls: func(t *testing.T, calls []commandCall) {
+				if len(calls) != 0 {
+					t.Fatalf("calls = %d, want 0", len(calls))
 				}
 			},
 		},
@@ -211,14 +246,30 @@ func TestRun(t *testing.T) {
 			var calls []commandCall
 			originalRunCommand := runCommand
 			runCommand = tt.run(t, &calls)
+			var logOutput bytes.Buffer
+			originalStdout := stdout
+			stdout = &logOutput
+			if tt.name == "run id failure" {
+				originalGenerateRunID := generateRunID
+				generateRunID = func() (string, error) {
+					return "", context.Canceled
+				}
+				defer func() {
+					generateRunID = originalGenerateRunID
+				}()
+			}
 			defer func() {
 				runCommand = originalRunCommand
+				stdout = originalStdout
 			}()
 
 			err := Run(context.Background(), cfg)
 
 			tt.assertError(t, err)
 			tt.assertCalls(t, calls)
+			if tt.assertLog != nil {
+				tt.assertLog(t, logOutput.String(), calls)
+			}
 		})
 	}
 }
@@ -233,12 +284,12 @@ func newConfig(t *testing.T, suites ...*guitarconfig.Suite) *guitarconfig.Config
 	}
 }
 
-func newSuite(t *testing.T, root string, suiteName string, deployName string, testCase string) *guitarconfig.Suite {
+func newSuite(t *testing.T, root string, suiteName string, testCase string) *guitarconfig.Suite {
 	t.Helper()
 
 	deployPath := filepath.Join(root, suiteName+".yaml")
 	raw := strings.Join([]string{
-		"name: " + deployName,
+		"name: game.{{run}}",
 		"desc: test deploy",
 		"type: test",
 		"services:",
@@ -256,7 +307,6 @@ func newSuite(t *testing.T, root string, suiteName string, deployName string, te
 
 	return &guitarconfig.Suite{
 		Name:   suiteName,
-		Env:    "test.env",
 		Deploy: deployPath,
 		Cases:  []string{testCase},
 	}
@@ -298,5 +348,51 @@ func assertCommand(t *testing.T, call commandCall, wantName string, wantArg stri
 	}
 	if len(call.args) == 0 || call.args[0] != wantArg {
 		t.Fatalf("command args = %v, want first arg %q", call.args, wantArg)
+	}
+}
+
+func assertDeployApplyWithRun(t *testing.T, call commandCall) string {
+	t.Helper()
+
+	assertCommand(t, call, deployBinary, deployApplyCommand)
+	runID := deployRunID(t, call)
+	if !regexp.MustCompile(`^lt[a-z0-9]{6}$`).MatchString(runID) {
+		t.Fatalf("deploy args = %v, want run ID format", call.args)
+	}
+	return runID
+}
+
+func deployRunID(t *testing.T, call commandCall) string {
+	t.Helper()
+
+	for i := 0; i+1 < len(call.args); i++ {
+		if call.args[i] == "--run" {
+			return call.args[i+1]
+		}
+	}
+	t.Fatalf("deploy args = %v, want --run flag", call.args)
+	return ""
+}
+
+func assertCleanupEnv(t *testing.T, call commandCall, wantEnvName string) {
+	t.Helper()
+
+	assertCommand(t, call, deployBinary, deployDeleteCommand)
+	if !slices.Contains(call.args, wantEnvName) {
+		t.Fatalf("cleanup args = %v, want %q", call.args, wantEnvName)
+	}
+	if slices.Contains(call.args, "test.env") {
+		t.Fatalf("cleanup args = %v, must not use suite Env", call.args)
+	}
+}
+
+func assertTestEnv(t *testing.T, call commandCall, wantEnvName string) {
+	t.Helper()
+
+	for _, key := range []string{"TESTTOOL_ENV", "DOMINION_ENVIRONMENT"} {
+		flag := "--test_env=" + key + "=" + wantEnvName
+		if !slices.Contains(call.args, flag) {
+			t.Fatalf("bazel args = %v, want %q", call.args, flag)
+		}
 	}
 }

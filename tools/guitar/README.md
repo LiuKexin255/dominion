@@ -44,3 +44,5 @@ guitar run <plan.yaml>
 ### 测试计划格式
 
 详见 `design/guitar_yaml_testplan.md`。
+
+注意：suite 中不再包含 `env` 字段。环境名由 `guitar run` 为每个 suite 自动生成（lt + 6 位 base36 随机串），并通过环境变量注入测试进程。

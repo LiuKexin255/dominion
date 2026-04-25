@@ -541,7 +541,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					App:              "platform",
 					EnvType:          domain.EnvironmentTypeProd,
 					Hostnames:        []string{"api.example.com"},
-					BackendService:   newObjectName(WorkloadKindService, "platform", "api"),
+					BackendService:   newObjectName(WorkloadKindService, "tstscope.dev", "api"),
 					GatewayName:      "test-gateway",
 					GatewayNamespace: "test-gw-ns",
 					Matches: []*HTTPRoutePathMatch{{
