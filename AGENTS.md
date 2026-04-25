@@ -39,7 +39,7 @@
 2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
 3. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
 4. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
-5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译；**禁止**自己编写 `proto` 和 `grpc stub` 代码。
+5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译。仓库内**禁止**保存 `proto 和 grpc` 生成的代码。
 6. golang 大型测试的 `target` 使用 `go_largetest(//tools/go:defs.bzl)` 规则，单元测试使用 `go_unittest` （默认生成）。
 
 ##### 格式化与依赖更新
@@ -53,8 +53,11 @@ Golang 代码格式化与依赖更新步骤如下：
 
 #### Typescript/Javascript
 
-1. `npnm` 使用 `bazel run @pnpm --dir {project_path}` 来执行。
-2. `ts/js` 项目使用 `npnm` monorepo 仓库来管理依赖，并且子包的依赖全部是 `workspace:*` 以保持和主包版本一致。
+1. 执行 `pnpm` 命令使用 `bazel run @pnpm -- --dir {project_path}` 来执行(因为是 `bazel` 管理的 `pnpm` 所以执行有变更操作时一定要带上 `--dir` 参数，并且是绝对路径)。
+2. 使用 `bazel` 编译 `ts/js` 项目，而不是使用 `pnpm` 直接编译。
+2. `ts/js` 项目使用 `pnpm` monorepo 仓库来管理依赖，根目录的 `package.json` 管理所有包的依赖，不得在子包内保存 `pnpm-lock.yaml` 文件。在 `pnpm-workspace.yaml` 中使用 `catalog` 统一主包和所有子包依赖的版本（除少数需要在 `package.json` 中直接声明版本号的依赖，例如 `typescript`。但也要保持与 `catalog` 版本一致）。
+4. 修改 `package.json` 以后，使用 `pnpm up` 来更新所有依赖。不要手动修改 `pnpm-lock.yaml`。
+5. 对于 `proto` 依赖，使用 `bazel` 来进行依赖管理和编译（使用 `protobuf_ts rules`）。与 `golang` 类似，仓库内 **禁止** 保存 `proto 和 grpc` 生成的代码。
 
 ## 开发计划
 

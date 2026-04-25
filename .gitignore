@@ -1,5 +1,4 @@
 bazel-*
-bazel-bin/projects/game/windows_agent/proto/
 .env/*
 .sisyphus
 node_modules

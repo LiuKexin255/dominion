@@ -1,9 +1,0 @@
-{
-  "version": "8.1",
-  "variant": "essentials",
-  "source_url": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
-  "sha256": "1a65d5b0b10d8d9a81d2824a3538046a40ed3607c906b335a166add87613f705",
-  "download_date": "2026-04-24",
-  "build_date": "2026-03-17",
-  "includes_libx264": true
-}

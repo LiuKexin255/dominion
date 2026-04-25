@@ -43,3 +43,5 @@ alias(
 
 # 生成 node_modules（运行时需要）
 npm_link_all_packages()
+
+exports_files(["pnpm-workspace.yaml"])
