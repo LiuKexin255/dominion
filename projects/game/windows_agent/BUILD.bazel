@@ -1,4 +1,4 @@
-load("//tools/dev/wails:defs.bzl", "wails_windows_package")
+load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
 
 exports_files([
@@ -6,7 +6,7 @@ exports_files([
     "resources/icon.ico",
 ])
 
-wails_windows_package(
+windows_agent_package(
     name = "windows_agent_win_zip",
     binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",

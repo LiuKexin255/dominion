@@ -1,6 +1,6 @@
-_ZIP_TOOL = Label("//tools/dev/wails:zip_package.py")
+_ZIP_TOOL = Label("//projects/game/windows_agent/release:zip_package")
 
-def _wails_zip_impl(ctx):
+def _windows_agent_package_impl(ctx):
     binary = ctx.file.binary
     ffmpeg = ctx.file.ffmpeg
     input_helper = ctx.file.input_helper
@@ -9,28 +9,28 @@ def _wails_zip_impl(ctx):
 
     output = ctx.actions.declare_file(ctx.attr.name + ".zip")
 
-    entries = [
-        "windows-agent.exe=" + binary.path,
-        "resources/bin/ffmpeg.exe=" + ffmpeg.path,
-        "resources/bin/input-helper.exe=" + input_helper.path,
-        "resources/bin/ffmpeg-metadata.json=" + metadata.path,
-        "resources/icon.ico=" + icon.path,
-    ]
+    args = ctx.actions.args()
+    args.add("-output", output.path)
+    args.add("-entry", "windows-agent.exe=" + binary.path)
+    args.add("-entry", "resources/bin/ffmpeg.exe=" + ffmpeg.path)
+    args.add("-entry", "resources/bin/input-helper.exe=" + input_helper.path)
+    args.add("-entry", "resources/bin/ffmpeg-metadata.json=" + metadata.path)
+    args.add("-entry", "resources/icon.ico=" + icon.path)
+    args.add("-checksum", "resources/bin/ffmpeg.exe.sha256=resources/bin/ffmpeg.exe")
 
     ctx.actions.run(
-        executable = "python3",
+        executable = ctx.executable._zip_tool,
         inputs = [binary, ffmpeg, input_helper, metadata, icon],
         outputs = [output],
-        arguments = [ctx.file._zip_tool.path, output.path, "."] + entries,
-        tools = [ctx.file._zip_tool],
-        mnemonic = "WailsZipPackage",
+        arguments = [args],
+        mnemonic = "WindowsAgentPackage",
         progress_message = "Creating portable zip: " + output.basename,
     )
 
     return [DefaultInfo(files = depset([output]))]
 
-_wails_zip = rule(
-    implementation = _wails_zip_impl,
+_windows_agent_package = rule(
+    implementation = _windows_agent_package_impl,
     attrs = {
         "binary": attr.label(
             mandatory = True,
@@ -56,14 +56,13 @@ _wails_zip = rule(
         ),
         "_zip_tool": attr.label(
             default = _ZIP_TOOL,
-            allow_single_file = True,
+            executable = True,
             cfg = "exec",
         ),
     },
 )
 
-
-def wails_windows_package(
+def windows_agent_package(
         name,
         binary,
         ffmpeg,
@@ -87,7 +86,7 @@ def wails_windows_package(
     if visibility:
         zip_kwargs["visibility"] = visibility
 
-    _wails_zip(
+    _windows_agent_package(
         name = name,
         binary = binary,
         ffmpeg = ffmpeg,
