@@ -97,4 +97,4 @@ bazel run @pnpm -- --dir /mnt/code/dominion/projects/game/windows_agent/frontend
 - `frontend/dist/` — Vite 构建输出
 - `assets/frontend_dist` — 由 Bazel action 生成的 asset handoff 产物
 
-已在 `frontend/.gitignore` 中配置忽略 `/dist`，本地运行 Bazel 构建后也不会误提交。
+根目录 `.gitignore` 已配置忽略 `node_modules`，Bazel 生成产物位于 `bazel-*` 目录下，不会被提交。
