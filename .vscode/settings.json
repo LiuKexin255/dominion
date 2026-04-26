@@ -4,8 +4,8 @@
         "GOPACKAGESDRIVER": "${workspaceFolder}/tools/go/gopackagesdriver.sh"
     },
     "yaml.schemas": {
-        "tools/deploy/pkg/schema/service.schema.json": "service.yaml",
-        "tools/deploy/pkg/schema/deploy.schema.json": "deploy.yaml"
+        "tools/release/deploy/pkg/schema/service.schema.json": "service.yaml",
+        "tools/release/deploy/pkg/schema/deploy.schema.json": "deploy.yaml"
     },
     "go.testFlags": [
         "-v"
