@@ -4,7 +4,6 @@ def _windows_agent_package_impl(ctx):
     binary = ctx.file.binary
     ffmpeg = ctx.file.ffmpeg
     input_helper = ctx.file.input_helper
-    metadata = ctx.file.metadata
     icon = ctx.file.icon
 
     output = ctx.actions.declare_file(ctx.attr.name + ".zip")
@@ -14,13 +13,12 @@ def _windows_agent_package_impl(ctx):
     args.add("-entry", "windows-agent.exe=" + binary.path)
     args.add("-entry", "resources/bin/ffmpeg.exe=" + ffmpeg.path)
     args.add("-entry", "resources/bin/input-helper.exe=" + input_helper.path)
-    args.add("-entry", "resources/bin/ffmpeg-metadata.json=" + metadata.path)
     args.add("-entry", "resources/icon.ico=" + icon.path)
     args.add("-checksum", "resources/bin/ffmpeg.exe.sha256=resources/bin/ffmpeg.exe")
 
     ctx.actions.run(
         executable = ctx.executable._zip_tool,
-        inputs = [binary, ffmpeg, input_helper, metadata, icon],
+        inputs = [binary, ffmpeg, input_helper, icon],
         outputs = [output],
         arguments = [args],
         mnemonic = "WindowsAgentPackage",
@@ -46,10 +44,6 @@ _windows_agent_package = rule(
             allow_single_file = True,
             cfg = "target",
         ),
-        "metadata": attr.label(
-            mandatory = True,
-            allow_single_file = True,
-        ),
         "icon": attr.label(
             mandatory = True,
             allow_single_file = True,
@@ -67,7 +61,6 @@ def windows_agent_package(
         binary,
         ffmpeg,
         input_helper,
-        metadata,
         icon,
         **kwargs):
     """Packages a pre-built Windows binary with resources into a portable zip.
@@ -77,7 +70,6 @@ def windows_agent_package(
         binary: Label of a go_binary (goos=windows, goarch=amd64).
         ffmpeg: Label of the ffmpeg.exe file.
         input_helper: Label of the input-helper binary (goos=windows).
-        metadata: Label of the ffmpeg-metadata.json file.
         icon: Label of the icon.ico file.
     """
     visibility = kwargs.pop("visibility", None)
@@ -91,7 +83,6 @@ def windows_agent_package(
         binary = binary,
         ffmpeg = ffmpeg,
         input_helper = input_helper,
-        metadata = metadata,
         icon = icon,
         **zip_kwargs
     )

@@ -2,7 +2,6 @@ load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
 
 exports_files([
-    "resources/bin/ffmpeg-metadata.json",
     "resources/icon.ico",
 ])
 
@@ -12,7 +11,6 @@ windows_agent_package(
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent_helper/input:input_helper",
-    metadata = "resources/bin/ffmpeg-metadata.json",
     visibility = ["//visibility:public"],
 )
 

@@ -486,7 +486,6 @@ wails_windows_package(
     input_helper = "//projects/game/windows_agent_helper/input:input_helper",
     resources = [
         "resources/icon.ico",
-        "resources/bin/ffmpeg-metadata.json",
     ],
     out = "windows-agent-win.zip",
 )
@@ -494,10 +493,10 @@ wails_windows_package(
 
 rule 职责：
 
-1. 声明 Wails CLI、ffmpeg、input helper、前端资源、Go 源码、图标和 metadata 为 inputs。
+1. 声明 Wails CLI、ffmpeg、input helper、前端资源、Go 源码和图标为 inputs。
 2. 使用 `ctx.actions.run` 调用固定版本 Wails CLI 或受控 package helper。
 3. 将 Wails 构建输出写入 declared directory。
-4. 将 `ffmpeg.exe`、`input-helper.exe`、metadata 复制到稳定的 `resources/bin/` 布局。
+4. 将 `ffmpeg.exe`、`input-helper.exe` 复制到稳定的 `resources/bin/` 布局。
 5. 使用 Bazel 管理的 zipper 或 `rules_pkg` 生成 portable zip。
 6. 输出 `DefaultInfo(files = depset([zip]))`，供发布 target 依赖。
 
@@ -538,8 +537,7 @@ windows-agent-0.1.0-windows-amd64.zip
   │   └── bin/
   │       ├── ffmpeg.exe
   │       ├── input-helper.exe
-  │       ├── ffmpeg.exe.sha256
-  │       └── ffmpeg-metadata.json
+  │       └── ffmpeg.exe.sha256
   ├── manifest.json
   └── SHA256SUMS
 ```
@@ -669,9 +667,7 @@ projects/game/windows_agent/
   │   ├── vite.config.ts
   │   └── src/
   ├── resources/
-  │   ├── icon.ico
-  │   └── bin/
-  │       └── ffmpeg-metadata.json
+  │   └── icon.ico
   └── release/
       ├── BUILD.bazel
       └── *.go
