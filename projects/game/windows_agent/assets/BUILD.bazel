@@ -1,9 +1,24 @@
+# keep
 load("@rules_go//go:def.bzl", "go_library")
+load("//projects/game/windows_agent/assets:defs.bzl", "frontend_embed_assets")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+frontend_embed_assets(
+    name = "frontend_dist",
+    src = "//projects/game/windows_agent/frontend:dist",
+    out = "frontend_dist",
+)
 
 go_library(
     name = "assets",
     srcs = ["assets.go"],
-    embedsrcs = glob(["frontend_dist/**"]),
+    embedsrcs = [":frontend_dist"],  # keep
     importpath = "dominion/projects/game/windows_agent/assets",
     visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "assets_test",
+    srcs = ["assets_test.go"],
+    embed = [":assets"],
 )
