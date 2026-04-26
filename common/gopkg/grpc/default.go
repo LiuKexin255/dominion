@@ -3,8 +3,8 @@ package grpc
 import (
 	"time"
 
-	"dominion/pkg/grpc/solver"
-	grpctls "dominion/pkg/grpc/tls"
+	"dominion/common/gopkg/grpc/solver"
+	grpctls "dominion/common/gopkg/grpc/tls"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"

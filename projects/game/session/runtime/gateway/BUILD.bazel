@@ -9,7 +9,7 @@ go_library(
     ],
     importpath = "dominion/projects/game/session/runtime/gateway",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/solver"],
+    deps = ["//common/gopkg/solver"],
 )
 
 go_unittest(
@@ -19,5 +19,5 @@ go_unittest(
         "registry_test.go",
     ],
     embed = [":gateway"],
-    deps = ["//pkg/solver"],
+    deps = ["//common/gopkg/solver"],
 )

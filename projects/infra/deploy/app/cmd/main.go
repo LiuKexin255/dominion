@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"dominion/pkg/mongo"
+	"dominion/common/gopkg/mongo"
 	"dominion/projects/infra/deploy/app"
 	"dominion/projects/infra/deploy/domain"
 	"dominion/projects/infra/deploy/runtime/k8s"

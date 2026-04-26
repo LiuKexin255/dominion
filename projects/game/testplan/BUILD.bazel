@@ -12,8 +12,8 @@ go_largetest(
         "SESSION_TOKEN_SECRET": "dev-session-token-secret",
     },
     deps = [
-        "//pkg/solver",
-        "//pkg/testtool",
+        "//common/gopkg/solver",
+        "//common/gopkg/testtool",
         "//projects/game/gateway",
         "//projects/game/pkg/token",
         "//projects/game/session",
@@ -28,7 +28,7 @@ go_library(
     importpath = "dominion/projects/game/testplan",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/testtool",
+        "//common/gopkg/testtool",
         "//projects/game/session",
         "@org_golang_google_protobuf//encoding/protojson",
     ],

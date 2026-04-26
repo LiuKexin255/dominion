@@ -7,8 +7,8 @@ go_largetest(
         "interface_test.go",
     ],
     deps = [
-        "//pkg/solver",
-        "//pkg/testtool",
+        "//common/gopkg/solver",
+        "//common/gopkg/testtool",
         "//projects/game/gateway",
         "//projects/game/pkg/token",
         "//projects/game/session",

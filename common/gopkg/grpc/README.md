@@ -1,6 +1,6 @@
-# pkg/grpc
+# common/gopkg/grpc
 
-`pkg/grpc` 是仓库内 grpc 相关扩展或插件的统一目录。
+`common/gopkg/grpc` 是仓库内 grpc 相关扩展或插件的统一目录。
 
 凡是对 grpc client/server 的公共增强能力，统一放在该目录下维护，避免分散在业务代码或其他工具包中重复实现。
 
@@ -9,7 +9,7 @@
 1. 聚合入口。
 2. 目录说明。
 
-当前阶段的聚合入口由 `default.go` 提供，具体 resolver / dial / target / env / k8s 实现统一放在 `pkg/grpc/solver` 子目录中。
+当前阶段的聚合入口由 `default.go` 提供，具体 resolver / dial / target / env / k8s 实现统一放在 `common/gopkg/grpc/solver` 子目录中。
 
 ## 目标
 
@@ -21,7 +21,7 @@
 
 ## 边界
 
-`pkg/grpc` 负责 grpc 扩展能力本身，不负责具体业务协议实现。
+`common/gopkg/grpc` 负责 grpc 扩展能力本身，不负责具体业务协议实现。
 
 例如：
 
@@ -36,12 +36,12 @@
 
 ## TLS 支持
 
-`pkg/grpc/tls` 包为 gRPC 提供标准的 TLS 凭据。
+`common/gopkg/grpc/tls` 包为 gRPC 提供标准的 TLS 凭据。
 
 ### 使用示例
 
 ```go
-import grpctls "dominion/pkg/grpc/tls"
+import grpctls "dominion/common/gopkg/grpc/tls"
 
 serverConfig := &grpctls.ServerConfig{
     CertFile: "/etc/tls/tls.crt",
@@ -56,7 +56,7 @@ creds, err := grpctls.NewServerTransportCredentials(serverConfig)
 使用 `Default()` 进行标准配置装配：
 
 ```go
-import "dominion/pkg/grpc"
+import "dominion/common/gopkg/grpc"
 
 opts, err := grpc.Default(grpc.DefaultConfig{
     ServerTLS: serverConfig,

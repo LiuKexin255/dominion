@@ -7,10 +7,10 @@ go_library(
         "dial.go",
         "resolver.go",
     ],
-    importpath = "dominion/pkg/grpc/solver",
+    importpath = "dominion/common/gopkg/grpc/solver",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/solver",
+        "//common/gopkg/solver",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//keepalive",
@@ -26,7 +26,7 @@ go_unittest(
     ],
     embed = [":solver"],
     deps = [
-        "//pkg/solver",
+        "//common/gopkg/solver",
         "@org_golang_google_grpc//resolver",
         "@org_golang_google_grpc//serviceconfig",
     ],

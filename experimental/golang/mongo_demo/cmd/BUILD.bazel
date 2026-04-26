@@ -11,8 +11,8 @@ go_library(
     deps = [
         "//experimental/golang/mongo_demo",
         "//experimental/golang/mongo_demo/storage",
-        "//pkg/grpc",
-        "//pkg/mongo",
+        "//common/gopkg/grpc",
+        "//common/gopkg/mongo",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",

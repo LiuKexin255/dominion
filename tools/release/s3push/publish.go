@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"dominion/pkg/s3"
+	"dominion/common/gopkg/s3"
 
 	"github.com/minio/minio-go/v7"
 )

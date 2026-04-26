@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"dominion/pkg/solver"
-	"dominion/pkg/testtool"
+	"dominion/common/gopkg/solver"
+	"dominion/common/gopkg/testtool"
 	gw "dominion/projects/game/gateway"
 	"dominion/projects/game/pkg/token"
 	session "dominion/projects/game/session"

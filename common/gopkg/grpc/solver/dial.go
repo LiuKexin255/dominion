@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

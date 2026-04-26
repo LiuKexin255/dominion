@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 )

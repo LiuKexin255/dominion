@@ -71,7 +71,7 @@ suites:
 * `TESTTOOL_ENDPOINT_<PROTOCOL>_<NAME>`：测试入口 URL（如 `TESTTOOL_ENDPOINT_HTTP_PUBLIC`）
 
 ```go
-import "dominion/pkg/testtool"
+import "dominion/common/gopkg/testtool"
 
 sutHostURL := testtool.MustEndpoint("http", "public")
 envName := testtool.MustEnv()

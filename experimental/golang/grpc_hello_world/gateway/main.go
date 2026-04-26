@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	"dominion/experimental/golang/grpc_hello_world"
-	pgrpc "dominion/pkg/grpc"
-	"dominion/pkg/grpc/solver"
+	pgrpc "dominion/common/gopkg/grpc"
+	"dominion/common/gopkg/grpc/solver"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"

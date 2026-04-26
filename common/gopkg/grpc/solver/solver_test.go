@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/serviceconfig"

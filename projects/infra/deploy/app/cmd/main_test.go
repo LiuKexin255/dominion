@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"dominion/pkg/mongo"
+	"dominion/common/gopkg/mongo"
 	"dominion/projects/infra/deploy/domain"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"

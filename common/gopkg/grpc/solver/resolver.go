@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
 )

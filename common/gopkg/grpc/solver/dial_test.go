@@ -3,7 +3,7 @@ package solver_test
 import (
 	"testing"
 
-	"dominion/pkg/grpc/solver"
+	"dominion/common/gopkg/grpc/solver"
 )
 
 func TestURI(t *testing.T) {

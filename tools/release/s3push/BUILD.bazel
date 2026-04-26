@@ -13,7 +13,7 @@ go_library(
     importpath = "dominion/tools/release/s3push",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/s3",
+        "//common/gopkg/s3",
         "@com_github_minio_minio_go_v7//:minio-go",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],

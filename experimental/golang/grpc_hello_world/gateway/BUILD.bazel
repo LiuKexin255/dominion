@@ -10,8 +10,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//experimental/golang/grpc_hello_world",
-        "//pkg/grpc",
-        "//pkg/grpc/solver",
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
     ],

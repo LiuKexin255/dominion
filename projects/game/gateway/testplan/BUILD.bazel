@@ -8,8 +8,8 @@ go_largetest(
         "SESSION_TOKEN_SECRET": "dev-session-token-secret",
     },
     deps = [
-        "//pkg/solver",
-        "//pkg/testtool",
+        "//common/gopkg/solver",
+        "//common/gopkg/testtool",
         "//projects/game/gateway",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/testplan/fakeagent",

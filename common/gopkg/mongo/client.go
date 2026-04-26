@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"

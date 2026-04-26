@@ -4,7 +4,7 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "tls",
     srcs = ["tls.go"],
-    importpath = "dominion/pkg/grpc/tls",
+    importpath = "dominion/common/gopkg/grpc/tls",
     visibility = ["//visibility:public"],
     deps = ["@org_golang_google_grpc//credentials"],
 )

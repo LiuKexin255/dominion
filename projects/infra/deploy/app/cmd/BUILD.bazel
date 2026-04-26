@@ -10,7 +10,7 @@ go_library(
     importpath = "dominion/projects/infra/deploy/app/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//pkg/mongo",
+        "//common/gopkg/mongo",
         "//projects/infra/deploy/app",
         "//projects/infra/deploy/domain",
         "//projects/infra/deploy/runtime/k8s",
@@ -30,7 +30,7 @@ go_unittest(
     srcs = ["main_test.go"],
     embed = [":cmd_lib"],
     deps = [
-        "//pkg/mongo",
+        "//common/gopkg/mongo",
         "//projects/infra/deploy/domain",
         "@org_mongodb_go_mongo_driver//mongo",
     ],

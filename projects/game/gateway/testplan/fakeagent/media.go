@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"dominion/pkg/s3"
+	"dominion/common/gopkg/s3"
 
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/minio/minio-go/v7"

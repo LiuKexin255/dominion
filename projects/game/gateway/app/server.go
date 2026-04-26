@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"dominion/pkg/grpc"
+	"dominion/common/gopkg/grpc"
 	"dominion/projects/game/gateway"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"

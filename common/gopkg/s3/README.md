@@ -1,11 +1,11 @@
-# pkg/s3
+# common/gopkg/s3
 
 SeaweedFS S3 客户端封装。
 
 ## 使用
 
 ```go
-import "dominion/pkg/s3"
+import "dominion/common/gopkg/s3"
 
 // 从环境变量读取凭证（默认行为）
 client, err := s3.NewS3Client()

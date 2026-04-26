@@ -12,7 +12,7 @@ go_library(
         "stateful_resolver.go",
         "target.go",
     ],
-    importpath = "dominion/pkg/solver",
+    importpath = "dominion/common/gopkg/solver",
     visibility = ["//visibility:public"],
     deps = [
         "//projects/infra/deploy",
