@@ -2,13 +2,23 @@
 
 SeaweedFS S3 客户端封装。
 
-## 本地测试
+## 使用
 
-测试环境未预置 S3 凭证。本地运行需要访问 S3 的测试时，手动设置只读凭证：
+```go
+import "dominion/pkg/s3"
 
-```bash
-export S3_ACCESS_KEY=readonly
-export S3_SECRET_KEY=Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ
+// 从环境变量读取凭证（默认行为）
+client, err := s3.NewS3Client()
+
+// 通过 option 显式指定 region、accessKey、secretKey
+client, err := s3.NewS3Client(
+    s3.WithRegion("us-east-1"),
+    s3.WithAccessKey("readonly"),
+    s3.WithSecretKey("Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ"),
+)
 ```
 
-`NewS3Client` 通过 `S3_ACCESS_KEY` 和 `S3_SECRET_KEY` 环境变量读取凭证，连接 SeaweedFS S3 网关。
+`NewS3Client` 支持通过 `ClientOption` 函数式选项配置：
+- `WithRegion(string)` — 设置 S3 region，未设置时默认为 `us-east-1`
+- `WithAccessKey(string)` — 设置 access key，未设置时从环境变量 `S3_ACCESS_KEY` 读取
+- `WithSecretKey(string)` — 设置 secret key，未设置时从环境变量 `S3_SECRET_KEY` 读取

@@ -101,7 +101,7 @@ func TestS3Bucket(t *testing.T) {
 	got := s3Bucket
 
 	// then
-	want := "CHANGE_ME"
+	want := "artifacts"
 	if got != want {
 		t.Fatalf("s3Bucket = %q, want %q", got, want)
 	}
@@ -135,7 +135,7 @@ func TestPublish(t *testing.T) {
 				mustWriteFile(t, filepath.Join(dir, sha256SumsFile), "hash  app.zip")
 			},
 			wantKeys:   []string{"my-app/1.0.0/app.zip", "my-app/1.0.0/manifest.json", "my-app/1.0.0/SHA256SUMS"},
-			wantBucket: "CHANGE_ME",
+			wantBucket: "artifacts",
 		},
 		{
 			name: "multiple artifacts uploads in correct order",
@@ -155,7 +155,7 @@ func TestPublish(t *testing.T) {
 				mustWriteFile(t, filepath.Join(dir, sha256SumsFile), "hash  tool")
 			},
 			wantKeys:   []string{"tool/2.5.0/tool-linux", "tool/2.5.0/tool.exe", "tool/2.5.0/manifest.json", "tool/2.5.0/SHA256SUMS"},
-			wantBucket: "CHANGE_ME",
+			wantBucket: "artifacts",
 		},
 		{
 			name: "upload failure returns error with object key",

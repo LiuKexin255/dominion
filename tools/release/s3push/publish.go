@@ -28,7 +28,7 @@ type S3Uploader struct {
 
 // NewS3Uploader creates an S3Uploader by connecting via pkg/s3.
 func NewS3Uploader() (*S3Uploader, error) {
-	client, err := s3.NewS3Client("")
+	client, err := s3.NewS3Client()
 	if err != nil {
 		return nil, fmt.Errorf("create S3 client: %w", err)
 	}
