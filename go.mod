@@ -8,6 +8,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	go.mongodb.org/mongo-driver v1.17.9
 	google.golang.org/grpc v1.79.1
+	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.35.3
 	sigs.k8s.io/gateway-api v1.0.0
 )
@@ -80,7 +81,6 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20260108192941-914a6e750570 // indirect
@@ -105,5 +105,4 @@ require (
 	google.golang.org/protobuf v1.36.11
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
-	nhooyr.io/websocket v1.8.17
 )

@@ -1,4 +1,5 @@
 load("//tools/dev/wails:defs.bzl", "wails_windows_package")
+load("//tools/release:defs.bzl", "s3_artifacts_push")
 
 exports_files([
     "resources/bin/ffmpeg-metadata.json",
@@ -12,5 +13,14 @@ wails_windows_package(
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent_helper/input:input_helper",
     metadata = "resources/bin/ffmpeg-metadata.json",
+    visibility = ["//visibility:public"],
+)
+
+s3_artifacts_push(
+    name = "windows_agent_push",
+    artifacts = [
+        ":windows_agent_win_zip",
+    ],
+    manifest = "release.yaml",
     visibility = ["//visibility:public"],
 )

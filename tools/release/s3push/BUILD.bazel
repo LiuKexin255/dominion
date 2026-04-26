@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "s3push_lib",
+    srcs = [
+        "main.go",
+        "manifest.go",
+        "publish.go",
+        "runfiles.go",
+        "staging.go",
+    ],
+    importpath = "dominion/tools/release/s3push",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/s3",
+        "@com_github_minio_minio_go_v7//:minio-go",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_binary(
+    name = "s3push",
+    embed = [":s3push_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "s3push_test",
+    srcs = [
+        "manifest_test.go",
+        "publish_test.go",
+        "runfiles_test.go",
+        "staging_test.go",
+    ],
+    embed = [":s3push_lib"],
+)
