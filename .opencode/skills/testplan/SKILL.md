@@ -147,6 +147,6 @@ guitar run <plan.yaml>
 
 - `styles/large_test.md`
 - `design/guitar_yaml_testplan.md`
-- `tools/guitar/README.md`
-- `tools/deploy/README.md`
+- `tools/test/guitar/README.md`
+- `tools/release/deploy/README.md`
 - `projects/game/testplan/interface_test.yaml`

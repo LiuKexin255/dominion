@@ -1,5 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/go:defs.bzl", "go_unittest")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "token",

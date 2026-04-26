@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "validate",
+    srcs = ["validate.go"],
+    importpath = "dominion/tools/test/guitar/pkg/validate",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/release/deploy/pkg/config",
+        "//tools/release/deploy/pkg/workspace",
+        "//tools/test/guitar/pkg/config",
+    ],
+)
+
+go_unittest(
+    name = "validate_test",
+    srcs = ["validate_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":validate"],
+    deps = ["//tools/test/guitar/pkg/config"],
+)

@@ -288,6 +288,28 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//third_party/ffmpeg:defs.bzl%ffmpeg_windows_amd64": {
+      "general": {
+        "bzlTransitiveDigest": "3w58pdh2Tdpd54Ryo3CYDqBbCRHr766jSoYROihi7v4=",
+        "usagesDigest": "YyKybeZLGjCgxZcy6ZYLDmJzGw3OKKBTud7HvziBltw=",
+        "recordedInputs": [
+          "REPO_MAPPING:,bazel_tools bazel_tools"
+        ],
+        "generatedRepoSpecs": {
+          "ffmpeg_windows_amd64": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "urls": [
+                "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+              ],
+              "sha256": "8748283d821613d930b0e7be685aaa9df4ca6f0ad4d0c42fd02622b3623463c6",
+              "strip_prefix": "ffmpeg-8.1-essentials_build",
+              "build_file_content": "exports_files([\n    \"bin/ffmpeg.exe\",\n])\n"
+            }
+          }
+        }
+      }
+    },
     "@@aspect_rules_ts+//ts:extensions.bzl%ext": {
       "general": {
         "bzlTransitiveDigest": "CWZ/22Tg68/oJoCxW/joGNcGBQkyrSo0L9J+/elsrn0=",
@@ -932,7 +954,7 @@
     },
     "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
       "general": {
-        "bzlTransitiveDigest": "BGbDPK0hhEedtondWXzPCMTfuQ78aTN7O5qHqQOuNF4=",
+        "bzlTransitiveDigest": "FLgKGE3lXVtDUFGSfdNeAYvxOxr8VPQAtVdHgBvlkfE=",
         "usagesDigest": "v4We18mWSPeKV4GPp9Gne78W+jZOgP2pC1i4UN9br1g=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",

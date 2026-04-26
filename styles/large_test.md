@@ -23,7 +23,7 @@
 * name：测试计划名
 * suites：测试套件列表，每个 suite 包含：
   * env：测试环境标识（格式：scope.env，如 game.lt）
-  * deploy：被测系统部署配置，通过 `deploy(//tools/deploy)` 工具进行部署，测试完成后移除
+  * deploy：被测系统部署配置，通过 `deploy(//tools/release/deploy)` 工具进行部署，测试完成后移除
   * endpoint：测试入口 URL 映射（可选）
   * cases：测试用例列表，在部署完成后执行
 
@@ -46,7 +46,7 @@ suites:
 
 ## 测试用例
 
-* 大型测试的 `target` 使用专用的 `bazel rule`，例如 `golang` 使用 `go_largetest(//tools/go:defs.bzl)`。
+* 大型测试的 `target` 使用专用的 `bazel rule`，例如 `golang` 使用 `go_largetest(//tools/dev/go:defs.bzl)`。
 * 大型测试的 `target` 名最好使用 `gazelle` 生成的默认名称（`{package_name}_test`），以防止重复生成 `go_unittest`。
 * 测试用例需要根据实际情况设置 `size`。
 * 使用 `guitar run <plan.yaml>` 执行测试计划，自动完成部署、测试、清理闭环。

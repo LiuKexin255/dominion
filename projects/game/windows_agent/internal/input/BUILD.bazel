@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "input",
+    srcs = [
+        "cleanup.go",
+        "command.go",
+        "doc.go",
+        "manager.go",
+        "response.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/input",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = ["//projects/game/gateway/domain"],
+)
+
+go_unittest(
+    name = "input_test",
+    srcs = ["manager_test.go"],
+    embed = [":input"],
+    deps = ["//projects/game/gateway/domain"],
+)

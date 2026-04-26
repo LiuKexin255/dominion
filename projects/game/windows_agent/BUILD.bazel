@@ -1,0 +1,16 @@
+load("//tools/dev/wails:defs.bzl", "wails_windows_package")
+
+exports_files([
+    "resources/bin/ffmpeg-metadata.json",
+    "resources/icon.ico",
+])
+
+wails_windows_package(
+    name = "windows_agent_win_zip",
+    binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
+    ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
+    icon = "resources/icon.ico",
+    input_helper = "//projects/game/windows_agent_helper/input:input_helper",
+    metadata = "resources/bin/ffmpeg-metadata.json",
+    visibility = ["//visibility:public"],
+)

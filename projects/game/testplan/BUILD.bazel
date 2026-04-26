@@ -1,4 +1,5 @@
-load("//tools/go:defs.bzl", "go_largetest")
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_largetest")
 
 go_largetest(
     name = "testplan_test",
@@ -17,6 +18,18 @@ go_largetest(
         "//projects/game/pkg/token",
         "//projects/game/session",
         "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_library(
+    name = "testplan",
+    srcs = ["helpers.go"],
+    importpath = "dominion/projects/game/testplan",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/testtool",
+        "//projects/game/session",
         "@org_golang_google_protobuf//encoding/protojson",
     ],
 )

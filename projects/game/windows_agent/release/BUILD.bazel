@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "release_lib",
+    srcs = [
+        "main.go",
+        "manifest.go",
+        "publish.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/release",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/s3",
+        "@com_github_minio_minio_go_v7//:minio-go",
+    ],
+)
+
+go_binary(
+    name = "publish_s3",
+    embed = [":release_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "release_test",
+    srcs = ["publish_test.go"],
+    embed = [":release_lib"],
+)

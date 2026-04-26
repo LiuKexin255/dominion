@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "assets",
+    srcs = ["assets.go"],
+    embedsrcs = glob(["frontend_dist/**"]),
+    importpath = "dominion/projects/game/windows_agent/assets",
+    visibility = ["//visibility:public"],
+)

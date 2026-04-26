@@ -1,7 +1,7 @@
 load("@gazelle//:def.bzl", "gazelle")
 
 # gazelle:go_grpc_compilers @rules_go//proto:go_grpc_v2, @rules_go//proto:go_proto, @grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway
-# gazelle:map_kind go_test go_unittest //tools/go:defs.bzl
+# gazelle:map_kind go_test go_unittest //tools/dev/go:defs.bzl
 # gazelle:alias_kind go_largetest go_test
 
 # gazelle:resolve proto google/api/annotations.proto @googleapis//google/api:annotations_proto
@@ -33,12 +33,12 @@ gazelle(
 
 alias(
     name = "deploy_install",
-    actual = "//tools/deploy/v2:install",
+    actual = "//tools/release/deploy/v2:install",
 )
 
 alias(
     name = "guitar_install",
-    actual = "//tools/guitar:install",
+    actual = "//tools/test/guitar:install",
 )
 
 # 生成 node_modules（运行时需要）

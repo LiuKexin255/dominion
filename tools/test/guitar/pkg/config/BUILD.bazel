@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "config",
+    srcs = ["config.go"],
+    importpath = "dominion/tools/test/guitar/pkg/config",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/release/deploy/pkg/workspace",
+        "@com_github_goccy_go_yaml//:go-yaml",
+    ],
+)
+
+go_unittest(
+    name = "config_test",
+    srcs = ["config_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":config"],
+)

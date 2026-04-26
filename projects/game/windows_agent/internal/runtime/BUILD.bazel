@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "runtime",
+    srcs = [
+        "cleanup.go",
+        "control_flow.go",
+        "doc.go",
+        "lifecycle.go",
+        "media_flow.go",
+        "runtime.go",
+        "session.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/runtime",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = [
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain",
+        "//projects/game/windows_agent/internal/capture",
+        "//projects/game/windows_agent/internal/encoder",
+        "//projects/game/windows_agent/internal/input",
+        "//projects/game/windows_agent/internal/media",
+        "//projects/game/windows_agent/internal/transport",
+        "//projects/game/windows_agent/internal/window",
+    ],
+)
+
+go_unittest(
+    name = "runtime_test",
+    srcs = ["runtime_test.go"],
+    embed = [":runtime"],
+    deps = [
+        "//projects/game/gateway",
+        "//projects/game/windows_agent/internal/encoder",
+        "//projects/game/windows_agent/internal/input",
+        "//projects/game/windows_agent/internal/media",
+        "//projects/game/windows_agent/internal/transport",
+        "//projects/game/windows_agent/internal/window",
+    ],
+)

@@ -1,5 +1,5 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("//tools/go:defs.bzl", "go_unittest")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "input_helper_lib",
@@ -26,3 +26,4 @@ go_unittest(
     srcs = ["command_test.go"],
     embed = [":input_helper_lib"],
 )
+

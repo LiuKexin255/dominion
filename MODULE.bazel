@@ -32,6 +32,7 @@ use_repo(
     "com_github_minio_minio_go_v7",
     "com_github_santhosh_tekuri_jsonschema_v6",
     "com_github_spf13_pflag",
+    "com_github_wailsapp_wails_v2",
     "io_k8s_api",
     "io_k8s_apimachinery",
     "io_k8s_client_go",
@@ -73,3 +74,6 @@ rules_ts_ext.deps(
     ts_version_from = "//:package.json",
 )
 use_repo(rules_ts_ext, "npm_typescript")
+
+ffmpeg_ext = use_extension("//third_party/ffmpeg:defs.bzl", "ffmpeg_windows_amd64")
+use_repo(ffmpeg_ext, "ffmpeg_windows_amd64")

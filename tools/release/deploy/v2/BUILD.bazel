@@ -1,0 +1,62 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "deploy_lib",
+    srcs = [
+        "apply.go",
+        "del.go",
+        "identity.go",
+        "list.go",
+        "main.go",
+        "scope.go",
+    ],
+    importpath = "dominion/tools/release/deploy/v2",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//projects/infra/deploy",
+        "//tools/release/deploy/pkg/config",
+        "//tools/release/deploy/pkg/imagepush",
+        "//tools/release/deploy/pkg/workspace",
+        "//tools/release/deploy/v2/client",
+        "//tools/release/deploy/v2/compiler",
+        "@com_github_spf13_pflag//:pflag",
+    ],
+)
+
+go_binary(
+    name = "deploy",
+    embed = [":deploy_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "deploy_test",
+    srcs = [
+        "apply_test.go",
+        "del_list_test.go",
+        "main_test.go",
+        "scope_test.go",
+    ],
+    embed = [":deploy_lib"],
+    deps = [
+        "//projects/infra/deploy",
+        "//tools/release/deploy/pkg/config",
+        "//tools/release/deploy/pkg/imagepush",
+        "//tools/release/deploy/v2/client",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/fieldmaskpb",
+    ],
+)
+
+sh_binary(
+    name = "install",
+    srcs = ["install.sh"],
+    data = [
+        ":deploy",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    visibility = ["//visibility:public"],
+)

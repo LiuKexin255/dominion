@@ -1,0 +1,9 @@
+{
+  "name": "windows-agent",
+  "outputfilename": "windows-agent",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": { "name": "", "email": "" }
+}
