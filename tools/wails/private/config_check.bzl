@@ -3,7 +3,8 @@
 def _wails_config_check_impl(ctx):
     """Parses wails.json and checks it against Bazel best practices.
 
-    The validation runs at BUILD time via ctx.actions.run_shell. It checks:
+    The validation runs as a Bazel action (hermetic, no python3 dependency).
+    It checks:
     1. frontend:install is empty (Bazel manages dependencies)
     2. frontend:build is empty (Bazel manages the build)
     3. No hooks execute non-Bazel tools in production
@@ -20,29 +21,42 @@ def _wails_config_check_impl(ctx):
 
 WAILS_JSON="{wails_json}"
 OUTPUT="{output}"
+
 echo "Checking wails.json: $WAILS_JSON"
 
 ERRORS=0
 
+# Extract a value for a top-level key from simple JSON.
+# Handles "key": "value" and "key": "" patterns.
+get_val() {{
+  local key="$1"
+  local file="$2"
+  local val
+  val=$(sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"?\\([^,"]*\\)"?.*/\\1/p' "$file" | head -1 || true)
+  echo "$val"
+}}
+
 # Check frontend:install — must be empty for Bazel-managed builds
-INSTALL=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('frontend:install',''))" "$WAILS_JSON" 2>/dev/null || echo "")
+INSTALL=$(get_val "frontend:install" "$WAILS_JSON")
 if [ -n "$INSTALL" ]; then
   echo "ERROR: frontend:install must be empty (found: '$INSTALL')"
   ERRORS=$((ERRORS + 1))
 fi
 
 # Check frontend:build — must be empty for Bazel-managed builds
-BUILD_CMD=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('frontend:build',''))" "$WAILS_JSON" 2>/dev/null || echo "")
+BUILD_CMD=$(get_val "frontend:build" "$WAILS_JSON")
 if [ -n "$BUILD_CMD" ]; then
   echo "ERROR: frontend:build must be empty (found: '$BUILD_CMD')"
   ERRORS=$((ERRORS + 1))
 fi
 
-# Check hooks — no non-Bazel hooks in production
-HOOKS=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); h=d.get('hooks',{{}}); print(len([k for k,v in h.items() if v]))" "$WAILS_JSON" 2>/dev/null || echo "0")
-if [ "$HOOKS" != "0" ]; then
-  echo "ERROR: hooks must not execute non-Bazel tools in production (found $HOOKS active hooks)"
-  ERRORS=$((ERRORS + 1))
+# Check hooks — look for "hooks" key with non-empty object
+if grep -q '"hooks"' "$WAILS_JSON"; then
+  HOOKS_LINE=$(grep -A1 '"hooks"' "$WAILS_JSON" | tail -1)
+  if echo "$HOOKS_LINE" | grep -qv '^\\s*{{\\s*}}\\s*$\\|^\\s*$'; then
+    echo "ERROR: hooks must not execute non-Bazel tools in production"
+    ERRORS=$((ERRORS + 1))
+  fi
 fi
 
 if [ "$ERRORS" -gt 0 ]; then

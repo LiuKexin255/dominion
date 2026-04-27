@@ -8,7 +8,7 @@ def _wails_frontend_assets_impl(ctx):
     out_name = ctx.attr.out if ctx.attr.out else ctx.label.name
     output = ctx.actions.declare_directory(out_name)
 
-    # The frontend dist target is a tree artifact; copy its root contents into
+    # The frontend dist target is a tree artifact; copy its contents into
     # the re-rooted output directory so Go embed sees frontend_dist/index.html.
     src_dir = src_files[0].path
 
@@ -16,11 +16,25 @@ def _wails_frontend_assets_impl(ctx):
     args.add(src_dir)
     args.add(output.path)
 
+    # Use cp -rT (or fallback) to copy directory contents including dotfiles.
+    # The -T flag treats the destination as a normal directory (not a target
+    # directory named after the source), and globbing handles edge cases.
     ctx.actions.run_shell(
         inputs = src_files,
         outputs = [output],
         arguments = [args],
-        command = 'cp -r "$1"/* "$2"/',
+        command = """#!/usr/bin/env bash
+set -euo pipefail
+src="$1"
+out="$2"
+# Copy all contents including hidden files
+if [ -d "$src" ]; then
+  cp -r "$src"/. "$out"/
+else
+  echo "wails_frontend_assets: expected directory input, got: $src"
+  exit 1
+fi
+""",
         mnemonic = "WailsFrontendAssets",
         progress_message = "Copying frontend assets into embed directory: " + output.basename,
     )
@@ -31,7 +45,6 @@ _wails_frontend_assets = rule(
     implementation = _wails_frontend_assets_impl,
     attrs = {
         "src": attr.label(
-            cfg = "exec",
             doc = "Bazel target producing the frontend build tree artifact",
             mandatory = True,
         ),

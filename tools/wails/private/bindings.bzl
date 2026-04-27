@@ -11,11 +11,18 @@ def _wails_bindings_impl(ctx):
 
     go_srcs = depset(transitive = [src.files for src in ctx.attr.go_srcs]).to_list()
     output = ctx.actions.declare_directory(ctx.label.name + "_wailsjs")
+
+    # The wailsjsdir must point to the output directory so bindings are
+    # written into the declared output. We inject it via sed in the launcher
+    # script — no python3 dependency needed.
+    out_path_for_wailsjsdir = output.path
+
     launcher = ctx.actions.declare_file(ctx.label.name + "_generate.sh")
 
-    ctx.actions.write(
-        output = launcher,
-        content = """#!/usr/bin/env bash
+    # Build the launcher script content. We use string replacement
+    # (not .format) to avoid issues with bash braces conflicting
+    # with Python format string syntax.
+    launcher_content = """#!/usr/bin/env bash
 set -euo pipefail
 
 WAILS="$1"
@@ -23,6 +30,7 @@ GO="$2"
 WAILS_JSON="$3"
 OUT="$4"
 TAGS="$5"
+WAILSJSDIR="__WAILSJS_DIR__"
 shift 5
 
 case "$WAILS" in
@@ -63,22 +71,11 @@ for src in "$@"; do
   cp "$src" "$WORK/$(basename "$src")"
 done
 
-python3 - "$WAILS_JSON" "$WORK/wails.json" "$OUT" <<'PY'
-import json
-import os
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    config = json.load(source)
-
-config["wailsjsdir"] = os.path.dirname(os.path.abspath(sys.argv[3]))
-config.setdefault("frontend:install", "")
-config.setdefault("frontend:build", "")
-
-with open(sys.argv[2], "w", encoding="utf-8") as target:
-    json.dump(config, target, indent=2)
-    target.write("\\n")
-PY
+# Rewrite wails.json: inject wailsjsdir pointing to the output directory.
+# wails.json fixtures don't have this key, so we prepend it after the
+# opening brace. Use sed with | delimiter to avoid path conflicts.
+cp "$WAILS_JSON" "$WORK/wails.json"
+sed -i '1s|{|{"wailsjsdir": "'"$WAILSJSDIR"'",|' "$WORK/wails.json"
 
 cmd=("$WAILS" generate module -compiler "$GO" -v 2)
 if [[ -n "$TAGS" ]]; then
@@ -86,7 +83,11 @@ if [[ -n "$TAGS" ]]; then
 fi
 
 (cd "$WORK" && "${cmd[@]}")
-""",
+""".replace("__WAILSJS_DIR__", out_path_for_wailsjsdir)
+
+    ctx.actions.write(
+        output = launcher,
+        content = launcher_content,
         is_executable = True,
     )
 

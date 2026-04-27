@@ -17,6 +17,7 @@ bazel_dep(name = "aspect_rules_js", version = "3.0.3")
 bazel_dep(name = "aspect_rules_ts", version = "3.8.8")
 bazel_dep(name = "rules_nodejs", version = "6.7.4")
 bazel_dep(name = "aspect_rules_swc", version = "2.7.1")
+bazel_dep(name = "platforms", version = "1.0.0")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
@@ -68,6 +69,7 @@ use_repo(
     "com_github_tkrajina_go_reflector",
     "com_github_wailsapp_go_webview2",
     "com_github_wailsapp_mimetype",
+    "com_github_wailsapp_wails_v2",
     "com_github_wzshiming_ctc",
     "ht_sr_git__jackmordaunt_go_toast_v2",
     "in_gopkg_yaml_v3",
@@ -118,3 +120,5 @@ use_repo(rules_ts_ext, "npm_typescript")
 
 ffmpeg_ext = use_extension("//third_party/www.gyan.dev/ffmpeg:defs.bzl", "ffmpeg_windows_amd64")
 use_repo(ffmpeg_ext, "ffmpeg_windows_amd64")
+
+register_toolchains("//tools/wails:linux_amd64_toolchain")
