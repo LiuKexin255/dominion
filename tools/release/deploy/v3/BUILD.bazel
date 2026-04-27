@@ -3,7 +3,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
-    name = "deploy_v3_lib",
+    name = "deploy_lib",
     srcs = [
         "apply.go",
         "del.go",
@@ -27,7 +27,7 @@ go_library(
 
 go_binary(
     name = "deploy_v3",
-    embed = [":deploy_v3_lib"],
+    embed = [":deploy_lib"],
     visibility = ["//visibility:public"],
 )
 
