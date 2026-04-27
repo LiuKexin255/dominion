@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "menu",
@@ -21,9 +20,3 @@ go_library(
     deps = ["//third_party/github.com/wailsapp/wails/v2/pkg/menu/keys"],
 )
 
-go_unittest(
-    name = "menu_test",
-    srcs = ["styledlabel_test.go"],
-    embed = [":menu"],
-    deps = ["@com_github_matryer_is//:is"],
-)

@@ -4,35 +4,12 @@ go_library(
     name = "webview",
     srcs = [
         "request.go",
-        "request_darwin.go",
         "request_finalizer.go",
-        "request_linux.go",
         "request_windows.go",
         "responsewriter.go",
-        "responsewriter_darwin.go",
-        "responsewriter_linux.go",
         "responsewriter_windows.go",
-        "webkit2_legacy.go",
     ],
     cgo = True,
-    clinkopts = select({
-        "@rules_go//go/platform:darwin": [
-            "-framework Foundation -framework WebKit",
-        ],
-        "@rules_go//go/platform:ios": [
-            "-framework Foundation -framework WebKit",
-        ],
-        "//conditions:default": [],
-    }),
-    copts = select({
-        "@rules_go//go/platform:darwin": [
-            "-x objective-c",
-        ],
-        "@rules_go//go/platform:ios": [
-            "-x objective-c",
-        ],
-        "//conditions:default": [],
-    }),
     importpath = "github.com/wailsapp/wails/v2/pkg/assetserver/webview",
     visibility = ["//visibility:public"],
     deps = select({

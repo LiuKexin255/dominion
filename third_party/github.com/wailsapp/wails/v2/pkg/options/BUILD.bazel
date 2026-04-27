@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "options",
@@ -19,8 +18,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "options_test",
-    srcs = ["options_test.go"],
-    embed = [":options"],
-)

@@ -1,9 +1,0 @@
-load("@rules_go//go:def.bzl", "go_library")
-
-go_library(
-    name = "binding_test_import",
-    srcs = ["binding_test_import.go"],
-    importpath = "github.com/wailsapp/wails/v2/internal/binding/binding_test/binding_test_import",
-    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
-    deps = ["//third_party/github.com/wailsapp/wails/v2/internal/binding/binding_test/binding_test_import/binding_test_nestedimport"],
-)

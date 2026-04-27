@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 # gazelle:exclude templates
 
@@ -32,9 +31,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "templates_test",
-    srcs = ["templates_test.go"],
-    embed = [":templates"],
-    deps = ["@com_github_matryer_is//:is"],
-)

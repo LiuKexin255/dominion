@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "dev",
@@ -45,13 +44,3 @@ go_library(
     }),
 )
 
-go_unittest(
-    name = "dev_test",
-    srcs = ["watcher_test.go"],
-    embed = [":dev"],
-    deps = [
-        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
-        "@com_github_samber_lo//:lo",
-        "@com_github_stretchr_testify//require",
-    ],
-)

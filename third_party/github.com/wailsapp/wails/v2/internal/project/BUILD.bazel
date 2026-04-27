@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "project",
@@ -9,11 +8,3 @@ go_library(
     deps = ["@com_github_samber_lo//:lo"],
 )
 
-go_unittest(
-    name = "project_test",
-    srcs = ["project_test.go"],
-    deps = [
-        ":project",
-        "@com_github_samber_lo//:lo",
-    ],
-)

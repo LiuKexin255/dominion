@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "bindings",
@@ -14,12 +13,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "bindings_test",
-    srcs = ["bindings_test.go"],
-    embed = [":bindings"],
-    deps = [
-        "//third_party/github.com/wailsapp/wails/v2/pkg/templates",
-        "@com_github_matryer_is//:is",
-    ],
-)

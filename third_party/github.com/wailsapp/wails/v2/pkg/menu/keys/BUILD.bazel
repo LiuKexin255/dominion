@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "keys",
@@ -14,13 +13,3 @@ go_library(
     deps = ["@com_github_leaanthony_slicer//:slicer"],
 )
 
-go_unittest(
-    name = "keys_test",
-    srcs = [
-        "macmodifiers_test.go",
-        "parser_test.go",
-        "stringify_test.go",
-    ],
-    embed = [":keys"],
-    deps = ["@com_github_matryer_is//:is"],
-)

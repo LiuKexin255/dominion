@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "assetserver",
@@ -27,8 +26,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "assetserver_test",
-    srcs = ["mimecache_test.go"],
-    embed = [":assetserver"],
-)

@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "staticanalysis",
@@ -9,9 +8,3 @@ go_library(
     deps = ["@org_golang_x_tools//go/packages"],
 )
 
-go_unittest(
-    name = "staticanalysis_test",
-    srcs = ["staticanalysis_test.go"],
-    embed = [":staticanalysis"],
-    deps = ["@com_github_stretchr_testify//require"],
-)

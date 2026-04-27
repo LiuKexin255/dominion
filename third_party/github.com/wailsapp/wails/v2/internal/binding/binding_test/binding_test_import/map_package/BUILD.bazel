@@ -1,8 +1,0 @@
-load("@rules_go//go:def.bzl", "go_library")
-
-go_library(
-    name = "map_package",
-    srcs = ["type.go"],
-    importpath = "github.com/wailsapp/wails/v2/internal/binding/binding_test/binding_test_import/map_package",
-    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
-)

@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "menu",
@@ -18,15 +17,3 @@ go_library(
     }),
 )
 
-go_unittest(
-    name = "menu_test",
-    srcs = ["manager_test.go"],
-    deps = select({
-        "@rules_go//go/platform:windows": [
-            ":menu",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/menu",
-            "@com_github_stretchr_testify//require",
-        ],
-        "//conditions:default": [],
-    }),
-)

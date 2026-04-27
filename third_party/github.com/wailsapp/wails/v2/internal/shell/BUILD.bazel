@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "shell",
@@ -11,8 +10,3 @@ go_library(
     visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
 )
 
-go_unittest(
-    name = "shell_test",
-    srcs = ["env_test.go"],
-    embed = [":shell"],
-)

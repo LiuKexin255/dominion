@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "runtime",
@@ -23,11 +22,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "runtime_test",
-    srcs = ["events_test.go"],
-    deps = [
-        ":runtime",
-        "@com_github_matryer_is//:is",
-    ],
-)

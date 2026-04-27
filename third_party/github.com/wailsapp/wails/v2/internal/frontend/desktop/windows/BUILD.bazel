@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "windows",
@@ -52,15 +51,3 @@ go_library(
     }),
 )
 
-go_unittest(
-    name = "windows_test",
-    srcs = ["dialog_test.go"],
-    embed = [":windows"],
-    deps = select({
-        "@rules_go//go/platform:windows": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "@org_golang_x_sys//windows",
-        ],
-        "//conditions:default": [],
-    }),
-)

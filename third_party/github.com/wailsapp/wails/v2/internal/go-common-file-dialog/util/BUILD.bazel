@@ -1,5 +1,4 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "util",
@@ -12,9 +11,3 @@ go_library(
     ],
 )
 
-go_unittest(
-    name = "util_test",
-    srcs = ["util_test.go"],
-    embed = [":util"],
-    deps = ["@com_github_go_ole_go_ole//:go-ole"],
-)

@@ -3,48 +3,15 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "desktop",
     srcs = [
-        "desktop_darwin.go",
-        "desktop_linux.go",
         "desktop_windows.go",
     ],
     importpath = "github.com/wailsapp/wails/v2/internal/frontend/desktop",
     visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
-    deps = select({
-        "@rules_go//go/platform:android": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/binding",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/linux",
-            "//third_party/github.com/wailsapp/wails/v2/internal/logger",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
-        ],
-        "@rules_go//go/platform:darwin": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/binding",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/darwin",
-            "//third_party/github.com/wailsapp/wails/v2/internal/logger",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
-        ],
-        "@rules_go//go/platform:ios": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/binding",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/darwin",
-            "//third_party/github.com/wailsapp/wails/v2/internal/logger",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
-        ],
-        "@rules_go//go/platform:linux": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/binding",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/linux",
-            "//third_party/github.com/wailsapp/wails/v2/internal/logger",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
-        ],
-        "@rules_go//go/platform:windows": [
-            "//third_party/github.com/wailsapp/wails/v2/internal/binding",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
-            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/windows",
-            "//third_party/github.com/wailsapp/wails/v2/internal/logger",
-            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
-        ],
-        "//conditions:default": [],
-    }),
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/binding",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/windows",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ],
 )
