@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/gateway/service"
 	"dominion/projects/game/pkg/token"
 
-	"google.golang.org/protobuf/encoding/protojson"
 	"github.com/coder/websocket"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type testVerifierWS struct {
@@ -86,6 +87,70 @@ func connectAndHello(ctx context.Context, url, sessionID string, role GameClient
 		return nil, err
 	}
 	return conn, nil
+}
+
+func Test_toDomainPayload_controlRequestMouseDragRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *GameWebSocketEnvelope
+	}{
+		{
+			name: "mouse drag keeps button coordinates and duration",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-1",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-drag",
+						Kind:        GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG,
+						Mouse: &GameMouseAction{
+							Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+							FromX:      10,
+							FromY:      20,
+							ToX:        100,
+							ToY:        200,
+							DurationMs: 500,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domainPayload, ok := toDomainPayload(tt.env).(domain.ControlRequestPayload)
+			if !ok {
+				t.Fatal("toDomainPayload() is not control_request")
+			}
+			if domainPayload.Kind != domain.OperationKindMouseDrag {
+				t.Fatalf("Kind = %q, want %q", domainPayload.Kind, domain.OperationKindMouseDrag)
+			}
+			if domainPayload.Button != "left" {
+				t.Fatalf("Button = %q, want %q", domainPayload.Button, "left")
+			}
+			if domainPayload.FromX != 10 || domainPayload.FromY != 20 || domainPayload.ToX != 100 || domainPayload.ToY != 200 {
+				t.Fatalf("domain drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
+					domainPayload.FromX, domainPayload.FromY, domainPayload.ToX, domainPayload.ToY)
+			}
+
+			protoPayload, ok := toProtoPayload(domainPayload).(*GameWebSocketEnvelope_ControlRequest)
+			if !ok {
+				t.Fatal("toProtoPayload() is not control_request")
+			}
+			mouse := protoPayload.ControlRequest.GetMouse()
+			if mouse.GetButton() != GameMouseButton_GAME_MOUSE_BUTTON_LEFT {
+				t.Fatalf("Button = %v, want %v", mouse.GetButton(), GameMouseButton_GAME_MOUSE_BUTTON_LEFT)
+			}
+			if mouse.GetFromX() != 10 || mouse.GetFromY() != 20 || mouse.GetToX() != 100 || mouse.GetToY() != 200 {
+				t.Fatalf("proto drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
+					mouse.GetFromX(), mouse.GetFromY(), mouse.GetToX(), mouse.GetToY())
+			}
+			if mouse.GetDurationMs() != 500 {
+				t.Fatalf("DurationMs = %d, want %d", mouse.GetDurationMs(), 500)
+			}
+		})
+	}
 }
 
 func Test_pathParsing(t *testing.T) {

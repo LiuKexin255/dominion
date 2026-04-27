@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "window",
+    srcs = [
+        "bind_other.go",
+        "bind_windows.go",
+        "coord_other.go",
+        "coord_windows.go",
+        "doc.go",
+        "enum_other.go",
+        "enum_windows.go",
+        "window.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/window",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+)
+
+go_unittest(
+    name = "window_test",
+    srcs = ["window_test.go"],
+    embed = [":window"],
+)

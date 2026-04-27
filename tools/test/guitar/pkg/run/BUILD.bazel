@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "run",
+    srcs = ["run.go"],
+    importpath = "dominion/tools/test/guitar/pkg/run",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/release/deploy/pkg/config",
+        "//tools/release/deploy/pkg/workspace",
+        "//tools/test/guitar/pkg/config",
+        "//tools/test/guitar/pkg/env",
+        "//tools/test/guitar/pkg/runid",
+        "//tools/test/guitar/pkg/validate",
+    ],
+)
+
+go_unittest(
+    name = "run_test",
+    srcs = ["run_test.go"],
+    embed = [":run"],
+    deps = ["//tools/test/guitar/pkg/config"],
+)

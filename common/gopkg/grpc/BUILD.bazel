@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "grpc",
+    srcs = ["default.go"],
+    importpath = "dominion/common/gopkg/grpc",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/grpc/solver",
+        "//common/gopkg/grpc/tls",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//keepalive",
+    ],
+)

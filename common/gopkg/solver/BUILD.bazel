@@ -1,0 +1,51 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "solver",
+    srcs = [
+        "deploy_http_client.go",
+        "deploy_resolver.go",
+        "deploy_stateful_resolver.go",
+        "env.go",
+        "k8s.go",
+        "stateful_resolver.go",
+        "target.go",
+    ],
+    importpath = "dominion/common/gopkg/solver",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/infra/deploy",
+        "@io_k8s_api//discovery/v1:discovery",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/labels",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//rest",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_unittest(
+    name = "solver_test",
+    srcs = [
+        "deploy_http_client_test.go",
+        "deploy_resolver_test.go",
+        "deploy_stateful_resolver_test.go",
+        "env_test.go",
+        "k8s_test.go",
+        "target_test.go",
+    ],
+    embed = [":solver"],
+    deps = [
+        "//projects/infra/deploy",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_api//discovery/v1:discovery",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/labels",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//kubernetes/fake",
+        "@io_k8s_client_go//rest",
+    ],
+)

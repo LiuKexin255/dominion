@@ -10,8 +10,8 @@ import (
 
 	mongodemo "dominion/experimental/golang/mongo_demo"
 	"dominion/experimental/golang/mongo_demo/storage"
-	pgrpc "dominion/pkg/grpc"
-	mongo "dominion/pkg/mongo"
+	pgrpc "dominion/common/gopkg/grpc"
+	mongo "dominion/common/gopkg/mongo"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	grpcgo "google.golang.org/grpc"

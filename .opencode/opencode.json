@@ -4,5 +4,17 @@
   "small_model": "opencode-go/minimax-m2.7",
   "plugin": [
     "oh-my-openagent@3.17.5"
-  ]
+  ],
+  "lsp": {
+    "bazel": {
+      "command": [
+        "starpls",
+        "server"
+      ],
+      "extensions": [
+        ".bzl",
+        ".bazel"
+      ]
+    }
+  }
 }

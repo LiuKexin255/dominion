@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"dominion/pkg/grpc"
+	"dominion/common/gopkg/grpc"
 	"dominion/projects/game/session"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"

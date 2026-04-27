@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "app",
+    srcs = [
+        "app.go",
+        "bindings.go",
+        "doc.go",
+        "events.go",
+        "status.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/app",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = [
+        "//projects/game/windows_agent/internal/runtime",
+        "//projects/game/windows_agent/internal/window",
+        "@com_github_wailsapp_wails_v2//pkg/runtime",
+    ],
+)
+
+go_unittest(
+    name = "app_test",
+    srcs = ["app_test.go"],
+    embed = [":app"],
+)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 )
 
 // DeployRegistry resolves gateway instances via a StatefulResolver.

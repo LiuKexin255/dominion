@@ -1,0 +1,3 @@
+"""Exposes ffmpeg Windows amd64 binary as a filegroup."""
+
+exports_files(["defs.bzl"])

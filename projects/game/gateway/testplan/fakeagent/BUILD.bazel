@@ -9,7 +9,7 @@ go_library(
     importpath = "dominion/projects/game/gateway/testplan/fakeagent",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/s3",
+        "//common/gopkg/s3",
         "//projects/game/gateway",
         "//projects/game/gateway/domain",
         "@com_github_coder_websocket//:websocket",

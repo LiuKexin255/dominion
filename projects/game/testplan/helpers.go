@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"dominion/pkg/testtool"
+	"dominion/common/gopkg/testtool"
 	session "dominion/projects/game/session"
 
 	"google.golang.org/protobuf/encoding/protojson"

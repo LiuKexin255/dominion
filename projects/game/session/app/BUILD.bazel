@@ -9,7 +9,7 @@ go_library(
     importpath = "dominion/projects/game/session/app",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/grpc",
+        "//common/gopkg/grpc",
         "//projects/game/pkg/token",
         "//projects/game/session",
         "//projects/game/session/domain",

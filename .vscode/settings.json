@@ -1,11 +1,11 @@
 {
     "go.goroot": "${workspaceFolder}/bazel-${workspaceFolderBasename}/external/rules_go++go_sdk+main___download_0",
     "go.toolsEnvVars": {
-        "GOPACKAGESDRIVER": "${workspaceFolder}/tools/go/gopackagesdriver.sh"
+        "GOPACKAGESDRIVER": "${workspaceFolder}/tools/dev/go/gopackagesdriver.sh"
     },
     "yaml.schemas": {
-        "tools/deploy/pkg/schema/service.schema.json": "service.yaml",
-        "tools/deploy/pkg/schema/deploy.schema.json": "deploy.yaml"
+        "tools/release/deploy/pkg/schema/service.schema.json": "service.yaml",
+        "tools/release/deploy/pkg/schema/deploy.schema.json": "deploy.yaml"
     },
     "go.testFlags": [
         "-v"
@@ -23,5 +23,6 @@
             "-bazel-testlogs",
             "-bazel-yourrepo"
         ]
-    }
+    },
+    "bazel.lsp.command": "starpls"
 }

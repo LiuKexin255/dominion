@@ -1,17 +1,15 @@
-load("//tools/go:defs.bzl", "go_largetest")
+load("//tools/dev/go:defs.bzl", "go_largetest")
 
 go_largetest(
     name = "testplan_test",
     size = "small",
     srcs = ["interface_test.go"],
     env = {
-        "S3_ACCESS_KEY": "readonly",
-        "S3_SECRET_KEY": "Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ",
         "SESSION_TOKEN_SECRET": "dev-session-token-secret",
     },
     deps = [
-        "//pkg/solver",
-        "//pkg/testtool",
+        "//common/gopkg/solver",
+        "//common/gopkg/testtool",
         "//projects/game/gateway",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/testplan/fakeagent",

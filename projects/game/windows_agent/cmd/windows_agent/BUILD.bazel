@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "windows_agent_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/windows_agent/cmd/windows_agent",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//projects/game/windows_agent/assets",
+        "//projects/game/windows_agent/internal/app",
+        "@com_github_wailsapp_wails_v2//:wails",
+        "@com_github_wailsapp_wails_v2//pkg/options",
+        "@com_github_wailsapp_wails_v2//pkg/options/assetserver",
+    ],
+)
+
+go_binary(
+    name = "windows_agent",
+    embed = [":windows_agent_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "windows_agent_windows",
+    embed = [":windows_agent_lib"],
+    goarch = "amd64",
+    goos = "windows",
+    visibility = ["//visibility:public"],
+)

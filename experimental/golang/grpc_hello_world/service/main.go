@@ -7,7 +7,7 @@ import (
 	"net"
 
 	"dominion/experimental/golang/grpc_hello_world"
-	pgrpc "dominion/pkg/grpc"
+	pgrpc "dominion/common/gopkg/grpc"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"

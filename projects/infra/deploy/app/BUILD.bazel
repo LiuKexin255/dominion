@@ -9,7 +9,7 @@ go_library(
     importpath = "dominion/projects/infra/deploy/app",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/grpc",
+        "//common/gopkg/grpc",
         "//projects/infra/deploy",
         "//projects/infra/deploy/domain",
         "@grpc_ecosystem_grpc_gateway//runtime",

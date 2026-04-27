@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "solver",
+    srcs = [
+        "dial.go",
+        "resolver.go",
+    ],
+    importpath = "dominion/common/gopkg/grpc/solver",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/solver",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//keepalive",
+        "@org_golang_google_grpc//resolver",
+    ],
+)
+
+go_unittest(
+    name = "solver_test",
+    srcs = [
+        "dial_test.go",
+        "solver_test.go",
+    ],
+    embed = [":solver"],
+    deps = [
+        "//common/gopkg/solver",
+        "@org_golang_google_grpc//resolver",
+        "@org_golang_google_grpc//serviceconfig",
+    ],
+)

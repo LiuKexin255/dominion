@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/solver"
 )
 
 // fakeStatefulResolver implements solver.StatefulResolver for testing.

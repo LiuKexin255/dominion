@@ -1,0 +1,24 @@
+load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
+load("//tools/release:defs.bzl", "s3_artifacts_push")
+
+exports_files([
+    "resources/icon.ico",
+])
+
+windows_agent_package(
+    name = "windows_agent_win_zip",
+    binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
+    ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
+    icon = "resources/icon.ico",
+    input_helper = "//projects/game/windows_agent_helper/input:input_helper",
+    visibility = ["//visibility:public"],
+)
+
+s3_artifacts_push(
+    name = "windows_agent_push",
+    artifacts = [
+        ":windows_agent_win_zip",
+    ],
+    manifest = "release.yaml",
+    visibility = ["//visibility:public"],
+)

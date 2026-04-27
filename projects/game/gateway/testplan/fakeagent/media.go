@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"dominion/pkg/s3"
+	"dominion/common/gopkg/s3"
 
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/minio/minio-go/v7"
@@ -52,7 +52,10 @@ func downloadAndParseVideo(s3URL string) *mediaData {
 	ctx, cancel := context.WithTimeout(context.Background(), s3DownloadTimeout)
 	defer cancel()
 
-	client, err := s3.NewS3Client("")
+	client, err := s3.NewS3Client(
+		s3.WithAccessKey("readonly"),
+		s3.WithSecretKey("Kx7mNpQ3sT6vW9yB2dF5gH8jL0rU4XcZ"),
+	)
 	if err != nil {
 		log.Fatalf("create S3 client: %v", err)
 	}

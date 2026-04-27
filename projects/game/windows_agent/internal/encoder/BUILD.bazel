@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "encoder",
+    srcs = [
+        "args.go",
+        "config.go",
+        "doc.go",
+        "encoder.go",
+        "path.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/encoder",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+)
+
+go_unittest(
+    name = "encoder_test",
+    srcs = ["encoder_test.go"],
+    embed = [":encoder"],
+)

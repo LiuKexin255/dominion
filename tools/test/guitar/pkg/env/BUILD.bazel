@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "env",
+    srcs = ["env.go"],
+    importpath = "dominion/tools/test/guitar/pkg/env",
+    visibility = ["//visibility:public"],
+    deps = ["//tools/test/guitar/pkg/config"],
+)
+
+go_unittest(
+    name = "env_test",
+    srcs = ["env_test.go"],
+    embed = [":env"],
+    deps = ["//tools/test/guitar/pkg/config"],
+)

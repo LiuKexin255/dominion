@@ -58,7 +58,10 @@ type MediaSegmentPayload struct {
 type ControlRequestPayload struct {
 	RequestID     string
 	Kind          OperationKind
+	Button        string
 	X, Y          int32
+	FromX, FromY  int32
+	ToX, ToY      int32
 	DurationMs    int32
 	FlashSnapshot bool
 }

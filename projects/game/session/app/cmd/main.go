@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"dominion/pkg/mongo"
-	"dominion/pkg/solver"
+	"dominion/common/gopkg/mongo"
+	"dominion/common/gopkg/solver"
 	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/app"
 	"dominion/projects/game/session/runtime/gateway"

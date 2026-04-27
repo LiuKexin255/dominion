@@ -46,12 +46,15 @@ func TestControlExecutor_Validate(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name: "drag with all coordinates accepted",
+			name: "drag with source and target coordinates accepted",
 			req: domain.ControlRequestPayload{
 				RequestID: "op-4",
 				Kind:      domain.OperationKindMouseDrag,
-				X:         10,
-				Y:         20,
+				Button:    "left",
+				FromX:     10,
+				FromY:     20,
+				ToX:       100,
+				ToY:       200,
 			},
 			wantErr: nil,
 		},
@@ -115,6 +118,12 @@ func TestControlExecutor_Validate(t *testing.T) {
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("SubmitOperation() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.req.Kind == domain.OperationKindMouseDrag {
+				if tt.req.FromX != 10 || tt.req.FromY != 20 || tt.req.ToX != 100 || tt.req.ToY != 200 {
+					t.Fatalf("drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
+						tt.req.FromX, tt.req.FromY, tt.req.ToX, tt.req.ToY)
+				}
 			}
 		})
 	}

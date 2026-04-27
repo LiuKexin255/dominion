@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "transport",
+    srcs = [
+        "client.go",
+        "constants.go",
+        "doc.go",
+        "envelope.go",
+        "reader.go",
+        "sender.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/transport",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = [
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_unittest(
+    name = "transport_test",
+    srcs = [
+        "envelope_test.go",
+        "ws_test.go",
+    ],
+    embed = [":transport"],
+    deps = [
+        "//projects/game/gateway",
+        "//projects/game/gateway/domain",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

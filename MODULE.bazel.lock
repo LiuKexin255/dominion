@@ -288,6 +288,28 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
+    "//third_party/ffmpeg:defs.bzl%ffmpeg_windows_amd64": {
+      "general": {
+        "bzlTransitiveDigest": "3w58pdh2Tdpd54Ryo3CYDqBbCRHr766jSoYROihi7v4=",
+        "usagesDigest": "YyKybeZLGjCgxZcy6ZYLDmJzGw3OKKBTud7HvziBltw=",
+        "recordedInputs": [
+          "REPO_MAPPING:,bazel_tools bazel_tools"
+        ],
+        "generatedRepoSpecs": {
+          "ffmpeg_windows_amd64": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "urls": [
+                "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+              ],
+              "sha256": "8748283d821613d930b0e7be685aaa9df4ca6f0ad4d0c42fd02622b3623463c6",
+              "strip_prefix": "ffmpeg-8.1-essentials_build",
+              "build_file_content": "exports_files([\n    \"bin/ffmpeg.exe\",\n])\n"
+            }
+          }
+        }
+      }
+    },
     "@@aspect_rules_ts+//ts:extensions.bzl%ext": {
       "general": {
         "bzlTransitiveDigest": "CWZ/22Tg68/oJoCxW/joGNcGBQkyrSo0L9J+/elsrn0=",
@@ -295,7 +317,7 @@
         "recordedInputs": [
           "REPO_MAPPING:aspect_rules_ts+,aspect_rules_ts aspect_rules_ts+",
           "REPO_MAPPING:aspect_rules_ts+,bazel_tools bazel_tools",
-          "FILE:@@//package.json ee2aa3a147570c9958a10488bea6da2aa0533aeb30508c569b51b8ecc24c8805"
+          "FILE:@@//package.json 2b212f48b0fed680e97d3e71819332a0cceff0cc821b9a90dc48abea7fdb8c76"
         ],
         "generatedRepoSpecs": {
           "npm_typescript": {
@@ -932,7 +954,7 @@
     },
     "@@rules_rust+//crate_universe/private:internal_extensions.bzl%cu_nr": {
       "general": {
-        "bzlTransitiveDigest": "BGbDPK0hhEedtondWXzPCMTfuQ78aTN7O5qHqQOuNF4=",
+        "bzlTransitiveDigest": "FLgKGE3lXVtDUFGSfdNeAYvxOxr8VPQAtVdHgBvlkfE=",
         "usagesDigest": "v4We18mWSPeKV4GPp9Gne78W+jZOgP2pC1i4UN9br1g=",
         "recordedInputs": [
           "REPO_MAPPING:bazel_features+,bazel_features_globals bazel_features++version_extension+bazel_features_globals",
