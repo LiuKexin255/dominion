@@ -270,6 +270,30 @@ services:
       name: service
 `),
 		},
+		{
+			name: "valid deploy yaml with version 3.0",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+version: "3.0"
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+		},
+		{
+			name: "deploy yaml with valid version 2.0",
+			raw: []byte(`name: grpc.dev
+desc: 开发环境
+version: "2.0"
+type: dev
+services:
+  - artifact:
+      path: //experimental/grpc_hello_world/service/service.yaml
+      name: service
+`),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -433,6 +457,37 @@ artifacts:
   - name: service
     target: //experimental/grpc_hello_world/service:service_image
 `),
+		},
+		{
+			name: "valid service yaml with version 3.0",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+version: "3.0"
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+    tls: true
+    ports:
+      - name: grpc
+        port: 50051
+`),
+		},
+		{
+			name: "service yaml with invalid version format",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+version: "invalid"
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+    tls: true
+    ports:
+      - name: grpc
+        port: 50051
+`),
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {

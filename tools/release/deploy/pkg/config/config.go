@@ -42,6 +42,9 @@ type DeployConfig struct {
 	Type     EnvironmentType  `yaml:"type"`
 	Services []*DeployService `yaml:"services"`
 
+	// Version 配置版本，如果读取时为空，默认为 "2.0"
+	Version string `yaml:"version,omitempty"`
+
 	// URI 资源标识符，如果读取时为空，读取时写入
 	URI string `yaml:"uri,omitempty"`
 }
@@ -100,6 +103,9 @@ type ServiceConfig struct {
 	// Ports 所有 artifact 共有的默认端口。
 	Ports []*ServiceArtifactPort `yaml:"ports,omitempty"`
 
+	// Version 配置版本，如果读取时为空，默认为 "2.0"
+	Version string `yaml:"version,omitempty"`
+
 	// URI 资源标识符，如果读取时为空，读取时写入
 	URI string `yaml:"uri,omitempty"`
 
@@ -144,6 +150,10 @@ func ParseDeployConfig(filePath string) (*DeployConfig, error) {
 		return nil, err
 	}
 
+	if c.Version == "" {
+		c.Version = "2.0"
+	}
+
 	configURI, err := workspace.ToURI(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("解析部署配置 URI 失败: %w", err)
@@ -175,6 +185,10 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 	c := new(ServiceConfig)
 	if err := yaml.Unmarshal(serviceRaw, c); err != nil {
 		return nil, err
+	}
+
+	if c.Version == "" {
+		c.Version = "2.0"
 	}
 
 	configURI, err := workspace.ToURI(filePath)

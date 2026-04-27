@@ -1,3 +1,4 @@
+version: "3.0"
 name: gateway
 app: grpc-hello-world
 kind: stateless
@@ -7,5 +8,5 @@ ports:
     port: 80
 artifacts:
   - name: gateway
-    target: :gateway_image
+    target: :cmd_image
     tls: true

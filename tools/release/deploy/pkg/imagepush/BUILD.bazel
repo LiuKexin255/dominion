@@ -6,6 +6,8 @@ go_library(
     srcs = [
         "imagepush.go",
         "runner.go",
+        "runner_v3.go",
+        "v3.go",
     ],
     importpath = "dominion/tools/release/deploy/pkg/imagepush",
     visibility = ["//visibility:public"],
@@ -14,6 +16,10 @@ go_library(
 
 go_unittest(
     name = "imagepush_test",
-    srcs = ["imagepush_test.go"],
+    srcs = [
+        "imagepush_test.go",
+        "runner_v3_test.go",
+        "v3_test.go",
+    ],
     embed = [":imagepush"],
 )

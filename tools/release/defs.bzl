@@ -1,5 +1,8 @@
 """Bazel rules for publishing release artifacts to S3."""
 
+load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+
 _PUSH_TOOL = Label("//tools/release/s3push")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles")
 
@@ -119,4 +122,123 @@ def s3_artifacts_push(name, manifest, artifacts, visibility = None):
         manifest = manifest,
         artifacts = artifacts,
         **push_kwargs
+    )
+
+def _artifact_image_metadata_impl(ctx):
+    output = ctx.actions.declare_file(ctx.attr.name + ".json")
+    entrypoint = "/dominion/{}/{}/bin/{}".format(
+        ctx.attr.app,
+        ctx.attr.service,
+        ctx.attr.binary,
+    )
+    content = """{{
+  "schema_version": "3.0",
+  "app": "{app}",
+  "service": "{service}",
+  "binary": "{binary}",
+  "entrypoint": "{entrypoint}",
+  "image_target": "{image_target}",
+  "push_target": "{push_target}",
+  "repository": "{repository}",
+  "tag": "latest"
+}}
+""".format(
+        app = ctx.attr.app,
+        service = ctx.attr.service,
+        binary = ctx.attr.binary,
+        entrypoint = entrypoint,
+        image_target = ctx.attr.image_target,
+        push_target = ctx.attr.push_target,
+        repository = ctx.attr.repository,
+    )
+
+    ctx.actions.write(
+        output = output,
+        content = content,
+    )
+
+    return [DefaultInfo(files = depset([output]))]
+
+_artifact_image_metadata = rule(
+    implementation = _artifact_image_metadata_impl,
+    attrs = {
+        "app": attr.string(mandatory = True),
+        "service": attr.string(mandatory = True),
+        "binary": attr.string(mandatory = True),
+        "image_target": attr.string(mandatory = True),
+        "push_target": attr.string(mandatory = True),
+        "repository": attr.string(mandatory = True),
+    },
+)
+
+def artifact_image(name, app, service, binary, visibility = None):
+    """Creates OCI image, push, tag, tar layer, and metadata targets for a service.
+
+    Args:
+        name: Base target name. The metadata target uses this exact name.
+        app: Application name.
+        service: Service name.
+        binary: Bazel label for the service binary.
+        visibility: Optional visibility for generated targets.
+    """
+    binary_name = native.package_relative_label(binary).name
+    package_path = native.package_name()
+    repository = "registry.liukexin.com/" + app + "/" + service
+    entrypoint = "/dominion/" + app + "/" + service + "/bin/" + binary_name
+    package_dir = "dominion/" + app + "/" + service + "/bin"
+
+    full_image_target = "//" + package_path + ":" + name + "_oci"
+    full_push_target = "//" + package_path + ":" + name + "_push"
+
+    kwargs = {}
+    if visibility:
+        kwargs["visibility"] = visibility
+
+    native.genrule(
+        name = name + "_layer",
+        outs = [name + "_layer.tar"],
+        srcs = [binary],
+        cmd = ("BIN=$$(basename $(location {binary})); " +
+               "LAYER_DIR=$$(dirname $@)/{package_dir}; " +
+               "mkdir -p \"$${{LAYER_DIR}}\"; " +
+               "cp $(location {binary}) \"$${{LAYER_DIR}}/$${{BIN}}\"; " +
+               "tar -cf \"$@\" -C \"$$(dirname $@)\" dominion").format(
+            binary = binary,
+            package_dir = package_dir,
+        ),
+        **kwargs
+    )
+
+    oci_image(
+        name = name + "_oci",
+        base = "@distroless_base",
+        entrypoint = [entrypoint],
+        tars = [":" + name + "_layer"],
+        **kwargs
+    )
+
+    expand_template(
+        name = name + "_tags",
+        out = name + "_tags.txt",
+        template = ["latest"],
+        **kwargs
+    )
+
+    oci_push(
+        name = name + "_push",
+        image = ":" + name + "_oci",
+        remote_tags = ":" + name + "_tags",
+        repository = repository,
+        **kwargs
+    )
+
+    _artifact_image_metadata(
+        name = name,
+        app = app,
+        service = service,
+        binary = binary_name,
+        image_target = full_image_target,
+        push_target = full_push_target,
+        repository = repository,
+        **kwargs
     )
