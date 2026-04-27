@@ -18,6 +18,8 @@ projects/game/windows_agent/
 │   └── BUILD.bazel
 ├── cmd/windows_agent/     # Go 主程序入口
 │   └── main.go            # Wails app 构造与启动
+├── helper/                # 输入助手（input-helper.exe 源码）
+│   └── input/             # 鼠标 IPC 命令解析与 Win32 执行
 ├── internal/              # 业务逻辑（采集、编码、输入控制等）
 │   ├── app/
 │   ├── capture/

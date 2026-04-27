@@ -10,7 +10,7 @@ windows_agent_package(
     binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
-    input_helper = "//projects/game/windows_agent_helper/input:input_helper",
+    input_helper = "//projects/game/windows_agent/helper/input:input_helper",
     visibility = ["//visibility:public"],
 )
 

@@ -9,7 +9,7 @@ go_library(
         "main.go",
         "windows_executor.go",
     ],
-    importpath = "dominion/projects/game/windows_agent_helper/input",
+    importpath = "dominion/projects/game/windows_agent/helper/input",
     visibility = ["//visibility:private"],
 )
 
