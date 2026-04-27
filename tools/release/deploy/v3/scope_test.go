@@ -99,7 +99,7 @@ func TestScopeCommand_DisplayDefaultScope(t *testing.T) {
 				}
 			}
 
-			gotOutput := captureStdout(t, func() error {
+			gotOutput := captureScopeStdout(t, func() error {
 				return scopeCommand(&options{})
 			})
 
@@ -124,7 +124,7 @@ func TestScopeCommand_SetDefaultScope(t *testing.T) {
 			root, cwd := newScopeRepo(t)
 			withWorkingDir(t, cwd)
 
-			gotOutput := captureStdout(t, func() error {
+			gotOutput := captureScopeStdout(t, func() error {
 				return scopeCommand(&options{target: tt.target})
 			})
 
@@ -171,7 +171,7 @@ func TestScopeCommand_RejectsInvalidScope(t *testing.T) {
 	}
 }
 
-func captureStdout(t *testing.T, fn func() error) string {
+func captureScopeStdout(t *testing.T, fn func() error) string {
 	t.Helper()
 
 	oldStdout := stdout
@@ -190,9 +190,7 @@ func newScopeRepo(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
+	writeFile(t, filepath.Join(root, "MODULE.bazel"), "")
 	cwd := filepath.Join(root, "apps", "svc")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
@@ -203,9 +201,7 @@ func newScopeRepo(t *testing.T) (string, string) {
 func newScopeWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
+	writeFile(t, filepath.Join(root, "MODULE.bazel"), "")
 	return root
 }
 

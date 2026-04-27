@@ -1,3 +1,4 @@
+version: "3.0"
 name: service
 app: mongo-demo
 desc: mongo demo gRPC service and HTTP gateway

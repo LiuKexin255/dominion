@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 func TestNewS3Client(t *testing.T) {
@@ -192,7 +193,7 @@ func TestNewS3Client(t *testing.T) {
 			if capturedOpts.Creds == nil {
 				t.Fatal("creds = nil, want non-nil")
 			}
-			credsValue, err := capturedOpts.Creds.Get()
+			credsValue, err := capturedOpts.Creds.GetWithContext(&credentials.CredContext{})
 			if err != nil {
 				t.Fatalf("get credentials: %v", err)
 			}

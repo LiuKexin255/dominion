@@ -1,13 +1,13 @@
-version: "3.0"
-name: liukexin.demo
-type: test
+version: "2.0"
+name: grpc.dev
 desc: "开发环境"
+type: dev
 services:
   - artifact: 
-      path: //experimental/golang/grpc_hello_world/service/service.yaml
+      path: service/service.yaml
       name: service
   - artifact: 
-      path: //experimental/golang/grpc_hello_world/gateway/service.yaml
+      path: gateway/service.yaml
       name: gateway 
     http: 
       hostnames:

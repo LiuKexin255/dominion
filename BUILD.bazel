@@ -33,7 +33,7 @@ gazelle(
 
 alias(
     name = "deploy_install",
-    actual = "//tools/release/deploy/v2:install",
+    actual = "//tools/release/deploy/v3:install",
 )
 
 alias(

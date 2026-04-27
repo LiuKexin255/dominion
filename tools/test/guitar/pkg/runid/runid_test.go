@@ -37,7 +37,7 @@ func TestGenerate(t *testing.T) {
 
 func TestGenerateCollision(t *testing.T) {
 	seen := make(map[string]struct{})
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		id, err := Generate()
 		if err != nil {
 			t.Fatalf("Generate() error = %v", err)

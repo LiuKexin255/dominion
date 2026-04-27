@@ -1,12 +1,10 @@
 version: "3.0"
 name: service
 app: grpc-hello-world
-kind: stateless
 desc: grpc hello world service
-ports:
-  - name: grpc
-    port: 50051
 artifacts:
   - name: service
-    target: :cmd_image
-    tls: true
+    target: :service_image
+    ports: 
+      - name: grpc 
+        port: 50051

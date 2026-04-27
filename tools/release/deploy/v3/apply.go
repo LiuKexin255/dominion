@@ -19,12 +19,14 @@ import (
 const applyPollInterval = 100 * time.Millisecond
 
 var (
-	newImageRunner = imagepush.NewRunner
+	newV3ImageRunner = func() (imagepush.V3Runner, error) {
+		return imagepush.NewV3BazelRunner()
+	}
 	pollUntilReady = client.PollUntilReady
 )
 
 func applyCommand(opts *options) error {
-	deployConfig, err := config.ParseDeployConfig(workspace.ResolvePath(opts.target))
+	deployConfig, err := config.ParseV3DeployConfig(workspace.ResolvePath(opts.target))
 	if err != nil {
 		return err
 	}
@@ -38,12 +40,20 @@ func applyCommand(opts *options) error {
 	if err != nil {
 		return err
 	}
+	for path := range serviceConfigs {
+		serviceConfig, err := config.ParseV3ServiceConfig(workspace.ResolveRootPath(path))
+		if err != nil {
+			return err
+		}
+		serviceConfigs[path] = serviceConfig
+	}
+
 	artifactTargets, err := compiler.ResolveArtifactTargets(deployConfig, serviceConfigs)
 	if err != nil {
 		return err
 	}
 
-	imageResults, err := resolveImages(context.Background(), artifactTargets)
+	imageResults, err := resolveV3Images(context.Background(), artifactTargets, deployConfig, serviceConfigs)
 	if err != nil {
 		return err
 	}
@@ -153,19 +163,27 @@ func resolvePlaceholders(name string, envType config.EnvironmentType, run string
 	return strings.ReplaceAll(name, placeholderRun, run), nil
 }
 
-func resolveImages(ctx context.Context, artifactTargets []string) (map[string]*imagepush.Result, error) {
+func resolveV3Images(ctx context.Context, artifactTargets []string, deployConfig *config.DeployConfig, serviceConfigs map[string]*config.ServiceConfig) (map[string]*imagepush.Result, error) {
 	if len(artifactTargets) == 0 {
 		return nil, nil
 	}
 
-	runner, err := newImageRunner()
+	artifactSpecs, err := artifactSpecsByTarget(deployConfig, serviceConfigs)
 	if err != nil {
 		return nil, err
 	}
-	resolver := imagepush.NewResolver(runner)
+	runner, err := newV3ImageRunner()
+	if err != nil {
+		return nil, err
+	}
+	resolver := imagepush.NewV3Resolver(runner)
 	results := make(map[string]*imagepush.Result)
 	for _, artifactTarget := range artifactTargets {
-		result, err := resolver.Resolve(ctx, artifactTarget)
+		spec, ok := artifactSpecs[artifactTarget]
+		if !ok {
+			return nil, fmt.Errorf("artifact target %s not found", artifactTarget)
+		}
+		result, err := resolver.Resolve(ctx, artifactTarget, spec.app, spec.service)
 		if err != nil {
 			return nil, fmt.Errorf("resolve image for %s failed: %w", artifactTarget, err)
 		}
@@ -173,6 +191,30 @@ func resolveImages(ctx context.Context, artifactTargets []string) (map[string]*i
 	}
 
 	return results, nil
+}
+
+type artifactSpec struct {
+	app     string
+	service string
+}
+
+func artifactSpecsByTarget(deployConfig *config.DeployConfig, serviceConfigs map[string]*config.ServiceConfig) (map[string]*artifactSpec, error) {
+	specs := make(map[string]*artifactSpec)
+	for _, deployService := range deployConfig.Services {
+		if deployService == nil || deployService.Artifact.Path == "" {
+			continue
+		}
+		serviceConfig, ok := serviceConfigs[deployService.Artifact.Path]
+		if !ok {
+			return nil, fmt.Errorf("service config %s not found", deployService.Artifact.Path)
+		}
+		artifact, err := serviceConfig.GetArtifact(deployService.Artifact.Name)
+		if err != nil {
+			return nil, fmt.Errorf("service config %s artifact %s not found: %w", deployService.Artifact.Path, deployService.Artifact.Name, err)
+		}
+		specs[artifact.Target] = &artifactSpec{app: serviceConfig.App, service: serviceConfig.Name}
+	}
+	return specs, nil
 }
 
 func scopeResourceName(scope string) string {

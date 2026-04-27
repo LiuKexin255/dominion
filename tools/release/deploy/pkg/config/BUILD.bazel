@@ -3,7 +3,10 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "config",
-    srcs = ["config.go"],
+    srcs = [
+        "config.go",
+        "v3.go",
+    ],
     importpath = "dominion/tools/release/deploy/pkg/config",
     visibility = ["//visibility:public"],
     deps = [
@@ -15,7 +18,10 @@ go_library(
 
 go_unittest(
     name = "config_test",
-    srcs = ["config_test.go"],
+    srcs = [
+        "config_test.go",
+        "v3_test.go",
+    ],
     data = glob(["testdata/**"]),
     embed = [":config"],
 )

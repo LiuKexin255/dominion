@@ -1,7 +1,5 @@
-load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
-load("@tar.bzl", "mutate", "tar")
+load("//tools/release:defs.bzl", "artifact_image")
 
 go_library(
     name = "cmd_lib",
@@ -24,29 +22,9 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-tar(
-    name = "cmd_tar",
-    srcs = [":cmd"],
-    mutate = mutate(strip_prefix = package_name() + "/cmd_"),
-)
-
-oci_image(
+artifact_image(
     name = "cmd_image",
-    base = "@distroless_base",
-    entrypoint = ["/cmd"],
-    tars = [":cmd_tar"],
-)
-
-expand_template(
-    name = "stamped",
-    out = "_stamped.tags.txt",
-    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
-    template = ["dev"],
-)
-
-oci_push(
-    name = "cmd_image_push",
-    image = ":cmd_image",
-    remote_tags = ":stamped",
-    repository = "registry.liukexin.com/projects/game/session",
+    app = "game",
+    binary = ":cmd",
+    service = "session",
 )

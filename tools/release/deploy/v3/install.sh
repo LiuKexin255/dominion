@@ -48,12 +48,12 @@ fi
 
 src=""
 for candidate in \
-  "_main/tools/release/deploy/v2/deploy_/deploy" \
-  "__main__/tools/release/deploy/v2/deploy_/deploy" \
-  "tools/release/deploy/v2/deploy_/deploy" \
-  "_main/tools/release/deploy/v2/deploy" \
-  "__main__/tools/release/deploy/v2/deploy" \
-  "tools/release/deploy/v2/deploy"; do
+  "_main/tools/release/deploy/v3/deploy_v3_/deploy_v3" \
+  "__main__/tools/release/deploy/v3/deploy_v3_/deploy_v3" \
+  "tools/release/deploy/v3/deploy_v3_/deploy_v3" \
+  "_main/tools/release/deploy/v3/deploy_v3" \
+  "__main__/tools/release/deploy/v3/deploy_v3" \
+  "tools/release/deploy/v3/deploy_v3"; do
   resolved="$(rlocation "$candidate" 2>/dev/null || true)"
   if [[ -n "$resolved" && -f "$resolved" ]]; then
     src="$resolved"

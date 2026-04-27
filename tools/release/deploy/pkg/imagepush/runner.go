@@ -20,6 +20,7 @@ const (
 	bazelBinary       = "bazel"
 	bazelRun          = "run"
 	bazelQuery        = "cquery"
+	bazelBuild        = "build"
 
 	imageDirPrefix       = "readonly IMAGE_DIR=\"$(rlocation \""
 	repositoryFilePrefix = "readonly REPOSITORY_FILE=\"$(rlocation \""

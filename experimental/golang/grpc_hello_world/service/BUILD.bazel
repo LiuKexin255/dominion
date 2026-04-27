@@ -1,7 +1,5 @@
-load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
-load("@tar.bzl", "mutate", "tar")
+load("//tools/release:defs.bzl", "artifact_image")
 
 go_library(
     name = "service_lib",
@@ -9,8 +7,8 @@ go_library(
     importpath = "dominion/experimental/golang/grpc_hello_world/service",
     visibility = ["//visibility:private"],
     deps = [
-        "//experimental/golang/grpc_hello_world",
         "//common/gopkg/grpc",
+        "//experimental/golang/grpc_hello_world",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//reflection",
     ],
@@ -22,31 +20,9 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-tar(
-    name = "service_tar",
-    srcs = [
-        ":service",
-    ],
-    mutate = mutate(strip_prefix = package_name() + "/service_"),
-)
-
-oci_image(
-    name = "service_image",
-    base = "@distroless_base",
-    entrypoint = ["/service"],
-    tars = [":service_tar"],
-)
-
-expand_template(
-    name = "stamped",
-    out = "_stamped.tags.txt",
-    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
-    template = ["dev"],
-)
-
-oci_push(
-    name = "service_image_push",
-    image = ":service_image",
-    remote_tags = ":stamped",
-    repository = "registry.liukexin.com/experimental/grpc_hello_world/service",
+artifact_image(
+    name = "cmd_image",
+    app = "grpc-hello-world",
+    binary = ":service",
+    service = "service",
 )

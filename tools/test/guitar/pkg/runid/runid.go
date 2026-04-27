@@ -24,7 +24,7 @@ func Generate() (string, error) {
 	}
 
 	id := make([]byte, idLen)
-	for i := 0; i < idLen; i++ {
+	for i := range idLen {
 		id[i] = base36Chars[buf[i]%36]
 	}
 

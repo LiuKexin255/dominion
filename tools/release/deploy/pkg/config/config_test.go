@@ -21,10 +21,11 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.yaml"),
 			want: &DeployConfig{
-				Name: "grpc.dev",
-				Desc: "开发环境",
-				Type: "dev",
-				URI:  "//testdata/deploy.yaml",
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.yaml",
 				Services: []*DeployService{
 					{
 						Artifact: DeployArtifact{
@@ -57,10 +58,11 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取 infra 部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.infra.yaml"),
 			want: &DeployConfig{
-				Name: "grpc.dev",
-				Desc: "开发环境",
-				Type: "dev",
-				URI:  "//testdata/deploy.infra.yaml",
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.infra.yaml",
 				Services: []*DeployService{{
 					Infra: DeployInfra{
 						Resource: "mongodb",
@@ -93,10 +95,11 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取包含 replicas 的部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.replicas.yaml"),
 			want: &DeployConfig{
-				Name: "grpc.dev",
-				Desc: "开发环境",
-				Type: "dev",
-				URI:  "//testdata/deploy.replicas.yaml",
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.replicas.yaml",
 				Services: []*DeployService{
 					{
 						Artifact: DeployArtifact{
@@ -112,10 +115,11 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取包含 env 的部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.env.yaml"),
 			want: &DeployConfig{
-				Name: "grpc.dev",
-				Desc: "开发环境",
-				Type: "dev",
-				URI:  "//testdata/deploy.env.yaml",
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.env.yaml",
 				Services: []*DeployService{
 					{
 						Artifact: DeployArtifact{
@@ -134,15 +138,90 @@ func TestParseDeployConfig(t *testing.T) {
 			name: "读取包含 type 的部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.type.yaml"),
 			want: &DeployConfig{
-				Name: "grpc.dev",
-				Desc: "开发环境",
-				Type: "test",
-				URI:  "//testdata/deploy.type.yaml",
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "test",
+				Version: "2.0",
+				URI:     "//testdata/deploy.type.yaml",
 				Services: []*DeployService{
 					{
 						Artifact: DeployArtifact{
 							Path: "//testdata/service/service.yaml",
 							Name: "service",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "未指定 version 时默认为 2.0",
+			path: filepath.Join(root, "testdata", "deploy-v2-no-version.yaml"),
+			want: &DeployConfig{
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy-v2-no-version.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/service/service.yaml",
+							Name: "service",
+						},
+					},
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/gateway/service.yaml",
+							Name: "gateway",
+						},
+						HTTP: DeployHTTP{
+							Hostnames: []string{"hello.liukexin.com"},
+							Matches: []*DeployHTTPMatch{
+								{
+									Backend: "http",
+									Path: DeployHTTPPathMatch{
+										Type:  HTTPPathMatchTypePrefix,
+										Value: "/v1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "指定 version 为 3.0 时保留原值",
+			path: filepath.Join(root, "testdata", "deploy-v3.yaml"),
+			want: &DeployConfig{
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "3.0",
+				URI:     "//testdata/deploy-v3.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/service/service.yaml",
+							Name: "service",
+						},
+					},
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/gateway/service.yaml",
+							Name: "gateway",
+						},
+						HTTP: DeployHTTP{
+							Hostnames: []string{"hello.liukexin.com"},
+							Matches: []*DeployHTTPMatch{
+								{
+									Backend: "http",
+									Path: DeployHTTPPathMatch{
+										Type:  HTTPPathMatchTypePrefix,
+										Value: "/v1",
+									},
+								},
+							},
 						},
 					},
 				},
@@ -182,10 +261,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取服务配置成功",
 			path: filepath.Join(root, "testdata", "service.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world service",
-				URI:  "//testdata/service.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service.yaml",
 				Artifacts: []*ServiceArtifact{
 					{
 						Name:   "service",
@@ -206,10 +286,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取服务配置并启用 tls",
 			path: filepath.Join(root, "testdata", "service.tls.true.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world service",
-				URI:  "//testdata/service.tls.true.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service.tls.true.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
 					Target: "//testdata:service_image",
@@ -226,10 +307,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取服务配置并显式关闭 tls",
 			path: filepath.Join(root, "testdata", "service.tls.false.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world service",
-				URI:  "//testdata/service.tls.false.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service.tls.false.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
 					Target: "//testdata:service_image",
@@ -266,10 +348,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取包含顶层 ports 的服务配置成功",
 			path: filepath.Join(root, "testdata", "service.ports.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world service with ports",
-				URI:  "//testdata/service.ports.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service with ports",
+				Version: "2.0",
+				URI:     "//testdata/service.ports.yaml",
 				Ports: []*ServiceArtifactPort{{
 					Name: "admin",
 					Port: 9090,
@@ -290,10 +373,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取 stateful 工作负载配置成功",
 			path: filepath.Join(root, "testdata", "service.workload-stateful.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world stateful service",
-				URI:  "//testdata/service.workload-stateful.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world stateful service",
+				Version: "2.0",
+				URI:     "//testdata/service.workload-stateful.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
 					Target: "//testdata:service_image",
@@ -309,10 +393,11 @@ func TestParseServiceConfig(t *testing.T) {
 			name: "读取显式 stateless 工作负载配置成功",
 			path: filepath.Join(root, "testdata", "service.workload-stateless.yaml"),
 			want: &ServiceConfig{
-				Name: "service",
-				App:  "grpc-hello-world",
-				Desc: "grpc hello world service",
-				URI:  "//testdata/service.workload-stateless.yaml",
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service.workload-stateless.yaml",
 				Artifacts: []*ServiceArtifact{{
 					Name:   "service",
 					Target: "//testdata:service_image",
@@ -321,6 +406,56 @@ func TestParseServiceConfig(t *testing.T) {
 						Port: 50051,
 					}},
 				}},
+				Kind: WorkloadKindStateless,
+			},
+		},
+		{
+			name: "服务配置未指定 version 时默认为 2.0",
+			path: filepath.Join(root, "testdata", "service-v2-no-version.yaml"),
+			want: &ServiceConfig{
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service-v2-no-version.yaml",
+				Artifacts: []*ServiceArtifact{
+					{
+						Name:   "service",
+						Target: "//testdata:service_image",
+						TLS:    false,
+						Ports: []*ServiceArtifactPort{
+							{
+								Name: "grpc",
+								Port: 50051,
+							},
+						},
+					},
+				},
+				Kind: WorkloadKindStateless,
+			},
+		},
+		{
+			name: "服务配置指定 version 为 3.0 时保留原值",
+			path: filepath.Join(root, "testdata", "service-v3.yaml"),
+			want: &ServiceConfig{
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "3.0",
+				URI:     "//testdata/service-v3.yaml",
+				Artifacts: []*ServiceArtifact{
+					{
+						Name:   "service",
+						Target: "//testdata:service_image",
+						TLS:    false,
+						Ports: []*ServiceArtifactPort{
+							{
+								Name: "grpc",
+								Port: 50051,
+							},
+						},
+					},
+				},
 				Kind: WorkloadKindStateless,
 			},
 		},

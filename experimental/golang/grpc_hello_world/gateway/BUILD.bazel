@@ -1,7 +1,5 @@
-load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
-load("@tar.bzl", "mutate", "tar")
+load("//tools/release:defs.bzl", "artifact_image")
 
 go_library(
     name = "gateway_lib",
@@ -9,9 +7,9 @@ go_library(
     importpath = "dominion/experimental/golang/grpc_hello_world/gateway",
     visibility = ["//visibility:private"],
     deps = [
-        "//experimental/golang/grpc_hello_world",
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
+        "//experimental/golang/grpc_hello_world",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
     ],
@@ -23,31 +21,9 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-tar(
-    name = "gateway_tar",
-    srcs = [
-        ":gateway",
-    ],
-    mutate = mutate(strip_prefix = package_name() + "/gateway_"),
-)
-
-oci_image(
-    name = "gateway_image",
-    base = "@distroless_base",
-    entrypoint = ["/gateway"],
-    tars = [":gateway_tar"],
-)
-
-expand_template(
-    name = "stamped",
-    out = "_stamped.tags.txt",
-    stamp_substitutions = {"dev": "{{BUILD_EMBED_LABEL}}"},
-    template = ["dev"],
-)
-
-oci_push(
-    name = "gateway_image_push",
-    image = ":gateway_image",
-    remote_tags = ":stamped",
-    repository = "registry.liukexin.com/experimental/grpc_hello_world/gateway",
+artifact_image(
+    name = "cmd_image",
+    app = "grpc-hello-world",
+    binary = ":gateway",
+    service = "gateway",
 )

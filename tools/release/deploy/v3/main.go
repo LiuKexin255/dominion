@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dominion/tools/release/deploy/v2/client"
+
 	"github.com/spf13/pflag"
 )
 
@@ -247,7 +248,7 @@ func isHelpArgs(args []string) bool {
 
 func usageText() string {
 	return strings.Join([]string{
-		"Usage: deploy <command> [args]",
+		"Usage: deploy_v3 <command> [args]",
 		"",
 		"Commands:",
 		"  apply [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",

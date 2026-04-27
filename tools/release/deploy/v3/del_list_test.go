@@ -45,7 +45,7 @@ func TestDelCommand(t *testing.T) {
 					if r.URL.Path != "/v1/deploy/scopes/dev/environments/api" {
 						t.Fatalf("poll path = %s", r.URL.Path)
 					}
-					writeMainJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
+					writeDelListJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
 				default:
 					t.Fatalf("method = %s", r.Method)
 				}
@@ -60,7 +60,7 @@ func TestDelCommand(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Fatalf("method = %s, want DELETE", r.Method)
 				}
-				writeMainJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
+				writeDelListJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
 			},
 			wantErrIs: clientpkg.ErrNotFound,
 		},
@@ -74,7 +74,7 @@ func TestDelCommand(t *testing.T) {
 				case http.MethodDelete:
 					w.WriteHeader(http.StatusOK)
 				case http.MethodGet:
-					writeMainJSONResponse(t, w, http.StatusOK, &deploy.Environment{Name: "deploy/scopes/dev/environments/api", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_DELETING}})
+					writeDelListJSONResponse(t, w, http.StatusOK, &deploy.Environment{Name: "deploy/scopes/dev/environments/api", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_DELETING}})
 				default:
 					t.Fatalf("method = %s", r.Method)
 				}
@@ -88,7 +88,7 @@ func TestDelCommand(t *testing.T) {
 			server := httptest.NewServer(tt.handler)
 			t.Cleanup(server.Close)
 
-			root, cwd := newCommandWorkspace(t)
+			root, cwd := newDelListWorkspace(t)
 			withWorkingDir(t, cwd)
 			if tt.scope != "" {
 				if err := saveConfig(root, &cliConfig{DefaultScope: tt.scope}); err != nil {
@@ -96,7 +96,7 @@ func TestDelCommand(t *testing.T) {
 				}
 			}
 
-			gotOutput, err := captureOutputAndError(t, func() error {
+			gotOutput, err := captureDelListOutput(t, func() error {
 				return delCommand(&options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
 			})
 
@@ -162,11 +162,11 @@ func TestListCommand(t *testing.T) {
 					if r.URL.Path != "/v1/deploy/scopes/dev/environments" {
 						t.Fatalf("path = %s", r.URL.Path)
 					}
-					writeMainJSONResponse(t, w, tt.status, tt.response)
+					writeDelListJSONResponse(t, w, tt.status, tt.response)
 				}))
 				t.Cleanup(server.Close)
 
-				root, cwd := newCommandWorkspace(t)
+				root, cwd := newDelListWorkspace(t)
 				withWorkingDir(t, cwd)
 				if tt.seed != nil {
 					if err := saveConfig(root, tt.seed); err != nil {
@@ -174,7 +174,7 @@ func TestListCommand(t *testing.T) {
 					}
 				}
 
-				gotOutput := captureStdout(t, func() error {
+				gotOutput := captureListStdout(t, func() error {
 					return listCommand(&options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
 				})
 				if strings.TrimSpace(gotOutput) != tt.wantOutput {
@@ -183,7 +183,7 @@ func TestListCommand(t *testing.T) {
 				return
 			}
 
-			root, cwd := newCommandWorkspace(t)
+			root, cwd := newDelListWorkspace(t)
 			withWorkingDir(t, cwd)
 			if tt.seed != nil {
 				if err := saveConfig(root, tt.seed); err != nil {
@@ -199,13 +199,11 @@ func TestListCommand(t *testing.T) {
 	}
 }
 
-func newCommandWorkspace(t *testing.T) (string, string) {
+func newDelListWorkspace(t *testing.T) (string, string) {
 	t.Helper()
 
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
+	writeFile(t, filepath.Join(root, "MODULE.bazel"), "")
 	cwd := filepath.Join(root, "apps", "svc")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("MkdirAll() failed: %v", err)
@@ -213,7 +211,7 @@ func newCommandWorkspace(t *testing.T) (string, string) {
 	return root, cwd
 }
 
-func captureOutputAndError(t *testing.T, fn func() error) (string, error) {
+func captureDelListOutput(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 
 	oldStdout := stdout
@@ -225,7 +223,22 @@ func captureOutputAndError(t *testing.T, fn func() error) (string, error) {
 	return out.String(), err
 }
 
-func writeMainJSONResponse(t *testing.T, w http.ResponseWriter, statusCode int, body any) {
+func captureListStdout(t *testing.T, fn func() error) string {
+	t.Helper()
+
+	oldStdout := stdout
+	var out bytes.Buffer
+	stdout = &out
+	t.Cleanup(func() { stdout = oldStdout })
+
+	callErr := fn()
+	if callErr != nil {
+		t.Fatalf("call failed: %v", callErr)
+	}
+	return out.String()
+}
+
+func writeDelListJSONResponse(t *testing.T, w http.ResponseWriter, statusCode int, body any) {
 	t.Helper()
 
 	w.Header().Set("Content-Type", "application/json")

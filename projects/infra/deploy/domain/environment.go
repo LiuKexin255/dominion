@@ -4,6 +4,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -360,9 +361,7 @@ func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
 		}
 		if len(artifact.Env) > 0 {
 			spec.Env = make(map[string]string, len(artifact.Env))
-			for k, v := range artifact.Env {
-				spec.Env[k] = v
-			}
+			maps.Copy(spec.Env, artifact.Env)
 		}
 		cloned[i] = &spec
 	}

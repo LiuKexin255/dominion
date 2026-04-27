@@ -9,7 +9,7 @@ import (
 )
 
 // IMPORTANT: These types MUST exactly match the helper's protocol defined in:
-// projects/game/windows_agent_helper/input/command.go
+// projects/game/windows_agent/helper/input/command.go
 
 // Action describes a mouse action accepted by the input helper JSON protocol.
 type Action string

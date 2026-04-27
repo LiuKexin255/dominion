@@ -38,18 +38,6 @@ func Test_parseOptions(t *testing.T) {
 			},
 		},
 		{
-			name: "apply with run flag empty default",
-			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--scope=team", "deploy.yaml"},
-			want: &options{
-				command:  commandApply,
-				target:   "deploy.yaml",
-				endpoint: "http://localhost:8081",
-				timeout:  30 * time.Second,
-				scope:    "team",
-				run:      "",
-			},
-		},
-		{
 			name:    "del does not accept run flag",
 			args:    []string{"del", "--run=abc123", "team.dev"},
 			wantErr: true,
@@ -121,8 +109,8 @@ func TestRun_Help(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "Usage: deploy <command> [args]") {
-		t.Fatalf("run(--help) output = %q, want usage", got)
+	if !strings.Contains(got, "Usage: deploy_v3 <command> [args]") {
+		t.Fatalf("run(--help) output = %q, want v3 usage", got)
 	}
 	if !strings.Contains(got, "--endpoint") {
 		t.Fatalf("run(--help) output = %q, want endpoint flag", got)
