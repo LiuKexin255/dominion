@@ -9,9 +9,9 @@ go_library(
     importpath = "dominion/experimental/golang/grpc_hello_world/gateway",
     visibility = ["//visibility:private"],
     deps = [
-        "//experimental/golang/grpc_hello_world",
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
+        "//experimental/golang/grpc_hello_world",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
     ],

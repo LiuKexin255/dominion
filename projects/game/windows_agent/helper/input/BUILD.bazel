@@ -22,8 +22,7 @@ go_binary(
 )
 
 go_unittest(
-    name = "input_helper_test",
+    name = "input_test",
     srcs = ["command_test.go"],
     embed = [":input_helper_lib"],
 )
-

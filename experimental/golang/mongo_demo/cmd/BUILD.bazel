@@ -9,10 +9,10 @@ go_library(
     importpath = "dominion/experimental/golang/mongo_demo/cmd",
     visibility = ["//visibility:private"],
     deps = [
-        "//experimental/golang/mongo_demo",
-        "//experimental/golang/mongo_demo/storage",
         "//common/gopkg/grpc",
         "//common/gopkg/mongo",
+        "//experimental/golang/mongo_demo",
+        "//experimental/golang/mongo_demo/storage",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
