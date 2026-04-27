@@ -1,0 +1,44 @@
+load("//tools/wails/private:app.bzl", "wails_app")
+load("//tools/wails/private:bindings.bzl", "wails_bindings")
+load("//tools/wails/private:config_check.bzl", "wails_config_check")
+load("//tools/wails/private:frontend_assets.bzl", "wails_frontend_assets")
+load("//tools/wails/private:windows_resources.bzl", "wails_windows_resources")
+
+package(default_visibility = ["//tools/wails:__subpackages__"])
+
+wails_config_check(
+    name = "config_check_pass",
+    wails_json = "//tools/wails/private/tests/fixtures:wails_valid.json",
+)
+
+wails_config_check(
+    name = "config_check_reject",
+    tags = ["manual"],
+    wails_json = "//tools/wails/private/tests/fixtures:wails_invalid.json",
+)
+
+wails_frontend_assets(
+    name = "frontend_assets_test",
+    src = "//tools/wails/private/tests/fixtures:frontend_mock_dist",
+    out = "frontend_dist",
+)
+
+wails_bindings(
+    name = "bindings_test",
+    go_srcs = ["//tools/wails/private/tests/fixtures:bindings_go_srcs"],
+    wails_json = "//tools/wails/private/tests/fixtures/bindings:wails.json",
+)
+
+wails_windows_resources(
+    name = "windows_resources_test",
+    out = "test-res.syso",
+    icon = "//tools/wails/private/tests/fixtures:windows_resources/test.ico",
+)
+
+wails_app(
+    name = "wails_app_test",
+    frontend = "//tools/wails/private/tests/fixtures:frontend_mock_dist",
+    go_srcs = ["//tools/wails/private/tests/fixtures:bindings_go_srcs"],
+    icon = "//tools/wails/private/tests/fixtures:windows_resources/test.ico",
+    wails_json = "//tools/wails/private/tests/fixtures:wails_valid.json",
+)

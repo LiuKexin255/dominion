@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "buildassets",
+    srcs = ["buildassets.go"],
+    embedsrcs = [
+        "build/README.md",
+        "build/appicon.png",
+        "build/darwin/Info.dev.plist",
+        "build/darwin/Info.plist",
+        "build/windows/icon.ico",
+        "build/windows/info.json",
+        "build/windows/installer/project.nsi",
+        "build/windows/installer/wails_tools.nsh",
+        "build/windows/wails.exe.manifest",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/buildassets",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/internal/project",
+        "@com_github_leaanthony_gosod//:gosod",
+        "@com_github_samber_lo//:lo",
+    ],
+)

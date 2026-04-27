@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "build",
+    srcs = [
+        "base.go",
+        "build.go",
+        "builder.go",
+        "desktop.go",
+        "nsis_installer.go",
+        "packager.go",
+        "packager_linux.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/commands/build",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/runtime/wrapper",
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/internal/project",
+        "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        "//third_party/github.com/wailsapp/wails/v2/internal/staticanalysis",
+        "//third_party/github.com/wailsapp/wails/v2/internal/system",
+        "//third_party/github.com/wailsapp/wails/v2/internal/webview2runtime",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/buildassets",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/clilogger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/commands/bindings",
+        "@com_github_google_shlex//:shlex",
+        "@com_github_jackmordaunt_icns//:icns",
+        "@com_github_leaanthony_gosod//:gosod",
+        "@com_github_leaanthony_slicer//:slicer",
+        "@com_github_leaanthony_winicon//:winicon",
+        "@com_github_pkg_errors//:errors",
+        "@com_github_pterm_pterm//:pterm",
+        "@com_github_samber_lo//:lo",
+        "@com_github_tc_hib_winres//:winres",
+        "@com_github_tc_hib_winres//version",
+    ],
+)
+
+go_unittest(
+    name = "build_test",
+    srcs = ["base_test.go"],
+    embed = [":build"],
+)

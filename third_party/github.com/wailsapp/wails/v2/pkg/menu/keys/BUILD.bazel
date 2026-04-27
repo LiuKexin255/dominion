@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "keys",
+    srcs = [
+        "keys.go",
+        "macmodifiers.go",
+        "parser.go",
+        "stringify.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/menu/keys",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_leaanthony_slicer//:slicer"],
+)
+
+go_unittest(
+    name = "keys_test",
+    srcs = [
+        "macmodifiers_test.go",
+        "parser_test.go",
+        "stringify_test.go",
+    ],
+    embed = [":keys"],
+    deps = ["@com_github_matryer_is//:is"],
+)

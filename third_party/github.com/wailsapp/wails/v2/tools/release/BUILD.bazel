@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "release_lib",
+    srcs = ["release.go"],
+    importpath = "github.com/wailsapp/wails/v2/tools/release",
+    visibility = ["//visibility:private"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/internal/s"],
+)
+
+go_binary(
+    name = "release",
+    embed = [":release_lib"],
+    visibility = ["//visibility:public"],
+)

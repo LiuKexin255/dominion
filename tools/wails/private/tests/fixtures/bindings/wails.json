@@ -1,0 +1,9 @@
+{
+  "name": "bindings-test",
+  "outputfilename": "bindings-test",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": { "name": "", "email": "" }
+}

@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "cfd",
+    srcs = [
+        "CommonFileDialog.go",
+        "CommonFileDialog_nonWindows.go",
+        "CommonFileDialog_windows.go",
+        "DialogConfig.go",
+        "errors.go",
+        "iFileOpenDialog.go",
+        "iFileSaveDialog.go",
+        "iShellItem.go",
+        "iShellItemArray.go",
+        "vtblCommon.go",
+        "vtblCommonFunc.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/go-common-file-dialog/cfd",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "@com_github_go_ole_go_ole//:go-ole",
+            "@com_github_google_uuid//:uuid",
+        ],
+        "//conditions:default": [],
+    }),
+)

@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "logger",
+    srcs = [
+        "custom_logger.go",
+        "default_logger.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/logger",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/pkg/logger"],
+)

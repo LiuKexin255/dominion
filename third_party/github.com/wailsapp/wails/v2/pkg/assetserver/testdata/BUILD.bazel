@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "testdata",
+    srcs = ["testdata.go"],
+    embedsrcs = [
+        "index.html",
+        "main.css",
+        "main.js",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/assetserver/testdata",
+    visibility = ["//visibility:public"],
+)

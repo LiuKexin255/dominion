@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "util",
+    srcs = ["util.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/go-common-file-dialog/util",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "@com_github_go_ole_go_ole//:go-ole",
+        "@com_github_google_uuid//:uuid",
+    ],
+)
+
+go_unittest(
+    name = "util_test",
+    srcs = ["util_test.go"],
+    embed = [":util"],
+    deps = ["@com_github_go_ole_go_ole//:go-ole"],
+)

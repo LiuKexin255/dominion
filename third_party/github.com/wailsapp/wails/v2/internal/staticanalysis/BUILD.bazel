@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "staticanalysis",
+    srcs = ["staticanalysis.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/staticanalysis",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = ["@org_golang_x_tools//go/packages"],
+)
+
+go_unittest(
+    name = "staticanalysis_test",
+    srcs = ["staticanalysis_test.go"],
+    embed = [":staticanalysis"],
+    deps = ["@com_github_stretchr_testify//require"],
+)

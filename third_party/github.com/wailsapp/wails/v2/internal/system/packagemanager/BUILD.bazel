@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "packagemanager",
+    srcs = [
+        "apt.go",
+        "dnf.go",
+        "emerge.go",
+        "eopkg.go",
+        "nixpkgs.go",
+        "packagemanager.go",
+        "pacman.go",
+        "pm.go",
+        "zypper.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/system/packagemanager",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:android": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        ],
+        "@rules_go//go/platform:linux": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        ],
+        "//conditions:default": [],
+    }),
+)

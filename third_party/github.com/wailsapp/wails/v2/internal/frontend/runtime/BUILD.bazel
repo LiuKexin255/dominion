@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "runtime",
+    srcs = [
+        "assets.go",
+        "events.go",
+        "ipc.go",
+        "runtime_debug_desktop.go",
+    ],
+    embedsrcs = [
+        "ipc.js",
+        "ipc_websocket.js",  # keep
+        "runtime_debug_desktop.js",
+        "runtime_prod_desktop.js",  # keep
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/runtime",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "@com_github_samber_lo//:lo",
+    ],
+)
+
+go_unittest(
+    name = "runtime_test",
+    srcs = ["events_test.go"],
+    deps = [
+        ":runtime",
+        "@com_github_matryer_is//:is",
+    ],
+)

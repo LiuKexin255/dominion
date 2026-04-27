@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "webview2runtime",
+    srcs = [
+        "webview2installer.go",
+        "webview2runtime.go",
+    ],
+    embedsrcs = ["MicrosoftEdgeWebview2Setup.exe"],
+    importpath = "github.com/wailsapp/wails/v2/internal/webview2runtime",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+)

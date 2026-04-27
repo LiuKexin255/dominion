@@ -288,10 +288,10 @@
   },
   "selectedYankedVersions": {},
   "moduleExtensions": {
-    "//third_party/ffmpeg:defs.bzl%ffmpeg_windows_amd64": {
+    "//third_party/www.gyan.dev/ffmpeg:defs.bzl%ffmpeg_windows_amd64": {
       "general": {
         "bzlTransitiveDigest": "3w58pdh2Tdpd54Ryo3CYDqBbCRHr766jSoYROihi7v4=",
-        "usagesDigest": "YyKybeZLGjCgxZcy6ZYLDmJzGw3OKKBTud7HvziBltw=",
+        "usagesDigest": "6PAIeCsYyVmtvb9DPhVESwFph94FfaLswHFofSwMqhI=",
         "recordedInputs": [
           "REPO_MAPPING:,bazel_tools bazel_tools"
         ],

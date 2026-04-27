@@ -1,10 +1,29 @@
 load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
+load("//tools/wails:defs.bzl", "wails_app", "wails_config_check")
 
 exports_files([
     "resources/icon.ico",
 ])
 
+# Wails toolchain config check
+wails_config_check(
+    name = "wails_config_check",
+    wails_json = "wails.json",
+)
+
+# Wails app aggregation
+# NOTE: icon omitted — resources/icon.ico is a placeholder (1 byte).
+# When a real .ico is available, add: icon = "resources/icon.ico",
+# NOTE: go_srcs omitted — wails_bindings requires a go.mod which is not
+# available in the sandbox. Enable when bindings generation is fixed.
+wails_app(
+    name = "windows_agent_app",
+    frontend = "//projects/game/windows_agent/frontend:dist",
+    wails_json = "wails.json",
+)
+
+# Existing targets — kept unchanged
 windows_agent_package(
     name = "windows_agent_win_zip",
     binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",

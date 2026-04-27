@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# gazelle:exclude base
+
+go_library(
+    name = "template",
+    srcs = ["template.go"],
+    embedsrcs = glob(
+        ["base/**"],
+        allow_empty = True,
+    ),
+    importpath = "github.com/wailsapp/wails/v2/cmd/wails/internal/template",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2/cmd/wails:__subpackages__"],
+)

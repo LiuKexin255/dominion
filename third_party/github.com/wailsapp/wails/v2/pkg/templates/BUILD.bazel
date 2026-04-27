@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+# gazelle:exclude templates
+
+go_library(
+    name = "templates",
+    srcs = ["templates.go"],
+    embedsrcs = glob(
+        ["templates/**"],
+        allow_empty = True,
+    ) + [
+        "ides/goland/gitignore.txt",
+        "ides/goland/modules.tmpl.xml",
+        "ides/goland/name.tmpl",
+        "ides/goland/projectname.iml",
+        "ides/goland/vcs.xml",
+        "ides/goland/workspace.tmpl.xml",
+        "ides/vscode/launch.tmpl.json",
+        "ides/vscode/tasks.tmpl.json",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/templates",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/clilogger",
+        "@com_github_go_git_go_git_v5//:go-git",
+        "@com_github_go_git_go_git_v5//plumbing",
+        "@com_github_leaanthony_debme//:debme",
+        "@com_github_leaanthony_gosod//:gosod",
+        "@com_github_pkg_errors//:errors",
+    ],
+)
+
+go_unittest(
+    name = "templates_test",
+    srcs = ["templates_test.go"],
+    embed = [":templates"],
+    deps = ["@com_github_matryer_is//:is"],
+)

@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "dispatcher",
+    srcs = [
+        "browser.go",
+        "calls.go",
+        "dispatcher.go",
+        "draganddrop.go",
+        "events.go",
+        "log.go",
+        "securecalls.go",
+        "systemcalls.go",
+        "window.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/dispatcher",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/binding",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
+        "@com_github_pkg_errors//:errors",
+    ],
+)

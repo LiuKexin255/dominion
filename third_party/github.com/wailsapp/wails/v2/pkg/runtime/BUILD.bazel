@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "runtime",
+    srcs = [
+        "browser.go",
+        "clipboard.go",
+        "dialog.go",
+        "draganddrop.go",
+        "events.go",
+        "log.go",
+        "menu.go",
+        "notifications.go",
+        "runtime.go",
+        "screen.go",
+        "signal_linux.go",
+        "signal_other.go",
+        "window.go",
+    ],
+    cgo = True,
+    importpath = "github.com/wailsapp/wails/v2/pkg/runtime",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/menu",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ],
+)

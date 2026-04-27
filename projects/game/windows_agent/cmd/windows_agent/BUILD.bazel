@@ -4,13 +4,13 @@ go_library(
     name = "windows_agent_lib",
     srcs = ["main.go"],
     importpath = "dominion/projects/game/windows_agent/cmd/windows_agent",
-    visibility = ["//visibility:private"],
+    visibility = ["//projects/game/windows_agent:__pkg__"],
     deps = [
         "//projects/game/windows_agent/assets",
         "//projects/game/windows_agent/internal/app",
-        "@com_github_wailsapp_wails_v2//:wails",
-        "@com_github_wailsapp_wails_v2//pkg/options",
-        "@com_github_wailsapp_wails_v2//pkg/options/assetserver",
+        "//third_party/github.com/wailsapp/wails/v2:wails",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
     ],
 )
 

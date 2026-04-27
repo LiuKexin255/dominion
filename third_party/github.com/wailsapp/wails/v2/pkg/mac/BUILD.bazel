@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "mac",
+    srcs = [
+        "login_darwin.go",
+        "notification_darwin.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/mac",
+    visibility = ["//visibility:public"],
+    deps = select({
+        "@rules_go//go/platform:darwin": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+            "@com_github_leaanthony_slicer//:slicer",
+            "@com_github_pkg_errors//:errors",
+        ],
+        "@rules_go//go/platform:ios": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+            "@com_github_leaanthony_slicer//:slicer",
+            "@com_github_pkg_errors//:errors",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+go_unittest(
+    name = "mac_test",
+    srcs = ["notification_darwin_test.go"],
+    embed = [":mac"],
+)

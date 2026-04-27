@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "mac",
+    srcs = [
+        "appearance.go",
+        "mac.go",
+        "preferences.go",
+        "titlebar.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/options/mac",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_leaanthony_u//:u"],
+)

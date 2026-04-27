@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "project",
+    srcs = ["project.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/project",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = ["@com_github_samber_lo//:lo"],
+)
+
+go_unittest(
+    name = "project_test",
+    srcs = ["project_test.go"],
+    deps = [
+        ":project",
+        "@com_github_samber_lo//:lo",
+    ],
+)

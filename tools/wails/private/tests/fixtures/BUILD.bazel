@@ -1,0 +1,22 @@
+load(":defs.bzl", "mock_frontend_dist")
+
+package(default_visibility = ["//tools/wails:__subpackages__"])
+
+exports_files([
+    "wails_valid.json",
+    "wails_invalid.json",
+    "windows_resources/test.ico",
+])
+
+filegroup(
+    name = "bindings_go_srcs",
+    srcs = [
+        "//tools/wails/private/tests/fixtures/bindings:go.mod",
+        "//tools/wails/private/tests/fixtures/bindings:main.go",
+    ],
+)
+
+mock_frontend_dist(
+    name = "frontend_mock_dist",
+    srcs = glob(["frontend_mock/**"]),
+)

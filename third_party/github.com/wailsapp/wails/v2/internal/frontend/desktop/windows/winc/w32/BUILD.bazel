@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "w32",
+    srcs = [
+        "comctl32.go",
+        "comdlg32.go",
+        "constants.go",
+        "dwmapi.go",
+        "gdi32.go",
+        "gdiplus.go",
+        "idispatch.go",
+        "istream.go",
+        "iunknown.go",
+        "kernel32.go",
+        "ole32.go",
+        "oleaut32.go",
+        "shcore.go",
+        "shell32.go",
+        "shlwapi.go",
+        "toolbar.go",
+        "typedef.go",
+        "user32.go",
+        "utils.go",
+        "uxtheme.go",
+        "vars.go",
+        "wda.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/desktop/windows/winc/w32",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/system/operatingsystem",
+        ],
+        "//conditions:default": [],
+    }),
+)

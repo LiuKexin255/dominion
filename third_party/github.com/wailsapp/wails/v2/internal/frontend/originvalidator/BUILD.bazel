@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "originvalidator",
+    srcs = ["originValidator.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/originvalidator",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+)

@@ -1,0 +1,26 @@
+load("//tools/wails/private:diagnostics.bzl", "wails_version_test")
+load(":toolchain.bzl", "wails_cli_toolchain")
+
+toolchain_type(
+    name = "toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+exports_files([
+    "defs.bzl",
+    "toolchain.bzl",
+])
+
+wails_cli_toolchain(
+    name = "linux_amd64_toolchain",
+    exec_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    version = "v2.12.0",
+    wails = "//third_party/github.com/wailsapp/wails/v2/cmd/wails:wails",
+)
+
+wails_version_test(
+    name = "wails_version_test",
+)

@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "internal",
+    srcs = ["version.go"],
+    embedsrcs = ["version.txt"],
+    importpath = "github.com/wailsapp/wails/v2/cmd/wails/internal",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2/cmd/wails:__subpackages__"],
+)

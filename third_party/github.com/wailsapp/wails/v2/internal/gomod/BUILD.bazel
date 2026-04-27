@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "gomod",
+    srcs = [
+        "gomod.go",
+        "gomod_data_unix.go",
+        "gomod_data_windows.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/gomod",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "@com_github_masterminds_semver//:semver",
+        "@org_golang_x_mod//modfile",
+    ],
+)
+
+go_unittest(
+    name = "gomod_test",
+    srcs = ["gomod_test.go"],
+    embed = [":gomod"],
+    deps = [
+        "@com_github_masterminds_semver//:semver",
+        "@com_github_matryer_is//:is",
+    ],
+)

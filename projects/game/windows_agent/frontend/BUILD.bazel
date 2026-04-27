@@ -38,7 +38,10 @@ js_run_binary(
     chdir = package_name(),
     out_dirs = ["dist"],
     tool = ":vite_build",
-    visibility = ["//projects/game/windows_agent/assets:__pkg__"],
+    visibility = [
+        "//projects/game/windows_agent:__pkg__",
+        "//projects/game/windows_agent/assets:__pkg__",
+    ],
 )
 
 genrule(

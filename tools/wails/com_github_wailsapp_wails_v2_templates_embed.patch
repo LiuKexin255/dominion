@@ -1,0 +1,11 @@
+--- pkg/templates/BUILD.bazel
++++ pkg/templates/BUILD.bazel
+@@ -3,7 +3,7 @@
+ go_library(
+     name = "templates",
+     srcs = ["templates.go"],
+-    embedsrcs = [
++    embedsrcs = glob(["templates/**"]) + [
+         "ides/goland/gitignore.txt",
+         "ides/goland/modules.tmpl.xml",
+         "ides/goland/name.tmpl",
