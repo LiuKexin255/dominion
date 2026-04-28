@@ -1,5 +1,11 @@
 """Wails frontend assets rule — re-roots frontend build output for Go embed."""
 
+_HERMETIC_ENV = {
+    "HOME": "/tmp/wails_action_home",
+    "TMPDIR": "/tmp",
+    "NO_COLOR": "1",
+}
+
 def _wails_frontend_assets_impl(ctx):
     src_files = ctx.attr.src[DefaultInfo].files.to_list()
     if not src_files:
@@ -23,6 +29,7 @@ def _wails_frontend_assets_impl(ctx):
         inputs = src_files,
         outputs = [output],
         arguments = [args],
+        env = _HERMETIC_ENV,
         command = """#!/usr/bin/env bash
 set -euo pipefail
 src="$1"

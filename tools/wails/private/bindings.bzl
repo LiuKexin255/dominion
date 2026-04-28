@@ -2,6 +2,12 @@
 
 load("@rules_go//go:def.bzl", "go_context")
 
+_HERMETIC_ENV = {
+    "HOME": "/tmp/wails_action_home",
+    "TMPDIR": "/tmp",
+    "NO_COLOR": "1",
+}
+
 def _wails_bindings_impl(ctx):
     wails_toolchain = ctx.toolchains["//tools/wails:toolchain_type"].wails_toolchain
     wails = wails_toolchain.wails
@@ -111,7 +117,7 @@ fi
         outputs = [output],
         executable = launcher,
         arguments = [args],
-        env = go.env,
+        env = dict(go.env.items() + _HERMETIC_ENV.items()),
         tools = tool_files,
         mnemonic = "WailsBindings",
         progress_message = "Generating Wails bindings: " + output.basename,

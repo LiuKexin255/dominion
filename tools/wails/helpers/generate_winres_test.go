@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tc-hib/winres"
 )
 
 func TestFlagParsing(t *testing.T) {
@@ -93,6 +95,42 @@ func TestIconFileCheck(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestArchFromString(t *testing.T) {
+	tests := []struct {
+		input string
+		want  winres.Arch
+		err   bool
+	}{
+		{"amd64", winres.ArchAMD64, false},
+		{"x86_64", winres.ArchAMD64, false},
+		{"386", winres.ArchI386, false},
+		{"i386", winres.ArchI386, false},
+		{"x86", winres.ArchI386, false},
+		{"arm64", winres.ArchARM64, false},
+		{"aarch64", winres.ArchARM64, false},
+		{"unknown", "", true},
+		{"", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := archFromString(tt.input)
+			if tt.err {
+				if err == nil {
+					t.Errorf("archFromString(%q) expected error, got %v", tt.input, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("archFromString(%q) unexpected error: %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Errorf("archFromString(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

@@ -2,12 +2,19 @@
 
 _GENERATE_WINRES = Label("//tools/wails/helpers:generate_winres")
 
+_HERMETIC_ENV = {
+    "HOME": "/tmp/wails_action_home",
+    "TMPDIR": "/tmp",
+    "NO_COLOR": "1",
+}
+
 def _wails_windows_resources_impl(ctx):
     icon = ctx.file.icon
     out = ctx.actions.declare_file(ctx.attr.out)
 
     args = ctx.actions.args()
     args.add("-icon", icon)
+    args.add("-arch", ctx.attr.arch)
     if ctx.file.manifest:
         args.add("-manifest", ctx.file.manifest)
     if ctx.file.info:
@@ -25,6 +32,7 @@ def _wails_windows_resources_impl(ctx):
         outputs = [out],
         executable = ctx.executable._winres_tool,
         arguments = [args],
+        env = _HERMETIC_ENV,
         mnemonic = "WailsWindowsResources",
         progress_message = "Generating Windows resource: " + out.basename,
     )
@@ -51,6 +59,10 @@ _wails_windows_resources = rule(
             doc = "Output .syso filename.",
             default = "windows-res.syso",
         ),
+        "arch": attr.string(
+            doc = "Target Windows architecture passed to the resource generator.",
+            default = "amd64",
+        ),
         "_winres_tool": attr.label(
             default = _GENERATE_WINRES,
             executable = True,
@@ -60,7 +72,7 @@ _wails_windows_resources = rule(
     doc = "Generates a Windows .syso resource file from icon, manifest, and version info.",
 )
 
-def wails_windows_resources(name, icon, out = "windows-res.syso", manifest = None, info = None, **kwargs):
+def wails_windows_resources(name, icon, out = "windows-res.syso", manifest = None, info = None, arch = "amd64", **kwargs):
     """Generates Windows resources for Wails applications.
 
     Args:
@@ -69,6 +81,7 @@ def wails_windows_resources(name, icon, out = "windows-res.syso", manifest = Non
         out: Output .syso filename.
         manifest: Optional label of a Windows .manifest file.
         info: Optional label of a version info JSON file.
+        arch: Target Windows architecture.
         **kwargs: Additional keyword arguments forwarded to the underlying rule.
     """
     _wails_windows_resources(
@@ -77,5 +90,6 @@ def wails_windows_resources(name, icon, out = "windows-res.syso", manifest = Non
         out = out,
         manifest = manifest,
         info = info,
+        arch = arch,
         **kwargs
     )

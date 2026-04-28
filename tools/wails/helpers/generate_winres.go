@@ -34,6 +34,7 @@ func generate() error {
 	manifestPath := flag.String("manifest", "", "Path to .manifest file")
 	infoPath := flag.String("info", "", "Path to info.json")
 	outPath := flag.String("out", "", "Output .syso path")
+	archStr := flag.String("arch", "amd64", "Target architecture (amd64, 386, arm64)")
 	flag.Parse()
 
 	if *iconPath == "" || *outPath == "" {
@@ -61,7 +62,11 @@ func generate() error {
 	}
 	defer outFile.Close()
 
-	if err := rs.WriteObject(outFile, winres.ArchAMD64); err != nil {
+	arch, err := archFromString(*archStr)
+	if err != nil {
+		return err
+	}
+	if err := rs.WriteObject(outFile, arch); err != nil {
 		return fmt.Errorf("write .syso: %w", err)
 	}
 	return nil
@@ -120,6 +125,19 @@ func addVersionInfo(rs *winres.ResourceSet, infoPath string) error {
 
 	rs.SetVersionInfo(versionInfo)
 	return nil
+}
+
+func archFromString(s string) (winres.Arch, error) {
+	switch s {
+	case "amd64", "x86_64":
+		return winres.ArchAMD64, nil
+	case "386", "i386", "x86":
+		return winres.ArchI386, nil
+	case "arm64", "aarch64":
+		return winres.ArchARM64, nil
+	default:
+		return "", fmt.Errorf("unsupported architecture: %s", s)
+	}
 }
 
 func addManifest(rs *winres.ResourceSet, manifestPath string) error {

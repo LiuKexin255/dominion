@@ -1,11 +1,9 @@
 # keep
 load("@rules_go//go:def.bzl", "go_library")
-load("//projects/game/windows_agent/assets:defs.bzl", "frontend_embed_assets")
 load("//tools/dev/go:defs.bzl", "go_unittest")
+load("//tools/wails:defs.bzl", "wails_frontend_assets")
 
-# Legacy asset handoff — maintained for backward compatibility.
-# New Wails projects should use //tools/wails:defs.bzl % wails_frontend_assets.
-frontend_embed_assets(
+wails_frontend_assets(
     name = "frontend_dist",
     src = "//projects/game/windows_agent/frontend:dist",
     out = "frontend_dist",
