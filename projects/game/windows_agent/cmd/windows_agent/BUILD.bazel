@@ -25,5 +25,6 @@ go_binary(
     embed = [":windows_agent_lib"],
     goarch = "amd64",
     goos = "windows",
+    tags = ["manual"],
     visibility = ["//visibility:public"],
 )

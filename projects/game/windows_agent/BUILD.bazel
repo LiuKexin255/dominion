@@ -19,14 +19,19 @@ wails_config_check(
 # available in the sandbox. Enable when bindings generation is fixed.
 wails_app(
     name = "windows_agent_app",
-    frontend = "//projects/game/windows_agent/frontend:dist",
+    binary_name = "windows-agent",
+    platform = "windows/amd64",
     wails_json = "wails.json",
+    go_library = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_lib",
+    bindings = False,
+    webview2 = "embed",
+    visibility = ["//visibility:public"],
 )
 
 # Existing targets — kept unchanged
 windows_agent_package(
     name = "windows_agent_win_zip",
-    binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
+    binary = ":windows_agent_app",
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent/helper/input:input_helper",
