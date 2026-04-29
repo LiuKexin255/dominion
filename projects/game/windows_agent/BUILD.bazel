@@ -1,6 +1,12 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
 load("//tools/release/wails:defs.bzl", "wails_app")
+
+# gazelle:resolve go dominion/projects/game/windows_agent/assets //projects/game/windows_agent/assets:windows_agent_assets
+# gazelle:resolve go github.com/wailsapp/wails/v2 //third_party/github.com/wailsapp/wails/v2:wails
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/runtime //third_party/github.com/wailsapp/wails/v2/pkg/runtime:runtime
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options //third_party/github.com/wailsapp/wails/v2/pkg/options:options
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options/assetserver //third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver
 
 go_library(
     name = "windows_agent_lib",
@@ -11,8 +17,8 @@ go_library(
         "//projects/game/windows_agent/assets:windows_agent_assets",
         "//projects/game/windows_agent/internal/app",
         "//third_party/github.com/wailsapp/wails/v2:wails",
-        "//third_party/github.com/wailsapp/wails/v2/pkg/options:options",
-        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
     ],
 )
 
@@ -32,5 +38,11 @@ windows_agent_package(
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent/helper/input:input_helper",
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "windows_agent",
+    embed = [":windows_agent_lib"],
     visibility = ["//visibility:public"],
 )

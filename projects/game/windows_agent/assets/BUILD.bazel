@@ -14,5 +14,5 @@ wails_asset_library(
 go_unittest(
     name = "assets_test",
     srcs = ["assets_test.go"],
-    deps = [":windows_agent_assets"],
+    deps = ["//projects/game/windows_agent/assets:windows_agent_assets"],
 )

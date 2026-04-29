@@ -1,5 +1,6 @@
 load("@gazelle//:def.bzl", "gazelle")
 
+# gazelle:prefix dominion
 # gazelle:go_grpc_compilers @rules_go//proto:go_grpc_v2, @rules_go//proto:go_proto, @grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway
 # gazelle:map_kind go_test go_unittest //tools/dev/go:defs.bzl
 # gazelle:alias_kind go_largetest go_test
