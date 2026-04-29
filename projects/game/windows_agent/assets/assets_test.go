@@ -1,13 +1,15 @@
-package assets
+package assets_test
 
 import (
 	"embed"
 	"io/fs"
 	"strings"
 	"testing"
+
+	"dominion/projects/game/windows_agent/assets"
 )
 
-var _ embed.FS = FrontendDist
+var _ embed.FS = assets.FrontendDist
 
 func TestFrontendDistContainsIndexHTML(t *testing.T) {
 	// Given frontend dist files embedded by the Bazel frontend_embed_assets rule.
@@ -22,7 +24,7 @@ func TestFrontendDistContainsIndexHTML(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// When reading the embedded frontend entry point.
-			data, err := FrontendDist.ReadFile(tt.path)
+			data, err := assets.FrontendDist.ReadFile(tt.path)
 
 			// Then it contains the expected HTML document marker.
 			if err != nil {
@@ -40,7 +42,7 @@ func TestFrontendDistHasAssets(t *testing.T) {
 	assetPath := "frontend_dist/assets"
 
 	// When listing the assets emitted by the frontend build.
-	entries, err := fs.ReadDir(FrontendDist, assetPath)
+	entries, err := fs.ReadDir(assets.FrontendDist, assetPath)
 
 	// Then both JavaScript and CSS bundles are present.
 	if err != nil {

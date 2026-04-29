@@ -43,6 +43,7 @@ require (
 	github.com/tkrajina/go-reflector v0.5.8
 	github.com/wailsapp/go-webview2 v1.0.22
 	github.com/wailsapp/mimetype v1.4.1
+	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/wzshiming/ctc v1.2.3
 	go.mongodb.org/mongo-driver v1.17.9
 	golang.org/x/mod v0.32.0
@@ -167,7 +168,6 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
-	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/net v0.49.0
 	golang.org/x/sys v0.40.0
 	golang.org/x/text v0.34.0 // indirect

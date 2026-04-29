@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "helpers_lib",
+    srcs = [
+        "generate_assets_go.go",
+        "generate_winres.go",
+        "main.go",
+        "stage_frontend.go",
+    ],
+    importpath = "dominion/tools/release/wails/helpers",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_tc_hib_winres//:winres",
+        "@com_github_tc_hib_winres//version",
+    ],
+)
+
+go_binary(
+    name = "helpers",
+    embed = [":helpers_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "helpers_test",
+    srcs = [
+        "generate_assets_go_test.go",
+        "generate_winres_test.go",
+        "stage_frontend_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":helpers_lib"],
+    deps = ["@com_github_tc_hib_winres//:winres"],
+)

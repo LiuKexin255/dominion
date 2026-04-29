@@ -7,6 +7,7 @@ go_library(
         "events.go",
         "ipc.go",
         "runtime_debug_desktop.go",
+        "runtime_prod_desktop.go",
     ],
     embedsrcs = [
         "ipc.js",

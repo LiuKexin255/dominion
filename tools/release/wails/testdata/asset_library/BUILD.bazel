@@ -1,0 +1,18 @@
+load("//tools/release/wails:defs.bzl", "wails_asset_library")
+
+exports_files(
+    ["dist"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "frontend_dist_src",
+    srcs = ["dist"],
+)
+
+wails_asset_library(
+    name = "assets",
+    src = ":frontend_dist_src",
+    importpath = "dominion/tools/wails/testdata/asset_library/assets",
+    visibility = ["//visibility:public"],
+)

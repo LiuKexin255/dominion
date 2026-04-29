@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/release/wails:defs.bzl", "wails_go_binary")
+
+go_library(
+    name = "app_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/tools/wails/testdata/go_binary",
+    visibility = ["//visibility:private"],
+)
+
+wails_go_binary(
+    name = "app",
+    binary_name = "wails-test-app",
+    embed = [":app_lib"],
+    platform = "windows/amd64",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "go_binary_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/tools/release/wails/testdata/go_binary",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "go_binary",
+    embed = [":go_binary_lib"],
+    visibility = ["//visibility:public"],
+)

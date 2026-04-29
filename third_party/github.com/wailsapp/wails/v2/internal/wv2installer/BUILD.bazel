@@ -4,6 +4,7 @@ go_library(
     name = "wv2installer",
     srcs = [
         "download.go",
+        "embed.go",
         "wv2installer.go",
     ],
     importpath = "github.com/wailsapp/wails/v2/internal/wv2installer",
