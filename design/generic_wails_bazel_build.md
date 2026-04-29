@@ -9,7 +9,7 @@
 * 提供通用 `wails_app` 构建入口，项目侧只声明 Wails app 的业务输入，不手写 Wails 生产构建细节。
 * 生产构建由 Bazel 拆阶段完成：前端构建、资源交接、bindings、Windows resource、Go binary、项目打包均是 declared outputs。
 * Wails CLI 由 Bazel 固定版本管理，但不把 `wails build` 作为生产构建入口。
-* 优先使用正常 Go module 外部依赖 `github.com/wailsapp/wails/v2`，如外部依赖可满足 Bazel 构建，则移除当前本地化的 Wails 源码仓库。
+* Wails runtime 与 Wails CLI 均使用仓库内本地化源码作为内部 Bazel 依赖，避免依赖 Gazelle 自动生成的外部 Wails BUILD 文件。
 * `projects/game/windows_agent` 迁移为该通用规则的首个落地项目，`bazel build //projects/game/windows_agent:windows_agent_win_zip` 仍产出 Windows portable zip。
 * 当前只要求支持 Windows 目标平台；模型保留平台扩展点，但不实现 Linux/macOS app 构建支持。
 
@@ -21,8 +21,8 @@
 
 * 通用 `tools/wails` Bazel API、provider、rule/macro 分层。
 * Wails CLI 在 Bazel 中的定位与使用边界。
-* Wails Go runtime 依赖优先回归外部 Go module 的迁移策略。
-* 移除本地化 Wails 源码前需要处理的 Gazelle import 重定向问题。
+* Wails Go runtime 与 Wails CLI 使用内部本地化源码的依赖策略。
+* 本地化 Wails 源码与 Gazelle import 重定向的维护要求。
 * Windows-only 生产构建的 tags、linkopts、resource、frontend embed 模型。
 * `projects/game/windows_agent` 需要如何调整以适配通用构建方案。
 * 验收标准与迁移步骤。
@@ -41,7 +41,7 @@
 
 1. **`wails_app` 不是最终构建入口**：`projects/game/windows_agent:windows_agent_app` 只聚合部分 Wails 阶段输出，`WailsAppInfo.binary` 为空；最终 zip 仍直接依赖 `cmd/windows_agent:windows_agent_windows`。
 2. **Wails 构建语义分散在项目侧**：Windows `go_binary` 的 `goos/goarch`、Wails production tags、linkopts、resource `.syso` 接入没有由 `tools/wails` 统一封装。
-3. **本地化 Wails 源码维护成本高**：当前 `//third_party/github.com/wailsapp/wails/v2` 同时承担 Wails CLI 来源和 runtime 依赖来源。若不需要 patch Wails 源码或从源码构建 CLI，则本地化会增加 BUILD 文件维护和 Gazelle 重定向复杂度。
+3. **Wails 必须使用内部本地化源码**：Gazelle 基于外部 Go module 自动生成的 Wails BUILD 文件无法满足当前仓库 Bazel 编译要求，因此 `//third_party/github.com/wailsapp/wails/v2` 需要继续作为 Wails CLI 与 runtime 的内部依赖来源。
 4. **Wails CLI 职责容易混淆**：CLI 对 bindings、diagnostics 有价值，但 `wails build` 是面向工作区的黑盒编排命令，不适合作为 Bazel 生产 action。
 5. **Windows 目标平台与 CGo 认知混乱**：Wails v2 Windows runtime 本身不需要 CGo；当前目标平台仅 Windows，因此不应为了 Linux/macOS Wails CGo 场景引入 Windows C++ cross toolchain 作为默认要求。
 
@@ -246,57 +246,38 @@ wails_windows_resources(
 
 ## Wails 依赖来源设计
 
-### 首选：正常外部 Go module 依赖
+### 采用内部本地化源码
 
-Wails runtime/library 依赖优先回归正常 Go module：
-
-```go
-require github.com/wailsapp/wails/v2 v2.12.0
-```
-
-Bazel 通过：
-
-```starlark
-go_deps.from_file(go_mod = "//:go.mod")
-```
-
-生成或使用 `@com_github_wailsapp_wails_v2` 外部 repository target。
-
-优点：
-
-* 不维护本地化 Wails 源码和大量 BUILD 文件。
-* Wails runtime 版本由 `go.mod` 锁定，符合 Go 生态常规。
-* 降低 `third_party/github.com/wailsapp/wails/v2` 与 upstream 漂移风险。
-
-### Wails CLI 来源
-
-Wails CLI 不要求来自本地化源码。可选来源：
-
-1. **外部 Go module 构建 CLI**：从 `@com_github_wailsapp_wails_v2//cmd/wails` 构建。若 Gazelle 生成 target 可用，这是最一致的来源。
-2. **固定预构建 CLI 二进制**：通过 repository rule 下载官方或内部镜像中的 Wails CLI，固定 version/sha256。适合外部 Go module CLI target 构建困难时。
-
-禁止使用开发者本机 `PATH` 中的 `wails` 或 `go install ...@latest`。
-
-### 本地化 Wails 源码移除策略
-
-当前仓库存在本地化路径：
+Wails runtime/library 与 Wails CLI 均使用仓库内本地化源码：
 
 ```text
 third_party/github.com/wailsapp/wails/v2
 ```
 
-在移除前必须先处理 Bazel import 重定向：
+原因：
+
+* Gazelle 自动为外部 `github.com/wailsapp/wails/v2` Go module 生成的 BUILD 文件当前无法编译。
+* Wails CLI 与 runtime 需要版本一致；本地化源码可以让 `//tools/wails` 直接引用同一份源码中的 `cmd/wails` 与 runtime packages。
+* 本仓库可以对 Wails BUILD 文件做最小必要修正，例如平台限定、依赖修正、资源 target 修正，而不等待 upstream 或外部 repository 生成规则变化。
+
+要求：
+
+* 本地化 Wails 源码版本仍由根 `go.mod` 记录，目录 README 需要标明对应 upstream version。
+* 本地化目录不得保留独立 `go.mod`，依赖继续由根 `go.mod` 与 Bazel module 管理。
+* Wails 相关 import 必须通过 Gazelle resolve/prefix 稳定解析到 `//third_party/github.com/wailsapp/wails/v2...`。
+* 对 Wails BUILD 文件的修改应限于 Bazel 构建所需，避免无关源码 patch。
+
+### Gazelle import 重定向维护要求
+
+由于 Wails 使用内部本地化源码，必须显式维护 import 到内部 label 的映射：
 
 1. 检查本地化 Wails 顶层 `BUILD.bazel` 中的 Gazelle prefix / resolve 指令。
 2. 检查仓库内所有 `//third_party/github.com/wailsapp/wails/v2...` label 引用。
-3. 将项目 BUILD deps 改回外部 repo label，例如 `@com_github_wailsapp_wails_v2//...`，或使用 Gazelle 重新生成 deps。
-4. 确认 `go_deps.use_repo` 中保留 `com_github_wailsapp_wails_v2`。
-5. 运行 Gazelle，确保 import `github.com/wailsapp/wails/v2/...` 不再被重定向到本地 `//third_party/...`。
-6. 验证外部 Wails runtime 依赖可构建 Windows app。
-7. 验证 Wails CLI toolchain 可从外部 repo 或固定二进制获取。
-8. 以上全部通过后，删除本地化 Wails 源码目录。
+3. 运行 Gazelle 后，确认 `github.com/wailsapp/wails/v2/...` imports 不会被改写到外部 `@com_github_wailsapp_wails_v2`。
+4. 如 `go_deps.use_repo` 仍包含 `com_github_wailsapp_wails_v2`，需确认不会被仓库内 Wails imports 使用；它可以作为 module 依赖记录存在，但不是 Wails runtime/CLI 的 Bazel 构建来源。
+5. 删除或更新任何指向外部 Wails repository 的 BUILD 依赖，统一使用内部 `//third_party/...` label。
 
-如果外部 repo 构建失败，允许暂时保留本地化 Wails 源码，但必须记录具体阻塞原因，并限制本地 patch 范围。
+禁止使用开发者本机 `PATH` 中的 `wails` 或 `go install ...@latest`。
 
 ## 代码分层
 
@@ -419,9 +400,9 @@ frontend:dist -> assets:frontend_dist -> assets:assets -> windows_agent_lib
 
 因此生产构建必须拆成 Bazel 阶段；CLI 只作为工具用于受控子命令。
 
-### 为什么优先移除本地化 Wails 源码
+### 为什么使用内部本地化 Wails 源码
 
-本方案不要求 patch Wails runtime 源码，也不要求从本地源码构建 CLI。正常 Go module 外部依赖更符合 Go/Bazel 依赖管理模型。只有在外部 repo 的 BUILD 生成或 CLI 构建无法满足需求时，才保留本地化源码。
+Gazelle 自动生成的外部 Wails BUILD 文件当前无法编译，不能作为通用构建方案的基础。内部本地化源码让仓库可以维护可编译的 BUILD 文件，并确保 Wails CLI 与 runtime 使用同一版本来源。
 
 ### Windows C++ toolchain 处理
 
@@ -456,9 +437,9 @@ linux/amd64     # future, not implemented
 
 原因：`wails build` 的工作区写入和命令执行不适合 Bazel。CLI 保留为 toolchain tool，用于 version、doctor、bindings 和兼容对照。
 
-### 决策 3：优先使用外部 Go module Wails 依赖
+### 决策 3：Wails 使用内部本地化源码
 
-原因：降低本地化源码维护成本，避免 patch upstream BUILD 文件成为长期负担。移除本地化源码前必须先处理 Gazelle import 重定向。
+原因：外部 Go module 经 Gazelle 生成的 Wails BUILD 文件无法编译。为了让通用 Wails Bazel 构建方案可落地，Wails runtime 与 CLI 均以 `//third_party/github.com/wailsapp/wails/v2` 为内部依赖来源。
 
 ### 决策 4：Windows-only 当前目标默认 pure Go
 
@@ -470,12 +451,12 @@ linux/amd64     # future, not implemented
 
 ## 迁移步骤
 
-### Step 1：验证外部 Wails Go module 可用性
+### Step 1：固定内部 Wails 依赖来源
 
-1. 恢复或确认 `go.mod` 中 `github.com/wailsapp/wails/v2` 版本。
-2. 确认 `go_deps.use_repo` 中包含 `com_github_wailsapp_wails_v2`。
-3. 暂时绕过本地 `//third_party/github.com/wailsapp/wails/v2` label，验证外部 repo label 可被 rules_go 构建。
-4. 处理 Gazelle import 重定向，确保 `github.com/wailsapp/wails/v2/...` 不再被解析到本地 third_party。
+1. 确认 `third_party/github.com/wailsapp/wails/v2` 对应的 upstream version 与根 `go.mod` 一致。
+2. 确认本地化 Wails 目录不包含独立 `go.mod`。
+3. 确认 Wails 顶层 `BUILD.bazel` / Gazelle 配置能把 `github.com/wailsapp/wails/v2/...` imports 解析到内部 `//third_party/...` label。
+4. 清理指向外部 `@com_github_wailsapp_wails_v2//...` 的 Wails runtime/CLI 构建引用。
 
 ### Step 2：实现 `wails_go_binary`
 
@@ -498,16 +479,13 @@ linux/amd64     # future, not implemented
 3. `cmd/windows_agent:windows_agent_windows` 改为 manual/debug 兼容 target 或删除。
 4. 维持 `assets` 包和 frontend Bazel build 不变，降低业务代码改动。
 
-### Step 5：移除本地化 Wails 源码
+### Step 5：收敛本地化 Wails BUILD 维护
 
-在以下条件全部满足后执行：
-
-1. 外部 Wails runtime repo 可构建 Windows agent。
-2. Wails CLI toolchain 可从外部 repo 或固定二进制提供。
-3. 仓库内不再有 `//third_party/github.com/wailsapp/wails/v2...` label 引用。
-4. Gazelle 不再把 Wails imports 重定向到本地路径。
-5. `bazel test //tools/wails/...` 成功。
-6. `bazel build //projects/game/windows_agent:windows_agent_win_zip` 成功。
+1. 确认 `//tools/wails:wails_cli` 或等价 target 从内部 `//third_party/.../cmd/wails` 构建。
+2. 确认 `projects/game/windows_agent` 的 Wails runtime deps 全部指向内部 `//third_party/...` label。
+3. 运行 Gazelle 后确认不会把 Wails imports 改回外部 repository。
+4. `bazel test //tools/wails/...` 成功。
+5. `bazel build //projects/game/windows_agent:windows_agent_win_zip` 成功。
 
 ### Step 6：补齐可选能力
 
@@ -524,11 +502,11 @@ linux/amd64     # future, not implemented
 * `wails_app` fixture 能导出 `WailsAppInfo.binary`。
 * 生产构建路径不依赖任何 `wails_build_compat*` target。
 
-### Wails 外部依赖验收
+### Wails 内部依赖验收
 
-* 仓库内 Wails runtime imports 由外部 `@com_github_wailsapp_wails_v2` 满足。
-* 移除本地化 Wails 源码后，Gazelle 不重新生成到 `//third_party/github.com/wailsapp/wails/v2` 的依赖。
-* Wails CLI 来源固定 version/sha256 或外部 Go module version。
+* 仓库内 Wails runtime imports 由内部 `//third_party/github.com/wailsapp/wails/v2` 满足。
+* Wails CLI toolchain 从内部本地化源码构建，版本与根 `go.mod` 中 Wails 版本一致。
+* 运行 Gazelle 后，Wails imports 不被改写到外部 `@com_github_wailsapp_wails_v2`。
 
 ### Windows agent 验收
 
@@ -549,13 +527,13 @@ resources/icon.ico
 
 ## 风险与规避
 
-### 风险 1：外部 Wails repo 的 Gazelle BUILD 不满足构建
+### 风险 1：本地化 Wails BUILD 与 upstream 漂移
 
-规避：先验证外部 repo；失败时记录具体 target/错误。可短期保留本地化源码，或改用固定 CLI 二进制 + 外部 runtime 依赖的混合方案。
+规避：本地化目录 README 标明 upstream version；Wails BUILD 修改限制在 Bazel 构建必要范围内；升级 Wails 时按固定步骤重新生成/修正 BUILD 并跑 `//tools/wails/...` 与 Windows agent 验收。
 
-### 风险 2：Gazelle import 重定向残留
+### 风险 2：Gazelle import 重定向失效
 
-规避：移除本地化源码前先清理所有 `//third_party/github.com/wailsapp/wails/v2...` label，并运行 Gazelle 验证不会回写。
+规避：维护 Wails prefix/resolve 配置；每次运行 Gazelle 后检查 Wails deps 是否仍指向内部 `//third_party/...` label。
 
 ### 风险 3：bindings 生成依赖 Go workspace 布局
 

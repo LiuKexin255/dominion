@@ -8,8 +8,8 @@
 
 * Bazel 成为 Wails 应用生产构建的唯一入口，`bazel build //projects/game/windows_agent:windows_agent_win_zip` 能产出 Windows portable zip。
 * `tools/wails` 表达 Wails 应用的构建语义，而不是封装 `wails build`。
-* Wails runtime/library 使用 `go.mod` 管理的外部 Go module；不在 `MODULE.bazel` 绕过 `go.mod` 引入 Go 依赖。
-* 不 patch 外部依赖。只使用外部 Wails repo 中可原样使用的 runtime/library targets；CLI、构建、资源、assets 交接等能力由本仓库本地 Bazel rules/helpers 实现。
+* Wails runtime/library 使用仓库内部依赖源码管理；版本仍由根 `go.mod` 记录，不在 `MODULE.bazel` 绕过 `go.mod` 引入 Go 依赖。
+* 不 patch 外部依赖。Gazelle 为外部 Wails repo 生成的 BUILD 文件无法编译，因此终态不使用 `@com_github_wailsapp_wails_v2`；Wails 源码和 BUILD metadata 作为仓库内部代码维护。
 * 所有生产产物都是 Bazel declared outputs，不写源码目录，不依赖开发者本机 `PATH` 中的工具。
 * frontend dist、Go embed、Windows exe、Windows resource、portable zip 形成可查询、可验证的 Bazel 依赖闭环。
 
@@ -22,7 +22,7 @@
 * 不存在 package 的 `load(...)`、`register_toolchains(...)`、target 依赖。
 * 已删除实现留下的 `//tools/wails:*`、`//tools/cc_windows_launcher_toolchain:*` 等坏引用。
 * 直接依赖旧手写 Windows `go_binary` 的生产 package 路径。
-* 指向本地 Wails 源码、外部 Wails repo、Wails CLI 的混杂依赖图。
+* 指向外部 Wails repo 或 Wails CLI 的生产依赖图。
 * 会迫使 Bazel patch 外部 Go module 的 BUILD metadata 或源码的设计。
 
 本方案不以现有实现作为参考或兼容对象。现有实现只能作为失败背景；终态实现应从空的 `tools/wails` 重新建设。
@@ -50,7 +50,7 @@
 
 ## 调研结论
 
-### 外部 Wails runtime 可作为终态依赖来源
+### 外部 Wails 依赖不满足终态要求
 
 仓库通过：
 
@@ -58,7 +58,15 @@
 go_deps.from_file(go_mod = "//:go.mod")
 ```
 
-从根 `go.mod` 暴露 `com_github_wailsapp_wails_v2`。已确认关键 runtime/library labels 存在：
+从根 `go.mod` 暴露 `com_github_wailsapp_wails_v2`。但调研结论是：Gazelle 为外部 Wails repo 生成的 BUILD metadata 无法满足终态构建要求，不能作为本方案的依赖来源。
+
+典型问题包括：
+
+* Wails CLI/template 相关 `go:embed` 资源没有完整进入 generated BUILD。
+* runtime/library 与 CLI/template 的 generated targets 不能作为一套可验证、可编译的 Wails 构建基础。
+* 修复这些问题需要 patch 外部 repo 或外部 generated BUILD metadata，违反仓库约束。
+
+因此，本方案不使用以下外部 labels 作为终态依赖：
 
 ```text
 @com_github_wailsapp_wails_v2//:wails
@@ -67,34 +75,31 @@ go_deps.from_file(go_mod = "//:go.mod")
 @com_github_wailsapp_wails_v2//pkg/runtime:runtime
 ```
 
-这些 targets 对应 Windows agent 当前需要的 Wails runtime imports。方案终态应使用这些外部 labels，并移除本地 Wails runtime label 依赖，避免外部/本地双源。
+终态 Wails 依赖必须使用仓库内部源码，例如：
 
-实施时仍需在清理坏 Bazel 注册后执行硬验证：
-
-```bash
-bazel build \
-  @com_github_wailsapp_wails_v2//:wails \
-  @com_github_wailsapp_wails_v2//pkg/options:options \
-  @com_github_wailsapp_wails_v2//pkg/options/assetserver:assetserver \
-  @com_github_wailsapp_wails_v2//pkg/runtime:runtime
+```text
+//third_party/github.com/wailsapp/wails/v2:wails
+//third_party/github.com/wailsapp/wails/v2/pkg/options:options
+//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver
+//third_party/github.com/wailsapp/wails/v2/pkg/runtime:runtime
 ```
 
-如果这些 runtime targets 原样不可构建，不能 patch 外部 repo；必须在方案调研阶段整体改为本地 Wails 源码管理，而不是在开发中 fallback。
+内部 Wails 源码应作为普通仓库代码管理，维护完整 BUILD metadata、`go:embed` 资源声明和必要的 Bazel targets。根 `go.mod` 仍记录 `github.com/wailsapp/wails/v2` 的版本真相；不得在本地 Wails 子目录保存独立 `go.mod`。
 
-### 外部 Wails CLI 不作为终态依赖
+### Wails CLI 不作为生产构建入口
 
-外部 target `@com_github_wailsapp_wails_v2//cmd/wails:wails` 存在，但 generated BUILD 对 CLI/template 相关 `go:embed` 资源不完整，直接把它作为工具链会把方案推向 patch 外部 repo。
+即使 Wails 源码使用内部依赖管理，`tools/wails` 也不以 Wails CLI 为中心。终态目标是 Bazel 管理 Wails 构建，而不是封装官方 CLI。
 
 因此终态设计明确：
 
 * `tools/wails` 不以 Wails CLI 为中心。
 * 生产构建不调用 `wails build`。
-* 不依赖外部 Wails CLI target 完成 app 构建、bindings、resource 或 frontend 交接。
-* 如未来必须提供完整官方 Wails CLI，应在调研阶段选择本地化 Wails 源码并维护完整 BUILD metadata；不得 patch external repo。
+* 不依赖 `cmd/wails` 完成 app 构建、resource 或 frontend 交接。
+* 如 bindings 或诊断确实需要复用 Wails 内部能力，应通过本地 helper 精确调用可声明输入输出的子能力，而不是执行 `wails build`。
 
 ## 总体方案
 
-采用 “外部 Wails runtime + 本地 Bazel Wails 小工具” 模型：
+采用 “内部 Wails 源码依赖 + 本地 Bazel Wails 小工具” 模型：
 
 ```text
 frontend build target
@@ -321,7 +326,7 @@ wails_windows_resources(
 * 不写 `frontend/wailsjs` 源码目录。
 * 输出到 `ctx.actions.declare_directory(...)`。
 * 不依赖 `wails build`。
-* 不强制依赖外部 Wails CLI。
+* 不强制依赖 Wails CLI。
 * 如复用 Wails library 中可构建的 bindings 包，应通过本地 helper 控制输入、工作目录、环境变量和输出目录。
 * 如实现成本高，项目可关闭 bindings；工具 API 仍保留该能力边界。
 
@@ -405,7 +410,7 @@ windows_agent_package(
 )
 ```
 
-`cmd/windows_agent` 的 app library 依赖应使用外部 Wails runtime labels：
+`cmd/windows_agent` 的 app library 依赖应使用内部 Wails labels：
 
 ```starlark
 go_library(
@@ -415,9 +420,9 @@ go_library(
     deps = [
         "//projects/game/windows_agent:windows_agent_assets",
         "//projects/game/windows_agent/internal/app",
-        "@com_github_wailsapp_wails_v2//:wails",
-        "@com_github_wailsapp_wails_v2//pkg/options:options",
-        "@com_github_wailsapp_wails_v2//pkg/options/assetserver:assetserver",
+        "//third_party/github.com/wailsapp/wails/v2:wails",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options:options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver",
     ],
 )
 ```
@@ -437,8 +442,6 @@ bazel build //tools/wails/testdata/minimal_windows_go_binary:minimal_windows_go_
 bazel build //projects/game/windows_agent:windows_agent_app
 ```
 
-如果仍失败于 `@@bazel_tools//src/tools/launcher:launcher` 或 `@@bazel_tools//tools/cpp:toolchain_type`，应作为 Bazel launcher/toolchain baseline 问题单独处理。可选解法是 hermetic LLVM-mingw、MinGW 或 Zig C++ toolchain，但只有实际验证仍失败时才引入。
-
 真实 Windows CGo/C/C++ cross toolchain 只在项目代码或依赖确实包含 `import "C"`、C/C++ 源码或 C deps 时才进入方案。
 
 ## 关键细节
@@ -449,11 +452,11 @@ bazel build //projects/game/windows_agent:windows_agent_app
 
 Wails CLI 可以作为开发者本地工具存在，但不是生产构建依赖。
 
-### 为什么 runtime 用外部依赖，CLI 不用
+### 为什么 Wails 使用内部依赖
 
-外部 Wails runtime targets 可由 `go.mod` + `go_deps` 原样提供，符合依赖管理约束。外部 CLI target 存在，但 generated BUILD 对模板 embed 资源不完整；修复它需要 patch 外部依赖，违反约束。
+Gazelle 为外部 Wails repo 生成的 BUILD 文件无法编译，尤其是 `go:embed` 模板资源和 CLI 相关 targets 不完整。即使只想使用 runtime，继续依赖外部 repo 也会让 Wails 的 BUILD metadata 处于不可控状态。
 
-因此终态只使用外部 Wails runtime/library，CLI/构建能力由本地 `tools/wails` 实现。
+因此终态使用内部 Wails 源码依赖，并由仓库维护完整 BUILD metadata。这样既不 patch external repo，也避免外部/内部双源并存。
 
 ### 为什么 `wails_asset_library` 管理 frontend embed
 
@@ -471,13 +474,13 @@ Go `//go:embed` 只能嵌入声明该 directive 的 Go package 目录下的文�
 
 原因：目标是 Bazel 管理 Wails 构建语义。CLI 是开发工具，不是 Bazel production action driver。
 
-### 决策 3：Wails runtime 使用外部 Go module
+### 决策 3：Wails 使用内部依赖
 
-原因：runtime labels 可由 `go.mod` + `go_deps` 原样提供，不需要 patch；这符合 Go 依赖版本真相在 `go.mod` 的仓库约束。
+原因：外部 generated BUILD 无法编译且不能 patch。将 Wails 作为内部源码管理，可以维护正确 BUILD metadata、embed 资源和 Bazel targets，同时由根 `go.mod` 记录版本真相。
 
 ### 决策 4：不 patch 外部依赖
 
-原因：patch external repo 会让依赖行为脱离 `go.mod` 和 upstream 版本真相。如果确实需要修改 upstream 行为，应在调研阶段选择本地源码管理方案，而不是开发中 fallback。
+原因：patch external repo 会让依赖行为脱离 `go.mod` 和 upstream 版本真相。本方案已经在调研阶段确定外部 Wails 不满足要求，因此直接选择内部源码管理，不存在开发中 fallback。
 
 ### 决策 5：`wails_app` 必须导出最终 exe
 
@@ -495,21 +498,22 @@ Go `//go:embed` 只能嵌入声明该 directive 的 Go package 目录下的文�
 * `bazel query //projects/game/windows_agent:windows_agent_win_zip` 能完成 analysis。
 * 生产构建图中不存在对 `wails build`、PATH `wails`、外部 Wails CLI target 的依赖。
 
-### 外部 Wails runtime 验收
+### 内部 Wails 依赖验收
 
-* 以下 target 原样 build 成功：
+* 以下内部 target build 成功：
 
 ```bash
 bazel build \
-  @com_github_wailsapp_wails_v2//:wails \
-  @com_github_wailsapp_wails_v2//pkg/options:options \
-  @com_github_wailsapp_wails_v2//pkg/options/assetserver:assetserver \
-  @com_github_wailsapp_wails_v2//pkg/runtime:runtime
+  //third_party/github.com/wailsapp/wails/v2:wails \
+  //third_party/github.com/wailsapp/wails/v2/pkg/options:options \
+  //third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver \
+  //third_party/github.com/wailsapp/wails/v2/pkg/runtime:runtime
 ```
 
-* 仓库内 Wails runtime BUILD deps 不再指向 `//third_party/github.com/wailsapp/wails/v2...`。
+* 仓库内 Wails runtime BUILD deps 不再指向 `@com_github_wailsapp_wails_v2...`。
 * `MODULE.bazel` 不新增绕过 `go.mod` 的 Wails Go 依赖。
-* 外部 Wails repo 没有 patch。
+* 内部 Wails 源码目录不保存独立 `go.mod`。
+* `go_deps.use_repo` 中不暴露未使用的 `com_github_wailsapp_wails_v2`，避免外部/内部双源并存。
 
 ### `tools/wails` 验收
 
@@ -539,9 +543,9 @@ resources/icon.ico
 
 ## 风险与规避
 
-### 风险 1：外部 Wails runtime 实际 build 失败
+### 风险 1：内部 Wails BUILD metadata 漂移
 
-规避：清理坏 Bazel 注册后第一时间执行外部 runtime targets build 验收。若失败且需要修改 upstream，方案应整体切换为本地 Wails 源码管理，不允许 patch external repo 或开发中 fallback。
+规避：内部 Wails 源码由仓库维护 BUILD metadata，并用 `bazel test //third_party/github.com/wailsapp/wails/v2/...` 或必要子集持续验证。更新 Wails 版本时先同步根 `go.mod`，再同步内部源码和 BUILD 文件。
 
 ### 风险 2：误把 Wails CLI 重新引入生产路径
 
