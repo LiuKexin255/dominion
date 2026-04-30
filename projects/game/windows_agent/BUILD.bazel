@@ -1,5 +1,6 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
+load("//tools/release:defs.bzl", "s3_artifacts_push")
 load("//tools/release/wails:defs.bzl", "wails_app")
 
 # gazelle:resolve go dominion/projects/game/windows_agent/assets //projects/game/windows_agent/assets:windows_agent_assets
@@ -38,6 +39,13 @@ windows_agent_package(
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent/helper/input:input_helper",
+    visibility = ["//visibility:public"],
+)
+
+s3_artifacts_push(
+    name = "publish",
+    manifest = "release.yaml",
+    artifacts = [":windows_agent_win_zip"],
     visibility = ["//visibility:public"],
 )
 
