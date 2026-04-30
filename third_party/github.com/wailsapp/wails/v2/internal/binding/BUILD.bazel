@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "binding",
+    srcs = [
+        "binding.go",
+        "boundMethod.go",
+        "db.go",
+        "generate.go",
+        "parameter.go",
+        "reflect.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/binding",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/internal/typescriptify",
+        "@com_github_leaanthony_slicer//:slicer",
+    ],
+)
+

@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "webview",
+    srcs = [
+        "request.go",
+        "request_finalizer.go",
+        "request_windows.go",
+        "responsewriter.go",
+        "responsewriter_windows.go",
+    ],
+    cgo = True,
+    importpath = "github.com/wailsapp/wails/v2/pkg/assetserver/webview",
+    visibility = ["//visibility:public"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "@com_github_wailsapp_go_webview2//pkg/edge",
+        ],
+        "//conditions:default": [],
+    }),
+)

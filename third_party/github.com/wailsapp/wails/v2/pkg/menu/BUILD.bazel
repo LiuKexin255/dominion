@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "menu",
+    srcs = [
+        "callback.go",
+        "cols.go",
+        "contextmenu.go",
+        "mac.go",
+        "menu.go",
+        "menuitem.go",
+        "menuroles.go",
+        "styledlabel.go",
+        "tray.go",
+        "type.go",
+        "windows.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/menu",
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/pkg/menu/keys"],
+)
+

@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "win32",
+    srcs = [
+        "clipboard.go",
+        "consts.go",
+        "theme.go",
+        "window.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/desktop/windows/win32",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/windows/winc",
+            "//third_party/github.com/wailsapp/wails/v2/internal/system/operatingsystem",
+            "@org_golang_x_sys//windows/registry",
+        ],
+        "//conditions:default": [],
+    }),
+)

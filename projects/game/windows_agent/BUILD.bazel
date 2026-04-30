@@ -1,13 +1,41 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("//projects/game/windows_agent/release:defs.bzl", "windows_agent_package")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
+load("//tools/release/wails:defs.bzl", "wails_app")
 
-exports_files([
-    "resources/icon.ico",
-])
+# gazelle:resolve go dominion/projects/game/windows_agent/assets //projects/game/windows_agent/assets:windows_agent_assets
+# gazelle:resolve go github.com/wailsapp/wails/v2 //third_party/github.com/wailsapp/wails/v2:wails
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/runtime //third_party/github.com/wailsapp/wails/v2/pkg/runtime:runtime
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options //third_party/github.com/wailsapp/wails/v2/pkg/options:options
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options/assetserver //third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver:assetserver
+
+go_library(
+    name = "windows_agent_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/windows_agent",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/windows_agent/assets:windows_agent_assets",
+        "//projects/game/windows_agent/internal/app",
+        "//third_party/github.com/wailsapp/wails/v2:wails",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
+    ],
+)
+
+wails_app(
+    name = "windows_agent_app",
+    assets = "//projects/game/windows_agent/assets:windows_agent_assets_provider",
+    binary_name = "windows-agent",
+    go_library = "//projects/game/windows_agent:windows_agent_lib",
+    platform = "windows/amd64",
+    visibility = ["//visibility:public"],
+    webview2 = "embed",
+)
 
 windows_agent_package(
     name = "windows_agent_win_zip",
-    binary = "//projects/game/windows_agent/cmd/windows_agent:windows_agent_windows",
+    binary = ":windows_agent_app",
     ffmpeg = "@ffmpeg_windows_amd64//:bin/ffmpeg.exe",
     icon = "resources/icon.ico",
     input_helper = "//projects/game/windows_agent/helper/input:input_helper",
@@ -15,10 +43,14 @@ windows_agent_package(
 )
 
 s3_artifacts_push(
-    name = "windows_agent_push",
-    artifacts = [
-        ":windows_agent_win_zip",
-    ],
+    name = "publish",
     manifest = "release.yaml",
+    artifacts = [":windows_agent_win_zip"],
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "windows_agent",
+    embed = [":windows_agent_lib"],
     visibility = ["//visibility:public"],
 )

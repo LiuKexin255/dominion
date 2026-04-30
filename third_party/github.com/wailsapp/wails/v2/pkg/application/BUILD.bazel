@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "application",
+    srcs = [
+        "application.go",
+        "events.go",
+        "init.go",
+        "init_windows.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/application",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/app",
+        "//third_party/github.com/wailsapp/wails/v2/internal/signal",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/menu",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ],
+)

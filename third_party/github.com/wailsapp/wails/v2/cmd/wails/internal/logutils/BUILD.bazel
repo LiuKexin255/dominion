@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "logutils",
+    srcs = ["color-logs.go"],
+    importpath = "github.com/wailsapp/wails/v2/cmd/wails/internal/logutils",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2/cmd/wails:__subpackages__"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/internal/colour"],
+)

@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "assetserver",
+    srcs = [
+        "assethandler.go",
+        "assethandler_external.go",
+        "assetserver.go",
+        "assetserver_webview.go",
+        "body_recorder.go",
+        "common.go",
+        "content_type_sniffer.go",
+        "fs.go",
+        "mimecache.go",
+        "ringqueue.go",
+    ],
+    embedsrcs = ["defaultindex.html"],
+    importpath = "github.com/wailsapp/wails/v2/pkg/assetserver",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/pkg/assetserver/webview",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
+        "@com_github_wailsapp_mimetype//:mimetype",
+        "@org_golang_x_net//html",
+    ],
+)
+

@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "wrapper",
+    srcs = ["wrapper.go"],
+    embedsrcs = [
+        "package.json",
+        "runtime.d.ts",
+        "runtime.js",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/runtime/wrapper",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+)

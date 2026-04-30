@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "desktop",
+    srcs = [
+        "desktop_windows.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/desktop",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/binding",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/windows",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ],
+)

@@ -1,0 +1,7 @@
+exports_files([
+    "providers.bzl",
+    "assets.bzl",
+    "go_binary.bzl",
+    "app.bzl",
+    "windows_resources.bzl",
+])

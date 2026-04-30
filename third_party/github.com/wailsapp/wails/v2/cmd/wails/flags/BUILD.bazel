@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "flags",
+    srcs = [
+        "build.go",
+        "buildcommon.go",
+        "common.go",
+        "dev.go",
+        "doctor.go",
+        "generate.go",
+        "init.go",
+        "show.go",
+        "update.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/cmd/wails/flags",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/project",
+        "//third_party/github.com/wailsapp/wails/v2/internal/system",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/commands/build",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/commands/buildtags",
+        "@com_github_leaanthony_slicer//:slicer",
+        "@com_github_samber_lo//:lo",
+    ],
+)

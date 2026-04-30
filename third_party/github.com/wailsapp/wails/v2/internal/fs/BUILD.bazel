@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "fs",
+    srcs = ["fs.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/fs",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = ["@com_github_leaanthony_slicer//:slicer"],
+)
+

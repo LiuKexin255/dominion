@@ -1,24 +1,18 @@
-# keep
-load("@rules_go//go:def.bzl", "go_library")
-load("//projects/game/windows_agent/assets:defs.bzl", "frontend_embed_assets")
 load("//tools/dev/go:defs.bzl", "go_unittest")
+load("//tools/release/wails:defs.bzl", "wails_asset_library")
 
-frontend_embed_assets(
-    name = "frontend_dist",
+wails_asset_library(
+    name = "windows_agent_assets",
+    package_name = "assets",
     src = "//projects/game/windows_agent/frontend:dist",
     out = "frontend_dist",
-)
-
-go_library(
-    name = "assets",
-    srcs = ["assets.go"],
-    embedsrcs = [":frontend_dist"],  # keep
     importpath = "dominion/projects/game/windows_agent/assets",
+    variable_name = "FrontendDist",
     visibility = ["//visibility:public"],
 )
 
 go_unittest(
     name = "assets_test",
     srcs = ["assets_test.go"],
-    embed = [":assets"],
+    deps = ["//projects/game/windows_agent/assets:windows_agent_assets"],
 )

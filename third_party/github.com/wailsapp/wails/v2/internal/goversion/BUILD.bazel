@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "goversion",
+    srcs = [
+        "build_constraint.go",
+        "min.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/goversion",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+)

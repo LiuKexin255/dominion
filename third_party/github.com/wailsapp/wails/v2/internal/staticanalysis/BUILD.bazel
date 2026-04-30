@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "staticanalysis",
+    srcs = ["staticanalysis.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/staticanalysis",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = ["@org_golang_x_tools//go/packages"],
+)
+

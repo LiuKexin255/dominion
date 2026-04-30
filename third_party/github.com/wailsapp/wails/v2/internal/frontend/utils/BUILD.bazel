@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "utils",
+    srcs = ["urlValidator.go"],
+    importpath = "github.com/wailsapp/wails/v2/internal/frontend/utils",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+)
+

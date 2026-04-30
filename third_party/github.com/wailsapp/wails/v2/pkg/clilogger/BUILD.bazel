@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "clilogger",
+    srcs = ["clilogger.go"],
+    importpath = "github.com/wailsapp/wails/v2/pkg/clilogger",
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/internal/colour"],
+)

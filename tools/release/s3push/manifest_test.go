@@ -46,6 +46,39 @@ artifacts:
 `,
 		},
 		{
+			name: "accepts prerelease version",
+			yamlContent: `name: windows-agent
+version: 1.2.3-beta.1
+artifacts:
+  - target: //pkg:app_linux_amd64
+    filename: app-linux-amd64.zip
+    platform: linux
+    arch: amd64
+`,
+		},
+		{
+			name: "accepts version with rc suffix",
+			yamlContent: `name: windows-agent
+version: 0.1.0-rc1
+artifacts:
+  - target: //pkg:app_linux_amd64
+    filename: app-linux-amd64.zip
+    platform: linux
+    arch: amd64
+`,
+		},
+		{
+			name: "accepts version with alpha suffix",
+			yamlContent: `name: windows-agent
+version: 2.0.0-alpha
+artifacts:
+  - target: //pkg:app_linux_amd64
+    filename: app-linux-amd64.zip
+    platform: linux
+    arch: amd64
+`,
+		},
+		{
 			name: "rejects version with v prefix",
 			yamlContent: `name: windows-agent
 version: v1.2.3
@@ -72,9 +105,22 @@ artifacts:
 			errSubstr: "version",
 		},
 		{
-			name: "rejects prerelease version",
+			name: "rejects version with empty suffix",
 			yamlContent: `name: windows-agent
-version: 1.2.3-beta.1
+version: 1.2.3-
+artifacts:
+  - target: //pkg:app_linux_amd64
+    filename: app-linux-amd64.zip
+    platform: linux
+    arch: amd64
+`,
+			wantErr:   true,
+			errSubstr: "version",
+		},
+		{
+			name: "rejects version with dot-only suffix",
+			yamlContent: `name: windows-agent
+version: 1.2.3-.
 artifacts:
   - target: //pkg:app_linux_amd64
     filename: app-linux-amd64.zip

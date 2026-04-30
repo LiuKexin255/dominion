@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "app",
+    srcs = [
+        "app.go",
+        "app_debug_not.go",
+        "app_default_unix.go",
+        "app_default_windows.go",
+        "app_devtools_not.go",
+        "app_obfuscated_not.go",
+        "app_preflight_unix.go",
+        "app_preflight_windows.go",
+        "app_production.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/app",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/binding",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/dispatcher",
+        "//third_party/github.com/wailsapp/wails/v2/internal/frontend/runtime",
+        "//third_party/github.com/wailsapp/wails/v2/internal/logger",
+        "//third_party/github.com/wailsapp/wails/v2/internal/menumanager",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/menu",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ] + select({
+        "@rules_go//go/platform:windows": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/frontend/desktop/windows/winc/w32",
+            "//third_party/github.com/wailsapp/wails/v2/internal/wv2installer",
+        ],
+        "//conditions:default": [],
+    }),
+)

@@ -305,18 +305,16 @@ func Test_listStagingFiles(t *testing.T) {
 }
 
 func TestNewS3Uploader(t *testing.T) {
-	// given — verify that NewS3Uploader delegates to pkg/s3.NewS3Client("")
-	// Since credentials are not set in test environment, this should return an error.
+	// when — fixed credentials are hardcoded, so client creation should succeed
+	// without needing S3_ACCESS_KEY or S3_SECRET_KEY environment variables.
+	uploader, err := NewS3Uploader()
 
-	// when
-	_, err := NewS3Uploader()
-
-	// then — must error because S3_ACCESS_KEY is not set in test env
-	if err == nil {
-		t.Fatal("NewS3Uploader() expected error when S3 credentials are not configured")
+	// then
+	if err != nil {
+		t.Fatalf("NewS3Uploader() unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "S3_ACCESS_KEY") {
-		t.Fatalf("NewS3Uploader() error = %v, want substring %q", err, "S3_ACCESS_KEY")
+	if uploader == nil {
+		t.Fatal("NewS3Uploader() returned nil uploader")
 	}
 }
 

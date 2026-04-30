@@ -1,5 +1,8 @@
 load("@gazelle//:def.bzl", "gazelle")
 
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# gazelle:prefix dominion
 # gazelle:go_grpc_compilers @rules_go//proto:go_grpc_v2, @rules_go//proto:go_proto, @grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway
 # gazelle:map_kind go_test go_unittest //tools/dev/go:defs.bzl
 # gazelle:alias_kind go_largetest go_test
@@ -22,14 +25,15 @@ load("@gazelle//:def.bzl", "gazelle")
 # gazelle:resolve proto go google/protobuf/field_mask.proto @com_google_protobuf//:field_mask_go_proto
 # gazelle:resolve proto go google/protobuf/timestamp.proto @com_google_protobuf//:timestamp_go_proto
 
-load("@npm//:defs.bzl", "npm_link_all_packages")
-
 gazelle(
     name = "gazelle",
     extra_args = [
         "-index=lazy",
     ],
 )
+
+# 生成 node_modules（运行时需要）
+npm_link_all_packages()
 
 alias(
     name = "deploy_install",
@@ -41,7 +45,10 @@ alias(
     actual = "//tools/test/guitar:install",
 )
 
-# 生成 node_modules（运行时需要）
-npm_link_all_packages()
+alias(
+    name = "pnpm",
+    actual = "//tools/dev/js:pnpm",
+)
+
 
 exports_files(["pnpm-workspace.yaml"])

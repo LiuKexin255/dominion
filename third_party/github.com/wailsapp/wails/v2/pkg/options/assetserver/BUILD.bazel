@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "assetserver",
+    srcs = [
+        "middleware.go",
+        "options.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/pkg/options/assetserver",
+    visibility = ["//visibility:public"],
+)

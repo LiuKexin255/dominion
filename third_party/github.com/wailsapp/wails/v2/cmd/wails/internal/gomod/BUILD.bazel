@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "gomod",
+    srcs = ["gomod.go"],
+    importpath = "github.com/wailsapp/wails/v2/cmd/wails/internal/gomod",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2/cmd/wails:__subpackages__"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/cmd/wails/internal",
+        "//third_party/github.com/wailsapp/wails/v2/internal/colour",
+        "//third_party/github.com/wailsapp/wails/v2/internal/fs",
+        "//third_party/github.com/wailsapp/wails/v2/internal/gomod",
+        "//third_party/github.com/wailsapp/wails/v2/internal/goversion",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/clilogger",
+    ],
+)

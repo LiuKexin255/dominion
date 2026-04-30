@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "wv2installer",
+    srcs = [
+        "download.go",
+        "embed.go",
+        "wv2installer.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/wv2installer",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/webview2runtime",
+            "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+            "//third_party/github.com/wailsapp/wails/v2/pkg/options/windows",
+            "@com_github_wailsapp_go_webview2//webviewloader",
+        ],
+        "//conditions:default": [],
+    }),
+)

@@ -2,8 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/oh-my-opencode.schema.json",
   "agents": {
     "sisyphus": {
-      "model": "opencode-go/deepseek-v4-pro",
-      "variant": "high" 
+      "model": "zai-coding-plan/glm-5.1"
     },
     "hephaestus": {
       "model": "openai/gpt-5.5",

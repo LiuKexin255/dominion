@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/release/wails:defs.bzl", "wails_app", "wails_asset_library")
+
+filegroup(
+    name = "frontend_dist_src",
+    srcs = ["//tools/release/wails/testdata/asset_library:dist"],
+)
+
+wails_asset_library(
+    name = "assets",
+    src = ":frontend_dist_src",
+    importpath = "dominion/tools/wails/testdata/app/assets",
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "app_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/tools/release/wails/testdata/app",
+    visibility = ["//visibility:private"],
+)
+
+wails_app(
+    name = "app",
+    assets = ":assets_provider",
+    binary_name = "wails-app-fixture",
+    go_library = ":app_lib",
+    platform = "windows/amd64",
+    visibility = ["//visibility:public"],
+)

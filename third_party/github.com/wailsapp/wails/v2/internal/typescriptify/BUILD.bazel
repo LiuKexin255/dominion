@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "typescriptify",
+    srcs = [
+        "js-reserved-keywords.go",
+        "typescriptify.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/typescriptify",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "@com_github_leaanthony_slicer//:slicer",
+        "@com_github_tkrajina_go_reflector//reflector",
+    ],
+)

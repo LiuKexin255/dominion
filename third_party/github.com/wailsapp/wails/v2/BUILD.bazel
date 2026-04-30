@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+# gazelle:prefix github.com/wailsapp/wails/v2
+
+go_library(
+    name = "wails",
+    srcs = ["wails.go"],
+    importpath = "github.com/wailsapp/wails/v2",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/goversion",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/application",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+    ],
+)

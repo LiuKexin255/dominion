@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "git",
+    srcs = ["git.go"],
+    importpath = "github.com/wailsapp/wails/v2/pkg/git",
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/github.com/wailsapp/wails/v2/internal/shell"],
+)
+

@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "operatingsystem",
+    srcs = [
+        "os.go",
+        "os_darwin.go",
+        "os_linux.go",
+        "os_windows.go",
+        "version_windows.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/system/operatingsystem",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:darwin": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        ],
+        "@rules_go//go/platform:ios": [
+            "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        ],
+        "@rules_go//go/platform:windows": [
+            "@org_golang_x_sys//windows",
+            "@org_golang_x_sys//windows/registry",
+        ],
+        "//conditions:default": [],
+    }),
+)

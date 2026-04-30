@@ -26,6 +26,9 @@ jobs:
       - name: Set up Bazelisk
         uses: bazelbuild/setup-bazelisk@v3
 
+      - name: Set up pnpm
+        run: bazel run //:pnpm -- install
+
       - name: Build all Bazel targets
         run: bazel build //...
 

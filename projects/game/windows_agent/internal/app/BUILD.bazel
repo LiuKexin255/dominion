@@ -15,7 +15,7 @@ go_library(
     deps = [
         "//projects/game/windows_agent/internal/runtime",
         "//projects/game/windows_agent/internal/window",
-        "@com_github_wailsapp_wails_v2//pkg/runtime",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
     ],
 )
 

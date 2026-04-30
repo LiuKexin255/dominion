@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "linux",
+    srcs = ["linux.go"],
+    importpath = "github.com/wailsapp/wails/v2/pkg/options/linux",
+    visibility = ["//visibility:public"],
+)

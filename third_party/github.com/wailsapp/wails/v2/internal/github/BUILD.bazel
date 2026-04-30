@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "github",
+    srcs = [
+        "github.go",
+        "semver.go",
+    ],
+    importpath = "github.com/wailsapp/wails/v2/internal/github",
+    visibility = ["//third_party/github.com/wailsapp/wails/v2:__subpackages__"],
+    deps = [
+        "@com_github_charmbracelet_glamour//:glamour",
+        "@com_github_charmbracelet_glamour//styles",
+        "@com_github_masterminds_semver//:semver",
+    ],
+)
+

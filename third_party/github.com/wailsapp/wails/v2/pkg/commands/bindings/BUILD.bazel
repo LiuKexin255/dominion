@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "bindings",
+    srcs = ["bindings.go"],
+    importpath = "github.com/wailsapp/wails/v2/pkg/commands/bindings",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/github.com/wailsapp/wails/v2/internal/colour",
+        "//third_party/github.com/wailsapp/wails/v2/internal/shell",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/commands/buildtags",
+        "@com_github_samber_lo//:lo",
+    ],
+)
+
