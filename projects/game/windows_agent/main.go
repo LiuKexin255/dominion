@@ -37,6 +37,9 @@ func main() {
 		},
 		OnStartup:  func(ctx context.Context) { agentApp.WailsInit(ctx) },
 		OnShutdown: func(ctx context.Context) { agentApp.WailsShutdown() },
+		Bind: []interface{}{
+			agentApp,
+		},
 	})
 
 	if err != nil {

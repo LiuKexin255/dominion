@@ -1,5 +1,5 @@
 name: windows-agent
-version: 0.1.0
+version: 0.1.0-dev
 
 artifacts:
   - target: //projects/game/windows_agent:windows_agent_win_zip

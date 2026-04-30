@@ -1,6 +1,6 @@
 module dominion
 
-go 1.26.0
+go 1.26.2
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3

@@ -4,7 +4,8 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "types": ["svelte"]
   },
   "include": [
     "src/**/*.ts",
