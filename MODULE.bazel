@@ -69,6 +69,7 @@ use_repo(
     "com_github_tkrajina_go_reflector",
     "com_github_wailsapp_go_webview2",
     "com_github_wailsapp_mimetype",
+    "com_github_wailsapp_wails_v2",
     "com_github_wzshiming_ctc",
     "ht_sr_git__jackmordaunt_go_toast_v2",
     "in_gopkg_yaml_v3",
