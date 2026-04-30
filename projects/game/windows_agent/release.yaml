@@ -3,6 +3,6 @@ version: 0.1.0
 
 artifacts:
   - target: //projects/game/windows_agent:windows_agent_win_zip
-    filename: windows-agent-0.1.0-windows-amd64.zip
+    filename: windows-agent-windows-amd64.zip
     platform: windows
     arch: amd64

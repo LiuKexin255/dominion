@@ -11,7 +11,7 @@ import (
 
 var (
 	validNamePattern    = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	validVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+	validVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*)?$`)
 )
 
 var validPlatforms = []string{"windows", "linux", "darwin"}

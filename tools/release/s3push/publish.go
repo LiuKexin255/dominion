@@ -12,9 +12,11 @@ import (
 	"github.com/minio/minio-go/v7"
 )
 
-// s3Bucket is the S3 bucket for release artifacts.
-// Placeholder value; the developer replaces it with "artifacts" before production use.
-const s3Bucket = "artifacts"
+const (
+	s3AccessKey = "artifacts"
+	s3SecretKey = "nY8Kx3QpV7zLw2DgR5mHc9TjF4uA6sXe"
+	s3Bucket    = "artifacts"
+)
 
 // Uploader uploads a file to S3.
 type Uploader interface {
@@ -26,9 +28,12 @@ type S3Uploader struct {
 	client *minio.Client
 }
 
-// NewS3Uploader creates an S3Uploader by connecting via pkg/s3.
+// NewS3Uploader creates an S3Uploader by connecting via pkg/s3 with fixed credentials.
 func NewS3Uploader() (*S3Uploader, error) {
-	client, err := s3.NewS3Client()
+	client, err := s3.NewS3Client(
+		s3.WithAccessKey(s3AccessKey),
+		s3.WithSecretKey(s3SecretKey),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create S3 client: %w", err)
 	}
