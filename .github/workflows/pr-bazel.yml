@@ -27,7 +27,7 @@ jobs:
         uses: bazelbuild/setup-bazelisk@v3
 
       - name: Set up pnpm
-        uses: bazel run //:pnpm -- install
+        run: bazel run //:pnpm -- install
 
       - name: Build all Bazel targets
         run: bazel build //...
