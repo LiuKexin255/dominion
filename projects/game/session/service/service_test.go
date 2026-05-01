@@ -71,12 +71,16 @@ func TestSessionServiceCreateSession(t *testing.T) {
 					PublicHost: tt.pickedHost,
 				},
 				pickRandomErr: tt.pickErr,
+				publicHostMap: map[string]string{
+					"gateway-a": testPublicHost,
+					"gateway-b": "gateway-1-game.liukexin.com",
+				},
 			}
 
 			svc := NewSessionService(repo, issuer, registry)
 
 			// when
-			session, url, err := svc.CreateSession(context.Background(), tt.sessionType, tt.sessionID)
+			session, err := svc.CreateSession(context.Background(), tt.sessionType, tt.sessionID)
 
 			// then
 			if !errors.Is(err, tt.wantErr) {
@@ -96,13 +100,12 @@ func TestSessionServiceCreateSession(t *testing.T) {
 			if snapshot.GatewayID != tt.wantGatewayID {
 				t.Fatalf("CreateSession() gateway ID = %q, want %q", snapshot.GatewayID, tt.wantGatewayID)
 			}
-
 			wantURL := tt.wantURL
 			if tt.wantIDNonEmpty {
 				wantURL = fmt.Sprintf(tt.wantURL, snapshot.ID)
 			}
-			if url != wantURL {
-				t.Fatalf("CreateSession() URL = %q, want %q", url, wantURL)
+			if snapshot.AgentConnectURL != wantURL {
+				t.Fatalf("CreateSession() agent connect URL = %q, want %q", snapshot.AgentConnectURL, wantURL)
 			}
 
 			if len(issuer.calls) != 1 {
@@ -129,7 +132,6 @@ func TestSessionServiceGetSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		seed.SetGatewayID("gateway-a")
 		if err := seed.MarkActive(); err != nil {
 			t.Fatalf("MarkActive() error = %v", err)
 		}
@@ -144,6 +146,41 @@ func TestSessionServiceGetSession(t *testing.T) {
 
 		if session.Snapshot().ID != "session-1" {
 			t.Fatalf("GetSession() ID = %q, want %q", session.Snapshot().ID, "session-1")
+		}
+		if session.Snapshot().AgentConnectURL != "" {
+			t.Fatalf("GetSession() agent connect URL = %q, want empty", session.Snapshot().AgentConnectURL)
+		}
+	})
+
+	t.Run("enriches session with connect URL when host is set", func(t *testing.T) {
+		seed, err := domain.NewSession(domain.TypeSaolei, "session-1")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		seed.SetGatewayID("gateway-a")
+		if err := seed.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() error = %v", err)
+		}
+
+		repo := newFakeRepository(seed)
+		issuer := &stubIssuer{token: "token-abc"}
+		svc := NewSessionService(repo, issuer, &stubRegistry{publicHostMap: map[string]string{"gateway-a": testPublicHost}})
+
+		session, err := svc.GetSession(context.Background(), sessionName("session-1"))
+		if err != nil {
+			t.Fatalf("GetSession() error = %v", err)
+		}
+
+		wantURL := "wss://" + testPublicHost + "/v1/sessions/session-1/game/connect?token=token-abc"
+		if session.Snapshot().AgentConnectURL != wantURL {
+			t.Fatalf("GetSession() agent connect URL = %q, want %q", session.Snapshot().AgentConnectURL, wantURL)
+		}
+		wantCall := issueCall{sessionID: "session-1", gatewayID: "gateway-a", reconnectGeneration: 0}
+		if len(issuer.calls) != 1 {
+			t.Fatalf("Issue() calls = %d, want 1", len(issuer.calls))
+		}
+		if issuer.calls[0] != wantCall {
+			t.Fatalf("Issue() call = %+v, want %+v", issuer.calls[0], wantCall)
 		}
 	})
 
@@ -194,33 +231,33 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 
 func TestSessionServiceReconnectSession(t *testing.T) {
 	tests := []struct {
-		name          string
-		seedGatewayID string
-		pickedGateway string
-		pickedHost    string
-		pickErr       error
-		issuedToken   string
-		wantErr       error
-		wantGatewayID string
-		wantURL       string
+		name                string
+		seedGatewayID       string
+		pickedGateway       string
+		pickedHost          string
+		pickErr             error
+		issuedToken         string
+		wantErr             error
+		wantGatewayID       string
+		wantAgentConnectURL string
 	}{
 		{
-			name:          "reassigns to different gateway",
-			seedGatewayID: "gateway-a",
-			pickedGateway: "gateway-b",
-			pickedHost:    "gateway-1-game.liukexin.com",
-			issuedToken:   "token-next",
-			wantGatewayID: "gateway-b",
-			wantURL:       "wss://gateway-1-game.liukexin.com/v1/sessions/session-1/game/connect?token=token-next",
+			name:                "reassigns to different gateway",
+			seedGatewayID:       "gateway-a",
+			pickedGateway:       "gateway-b",
+			pickedHost:          "gateway-1-game.liukexin.com",
+			issuedToken:         "token-next",
+			wantGatewayID:       "gateway-b",
+			wantAgentConnectURL: "wss://gateway-1-game.liukexin.com/v1/sessions/session-1/game/connect?token=token-next",
 		},
 		{
-			name:          "falls back to same gateway when single gateway available",
-			seedGatewayID: "gateway-a",
-			pickedGateway: "gateway-a",
-			pickedHost:    testPublicHost,
-			issuedToken:   "token-same",
-			wantGatewayID: "gateway-a",
-			wantURL:       "wss://" + testPublicHost + "/v1/sessions/session-1/game/connect?token=token-same",
+			name:                "falls back to same gateway when single gateway available",
+			seedGatewayID:       "gateway-a",
+			pickedGateway:       "gateway-a",
+			pickedHost:          testPublicHost,
+			issuedToken:         "token-same",
+			wantGatewayID:       "gateway-a",
+			wantAgentConnectURL: "wss://" + testPublicHost + "/v1/sessions/session-1/game/connect?token=token-same",
 		},
 		{
 			name:    "no gateway available",
@@ -252,11 +289,15 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 					PublicHost: tt.pickedHost,
 				},
 				pickExcludingErr: tt.pickErr,
+				publicHostMap: map[string]string{
+					"gateway-a": testPublicHost,
+					"gateway-b": "gateway-1-game.liukexin.com",
+				},
 			}
 			svc := NewSessionService(repo, issuer, registry)
 
 			// when
-			session, url, err := svc.ReconnectSession(context.Background(), sessionName("session-1"))
+			session, err := svc.ReconnectSession(context.Background(), sessionName("session-1"))
 
 			// then
 			if !errors.Is(err, tt.wantErr) {
@@ -276,8 +317,8 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 			if snapshot.ReconnectGeneration != 1 {
 				t.Fatalf("ReconnectSession() generation = %d, want 1", snapshot.ReconnectGeneration)
 			}
-			if url != tt.wantURL {
-				t.Fatalf("ReconnectSession() URL = %q, want %q", url, tt.wantURL)
+			if snapshot.AgentConnectURL != tt.wantAgentConnectURL {
+				t.Fatalf("ReconnectSession() agent connect URL = %q, want %q", snapshot.AgentConnectURL, tt.wantAgentConnectURL)
 			}
 			if len(issuer.calls) != 1 {
 				t.Fatalf("Issue() calls = %d, want 1", len(issuer.calls))
@@ -293,9 +334,170 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		repo := newFakeRepository()
 		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
 
-		_, _, err := svc.ReconnectSession(context.Background(), sessionName("missing"))
+		_, err := svc.ReconnectSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("ReconnectSession() error = %v, want %v", err, domain.ErrNotFound)
+		}
+	})
+}
+
+func TestSessionService_ListSessions(t *testing.T) {
+	t.Run("returns non-ended sessions with connect URLs", func(t *testing.T) {
+		active, err := domain.NewSession(domain.TypeSaolei, "session-active")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		active.SetGatewayID("gateway-a")
+		if err := active.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() error = %v", err)
+		}
+
+		disconnected, err := domain.NewSession(domain.TypeSaolei, "session-disconnected")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		disconnected.SetGatewayID("gateway-b")
+		if err := disconnected.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() error = %v", err)
+		}
+		if err := disconnected.MarkDisconnected(); err != nil {
+			t.Fatalf("MarkDisconnected() error = %v", err)
+		}
+
+		ended, err := domain.NewSession(domain.TypeSaolei, "session-ended")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		ended.SetGatewayID("gateway-c")
+		if err := ended.MarkEnded(); err != nil {
+			t.Fatalf("MarkEnded() error = %v", err)
+		}
+
+		repo := newFakeRepository(active, disconnected, ended)
+		issuer := &stubIssuer{token: "token-list"}
+		svc := NewSessionService(repo, issuer, &stubRegistry{publicHostMap: map[string]string{
+			"gateway-a": testPublicHost,
+			"gateway-b": "gateway-1-game.liukexin.com",
+			"gateway-c": "gateway-2-game.liukexin.com",
+		}})
+
+		sessions, err := svc.ListSessions(context.Background())
+		if err != nil {
+			t.Fatalf("ListSessions() error = %v", err)
+		}
+
+		if len(sessions) != 2 {
+			t.Fatalf("ListSessions() count = %d, want 2", len(sessions))
+		}
+		gotURLs := map[string]string{}
+		for _, session := range sessions {
+			snapshot := session.Snapshot()
+			gotURLs[snapshot.ID] = snapshot.AgentConnectURL
+		}
+		wantActiveURL := "wss://" + testPublicHost + "/v1/sessions/session-active/game/connect?token=token-list"
+		if gotURLs["session-active"] != wantActiveURL {
+			t.Fatalf("ListSessions() active URL = %q, want %q", gotURLs["session-active"], wantActiveURL)
+		}
+		wantDisconnectedURL := "wss://gateway-1-game.liukexin.com/v1/sessions/session-disconnected/game/connect?token=token-list"
+		if gotURLs["session-disconnected"] != wantDisconnectedURL {
+			t.Fatalf("ListSessions() disconnected URL = %q, want %q", gotURLs["session-disconnected"], wantDisconnectedURL)
+		}
+		if _, ok := gotURLs["session-ended"]; ok {
+			t.Fatal("ListSessions() returned ended session")
+		}
+		if len(issuer.calls) != 2 {
+			t.Fatalf("Issue() calls = %d, want 2", len(issuer.calls))
+		}
+	})
+
+	t.Run("returns nil for empty store", func(t *testing.T) {
+		repo := newFakeRepository()
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
+
+		sessions, err := svc.ListSessions(context.Background())
+		if err != nil {
+			t.Fatalf("ListSessions() error = %v", err)
+		}
+		if sessions != nil {
+			t.Fatalf("ListSessions() sessions = %#v, want nil", sessions)
+		}
+	})
+
+	t.Run("skips session without gateway", func(t *testing.T) {
+		seed, err := domain.NewSession(domain.TypeSaolei, "session-pending")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+
+		repo := newFakeRepository(seed)
+		issuer := &stubIssuer{token: "token-list"}
+		svc := NewSessionService(repo, issuer, &stubRegistry{})
+
+		sessions, err := svc.ListSessions(context.Background())
+		if err != nil {
+			t.Fatalf("ListSessions() error = %v", err)
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("ListSessions() count = %d, want 1", len(sessions))
+		}
+		if sessions[0].Snapshot().AgentConnectURL != "" {
+			t.Fatalf("ListSessions() agent connect URL = %q, want empty", sessions[0].Snapshot().AgentConnectURL)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("Issue() calls = %d, want 0", len(issuer.calls))
+		}
+	})
+
+	t.Run("returns error when list fails", func(t *testing.T) {
+		listErr := errors.New("list failed")
+		repo := newFakeRepository()
+		repo.listErr = listErr
+		svc := NewSessionService(repo, &stubIssuer{}, &stubRegistry{})
+
+		_, err := svc.ListSessions(context.Background())
+		if !errors.Is(err, listErr) {
+			t.Fatalf("ListSessions() error = %v, want %v", err, listErr)
+		}
+	})
+}
+
+func Test_enrichWithConnectURL(t *testing.T) {
+	t.Run("session with no gateway keeps empty connect URL", func(t *testing.T) {
+		session, err := domain.NewSession(domain.TypeSaolei, "session-pending")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		issuer := &stubIssuer{token: "token-abc"}
+		svc := NewSessionService(newFakeRepository(), issuer, &stubRegistry{})
+
+		if err := svc.enrichWithConnectURL(context.Background(), session); err != nil {
+			t.Fatalf("enrichWithConnectURL() error = %v", err)
+		}
+
+		if session.Snapshot().AgentConnectURL != "" {
+			t.Fatalf("enrichWithConnectURL() agent connect URL = %q, want empty", session.Snapshot().AgentConnectURL)
+		}
+		if len(issuer.calls) != 0 {
+			t.Fatalf("Issue() calls = %d, want 0", len(issuer.calls))
+		}
+	})
+
+	t.Run("session with gateway returns token issue error", func(t *testing.T) {
+		session, err := domain.NewSession(domain.TypeSaolei, "session-active")
+		if err != nil {
+			t.Fatalf("NewSession() error = %v", err)
+		}
+		session.SetGatewayID("gateway-a")
+		issueErr := errors.New("issue failed")
+		issuer := &stubIssuer{err: issueErr}
+		svc := NewSessionService(newFakeRepository(), issuer, &stubRegistry{publicHostMap: map[string]string{"gateway-a": testPublicHost}})
+
+		err = svc.enrichWithConnectURL(context.Background(), session)
+		if !errors.Is(err, issueErr) {
+			t.Fatalf("enrichWithConnectURL() error = %v, want %v", err, issueErr)
+		}
+		if !strings.Contains(err.Error(), "issue token for connect URL") {
+			t.Fatalf("enrichWithConnectURL() error = %v, want wrapped issue token error", err)
 		}
 	})
 }
@@ -363,6 +565,8 @@ type stubRegistry struct {
 	pickRandomErr           error
 	pickExcludingAssignment *gateway.Assignment
 	pickExcludingErr        error
+	publicHostMap           map[string]string
+	publicHostErr           error
 }
 
 func (s *stubRegistry) PickRandom(_ context.Context) (*gateway.Assignment, error) {
@@ -379,12 +583,23 @@ func (s *stubRegistry) PickRandomExcluding(_ context.Context, _ string) (*gatewa
 	return s.pickExcludingAssignment, nil
 }
 
+func (s *stubRegistry) PublicHost(_ context.Context, gatewayID string) (string, error) {
+	if s.publicHostErr != nil {
+		return "", s.publicHostErr
+	}
+	if host, ok := s.publicHostMap[gatewayID]; ok {
+		return host, nil
+	}
+	return "", gateway.ErrNoGatewayAvailable
+}
+
 type fakeRepository struct {
 	mu        sync.RWMutex
 	sessions  map[string]*domain.Session
 	deleted   map[string]bool
 	lastSaved *domain.Session
 	getErr    error
+	listErr   error
 	saveErr   error
 	deleteErr error
 }
@@ -417,6 +632,24 @@ func (r *fakeRepository) Get(_ context.Context, name string) (*domain.Session, e
 	}
 
 	return mustRehydrate(session.Snapshot()), nil
+}
+
+func (r *fakeRepository) List(_ context.Context) ([]*domain.Session, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var sessions []*domain.Session
+	for _, session := range r.sessions {
+		if session.Snapshot().Status == domain.StatusEnded {
+			continue
+		}
+		sessions = append(sessions, mustRehydrate(session.Snapshot()))
+	}
+	return sessions, nil
 }
 
 func (r *fakeRepository) Save(_ context.Context, session *domain.Session) error {

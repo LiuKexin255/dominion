@@ -46,6 +46,7 @@ type SessionSnapshot struct {
 	EndedAt             *time.Time
 	ReconnectGeneration int64
 	LastError           string
+	AgentConnectURL     string // computed in service layer, not persisted
 }
 
 // Session is the aggregate root for a game session.
@@ -59,6 +60,7 @@ type Session struct {
 	endedAt             *time.Time
 	reconnectGeneration int64
 	lastError           string
+	agentConnectURL     string
 }
 
 // NewSession constructs a session in the pending state.
@@ -105,6 +107,7 @@ func Rehydrate(snapshot SessionSnapshot) (*Session, error) {
 		endedAt:             cloneTimePtr(snapshot.EndedAt),
 		reconnectGeneration: snapshot.ReconnectGeneration,
 		lastError:           snapshot.LastError,
+		agentConnectURL:     snapshot.AgentConnectURL,
 	}, nil
 }
 
@@ -120,6 +123,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		EndedAt:             cloneTimePtr(s.endedAt),
 		ReconnectGeneration: s.reconnectGeneration,
 		LastError:           s.lastError,
+		AgentConnectURL:     s.agentConnectURL,
 	}
 }
 
@@ -127,6 +131,11 @@ func (s *Session) Snapshot() SessionSnapshot {
 func (s *Session) SetGatewayID(id string) {
 	s.gatewayID = id
 	s.updatedAt = time.Now().UTC()
+}
+
+// SetAgentConnectURL enriches the session with the connect URL (non-state-changing).
+func (s *Session) SetAgentConnectURL(url string) {
+	s.agentConnectURL = url
 }
 
 // MarkActive transitions the session to active.

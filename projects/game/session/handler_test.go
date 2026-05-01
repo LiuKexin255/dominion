@@ -28,6 +28,14 @@ func sessionName(id string) string {
 	return "sessions/" + id
 }
 
+func sessionNames(sessions []*Session) []string {
+	names := make([]string, len(sessions))
+	for i, s := range sessions {
+		names[i] = s.GetName()
+	}
+	return names
+}
+
 // newTestHandler creates a handler with a FakeStore, real HMACSigner, and StaticRegistry
 // using the provided gateway IDs.
 func newTestHandler(gatewayIDs ...string) (*Handler, *storage.FakeStore) {
@@ -261,7 +269,7 @@ func TestHandler_CreateSession(t *testing.T) {
 					t.Fatalf("CreateSession() name = %q, want 'sessions/' prefix", session.GetName())
 				}
 			}
-			connectURL := got.GetAgentConnectUrl()
+			connectURL := got.GetSession().GetAgentConnectUrl()
 			if connectURL == "" {
 				t.Fatal("CreateSession() agent_connect_url is empty")
 			}
@@ -434,7 +442,7 @@ func TestHandler_ReconnectSession(t *testing.T) {
 			if session.GetReconnectGeneration() != 1 {
 				t.Fatalf("ReconnectSession() reconnect_generation = %d, want 1", session.GetReconnectGeneration())
 			}
-			connectURL := got.GetAgentConnectUrl()
+			connectURL := got.GetSession().GetAgentConnectUrl()
 			if connectURL == "" {
 				t.Fatal("ReconnectSession() agent_connect_url is empty")
 			}
@@ -459,6 +467,116 @@ func TestHandler_ReconnectSession(t *testing.T) {
 			token := parsedURL.Query().Get("token")
 			if token == "" {
 				t.Fatalf("ReconnectSession() agent_connect_url token is empty")
+			}
+		})
+	}
+}
+
+func TestHandler_ListSessions(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name            string
+		seedFunc        func(t *testing.T, repo domain.Repository)
+		wantCode        codes.Code
+		wantCount       int
+		wantNames       []string
+		wantConnectURLs bool
+	}{
+		{
+			name: "given active sessions, when ListSessions called, returns sessions with agent connect URLs",
+			seedFunc: func(t *testing.T, repo domain.Repository) {
+				t.Helper()
+				seedSession(t, repo, "session-1", "gw-0")
+				seedSession(t, repo, "session-2", "gw-1")
+			},
+			wantCode:        codes.OK,
+			wantCount:       2,
+			wantNames:       []string{sessionName("session-1"), sessionName("session-2")},
+			wantConnectURLs: true,
+		},
+		{
+			name: "given ended session, when ListSessions called, excludes ended sessions",
+			seedFunc: func(t *testing.T, repo domain.Repository) {
+				t.Helper()
+				seedSession(t, repo, "session-active", "gw-0")
+
+				name := seedSession(t, repo, "session-ended", "gw-0")
+				session, err := repo.Get(ctx, name)
+				if err != nil {
+					t.Fatalf("Get() error = %v", err)
+				}
+				if err := session.MarkEnded(); err != nil {
+					t.Fatalf("MarkEnded() error = %v", err)
+				}
+				if err := repo.Save(ctx, session); err != nil {
+					t.Fatalf("Save() error = %v", err)
+				}
+			},
+			wantCode:        codes.OK,
+			wantCount:       1,
+			wantNames:       []string{sessionName("session-active")},
+			wantConnectURLs: true,
+		},
+		{
+			name:            "given no sessions, when ListSessions called, returns empty list",
+			seedFunc:        nil,
+			wantCode:        codes.OK,
+			wantCount:       0,
+			wantNames:       nil,
+			wantConnectURLs: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			handler, repo := newTestHandler("gw-0", "gw-1")
+			if tt.seedFunc != nil {
+				tt.seedFunc(t, repo)
+			}
+
+			// when
+			got, err := handler.ListSessions(ctx, &ListSessionsRequest{})
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
+			if tt.wantCode != codes.OK {
+				return
+			}
+
+			sessions := got.GetSessions()
+			if len(sessions) != tt.wantCount {
+				t.Fatalf("ListSessions() count = %d, want %d", len(sessions), tt.wantCount)
+			}
+			if tt.wantNames != nil {
+				gotNames := make(map[string]bool, len(sessions))
+				for _, s := range sessions {
+					gotNames[s.GetName()] = true
+				}
+				for _, wantName := range tt.wantNames {
+					if !gotNames[wantName] {
+						t.Fatalf("ListSessions() missing session %q, got %v", wantName, sessionNames(sessions))
+					}
+				}
+			}
+			if tt.wantConnectURLs {
+				for _, s := range sessions {
+					connectURL := s.GetAgentConnectUrl()
+					if connectURL == "" {
+						t.Fatalf("ListSessions() session %q agent_connect_url is empty", s.GetName())
+					}
+					parsedURL, err := url.Parse(connectURL)
+					if err != nil {
+						t.Fatalf("ListSessions() agent_connect_url parse error = %v", err)
+					}
+					if parsedURL.Scheme != "wss" {
+						t.Fatalf("ListSessions() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
+					}
+					if parsedURL.Host == "" {
+						t.Fatal("ListSessions() agent_connect_url host is empty")
+					}
+				}
 			}
 		})
 	}

@@ -31,36 +31,57 @@ func NewSessionService(repo domain.Repository, tokenIssuer token.Issuer, gateway
 }
 
 // CreateSession creates, assigns, persists, and returns a new session.
-func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.SessionType, sessionID string) (*domain.Session, string, error) {
+func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.SessionType, sessionID string) (*domain.Session, error) {
 	session, err := domain.NewSession(sessionType, sessionID)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	assignment, err := s.gatewayReg.PickRandom(ctx)
 	if err != nil {
-		return nil, "", normalizeGatewayError(err)
+		return nil, normalizeGatewayError(err)
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
 
-	snapshot := session.Snapshot()
-	tok, err := s.tokenIssuer.Issue(snapshot.ID, assignment.GatewayID, snapshot.ReconnectGeneration)
-	if err != nil {
-		return nil, "", err
+	if err := s.enrichWithConnectURL(ctx, session); err != nil {
+		return nil, err
 	}
-
-	connectURL := buildConnectURL(snapshot.ID, assignment.PublicHost, tok)
 	if err := s.repo.Save(ctx, session); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	return session, connectURL, nil
+	return session, nil
 }
 
 // GetSession loads a session by resource name.
 func (s *SessionService) GetSession(ctx context.Context, name string) (*domain.Session, error) {
-	return s.repo.Get(ctx, name)
+	session, err := s.repo.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.enrichWithConnectURL(ctx, session); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
+// ListSessions lists non-ended sessions with agent connect URLs when available.
+func (s *SessionService) ListSessions(ctx context.Context) ([]*domain.Session, error) {
+	sessions, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+
+	for _, session := range sessions {
+		if err := s.enrichWithConnectURL(ctx, session); err != nil {
+			return nil, err
+		}
+	}
+
+	return sessions, nil
 }
 
 // DeleteSession removes a session by resource name.
@@ -69,35 +90,51 @@ func (s *SessionService) DeleteSession(ctx context.Context, name string) error {
 }
 
 // ReconnectSession reassigns a gateway, issues a new token, and persists the updated session.
-func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*domain.Session, string, error) {
+func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*domain.Session, error) {
 	session, err := s.repo.Get(ctx, name)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	current := session.Snapshot()
 	assignment, err := s.gatewayReg.PickRandomExcluding(ctx, current.GatewayID)
 	if err != nil {
-		return nil, "", normalizeGatewayError(err)
+		return nil, normalizeGatewayError(err)
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
 	if err := session.MarkActive(); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	snapshot := session.Snapshot()
-	tok, err := s.tokenIssuer.Issue(snapshot.ID, assignment.GatewayID, snapshot.ReconnectGeneration)
-	if err != nil {
-		return nil, "", err
+	if err := s.enrichWithConnectURL(ctx, session); err != nil {
+		return nil, err
 	}
-
-	connectURL := buildConnectURL(snapshot.ID, assignment.PublicHost, tok)
 	if err := s.repo.Save(ctx, session); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	return session, connectURL, nil
+	return session, nil
+}
+
+func (s *SessionService) enrichWithConnectURL(ctx context.Context, session *domain.Session) error {
+	snap := session.Snapshot()
+	if snap.GatewayID == "" {
+		return nil
+	}
+	host, err := s.gatewayReg.PublicHost(ctx, snap.GatewayID)
+	if err != nil {
+		return fmt.Errorf("lookup gateway host for %q: %w", snap.GatewayID, err)
+	}
+
+	tok, err := s.tokenIssuer.Issue(snap.ID, snap.GatewayID, snap.ReconnectGeneration)
+	if err != nil {
+		return fmt.Errorf("issue token for connect URL: %w", err)
+	}
+
+	connectURL := buildConnectURL(snap.ID, host, tok)
+	session.SetAgentConnectURL(connectURL)
+	return nil
 }
 
 func buildConnectURL(sessionID, publicHost, tok string) string {

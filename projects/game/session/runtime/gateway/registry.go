@@ -26,6 +26,9 @@ type Registry interface {
 	// PickRandomExcluding returns a random gateway assignment excluding the given gatewayID.
 	// When only one assignment exists, it falls back to returning that assignment.
 	PickRandomExcluding(ctx context.Context, gatewayID string) (*Assignment, error)
+	// PublicHost returns the public host address of the gateway identified by gatewayID.
+	// Returns ErrNoGatewayAvailable if the gateway is not found in the registry.
+	PublicHost(ctx context.Context, gatewayID string) (string, error)
 }
 
 // StaticRegistry is a fixed registry backed by an in-memory list.
@@ -81,4 +84,15 @@ func (r *StaticRegistry) PickRandomExcluding(_ context.Context, gatewayID string
 	}
 
 	return filtered[rand.Intn(len(filtered))], nil
+}
+
+// PublicHost returns the public host address of the gateway identified by gatewayID.
+func (r *StaticRegistry) PublicHost(_ context.Context, gatewayID string) (string, error) {
+	for _, a := range r.assignments {
+		if a.GatewayID == gatewayID {
+			return a.PublicHost, nil
+		}
+	}
+
+	return "", ErrNoGatewayAvailable
 }

@@ -88,6 +88,22 @@ func (r *DeployRegistry) PickRandomExcluding(ctx context.Context, gatewayID stri
 	}, nil
 }
 
+// PublicHost returns the public host address of the gateway identified by gatewayID.
+func (r *DeployRegistry) PublicHost(ctx context.Context, gatewayID string) (string, error) {
+	instances, err := r.resolver.Resolve(ctx, r.target)
+	if err != nil {
+		return "", err
+	}
+
+	for _, inst := range filterReady(instances) {
+		if inst.Hostname == gatewayID {
+			return fmt.Sprintf(r.hostPattern, inst.Index), nil
+		}
+	}
+
+	return "", ErrNoGatewayAvailable
+}
+
 func filterReady(instances []*solver.StatefulInstance) []*solver.StatefulInstance {
 	var ready []*solver.StatefulInstance
 	for _, inst := range instances {

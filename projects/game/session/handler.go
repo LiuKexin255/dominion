@@ -68,14 +68,13 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 		return nil, err
 	}
 
-	session, connectURL, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
+	session, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
 	return &CreateSessionResponse{
-		Session:         toProtoSession(session),
-		AgentConnectUrl: connectURL,
+		Session: toProtoSession(session),
 	}, nil
 }
 
@@ -98,15 +97,28 @@ func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionReq
 		return nil, err
 	}
 
-	session, connectURL, err := h.svc.ReconnectSession(ctx, req.GetName())
+	session, err := h.svc.ReconnectSession(ctx, req.GetName())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
 	return &ReconnectSessionResponse{
-		Session:         toProtoSession(session),
-		AgentConnectUrl: connectURL,
+		Session: toProtoSession(session),
 	}, nil
+}
+
+// ListSessions returns all non-ended sessions.
+func (h *Handler) ListSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
+	sessions, err := h.svc.ListSessions(ctx)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	protos := make([]*Session, 0, len(sessions))
+	for _, s := range sessions {
+		protos = append(protos, toProtoSession(s))
+	}
+	return &ListSessionsResponse{Sessions: protos}, nil
 }
 
 // toProtoSession converts a domain Session to a proto Session.
@@ -126,6 +138,7 @@ func toProtoSession(session *domain.Session) *Session {
 		EndTime:             toProtoTimestampPtr(snapshot.EndedAt),
 		ReconnectGeneration: snapshot.ReconnectGeneration,
 		LastError:           snapshot.LastError,
+		AgentConnectUrl:     snapshot.AgentConnectURL,
 	}
 }
 

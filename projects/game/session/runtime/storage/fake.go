@@ -86,3 +86,27 @@ func (s *FakeStore) Delete(_ context.Context, name string) error {
 
 	return nil
 }
+
+// List retrieves all sessions that have not ended.
+func (s *FakeStore) List(_ context.Context) ([]*domain.Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var results []*domain.Session
+	for _, session := range s.sessions {
+		if session.Snapshot().Status == domain.StatusEnded {
+			continue
+		}
+		copy, err := domain.Rehydrate(session.Snapshot())
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, copy)
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	return results, nil
+}

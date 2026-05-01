@@ -42,9 +42,17 @@ type indexViewOps interface {
 	CreateMany(ctx context.Context, models []mongodriver.IndexModel, opts ...*options.CreateIndexesOptions) ([]string, error)
 }
 
+// CursorOps wraps the iteration behavior of a MongoDB cursor.
+type CursorOps interface {
+	Next(ctx context.Context) bool
+	Decode(v any) error
+	Close(ctx context.Context) error
+}
+
 // CollectionOps defines the MongoDB collection operations used by MongoRepository.
 type CollectionOps interface {
 	FindOne(ctx context.Context, filter any, opts ...*options.FindOneOptions) singleResult
+	Find(ctx context.Context, filter any, opts ...*options.FindOptions) (CursorOps, error)
 	UpdateOne(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter any, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	Indexes() indexViewOps
@@ -62,6 +70,10 @@ func NewMongoCollection(collection *mongodriver.Collection) CollectionOps {
 
 func (c *mongoCollection) FindOne(ctx context.Context, filter any, opts ...*options.FindOneOptions) singleResult {
 	return c.Collection.FindOne(ctx, filter, opts...)
+}
+
+func (c *mongoCollection) Find(ctx context.Context, filter any, opts ...*options.FindOptions) (CursorOps, error) {
+	return c.Collection.Find(ctx, filter, opts...)
 }
 
 func (c *mongoCollection) UpdateOne(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error) {
@@ -170,6 +182,36 @@ func (r *MongoRepository) Delete(ctx context.Context, name string) error {
 	}
 
 	return nil
+}
+
+// List retrieves all sessions that have not ended.
+func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
+	filter := bson.D{{Key: mongoFieldStatus, Value: bson.D{{Key: "$ne", Value: int32(domain.StatusEnded)}}}}
+
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("find sessions: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var results []*domain.Session
+	for cursor.Next(ctx) {
+		doc := new(mongoSession)
+		if err := cursor.Decode(doc); err != nil {
+			return nil, fmt.Errorf("decode session: %w", err)
+		}
+		session, err := doc.toDomain()
+		if err != nil {
+			return nil, fmt.Errorf("convert session %q: %w", doc.Name, err)
+		}
+		results = append(results, session)
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	return results, nil
 }
 
 func (m *mongoSession) toDomain() (*domain.Session, error) {

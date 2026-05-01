@@ -128,3 +128,51 @@ func TestStaticRegistry_ConstructorCopiesInput(t *testing.T) {
 		t.Fatalf("registry retained caller slice mutation")
 	}
 }
+
+func TestStaticRegistry_PublicHost(t *testing.T) {
+	tests := []struct {
+		name      string
+		gatewayID string
+		// given
+		assignments []*Assignment
+		wantHost    string
+		err         error
+	}{
+		{
+			name:        "known gateway returns public host",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}, {GatewayID: "gw-1", Index: 1, PublicHost: "host-1"}},
+			gatewayID:   "gw-1",
+			wantHost:    "host-1",
+		},
+		{
+			name:        "unknown gateway returns error",
+			assignments: []*Assignment{{GatewayID: "gw-0", Index: 0, PublicHost: "host-0"}},
+			gatewayID:   "gw-9",
+			err:         ErrNoGatewayAvailable,
+		},
+		{
+			name:        "empty registry returns error",
+			assignments: nil,
+			gatewayID:   "gw-0",
+			err:         ErrNoGatewayAvailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			registry := NewStaticRegistry(tt.assignments)
+
+			// when
+			got, err := registry.PublicHost(context.Background(), tt.gatewayID)
+
+			// then
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("PublicHost() error = %v, want %v", err, tt.err)
+			}
+			if got != tt.wantHost {
+				t.Fatalf("PublicHost() = %q, want %q", got, tt.wantHost)
+			}
+		})
+	}
+}
