@@ -31,7 +31,7 @@
 2. 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件（因为设置了 `-lazy` 参数，所以最好在需要更新的目录下执行 `gazelle`，或者指定目录 `bazel run //:gazelle some/subdir`）。
 3. `BUILD.bazel` 文件通常应**只由** `gazelle` 命令生成/更新，如需添加 `target`（如 `oci_image`）应在 `gazelle` 生成后添加。不要更改 `gazelle` 生成的内容，除非生成的 `BUILD.bazel` 文件无法编译。
 4. 使用 `bazel mod tidy` 命令更新 `bazel` 依赖。
-5. 【**重要**】使用 `bazel test` 作为单测验证标准。
+5. 【**重要**】使用 `bazel test` 作为单测验证标准。并且完成开发任务后应确保整个仓库 `build` 与 `test` 正确，不会引入新问题。
 
 #### Golang
 

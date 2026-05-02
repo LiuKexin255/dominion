@@ -191,7 +191,7 @@ func TestSessionGateway_CreateSession_ReturnsValidAgentConnectURL(t *testing.T) 
 		t.Fatal("CreateSession response missing session")
 	}
 
-	agentURL := created.GetAgentConnectUrl()
+	agentURL := created.GetSession().GetAgentConnectUrl()
 	if agentURL == "" {
 		t.Fatal("agent_connect_url is empty")
 	}
@@ -235,7 +235,7 @@ func TestSessionGateway_WebSocketConnect_Succeeds(t *testing.T) {
 	created := sgCreateSession(t, sutHostURL)
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
 
-	agentURL := created.GetAgentConnectUrl()
+	agentURL := created.GetSession().GetAgentConnectUrl()
 	sessionIDFromName := strings.TrimPrefix(created.GetSession().GetName(), "sessions/")
 
 	ctx, cancel := context.WithTimeout(context.Background(), sgReadTimeout)
@@ -353,7 +353,7 @@ func TestSessionGateway_ReconnectSession_ReturnsNewAgentConnectURL(t *testing.T)
 		t.Fatal("ReconnectSession response missing session")
 	}
 
-	newAgentURL := reconnected.GetAgentConnectUrl()
+	newAgentURL := reconnected.GetSession().GetAgentConnectUrl()
 	if newAgentURL == "" {
 		t.Fatal("ReconnectSession agent_connect_url is empty")
 	}
