@@ -25,10 +25,12 @@ type WindowDetail struct {
 // AgentStatus is a point-in-time snapshot of the agent state sent to the frontend.
 type AgentStatus struct {
 	State              string        `json:"state"`
+	StreamingState     string        `json:"streamingState"`
 	SessionID          string        `json:"sessionId"`
 	BoundWindow        *WindowDetail `json:"boundWindow"`
 	MediaSegCount      int64         `json:"mediaSegCount"`
 	LastError          string        `json:"lastError"`
+	StreamingLastError string        `json:"streamingLastError"`
 	FFmpegRunning      bool          `json:"ffmpegRunning"`
 	HelperRunning      bool          `json:"helperRunning"`
 	ConnectedAt        string        `json:"connectedAt"`

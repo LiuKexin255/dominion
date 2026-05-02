@@ -3,12 +3,14 @@
 
   const sessionHost = 'https://game.liukexin.com';
 
-  let status: AgentStatus = {
+  let status: any = {
     state: 'Disconnected',
+    streamingState: 'Idle',
     sessionId: '',
     boundWindow: null,
     mediaSegCount: 0,
     lastError: '',
+    streamingLastError: '',
     ffmpegRunning: false,
     helperRunning: false,
     connectedAt: '',
@@ -19,22 +21,21 @@
     sessionServiceState: 'unknown',
     sessionServiceError: '',
   };
-  let sessions: Session[] = [];
+  let sessions: any[] = [];
   let showCreateDialog = false;
   let createType = 'SESSION_TYPE_SAOLEI';
   let creating = false;
   let loadingSessions = false;
   let errorMessage = '';
 
-  const connectedStates = new Set(['Connected', 'Bound', 'Streaming']);
-  $: isConnected = connectedStates.has(status.state);
+  $: isConnected = status.state === 'Connected';
 
   function wailsReady(): boolean {
     return !!(window as any).go?.app?.App;
   }
 
   onMount(async () => {
-    window.runtime.EventsOn('status:changed', (s: AgentStatus) => {
+    window.runtime.EventsOn('status:changed', (s: any) => {
       status = s;
     });
 
@@ -78,7 +79,7 @@
     }
   }
 
-  async function handleConnect(session: Session) {
+  async function handleConnect(session: any) {
     errorMessage = '';
     try {
       await window.go.app.App.ConnectSession(session);
@@ -269,7 +270,7 @@
           <td class="mono">{session.gatewayId}</td>
           <td>{session.createTime?.slice(0, 10)}</td>
           <td class="actions-cell">
-            <button on:click={() => handleConnect(session)}>连接</button>
+            <button on:click={() => handleConnect(session)} disabled={isConnected && status.sessionName === session.name}>连接</button>
             <button on:click={() => handleDelete(session.name)} class="danger">删除</button>
           </td>
         </tr>

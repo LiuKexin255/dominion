@@ -27,22 +27,22 @@ func TestStateTransitions(t *testing.T) {
 	if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect?token=t"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
-	if r.State() != StateConnected {
-		t.Fatalf("State() = %d, want %d", r.State(), StateConnected)
+	if r.ConnectionState() != ConnConnected {
+		t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
 	}
 	if err := r.BindWindow(100); err != nil {
 		t.Fatalf("BindWindow() unexpected error: %v", err)
 	}
-	if r.State() != StateBound {
-		t.Fatalf("State() = %d, want %d", r.State(), StateBound)
+	if r.StreamingState() != StreamIdle {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamIdle)
 	}
 	if err := r.StartCapture(context.Background()); err != nil {
 		t.Fatalf("StartCapture() unexpected error: %v", err)
 	}
 
 	// then
-	if r.State() != StateStreaming {
-		t.Fatalf("State() = %d, want %d", r.State(), StateStreaming)
+	if r.StreamingState() != StreamStreaming {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamStreaming)
 	}
 }
 
@@ -66,8 +66,11 @@ func TestStreamingToDisconnected(t *testing.T) {
 	}
 
 	// then
-	if r.State() != StateDisconnected {
-		t.Fatalf("State() = %d, want %d", r.State(), StateDisconnected)
+	if r.ConnectionState() != ConnDisconnected {
+		t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnDisconnected)
+	}
+	if r.StreamingState() != StreamIdle {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamIdle)
 	}
 }
 
@@ -136,7 +139,8 @@ func TestCleanupOrder(t *testing.T) {
 	r.encoder = &fakeEncoder{order: order}
 	r.inputMgr = &fakeInput{order: order}
 	r.transport = &fakeTransport{order: order}
-	r.state = StateStreaming
+	r.connState = ConnConnected
+	r.streamState = StreamStreaming
 
 	// when
 	if err := r.Disconnect(); err != nil {
@@ -144,7 +148,7 @@ func TestCleanupOrder(t *testing.T) {
 	}
 
 	// then
-	want := []string{"encoder.stop", "input.release_all", "input.stop", "transport.close"}
+	want := []string{"transport.close", "encoder.stop", "input.release_all", "input.stop"}
 	if got := order.events(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("cleanup order = %v, want %v", got, want)
 	}
@@ -218,7 +222,7 @@ func TestReadLoopRouting(t *testing.T) {
 		msg        transport.InboundMessage
 		setup      func(*Runtime)
 		wantEvents []string
-		wantState  AgentState
+		wantConn   ConnectionState
 	}{
 		{
 			name: "control request sends ack and result",
@@ -236,19 +240,19 @@ func TestReadLoopRouting(t *testing.T) {
 				r.boundWindow = &window.WindowInfo{HWND: 100}
 			},
 			wantEvents: []string{"control_ack:op-1", "control_result:op-1:GAME_CONTROL_RESULT_STATUS_SUCCEEDED"},
-			wantState:  StateDisconnected,
+			wantConn:   ConnDisconnected,
 		},
 		{
 			name:       "ping sends pong",
 			msg:        transport.InboundMessage{Ping: &gw.GamePing{Nonce: "nonce-1"}},
 			setup:      func(r *Runtime) { r.session = &Session{ID: "session-1"} },
 			wantEvents: []string{"pong:nonce-1"},
-			wantState:  StateDisconnected,
+			wantConn:   ConnDisconnected,
 		},
 		{
-			name:      "gateway error sets runtime error state",
-			msg:       transport.InboundMessage{Error: &gw.GameError{Code: "gateway_error", Message: "boom"}},
-			wantState: StateError,
+			name:     "gateway error sets runtime error state",
+			msg:      transport.InboundMessage{Error: &gw.GameError{Code: "gateway_error", Message: "boom"}},
+			wantConn: ConnDisconnected,
 		},
 	}
 
@@ -266,7 +270,7 @@ func TestReadLoopRouting(t *testing.T) {
 			r.startReadLoopConsumer()
 
 			// then
-			waitForReadLoop(t, r, ft, tt.wantEvents, tt.wantState)
+			waitForReadLoop(t, r, ft, tt.wantEvents, tt.wantConn)
 		})
 	}
 }
@@ -306,9 +310,9 @@ func TestClearWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ClearWindow() unexpected error: %v", err)
 			}
-			if r.State() != StateConnected {
-				t.Fatalf("State() = %d, want %d", r.State(), StateConnected)
-			}
+		if r.ConnectionState() != ConnConnected {
+			t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
+		}
 			if r.boundWindow != nil {
 				t.Fatalf("boundWindow = %+v, want nil", r.boundWindow)
 			}
@@ -394,7 +398,7 @@ func newTestRuntime() *Runtime {
 	return r
 }
 
-func waitForReadLoop(t *testing.T, r *Runtime, ft *fakeTransport, wantEvents []string, wantState AgentState) {
+func waitForReadLoop(t *testing.T, r *Runtime, ft *fakeTransport, wantEvents []string, wantConn ConnectionState) {
 	t.Helper()
 	deadline := time.After(time.Second)
 	tick := time.NewTicker(time.Millisecond)
@@ -402,9 +406,9 @@ func waitForReadLoop(t *testing.T, r *Runtime, ft *fakeTransport, wantEvents []s
 	for {
 		select {
 		case <-deadline:
-			t.Fatalf("read loop events = %v state = %d, want events %v state %d", ft.eventSnapshot(), r.State(), wantEvents, wantState)
+			t.Fatalf("read loop events = %v connState = %d, want events %v connState %d", ft.eventSnapshot(), r.ConnectionState(), wantEvents, wantConn)
 		case <-tick.C:
-			if reflect.DeepEqual(ft.eventSnapshot(), wantEvents) && r.State() == wantState {
+			if reflect.DeepEqual(ft.eventSnapshot(), wantEvents) && r.ConnectionState() == wantConn {
 				return
 			}
 		}

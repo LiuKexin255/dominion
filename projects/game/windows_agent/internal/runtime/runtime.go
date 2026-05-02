@@ -16,37 +16,58 @@ import (
 	"dominion/projects/game/windows_agent/internal/window"
 )
 
-// AgentState is the runtime lifecycle state for the Windows agent.
-type AgentState int
+// ConnectionState represents the WebSocket connection lifecycle.
+type ConnectionState int
 
 const (
-	// StateDisconnected means no active gateway or subsystem session exists.
-	StateDisconnected AgentState = iota
-	// StateConnecting means the gateway WebSocket connection is being established.
-	StateConnecting
-	// StateConnected means the gateway connection and hello handshake are complete.
-	StateConnected
-	// StateBound means a target window has been selected for capture and input.
-	StateBound
-	// StateStreaming means ffmpeg capture and media forwarding are active.
-	StateStreaming
-	// StateError means a subsystem failed and the runtime needs cleanup.
-	StateError
+	// ConnDisconnected means no active gateway connection.
+	ConnDisconnected ConnectionState = iota
+	// ConnConnecting means the gateway WebSocket connection is being established.
+	ConnConnecting
+	// ConnConnected means the gateway connection and hello handshake are complete.
+	ConnConnected
 )
 
-func (s AgentState) String() string {
+func (s ConnectionState) String() string {
 	switch s {
-	case StateDisconnected:
+	case ConnDisconnected:
 		return "disconnected"
-	case StateConnecting:
+	case ConnConnecting:
 		return "connecting"
-	case StateConnected:
+	case ConnConnected:
 		return "connected"
-	case StateBound:
-		return "bound"
-	case StateStreaming:
+	default:
+		return fmt.Sprintf("unknown(%d)", s)
+	}
+}
+
+// StreamingState represents the media capture lifecycle.
+type StreamingState int
+
+const (
+	// StreamIdle means no active capture.
+	StreamIdle StreamingState = iota
+	// StreamStarting means capture is being initialized.
+	StreamStarting
+	// StreamStreaming means ffmpeg capture and media forwarding are active.
+	StreamStreaming
+	// StreamStopping means capture is being stopped.
+	StreamStopping
+	// StreamError means capture failed.
+	StreamError
+)
+
+func (s StreamingState) String() string {
+	switch s {
+	case StreamIdle:
+		return "idle"
+	case StreamStarting:
+		return "starting"
+	case StreamStreaming:
 		return "streaming"
-	case StateError:
+	case StreamStopping:
+		return "stopping"
+	case StreamError:
 		return "error"
 	default:
 		return fmt.Sprintf("unknown(%d)", s)
@@ -93,16 +114,17 @@ type MediaParser func(io.Reader) (*media.ParseResult, error)
 
 // Runtime coordinates transport, window binding, capture, encoding, media, and input.
 type Runtime struct {
-	state      AgentState
-	session    *Session
-	transport  TransportClient
-	windowMgr  WindowEnumerator
-	captureCfg capture.CaptureConfig
-	encoder    MediaEncoder
-	inputMgr   InputExecutor
-	parseMedia MediaParser
-	ffmpegPath string
-	helperPath string
+	connState   ConnectionState
+	streamState StreamingState
+	session     *Session
+	transport   TransportClient
+	windowMgr   WindowEnumerator
+	captureCfg  capture.CaptureConfig
+	encoder     MediaEncoder
+	inputMgr    InputExecutor
+	parseMedia  MediaParser
+	ffmpegPath  string
+	helperPath  string
 
 	boundWindow *window.WindowInfo
 	mediaDone   chan error
@@ -111,9 +133,10 @@ type Runtime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	lastError error
-	segCount  int64
-	startTime time.Time
+	lastConnError   error
+	lastStreamError error
+	segCount        int64
+	startTime       time.Time
 }
 
 type defaultWindowManager struct{}

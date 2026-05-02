@@ -32,7 +32,7 @@ func TestConnect(t *testing.T) {
 		wantErr    bool
 	}{
 		{name: "success", wantState: "Connected"},
-		{name: "runtime error", connectErr: errors.New("connection refused"), wantState: "Error", wantErr: true},
+		{name: "runtime error", connectErr: errors.New("connection refused"), wantState: "Disconnected", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -160,8 +160,8 @@ func TestBindWindow(t *testing.T) {
 		wantErr      bool
 		wantBoundHWD uintptr
 	}{
-		{name: "success", wantState: "Bound", wantBoundHWD: 100},
-		{name: "runtime error", bindErr: errors.New("invalid hwnd"), wantState: "Error", wantErr: true},
+		{name: "success", wantState: "Connected", wantBoundHWD: 100},
+		{name: "runtime error", bindErr: errors.New("invalid hwnd"), wantState: "Connected", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -225,9 +225,8 @@ func TestStatusTransitions(t *testing.T) {
 		t.Fatalf("BindWindow() unexpected error: %v", err)
 	}
 
-	// then: state is Bound with window ref
-	if s := a.GetStatus(); s.State != "Bound" {
-		t.Fatalf("after BindWindow: State = %q, want %q", s.State, "Bound")
+	if s := a.GetStatus(); s.State != "Connected" {
+		t.Fatalf("after BindWindow: State = %q, want %q", s.State, "Connected")
 	}
 	if s := a.GetStatus(); s.BoundWindow == nil || s.BoundWindow.HWND != 200 {
 		t.Fatalf("after BindWindow: BoundWindow.HWND = %d, want 200", s.BoundWindow.HWND)
@@ -457,17 +456,18 @@ func TestConnectSession(t *testing.T) {
 
 func TestDeleteSession(t *testing.T) {
 	tests := []struct {
-		name          string
-		current       bool
-		state         string
-		deleteStatus  int
-		wantStopCalls int
-		wantDiscCalls int
-		wantErr       bool
+		name           string
+		current        bool
+		state          string
+		streamingState string
+		deleteStatus   int
+		wantStopCalls  int
+		wantDiscCalls  int
+		wantErr        bool
 	}{
 		{name: "delete other session", deleteStatus: http.StatusOK},
 		{name: "delete current connected", current: true, state: "Connected", deleteStatus: http.StatusOK, wantDiscCalls: 1},
-		{name: "delete current streaming", current: true, state: "Streaming", deleteStatus: http.StatusOK, wantStopCalls: 1, wantDiscCalls: 1},
+		{name: "delete current streaming", current: true, state: "Connected", streamingState: "Streaming", deleteStatus: http.StatusOK, wantStopCalls: 1, wantDiscCalls: 1},
 		{name: "delete error", deleteStatus: http.StatusInternalServerError, wantErr: true},
 	}
 
@@ -482,6 +482,9 @@ func TestDeleteSession(t *testing.T) {
 				disconnectFn:  func() error { disconnectCalls++; return nil },
 			}, rec)
 			a.status.State = tt.state
+			if tt.streamingState != "" {
+				a.status.StreamingState = tt.streamingState
+			}
 			if tt.current {
 				a.currentSession = &Session{Name: "sessions/s-1"}
 			}
@@ -527,7 +530,7 @@ func TestClearWindow(t *testing.T) {
 			// given
 			rec := newEmitRecorder()
 			a := newTestApp(&mockRuntime{clearWindowFn: func() error { return tt.clearErr }}, rec)
-			a.status = AgentStatus{State: "Bound", BoundWindow: &WindowDetail{WindowRef: WindowRef{HWND: 100}}}
+			a.status = AgentStatus{State: "Connected", BoundWindow: &WindowDetail{WindowRef: WindowRef{HWND: 100}}}
 
 			// when
 			err := a.ClearWindow()
@@ -555,10 +558,10 @@ func TestStartCapture(t *testing.T) {
 		wantCalled bool
 		wantErr    bool
 	}{
-		{name: "success", state: "Bound", window: &WindowDetail{WindowRef: WindowRef{HWND: 100}}, wantCalled: true},
-		{name: "missing window", state: "Bound", wantErr: true},
+		{name: "success", state: "Connected", window: &WindowDetail{WindowRef: WindowRef{HWND: 100}}, wantCalled: true},
+		{name: "missing window", state: "Connected", wantErr: true},
 		{name: "wrong state", state: "Disconnected", window: &WindowDetail{WindowRef: WindowRef{HWND: 100}}, wantErr: true},
-		{name: "runtime error", state: "Bound", window: &WindowDetail{WindowRef: WindowRef{HWND: 100}}, startErr: errors.New("ffmpeg failed"), wantCalled: true, wantErr: true},
+		{name: "runtime error", state: "Connected", window: &WindowDetail{WindowRef: WindowRef{HWND: 100}}, startErr: errors.New("ffmpeg failed"), wantCalled: true, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -582,8 +585,8 @@ func TestStartCapture(t *testing.T) {
 			if called != tt.wantCalled {
 				t.Fatalf("runtime called = %t, want %t", called, tt.wantCalled)
 			}
-			if !tt.wantErr && a.GetStatus().State != "Streaming" {
-				t.Fatalf("State = %q, want Streaming", a.GetStatus().State)
+			if !tt.wantErr && a.GetStatus().StreamingState != "Streaming" {
+				t.Fatalf("StreamingState = %q, want Streaming", a.GetStatus().StreamingState)
 			}
 		})
 	}
@@ -616,8 +619,8 @@ func TestStopCapture(t *testing.T) {
 			if !tt.wantErr && err != nil {
 				t.Fatalf("StopCapture() unexpected error: %v", err)
 			}
-			if !tt.wantErr && a.GetStatus().State != "Bound" {
-				t.Fatalf("State = %q, want Bound", a.GetStatus().State)
+			if !tt.wantErr && a.GetStatus().StreamingState != "Idle" {
+				t.Fatalf("StreamingState = %q, want Idle", a.GetStatus().StreamingState)
 			}
 		})
 	}

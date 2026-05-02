@@ -75,9 +75,16 @@
     return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
-  $: if (autoScroll && container) {
-    void filtered.length;
-    container.scrollTop = container.scrollHeight;
+  function scrollToBottom() {
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  let prevFilteredLength = 0;
+  $: if (autoScroll && container && filtered.length > prevFilteredLength) {
+    prevFilteredLength = filtered.length;
+    requestAnimationFrame(scrollToBottom);
   }
 
   onMount(() => {
@@ -138,6 +145,7 @@
     flex-direction: column;
     height: 100%;
     padding: 0;
+    overflow: hidden;
   }
 
   .log-toolbar {
@@ -148,6 +156,7 @@
     border-bottom: 1px solid #334155;
     flex-wrap: wrap;
     gap: 0.4rem;
+    flex-shrink: 0;
   }
 
   .filter-group {

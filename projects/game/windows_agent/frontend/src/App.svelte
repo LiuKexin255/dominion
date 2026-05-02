@@ -37,13 +37,15 @@
   main {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    height: 100vh;
     padding: 0;
+    overflow: hidden;
   }
 
   header {
     padding: 0.75rem 1.25rem;
     border-bottom: 1px solid #1e293b;
+    flex-shrink: 0;
   }
 
   header h1 {
@@ -54,10 +56,11 @@
   }
 
   .main-area {
-    flex: 1;
+    flex: 7;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
   }
 
   .tab-bar {
@@ -97,12 +100,12 @@
   }
 
   .log-area {
+    flex: 3;
     border-top: 1px solid #334155;
-    min-height: 200px;
-    max-height: 350px;
     display: flex;
     flex-direction: column;
     background: #0f172a;
+    min-height: 0;
   }
 
   .log-header {

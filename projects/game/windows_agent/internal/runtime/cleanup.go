@@ -2,11 +2,14 @@ package runtime
 
 import "errors"
 
-// cleanup stops all subsystems in order: ffmpeg, input-helper, media, transport.
+// cleanup stops all subsystems in order: transport, read loop, ffmpeg, input-helper.
 func (r *Runtime) cleanup() error {
 	var err error
 	if r.cancel != nil {
 		r.cancel()
+	}
+	if r.transport != nil {
+		err = errors.Join(err, r.transport.Close())
 	}
 	if r.encoder != nil {
 		err = errors.Join(err, r.encoder.Stop())
@@ -15,13 +18,12 @@ func (r *Runtime) cleanup() error {
 		err = errors.Join(err, r.inputMgr.ReleaseAll())
 		err = errors.Join(err, r.inputMgr.Stop())
 	}
-	if r.transport != nil {
-		err = errors.Join(err, r.transport.Close())
-	}
 	r.mu.Lock()
-	r.state = StateDisconnected
+	r.connState = ConnDisconnected
+	r.streamState = StreamIdle
 	r.boundWindow = nil
 	r.mediaDone = nil
+	r.session = nil
 	r.mu.Unlock()
 	return err
 }

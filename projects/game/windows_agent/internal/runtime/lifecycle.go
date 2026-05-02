@@ -18,54 +18,67 @@ import (
 func NewRuntime(ffmpegPath, helperPath string) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runtime{
-		state:      StateDisconnected,
-		transport:  transport.NewClient(),
-		windowMgr:  defaultWindowManager{},
-		captureCfg: capture.DefaultCaptureConfig(),
-		encoder:    encoder.NewEncoder(ffmpegPath),
-		inputMgr:   input.NewManager(),
-		parseMedia: media.Parse,
-		ffmpegPath: ffmpegPath,
-		helperPath: helperPath,
-		ctx:        ctx,
-		cancel:     cancel,
+		connState:   ConnDisconnected,
+		streamState: StreamIdle,
+		transport:   transport.NewClient(),
+		windowMgr:   defaultWindowManager{},
+		captureCfg:  capture.DefaultCaptureConfig(),
+		encoder:     encoder.NewEncoder(ffmpegPath),
+		inputMgr:    input.NewManager(),
+		parseMedia:  media.Parse,
+		ffmpegPath:  ffmpegPath,
+		helperPath:  helperPath,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
-// State returns the current runtime lifecycle state.
-func (r *Runtime) State() AgentState {
+// ConnectionState returns the current connection state.
+func (r *Runtime) ConnectionState() ConnectionState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.state
+	return r.connState
 }
 
-// Connect establishes the WebSocket connection, sends hello, and enters StateConnected.
+// StreamingState returns the current streaming state.
+func (r *Runtime) StreamingState() StreamingState {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.streamState
+}
+
+// Connect establishes the WebSocket connection, sends hello, and enters ConnConnected.
 func (r *Runtime) Connect(ctx context.Context, connectURL string) error {
 	sessionID, err := ParseSessionURL(connectURL)
 	if err != nil {
 		return err
 	}
-	if err := r.transition(StateDisconnected, StateConnecting); err != nil {
+
+	r.mu.Lock()
+	if r.connState != ConnDisconnected {
+		r.mu.Unlock()
+		return fmt.Errorf("already connected or connecting")
+	}
+	r.connState = ConnConnecting
+	r.session = &Session{ID: sessionID, ConnectURL: connectURL, Role: sessionRoleWindowsAgent}
+	r.ctx, r.cancel = context.WithCancel(ctx)
+	r.startTime = time.Now()
+	r.lastConnError = nil
+	r.mu.Unlock()
+
+	if err := r.transport.Connect(ctx, connectURL); err != nil {
+		r.setConnError(err)
+		return err
+	}
+	if err := r.SendHello(ctx); err != nil {
+		r.setConnError(err)
 		return err
 	}
 
 	r.mu.Lock()
-	r.session = &Session{ID: sessionID, ConnectURL: connectURL, Role: sessionRoleWindowsAgent}
-	r.ctx, r.cancel = context.WithCancel(ctx)
-	r.startTime = time.Now()
+	r.connState = ConnConnected
 	r.mu.Unlock()
 
-	if err := r.transport.Connect(ctx, connectURL); err != nil {
-		r.setError(err)
-		return err
-	}
-	if err := r.SendHello(ctx); err != nil {
-		r.setError(err)
-		return err
-	}
-	if err := r.transition(StateConnecting, StateConnected); err != nil {
-		return err
-	}
 	r.startReadLoopConsumer()
 	return nil
 }
@@ -79,9 +92,9 @@ func (r *Runtime) SendHello(ctx context.Context) error {
 	return r.transport.SendHello(ctx, session.ID)
 }
 
-// BindWindow validates and stores a target HWND, then enters StateBound.
+// BindWindow validates and stores a target HWND.
 func (r *Runtime) BindWindow(hwnd uintptr) error {
-	if err := r.ensureState(StateConnected); err != nil {
+	if err := r.ensureConnState(ConnConnected); err != nil {
 		return err
 	}
 	if !r.windowMgr.IsWindowValid(hwnd) {
@@ -90,7 +103,6 @@ func (r *Runtime) BindWindow(hwnd uintptr) error {
 
 	windows, err := r.windowMgr.EnumerateWindows()
 	if err != nil {
-		r.setError(err)
 		return err
 	}
 	info := window.WindowInfo{HWND: hwnd}
@@ -112,7 +124,6 @@ func (r *Runtime) BindWindow(hwnd uintptr) error {
 		MaxWidth:  r.captureCfg.MaxWidth,
 		MaxHeight: r.captureCfg.MaxHeight,
 	}
-	r.state = StateBound
 	r.mu.Unlock()
 	return nil
 }
@@ -120,13 +131,10 @@ func (r *Runtime) BindWindow(hwnd uintptr) error {
 // ClearWindow unbinds the current window after stopping capture when needed.
 func (r *Runtime) ClearWindow() error {
 	r.mu.RLock()
-	state := r.state
+	streamState := r.streamState
 	r.mu.RUnlock()
 
-	if state != StateBound && state != StateStreaming {
-		return fmt.Errorf("cannot clear window in state %d", state)
-	}
-	if state == StateStreaming {
+	if streamState == StreamStreaming {
 		if err := r.StopCapture(); err != nil {
 			return fmt.Errorf("stop capture before clear window: %w", err)
 		}
@@ -135,13 +143,12 @@ func (r *Runtime) ClearWindow() error {
 	r.mu.Lock()
 	r.boundWindow = nil
 	r.mu.Unlock()
-
-	return r.transition(StateBound, StateConnected)
+	return nil
 }
 
-// StartCapture starts ffmpeg capture and media forwarding, then enters StateStreaming.
+// StartCapture starts ffmpeg capture and media forwarding.
 func (r *Runtime) StartCapture(ctx context.Context) error {
-	if err := r.ensureState(StateBound); err != nil {
+	if err := r.ensureConnState(ConnConnected); err != nil {
 		return err
 	}
 	if r.encoder == nil {
@@ -155,6 +162,16 @@ func (r *Runtime) StartCapture(ctx context.Context) error {
 	if boundWindow == nil {
 		return fmt.Errorf("window is not bound")
 	}
+
+	r.mu.Lock()
+	if r.streamState != StreamIdle {
+		r.mu.Unlock()
+		return fmt.Errorf("streaming already started")
+	}
+	r.streamState = StreamStarting
+	r.lastStreamError = nil
+	r.mu.Unlock()
+
 	config := encoder.DefaultConfig()
 	config.HWND = boundWindow.HWND
 	config.FrameRate = captureCfg.FrameRate
@@ -162,25 +179,37 @@ func (r *Runtime) StartCapture(ctx context.Context) error {
 	config.MaxHeight = captureCfg.MaxHeight
 
 	if err := r.encoder.Start(ctx, config); err != nil {
-		r.setError(err)
+		r.setStreamError(err)
+		r.stopCaptureSubsystems()
 		return err
 	}
 	if err := r.inputMgr.Start(r.helperPath); err != nil {
-		r.setError(err)
+		r.setStreamError(err)
+		r.stopCaptureSubsystems()
 		return err
 	}
 	if err := r.startMediaFlow(); err != nil {
-		r.setError(err)
+		r.setStreamError(err)
+		r.stopCaptureSubsystems()
 		return err
 	}
-	return r.transition(StateBound, StateStreaming)
+
+	r.mu.Lock()
+	r.streamState = StreamStreaming
+	r.mu.Unlock()
+	return nil
 }
 
 // StopCapture stops media streaming without disconnecting from the gateway.
 func (r *Runtime) StopCapture() error {
-	if err := r.ensureState(StateStreaming); err != nil {
-		return err
+	r.mu.Lock()
+	if r.streamState != StreamStreaming && r.streamState != StreamError {
+		r.mu.Unlock()
+		return fmt.Errorf("not streaming")
 	}
+	r.streamState = StreamStopping
+	r.mu.Unlock()
+
 	var err error
 	if r.encoder != nil {
 		err = r.encoder.Stop()
@@ -188,48 +217,54 @@ func (r *Runtime) StopCapture() error {
 	if r.inputMgr != nil {
 		err = errors.Join(err, r.inputMgr.Stop())
 	}
-	if transErr := r.transition(StateStreaming, StateBound); transErr != nil && err == nil {
-		err = transErr
-	}
-	if err != nil {
-		r.setError(err)
-	}
+
+	r.mu.Lock()
+	r.streamState = StreamIdle
+	r.lastStreamError = err
+	r.mu.Unlock()
 	return err
 }
 
-// Disconnect cleanly shuts down all subsystems and enters StateDisconnected.
+// Disconnect cleanly shuts down all subsystems and enters ConnDisconnected.
 func (r *Runtime) Disconnect() error {
 	return r.cleanup()
 }
 
-func (r *Runtime) transition(from AgentState, to AgentState) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.state != from {
-		return fmt.Errorf("invalid state transition: %s -> %s (current: %s)", from, to, r.state)
-	}
-	r.state = to
-	return nil
-}
-
-func (r *Runtime) ensureState(want AgentState) error {
+func (r *Runtime) ensureConnState(want ConnectionState) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.state != want {
-		return fmt.Errorf("requires %s, but current state is %s", want, r.state)
+	if r.connState != want {
+		return fmt.Errorf("requires %s, but current connection state is %s", want, r.connState)
 	}
 	return nil
 }
 
-func (r *Runtime) setError(err error) {
+func (r *Runtime) setConnError(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lastError = err
-	r.state = StateError
+	r.lastConnError = err
+	r.connState = ConnDisconnected
+}
+
+func (r *Runtime) setStreamError(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastStreamError = err
+	r.streamState = StreamError
 }
 
 func (r *Runtime) currentSession() *Session {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.session
+}
+
+// stopCaptureSubsystems stops encoder and input without changing state.
+func (r *Runtime) stopCaptureSubsystems() {
+	if r.encoder != nil {
+		r.encoder.Stop()
+	}
+	if r.inputMgr != nil {
+		r.inputMgr.Stop()
+	}
 }

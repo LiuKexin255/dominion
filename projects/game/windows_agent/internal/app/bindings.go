@@ -24,7 +24,7 @@ const logModuleApp = "app"
 func (a *App) Connect(connectURL string) error {
 	if err := a.rt.Connect(context.Background(), connectURL); err != nil {
 		a.setStatus(func(s *AgentStatus) {
-			s.State = "Error"
+			s.State = "Disconnected"
 			s.LastError = "connect failed"
 		})
 		a.emitStatusChanged()
@@ -37,12 +37,14 @@ func (a *App) Connect(connectURL string) error {
 	startTime := time.Now().UTC().Format(time.RFC3339)
 	a.setStatus(func(s *AgentStatus) {
 		s.State = "Connected"
+		s.StreamingState = "Idle"
 		s.SessionID = sessionID
 		s.SessionName = sessionNameFromID(sessionID)
 		s.SessionType = ""
 		s.GatewayID = gatewayHost(connectURL)
 		s.ConnectedAt = startTime
 		s.LastError = ""
+		s.StreamingLastError = ""
 	})
 	a.emitStatusChanged()
 	a.log("info", "connected", map[string]string{"gateway": sanitizeURL(connectURL), "session": sessionNameFromID(sessionID)})
@@ -58,6 +60,7 @@ func (a *App) Disconnect() error {
 	a.sessionMu.Unlock()
 	a.setStatus(func(s *AgentStatus) {
 		s.State = "Disconnected"
+		s.StreamingState = "Idle"
 		s.SessionID = ""
 		s.SessionName = ""
 		s.SessionType = ""
@@ -65,6 +68,7 @@ func (a *App) Disconnect() error {
 		s.BoundWindow = nil
 		s.MediaSegCount = 0
 		s.LastError = ""
+		s.StreamingLastError = ""
 		s.FFmpegRunning = false
 		s.HelperRunning = false
 		s.ConnectedAt = ""
@@ -121,18 +125,18 @@ func (a *App) ConnectSession(session Session) error {
 		if reconnectErr != nil {
 			err = fmt.Errorf("connect failed (%w), reconnect failed (%w)", err, reconnectErr)
 			a.setStatus(func(s *AgentStatus) {
-				s.State = "Error"
+				s.State = "Disconnected"
 				s.LastError = "session reconnect failed"
 			})
 			a.emitStatusChanged()
-			a.emitEvent(EventErrorOccurred, err.Error())
+			a.emitEvent(EventErrorOccurred, "session reconnect failed")
 			a.log("error", "session reconnect failed", map[string]string{"name": session.Name, "error": err.Error()})
 			return err
 		}
 		activeSession = convertSession(newSession)
 		if retryErr := a.rt.Connect(context.Background(), activeSession.AgentConnectURL); retryErr != nil {
 			a.setStatus(func(s *AgentStatus) {
-				s.State = "Error"
+				s.State = "Disconnected"
 				s.LastError = "session reconnect retry failed"
 			})
 			a.emitStatusChanged()
@@ -148,15 +152,17 @@ func (a *App) ConnectSession(session Session) error {
 
 	sessionID, _ := agentruntime.ParseSessionURL(activeSession.AgentConnectURL)
 	startTime := time.Now().UTC().Format(time.RFC3339)
-	a.setStatus(func(s *AgentStatus) {
-		s.State = "Connected"
-		s.SessionID = sessionID
-		s.SessionName = activeSession.Name
-		s.SessionType = activeSession.Type
-		s.GatewayID = activeSession.GatewayID
-		s.ConnectedAt = startTime
-		s.LastError = ""
-	})
+		a.setStatus(func(s *AgentStatus) {
+			s.State = "Connected"
+			s.StreamingState = "Idle"
+			s.SessionID = sessionID
+			s.SessionName = activeSession.Name
+			s.SessionType = activeSession.Type
+			s.GatewayID = activeSession.GatewayID
+			s.ConnectedAt = startTime
+			s.LastError = ""
+			s.StreamingLastError = ""
+		})
 	a.emitStatusChanged()
 	a.log("info", "connected to session", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL)})
 	return nil
@@ -167,7 +173,7 @@ func (a *App) ConnectSession(session Session) error {
 func (a *App) DeleteSession(name string) error {
 	if a.isCurrentSession(name) {
 		status := a.GetStatus()
-		if status.State == "Streaming" {
+		if status.StreamingState == "Streaming" {
 			if err := a.rt.StopCapture(); err != nil {
 				a.log("error", "stop capture before delete failed", map[string]string{"name": name, "error": err.Error()})
 				return err
@@ -213,7 +219,6 @@ func (a *App) BindWindow(hwnd uintptr) error {
 
 	if err := a.rt.BindWindow(hwnd); err != nil {
 		a.setStatus(func(s *AgentStatus) {
-			s.State = "Error"
 			s.LastError = "bind window failed"
 		})
 		a.emitStatusChanged()
@@ -223,7 +228,7 @@ func (a *App) BindWindow(hwnd uintptr) error {
 	}
 
 	a.setStatus(func(s *AgentStatus) {
-		s.State = "Bound"
+		s.State = "Connected"
 		s.BoundWindow = &detail
 		s.LastError = ""
 	})
@@ -237,7 +242,6 @@ func (a *App) BindWindow(hwnd uintptr) error {
 func (a *App) ClearWindow() error {
 	if err := a.rt.ClearWindow(); err != nil {
 		a.setStatus(func(s *AgentStatus) {
-			s.State = "Error"
 			s.LastError = "clear window failed"
 		})
 		a.emitStatusChanged()
@@ -246,7 +250,6 @@ func (a *App) ClearWindow() error {
 		return err
 	}
 	a.setStatus(func(s *AgentStatus) {
-		s.State = "Connected"
 		s.BoundWindow = nil
 		s.StreamingStartedAt = ""
 		s.LastError = ""
@@ -268,8 +271,8 @@ func (a *App) StartCapture() error {
 	}
 	if err := a.rt.StartCapture(context.Background()); err != nil {
 		a.setStatus(func(s *AgentStatus) {
-			s.State = "Error"
-			s.LastError = "start capture failed"
+			s.StreamingState = "Error"
+			s.StreamingLastError = "start capture failed"
 		})
 		a.emitStatusChanged()
 		a.emitEvent(EventErrorOccurred, err.Error())
@@ -278,11 +281,11 @@ func (a *App) StartCapture() error {
 	}
 	startTime := time.Now().UTC().Format(time.RFC3339)
 	a.setStatus(func(s *AgentStatus) {
-		s.State = "Streaming"
+		s.StreamingState = "Streaming"
 		s.StreamingStartedAt = startTime
 		s.FFmpegRunning = true
 		s.HelperRunning = true
-		s.LastError = ""
+		s.StreamingLastError = ""
 	})
 	a.emitStatusChanged()
 	a.log("info", "started capture", nil)
@@ -294,8 +297,8 @@ func (a *App) StartCapture() error {
 func (a *App) StopCapture() error {
 	if err := a.rt.StopCapture(); err != nil {
 		a.setStatus(func(s *AgentStatus) {
-			s.State = "Error"
-			s.LastError = "stop capture failed"
+			s.StreamingState = "Error"
+			s.StreamingLastError = "stop capture failed"
 		})
 		a.emitStatusChanged()
 		a.emitEvent(EventErrorOccurred, err.Error())
@@ -303,11 +306,11 @@ func (a *App) StopCapture() error {
 		return err
 	}
 	a.setStatus(func(s *AgentStatus) {
-		s.State = "Bound"
+		s.StreamingState = "Idle"
 		s.StreamingStartedAt = ""
 		s.FFmpegRunning = false
 		s.HelperRunning = false
-		s.LastError = ""
+		s.StreamingLastError = ""
 	})
 	a.emitStatusChanged()
 	a.log("info", "stopped capture", nil)
