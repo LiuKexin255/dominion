@@ -9,6 +9,7 @@ go_library(
         "doc.go",
         "lifecycle.go",
         "media_flow.go",
+        "readloop.go",
         "runtime.go",
         "session.go",
     ],

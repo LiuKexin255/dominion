@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -32,6 +33,25 @@ const (
 	// StateError means a subsystem failed and the runtime needs cleanup.
 	StateError
 )
+
+func (s AgentState) String() string {
+	switch s {
+	case StateDisconnected:
+		return "disconnected"
+	case StateConnecting:
+		return "connecting"
+	case StateConnected:
+		return "connected"
+	case StateBound:
+		return "bound"
+	case StateStreaming:
+		return "streaming"
+	case StateError:
+		return "error"
+	default:
+		return fmt.Sprintf("unknown(%d)", s)
+	}
+}
 
 // TransportClient sends and receives gateway WebSocket messages.
 type TransportClient interface {
@@ -81,6 +101,8 @@ type Runtime struct {
 	encoder    MediaEncoder
 	inputMgr   InputExecutor
 	parseMedia MediaParser
+	ffmpegPath string
+	helperPath string
 
 	boundWindow *window.WindowInfo
 	mediaDone   chan error
@@ -95,6 +117,16 @@ type Runtime struct {
 }
 
 type defaultWindowManager struct{}
+
+// SetEncoder replaces the runtime media encoder, primarily for tests.
+func (r *Runtime) SetEncoder(e MediaEncoder) {
+	r.encoder = e
+}
+
+// SetInputMgr replaces the runtime input manager, primarily for tests.
+func (r *Runtime) SetInputMgr(exec InputExecutor) {
+	r.inputMgr = exec
+}
 
 func (defaultWindowManager) EnumerateWindows() ([]window.WindowInfo, error) {
 	return window.EnumerateWindows()

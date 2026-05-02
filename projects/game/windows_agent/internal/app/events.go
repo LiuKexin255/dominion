@@ -1,5 +1,14 @@
 package app
 
+// LogEntry is a structured log entry sent to the frontend.
+type LogEntry struct {
+	Timestamp string            `json:"timestamp"`
+	Level     string            `json:"level"`
+	Module    string            `json:"module"`
+	Message   string            `json:"message"`
+	Fields    map[string]string `json:"fields"`
+}
+
 // Wails event names for frontend communication.
 const (
 	EventStatusChanged = "status:changed"
@@ -29,4 +38,9 @@ func (a *App) emitStatusChanged() {
 // EmitLog emits a diagnostic log entry to the Wails frontend.
 func (a *App) EmitLog(level, message string) {
 	a.emitEvent(EventLogEntry, map[string]string{"level": level, "message": message})
+}
+
+// EmitStructuredLog emits a structured log entry to the Wails frontend.
+func (a *App) EmitStructuredLog(entry LogEntry) {
+	a.emitEvent(EventLogEntry, entry)
 }

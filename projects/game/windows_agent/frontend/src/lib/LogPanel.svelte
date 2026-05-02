@@ -1,45 +1,89 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
 
-  interface LogEntry {
+  interface LogItem {
     timestamp: string;
-    level: 'INFO' | 'WARN' | 'ERROR';
+    level: string;
+    module: string;
     message: string;
+    fields: Record<string, string>;
   }
 
-  const MAX_ENTRIES = 200;
+  const MAX_ENTRIES = 500;
+  const HARD_LIMIT = 1000;
 
-  let logs: LogEntry[] = [];
-  let container: HTMLDivElement;
+  let entries: LogItem[] = [];
+  let filter: 'ALL' | 'INFO' | 'WARN' | 'ERROR' = 'ALL';
   let autoScroll = true;
+  let expanded: Set<number> = new Set();
+  let container: HTMLDivElement;
 
-  function addEntry(level: string, message: string): void {
-    const entry: LogEntry = {
-      timestamp: new Date().toLocaleTimeString(),
-      level: level === 'WARN' || level === 'ERROR' ? level : 'INFO',
-      message,
-    };
-    logs = [...logs, entry];
-    if (logs.length > MAX_ENTRIES) {
-      logs = logs.slice(-MAX_ENTRIES);
+  $: filtered = filter === 'ALL' ? entries : entries.filter(e => e.level.toUpperCase() === filter);
+
+  function onLogEntry(data: any) {
+    let entry: LogItem;
+    if (data && data.timestamp !== undefined) {
+      entry = {
+        timestamp: data.timestamp,
+        level: data.level ?? 'info',
+        module: data.module ?? '',
+        message: data.message ?? '',
+        fields: data.fields ?? {},
+      };
+    } else {
+      entry = {
+        timestamp: new Date().toISOString(),
+        level: data?.level ?? 'info',
+        module: '',
+        message: data?.message ?? '',
+        fields: {},
+      };
+    }
+    entries = [...entries, entry];
+    if (entries.length > HARD_LIMIT) {
+      entries = entries.slice(entries.length - MAX_ENTRIES);
     }
   }
 
-  function onLogEvent(data: { level?: string; message?: string }): void {
-    if (data && data.message) {
-      addEntry(data.level ?? 'INFO', data.message);
+  function clear() {
+    entries = [];
+    expanded = new Set();
+  }
+
+  function toggleExpand(idx: number) {
+    const next = new Set(expanded);
+    if (next.has(idx)) {
+      next.delete(idx);
+    } else {
+      next.add(idx);
     }
+    expanded = next;
+  }
+
+  function levelColor(level: string): string {
+    switch (level.toUpperCase()) {
+      case 'ERROR': return '#ef4444';
+      case 'WARN': return '#f59e0b';
+      case 'INFO': return '#22c55e';
+      default: return '#94a3b8';
+    }
+  }
+
+  function formatTime(iso: string): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
   $: if (autoScroll && container) {
+    void filtered.length;
     container.scrollTop = container.scrollHeight;
   }
 
   onMount(() => {
-    // Wails v2 injects EventsOn via the generated runtime module or window.runtime.
     const wails = window.runtime;
     if (wails?.EventsOn) {
-      wails.EventsOn('log:entry', onLogEvent);
+      wails.EventsOn('log:entry', onLogEntry);
     }
   });
 
@@ -51,25 +95,40 @@
   });
 </script>
 
-<div class="log-panel">
-  <div class="panel-header">
-    <h3>Logs</h3>
-    <label class="autoscroll-toggle">
-      <input type="checkbox" bind:checked={autoScroll} />
-      Auto-scroll
-    </label>
+<div class="panel log-panel">
+  <div class="log-toolbar">
+    <div class="filter-group">
+      <button class:active={filter === 'ALL'} on:click={() => filter = 'ALL'}>全部</button>
+      <button class:active={filter === 'INFO'} on:click={() => filter = 'INFO'}>INFO</button>
+      <button class:active={filter === 'WARN'} on:click={() => filter = 'WARN'}>WARN</button>
+      <button class:active={filter === 'ERROR'} on:click={() => filter = 'ERROR'}>ERROR</button>
+    </div>
+    <div class="toolbar-actions">
+      <label class="auto-scroll"><input type="checkbox" bind:checked={autoScroll} />自动滚动</label>
+      <button on:click={clear}>清空</button>
+    </div>
   </div>
+
   <div class="log-entries" bind:this={container}>
-    {#each logs as entry}
-      <div class="log-entry log-{entry.level.toLowerCase()}">
-        <span class="log-time">{entry.timestamp}</span>
-        <span class="log-level level-{entry.level.toLowerCase()}">{entry.level}</span>
-        <span class="log-msg">{entry.message}</span>
+    {#each filtered as entry, i (i)}
+      <div class="log-entry">
+        <span class="log-time">{formatTime(entry.timestamp)}</span>
+        <span class="log-level" style="color:{levelColor(entry.level)}">[{entry.level.toUpperCase()}]</span>
+        {#if entry.module}
+          <span class="log-module">{entry.module}</span>
+        {/if}
+        <span class="log-message" on:click={() => toggleExpand(i)}>{entry.message}</span>
+        {#if expanded.has(i) && Object.keys(entry.fields).length > 0}
+          <div class="log-fields">
+            {#each Object.entries(entry.fields) as [key, value]}
+              <div class="field"><span class="field-key">{key}</span>=<span class="field-value">{value}</span></div>
+            {/each}
+          </div>
+        {/if}
       </div>
+    {:else}
+      <div class="empty-logs">暂无日志</div>
     {/each}
-    {#if logs.length === 0}
-      <div class="log-empty">No log entries yet.</div>
-    {/if}
   </div>
 </div>
 
@@ -78,117 +137,152 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: #1e293b;
-    border-radius: 6px;
-    overflow: hidden;
+    padding: 0;
   }
 
-  .panel-header {
+  .log-toolbar {
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
-    border-bottom: 1px solid #334155;
-  }
-
-  .panel-header h3 {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: #e2e8f0;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .autoscroll-toggle {
-    display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid #334155;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .filter-group {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .filter-group button {
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid #475569;
+    background: #1e293b;
     color: #94a3b8;
     cursor: pointer;
   }
 
-  .autoscroll-toggle input {
+  .filter-group button.active {
+    background: #334155;
+    color: #e2e8f0;
+    border-color: #38bdf8;
+  }
+
+  .toolbar-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .toolbar-actions button {
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid #475569;
+    background: #1e293b;
+    color: #94a3b8;
     cursor: pointer;
+  }
+
+  .toolbar-actions button:hover {
+    background: #334155;
+    color: #e2e8f0;
+  }
+
+  .auto-scroll {
+    font-size: 0.72rem;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+  }
+
+  .auto-scroll input {
+    margin: 0;
+    accent-color: #38bdf8;
   }
 
   .log-entries {
     flex: 1;
-    overflow-y: auto;
-    padding: 4px 0;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 12px;
+    overflow: auto;
+    padding: 0.4rem 0.75rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.72rem;
     line-height: 1.6;
   }
 
   .log-entry {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 2px 12px;
+    padding: 0.1rem 0;
     border-left: 3px solid transparent;
+    padding-left: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   }
 
-  .log-entry:hover {
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .log-info {
-    border-left-color: #3b82f6;
-  }
-
-  .log-warn {
-    border-left-color: #f59e0b;
-    background: rgba(245, 158, 11, 0.05);
-  }
-
-  .log-error {
+  .log-entry:has(.log-level[style*="#ef4444"]) {
     border-left-color: #ef4444;
-    background: rgba(239, 68, 68, 0.05);
+  }
+
+  .log-entry:has(.log-level[style*="#f59e0b"]) {
+    border-left-color: #f59e0b;
+  }
+
+  .log-entry:has(.log-level[style*="#22c55e"]) {
+    border-left-color: #22c55e;
   }
 
   .log-time {
-    flex-shrink: 0;
     color: #64748b;
-    font-size: 11px;
+    margin-right: 0.4rem;
   }
 
   .log-level {
-    flex-shrink: 0;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 5px;
-    border-radius: 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-weight: 600;
+    margin-right: 0.3rem;
   }
 
-  .level-info {
-    color: #93c5fd;
-    background: rgba(59, 130, 246, 0.15);
+  .log-module {
+    color: #38bdf8;
+    margin-right: 0.3rem;
   }
 
-  .level-warn {
-    color: #fcd34d;
-    background: rgba(245, 158, 11, 0.15);
-  }
-
-  .level-error {
-    color: #fca5a5;
-    background: rgba(239, 68, 68, 0.15);
-  }
-
-  .log-msg {
+  .log-message {
     color: #cbd5e1;
-    word-break: break-word;
+    cursor: pointer;
   }
 
-  .log-empty {
-    padding: 16px 12px;
+  .log-message:hover {
+    text-decoration: underline;
+  }
+
+  .log-fields {
+    margin: 0.15rem 0 0.15rem 0.5rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid #334155;
+  }
+
+  .field {
+    font-size: 0.68rem;
+    color: #64748b;
+  }
+
+  .field-key {
+    color: #94a3b8;
+  }
+
+  .field-value {
+    color: #cbd5e1;
+    margin-left: 0.2rem;
+  }
+
+  .empty-logs {
+    color: #64748b;
     text-align: center;
-    color: #475569;
-    font-size: 12px;
-    font-family: system-ui, sans-serif;
+    padding: 1rem;
   }
 </style>

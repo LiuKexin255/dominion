@@ -212,12 +212,203 @@ func TestControlFlow(t *testing.T) {
 	}
 }
 
+func TestReadLoopRouting(t *testing.T) {
+	tests := []struct {
+		name       string
+		msg        transport.InboundMessage
+		setup      func(*Runtime)
+		wantEvents []string
+		wantState  AgentState
+	}{
+		{
+			name: "control request sends ack and result",
+			msg: transport.InboundMessage{ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-1",
+				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
+				Mouse: &gw.GameMouseAction{
+					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+					X:      10,
+					Y:      20,
+				},
+			}},
+			setup: func(r *Runtime) {
+				r.session = &Session{ID: "session-1"}
+				r.boundWindow = &window.WindowInfo{HWND: 100}
+			},
+			wantEvents: []string{"control_ack:op-1", "control_result:op-1:GAME_CONTROL_RESULT_STATUS_SUCCEEDED"},
+			wantState:  StateDisconnected,
+		},
+		{
+			name:       "ping sends pong",
+			msg:        transport.InboundMessage{Ping: &gw.GamePing{Nonce: "nonce-1"}},
+			setup:      func(r *Runtime) { r.session = &Session{ID: "session-1"} },
+			wantEvents: []string{"pong:nonce-1"},
+			wantState:  StateDisconnected,
+		},
+		{
+			name:      "gateway error sets runtime error state",
+			msg:       transport.InboundMessage{Error: &gw.GameError{Code: "gateway_error", Message: "boom"}},
+			wantState: StateError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			ft := &fakeTransport{readLoopMsgs: []transport.InboundMessage{tt.msg}}
+			r.transport = ft
+			if tt.setup != nil {
+				tt.setup(r)
+			}
+
+			// when
+			r.startReadLoopConsumer()
+
+			// then
+			waitForReadLoop(t, r, ft, tt.wantEvents, tt.wantState)
+		})
+	}
+}
+
+func TestClearWindow(t *testing.T) {
+	tests := []struct {
+		name             string
+		streaming        bool
+		wantEncoderStops int
+	}{
+		{name: "bound window clears to connected"},
+		{name: "streaming window stops capture before clearing", streaming: true, wantEncoderStops: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			fe := &fakeEncoder{stdout: bytes.NewReader(fmp4Stream())}
+			r.encoder = fe
+			if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect"); err != nil {
+				t.Fatalf("Connect() unexpected error: %v", err)
+			}
+			if err := r.BindWindow(100); err != nil {
+				t.Fatalf("BindWindow() unexpected error: %v", err)
+			}
+			if tt.streaming {
+				if err := r.StartCapture(context.Background()); err != nil {
+					t.Fatalf("StartCapture() unexpected error: %v", err)
+				}
+			}
+
+			// when
+			err := r.ClearWindow()
+
+			// then
+			if err != nil {
+				t.Fatalf("ClearWindow() unexpected error: %v", err)
+			}
+			if r.State() != StateConnected {
+				t.Fatalf("State() = %d, want %d", r.State(), StateConnected)
+			}
+			if r.boundWindow != nil {
+				t.Fatalf("boundWindow = %+v, want nil", r.boundWindow)
+			}
+			if fe.stopCount != tt.wantEncoderStops {
+				t.Fatalf("encoder stop count = %d, want %d", fe.stopCount, tt.wantEncoderStops)
+			}
+		})
+	}
+}
+
+func TestNewRuntimeInitialization(t *testing.T) {
+	// given
+	ffmpegPath := "resources/bin/ffmpeg.exe"
+	helperPath := "resources/bin/input-helper.exe"
+
+	// when
+	r := NewRuntime(ffmpegPath, helperPath)
+
+	// then
+	if r.encoder == nil {
+		t.Fatalf("encoder is nil")
+	}
+	if r.inputMgr == nil {
+		t.Fatalf("inputMgr is nil")
+	}
+	if r.ffmpegPath != ffmpegPath || r.helperPath != helperPath {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", r.ffmpegPath, r.helperPath, ffmpegPath, helperPath)
+	}
+}
+
+func TestInputHelperLifecycle(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Runtime) error
+	}{
+		{name: "stop capture stops helper", run: func(r *Runtime) error { return r.StopCapture() }},
+		{name: "disconnect stops helper", run: func(r *Runtime) error { return r.Disconnect() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			r.helperPath = "resources/bin/input-helper.exe"
+			fi := &fakeInput{}
+			r.inputMgr = fi
+			r.encoder = &fakeEncoder{stdout: bytes.NewReader(fmp4Stream())}
+			if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect"); err != nil {
+				t.Fatalf("Connect() unexpected error: %v", err)
+			}
+			if err := r.BindWindow(100); err != nil {
+				t.Fatalf("BindWindow() unexpected error: %v", err)
+			}
+			if err := r.StartCapture(context.Background()); err != nil {
+				t.Fatalf("StartCapture() unexpected error: %v", err)
+			}
+
+			// when
+			err := tt.run(r)
+
+			// then
+			if err != nil {
+				t.Fatalf("lifecycle action unexpected error: %v", err)
+			}
+			if fi.startCount != 1 {
+				t.Fatalf("input start count = %d, want 1", fi.startCount)
+			}
+			if fi.stopCount != 1 {
+				t.Fatalf("input stop count = %d, want 1", fi.stopCount)
+			}
+			if fi.lastStartPath != r.helperPath {
+				t.Fatalf("input start path = %q, want %q", fi.lastStartPath, r.helperPath)
+			}
+		})
+	}
+}
+
 func newTestRuntime() *Runtime {
-	r := NewRuntime()
+	r := NewRuntime("", "")
 	r.transport = &fakeTransport{}
 	r.windowMgr = &fakeWindowManager{windows: []window.WindowInfo{{HWND: 100, Title: "game", Rect: window.Rect{Right: 800, Bottom: 600}}}}
 	r.inputMgr = &fakeInput{}
 	return r
+}
+
+func waitForReadLoop(t *testing.T, r *Runtime, ft *fakeTransport, wantEvents []string, wantState AgentState) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("read loop events = %v state = %d, want events %v state %d", ft.eventSnapshot(), r.State(), wantEvents, wantState)
+		case <-tick.C:
+			if reflect.DeepEqual(ft.eventSnapshot(), wantEvents) && r.State() == wantState {
+				return
+			}
+		}
+	}
 }
 
 type orderRecorder struct {
@@ -242,8 +433,10 @@ func (r *orderRecorder) events() []string {
 }
 
 type fakeTransport struct {
-	order  *orderRecorder
-	events []string
+	order        *orderRecorder
+	events       []string
+	readLoopMsgs []transport.InboundMessage
+	mu           sync.Mutex
 }
 
 func (f *fakeTransport) Connect(context.Context, string) error { return nil }
@@ -255,26 +448,46 @@ func (f *fakeTransport) Close() error {
 }
 func (f *fakeTransport) SendHello(context.Context, string) error { return nil }
 func (f *fakeTransport) SendMediaInit(context.Context, string, string, []byte) error {
-	f.events = append(f.events, "media_init")
+	f.addEvent("media_init")
 	return nil
 }
 func (f *fakeTransport) SendMediaSegment(_ context.Context, _ string, segmentID string, _ []byte, _ bool) error {
-	f.events = append(f.events, "media_segment:"+segmentID)
+	f.addEvent("media_segment:" + segmentID)
 	return nil
 }
 func (f *fakeTransport) SendControlAck(_ context.Context, _ string, operationID string) error {
-	f.events = append(f.events, "control_ack:"+operationID)
+	f.addEvent("control_ack:" + operationID)
 	return nil
 }
 func (f *fakeTransport) SendControlResult(_ context.Context, _ string, operationID string, status gw.GameControlResultStatus) error {
-	f.events = append(f.events, fmt.Sprintf("control_result:%s:%s", operationID, status.String()))
+	f.addEvent(fmt.Sprintf("control_result:%s:%s", operationID, status.String()))
 	return nil
 }
-func (f *fakeTransport) SendPong(context.Context, string, string) error { return nil }
+func (f *fakeTransport) SendPong(_ context.Context, _ string, nonce string) error {
+	f.addEvent("pong:" + nonce)
+	return nil
+}
 func (f *fakeTransport) ReadLoop(context.Context) (<-chan transport.InboundMessage, error) {
 	ch := make(chan transport.InboundMessage)
-	close(ch)
+	go func() {
+		defer close(ch)
+		for _, msg := range f.readLoopMsgs {
+			ch <- msg
+		}
+	}()
 	return ch, nil
+}
+
+func (f *fakeTransport) addEvent(event string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+}
+
+func (f *fakeTransport) eventSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
 }
 
 type fakeWindowManager struct {
@@ -295,12 +508,20 @@ func (f *fakeWindowManager) IsWindowValid(hwnd uintptr) bool {
 }
 
 type fakeInput struct {
-	order       *orderRecorder
-	lastCommand input.Command
+	order         *orderRecorder
+	lastCommand   input.Command
+	lastStartPath string
+	startCount    int
+	stopCount     int
 }
 
-func (f *fakeInput) Start(string) error { return nil }
+func (f *fakeInput) Start(helperPath string) error {
+	f.lastStartPath = helperPath
+	f.startCount++
+	return nil
+}
 func (f *fakeInput) Stop() error {
+	f.stopCount++
 	if f.order != nil {
 		f.order.add("input.stop")
 	}
@@ -318,13 +539,15 @@ func (f *fakeInput) ReleaseAll() error {
 }
 
 type fakeEncoder struct {
-	order  *orderRecorder
-	stdout io.Reader
+	order     *orderRecorder
+	stdout    io.Reader
+	stopCount int
 }
 
 func (f *fakeEncoder) Start(context.Context, encoder.EncoderConfig) error { return nil }
 func (f *fakeEncoder) StdoutPipe() io.Reader                              { return f.stdout }
 func (f *fakeEncoder) Stop() error {
+	f.stopCount++
 	if f.order != nil {
 		f.order.add("encoder.stop")
 	}

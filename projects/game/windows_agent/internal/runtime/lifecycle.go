@@ -2,25 +2,31 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"dominion/projects/game/windows_agent/internal/capture"
 	"dominion/projects/game/windows_agent/internal/encoder"
+	"dominion/projects/game/windows_agent/internal/input"
 	"dominion/projects/game/windows_agent/internal/media"
 	"dominion/projects/game/windows_agent/internal/transport"
 	"dominion/projects/game/windows_agent/internal/window"
 )
 
 // NewRuntime creates a disconnected runtime with default subsystem adapters.
-func NewRuntime() *Runtime {
+func NewRuntime(ffmpegPath, helperPath string) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runtime{
 		state:      StateDisconnected,
 		transport:  transport.NewClient(),
 		windowMgr:  defaultWindowManager{},
 		captureCfg: capture.DefaultCaptureConfig(),
+		encoder:    encoder.NewEncoder(ffmpegPath),
+		inputMgr:   input.NewManager(),
 		parseMedia: media.Parse,
+		ffmpegPath: ffmpegPath,
+		helperPath: helperPath,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -57,7 +63,11 @@ func (r *Runtime) Connect(ctx context.Context, connectURL string) error {
 		r.setError(err)
 		return err
 	}
-	return r.transition(StateConnecting, StateConnected)
+	if err := r.transition(StateConnecting, StateConnected); err != nil {
+		return err
+	}
+	r.startReadLoopConsumer()
+	return nil
 }
 
 // SendHello sends the gateway hello message for the current session.
@@ -107,6 +117,28 @@ func (r *Runtime) BindWindow(hwnd uintptr) error {
 	return nil
 }
 
+// ClearWindow unbinds the current window after stopping capture when needed.
+func (r *Runtime) ClearWindow() error {
+	r.mu.RLock()
+	state := r.state
+	r.mu.RUnlock()
+
+	if state != StateBound && state != StateStreaming {
+		return fmt.Errorf("cannot clear window in state %d", state)
+	}
+	if state == StateStreaming {
+		if err := r.StopCapture(); err != nil {
+			return fmt.Errorf("stop capture before clear window: %w", err)
+		}
+	}
+
+	r.mu.Lock()
+	r.boundWindow = nil
+	r.mu.Unlock()
+
+	return r.transition(StateBound, StateConnected)
+}
+
 // StartCapture starts ffmpeg capture and media forwarding, then enters StateStreaming.
 func (r *Runtime) StartCapture(ctx context.Context) error {
 	if err := r.ensureState(StateBound); err != nil {
@@ -133,6 +165,10 @@ func (r *Runtime) StartCapture(ctx context.Context) error {
 		r.setError(err)
 		return err
 	}
+	if err := r.inputMgr.Start(r.helperPath); err != nil {
+		r.setError(err)
+		return err
+	}
 	if err := r.startMediaFlow(); err != nil {
 		r.setError(err)
 		return err
@@ -148,6 +184,9 @@ func (r *Runtime) StopCapture() error {
 	var err error
 	if r.encoder != nil {
 		err = r.encoder.Stop()
+	}
+	if r.inputMgr != nil {
+		err = errors.Join(err, r.inputMgr.Stop())
 	}
 	if transErr := r.transition(StateStreaming, StateBound); transErr != nil && err == nil {
 		err = transErr
@@ -167,7 +206,7 @@ func (r *Runtime) transition(from AgentState, to AgentState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state != from {
-		return fmt.Errorf("invalid state transition: %d -> %d", r.state, to)
+		return fmt.Errorf("invalid state transition: %s -> %s (current: %s)", from, to, r.state)
 	}
 	r.state = to
 	return nil
@@ -177,7 +216,7 @@ func (r *Runtime) ensureState(want AgentState) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.state != want {
-		return fmt.Errorf("invalid state: got %d, want %d", r.state, want)
+		return fmt.Errorf("requires %s, but current state is %s", want, r.state)
 	}
 	return nil
 }
