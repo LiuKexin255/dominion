@@ -23,7 +23,7 @@ mongodb:
       run_as_user: 1000
       run_as_group: 3000
     storage:
-      storage_class_name: "nfs-csi"
+      storage_class_name: "truenas-iscsi"
       capacity: "16Gi"
       access_modes:
         - "ReadWriteOnce"
