@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	agentlog "dominion/projects/game/windows_agent/internal/log"
 	agentruntime "dominion/projects/game/windows_agent/internal/runtime"
 	"dominion/projects/game/windows_agent/internal/sessionclient"
 
@@ -35,30 +36,89 @@ type App struct {
 	status AgentStatus
 
 	emitFunc func(ctx context.Context, name string, data ...interface{})
+
+	initErrors     []string
+	deferredEvents []deferredEvent
+}
+
+type deferredEvent struct {
+	name string
+	data interface{}
+}
+
+type appConfig struct {
+	ffmpegPath string
+	helperPath string
+	initErrors []string
+}
+
+// AppOption configures App construction.
+type AppOption func(*appConfig)
+
+// WithFFmpegPath sets the ffmpeg executable path used by the runtime.
+func WithFFmpegPath(path string) AppOption {
+	return func(cfg *appConfig) {
+		cfg.ffmpegPath = path
+	}
+}
+
+// WithHelperPath sets the input helper executable path used by the runtime.
+func WithHelperPath(path string) AppOption {
+	return func(cfg *appConfig) {
+		cfg.helperPath = path
+	}
+}
+
+// WithInitErrors sets initialization errors to report after frontend subscription.
+func WithInitErrors(errors []string) AppOption {
+	return func(cfg *appConfig) {
+		cfg.initErrors = append([]string(nil), errors...)
+	}
 }
 
 // NewApp creates an App with a default Runtime and Wails event emitter.
-func NewApp(paths ...string) *App {
-	var ffmpegPath, helperPath string
-	if len(paths) > 0 {
-		ffmpegPath = paths[0]
-	}
-	if len(paths) > 1 {
-		helperPath = paths[1]
+func NewApp(options ...AppOption) *App {
+	cfg := appConfig{}
+	for _, option := range options {
+		if option != nil {
+			option(&cfg)
+		}
 	}
 	return &App{
-		rt:       agentruntime.NewRuntime(ffmpegPath, helperPath),
-		sc:       sessionclient.NewClient(nil),
-		status:   AgentStatus{State: "Disconnected", SessionServiceState: "unknown"},
-		emitFunc: wailsrt.EventsEmit,
+		rt:         agentruntime.NewRuntime(cfg.ffmpegPath, cfg.helperPath),
+		sc:         sessionclient.NewClient(nil),
+		status:     AgentStatus{State: "Disconnected", SessionServiceState: "unknown"},
+		emitFunc:   wailsrt.EventsEmit,
+		initErrors: append([]string(nil), cfg.initErrors...),
 	}
 }
 
-// WailsInit stores the Wails context for event emission.
+// WailsInit stores the Wails context and initializes the global window logger.
 func (a *App) WailsInit(ctx context.Context) error {
 	a.ctx = ctx
+
+	emitFn := func(name string, data interface{}) {
+		if a.ctx != nil && a.emitFunc != nil {
+			a.emitFunc(a.ctx, name, data)
+		}
+	}
+	agentlog.SetGlobal(agentlog.NewLogger(emitFn))
+
 	a.log("info", "app started", nil)
+	for _, errMsg := range a.initErrors {
+		a.deferredEvents = append(a.deferredEvents,
+			deferredEvent{name: EventLogEntry, data: a.logEntry("error", errMsg, nil)},
+		)
+	}
 	return nil
+}
+
+// FlushInitErrors emits deferred initialization errors after the frontend subscribes.
+func (a *App) FlushInitErrors() {
+	for _, event := range a.deferredEvents {
+		a.emitEvent(event.name, event.data)
+	}
+	a.deferredEvents = nil
 }
 
 // WailsShutdown disconnects the runtime and cleans up all resources.

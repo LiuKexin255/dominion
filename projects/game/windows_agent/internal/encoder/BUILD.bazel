@@ -5,6 +5,8 @@ go_library(
     name = "encoder",
     srcs = [
         "args.go",
+        "cmd_other.go",
+        "cmd_windows.go",
         "config.go",
         "doc.go",
         "encoder.go",

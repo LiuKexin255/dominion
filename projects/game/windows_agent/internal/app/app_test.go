@@ -24,6 +24,44 @@ func newTestApp(rt runtimeService, rec *emitRecorder) *App {
 	}
 }
 
+func TestNewAppOptions(t *testing.T) {
+	errs := []string{"ffmpeg missing"}
+	a := NewApp(WithFFmpegPath("ffmpeg.exe"), WithHelperPath("input-helper.exe"), WithInitErrors(errs))
+	errs[0] = "mutated"
+
+	if len(a.initErrors) != 1 || a.initErrors[0] != "ffmpeg missing" {
+		t.Fatalf("initErrors = %v, want copied option errors", a.initErrors)
+	}
+
+	defaultApp := NewApp()
+	if len(defaultApp.initErrors) != 0 {
+		t.Fatalf("default initErrors = %v, want empty", defaultApp.initErrors)
+	}
+}
+
+func TestFlushInitErrors(t *testing.T) {
+	rec := newEmitRecorder()
+	a := newTestApp(&mockRuntime{}, rec)
+	a.initErrors = []string{"ffmpeg missing", "helper missing"}
+
+	if err := a.WailsInit(context.Background()); err != nil {
+		t.Fatalf("WailsInit() unexpected error: %v", err)
+	}
+	if got := len(rec.all(EventLogEntry)); got != 1 {
+		t.Fatalf("log events before flush = %d, want 1", got)
+	}
+
+	a.FlushInitErrors()
+	if got := len(rec.all(EventLogEntry)); got != 3 {
+		t.Fatalf("log events after flush = %d, want 3", got)
+	}
+
+	a.FlushInitErrors()
+	if got := len(rec.all(EventLogEntry)); got != 3 {
+		t.Fatalf("log events after second flush = %d, want 3", got)
+	}
+}
+
 func TestConnect(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -635,7 +673,7 @@ func TestTakeScreenshot(t *testing.T) {
 		wantURL    string
 		wantErr    bool
 	}{
-		{name: "success", session: &Session{Name: "sessions/s-1", GatewayID: "gw-1"}, statusCode: http.StatusOK, body: `{"snapshot_id":"snap-1","mime_type":"image/png","image":"aW1n","capture_time":"now"}`, wantURL: "data:image/png;base64,aW1n"},
+		{name: "success", session: &Session{Name: "sessions/s-1", GatewayID: "gw-1"}, statusCode: http.StatusOK, body: `{"snapshotId":"snap-1","mimeType":"image/png","image":"aW1n","captureTime":"2026-01-01T00:00:00Z"}`, wantURL: "data:image/png;base64,aW1n"},
 		{name: "no active session", wantErr: true},
 		{name: "gateway error", session: &Session{Name: "sessions/s-1", GatewayID: "gw-1"}, statusCode: http.StatusBadGateway, body: `bad gateway`, wantErr: true},
 	}

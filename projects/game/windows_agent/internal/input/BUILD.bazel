@@ -5,9 +5,12 @@ go_library(
     name = "input",
     srcs = [
         "cleanup.go",
+        "cmd_other.go",
+        "cmd_windows.go",
         "command.go",
         "doc.go",
         "manager.go",
+        "path.go",
         "response.go",
     ],
     importpath = "dominion/projects/game/windows_agent/internal/input",

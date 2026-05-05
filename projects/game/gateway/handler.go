@@ -102,16 +102,19 @@ func parseResourceName(name, suffix string) (string, error) {
 
 // toProtoSnapshot converts a domain SnapshotRef to a proto GameSnapshot.
 func toProtoSnapshot(sessionID string, ref *domain.SnapshotRef) *GameSnapshot {
+	name := "sessions/" + sessionID + "/game/snapshot"
+	session := "sessions/" + sessionID
 	if ref == nil {
 		return &GameSnapshot{
-			Name:    "sessions/" + sessionID + "/game/snapshot",
-			Session: "sessions/" + sessionID,
+			Name:    name,
+			Session: session,
 		}
 	}
 
 	return &GameSnapshot{
-		Name:        "sessions/" + sessionID + "/game/snapshot",
-		Session:     "sessions/" + sessionID,
+		Name:        name,
+		Session:     session,
+		SnapshotId:  fmt.Sprintf("%s-%d", sessionID, ref.CaptureTime.UnixMilli()),
 		MimeType:    ref.MimeType,
 		Image:       ref.Data,
 		Cached:      ref.Cached,

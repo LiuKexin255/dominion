@@ -25,7 +25,7 @@ func NewRuntime(ffmpegPath, helperPath string) *Runtime {
 		captureCfg:  capture.DefaultCaptureConfig(),
 		encoder:     encoder.NewEncoder(ffmpegPath),
 		inputMgr:    input.NewManager(),
-		parseMedia:  media.Parse,
+		parseMedia:  media.ParseStreaming,
 		ffmpegPath:  ffmpegPath,
 		helperPath:  helperPath,
 		ctx:         ctx,
@@ -164,7 +164,7 @@ func (r *Runtime) StartCapture(ctx context.Context) error {
 	}
 
 	r.mu.Lock()
-	if r.streamState != StreamIdle {
+	if r.streamState != StreamIdle && r.streamState != StreamError {
 		r.mu.Unlock()
 		return fmt.Errorf("streaming already started")
 	}

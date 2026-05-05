@@ -148,7 +148,7 @@ func TestCleanupOrder(t *testing.T) {
 	}
 
 	// then
-	want := []string{"transport.close", "encoder.stop", "input.release_all", "input.stop"}
+	want := []string{"encoder.stop", "input.release_all", "input.stop", "transport.close"}
 	if got := order.events(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("cleanup order = %v, want %v", got, want)
 	}
@@ -310,9 +310,9 @@ func TestClearWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ClearWindow() unexpected error: %v", err)
 			}
-		if r.ConnectionState() != ConnConnected {
-			t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
-		}
+			if r.ConnectionState() != ConnConnected {
+				t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
+			}
 			if r.boundWindow != nil {
 				t.Fatalf("boundWindow = %+v, want nil", r.boundWindow)
 			}
@@ -577,4 +577,4 @@ var _ TransportClient = (*fakeTransport)(nil)
 var _ WindowEnumerator = (*fakeWindowManager)(nil)
 var _ InputExecutor = (*fakeInput)(nil)
 var _ MediaEncoder = (*fakeEncoder)(nil)
-var _ MediaParser = media.Parse
+var _ MediaParser = media.ParseStreaming

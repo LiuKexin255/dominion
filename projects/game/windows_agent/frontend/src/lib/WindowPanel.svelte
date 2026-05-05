@@ -24,8 +24,8 @@
   $: canStart =
     (status.state === 'Connected' || status.state === 'Bound') &&
     status.boundWindow !== null &&
-    status.state !== 'Streaming';
-  $: canStop = status.state === 'Streaming';
+    status.streamingState !== 'Streaming';
+  $: canStop = status.streamingState === 'Streaming';
   $: transportLabel =
     status.state === 'Streaming'
       ? '传输中'

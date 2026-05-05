@@ -2,7 +2,7 @@ package app
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,11 +11,16 @@ import (
 	"strings"
 	"time"
 
+	gw "dominion/projects/game/gateway"
 	agentruntime "dominion/projects/game/windows_agent/internal/runtime"
 	"dominion/projects/game/windows_agent/internal/window"
 
 	sessionpb "dominion/projects/game/session"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
+
+var protojsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 
 const logModuleApp = "app"
 
@@ -54,6 +59,10 @@ func (a *App) Connect(connectURL string) error {
 // Disconnect cleanly shuts down the runtime and resets the agent status.
 // Callable from frontend via window.go.main.App.Disconnect().
 func (a *App) Disconnect() error {
+	status := a.GetStatus()
+	if status.StreamingState == "Streaming" {
+		_ = a.StopCapture()
+	}
 	err := a.rt.Disconnect()
 	a.sessionMu.Lock()
 	a.currentSession = nil
@@ -152,17 +161,17 @@ func (a *App) ConnectSession(session Session) error {
 
 	sessionID, _ := agentruntime.ParseSessionURL(activeSession.AgentConnectURL)
 	startTime := time.Now().UTC().Format(time.RFC3339)
-		a.setStatus(func(s *AgentStatus) {
-			s.State = "Connected"
-			s.StreamingState = "Idle"
-			s.SessionID = sessionID
-			s.SessionName = activeSession.Name
-			s.SessionType = activeSession.Type
-			s.GatewayID = activeSession.GatewayID
-			s.ConnectedAt = startTime
-			s.LastError = ""
-			s.StreamingLastError = ""
-		})
+	a.setStatus(func(s *AgentStatus) {
+		s.State = "Connected"
+		s.StreamingState = "Idle"
+		s.SessionID = sessionID
+		s.SessionName = activeSession.Name
+		s.SessionType = activeSession.Type
+		s.GatewayID = activeSession.GatewayID
+		s.ConnectedAt = startTime
+		s.LastError = ""
+		s.StreamingLastError = ""
+	})
 	a.emitStatusChanged()
 	a.log("info", "connected to session", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL)})
 	return nil
@@ -172,13 +181,6 @@ func (a *App) ConnectSession(session Session) error {
 // Callable from frontend via window.go.main.App.DeleteSession(name).
 func (a *App) DeleteSession(name string) error {
 	if a.isCurrentSession(name) {
-		status := a.GetStatus()
-		if status.StreamingState == "Streaming" {
-			if err := a.rt.StopCapture(); err != nil {
-				a.log("error", "stop capture before delete failed", map[string]string{"name": name, "error": err.Error()})
-				return err
-			}
-		}
 		if err := a.Disconnect(); err != nil {
 			a.log("error", "disconnect before delete failed", map[string]string{"name": name, "error": err.Error()})
 			return err
@@ -269,6 +271,9 @@ func (a *App) StartCapture() error {
 	if status.BoundWindow == nil {
 		return a.capturePreconditionError("cannot start capture without a bound window")
 	}
+	if status.StreamingState == "Streaming" {
+		return nil
+	}
 	if err := a.rt.StartCapture(context.Background()); err != nil {
 		a.setStatus(func(s *AgentStatus) {
 			s.StreamingState = "Error"
@@ -325,37 +330,67 @@ func (a *App) TakeScreenshot() (ScreenshotResult, error) {
 	a.sessionMu.RUnlock()
 	if session == nil {
 		err := fmt.Errorf("no active session")
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error()})
 		return ScreenshotResult{Error: err.Error()}, err
 	}
 	parsed, err := url.Parse(session.AgentConnectURL)
 	if err != nil {
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
 	}
 	snapshotURL := fmt.Sprintf("https://%s/v1/%s/game/snapshot", parsed.Host, session.Name)
 	resp, err := http.Get(snapshotURL)
 	if err != nil {
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "url": snapshotURL})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
+		a.log("error", "take screenshot failed", map[string]string{"status": fmt.Sprintf("%d", resp.StatusCode), "body": string(body), "session": session.Name, "url": snapshotURL})
 		err := fmt.Errorf("snapshot HTTP %d", resp.StatusCode)
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body)}, err
 	}
-	snapshot := new(snapshotResponse)
-	if err := json.NewDecoder(resp.Body).Decode(snapshot); err != nil {
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
 	}
+	snapshot := new(gw.GameSnapshot)
+	if err := protojsonUnmarshaler.Unmarshal(body, snapshot); err != nil {
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "body": string(body)})
+		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
+	}
+
+	imageURL := dataURL(snapshot.GetMimeType(), snapshot.GetImage())
+	if imageURL == "" {
+		a.log("error", "take screenshot failed", map[string]string{"error": "snapshot image is empty", "session": session.Name})
+		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: "snapshot image is empty"}, fmt.Errorf("snapshot image is empty")
+	}
+
+	a.log("info", "snapshot received", map[string]string{
+		"session":   session.Name,
+		"mime":      snapshot.GetMimeType(),
+		"imageSize": fmt.Sprintf("%d", len(snapshot.GetImage())),
+		"snapshotId": snapshot.GetSnapshotId(),
+		"urlLen":    fmt.Sprintf("%d", len(imageURL)),
+	})
+
+	var captureTime string
+	if ct := snapshot.GetCaptureTime(); ct != nil {
+		captureTime = ct.AsTime().UTC().Format(time.RFC3339)
+	}
 	result := ScreenshotResult{
-		ImageURL:    dataURL(snapshot.MimeType, snapshot.Image),
-		MimeType:    snapshot.MimeType,
-		SnapshotID:  snapshot.SnapshotID,
-		CaptureTime: snapshot.CaptureTime,
+		ImageURL:    imageURL,
+		MimeType:    snapshot.GetMimeType(),
+		SnapshotID:  snapshot.GetSnapshotId(),
+		CaptureTime: captureTime,
 		SessionName: session.Name,
 		GatewayID:   session.GatewayID,
 	}
-	a.log("info", "took screenshot", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "snapshot": snapshot.SnapshotID})
+	a.log("info", "took screenshot", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "snapshot": snapshot.GetSnapshotId()})
 	return result, nil
 }
 
@@ -367,11 +402,15 @@ func (a *App) GetStatus() AgentStatus {
 	return a.status
 }
 
-type snapshotResponse struct {
-	SnapshotID  string `json:"snapshot_id"`
-	MimeType    string `json:"mime_type"`
-	Image       string `json:"image"`
-	CaptureTime string `json:"capture_time"`
+func dataURL(mimeType string, image []byte) string {
+	if len(image) == 0 {
+		return ""
+	}
+	encoded := base64.StdEncoding.EncodeToString(image)
+	if mimeType == "" {
+		return encoded
+	}
+	return "data:" + mimeType + ";base64," + encoded
 }
 
 func (a *App) capturePreconditionError(message string) error {
@@ -392,13 +431,17 @@ func (a *App) isCurrentSession(name string) bool {
 }
 
 func (a *App) log(level, message string, fields map[string]string) {
-	a.EmitStructuredLog(LogEntry{
+	a.EmitStructuredLog(a.logEntry(level, message, fields))
+}
+
+func (a *App) logEntry(level, message string, fields map[string]string) LogEntry {
+	return LogEntry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Level:     level,
 		Module:    logModuleApp,
 		Message:   message,
 		Fields:    fields,
-	})
+	}
 }
 
 func convertSession(pb *sessionpb.Session) Session {
@@ -455,14 +498,4 @@ func sessionNameFromID(sessionID string) string {
 		return ""
 	}
 	return "sessions/" + sessionID
-}
-
-func dataURL(mimeType, image string) string {
-	if image == "" {
-		return ""
-	}
-	if mimeType == "" {
-		return image
-	}
-	return "data:" + mimeType + ";base64," + image
 }

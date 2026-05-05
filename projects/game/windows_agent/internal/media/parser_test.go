@@ -328,6 +328,48 @@ func TestParseSegmentSizeAtLimit(t *testing.T) {
 	}
 }
 
+func TestParseStreamingDeliversSegments(t *testing.T) {
+	// given a full fMP4 stream with init and 3 media segments.
+	input := bytes.NewReader(generateTestStream(3))
+	var initCalls [][]byte
+	var mediaCalls []*MediaSegment
+
+	// when parsing with streaming callbacks.
+	err := ParseStreaming(input,
+		func(data []byte) error {
+			initCalls = append(initCalls, data)
+			return nil
+		},
+		func(seg *MediaSegment) error {
+			mediaCalls = append(mediaCalls, seg)
+			return nil
+		},
+	)
+
+	// then init is called once and media segments are delivered in order.
+	if err != nil {
+		t.Fatalf("ParseStreaming() unexpected error: %v", err)
+	}
+	if len(initCalls) != 1 {
+		t.Fatalf("ParseStreaming() init calls = %d, want 1", len(initCalls))
+	}
+	wantInit := generateTestInitSegment()
+	if !bytes.Equal(initCalls[0], wantInit) {
+		t.Fatalf("ParseStreaming() init data mismatch: got %d bytes, want %d", len(initCalls[0]), len(wantInit))
+	}
+	if len(mediaCalls) != 3 {
+		t.Fatalf("ParseStreaming() media calls = %d, want 3", len(mediaCalls))
+	}
+	for i, seg := range mediaCalls {
+		if seg.SeqNum != i {
+			t.Fatalf("ParseStreaming() segment %d SeqNum = %d, want %d", i, seg.SeqNum, i)
+		}
+		if !seg.KeyFrame {
+			t.Fatalf("ParseStreaming() segment %d KeyFrame = false, want true", i)
+		}
+	}
+}
+
 func generateTestInitSegment() []byte {
 	ftyp := make([]byte, 20)
 	binary.BigEndian.PutUint32(ftyp[0:4], 20)

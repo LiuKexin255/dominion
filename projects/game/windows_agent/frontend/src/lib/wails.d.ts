@@ -18,6 +18,7 @@ declare global {
           StopCapture: () => Promise<void>;
           TakeScreenshot: () => Promise<ScreenshotResult>;
           GetStatus: () => Promise<AgentStatus>;
+          FlushInitErrors: () => Promise<void>;
           EnumerateWindows: () => Promise<WindowInfo[]>;
           BindWindow: (hwnd: number) => Promise<void>;
           Disconnect: () => Promise<void>;

@@ -17,6 +17,8 @@ go_library(
     deps = [
         "//projects/game/windows_agent/assets:windows_agent_assets",
         "//projects/game/windows_agent/internal/app",
+        "//projects/game/windows_agent/internal/encoder",
+        "//projects/game/windows_agent/internal/input",
         "//third_party/github.com/wailsapp/wails/v2:wails",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
@@ -44,8 +46,8 @@ windows_agent_package(
 
 s3_artifacts_push(
     name = "publish",
-    manifest = "release.yaml",
     artifacts = [":windows_agent_win_zip"],
+    manifest = "release.yaml",
     visibility = ["//visibility:public"],
 )
 

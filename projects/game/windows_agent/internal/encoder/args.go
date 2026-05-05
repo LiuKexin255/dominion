@@ -32,6 +32,8 @@ func BuildFFmpegArgs(config EncoderConfig, ffmpegPath string) []string {
 		"-b:v", config.Bitrate,
 		"-maxrate", config.Bitrate,
 		"-bufsize", bufsize,
+		"-g", strconv.Itoa(config.FrameRate * 2),
+		"-keyint_min", strconv.Itoa(config.FrameRate),
 		"-vf", "scale=" + strconv.Itoa(config.MaxWidth) + ":" + strconv.Itoa(config.MaxHeight) + ":force_original_aspect_ratio=decrease",
 		"-movflags", fmp4Movflags,
 		"-f", "mp4",

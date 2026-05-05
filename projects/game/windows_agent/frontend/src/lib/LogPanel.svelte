@@ -45,6 +45,27 @@
     }
   }
 
+  function onErrorOccurred(data: any) {
+    onLogEntry({
+      timestamp: new Date().toISOString(),
+      level: 'error',
+      module: 'app',
+      message: typeof data === 'string' ? data : (data?.message ?? String(data)),
+      fields: {},
+    });
+  }
+
+  async function flushInitErrors() {
+    for (let i = 0; i < 20; i++) {
+      const flush = (window as any).go?.app?.App?.FlushInitErrors;
+      if (flush) {
+        await flush();
+        return;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
   function clear() {
     entries = [];
     expanded = new Set();
@@ -91,13 +112,16 @@
     const wails = window.runtime;
     if (wails?.EventsOn) {
       wails.EventsOn('log:entry', onLogEntry);
+      wails.EventsOn('error:occurred', onErrorOccurred);
     }
+    flushInitErrors();
   });
 
   onDestroy(() => {
     const wails = window.runtime;
     if (wails?.EventsOff) {
       wails.EventsOff('log:entry');
+      wails.EventsOff('error:occurred');
     }
   });
 </script>

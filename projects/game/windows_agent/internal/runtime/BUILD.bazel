@@ -21,6 +21,7 @@ go_library(
         "//projects/game/windows_agent/internal/capture",
         "//projects/game/windows_agent/internal/encoder",
         "//projects/game/windows_agent/internal/input",
+        "//projects/game/windows_agent/internal/log",
         "//projects/game/windows_agent/internal/media",
         "//projects/game/windows_agent/internal/transport",
         "//projects/game/windows_agent/internal/window",

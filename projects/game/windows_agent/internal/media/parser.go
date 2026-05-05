@@ -101,6 +101,64 @@ func ParseBytes(data []byte) (*ParseResult, error) {
 	return Parse(bytes.NewReader(data))
 }
 
+// ParseStreaming reads an fMP4 byte stream and invokes onInit when the init
+// segment is complete (ftyp+moov) and onMedia for each media fragment
+// (moof+mdat) as it arrives. It returns an error if any segment exceeds
+// domain.MaxSegmentSize. Unlike Parse, it does not wait for EOF — each
+// segment is delivered immediately after parsing.
+func ParseStreaming(r io.Reader, onInit func([]byte) error, onMedia func(*MediaSegment) error) error {
+	var initData []byte
+	var currentMedia []byte
+	seqNum := 0
+
+	for {
+		bx, err := readBox(r)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		switch bx.typ {
+		case BoxTypeFTYP, BoxTypeMOOV:
+			if len(initData)+len(bx.data) > domain.MaxSegmentSize {
+				return fmt.Errorf("init segment exceeds max size: %d > %d", len(initData)+len(bx.data), domain.MaxSegmentSize)
+			}
+			initData = append(initData, bx.data...)
+			if bx.typ == BoxTypeMOOV {
+				if err := onInit(append([]byte(nil), initData...)); err != nil {
+					return err
+				}
+			}
+
+		case BoxTypeMOOF:
+			if len(bx.data) > domain.MaxSegmentSize {
+				return fmt.Errorf("media segment exceeds max size: %d > %d", len(bx.data), domain.MaxSegmentSize)
+			}
+			currentMedia = append(currentMedia[:0], bx.data...)
+
+		case BoxTypeMDAT:
+			if len(currentMedia)+len(bx.data) > domain.MaxSegmentSize {
+				return fmt.Errorf("media segment exceeds max size: %d > %d", len(currentMedia)+len(bx.data), domain.MaxSegmentSize)
+			}
+			currentMedia = append(currentMedia, bx.data...)
+			segData := append([]byte(nil), currentMedia...)
+			if err := onMedia(&MediaSegment{
+				Data:     segData,
+				KeyFrame: true,
+				SeqNum:   seqNum,
+			}); err != nil {
+				return err
+			}
+			seqNum++
+			currentMedia = nil
+		}
+	}
+
+	return nil
+}
+
 type box struct {
 	typ  string
 	data []byte

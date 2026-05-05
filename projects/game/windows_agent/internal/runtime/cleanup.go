@@ -2,14 +2,10 @@ package runtime
 
 import "errors"
 
-// cleanup stops all subsystems in order: transport, read loop, ffmpeg, input-helper.
 func (r *Runtime) cleanup() error {
 	var err error
 	if r.cancel != nil {
 		r.cancel()
-	}
-	if r.transport != nil {
-		err = errors.Join(err, r.transport.Close())
 	}
 	if r.encoder != nil {
 		err = errors.Join(err, r.encoder.Stop())
@@ -17,6 +13,9 @@ func (r *Runtime) cleanup() error {
 	if r.inputMgr != nil {
 		err = errors.Join(err, r.inputMgr.ReleaseAll())
 		err = errors.Join(err, r.inputMgr.Stop())
+	}
+	if r.transport != nil {
+		err = errors.Join(err, r.transport.Close())
 	}
 	r.mu.Lock()
 	r.connState = ConnDisconnected

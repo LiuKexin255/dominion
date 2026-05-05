@@ -3,6 +3,7 @@ package encoder
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -18,8 +19,6 @@ func ResolveFFmpegPath(agentDir string) (string, error) {
 	return filepath.Join(agentDir, ffmpegRelativePath), nil
 }
 
-// ValidateFFmpeg checks that the ffmpeg binary at the given path exists and is executable.
-// On Linux, this does not execute the Windows binary.
 func ValidateFFmpeg(ffmpegPath string) error {
 	if ffmpegPath == "" {
 		return fmt.Errorf("ffmpeg path is empty")
@@ -34,8 +33,13 @@ func ValidateFFmpeg(ffmpegPath string) error {
 	if runtime.GOOS != "windows" {
 		return nil
 	}
-	if info.Mode().Perm()&0111 == 0 {
-		return fmt.Errorf("ffmpeg is not executable: %s", ffmpegPath)
+	cmd := exec.Command(ffmpegPath, "-version")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg is not executable: %s: %w", ffmpegPath, err)
+	}
+	if len(out) == 0 {
+		return fmt.Errorf("ffmpeg produced no output: %s", ffmpegPath)
 	}
 	return nil
 }

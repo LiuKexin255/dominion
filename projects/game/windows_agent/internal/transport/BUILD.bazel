@@ -16,6 +16,7 @@ go_library(
     deps = [
         "//projects/game/gateway",
         "//projects/game/gateway/domain",
+        "//projects/game/windows_agent/internal/log",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",

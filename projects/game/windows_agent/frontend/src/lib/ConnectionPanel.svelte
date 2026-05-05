@@ -34,10 +34,15 @@
     return !!(window as any).go?.app?.App;
   }
 
+  function onErrorOccurred(data: any) {
+    errorMessage = typeof data === 'string' ? data : (data?.message ?? String(data));
+  }
+
   onMount(async () => {
     window.runtime.EventsOn('status:changed', (s: any) => {
       status = s;
     });
+    window.runtime.EventsOn('error:occurred', onErrorOccurred);
 
     if (!wailsReady()) {
       errorMessage = 'Wails runtime not ready — retrying...';
@@ -64,6 +69,7 @@
 
   onDestroy(() => {
     window.runtime.EventsOff('status:changed');
+    window.runtime.EventsOff('error:occurred');
   });
 
   async function refreshSessions() {

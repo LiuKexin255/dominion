@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
+
+	"dominion/projects/game/windows_agent/internal/log"
+	"dominion/projects/game/windows_agent/internal/media"
 )
 
 const mediaMimeType = "video/mp4; codecs=\"avc1.42E01E\""
@@ -32,26 +35,32 @@ func (r *Runtime) startMediaFlow() error {
 	r.mu.Unlock()
 
 	go func(reader io.Reader, sessionID string) {
-		result, err := r.parseMedia(reader)
+		err := r.parseMedia(reader,
+			func(initData []byte) error {
+				log.Printf("media-flow", "sending init segment: session=%s size=%d", sessionID, len(initData))
+				if err := r.transport.SendMediaInit(ctx, sessionID, mediaMimeType, initData); err != nil {
+					log.Errorf("media-flow", "send init failed: session=%s error=%v", sessionID, err)
+					return err
+				}
+				return nil
+			},
+			func(seg *media.MediaSegment) error {
+				segmentID := fmt.Sprintf("seg-%d", seg.SeqNum)
+				log.Printf("media-flow", "sending segment: session=%s seg=%s size=%d keyframe=%v", sessionID, segmentID, len(seg.Data), seg.KeyFrame)
+				if err := r.transport.SendMediaSegment(ctx, sessionID, segmentID, seg.Data, seg.KeyFrame); err != nil {
+					log.Errorf("media-flow", "send segment failed: session=%s seg=%s error=%v", sessionID, segmentID, err)
+					return err
+				}
+				atomic.AddInt64(&r.segCount, 1)
+				return nil
+			},
+		)
 		if err != nil {
-			done <- err
-			return
+			log.Errorf("media-flow", "media flow ended with error: session=%s error=%v", sessionID, err)
+		} else {
+			log.Printf("media-flow", "media flow ended: session=%s segments=%d", sessionID, r.segCount)
 		}
-		if result.InitSegment != nil {
-			if err := r.transport.SendMediaInit(ctx, sessionID, mediaMimeType, result.InitSegment.Data); err != nil {
-				done <- err
-				return
-			}
-		}
-		for _, segment := range result.MediaSegs {
-			segmentID := fmt.Sprintf("seg-%d", segment.SeqNum)
-			if err := r.transport.SendMediaSegment(ctx, sessionID, segmentID, segment.Data, segment.KeyFrame); err != nil {
-				done <- err
-				return
-			}
-			atomic.AddInt64(&r.segCount, 1)
-		}
-		done <- nil
+		done <- err
 	}(stdout, session.ID)
 	return nil
 }

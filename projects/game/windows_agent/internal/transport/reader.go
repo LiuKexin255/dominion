@@ -2,11 +2,11 @@ package transport
 
 import (
 	"context"
-	"log"
+	"fmt"
 
 	gw "dominion/projects/game/gateway"
 
-	"fmt"
+	"dominion/projects/game/windows_agent/internal/log"
 )
 
 // InboundMessage represents a decoded downstream WebSocket message.
@@ -40,13 +40,13 @@ func (c *Client) ReadLoop(ctx context.Context) (<-chan InboundMessage, error) {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("transport: read error: %v", err)
+				log.Errorf("transport", "read error: %v", err)
 				return
 			}
 
 			env, err := DecodeEnvelope(data)
 			if err != nil {
-				log.Printf("transport: decode error: %v", err)
+				log.Warnf("transport", "decode error: %v", err)
 				continue
 			}
 
@@ -59,7 +59,7 @@ func (c *Client) ReadLoop(ctx context.Context) (<-chan InboundMessage, error) {
 			case *gw.GameWebSocketEnvelope_Error:
 				msg.Error = p.Error
 			default:
-				log.Printf("transport: ignoring message type %T", env.Payload)
+				log.Warnf("transport", "ignoring message type %T", env.Payload)
 				continue
 			}
 

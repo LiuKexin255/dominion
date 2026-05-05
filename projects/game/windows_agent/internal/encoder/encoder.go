@@ -49,8 +49,12 @@ func (encoder *ffmpegEncoder) Start(ctx context.Context, config EncoderConfig) e
 	if err := validateConfig(config); err != nil {
 		return err
 	}
+	if encoder.path == "" {
+		return fmt.Errorf("ffmpeg path is empty")
+	}
 	args := BuildFFmpegArgs(config, encoder.path)
 	cmd := exec.CommandContext(ctx, encoder.path, args[1:]...)
+	setCmdHideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create ffmpeg stdout pipe: %w", err)
@@ -110,17 +114,13 @@ func (encoder *ffmpegEncoder) Stop() error {
 
 	select {
 	case <-done:
-		encoder.mu.Lock()
-		defer encoder.mu.Unlock()
-		return encoder.waitErr
+		return nil
 	case <-time.After(stopTimeout):
 		if err := cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("kill ffmpeg: %w", err)
 		}
 		<-done
-		encoder.mu.Lock()
-		defer encoder.mu.Unlock()
-		return encoder.waitErr
+		return nil
 	}
 }
 

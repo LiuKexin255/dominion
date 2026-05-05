@@ -79,6 +79,9 @@ func TestHandler_GetGameSnapshot(t *testing.T) {
 				if got.GetSession() != wantSession {
 					t.Fatalf("Session = %q, want %q", got.GetSession(), wantSession)
 				}
+				if got.GetSnapshotId() == "" {
+					t.Fatalf("SnapshotId is empty, want non-empty")
+				}
 				if got.GetMimeType() != "image/jpeg" {
 					t.Fatalf("MimeType = %q, want %q", got.GetMimeType(), "image/jpeg")
 				}

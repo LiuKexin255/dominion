@@ -2,7 +2,8 @@ package runtime
 
 import (
 	"fmt"
-	"log"
+
+	"dominion/projects/game/windows_agent/internal/log"
 )
 
 // startReadLoopConsumer starts a goroutine that consumes ReadLoop messages.
@@ -18,7 +19,7 @@ func (r *Runtime) startReadLoopConsumer() {
 			switch {
 			case msg.ControlRequest != nil:
 				if err := r.handleControlRequest(msg.ControlRequest); err != nil {
-					log.Printf("runtime: handle control request: %v", err)
+					log.Errorf("runtime", "handle control request: %v", err)
 				}
 			case msg.Ping != nil:
 				session := r.currentSession()

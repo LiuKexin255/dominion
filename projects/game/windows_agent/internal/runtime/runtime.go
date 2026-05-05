@@ -109,8 +109,9 @@ type MediaEncoder interface {
 	Wait() error
 }
 
-// MediaParser parses fragmented MP4 data from ffmpeg stdout.
-type MediaParser func(io.Reader) (*media.ParseResult, error)
+// MediaParser reads an fMP4 stream and delivers init and media segments via
+// callbacks as they are parsed, without waiting for EOF.
+type MediaParser func(r io.Reader, onInit func([]byte) error, onMedia func(*media.MediaSegment) error) error
 
 // Runtime coordinates transport, window binding, capture, encoding, media, and input.
 type Runtime struct {

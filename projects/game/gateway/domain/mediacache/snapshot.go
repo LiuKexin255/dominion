@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"dominion/projects/game/gateway/domain"
 
@@ -40,12 +41,46 @@ func ExtractJPEGFromSegment(initData []byte, seg *domain.SegmentRef) ([]byte, er
 		return nil, err
 	}
 
-	fr, err := decodeH264(sampleData)
+	nalData := prependSPSPPS(parsed, sampleData)
+
+	fr, err := decodeH264(nalData)
 	if err != nil {
 		return nil, fmt.Errorf("h264 decode: %w", err)
 	}
 
 	return encodeJPEG(fr)
+}
+
+// prependSPSPPS extracts SPS and PPS NAL units from the fMP4 moov box and
+// prepends them (in AVC length-prefixed format) to the sample data so the
+// H.264 decoder has the parameter sets needed to initialise.
+func prependSPSPPS(f *mp4.File, sampleData []byte) []byte {
+	if f.Moov == nil {
+		return sampleData
+	}
+	for _, trak := range f.Moov.Traks {
+		stsd := trak.Mdia.Minf.Stbl.Stsd
+		if stsd.AvcX == nil || stsd.AvcX.AvcC == nil {
+			continue
+		}
+		avcC := stsd.AvcX.AvcC
+		buf := make([]byte, 0, len(sampleData)+len(avcC.SPSnalus)*32+len(avcC.PPSnalus)*32)
+		for _, sps := range avcC.SPSnalus {
+			buf = append(buf, avcLengthPrefix(uint32(len(sps)))...)
+			buf = append(buf, sps...)
+		}
+		for _, pps := range avcC.PPSnalus {
+			buf = append(buf, avcLengthPrefix(uint32(len(pps)))...)
+			buf = append(buf, pps...)
+		}
+		buf = append(buf, sampleData...)
+		return buf
+	}
+	return sampleData
+}
+
+func avcLengthPrefix(size uint32) []byte {
+	return []byte{byte(size >> 24), byte(size >> 16), byte(size >> 8), byte(size)}
 }
 
 // extractFirstSample returns the raw bytes of the first video sample from a

@@ -74,6 +74,33 @@ func main() {
 
 	zw := zip.NewWriter(f)
 
+	dirSeen := make(map[string]struct{})
+	for _, e := range entryList {
+		parts := strings.Split(e.dest, "/")
+		for i := 1; i < len(parts); i++ {
+			dirPath := strings.Join(parts[:i], "/") + "/"
+			if _, ok := dirSeen[dirPath]; ok {
+				continue
+			}
+			dirSeen[dirPath] = struct{}{}
+
+			hdr := &zip.FileHeader{
+				Name:   dirPath,
+				Method: zip.Store,
+			}
+			hdr.Modified = fixedTime
+			// Only set basic permission bits, avoid os.ModeDir which can be
+			// interpreted as a symlink/junction on Windows extractors.
+			hdr.SetMode(0755)
+
+			_, err := zw.CreateHeader(hdr)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: create zip header for directory %q: %v\n", dirPath, err)
+				os.Exit(1)
+			}
+		}
+	}
+
 	for _, e := range entryList {
 		info, err := os.Stat(e.src)
 		if err != nil {

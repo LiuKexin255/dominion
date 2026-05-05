@@ -14,11 +14,14 @@ go_library(
     importpath = "dominion/projects/game/windows_agent/internal/app",
     visibility = ["//projects/game/windows_agent:__subpackages__"],
     deps = [
+        "//projects/game/gateway",
         "//projects/game/session",
+        "//projects/game/windows_agent/internal/log",
         "//projects/game/windows_agent/internal/runtime",
         "//projects/game/windows_agent/internal/sessionclient",
         "//projects/game/windows_agent/internal/window",
         "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
+        "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
 
