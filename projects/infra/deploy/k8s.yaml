@@ -28,7 +28,7 @@ metadata:
     dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
-  storageClassName: nfs-csi
+  storageClassName: truenas-iscsi
   volumeMode: Filesystem
   accessModes:
     - ReadWriteOnce
@@ -61,9 +61,6 @@ spec:
         dominion.io/environment: infra.deploy
         app.kubernetes.io/managed-by: dominion.io
     spec:
-      securityContext:
-        runAsUser: 1000
-        runAsGroup: 3000
       volumes:
         - name: mongo-data
           persistentVolumeClaim:
