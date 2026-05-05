@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"dominion/projects/game/gateway/domain"
 
