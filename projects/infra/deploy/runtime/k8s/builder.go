@@ -655,8 +655,6 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 	)
 	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
 	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
-	runAsUser := profile.Security.RunAsUser
-	runAsGroup := profile.Security.RunAsGroup
 	volumes := []corev1.Volume{{
 		Name:         mongoDataVolumeName,
 		VolumeSource: buildMongoDBDataVolumeSource(workload),
@@ -665,10 +663,6 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		Name:      mongoDataVolumeName,
 		MountPath: mongoDataMountPath,
 	}}
-	podSecurityContext := &corev1.PodSecurityContext{
-		RunAsUser:  &runAsUser,
-		RunAsGroup: &runAsGroup,
-	}
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(mongoPortName)},
@@ -692,8 +686,7 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 					Labels: map[string]string(objectLabels),
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: podSecurityContext,
-					Volumes:         volumes,
+					Volumes: volumes,
 					InitContainers: []corev1.Container{{
 						Name:         mongoInitContainerName,
 						Image:        containerImage,

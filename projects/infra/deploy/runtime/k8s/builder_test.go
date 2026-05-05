@@ -43,10 +43,6 @@ func testK8sConfig() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Security: MongoSecurityConfig{
-					RunAsUser:  1000,
-					RunAsGroup: 3000,
-				},
 				Storage: MongoStorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
@@ -1223,18 +1219,6 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 	}
 	if container.ReadinessProbe == nil || container.ReadinessProbe.TCPSocket == nil {
 		t.Fatalf("ReadinessProbe should use TCP socket")
-	}
-
-	// Verify security context.
-	sc := deploy.Spec.Template.Spec.SecurityContext
-	if sc == nil {
-		t.Fatalf("SecurityContext should not be nil")
-	}
-	if *sc.RunAsUser != profile.Security.RunAsUser {
-		t.Fatalf("RunAsUser = %d, want %d", *sc.RunAsUser, profile.Security.RunAsUser)
-	}
-	if *sc.RunAsGroup != profile.Security.RunAsGroup {
-		t.Fatalf("RunAsGroup = %d, want %d", *sc.RunAsGroup, profile.Security.RunAsGroup)
 	}
 
 	// Verify volumes (PVC).

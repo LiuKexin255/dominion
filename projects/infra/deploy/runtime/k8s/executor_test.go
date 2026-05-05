@@ -885,10 +885,6 @@ func newExecutorTestConfig() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Security: MongoSecurityConfig{
-					RunAsUser:  1000,
-					RunAsGroup: 3000,
-				},
 				Storage: MongoStorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",

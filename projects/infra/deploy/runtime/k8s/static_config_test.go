@@ -48,12 +48,6 @@ func TestLoadK8sConfigMongoProfile(t *testing.T) {
 	if !reflect.DeepEqual(profile.Storage.AccessModes, []string{"ReadWriteOnce"}) {
 		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Storage.AccessModes = %#v, want %#v", profile.Storage.AccessModes, []string{"ReadWriteOnce"})
 	}
-	if profile.Security.RunAsUser != 1000 {
-		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Security.RunAsUser = %d, want %d", profile.Security.RunAsUser, 1000)
-	}
-	if profile.Security.RunAsGroup != 3000 {
-		t.Fatalf("LoadK8sConfig().MongoDB[\"dev-single\"].Security.RunAsGroup = %d, want %d", profile.Security.RunAsGroup, 3000)
-	}
 }
 
 func Test_parseK8sConfig(t *testing.T) {
@@ -122,10 +116,6 @@ func Test_parseK8sConfig(t *testing.T) {
 						Version:       "7.0",
 						Port:          27017,
 						AdminUsername: "admin",
-						Security: MongoSecurityConfig{
-							RunAsUser:  1000,
-							RunAsGroup: 3000,
-						},
 						Storage: MongoStorageConfig{
 							StorageClassName: "local-path",
 							Capacity:         "1Gi",
@@ -241,10 +231,6 @@ func TestK8sConfig_MongoProfile(t *testing.T) {
 					Version:       "7.0",
 					Port:          27017,
 					AdminUsername: "admin",
-					Security: MongoSecurityConfig{
-						RunAsUser:  1000,
-						RunAsGroup: 3000,
-					},
 				},
 			}},
 			profile: "dev-single",
@@ -253,10 +239,6 @@ func TestK8sConfig_MongoProfile(t *testing.T) {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Security: MongoSecurityConfig{
-					RunAsUser:  1000,
-					RunAsGroup: 3000,
-				},
 			},
 		},
 		{
@@ -267,10 +249,6 @@ func TestK8sConfig_MongoProfile(t *testing.T) {
 					Version:       "7.0",
 					Port:          27017,
 					AdminUsername: "admin",
-					Security: MongoSecurityConfig{
-						RunAsUser:  1000,
-						RunAsGroup: 3000,
-					},
 				},
 			}},
 			profile: "nonexistent",

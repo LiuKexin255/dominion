@@ -7,11 +7,8 @@ mongodb:
   dev-single:
     image: "mongo"
     version: "7.0"
-    port: 27017
+    port: 0
     admin_username: "admin"
-    security:
-      run_as_user: 0
-      run_as_group: 3000
     storage:
       storage_class_name: "local-path"
       capacity: "1Gi"
