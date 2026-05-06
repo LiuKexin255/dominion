@@ -235,6 +235,8 @@ message InfraSpec {
 
 message InfraPersistenceSpec {
   bool enabled = 1;
+
+  string capacity = 2;
 }
 
 message ArtifactHTTPSpec {

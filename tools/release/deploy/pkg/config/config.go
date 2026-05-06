@@ -11,12 +11,15 @@ import (
 	"dominion/tools/release/deploy/pkg/workspace"
 
 	"github.com/goccy/go-yaml"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 var (
 	// ErrNotFound 未找到
 	ErrNotFound = errors.New("未找到")
 )
+
+const maxInfraPersistenceCapacity = "1Ti"
 
 type EnvironmentType string
 type HTTPPathMatchType string
@@ -75,7 +78,8 @@ type DeployInfra struct {
 
 // DeployInfraPersistence 表示基础设施部署的持久化配置。
 type DeployInfraPersistence struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled  bool   `yaml:"enabled"`
+	Capacity string `yaml:"capacity,omitempty"`
 }
 
 type DeployHTTP struct {
@@ -166,9 +170,36 @@ func ParseDeployConfig(filePath string) (*DeployConfig, error) {
 		if svc.Artifact.Path != "" || svc.Artifact.Name != "" {
 			svc.Artifact.Path = normalizeArtifactPath(svc.Artifact.Path, configURI)
 		}
+		if svc.Infra.Resource != "" {
+			if err := validateDeployInfraPersistence(svc.Infra.Persistence); err != nil {
+				return nil, fmt.Errorf("infra %s: %w", svc.Infra.Name, err)
+			}
+		}
 	}
 
 	return c, nil
+}
+
+// validateDeployInfraPersistence 校验基础设施部署的持久化容量配置。
+// 规则：
+//  1. persistence 未启用时不能配置 capacity
+//  2. capacity 须为合法的 Kubernetes 资源量
+//  3. capacity 不能超过 1Ti
+func validateDeployInfraPersistence(p DeployInfraPersistence) error {
+	if !p.Enabled && strings.TrimSpace(p.Capacity) != "" {
+		return errors.New("persistence 未启用时不能配置 capacity")
+	}
+	if strings.TrimSpace(p.Capacity) != "" {
+		q, err := resource.ParseQuantity(p.Capacity)
+		if err != nil {
+			return fmt.Errorf("capacity 解析失败: %w", err)
+		}
+		upperBound := resource.MustParse(maxInfraPersistenceCapacity)
+		if q.Cmp(upperBound) > 0 {
+			return fmt.Errorf("capacity 超过上限 %s: %s", maxInfraPersistenceCapacity, p.Capacity)
+		}
+	}
+	return nil
 }
 
 // ParseServiceConfig 解析服务配置

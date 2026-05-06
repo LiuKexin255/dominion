@@ -678,6 +678,9 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string(selectorLabels),
 			},
@@ -756,6 +759,13 @@ func BuildMongoDBService(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Ser
 	}, nil
 }
 
+func resolveMongoDBCapacity(workload *MongoDBWorkload, profile *MongoProfileConfig) (resource.Quantity, error) {
+	if !workload.Persistence.Capacity.IsZero() {
+		return workload.Persistence.Capacity, nil
+	}
+	return resource.MustParse(strings.TrimSpace(profile.Storage.Capacity)), nil
+}
+
 // BuildMongoDBPVC 将 MongoDB PVC workload 构造成可直接下发的 PersistentVolumeClaim 对象。
 func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.PersistentVolumeClaim, error) {
 	if workload == nil {
@@ -782,7 +792,10 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 	)
 	storageClassName := strings.TrimSpace(profile.Storage.StorageClassName)
 	volumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(profile.Storage.VolumeMode))
-	storageQuantity := resource.MustParse(strings.TrimSpace(profile.Storage.Capacity))
+	storageQuantity, err := resolveMongoDBCapacity(workload, profile)
+	if err != nil {
+		return nil, fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
+	}
 
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -873,7 +886,10 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 		return fmt.Errorf("pvc %s volumeMode 不兼容: existing=%q desired=%q", existing.Name, pvcVolumeModeValue(existing.Spec.VolumeMode), desiredVolumeMode)
 	}
 
-	desiredCapacity := resource.MustParse(strings.TrimSpace(profile.Storage.Capacity))
+	desiredCapacity, err := resolveMongoDBCapacity(desired, profile)
+	if err != nil {
+		return fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
+	}
 	existingCapacity, ok := existing.Spec.Resources.Requests[corev1.ResourceStorage]
 	if !ok {
 		return fmt.Errorf("pvc %s storage capacity 不兼容: existing=missing desired=%s", existing.Name, desiredCapacity.String())

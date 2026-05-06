@@ -46,7 +46,7 @@ func testK8sConfig() *K8sConfig {
 				Storage: MongoStorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
-					AccessModes:      []string{"ReadWriteOnce"},
+					AccessModes:      []string{"ReadWriteOncePod"},
 					VolumeMode:       "Filesystem",
 				},
 			},
@@ -1197,6 +1197,11 @@ func TestBuildMongoDBDeployment(t *testing.T) {
 		t.Fatalf("Replicas = %d, want 1", *deploy.Spec.Replicas)
 	}
 
+	// Verify strategy is Recreate.
+	if deploy.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("Strategy.Type = %q, want %q", deploy.Spec.Strategy.Type, appsv1.RecreateDeploymentStrategyType)
+	}
+
 	// Verify container image.
 	profile := cfg.MongoDB["dev-single"]
 	wantImage := profile.Image + ":" + profile.Version
@@ -1449,6 +1454,41 @@ func TestBuildMongoDBPVC_PersistenceDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildMongoDBPVC_InstanceCapacity(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testMongoDBWorkload()
+	w.Persistence.Capacity = resource.MustParse("20Gi")
+
+	pvc, err := BuildMongoDBPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildMongoDBPVC() error: %v", err)
+	}
+
+	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	wantCapacity := resource.MustParse("20Gi")
+	if capacity.Cmp(wantCapacity) != 0 {
+		t.Fatalf("Capacity = %s, want %s", capacity.String(), wantCapacity.String())
+	}
+}
+
+func TestBuildMongoDBPVC_ProfileFallbackCapacity(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testMongoDBWorkload()
+	w.Persistence.Capacity = resource.Quantity{}
+
+	pvc, err := BuildMongoDBPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildMongoDBPVC() error: %v", err)
+	}
+
+	capacity := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	profile := cfg.MongoDB["dev-single"]
+	wantCapacity := resource.MustParse(profile.Storage.Capacity)
+	if capacity.Cmp(wantCapacity) != 0 {
+		t.Fatalf("Capacity = %s, want %s (profile default)", capacity.String(), wantCapacity.String())
+	}
+}
+
 // --- BuildMongoDBSecret ---
 
 func TestBuildMongoDBSecret(t *testing.T) {
@@ -1588,6 +1628,36 @@ func TestCheckPVCCompatibility_MissingStorageRequest(t *testing.T) {
 	err := CheckPVCCompatibility(pvc, w, cfg)
 	if err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("Expected missing capacity error, got: %v", err)
+	}
+}
+
+func TestCheckPVCCompatibility_InstanceCapacity(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testMongoDBWorkload()
+	w.Persistence.Capacity = resource.MustParse("20Gi")
+
+	// Build expected PVC using instance capacity.
+	expectedPVC, err := BuildMongoDBPVC(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildMongoDBPVC() error: %v", err)
+	}
+
+	// Compatible PVC with same instance capacity should pass.
+	if err := CheckPVCCompatibility(expectedPVC, w, cfg); err != nil {
+		t.Fatalf("CheckPVCCompatibility() unexpected error: %v", err)
+	}
+
+	// Existing PVC with smaller capacity should also be compatible (expand allowed).
+	expectedPVC.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("10Gi")
+	if err := CheckPVCCompatibility(expectedPVC, w, cfg); err != nil {
+		t.Fatalf("CheckPVCCompatibility() with smaller existing capacity unexpected error: %v", err)
+	}
+
+	// Existing PVC with larger capacity than instance capacity is incompatible.
+	expectedPVC.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("100Gi")
+	err = CheckPVCCompatibility(expectedPVC, w, cfg)
+	if err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("Expected capacity mismatch error for larger existing, got: %v", err)
 	}
 }
 

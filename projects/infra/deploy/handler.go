@@ -563,7 +563,8 @@ func toProtoInfras(infras []*domain.InfraSpec) []*InfraSpec {
 			Name:     infra.Name,
 			App:      infra.App,
 			Persistence: &InfraPersistenceSpec{
-				Enabled: infra.Persistence.Enabled,
+				Enabled:  infra.Persistence.Enabled,
+				Capacity: infra.Persistence.Capacity,
 			},
 		})
 	}
@@ -587,7 +588,8 @@ func fromProtoInfras(infras []*InfraSpec) ([]*domain.InfraSpec, error) {
 			Name:     infra.GetName(),
 			App:      infra.GetApp(),
 			Persistence: domain.InfraPersistenceSpec{
-				Enabled: infra.GetPersistence().GetEnabled(),
+				Enabled:  infra.GetPersistence().GetEnabled(),
+				Capacity: infra.GetPersistence().GetCapacity(),
 			},
 		})
 	}

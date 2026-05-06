@@ -13,6 +13,7 @@ go_library(
         "//tools/release/deploy/pkg/schema",
         "//tools/release/deploy/pkg/workspace",
         "@com_github_goccy_go_yaml//:go-yaml",
+        "@io_k8s_apimachinery//pkg/api/resource",
     ],
 )
 

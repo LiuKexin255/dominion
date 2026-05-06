@@ -113,6 +113,9 @@
                 "properties": {
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "capacity": {
+                    "type": "string"
                   }
                 }
               }

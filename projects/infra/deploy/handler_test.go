@@ -1804,7 +1804,8 @@ func newDesiredState() domain.DesiredState {
 			Name:     "redis-main",
 			App:      "gateway",
 			Persistence: domain.InfraPersistenceSpec{
-				Enabled: true,
+				Enabled:  true,
+				Capacity: "20Gi",
 			},
 		}},
 	}
@@ -1843,7 +1844,8 @@ func newProtoDesiredState() *EnvironmentDesiredState {
 			Name:     "redis-main",
 			App:      "gateway",
 			Persistence: &InfraPersistenceSpec{
-				Enabled: true,
+				Enabled:  true,
+				Capacity: "20Gi",
 			},
 		}},
 	}

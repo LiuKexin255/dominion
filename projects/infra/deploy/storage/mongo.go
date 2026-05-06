@@ -156,7 +156,8 @@ type mongoInfraSpec struct {
 
 // mongoInfraPersistenceSpec is the BSON representation of domain.InfraPersistenceSpec.
 type mongoInfraPersistenceSpec struct {
-	Enabled bool `bson:"enabled"`
+	Enabled  bool   `bson:"enabled"`
+	Capacity string `bson:"capacity"`
 }
 
 // mongoHTTPPathRule is the BSON representation of domain.HTTPPathRule.
@@ -509,7 +510,7 @@ func infraSpecsToMongo(specs []*domain.InfraSpec) []mongoInfraSpec {
 			Profile:     s.Profile,
 			Name:        s.Name,
 			App:         s.App,
-			Persistence: mongoInfraPersistenceSpec{Enabled: s.Persistence.Enabled},
+			Persistence: mongoInfraPersistenceSpec{Enabled: s.Persistence.Enabled, Capacity: s.Persistence.Capacity},
 		}
 	}
 	return result
@@ -657,7 +658,7 @@ func infraSpecsFromMongo(specs []mongoInfraSpec) []*domain.InfraSpec {
 			Profile:     s.Profile,
 			Name:        s.Name,
 			App:         s.App,
-			Persistence: domain.InfraPersistenceSpec{Enabled: s.Persistence.Enabled},
+			Persistence: domain.InfraPersistenceSpec{Enabled: s.Persistence.Enabled, Capacity: s.Persistence.Capacity},
 		}
 	}
 	return result

@@ -134,8 +134,89 @@ func TestCompile(t *testing.T) {
 					Name:     "mongo",
 					App:      "alpha",
 					Persistence: &deploy.InfraPersistenceSpec{
-						Enabled: true,
+						Enabled:  true,
+						Capacity: "",
 					},
+				}},
+			},
+		},
+		{
+			name: "pure infra config with capacity",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Infra: config.DeployInfra{
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo",
+						App:      "alpha",
+						Persistence: config.DeployInfraPersistence{
+							Enabled:  true,
+							Capacity: "20Gi",
+						},
+					},
+				}},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Infras: []*deploy.InfraSpec{{
+					Resource: "mongodb",
+					Profile:  "dev-single",
+					Name:     "mongo",
+					App:      "alpha",
+					Persistence: &deploy.InfraPersistenceSpec{
+						Enabled:  true,
+						Capacity: "20Gi",
+					},
+				}},
+			},
+		},
+		{
+			name: "pure infra config with empty capacity",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Infra: config.DeployInfra{
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo",
+						App:      "alpha",
+						Persistence: config.DeployInfraPersistence{
+							Enabled:  true,
+							Capacity: "",
+						},
+					},
+				}},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Infras: []*deploy.InfraSpec{{
+					Resource: "mongodb",
+					Profile:  "dev-single",
+					Name:     "mongo",
+					App:      "alpha",
+					Persistence: &deploy.InfraPersistenceSpec{
+						Enabled:  true,
+						Capacity: "",
+					},
+				}},
+			},
+		},
+		{
+			name: "pure infra config with persistence disabled",
+			deployConfig: &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Infra: config.DeployInfra{
+						Resource:    "mongodb",
+						Profile:     "dev-single",
+						Name:        "mongo",
+						App:         "alpha",
+						Persistence: config.DeployInfraPersistence{},
+					},
+				}},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Infras: []*deploy.InfraSpec{{
+					Resource: "mongodb",
+					Profile:  "dev-single",
+					Name:     "mongo",
+					App:      "alpha",
 				}},
 			},
 		},

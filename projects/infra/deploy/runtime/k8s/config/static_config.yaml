@@ -23,5 +23,5 @@ mongodb:
       storage_class_name: "truenas-iscsi"
       capacity: "4Gi"
       access_modes:
-        - "ReadWriteOnce"
+        - "ReadWriteOncePod"
       volume_mode: "Filesystem"

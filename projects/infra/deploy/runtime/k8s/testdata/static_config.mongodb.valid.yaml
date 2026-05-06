@@ -13,5 +13,5 @@ mongodb:
       storage_class_name: "local-path"
       capacity: "1Gi"
       access_modes:
-        - "ReadWriteOnce"
+        - "ReadWriteOncePod"
       volume_mode: "Filesystem"

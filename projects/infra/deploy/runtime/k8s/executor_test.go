@@ -888,7 +888,7 @@ func newExecutorTestConfig() *K8sConfig {
 				Storage: MongoStorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
-					AccessModes:      []string{"ReadWriteOnce"},
+					AccessModes:      []string{"ReadWriteOncePod"},
 					VolumeMode:       "Filesystem",
 				},
 			},

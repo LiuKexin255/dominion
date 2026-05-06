@@ -1805,3 +1805,108 @@ func assertSaveUpdateDocument(t *testing.T, got any, env *domain.Environment) {
 		t.Fatalf("UpdateOne() update = %#v, want %#v", got, want)
 	}
 }
+
+func TestInfraSpecs_CapacityPersistence(t *testing.T) {
+	tests := []struct {
+		name           string
+		source         *domain.InfraSpec
+		mongo          *mongoInfraSpec
+		wantCapacity   string
+		checkRoundTrip bool
+	}{
+		{
+			name: "enabled with capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  true,
+					Capacity: "20Gi",
+				},
+			},
+			wantCapacity:   "20Gi",
+			checkRoundTrip: true,
+		},
+		{
+			name: "enabled with empty capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  true,
+					Capacity: "",
+				},
+			},
+			wantCapacity:   "",
+			checkRoundTrip: true,
+		},
+		{
+			name: "disabled with empty capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  false,
+					Capacity: "",
+				},
+			},
+			wantCapacity:   "",
+			checkRoundTrip: true,
+		},
+		{
+			name: "old mongo document without capacity defaults to empty",
+			mongo: &mongoInfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: mongoInfraPersistenceSpec{
+					Enabled: true,
+				},
+			},
+			wantCapacity: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoInfraSpec
+			if tt.source != nil {
+				// when: domain → mongo
+				mongoSpecs = infraSpecsToMongo([]*domain.InfraSpec{tt.source})
+
+				// then: mongo Capacity matches
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("infraSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+				if mongoSpecs[0].Persistence.Capacity != tt.wantCapacity {
+					t.Fatalf("infraSpecsToMongo() capacity = %q, want %q", mongoSpecs[0].Persistence.Capacity, tt.wantCapacity)
+				}
+			} else {
+				// given: use pre-built mongo struct
+				mongoSpecs = []mongoInfraSpec{*tt.mongo}
+			}
+
+			// when: mongo → domain
+			got := infraSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("infraSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if got[0].Persistence.Capacity != tt.wantCapacity {
+				t.Fatalf("infraSpecsFromMongo() capacity = %q, want %q", got[0].Persistence.Capacity, tt.wantCapacity)
+			}
+			if tt.checkRoundTrip && got[0].Persistence.Capacity != tt.source.Persistence.Capacity {
+				t.Fatalf("round trip capacity = %q, want %q", got[0].Persistence.Capacity, tt.source.Persistence.Capacity)
+			}
+		})
+	}
+}
