@@ -130,38 +130,45 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
+
+	// TLS 注入分为两部分：
+	// - 服务端证书（Secret 投影 + TLS_CERT_FILE/TLS_KEY_FILE）仅当 TLSEnabled 时注入。
+	// - 客户端 CA 证书和域名（ConfigMap 投影 + TLS_CA_FILE/TLS_SERVER_NAME）始终注入。
+	var projectedSources []corev1.VolumeProjection
 	if workload.TLSEnabled {
-		volumes = []corev1.Volume{{
-			Name: tlsVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					Sources: []corev1.VolumeProjection{
-						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
-						{ConfigMap: &corev1.ConfigMapProjection{
-							LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
-							Items: []corev1.KeyToPath{{
-								Key:  cfg.TLS.CAConfigMap.Key,
-								Path: tlsCAFileName,
-							}},
-						}},
-					},
-				},
-			},
-		}}
-		volumeMounts = []corev1.VolumeMount{{
-			Name:      tlsVolumeName,
-			MountPath: tlsMountPath,
-			ReadOnly:  true,
-		}}
+		projectedSources = append(projectedSources,
+			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
+		)
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
 			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
-			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 		)
 	}
+	projectedSources = append(projectedSources,
+		corev1.VolumeProjection{ConfigMap: &corev1.ConfigMapProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
+			Items: []corev1.KeyToPath{{
+				Key:  cfg.TLS.CAConfigMap.Key,
+				Path: tlsCAFileName,
+			}},
+		}},
+	)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+	)
+	volumes := []corev1.Volume{{
+		Name: tlsVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: projectedSources},
+		},
+	}}
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      tlsVolumeName,
+		MountPath: tlsMountPath,
+		ReadOnly:  true,
+	}}
+
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
@@ -250,38 +257,43 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
+
+	// 服务端证书仅当 TLSEnabled 时注入；客户端 CA 证书和域名始终注入。
+	var projectedSources []corev1.VolumeProjection
 	if workload.TLSEnabled {
-		volumes = []corev1.Volume{{
-			Name: tlsVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					Sources: []corev1.VolumeProjection{
-						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
-						{ConfigMap: &corev1.ConfigMapProjection{
-							LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
-							Items: []corev1.KeyToPath{{
-								Key:  cfg.TLS.CAConfigMap.Key,
-								Path: tlsCAFileName,
-							}},
-						}},
-					},
-				},
-			},
-		}}
-		volumeMounts = []corev1.VolumeMount{{
-			Name:      tlsVolumeName,
-			MountPath: tlsMountPath,
-			ReadOnly:  true,
-		}}
+		projectedSources = append(projectedSources,
+			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
+		)
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
 			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
-			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 		)
 	}
+	projectedSources = append(projectedSources,
+		corev1.VolumeProjection{ConfigMap: &corev1.ConfigMapProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
+			Items: []corev1.KeyToPath{{
+				Key:  cfg.TLS.CAConfigMap.Key,
+				Path: tlsCAFileName,
+			}},
+		}},
+	)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+	)
+	volumes := []corev1.Volume{{
+		Name: tlsVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: projectedSources},
+		},
+	}}
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      tlsVolumeName,
+		MountPath: tlsMountPath,
+		ReadOnly:  true,
+	}}
+
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
