@@ -21,7 +21,7 @@ mongodb:
     admin_username: "admin"
     storage:
       storage_class_name: "truenas-iscsi"
-      capacity: "16Gi"
+      capacity: "4Gi"
       access_modes:
         - "ReadWriteOnce"
       volume_mode: "Filesystem"

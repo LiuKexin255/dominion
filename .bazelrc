@@ -1,5 +1,4 @@
 test --test_verbose_timeout_warnings
-test --test_output=all
 build --remote_cache=https://bazel-cache.liukexin.com
 build --tls_certificate=tools/dev/myCA.crt
 build --remote_timeout=5
