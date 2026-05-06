@@ -28,13 +28,13 @@ metadata:
     dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
-  storageClassName: truenas-iscsi
+  storageClassName: truenas-iscsi-v2
   volumeMode: Filesystem
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteOncePod
   resources:
     requests:
-      storage: 16Gi
+      storage: 4Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,6 +48,8 @@ metadata:
     app.kubernetes.io/managed-by: dominion.io
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: deploy
