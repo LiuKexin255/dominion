@@ -6,5 +6,5 @@ go_largetest(
     srcs = ["interface_test.go"],
     deps = [
         "//common/gopkg/testtool",
-    ]
+    ],
 )

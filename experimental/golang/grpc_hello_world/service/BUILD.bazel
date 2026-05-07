@@ -7,9 +7,9 @@ go_library(
     importpath = "dominion/experimental/golang/grpc_hello_world/service",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
         "//common/gopkg/logs",
-        "//common/gopkg/otel",
         "//experimental/golang/grpc_hello_world",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//reflection",

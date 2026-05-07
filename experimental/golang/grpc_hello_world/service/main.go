@@ -5,13 +5,10 @@ import (
 	"flag"
 	"log"
 	"net"
-	"os"
-	"os/signal"
-	"syscall"
 
+	"dominion/common/gopkg/bootstrap"
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/logs"
-	"dominion/common/gopkg/otel"
 	"dominion/experimental/golang/grpc_hello_world"
 
 	grpcgo "google.golang.org/grpc"
@@ -38,11 +35,6 @@ func (s *greeterServer) GetHello(ctx context.Context, req *grpc_hello_world.Hell
 func main() {
 	flag.Parse()
 
-	shutdown, err := otel.Init(context.Background())
-	if err != nil {
-		log.Fatalf("failed to initialize otel: %v", err)
-	}
-
 	listener, err := net.Listen("tcp", ":"+*port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -53,21 +45,10 @@ func main() {
 	grpc_hello_world.RegisterGreeterServer(grpcServer, &greeterServer{})
 	reflection.Register(grpcServer)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		if err := grpcServer.Serve(listener); err != nil {
-			log.Fatalf("failed to serve: %v", err)
-		}
-	}()
 	log.Printf("gRPC hello world server listening: %s", *port)
 
-	<-sigCh
-	log.Println("shutting down gracefully...")
-
-	grpcServer.GracefulStop()
-	if err := shutdown(context.Background()); err != nil {
-		log.Printf("otel shutdown error: %v", err)
-	}
+	b := bootstrap.New()
+	b.Register(bootstrap.OTel())
+	b.Register(bootstrap.GRPCServer("grpc", grpcServer, listener))
+	log.Fatal(b.Run(context.Background()))
 }
