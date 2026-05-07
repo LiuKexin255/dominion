@@ -267,10 +267,10 @@ func ShutdownFunc(name string, stage Stage, fn func(context.Context) error) Comp
 第一阶段可以提供窄边界默认组件：
 
 ```go
-func Standard() []Component
+func Default() []Component
 ```
 
-`Standard()` 只包含通用 foundation 能力，例如 OTel。它不构造 Mongo、gRPC client、handler、repository 或业务 service。
+`Default()` 只包含通用 foundation 能力，例如 OTel。它不构造 Mongo、gRPC client、handler、repository 或业务 service。
 
 ## hello_world 实践方案
 
