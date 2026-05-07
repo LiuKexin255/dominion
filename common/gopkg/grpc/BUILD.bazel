@@ -7,8 +7,10 @@ go_library(
     importpath = "dominion/common/gopkg/grpc",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/grpc/gateway",
         "//common/gopkg/grpc/solver",
         "//common/gopkg/grpc/tls",
+        "@grpc_ecosystem_grpc_gateway//runtime",
         "@io_opentelemetry_go_contrib_instrumentation_google_golang_org_grpc_otelgrpc//:otelgrpc",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//keepalive",

@@ -3,9 +3,11 @@ package grpc
 import (
 	"time"
 
+	"dominion/common/gopkg/grpc/gateway"
 	"dominion/common/gopkg/grpc/solver"
 	grpctls "dominion/common/gopkg/grpc/tls"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	otelgrpc "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -46,4 +48,11 @@ func ClientDefault() []grpcgo.DialOption {
 		opts = append(opts, grpcgo.WithTransportCredentials(cred))
 	}
 	return opts
+}
+
+// GatewayDefault returns the default ServeMux options for dominion grpc-gateway services.
+func GatewayDefault() []runtime.ServeMuxOption {
+	return []runtime.ServeMuxOption{
+		gateway.WithOTelTracing(),
+	}
 }
