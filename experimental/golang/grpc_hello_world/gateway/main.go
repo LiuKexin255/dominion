@@ -6,9 +6,10 @@ import (
 	"log"
 	"net/http"
 
-	"dominion/experimental/golang/grpc_hello_world"
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/grpc/solver"
+	"dominion/common/gopkg/otel"
+	"dominion/experimental/golang/grpc_hello_world"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -18,6 +19,13 @@ var port = flag.String("port", "80", "Port to listen on")
 
 func main() {
 	flag.Parse()
+
+	shutdown, err := otel.Init(context.Background())
+	if err != nil {
+		log.Fatalf("failed to initialize otel: %v", err)
+	}
+	defer shutdown(context.Background())
+
 	conn, err := grpc.NewClient(solver.URI("grpc-hello-world/service:grpc"), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("failed to dial backend: %v", err)

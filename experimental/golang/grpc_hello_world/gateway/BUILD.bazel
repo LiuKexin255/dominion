@@ -9,6 +9,7 @@ go_library(
     deps = [
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
+        "//common/gopkg/otel",
         "//experimental/golang/grpc_hello_world",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",

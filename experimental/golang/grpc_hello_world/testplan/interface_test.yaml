@@ -1,0 +1,19 @@
+name: grpc-hello-world-interface-test
+description: |
+  grpc-hello-world HTTP REST 接口测试
+
+  Service: grpc-hello-world  
+  Interface: grpc-gateway exposed HTTP REST API
+  Base path: /v1/world
+  Test cases:
+    1. TestGetHello — GET /v1/world/{name} returns correct greeting
+    2. TestOTelIntegration — OTel integration verification via HTTP
+
+suites:
+  - name: default
+    deploy: //experimental/golang/grpc_hello_world/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://hello.liukexin.com
+    cases:
+      - //experimental/golang/grpc_hello_world/testplan:testplan_test

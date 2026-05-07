@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "grpc",
@@ -8,7 +9,14 @@ go_library(
     deps = [
         "//common/gopkg/grpc/solver",
         "//common/gopkg/grpc/tls",
+        "@io_opentelemetry_go_contrib_instrumentation_google_golang_org_grpc_otelgrpc//:otelgrpc",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//keepalive",
     ],
+)
+
+go_unittest(
+    name = "grpc_test",
+    srcs = ["default_test.go"],
+    embed = [":grpc"],
 )

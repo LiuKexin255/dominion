@@ -6,8 +6,10 @@ import (
 	"log"
 	"net"
 
-	"dominion/experimental/golang/grpc_hello_world"
 	pgrpc "dominion/common/gopkg/grpc"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
+	"dominion/experimental/golang/grpc_hello_world"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -25,11 +27,19 @@ func (s *greeterServer) GetHello(ctx context.Context, req *grpc_hello_world.Hell
 		name = "world"
 	}
 
+	logs.InfoContext(ctx, "handle GetHello", "name", name)
+
 	return &grpc_hello_world.Hello{Name: name, Message: "Hello, " + name + "!"}, nil
 }
 
 func main() {
 	flag.Parse()
+
+	shutdown, err := otel.Init(context.Background())
+	if err != nil {
+		log.Fatalf("failed to initialize otel: %v", err)
+	}
+	defer shutdown(context.Background())
 
 	listener, err := net.Listen("tcp", ":"+*port)
 	if err != nil {

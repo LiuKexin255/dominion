@@ -6,6 +6,7 @@ import (
 	"dominion/common/gopkg/grpc/solver"
 	grpctls "dominion/common/gopkg/grpc/tls"
 
+	otelgrpc "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -17,7 +18,9 @@ const (
 
 // ServiceDefault returns the default grpc server options for dominion services.
 func ServiceDefault() []grpcgo.ServerOption {
-	opts := []grpcgo.ServerOption{}
+	opts := []grpcgo.ServerOption{
+		grpcgo.StatsHandler(otelgrpc.NewServerHandler()),
+	}
 
 	if cred := grpctls.ServerTransportCredentials(); cred != nil {
 		opts = append(opts, grpcgo.Creds(grpctls.ServerTransportCredentials()))
@@ -36,6 +39,7 @@ func ClientDefault() []grpcgo.DialOption {
 		}),
 		grpcgo.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 		grpcgo.WithResolvers(solver.NewBuilder()),
+		grpcgo.WithStatsHandler(otelgrpc.NewClientHandler()),
 	}
 
 	if cred := grpctls.ClientTransportCredentials(); cred != nil {

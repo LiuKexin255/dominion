@@ -1,0 +1,19 @@
+version: "3.0"
+name: liukexin.{{run}}
+type: test
+desc: "开发环境"
+services:
+  - artifact: 
+      path: //experimental/golang/grpc_hello_world/service/service.yaml
+      name: service
+  - artifact: 
+      path: //experimental/golang/grpc_hello_world/gateway/service.yaml
+      name: gateway 
+    http: 
+      hostnames:
+        - hello.liukexin.com
+      matches:
+        - backend: http
+          path: 
+            type: PathPrefix
+            value: /v1
