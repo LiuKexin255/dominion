@@ -36,12 +36,13 @@ func newTestGatewayServiceWS(verifier *testVerifierWS) *service.GatewayService {
 			},
 		}
 	}
-	return service.NewGatewayService(
+	svc, _ := service.NewGatewayService(
 		sessionmanager.NewManager("gw-test"),
 		service.NewControlExecutor(),
 		"gw-test",
 		verifier,
 	)
+	return svc
 }
 
 func makeWSURL(server *httptest.Server, sessionID, tokenStr string) string {
@@ -213,7 +214,7 @@ func Test_pathParsing(t *testing.T) {
 
 func TestWebSocket_InvalidToken(t *testing.T) {
 	svc := newTestGatewayServiceWS(&testVerifierWS{err: token.ErrTokenInvalid})
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -237,7 +238,7 @@ func TestWebSocket_InvalidToken(t *testing.T) {
 
 func TestWebSocket_MissingToken(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -259,7 +260,7 @@ func TestWebSocket_MissingToken(t *testing.T) {
 
 func TestWebSocket_ConnectAndHello(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -302,7 +303,7 @@ func TestWebSocket_ConnectAndHello(t *testing.T) {
 
 func TestWebSocket_DuplicateAgent(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -351,7 +352,7 @@ func TestWebSocket_DuplicateAgent(t *testing.T) {
 
 func TestWebSocket_MessageRouting(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -408,7 +409,7 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 
 func TestWebSocket_PingPong(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

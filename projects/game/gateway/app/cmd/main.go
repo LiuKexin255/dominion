@@ -38,16 +38,13 @@ func main() {
 		gatewayID = "game-gateway-0"
 	}
 
-	// Create handler and wsHandler.
 	verifier := token.NewHMACSigner(tokenSecret, 0)
 	sessions := sessionmanager.NewManager(gatewayID)
 	control := service.NewControlExecutor()
-	svc := service.NewGatewayService(sessions, control, gatewayID, verifier)
+	svc, completionWorker := service.NewGatewayService(sessions, control, gatewayID, verifier)
+	wsHandler, routingWorker := gateway.NewWebSocketHandler(svc)
 	handler := gateway.NewHandler(svc)
-	wsHandler := gateway.NewWebSocketHandler(svc)
-	svc.SetAsyncSink(wsHandler)
 
-	// Server component.
 	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
 	gateway.RegisterGameGatewayServiceServer(grpcServer, handler)
 	httpMux := runtime.NewServeMux()
@@ -58,6 +55,12 @@ func main() {
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
 	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {
 		log.Fatalf("register gateway server: %v", err)
+	}
+	if err := bs.Register(bootstrap.Daemon("gateway-completion", completionWorker)); err != nil {
+		log.Fatalf("register completion worker: %v", err)
+	}
+	if err := bs.Register(bootstrap.Daemon("gateway-routing", routingWorker)); err != nil {
+		log.Fatalf("register routing worker: %v", err)
 	}
 	if err := bs.Run(context.Background()); err != nil {
 		log.Fatalf("run gateway: %v", err)

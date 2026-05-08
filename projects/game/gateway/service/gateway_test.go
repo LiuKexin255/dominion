@@ -61,8 +61,10 @@ func (c *stubMediaCache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 	return c.snapshot, c.snapshotErr
 }
 
-func newTestService(gatewayID string, verifier token.Verifier) *GatewayService {
-	return NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), gatewayID, verifier)
+func newTestService(t *testing.T, gatewayID string, verifier token.Verifier) *GatewayService {
+	t.Helper()
+	svc, _ := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), gatewayID, verifier)
+	return svc
 }
 
 func TestGatewayService_ConnectSession(t *testing.T) {
@@ -125,7 +127,7 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService(tt.gatewayID, &stubVerifier{claims: tt.claims, err: tt.verifyErr})
+			svc := newTestService(t, tt.gatewayID, &stubVerifier{claims: tt.claims, err: tt.verifyErr})
 
 			// when
 			rt, claims, err := svc.ConnectSession(context.Background(), tt.pathSessionID, "some-token")
@@ -158,7 +160,7 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_Agent(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -182,7 +184,7 @@ func TestGatewayService_ProcessHello_Agent(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -198,7 +200,7 @@ func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_Web(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -264,7 +266,7 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -281,7 +283,7 @@ func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 	cache := new(stubMediaCache)
 	svc.mediaCaches["session-1"] = cache
@@ -320,7 +322,7 @@ func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 	cache := new(stubMediaCache)
 	svc.mediaCaches["session-1"] = cache
@@ -360,7 +362,7 @@ func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlAck(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	// given: inflight operation from web-1
@@ -407,7 +409,7 @@ func TestGatewayService_HandleAgentMessage_ControlAck(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
@@ -457,7 +459,7 @@ func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
@@ -513,7 +515,7 @@ func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing
 }
 
 func TestGatewayService_HandleAgentMessage_ControlAckNoInflight(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -533,7 +535,7 @@ func TestGatewayService_HandleAgentMessage_ControlAckNoInflight(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResultNoInflight(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -554,7 +556,7 @@ func TestGatewayService_HandleAgentMessage_ControlResultNoInflight(t *testing.T)
 }
 
 func TestGatewayService_HandleAgentMessage_UnknownPayload(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -575,7 +577,7 @@ func TestGatewayService_HandleAgentMessage_UnknownPayload(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -624,7 +626,7 @@ func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_ControlRequestInvalid(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -645,7 +647,7 @@ func TestGatewayService_HandleWebMessage_ControlRequestInvalid(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_Ping(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -678,7 +680,7 @@ func TestGatewayService_HandleWebMessage_Ping(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_UnknownPayload(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -769,7 +771,7 @@ func TestGatewayService_GetSnapshot(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService("gw-0", &stubVerifier{})
+			svc := newTestService(t, "gw-0", &stubVerifier{})
 			tt.setupCache(svc)
 
 			// when
@@ -816,7 +818,7 @@ func TestGatewayService_GetRuntime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService("gw-0", &stubVerifier{})
+			svc := newTestService(t, "gw-0", &stubVerifier{})
 			svc.sessions.GetOrCreateRuntime("session-1")
 
 			// when

@@ -7,64 +7,60 @@ import (
 	"sync"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/pkg/token"
 )
 
-// AsyncMessageSink receives routed messages outside the synchronous handler
-// flow. GatewayService calls it when control operations complete asynchronously
-// (timeout or agent disconnect).
-type AsyncMessageSink interface {
-	RouteRoutedMessage(ctx context.Context, msg *domain.RoutedMessage)
-}
-
 var (
-	// errGatewayMismatch indicates the token's gateway ID does not match this
-	// gateway instance.
 	errGatewayMismatch = errors.New("gateway ID mismatch")
-	// errSessionMismatch indicates the token's session ID does not match the
-	// path parameter.
 	errSessionMismatch = errors.New("session ID mismatch")
 )
 
-// GatewayService orchestrates the game gateway business logic, coordinating
-// session management, media caching, control operations, and token verification
-// for a single gateway instance.
 type GatewayService struct {
 	sessions      *sessionmanager.Manager
 	mediaCaches   map[string]domain.MediaCache
 	mediaMu       sync.Mutex
 	control       *ControlExecutor
-	asyncSink     AsyncMessageSink
+	asyncCh       chan *domain.RoutedMessage
 	gatewayID     string
 	tokenVerifier token.Verifier
 }
 
-// NewGatewayService creates a GatewayService with the given dependencies.
 func NewGatewayService(
 	sessions *sessionmanager.Manager,
 	control *ControlExecutor,
 	gatewayID string,
 	verifier token.Verifier,
-) *GatewayService {
+) (*GatewayService, bootstrap.WorkerBuilder) {
+	asyncCh := make(chan *domain.RoutedMessage, 64)
 	svc := &GatewayService{
 		sessions:      sessions,
 		mediaCaches:   map[string]domain.MediaCache{},
 		control:       control,
+		asyncCh:       asyncCh,
 		gatewayID:     gatewayID,
 		tokenVerifier: verifier,
 	}
-	control.SetOnCompletion(svc.handleAsyncCompletion)
-	return svc
+	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewCompletionWorker(control.Completions(), func(ctx context.Context, comp domain.ControlCompletion) {
+			svc.HandleCompletion(ctx, comp)
+		}), nil
+	})
+	return svc, builder
 }
 
-func (s *GatewayService) SetAsyncSink(sink AsyncMessageSink) {
-	s.asyncSink = sink
+func (s *GatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
+	return s.asyncCh
 }
 
-func (s *GatewayService) handleAsyncCompletion(comp domain.ControlCompletion) {
+// HandleCompletion processes a control completion: refreshes the snapshot cache
+// if requested, constructs the routed message, and delivers it to the async
+// output channel. Returns true if the message was sent, false if the context
+// was cancelled.
+func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.ControlCompletion) bool {
 	if comp.FlashSnapshot {
 		cache := s.getOrCreateMediaCache(comp.SessionID)
 		if snap, err := cache.RefreshSnapshot(); err == nil && snap != nil {
@@ -75,14 +71,18 @@ func (s *GatewayService) handleAsyncCompletion(comp domain.ControlCompletion) {
 		}
 	}
 
-	if s.asyncSink != nil {
-		s.asyncSink.RouteRoutedMessage(context.Background(), &domain.RoutedMessage{
-			TargetConnID: comp.RequesterConnID,
-			Message: &domain.Message{
-				SessionID: comp.SessionID,
-				Payload:   comp.Result,
-			},
-		})
+	msg := &domain.RoutedMessage{
+		TargetConnID: comp.RequesterConnID,
+		Message: &domain.Message{
+			SessionID: comp.SessionID,
+			Payload:   comp.Result,
+		},
+	}
+	select {
+	case s.asyncCh <- msg:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

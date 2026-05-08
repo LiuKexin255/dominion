@@ -38,12 +38,14 @@ go_library(
     name = "gateway",
     srcs = [
         "handler.go",
+        "worker.go",
         "ws.go",
     ],
     embed = [":gateway_go_proto"],
     importpath = "dominion/projects/game/gateway",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/bootstrap",
         "//projects/game/gateway/domain",
         "//projects/game/pkg/token",
         "@com_github_coder_websocket//:websocket",

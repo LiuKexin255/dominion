@@ -2,7 +2,6 @@ package service
 
 import (
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -219,15 +218,7 @@ func TestControlExecutor_Inflight(t *testing.T) {
 }
 
 func TestControlExecutor_Timeout(t *testing.T) {
-	var mu sync.Mutex
-	var gotCompletion domain.ControlCompletion
-
 	e := NewControlExecutor()
-	e.SetOnCompletion(func(comp domain.ControlCompletion) {
-		mu.Lock()
-		gotCompletion = comp
-		mu.Unlock()
-	})
 
 	req := domain.ControlRequestPayload{
 		RequestID: "op-timeout",
@@ -241,24 +232,13 @@ func TestControlExecutor_Timeout(t *testing.T) {
 		t.Fatalf("SubmitOperation() error = %v", err)
 	}
 
-	// wait for timeout (click timeout = 1s)
-	deadline := time.After(3 * time.Second)
-	for {
-		mu.Lock()
-		done := gotCompletion.Result.RequestID != ""
-		mu.Unlock()
-		if done {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for completion callback")
-		case <-time.After(50 * time.Millisecond):
-		}
+	var gotCompletion domain.ControlCompletion
+	select {
+	case gotCompletion = <-e.Completions():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for completion")
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
 	if gotCompletion.SessionID != "session-1" {
 		t.Fatalf("SessionID = %q, want %q", gotCompletion.SessionID, "session-1")
 	}
@@ -361,15 +341,7 @@ func TestControlExecutor_AckAndResult(t *testing.T) {
 }
 
 func TestControlExecutor_AgentDisconnect(t *testing.T) {
-	var mu sync.Mutex
-	var gotCompletion domain.ControlCompletion
-
 	e := NewControlExecutor()
-	e.SetOnCompletion(func(comp domain.ControlCompletion) {
-		mu.Lock()
-		gotCompletion = comp
-		mu.Unlock()
-	})
 
 	req := domain.ControlRequestPayload{
 		RequestID: "op-disc",
@@ -385,7 +357,13 @@ func TestControlExecutor_AgentDisconnect(t *testing.T) {
 
 	e.HandleAgentDisconnect("session-1")
 
-	mu.Lock()
+	var gotCompletion domain.ControlCompletion
+	select {
+	case gotCompletion = <-e.Completions():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for completion")
+	}
+
 	if gotCompletion.SessionID != "session-1" {
 		t.Fatalf("SessionID = %q, want %q", gotCompletion.SessionID, "session-1")
 	}
@@ -401,7 +379,6 @@ func TestControlExecutor_AgentDisconnect(t *testing.T) {
 	if gotCompletion.Result.Error != "agent disconnected" {
 		t.Fatalf("result.Error = %q, want %q", gotCompletion.Result.Error, "agent disconnected")
 	}
-	mu.Unlock()
 
 	if e.HasInflightOperation("session-1") {
 		t.Fatal("HasInflightOperation() = true after disconnect, want false")

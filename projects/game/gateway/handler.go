@@ -27,6 +27,7 @@ type gatewayService interface {
 	HandleWebMessage(ctx context.Context, sessionID string, connID string, msg *domain.Message) ([]*domain.RoutedMessage, error)
 	DisconnectAgent(sessionID string)
 	DisconnectWeb(sessionID, connID string)
+	AsyncMessages() <-chan *domain.RoutedMessage
 }
 
 // Handler implements GameGatewayServiceServer.

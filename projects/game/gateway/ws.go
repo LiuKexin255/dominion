@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
 
@@ -45,13 +46,17 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a WebSocketHandler backed by svc.
-func NewWebSocketHandler(svc gatewayService) *WebSocketHandler {
-	return &WebSocketHandler{
+func NewWebSocketHandler(svc gatewayService) (*WebSocketHandler, bootstrap.WorkerBuilder) {
+	h := &WebSocketHandler{
 		svc:         svc,
 		conns:       make(map[string]*wsConn),
 		webConns:    make(map[string]map[string]struct{}),
 		agentConnID: make(map[string]string),
 	}
+	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return &routingWorker{messages: svc.AsyncMessages(), route: h.RouteRoutedMessage}, nil
+	})
+	return h, builder
 }
 
 type wsConn struct {

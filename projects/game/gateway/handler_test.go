@@ -47,6 +47,10 @@ func (s *stubGatewayService) DisconnectAgent(_ string) {}
 
 func (s *stubGatewayService) DisconnectWeb(_, _ string) {}
 
+func (s *stubGatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
+	return nil
+}
+
 func TestHandler_GetGameSnapshot(t *testing.T) {
 	ctx := context.Background()
 	captureTime := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)

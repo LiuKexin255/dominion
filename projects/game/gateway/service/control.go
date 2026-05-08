@@ -15,19 +15,20 @@ type inflight struct {
 type ControlExecutor struct {
 	mu           sync.Mutex
 	inflight     map[string]*inflight
-	onCompletion func(domain.ControlCompletion)
+	completionCh chan domain.ControlCompletion
 }
 
 func NewControlExecutor() *ControlExecutor {
 	return &ControlExecutor{
-		inflight: make(map[string]*inflight),
+		inflight:     make(map[string]*inflight),
+		completionCh: make(chan domain.ControlCompletion, 64),
 	}
 }
 
-func (e *ControlExecutor) SetOnCompletion(fn func(domain.ControlCompletion)) {
-	e.mu.Lock()
-	e.onCompletion = fn
-	e.mu.Unlock()
+// Completions returns a read-only channel that receives completion events when
+// control operations finish asynchronously (timeout or agent disconnect).
+func (e *ControlExecutor) Completions() <-chan domain.ControlCompletion {
+	return e.completionCh
 }
 
 func (e *ControlExecutor) SubmitOperation(
@@ -112,11 +113,12 @@ func (e *ControlExecutor) HandleAgentDisconnect(sessionID string) {
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
-	onCompletion := e.onCompletion
+	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	if onCompletion != nil {
-		onCompletion(completion)
+	select {
+	case onCompletion <- completion:
+	default:
 	}
 }
 
@@ -139,11 +141,12 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
-	onCompletion := e.onCompletion
+	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	if onCompletion != nil {
-		onCompletion(completion)
+	select {
+	case onCompletion <- completion:
+	default:
 	}
 }
 
