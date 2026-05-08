@@ -4,20 +4,26 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/mongo"
+	"dominion/projects/infra/deploy"
 	"dominion/projects/infra/deploy/app"
+	"dominion/projects/infra/deploy/domain"
 	"dominion/projects/infra/deploy/runtime/k8s"
 	"dominion/projects/infra/deploy/storage"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 )
 
 const (
 	defaultHTTPListenAddr   = ":8081"
 	deployMongoTarget       = "deploy/mongo"
+	deployMongoDatabase     = "deploy"
 	defaultShutdownDeadline = 5 * time.Second
 )
 
@@ -31,7 +37,7 @@ func main() {
 		log.Fatalf("create mongo client: %v", err)
 	}
 
-	repo, err := storage.NewMongoRepository(client)
+	repo, err := storage.NewMongoRepository(client.Database(deployMongoDatabase))
 	if err != nil {
 		log.Fatalf("create deploy repository: %v", err)
 	}
@@ -42,17 +48,30 @@ func main() {
 	}
 	runtimeImpl := k8s.NewK8sRuntime(runtimeClient)
 
-	b := app.NewBootstrap(repo, runtimeImpl)
-	components, err := b.Components(normalizeListenAddr(*httpPort))
-	if err != nil {
-		log.Fatalf("create deploy components: %v", err)
+	// Create queue and handler.
+	queue := domain.NewQueue()
+	handler := deploy.NewHandler(repo, queue, runtimeImpl)
+
+	// Server component.
+	httpMux := runtime.NewServeMux()
+	deploy.RegisterDeployServiceHandlerServer(context.Background(), httpMux, handler)
+	httpServer := &http.Server{Addr: normalizeListenAddr(*httpPort), Handler: httpMux}
+	server := bootstrap.HTTPServer("deploy-http", httpServer)
+
+	// Daemon component.
+	workerBuilder := &app.DeployWorkerBuilder{
+		Repo:    repo,
+		Runtime: runtimeImpl,
+		Queue:   queue,
 	}
+	daemon := bootstrap.Daemon("deploy-worker", workerBuilder,
+		bootstrap.WithDaemonErrorClassifier(workerBuilder.ClassifyError),
+	)
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
 	bs.Register(bootstrap.MongoClient("mongo", client))
-	for _, c := range components {
-		bs.Register(c)
-	}
+	bs.Register(server)
+	bs.Register(daemon)
 	if err := bs.Run(context.Background()); err != nil {
 		log.Fatalf("run deploy: %v", err)
 	}

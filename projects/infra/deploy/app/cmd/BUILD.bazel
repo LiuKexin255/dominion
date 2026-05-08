@@ -11,9 +11,12 @@ go_library(
     deps = [
         "//common/gopkg/bootstrap",
         "//common/gopkg/mongo",
+        "//projects/infra/deploy",
         "//projects/infra/deploy/app",
+        "//projects/infra/deploy/domain",
         "//projects/infra/deploy/runtime/k8s",
         "//projects/infra/deploy/storage",
+        "@grpc_ecosystem_grpc_gateway//runtime",
     ],
 )
 

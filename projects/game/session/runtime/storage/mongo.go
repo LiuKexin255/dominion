@@ -16,10 +16,8 @@ import (
 )
 
 const (
-	// DatabaseName is the MongoDB database used by the session service.
-	DatabaseName = "game"
-	// CollectionName is the MongoDB collection used for sessions.
-	CollectionName = "sessions"
+	// collectionName is the MongoDB collection used for sessions.
+	collectionName = "sessions"
 
 	mongoFieldName                = "name"
 	mongoFieldType                = "type"
@@ -63,11 +61,6 @@ type mongoCollection struct {
 	*mongodriver.Collection
 }
 
-// NewMongoCollection adapts a MongoDB collection to the session storage interface.
-func NewMongoCollection(collection *mongodriver.Collection) CollectionOps {
-	return &mongoCollection{Collection: collection}
-}
-
 func (c *mongoCollection) FindOne(ctx context.Context, filter any, opts ...*options.FindOneOptions) singleResult {
 	return c.Collection.FindOne(ctx, filter, opts...)
 }
@@ -108,9 +101,9 @@ type MongoRepository struct {
 }
 
 // NewMongoRepository creates a MongoDB-backed repository and ensures indexes eagerly.
-func NewMongoRepository(ctx context.Context, coll CollectionOps) (*MongoRepository, error) {
+func NewMongoRepository(ctx context.Context, db *mongodriver.Database) (*MongoRepository, error) {
 	repo := &MongoRepository{
-		collection: coll,
+		collection: &mongoCollection{Collection: db.Collection(collectionName)},
 	}
 
 	if err := repo.ensureIndexes(ctx); err != nil {

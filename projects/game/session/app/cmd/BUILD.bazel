@@ -11,9 +11,11 @@ go_library(
         "//common/gopkg/mongo",
         "//common/gopkg/solver",
         "//projects/game/pkg/token",
-        "//projects/game/session/app",
+        "//projects/game/session",
         "//projects/game/session/runtime/gateway",
         "//projects/game/session/runtime/storage",
+        "//projects/game/session/service",
+        "@grpc_ecosystem_grpc_gateway//runtime",
     ],
 )
 

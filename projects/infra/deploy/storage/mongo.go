@@ -18,10 +18,8 @@ import (
 type EnvironmentType string
 
 const (
-	// DatabaseName is the MongoDB database used by the deploy service.
-	DatabaseName = "deploy"
-	// CollectionName is the MongoDB collection used for environments.
-	CollectionName = "environments"
+	// collectionName is the MongoDB collection used for environments.
+	collectionName = "environments"
 	// mongoDefaultPageSize is the default number of environments returned by ListByScope.
 	mongoDefaultPageSize        = 100
 	mongoFieldName              = "name"
@@ -71,8 +69,8 @@ type collectionOps interface {
 	Indexes() indexViewOps
 }
 
-var newCollection = func(client *mongodriver.Client, db string, coll string) collectionOps {
-	return &mongoCollection{Collection: client.Database(db).Collection(coll)}
+var newCollection = func(db *mongodriver.Database, coll string) collectionOps {
+	return &mongoCollection{Collection: db.Collection(coll)}
 }
 
 type mongoCollection struct {
@@ -194,9 +192,9 @@ type MongoRepository struct {
 }
 
 // NewMongoRepository creates a MongoDB-backed repository and ensures indexes eagerly.
-func NewMongoRepository(client *mongodriver.Client) (domain.Repository, error) {
+func NewMongoRepository(db *mongodriver.Database) (domain.Repository, error) {
 	repo := &MongoRepository{
-		collection: newCollection(client, DatabaseName, CollectionName),
+		collection: newCollection(db, collectionName),
 	}
 
 	if err := repo.ensureIndexes(context.Background()); err != nil {

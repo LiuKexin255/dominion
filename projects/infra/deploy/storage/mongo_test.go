@@ -966,10 +966,8 @@ func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	})
 
 	fakeCollection := &fakeCollectionOps{}
-	var gotDB string
 	var gotCollection string
-	newCollection = func(_ *mongodriver.Client, db string, coll string) collectionOps {
-		gotDB = db
+	newCollection = func(_ *mongodriver.Database, coll string) collectionOps {
 		gotCollection = coll
 		return fakeCollection
 	}
@@ -981,11 +979,8 @@ func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	if repo == nil {
 		t.Fatal("NewMongoRepository() returned nil repository")
 	}
-	if gotDB != DatabaseName {
-		t.Fatalf("database = %q, want %q", gotDB, DatabaseName)
-	}
-	if gotCollection != CollectionName {
-		t.Fatalf("collection = %q, want %q", gotCollection, CollectionName)
+	if gotCollection != collectionName {
+		t.Fatalf("collection = %q, want %q", gotCollection, collectionName)
 	}
 	if len(fakeCollection.indexes.models) != 2 {
 		t.Fatalf("index count = %d, want 2", len(fakeCollection.indexes.models))
@@ -1001,7 +996,7 @@ func TestMongoRepository_NewMongoRepository_ReturnsIndexError(t *testing.T) {
 		newCollection = originalNewCollection
 	})
 
-	newCollection = func(_ *mongodriver.Client, _, _ string) collectionOps {
+	newCollection = func(_ *mongodriver.Database, _ string) collectionOps {
 		return &fakeCollectionOps{
 			indexes: fakeIndexViewOps{err: errors.New("boom")},
 		}

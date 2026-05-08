@@ -3,12 +3,21 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/grpc"
+	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
+	"dominion/projects/game/gateway/domain/sessionmanager"
+	"dominion/projects/game/gateway/service"
+	"dominion/projects/game/pkg/token"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	grpcgo "google.golang.org/grpc"
 )
 
 const (
@@ -29,10 +38,25 @@ func main() {
 		gatewayID = "game-gateway-0"
 	}
 
-	b := app.NewBootstrap(tokenSecret, gatewayID)
+	// Create handler and wsHandler.
+	verifier := token.NewHMACSigner(tokenSecret, 0)
+	sessions := sessionmanager.NewManager(gatewayID)
+	control := service.NewControlExecutor()
+	svc := service.NewGatewayService(sessions, control, gatewayID, verifier)
+	handler := gateway.NewHandler(svc)
+	wsHandler := gateway.NewWebSocketHandler(svc)
+	svc.SetAsyncSink(wsHandler)
+
+	// Server component.
+	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
+	gateway.RegisterGameGatewayServiceServer(grpcServer, handler)
+	httpMux := runtime.NewServeMux()
+	_ = gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), httpMux, handler)
+	router := &app.Router{WSHandler: wsHandler, GRPCMux: httpMux}
+	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
-	if err := bs.Register(b.Component(normalizeListenAddr(httpPort))); err != nil {
+	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {
 		log.Fatalf("register gateway server: %v", err)
 	}
 	if err := bs.Run(context.Background()); err != nil {

@@ -2,15 +2,11 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "app",
-    srcs = ["bootstrap.go"],
+    srcs = ["worker.go"],
     importpath = "dominion/projects/infra/deploy/app",
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/bootstrap",
-        "//common/gopkg/grpc",
-        "//projects/infra/deploy",
         "//projects/infra/deploy/domain",
-        "@grpc_ecosystem_grpc_gateway//runtime",
-        "@org_golang_google_grpc//:grpc",
     ],
 )
