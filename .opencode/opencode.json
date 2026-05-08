@@ -3,7 +3,7 @@
   "model": "opencode-go/kimi-k2.6",
   "small_model": "opencode-go/minimax-m2.7",
   "plugin": [
-    "oh-my-openagent@3.17.15"
+    "oh-my-openagent@4.0.0"
   ],
   "lsp": {
     "bazel": {

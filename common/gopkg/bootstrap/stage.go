@@ -10,6 +10,8 @@ const (
 	StageFoundation Stage = 100
 	// StageClient represents the client connection stage (database, cache, etc.).
 	StageClient Stage = 200
+	// StageDaemon represents the background daemon/worker stage.
+	StageDaemon Stage = 250
 	// StageServer represents the server serving stage (HTTP, gRPC, etc.).
 	StageServer Stage = 300
 )
@@ -21,6 +23,8 @@ func (s Stage) String() string {
 		return "Foundation"
 	case StageClient:
 		return "Client"
+	case StageDaemon:
+		return "Daemon"
 	case StageServer:
 		return "Server"
 	default:

@@ -33,6 +33,7 @@ type Queue struct {
 
 	pendingCh chan EnvironmentName
 	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 // NewQueue creates a new Queue.
@@ -46,16 +47,10 @@ func NewQueue() *Queue {
 	}
 }
 
-// Start initializes the queue lifecycle. It must be called before Dequeue.
-// Items enqueued before Start are buffered and will be available for Dequeue.
-func (q *Queue) Start(_ context.Context) error {
-	return nil
-}
-
-// Stop signals the queue to shut down. Any goroutine blocked on Dequeue will
-// receive zero value and false.
-func (q *Queue) Stop() {
-	close(q.done)
+// stop signals the queue to shut down. Any goroutine blocked on Dequeue will
+// receive zero value and false. It is idempotent.
+func (q *Queue) stop() {
+	q.stopOnce.Do(func() { close(q.done) })
 }
 
 // Enqueue adds a user work item for envName.
@@ -110,7 +105,7 @@ func (q *Queue) EnqueueRetry(_ context.Context, item *WorkItem) error {
 }
 
 // Dequeue retrieves the next work item.
-// It blocks until an item is available, the context is cancelled, or Stop is called.
+// It blocks until an item is available, the context is cancelled, or stop is called.
 func (q *Queue) Dequeue(ctx context.Context) (*WorkItem, bool) {
 	for {
 		select {

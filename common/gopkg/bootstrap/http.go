@@ -59,8 +59,10 @@ func (c *httpServerComponent) Stop(ctx context.Context) error {
 	return c.server.Shutdown(ctx)
 }
 
-// ServerDone returns a channel that receives a value when the server exits.
+// Done returns a channel that receives a value when the server exits.
 // The value is nil for clean shutdown (http.ErrServerClosed) or the error otherwise.
-func (c *httpServerComponent) ServerDone() <-chan error {
+// This satisfies the exitWatcher interface used by Bootstrap to monitor
+// unexpected component exits.
+func (c *httpServerComponent) Done() <-chan error {
 	return c.done
 }

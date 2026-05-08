@@ -4,10 +4,10 @@ import (
 	"context"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+	"time"
 
+	"dominion/common/gopkg/bootstrap"
 	"dominion/projects/game/gateway/app"
 )
 
@@ -29,12 +29,14 @@ func main() {
 		gatewayID = "game-gateway-0"
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	b := app.NewBootstrap(tokenSecret, gatewayID)
 
-	bootstrap := app.NewBootstrap(tokenSecret, gatewayID)
-	if err := app.Serve(ctx, bootstrap.Handler, bootstrap.WSHandler, normalizeListenAddr(httpPort)); err != nil {
-		log.Fatalf("serve gateway: %v", err)
+	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
+	if err := bs.Register(b.Component(normalizeListenAddr(httpPort))); err != nil {
+		log.Fatalf("register gateway server: %v", err)
+	}
+	if err := bs.Run(context.Background()); err != nil {
+		log.Fatalf("run gateway: %v", err)
 	}
 }
 

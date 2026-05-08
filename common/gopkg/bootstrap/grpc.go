@@ -112,9 +112,9 @@ func (c *grpcServerComponent) Stop(ctx context.Context) error {
 	}
 }
 
-// ServerDone returns a channel that receives the error result when the gRPC
-// server exits. This satisfies the serverExiter interface used by Bootstrap
-// to monitor unexpected server exits.
-func (c *grpcServerComponent) ServerDone() <-chan error {
+// Done returns a channel that receives the error result when the gRPC
+// server exits. This satisfies the exitWatcher interface used by Bootstrap
+// to monitor unexpected component exits.
+func (c *grpcServerComponent) Done() <-chan error {
 	return c.done
 }

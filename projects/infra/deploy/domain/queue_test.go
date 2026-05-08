@@ -50,10 +50,7 @@ func TestQueue_Dequeue_FIFO(t *testing.T) {
 			q := NewQueue()
 			ctx := context.Background()
 
-			if err := q.Start(ctx); err != nil {
-				t.Fatalf("Start() failed: %v", err)
-			}
-			defer q.Stop()
+			defer q.stop()
 
 			// when
 			for _, envName := range tt.envs {
@@ -81,10 +78,7 @@ func TestQueue_Enqueue_DedupQueued(t *testing.T) {
 	ctx := context.Background()
 	envName := mustEnvName(t, "scope1", "env")
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	// when
 	if err := q.Enqueue(ctx, envName); err != nil {
@@ -117,10 +111,7 @@ func TestQueue_Enqueue_UserOverridesQueuedRetry(t *testing.T) {
 	envName := mustEnvName(t, "scope1", "override")
 	retryItem := &WorkItem{EnvName: envName, RetryCount: 3}
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	if err := q.EnqueueRetry(ctx, retryItem); err != nil {
 		t.Fatalf("EnqueueRetry() failed: %v", err)
@@ -145,10 +136,7 @@ func TestQueue_EnqueueRetry_DropsWhenUserTaskQueued(t *testing.T) {
 	ctx := context.Background()
 	envName := mustEnvName(t, "scope1", "userq")
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	if err := q.Enqueue(ctx, envName); err != nil {
 		t.Fatalf("Enqueue() failed: %v", err)
@@ -181,10 +169,7 @@ func TestQueue_Complete_RequeuesFollowUpAfterInFlightUserEnqueue(t *testing.T) {
 	ctx := context.Background()
 	envName := mustEnvName(t, "scope1", "inflight")
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 2}); err != nil {
 		t.Fatalf("EnqueueRetry() failed: %v", err)
@@ -224,10 +209,7 @@ func TestQueue_EnqueueRetry_InFlightKeepsUserFollowUp(t *testing.T) {
 	ctx := context.Background()
 	envName := mustEnvName(t, "scope1", "followup")
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	if err := q.EnqueueRetry(ctx, &WorkItem{EnvName: envName, RetryCount: 1}); err != nil {
 		t.Fatalf("EnqueueRetry() failed: %v", err)
@@ -268,10 +250,7 @@ func TestQueue_EnqueueRetry_InFlightKeepsUserFollowUp(t *testing.T) {
 func TestQueue_Dequeue_ContextCancellation(t *testing.T) {
 	// given
 	q := NewQueue()
-	if err := q.Start(context.Background()); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-	defer q.Stop()
+	defer q.stop()
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 
@@ -294,10 +273,6 @@ func TestQueue_Stop_DrainsDequeue(t *testing.T) {
 	q := NewQueue()
 	ctx := context.Background()
 
-	if err := q.Start(ctx); err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-
 	done := make(chan struct{})
 
 	// when
@@ -307,7 +282,7 @@ func TestQueue_Stop_DrainsDequeue(t *testing.T) {
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	q.Stop()
+	q.stop()
 
 	// then
 	select {

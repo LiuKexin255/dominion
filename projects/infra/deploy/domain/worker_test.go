@@ -293,10 +293,7 @@ func TestWorker_RunCountedRetryBackoffIsNonBlocking(t *testing.T) {
 	envA := mustReconcilingEnvironment(t, "dev", "alpha")
 	envB := mustReconcilingEnvironment(t, "dev", "beta")
 	queue := NewQueue()
-	if err := queue.Start(ctx); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer safeStopQueue(queue)
+	defer queue.stop()
 	if err := queue.Enqueue(ctx, envA.Name()); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -312,7 +309,7 @@ func TestWorker_RunCountedRetryBackoffIsNonBlocking(t *testing.T) {
 				return errors.New("apply failed")
 			case envB.Name():
 				close(processedB)
-				queue.Stop()
+				queue.stop()
 				return nil
 			default:
 				return nil
@@ -334,7 +331,7 @@ func TestWorker_RunCountedRetryBackoffIsNonBlocking(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		worker.Run()
+		worker.Run(ctx)
 		close(done)
 	}()
 
@@ -370,17 +367,14 @@ func TestWorker_RunMaxRetriesStopsRetry(t *testing.T) {
 	ctx := context.Background()
 	env := mustReconcilingEnvironment(t, "dev", "alpha")
 	queue := NewQueue()
-	if err := queue.Start(ctx); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer safeStopQueue(queue)
+	defer queue.stop()
 	if err := queue.EnqueueRetry(ctx, &WorkItem{EnvName: env.Name(), RetryCount: defaultMaxRetries}); err != nil {
 		t.Fatalf("EnqueueRetry() error = %v", err)
 	}
 	repo := newFakeWorkerRepository(env)
 	runtime := &fakeEnvironmentRuntime{
 		applyFn: func(_ context.Context, _ *Environment, _ func(string)) error {
-			queue.Stop()
+			queue.stop()
 			return errors.New("apply failed")
 		},
 	}
@@ -392,7 +386,7 @@ func TestWorker_RunMaxRetriesStopsRetry(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		worker.Run()
+		worker.Run(ctx)
 		close(done)
 	}()
 
@@ -407,10 +401,7 @@ func TestWorker_RunContinuesAfterFatalError(t *testing.T) {
 	envA := mustWorkerEnvName(t, "dev", "alpha")
 	envB := mustReconcilingEnvironment(t, "dev", "beta")
 	queue := NewQueue()
-	if err := queue.Start(ctx); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer safeStopQueue(queue)
+	defer queue.stop()
 	if err := queue.Enqueue(ctx, envA); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -428,7 +419,7 @@ func TestWorker_RunContinuesAfterFatalError(t *testing.T) {
 		applyFn: func(_ context.Context, env *Environment, _ func(string)) error {
 			if env.Name() == envB.Name() {
 				close(processedB)
-				queue.Stop()
+				queue.stop()
 			}
 			return nil
 		},
@@ -437,7 +428,7 @@ func TestWorker_RunContinuesAfterFatalError(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		worker.Run()
+		worker.Run(ctx)
 		close(done)
 	}()
 
@@ -456,18 +447,15 @@ func TestWorker_RunContinuesAfterFatalError(t *testing.T) {
 func TestWorker_RunReturnsAfterQueueStop(t *testing.T) {
 	ctx := context.Background()
 	queue := NewQueue()
-	if err := queue.Start(ctx); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
 	worker := NewWorker(newFakeWorkerRepository(), queue, &fakeEnvironmentRuntime{})
 
 	done := make(chan struct{})
 	go func() {
-		worker.Run()
+		worker.Run(ctx)
 		close(done)
 	}()
 
-	queue.Stop()
+	queue.stop()
 	waitWorkerDone(t, done)
 }
 
@@ -476,10 +464,7 @@ func TestWorker_RunIterationTimeout(t *testing.T) {
 	envA := mustReconcilingEnvironment(t, "dev", "alpha")
 	envB := mustReconcilingEnvironment(t, "dev", "beta")
 	queue := NewQueue()
-	if err := queue.Start(ctx); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer safeStopQueue(queue)
+	defer queue.stop()
 	if err := queue.Enqueue(ctx, envA.Name()); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
@@ -495,7 +480,7 @@ func TestWorker_RunIterationTimeout(t *testing.T) {
 				return ctx.Err()
 			}
 			close(processedB)
-			queue.Stop()
+			queue.stop()
 			return nil
 		},
 	}
@@ -504,7 +489,7 @@ func TestWorker_RunIterationTimeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		worker.Run()
+		worker.Run(ctx)
 		close(done)
 	}()
 
@@ -739,10 +724,7 @@ func mustEnvironmentWithGeneration(t *testing.T, env *Environment, generation in
 }
 
 func safeStopQueue(queue *Queue) {
-	defer func() {
-		_ = recover()
-	}()
-	queue.Stop()
+	queue.stop()
 }
 
 func waitWorkerDone(t *testing.T, done <-chan struct{}) {

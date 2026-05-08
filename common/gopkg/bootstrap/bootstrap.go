@@ -67,10 +67,10 @@ func (b *Bootstrap) Run(ctx context.Context) error {
 	return b.RunSignal(ctx, os.Interrupt, syscall.SIGTERM)
 }
 
-// serverExiter is optionally implemented by server-stage components to
-// signal when the server has exited unexpectedly.
-type serverExiter interface {
-	ServerDone() <-chan error
+// exitWatcher is optionally implemented by components to signal when the
+// component has exited unexpectedly.
+type exitWatcher interface {
+	Done() <-chan error
 }
 
 // RunSignal starts all registered components, then waits for a shutdown
@@ -115,7 +115,7 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 
 	// 6. Start monitoring goroutine for server component exit.
 	serverExit := make(chan error, 1)
-	go b.monitorServers(started, serverExit)
+	go b.monitorExitWatchers(started, serverExit)
 
 	// 7. Wait for shutdown trigger.
 	var shutdownCause error
@@ -163,23 +163,21 @@ func (b *Bootstrap) shutdown(started []Component) error {
 	return errors.Join(errs...)
 }
 
-// monitorServers watches server-stage components for unexpected exits.
-func (b *Bootstrap) monitorServers(components []Component, exitCh chan<- error) {
+// monitorExitWatchers watches all components that implement exitWatcher for
+// unexpected exits.
+func (b *Bootstrap) monitorExitWatchers(components []Component, exitCh chan<- error) {
 	for _, c := range components {
-		if c.Stage() != StageServer {
-			continue
-		}
-		se, ok := c.(serverExiter)
+		ew, ok := c.(exitWatcher)
 		if !ok {
 			continue
 		}
 		go func(name string, done <-chan error) {
 			if err := <-done; err != nil {
 				select {
-				case exitCh <- fmt.Errorf("bootstrap: server %q exited: %w", name, err):
+				case exitCh <- fmt.Errorf("bootstrap: component %q exited: %w", name, err):
 				default:
 				}
 			}
-		}(c.Name(), se.ServerDone())
+		}(c.Name(), ew.Done())
 	}
 }

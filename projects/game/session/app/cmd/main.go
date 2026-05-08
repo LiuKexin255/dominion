@@ -5,11 +5,10 @@ import (
 	"flag"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/mongo"
 	"dominion/common/gopkg/solver"
 	"dominion/projects/game/pkg/token"
@@ -49,23 +48,14 @@ func main() {
 	mongoTarget := envOrDefault(envSessionMongoTarget, defaultMongoTarget)
 	httpAddr := normalizeListenAddr(*httpPort)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
+	// Create Mongo client and repo BEFORE bootstrap (repo needs ctx for index creation).
 	client, err := mongo.NewClient(mongoTarget)
 	if err != nil {
 		log.Fatalf("create mongo client: %v", err)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownDeadline)
-		defer cancel()
-		if err := client.Disconnect(shutdownCtx); err != nil {
-			log.Printf("disconnect mongo client: %v", err)
-		}
-	}()
 
+	ctx := context.Background()
 	coll := storage.NewMongoCollection(client.Database(storage.DatabaseName).Collection(storage.CollectionName))
-
 	repo, err := storage.NewMongoRepository(ctx, coll)
 	if err != nil {
 		log.Fatalf("create session repository: %v", err)
@@ -81,10 +71,13 @@ func main() {
 	}
 	gatewayReg := gateway.NewDeployRegistry(resolver, target, publicHostPattern)
 	tokenIssuer := token.NewHMACSigner(tokenSecret, tokenTTL)
-	bootstrap := app.NewBootstrap(repo, tokenIssuer, gatewayReg)
+	b := app.NewBootstrap(repo, tokenIssuer, gatewayReg)
 
-	if err := app.Serve(ctx, bootstrap.Handler, httpAddr); err != nil {
-		log.Fatalf("serve session service: %v", err)
+	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
+	bs.Register(bootstrap.MongoClient("mongo", client))
+	bs.Register(b.Component(httpAddr))
+	if err := bs.Run(context.Background()); err != nil {
+		log.Fatalf("run session: %v", err)
 	}
 }
 

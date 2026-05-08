@@ -6,8 +6,10 @@ go_library(
     srcs = [
         "bootstrap.go",
         "component.go",
+        "daemon.go",
         "grpc.go",
         "http.go",
+        "mongo.go",
         "option.go",
         "otel.go",
         "stage.go",
@@ -17,6 +19,7 @@ go_library(
     deps = [
         "//common/gopkg/otel",
         "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//mongo",
     ],
 )
 
@@ -24,8 +27,10 @@ go_unittest(
     name = "bootstrap_test",
     srcs = [
         "bootstrap_test.go",
+        "daemon_test.go",
         "grpc_test.go",
         "http_test.go",
+        "mongo_test.go",
         "otel_test.go",
     ],
     embed = [":bootstrap"],
@@ -33,5 +38,7 @@ go_unittest(
         "//common/gopkg/otel",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
     ],
 )

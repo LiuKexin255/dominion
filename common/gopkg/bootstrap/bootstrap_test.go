@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -455,4 +456,58 @@ func TestBootstrap_DoubleRunReturnsError(t *testing.T) {
 	// Clean up first Run.
 	cancel()
 	<-done
+}
+
+// mockExitWatcher implements Component and exitWatcher for testing unexpected
+// exit detection on non-StageServer components (e.g. StageDaemon).
+type mockExitWatcher struct {
+	name     string
+	stage    Stage
+	done     chan error
+	startErr error
+	stopErr  error
+}
+
+func (m *mockExitWatcher) Name() string                  { return m.name }
+func (m *mockExitWatcher) Stage() Stage                  { return m.stage }
+func (m *mockExitWatcher) Start(_ context.Context) error { return m.startErr }
+func (m *mockExitWatcher) Stop(_ context.Context) error  { return m.stopErr }
+func (m *mockExitWatcher) Done() <-chan error            { return m.done }
+
+// TestBootstrap_DaemonExitWatcher verifies that a StageDaemon component
+// implementing exitWatcher triggers shutdown when its Done() channel
+// receives an error. This proves the monitor watches all component stages,
+// not just StageServer.
+func TestBootstrap_DaemonExitWatcher(t *testing.T) {
+	b := New()
+	mu, ord := newTestOrder()
+
+	daemon := &mockExitWatcher{
+		name:  "mydaemon",
+		stage: StageDaemon,
+		done:  make(chan error, 1),
+	}
+	_ = b.Register(daemon)
+	_ = b.Register(newMock("other", StageClient, mu, ord))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- b.RunSignal(ctx, syscall.SIGUSR1)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Simulate daemon failure — sends error through Done() channel.
+	daemon.done <- errors.New("daemon crashed")
+
+	err := <-done
+	if err == nil {
+		t.Fatal("expected error from daemon exit, got nil")
+	}
+	if !strings.Contains(err.Error(), "daemon crashed") {
+		t.Fatalf("expected error containing 'daemon crashed', got: %v", err)
+	}
 }

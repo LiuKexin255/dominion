@@ -45,20 +45,24 @@ func NewWorker(repo Repository, queue *Queue, runtime EnvironmentRuntime) *Worke
 	}
 }
 
-// Run drains queued environment names until the queue is stopped.
+// Run drains queued environment names until the queue is stopped or ctx is
+// cancelled.
 //
-// Each dequeued item is processed with its own short-lived timeout context.
-// Iteration errors are handled internally so the daemon keeps running; only a
-// panic from processing terminates the goroutine naturally.
-func (w *Worker) Run() {
+// Each dequeued item is processed with its own short-lived timeout context
+// derived from ctx. Iteration errors are handled internally so the daemon keeps
+// running; only a panic from processing terminates the goroutine naturally.
+func (w *Worker) Run(ctx context.Context) error {
 	for {
-		item, ok := w.queue.Dequeue(context.Background())
+		item, ok := w.queue.Dequeue(ctx)
 		if !ok {
-			return
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), w.iterTimeout)
-		err := w.process(ctx, item)
+		iterCtx, cancel := context.WithTimeout(ctx, w.iterTimeout)
+		err := w.process(iterCtx, item)
 		cancel()
 		w.queue.Complete(item.EnvName)
 
@@ -69,7 +73,7 @@ func (w *Worker) Run() {
 			if item.RetryCount >= w.maxRetries {
 				continue
 			}
-			w.scheduleRetry(context.Background(), &WorkItem{EnvName: item.EnvName, RetryCount: item.RetryCount + 1}, retryBackoff(item.RetryCount))
+			w.scheduleRetry(ctx, &WorkItem{EnvName: item.EnvName, RetryCount: item.RetryCount + 1}, retryBackoff(item.RetryCount))
 		default:
 			continue
 		}

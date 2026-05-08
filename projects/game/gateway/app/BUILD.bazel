@@ -2,13 +2,11 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "app",
-    srcs = [
-        "bootstrap.go",
-        "server.go",
-    ],
+    srcs = ["bootstrap.go"],
     importpath = "dominion/projects/game/gateway/app",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
         "//projects/game/gateway",
         "//projects/game/gateway/domain/sessionmanager",
