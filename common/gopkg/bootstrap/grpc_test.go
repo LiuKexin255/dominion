@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,3 +212,62 @@ type fakeAddr struct {
 func (a fakeAddr) Network() string { return a.network }
 
 func (a fakeAddr) String() string { return a.address }
+
+func TestGRPCServer_StartedLog(t *testing.T) {
+	buf := captureSlog(t)
+	s := grpc.NewServer()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+
+	c := GRPCServer("log-grpc", s, ln)
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "grpc server started") {
+		t.Fatal("expected 'grpc server started' in log output")
+	}
+	if !strings.Contains(output, "component=log-grpc") {
+		t.Fatal("expected component=log-grpc in log output")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = c.Stop(stopCtx)
+}
+
+func TestGRPCServer_ForceStopLog(t *testing.T) {
+	buf := captureSlog(t)
+
+	origGraceful := callGracefulStop
+	origForce := callForceStop
+	t.Cleanup(func() {
+		callGracefulStop = origGraceful
+		callForceStop = origForce
+	})
+
+	callGracefulStop = func(_ *grpc.Server) { select {} }
+	callForceStop = func(_ *grpc.Server) {}
+
+	s := grpc.NewServer()
+	ln := newFakeListener()
+	c := GRPCServer("log-force", s, ln)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = c.Stop(ctx)
+
+	output := buf.String()
+	if !strings.Contains(output, "grpc server force stop") {
+		t.Fatal("expected 'grpc server force stop' in log output")
+	}
+	if !strings.Contains(output, "component=log-force") {
+		t.Fatal("expected component=log-force in force stop log output")
+	}
+}

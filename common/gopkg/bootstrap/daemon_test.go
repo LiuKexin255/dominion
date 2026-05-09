@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -875,5 +876,259 @@ func TestDaemon_ContextCancelledDuringBackoff(t *testing.T) {
 		// Acceptable — the key is that there's no infinite restart loop.
 	default:
 		// Expected: no restart.
+	}
+}
+
+func TestDaemon_StartedLog(t *testing.T) {
+	buf := captureSlog(t)
+	startCalled := make(chan struct{}, 1)
+	block := make(chan struct{})
+	builder := &testBuilder{
+		workers: []Worker{&testWorker{startBlock: block, startCalled: startCalled}},
+	}
+
+	d := Daemon("log-testd", builder)
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Wait for the worker to actually start (ensures "daemon started" is logged).
+	select {
+	case <-startCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for worker Start")
+	}
+
+	close(block)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = d.Stop(ctx)
+
+	output := buf.String()
+	if !strings.Contains(output, "daemon started") {
+		t.Fatal("expected 'daemon started' in log output")
+	}
+	if !strings.Contains(output, "component=log-testd") {
+		t.Fatal("expected component=log-testd in log output")
+	}
+}
+
+func TestDaemon_BuildFailedLog(t *testing.T) {
+	buf := captureSlog(t)
+	goodWorker := &testWorker{startBlock: make(chan struct{})}
+	builder := &testBuilder{
+		workers:     []Worker{goodWorker},
+		buildCalled: make(chan struct{}, 3),
+	}
+	builder.buildErr = errors.New("build boom")
+
+	d := Daemon("log-build-fail", builder,
+		WithDaemonRestartBackoff(10*time.Millisecond),
+	)
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Wait for first Build (fails).
+	<-builder.buildCalled
+
+	builder.mu.Lock()
+	builder.buildErr = nil
+	builder.mu.Unlock()
+
+	// Wait for second Build (restart, succeeds).
+	select {
+	case <-builder.buildCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for restart Build")
+	}
+
+	// Cleanup.
+	close(goodWorker.startBlock)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = d.Stop(ctx)
+
+	output := buf.String()
+	if !strings.Contains(output, "daemon build failed") {
+		t.Fatal("expected 'daemon build failed' in log output")
+	}
+	if !strings.Contains(output, "component=log-build-fail") {
+		t.Fatal("expected component=log-build-fail in build failed log output")
+	}
+}
+
+func TestDaemon_StartFailedLog(t *testing.T) {
+	buf := captureSlog(t)
+	startErr := errors.New("worker crashed")
+	errWorker := &testWorker{startErr: startErr}
+	goodWorker := &testWorker{startBlock: make(chan struct{})}
+
+	builder := &testBuilder{
+		workers:     []Worker{errWorker, goodWorker},
+		buildCalled: make(chan struct{}, 3),
+	}
+
+	d := Daemon("log-start-fail", builder,
+		WithDaemonRestartBackoff(10*time.Millisecond),
+	)
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Wait for initial build + start failure + restart build.
+	<-builder.buildCalled
+	select {
+	case <-builder.buildCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for restart Build")
+	}
+
+	// Cleanup.
+	close(goodWorker.startBlock)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = d.Stop(ctx)
+
+	output := buf.String()
+	if !strings.Contains(output, "daemon start failed") {
+		t.Fatal("expected 'daemon start failed' in log output")
+	}
+	if !strings.Contains(output, "component=log-start-fail") {
+		t.Fatal("expected component=log-start-fail in start failed log output")
+	}
+}
+
+func TestDaemon_RestartingLog(t *testing.T) {
+	buf := captureSlog(t)
+	errWorker := &testWorker{startErr: errors.New("fail")}
+	goodWorker := &testWorker{startBlock: make(chan struct{})}
+
+	builder := &testBuilder{
+		workers:     []Worker{errWorker, goodWorker},
+		buildCalled: make(chan struct{}, 3),
+	}
+
+	d := Daemon("log-restart", builder,
+		WithDaemonRestartBackoff(10*time.Millisecond),
+	)
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Wait for first build+start (fail) + restart build.
+	<-builder.buildCalled
+	select {
+	case <-builder.buildCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for restart Build")
+	}
+
+	// Cleanup.
+	close(goodWorker.startBlock)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = d.Stop(ctx)
+
+	output := buf.String()
+	if !strings.Contains(output, "restarting daemon") {
+		t.Fatal("expected 'restarting daemon' in log output")
+	}
+	if !strings.Contains(output, "component=log-restart") {
+		t.Fatal("expected component=log-restart in restarting log output")
+	}
+	if !strings.Contains(output, "attempt=") {
+		t.Fatal("expected attempt= in restarting log output")
+	}
+	if !strings.Contains(output, "backoff=") {
+		t.Fatal("expected backoff= in restarting log output")
+	}
+}
+
+func TestDaemon_RestartExhaustedLog(t *testing.T) {
+	buf := captureSlog(t)
+	worker := &testWorker{startErr: errors.New("always fails")}
+	builder := &testBuilder{workers: []Worker{worker}}
+
+	d := Daemon("log-exhausted", builder,
+		WithDaemonRestartBackoff(time.Millisecond),
+		WithDaemonMaxRestarts(1),
+	)
+
+	fatalCh := make(chan error, 1)
+	go func() {
+		select {
+		case err := <-d.(*daemonComponent).done:
+			fatalCh <- err
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	select {
+	case <-fatalCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for fatal error")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "restart policy exhausted") {
+		t.Fatal("expected 'restart policy exhausted' in log output")
+	}
+	if !strings.Contains(output, "component=log-exhausted") {
+		t.Fatal("expected component=log-exhausted in exhausted log output")
+	}
+}
+
+func TestDaemon_FatalErrorLog(t *testing.T) {
+	buf := captureSlog(t)
+	fatalErr := errors.New("classified as fatal")
+
+	classifier := func(_ context.Context, err error) DaemonDecision {
+		if errors.Is(err, fatalErr) {
+			return DaemonFatal
+		}
+		return DaemonRestart
+	}
+
+	worker := &testWorker{startErr: fatalErr}
+	builder := &testBuilder{workers: []Worker{worker}}
+
+	d := Daemon("log-fatal", builder,
+		WithDaemonErrorClassifier(classifier),
+	)
+
+	fatalCh := make(chan struct{})
+	go func() {
+		select {
+		case <-d.(*daemonComponent).done:
+			close(fatalCh)
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	select {
+	case <-fatalCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fatal error")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "daemon fatal error") {
+		t.Fatal("expected 'daemon fatal error' in log output")
+	}
+	if !strings.Contains(output, "component=log-fatal") {
+		t.Fatal("expected component=log-fatal in fatal error log output")
 	}
 }

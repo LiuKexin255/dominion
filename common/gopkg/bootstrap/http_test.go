@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,5 +120,63 @@ func TestHTTPServer_ErrServerClosedAfterShutdown(t *testing.T) {
 		}
 	default:
 		t.Fatalf("expected signal on done channel after clean shutdown, got nothing")
+	}
+}
+
+func TestHTTPServer_StartedLog(t *testing.T) {
+	buf := captureSlog(t)
+	srv := &http.Server{
+		Addr:    ":0",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}),
+	}
+	c := HTTPServer("log-http", srv)
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "http server started") {
+		t.Fatal("expected 'http server started' in log output")
+	}
+	if !strings.Contains(output, "component=log-http") {
+		t.Fatal("expected component=log-http in log output")
+	}
+
+	_ = c.Stop(context.Background())
+}
+
+func TestHTTPServer_ExitErrorLog(t *testing.T) {
+	buf := captureSlog(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Addr: ln.Addr().String()}
+	c := HTTPServer("log-http-err", srv)
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	select {
+	case err := <-c.(*httpServerComponent).done:
+		if err == nil {
+			t.Fatal("expected error from duplicate bind, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ListenAndServe error")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "http server exited") {
+		t.Fatal("expected 'http server exited' in log output")
+	}
+	if !strings.Contains(output, "component=log-http-err") {
+		t.Fatal("expected component=log-http-err in log output")
 	}
 }

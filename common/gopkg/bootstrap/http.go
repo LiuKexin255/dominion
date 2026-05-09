@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 )
 
@@ -48,9 +49,11 @@ func (c *httpServerComponent) Start(_ context.Context) error {
 		if err == http.ErrServerClosed {
 			c.done <- nil
 		} else {
+			slog.Error("http server exited", "component", c.name, "error", err)
 			c.done <- err
 		}
 	}()
+	slog.Info("http server started", "component", c.name)
 	return nil
 }
 

@@ -1,8 +1,10 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -509,5 +511,171 @@ func TestBootstrap_DaemonExitWatcher(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "daemon crashed") {
 		t.Fatalf("expected error containing 'daemon crashed', got: %v", err)
+	}
+}
+
+// captureSlog replaces the default slog logger with a TextHandler writing to
+// a buffer and returns the buffer. The original logger is restored on cleanup.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+func TestBootstrap_StartingLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+	mu, ord := newTestOrder()
+
+	_ = b.Register(newMock("a", StageClient, mu, ord))
+	_ = b.Register(newMock("b", StageServer, mu, ord))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.RunSignal(ctx, syscall.SIGUSR1) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "bootstrap starting") {
+		t.Fatal("expected 'bootstrap starting' in log output")
+	}
+	if !strings.Contains(output, "components=2") {
+		t.Fatal("expected components=2 in log output")
+	}
+	if !strings.Contains(output, "user defined signal 1") {
+		t.Fatal("expected signal name in log output")
+	}
+}
+
+func TestBootstrap_ComponentStartedLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+	mu, ord := newTestOrder()
+
+	_ = b.Register(newMock("svc", StageServer, mu, ord))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.RunSignal(ctx, syscall.SIGUSR1) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "component started") {
+		t.Fatal("expected 'component started' in log output")
+	}
+	if !strings.Contains(output, "component=svc") {
+		t.Fatal("expected component=svc in log output")
+	}
+	if !strings.Contains(output, "stage=Server") {
+		t.Fatal("expected stage=Server in log output")
+	}
+}
+
+func TestBootstrap_StartFailedRollbackLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+	mu, ord := newTestOrder()
+
+	ok := newMock("ok", StageFoundation, mu, ord)
+	fail := newMock("fail", StageClient, mu, ord)
+	fail.startErr = errors.New("boom")
+
+	_ = b.Register(ok)
+	_ = b.Register(fail)
+
+	ctx := context.Background()
+	_ = b.RunSignal(ctx, syscall.SIGUSR1)
+
+	output := buf.String()
+	if !strings.Contains(output, "component start failed, rolling back") {
+		t.Fatal("expected 'component start failed, rolling back' in log output")
+	}
+	if !strings.Contains(output, "component=fail") {
+		t.Fatal("expected component=fail in log output")
+	}
+}
+
+func TestBootstrap_ShutdownLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+	mu, ord := newTestOrder()
+
+	_ = b.Register(newMock("c", StageClient, mu, ord))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.RunSignal(ctx, syscall.SIGUSR1) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "shutdown starting") {
+		t.Fatal("expected 'shutdown starting' in log output")
+	}
+	if !strings.Contains(output, "components=1") {
+		t.Fatal("expected components=1 in shutdown log output")
+	}
+}
+
+func TestBootstrap_StopFailedLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+	mu, ord := newTestOrder()
+
+	c1 := newMock("c1", StageClient, mu, ord)
+	c1.stopErr = errors.New("stop boom")
+
+	_ = b.Register(c1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = b.RunSignal(ctx, syscall.SIGUSR1) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "component stop failed") {
+		t.Fatal("expected 'component stop failed' in log output")
+	}
+	if !strings.Contains(output, "component=c1") {
+		t.Fatal("expected component=c1 in stop failed log output")
+	}
+}
+
+func TestBootstrap_UnexpectedExitLog(t *testing.T) {
+	buf := captureSlog(t)
+	b := New()
+
+	daemon := &mockExitWatcher{
+		name:  "mydaemon",
+		stage: StageDaemon,
+		done:  make(chan error, 1),
+	}
+	_ = b.Register(daemon)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- b.RunSignal(ctx, syscall.SIGUSR1)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	daemon.done <- errors.New("daemon crashed")
+
+	_ = <-done
+
+	output := buf.String()
+	if !strings.Contains(output, "component exited unexpectedly") {
+		t.Fatal("expected 'component exited unexpectedly' in log output")
+	}
+	if !strings.Contains(output, "component=mydaemon") {
+		t.Fatal("expected component=mydaemon in unexpected exit log output")
 	}
 }

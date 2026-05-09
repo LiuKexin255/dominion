@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
@@ -204,6 +205,12 @@ func (b *Builder) Build(target grpcresolver.Target, cc grpcresolver.ClientConn, 
 		return nil, err
 	}
 
+	logs.InfoContext(context.Background(), "resolver built",
+		"scheme", Scheme,
+		"target", fmt.Sprintf("%s/%s", parsedTarget.App, parsedTarget.Service),
+		"refresh_interval", refreshInterval,
+	)
+
 	r.wg.Add(1)
 	go r.run()
 
@@ -253,6 +260,13 @@ func (b *StatefulBuilder) Build(target grpcresolver.Target, cc grpcresolver.Clie
 		r.ticker.Stop()
 		return nil, err
 	}
+
+	logs.InfoContext(context.Background(), "stateful resolver built",
+		"scheme", StatefulScheme,
+		"target", fmt.Sprintf("%s/%s", parsedTarget.App, parsedTarget.Service),
+		"instance", instanceIndex,
+		"refresh_interval", refreshInterval,
+	)
 
 	r.wg.Add(1)
 	go r.run()
@@ -304,25 +318,59 @@ func (r *Resolver) run() {
 
 func (r *Resolver) refresh() {
 	if err := r.Resolve(); err != nil {
+		r.mu.Lock()
+		hasState := r.hasState
+		r.mu.Unlock()
+
+		if hasState {
+			logs.WarnContext(context.Background(), "resolver refresh failed",
+				"target", fmt.Sprintf("%s/%s", r.target.App, r.target.Service),
+				"error", err,
+			)
+		}
 		r.cc.ReportError(err)
 	}
 }
 
 // Resolve refreshes the current EndpointSlice-derived address state.
 func (r *Resolver) Resolve() error {
+	targetStr := fmt.Sprintf("%s/%s", r.target.App, r.target.Service)
+
 	addresses, err := r.resolver.Resolve(context.Background(), r.target)
 	if err != nil {
+		r.mu.Lock()
+		hasState := r.hasState
+		r.mu.Unlock()
+
+		if !hasState {
+			logs.ErrorContext(context.Background(), "resolver initial resolve failed",
+				"target", targetStr,
+				"error", err,
+			)
+		}
 		return err
 	}
 
 	stateAddresses := buildResolverAddresses(addresses)
 	if r.sameState(stateAddresses) {
+		logs.DebugContext(context.Background(), "resolver addresses unchanged",
+			"target", targetStr,
+		)
 		return nil
 	}
 
 	if err := r.cc.UpdateState(grpcresolver.State{Addresses: stateAddresses}); err != nil {
+		logs.ErrorContext(context.Background(), "resolver update state failed",
+			"target", targetStr,
+			"error", err,
+		)
 		return fmt.Errorf("update resolver state for %q/%q: %w", r.target.App, r.target.Service, err)
 	}
+
+	logs.InfoContext(context.Background(), "resolver addresses updated",
+		"target", targetStr,
+		"address_count", len(stateAddresses),
+	)
 
 	r.storeState(stateAddresses)
 	return nil
@@ -339,6 +387,9 @@ func (r *Resolver) ResolveNow(grpcresolver.ResolveNowOptions) {
 // Close stops the polling loop and releases resolver resources.
 func (r *Resolver) Close() {
 	r.closeOnce.Do(func() {
+		logs.DebugContext(context.Background(), "resolver closed",
+			"target", fmt.Sprintf("%s/%s", r.target.App, r.target.Service),
+		)
 		close(r.done)
 		r.ticker.Stop()
 		r.wg.Wait()

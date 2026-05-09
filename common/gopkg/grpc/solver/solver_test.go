@@ -1,9 +1,11 @@
 package solver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"reflect"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/solver"
 
 	grpcresolver "google.golang.org/grpc/resolver"
@@ -590,4 +593,178 @@ func mustParseResolverURL(raw string) *url.URL {
 		panic(err)
 	}
 	return parsed
+}
+
+func newTestLogger() (*bytes.Buffer, *slog.Logger) {
+	buf := new(bytes.Buffer)
+	handler := slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	return buf, slog.New(handler)
+}
+
+func TestBuildLogsInfo(t *testing.T) {
+	buf, logger := newTestLogger()
+	logs.SetDefault(logger)
+
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeResolverClient{results: []resolveResult{{addresses: []string{"10.0.0.1:50051"}}}}
+	builder := NewBuilder(
+		WithResolver(client),
+		WithNewTicker(func(time.Duration) refreshTicker { return ticker }),
+		WithRefreshInterval(time.Hour),
+	)
+
+	got, err := builder.Build(newResolverTarget("catalog/grpc:50051"), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+
+	output := buf.String()
+	if !strings.Contains(output, "resolver built") {
+		t.Fatalf("Build() log output missing 'resolver built', got:\n%s", output)
+	}
+	if !strings.Contains(output, "catalog/grpc") {
+		t.Fatalf("Build() log output missing target 'catalog/grpc', got:\n%s", output)
+	}
+}
+
+func TestAddressChangeLogsInfo(t *testing.T) {
+	buf, logger := newTestLogger()
+	logs.SetDefault(logger)
+
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeResolverClient{results: []resolveResult{
+		{addresses: []string{"10.0.0.1:50051"}},
+		{addresses: []string{"10.0.0.1:50051", "10.0.0.2:50051"}},
+	}}
+	builder := NewBuilder(
+		WithResolver(client),
+		WithNewTicker(func(time.Duration) refreshTicker { return ticker }),
+		WithRefreshInterval(time.Hour),
+	)
+
+	got, err := builder.Build(newResolverTarget("catalog/grpc:50051"), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+	buf.Reset()
+
+	resolverInstance := got.(*Resolver)
+	if err := resolverInstance.Resolve(); err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "resolver addresses updated") {
+		t.Fatalf("Resolve() log output missing 'resolver addresses updated', got:\n%s", output)
+	}
+	if !strings.Contains(output, "address_count=2") {
+		t.Fatalf("Resolve() log output missing address_count=2, got:\n%s", output)
+	}
+}
+
+func TestRefreshFailureLogsWarn(t *testing.T) {
+	buf, logger := newTestLogger()
+	logs.SetDefault(logger)
+
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeResolverClient{results: []resolveResult{
+		{addresses: []string{"10.0.0.1:50051"}},
+		{err: errors.New("temporary failure")},
+		{addresses: []string{"10.0.0.2:50051"}},
+	}}
+	builder := NewBuilder(
+		WithResolver(client),
+		WithNewTicker(func(time.Duration) refreshTicker { return ticker }),
+		WithRefreshInterval(time.Hour),
+	)
+
+	got, err := builder.Build(newResolverTarget("catalog/grpc:50051"), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+	cc.drainUpdateSignals()
+	buf.Reset()
+
+	got.ResolveNow(grpcresolver.ResolveNowOptions{})
+	if err := cc.waitForError(time.Second); err == nil {
+		t.Fatal("expected error from ResolveNow refresh failure")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "resolver refresh failed") {
+		t.Fatalf("refresh() log output missing 'resolver refresh failed', got:\n%s", output)
+	}
+	if !strings.Contains(output, "WARN") {
+		t.Fatalf("refresh() log level not WARN, got:\n%s", output)
+	}
+}
+
+func TestStableStateNoInfoLog(t *testing.T) {
+	buf, logger := newTestLogger()
+	logs.SetDefault(logger)
+
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeResolverClient{results: []resolveResult{
+		{addresses: []string{"10.0.0.1:50051"}},
+		{addresses: []string{"10.0.0.1:50051"}},
+	}}
+	builder := NewBuilder(
+		WithResolver(client),
+		WithNewTicker(func(time.Duration) refreshTicker { return ticker }),
+		WithRefreshInterval(time.Hour),
+	)
+
+	got, err := builder.Build(newResolverTarget("catalog/grpc:50051"), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+	t.Cleanup(got.Close)
+	buf.Reset()
+
+	resolverInstance := got.(*Resolver)
+	if err := resolverInstance.Resolve(); err != nil {
+		t.Fatalf("Resolve() unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "INFO") {
+		t.Fatalf("stable state Resolve() should not log INFO, got:\n%s", output)
+	}
+	if !strings.Contains(output, "resolver addresses unchanged") {
+		t.Fatalf("stable state Resolve() should log unchanged at DEBUG, got:\n%s", output)
+	}
+}
+
+func TestCloseLogsDebug(t *testing.T) {
+	buf, logger := newTestLogger()
+	logs.SetDefault(logger)
+
+	cc := newFakeClientConn()
+	ticker := newFakeTicker()
+	client := &fakeResolverClient{results: []resolveResult{{addresses: []string{"10.0.0.1:50051"}}}}
+	builder := NewBuilder(
+		WithResolver(client),
+		WithNewTicker(func(time.Duration) refreshTicker { return ticker }),
+		WithRefreshInterval(time.Hour),
+	)
+
+	got, err := builder.Build(newResolverTarget("catalog/grpc:50051"), cc, grpcresolver.BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build() unexpected error: %v", err)
+	}
+
+	resolverInstance := got.(*Resolver)
+	resolverInstance.Close()
+
+	output := buf.String()
+	if !strings.Contains(output, "resolver closed") {
+		t.Fatalf("Close() log output missing 'resolver closed', got:\n%s", output)
+	}
 }

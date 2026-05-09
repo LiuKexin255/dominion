@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"dominion/common/gopkg/logs"
+
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -77,6 +79,7 @@ func (c *K8sResolver) Resolve(ctx context.Context, target *Target) ([]string, er
 	selector := buildServiceSelector(target, env)
 	services, err := c.clientset.CoreV1().Services(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
+		logs.WarnContext(ctx, "k8s service list failed", "namespace", env.Namespace, "selector", selector, "error", err)
 		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
 			return nil, fmt.Errorf("list services in namespace %q with selector %q: permission denied: %w", env.Namespace, selector, err)
 		}
@@ -107,13 +110,18 @@ func (c *K8sResolver) Resolve(ctx context.Context, target *Target) ([]string, er
 	epsSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: serviceName}).String()
 	endpointSlices, err := c.clientset.DiscoveryV1().EndpointSlices(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: epsSelector})
 	if err != nil {
+		logs.WarnContext(ctx, "k8s EndpointSlice list failed", "namespace", env.Namespace, "selector", epsSelector, "error", err)
 		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
 			return nil, fmt.Errorf("list EndpointSlices in namespace %q with selector %q: permission denied: %w", env.Namespace, epsSelector, err)
 		}
 		return nil, fmt.Errorf("list EndpointSlices in namespace %q with selector %q: %w", env.Namespace, epsSelector, err)
 	}
 
-	return expandEndpointSliceAddresses(endpointSlices.Items, target.PortSelector), nil
+	result := expandEndpointSliceAddresses(endpointSlices.Items, target.PortSelector)
+	if len(result) == 0 {
+		logs.WarnContext(ctx, "k8s endpoint slice returned no ready endpoints", "namespace", env.Namespace, "selector", epsSelector)
+	}
+	return result, nil
 }
 
 func expandEndpointSliceAddresses(endpointSlices []discoveryv1.EndpointSlice, portSelector PortSelector) []string {

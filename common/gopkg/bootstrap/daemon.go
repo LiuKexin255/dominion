@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -221,6 +222,9 @@ func (c *daemonComponent) supervise() {
 		c.mu.Unlock()
 
 		startErr := c.startWorker(worker)
+		if startErr == nil {
+			slog.Info("daemon started", "component", c.name)
+		}
 		// Shutdown context: worker exit is not an error to restart on.
 		if c.daemonCtx.Err() != nil {
 			return
@@ -240,9 +244,11 @@ func (c *daemonComponent) applyRestartPolicy(err error, restartCount *int, backo
 	case DaemonRestart:
 		*restartCount++
 		if c.restartsExhausted(*restartCount) {
+			slog.Error("restart policy exhausted", "component", c.name, "attempts", c.cfg.maxRestarts)
 			c.reportFatal(err)
 			return false
 		}
+		slog.Warn("restarting daemon", "component", c.name, "attempt", *restartCount, "backoff", *backoff)
 		if !c.sleepBackoff(*backoff) {
 			return false
 		}
@@ -261,6 +267,11 @@ func (c *daemonComponent) applyRestartPolicy(err error, restartCount *int, backo
 // buildWorker calls builder.Build with panic recovery.
 func (c *daemonComponent) buildWorker() (worker Worker, err error) {
 	defer func() {
+		if err != nil {
+			slog.Error("daemon build failed", "component", c.name, "error", err)
+		}
+	}()
+	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("bootstrap: daemon %q Build panicked: %v", c.name, r)
 		}
@@ -270,6 +281,11 @@ func (c *daemonComponent) buildWorker() (worker Worker, err error) {
 
 // startWorker calls worker.Start with panic recovery.
 func (c *daemonComponent) startWorker(worker Worker) (err error) {
+	defer func() {
+		if err != nil {
+			slog.Error("daemon start failed", "component", c.name, "error", err)
+		}
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("bootstrap: daemon %q Start panicked: %v", c.name, r)
@@ -314,6 +330,7 @@ func (c *daemonComponent) nextBackoff(current time.Duration) time.Duration {
 // reportFatal sends an error to the done channel exactly once.
 func (c *daemonComponent) reportFatal(err error) {
 	c.fatalOnce.Do(func() {
+		slog.Error("daemon fatal error", "component", c.name, "error", err)
 		c.done <- err
 	})
 }

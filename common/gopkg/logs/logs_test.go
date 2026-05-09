@@ -244,3 +244,72 @@ func TestLazyInit(t *testing.T) {
 		t.Error("Default() returned different loggers across calls")
 	}
 }
+
+func TestDebugContext(t *testing.T) {
+	resetInit()
+
+	t.Cleanup(func() { otel.LoggerProviderSet = false })
+	otel.LoggerProviderSet = false
+
+	stop := captureStdout(t)
+	defer stop()
+
+	DebugContext(context.Background(), "debug-message", "key", "value")
+
+	output := stop()
+	if strings.Contains(output, "debug-message") {
+		t.Errorf("expected debug message to be suppressed, got: %s", output)
+	}
+}
+
+func TestWarnContext(t *testing.T) {
+	resetInit()
+
+	t.Cleanup(func() { otel.LoggerProviderSet = false })
+	otel.LoggerProviderSet = false
+
+	stop := captureStdout(t)
+	defer stop()
+
+	WarnContext(context.Background(), "warn-message", "key", "value")
+
+	output := stop()
+	if !strings.Contains(output, "msg=") {
+		t.Errorf("expected text output containing 'msg=', got: %s", output)
+	}
+	if !strings.Contains(output, "warn-message") {
+		t.Errorf("expected output containing 'warn-message', got: %s", output)
+	}
+	if !strings.Contains(output, "key=value") {
+		t.Errorf("expected output containing 'key=value', got: %s", output)
+	}
+}
+
+func TestWithLogger(t *testing.T) {
+	resetInit()
+
+	t.Cleanup(func() { otel.LoggerProviderSet = false })
+	otel.LoggerProviderSet = false
+
+	custom := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx := WithLogger(context.Background(), custom)
+
+	logger := FromContext(ctx)
+	if logger != custom {
+		t.Error("WithLogger should store the custom logger in context")
+	}
+}
+
+func TestWithLogger_NilLogger(t *testing.T) {
+	resetInit()
+
+	t.Cleanup(func() { otel.LoggerProviderSet = false })
+	otel.LoggerProviderSet = false
+
+	ctx := WithLogger(context.Background(), nil)
+
+	logger := FromContext(ctx)
+	if logger != Default() {
+		t.Error("WithLogger(nil) should cause FromContext to return Default()")
+	}
+}

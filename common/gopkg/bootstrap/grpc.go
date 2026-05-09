@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"log/slog"
 	"net"
 
 	"google.golang.org/grpc"
@@ -89,8 +90,13 @@ func (c *grpcServerComponent) Stage() Stage {
 // channel so the monitor goroutine never blocks.
 func (c *grpcServerComponent) Start(_ context.Context) error {
 	go func() {
-		c.done <- c.server.Serve(c.listener)
+		err := c.server.Serve(c.listener)
+		if err != nil {
+			slog.Error("grpc server exited", "component", c.name, "error", err)
+		}
+		c.done <- err
 	}()
+	slog.Info("grpc server started", "component", c.name)
 	return nil
 }
 
@@ -107,6 +113,7 @@ func (c *grpcServerComponent) Stop(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		slog.WarnContext(ctx, "grpc server force stop", "component", c.name)
 		callForceStop(c.server)
 		return ctx.Err()
 	}

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"log/slog"
 
 	"dominion/common/gopkg/otel"
 )
@@ -42,9 +43,11 @@ func (c *otelComponent) Stage() Stage {
 func (c *otelComponent) Start(ctx context.Context) error {
 	shutdown, err := otelInit(ctx, c.opts...)
 	if err != nil {
+		slog.ErrorContext(ctx, "otel start failed", "component", c.name, "error", err)
 		return err
 	}
 	c.shutdown = shutdown
+	slog.InfoContext(ctx, "otel started", "component", c.name)
 	return nil
 }
 

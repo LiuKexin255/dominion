@@ -69,3 +69,31 @@ func With(ctx context.Context, args ...any) context.Context {
 	logger := FromContext(ctx).With(args...)
 	return context.WithValue(ctx, loggerKey{}, logger)
 }
+
+// DebugContext logs at LevelDebug using the logger associated with ctx.
+func DebugContext(ctx context.Context, msg string, args ...any) {
+	FromContext(ctx).DebugContext(ctx, msg, args...)
+}
+
+// WarnContext logs at LevelWarn using the logger associated with ctx.
+func WarnContext(ctx context.Context, msg string, args ...any) {
+	FromContext(ctx).WarnContext(ctx, msg, args...)
+}
+
+// WithLogger stores the given logger in ctx and returns the new context.
+// If logger is nil, ctx is returned unchanged so that FromContext falls
+// back to the default logger.
+func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	if logger == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, loggerKey{}, logger)
+}
+
+// SetDefault replaces the package-level default logger.
+// This is intended for testing; production code should rely on
+// the auto-detected default.
+func SetDefault(logger *slog.Logger) {
+	initOnce.Do(func() {})
+	defaultLogger = logger
+}

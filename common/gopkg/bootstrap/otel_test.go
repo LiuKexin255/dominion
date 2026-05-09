@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"dominion/common/gopkg/otel"
@@ -86,5 +87,43 @@ func TestOTel_StartFailureReturnsError(t *testing.T) {
 	// Stop on failed start should return nil (shutdown is nil).
 	if err := c.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after failed Start returned unexpected error: %v", err)
+	}
+}
+
+func TestOTel_StartSuccessLog(t *testing.T) {
+	buf := captureSlog(t)
+	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+		return func(_ context.Context) error { return nil }, nil
+	})
+
+	c := OTel()
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "otel started") {
+		t.Fatal("expected 'otel started' in log output")
+	}
+	if !strings.Contains(output, "component=otel") {
+		t.Fatal("expected component=otel in log output")
+	}
+}
+
+func TestOTel_StartFailureLog(t *testing.T) {
+	buf := captureSlog(t)
+	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+		return nil, errors.New("init failed")
+	})
+
+	c := OTel()
+	_ = c.Start(context.Background())
+
+	output := buf.String()
+	if !strings.Contains(output, "otel start failed") {
+		t.Fatal("expected 'otel start failed' in log output")
+	}
+	if !strings.Contains(output, "component=otel") {
+		t.Fatal("expected component=otel in log output")
 	}
 }

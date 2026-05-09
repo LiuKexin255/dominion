@@ -1,10 +1,15 @@
 package solver
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
+
+	"dominion/common/gopkg/logs"
 )
 
 // fakeDeployClient implements DeployEndpointClient for testing.
@@ -195,6 +200,79 @@ func TestDeployResolver_Resolve(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("Resolve(%#v) = %v, want %v", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeployResolver_Resolve_WarnOnNoEndpoints(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  *ServiceEndpointsInfo
+		target    *Target
+		wantLog   bool
+		wantCount string
+	}{
+		{
+			name:      "nil info logs warning with endpoint_count 0",
+			response:  nil,
+			target:    &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
+			wantLog:   true,
+			wantCount: "endpoint_count=0",
+		},
+		{
+			name: "empty endpoints after filter logs warning",
+			response: &ServiceEndpointsInfo{
+				Endpoints: []string{"10.0.0.1:8080"},
+			},
+			target:    &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
+			wantLog:   true,
+			wantCount: "endpoint_count=0",
+		},
+		{
+			name: "matching endpoints does not log warning",
+			response: &ServiceEndpointsInfo{
+				Endpoints: []string{"10.0.0.1:50051"},
+			},
+			target:  &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
+			wantLog: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			ctx := logs.WithLogger(context.Background(), logger)
+
+			client := &fakeDeployClient{response: tt.response}
+			resolver := &DeployResolver{client: client, scope: "dev", envName: "alpha"}
+
+			// when
+			_, err := resolver.Resolve(ctx, tt.target)
+
+			// then
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			output := buf.String()
+			if tt.wantLog {
+				if !strings.Contains(output, "deploy resolver returned no endpoints") {
+					t.Fatalf("log output = %q, want warning message", output)
+				}
+				if !strings.Contains(output, tt.wantCount) {
+					t.Fatalf("log output = %q, want %q", output, tt.wantCount)
+				}
+				if !strings.Contains(output, "app=app-a") {
+					t.Fatalf("log output = %q, want app=app-a", output)
+				}
+				if !strings.Contains(output, "service=svc-b") {
+					t.Fatalf("log output = %q, want service=svc-b", output)
+				}
+			} else {
+				if strings.Contains(output, "deploy resolver returned no endpoints") {
+					t.Fatalf("unexpected warning log: %q", output)
+				}
 			}
 		})
 	}

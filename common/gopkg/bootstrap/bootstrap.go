@@ -9,9 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -98,14 +100,17 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 	})
 
 	// 3. Start each component sequentially. Track which ones started successfully.
+	slog.InfoContext(ctx, "bootstrap starting", "components", len(sorted), "signals", fmtSignalNames(signals))
 	var started []Component
 	for _, c := range sorted {
 		if err := c.Start(ctx); err != nil {
+			slog.ErrorContext(ctx, "component start failed, rolling back", "component", c.Name(), "stage", c.Stage().String(), "error", err)
 			// 4. Rollback: stop all successfully-started components in reverse order.
 			rollbackErr := b.shutdown(started)
 			startErr := fmt.Errorf("bootstrap: component %q failed to start: %w", c.Name(), err)
 			return errors.Join(startErr, rollbackErr)
 		}
+		slog.InfoContext(ctx, "component started", "component", c.Name(), "stage", c.Stage().String())
 		started = append(started, c)
 	}
 
@@ -143,6 +148,7 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 // shutdown stops all started components in reverse order using the
 // configured shutdown timeout as a unified deadline.
 func (b *Bootstrap) shutdown(started []Component) error {
+	slog.Info("shutdown starting", "components", len(started), "timeout", b.cfg.shutdownTimeout)
 	stopCtx, cancel := context.WithTimeout(context.Background(), b.cfg.shutdownTimeout)
 	defer cancel()
 
@@ -156,6 +162,7 @@ func (b *Bootstrap) shutdown(started []Component) error {
 				}
 			}()
 			if err := c.Stop(stopCtx); err != nil {
+				slog.Error("component stop failed", "component", c.Name(), "error", err)
 				errs = append(errs, fmt.Errorf("bootstrap: component %q Stop: %w", c.Name(), err))
 			}
 		}()
@@ -173,6 +180,7 @@ func (b *Bootstrap) monitorExitWatchers(components []Component, exitCh chan<- er
 		}
 		go func(name string, done <-chan error) {
 			if err := <-done; err != nil {
+				slog.Error("component exited unexpectedly", "component", name, "error", err)
 				select {
 				case exitCh <- fmt.Errorf("bootstrap: component %q exited: %w", name, err):
 				default:
@@ -180,4 +188,13 @@ func (b *Bootstrap) monitorExitWatchers(components []Component, exitCh chan<- er
 			}
 		}(c.Name(), ew.Done())
 	}
+}
+
+// fmtSignalNames returns a comma-separated string of signal names for logging.
+func fmtSignalNames(signals []os.Signal) string {
+	names := make([]string, len(signals))
+	for i, s := range signals {
+		names[i] = s.String()
+	}
+	return strings.Join(names, ",")
 }

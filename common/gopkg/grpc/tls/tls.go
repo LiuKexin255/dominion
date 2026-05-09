@@ -1,11 +1,14 @@
 package tls
 
 import (
+	"context"
 	stdtls "crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
+
+	"dominion/common/gopkg/logs"
 
 	"google.golang.org/grpc/credentials"
 )
@@ -57,9 +60,11 @@ type ServerConfig struct {
 func NewClientTransportCredentials(config *ClientConfig) (credentials.TransportCredentials, error) {
 	tlsConfig, err := newClientTLSConfig(config)
 	if err != nil {
+		logs.ErrorContext(context.Background(), "client TLS config build failed", "error", err)
 		return nil, err
 	}
 
+	logs.InfoContext(context.Background(), "client TLS credentials created", "ca_file", config.CAFile, "server_name", config.ServerName)
 	return credentials.NewTLS(tlsConfig), nil
 }
 
@@ -67,9 +72,11 @@ func NewClientTransportCredentials(config *ClientConfig) (credentials.TransportC
 func NewServerTransportCredentials(config *ServerConfig) (credentials.TransportCredentials, error) {
 	tlsConfig, err := newServerTLSConfig(config)
 	if err != nil {
+		logs.ErrorContext(context.Background(), "server TLS config build failed", "error", err)
 		return nil, err
 	}
 
+	logs.InfoContext(context.Background(), "server TLS credentials created", "cert_file", config.CertFile, "key_file", config.KeyFile)
 	return credentials.NewTLS(tlsConfig), nil
 }
 
@@ -79,9 +86,11 @@ func ClientTransportCredentials() credentials.TransportCredentials {
 	serverName, hasServerName := lookupTrimmedEnv(envTLSServerName)
 	caFile, hasCAFile := lookupTrimmedEnv(envTLSCAFile)
 	if !hasServerName && !hasCAFile {
+		logs.InfoContext(context.Background(), "TLS not configured for client, using plain connection")
 		return nil
 	}
 	if serverName == "" {
+		logs.InfoContext(context.Background(), "TLS not configured for client, using plain connection")
 		return nil
 	}
 
@@ -93,6 +102,7 @@ func ClientTransportCredentials() credentials.TransportCredentials {
 		panic(fmt.Sprintf("failed to create client TLS credentials: %v", err))
 	}
 
+	logs.InfoContext(context.Background(), "client TLS configured from environment", "server_name", serverName)
 	return transportCredentials
 }
 
@@ -104,6 +114,7 @@ func ServerTransportCredentials() credentials.TransportCredentials {
 	_, hasCAFile := lookupTrimmedEnv(envTLSCAFile)
 	_, hasServerName := lookupTrimmedEnv(envTLSServerName)
 	if !hasCertFile && !hasKeyFile && !hasCAFile && !hasServerName {
+		logs.InfoContext(context.Background(), "TLS not configured for server, using plain connection")
 		return nil
 	}
 
@@ -115,6 +126,7 @@ func ServerTransportCredentials() credentials.TransportCredentials {
 		panic(fmt.Sprintf("failed to create server TLS credentials: %v", err))
 	}
 
+	logs.InfoContext(context.Background(), "server TLS configured from environment", "cert_file", certFile)
 	return transportCredentials
 }
 

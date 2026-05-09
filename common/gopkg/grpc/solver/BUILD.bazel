@@ -10,6 +10,7 @@ go_library(
     importpath = "dominion/common/gopkg/grpc/solver",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
         "//common/gopkg/solver",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",
@@ -26,6 +27,7 @@ go_unittest(
     ],
     embed = [":solver"],
     deps = [
+        "//common/gopkg/logs",
         "//common/gopkg/solver",
         "@org_golang_google_grpc//resolver",
         "@org_golang_google_grpc//serviceconfig",

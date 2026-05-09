@@ -1,12 +1,15 @@
 package mongo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
 
+	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -276,4 +279,108 @@ func Test_envOrDefault(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewClientLogging(t *testing.T) {
+	t.Run("success logs target and endpoint info", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+		logs.SetDefault(slog.New(handler))
+
+		originalLookupEnv := lookupEnv
+		originalNewMongoClient := newMongoClient
+		lookupEnv = func(key string) (string, bool) { return "dev", true }
+		newMongoClient = func(uri string) (*mongodriver.Client, error) {
+			return new(mongodriver.Client), nil
+		}
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+			newMongoClient = originalNewMongoClient
+		})
+
+		got, err := NewClient("app/mongo-main", withStubResolver(&stubResolver{
+			resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")},
+		}))
+		if err != nil {
+			t.Fatalf("NewClient() unexpected error: %v", err)
+		}
+		if got == nil {
+			t.Fatal("NewClient() = nil, want client")
+		}
+
+		output := buf.String()
+		if !strings.Contains(output, "mongo client initializing") {
+			t.Errorf("log missing 'mongo client initializing'\n got:\n%s", output)
+		}
+		if !strings.Contains(output, "mongo endpoints resolved") {
+			t.Errorf("log missing 'mongo endpoints resolved'\n got:\n%s", output)
+		}
+		if !strings.Contains(output, "mongo endpoint selected") {
+			t.Errorf("log missing 'mongo endpoint selected'\n got:\n%s", output)
+		}
+		if !strings.Contains(output, "10.0.0.12") {
+			t.Errorf("log missing resolved address\n got:\n%s", output)
+		}
+		if !strings.Contains(output, "address_count") {
+			t.Errorf("log missing address_count\n got:\n%s", output)
+		}
+	})
+
+	t.Run("client creation error logs safe fields, not URI", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+		logs.SetDefault(slog.New(handler))
+
+		originalLookupEnv := lookupEnv
+		originalNewMongoClient := newMongoClient
+		lookupEnv = func(key string) (string, bool) { return "dev", true }
+		newMongoClient = func(uri string) (*mongodriver.Client, error) {
+			return nil, errors.New("connection refused")
+		}
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+			newMongoClient = originalNewMongoClient
+		})
+
+		_, err := NewClient("app/mongo-main", withStubResolver(&stubResolver{
+			resolveAddresses: []string{net.JoinHostPort("10.0.0.12", "27017")},
+		}))
+		if err == nil {
+			t.Fatal("NewClient() expected error")
+		}
+
+		output := buf.String()
+		if !strings.Contains(output, "mongo client failed") {
+			t.Errorf("log missing 'mongo client failed'\n got:\n%s", output)
+		}
+		if !strings.Contains(output, "app/mongo-main") {
+			t.Errorf("log missing safe target\n got:\n%s", output)
+		}
+		// FORBIDDEN: URI, password, or auth credentials
+		if strings.Contains(output, "mongodb://") {
+			t.Error("log contains mongodb URI with password — FORBIDDEN")
+		}
+		if strings.Contains(output, "ZOp8SzWTYjjDRAtgSa3MgPeRQ8Zp3aZQ") {
+			t.Error("log contains password — FORBIDDEN")
+		}
+		if strings.Contains(output, "authSource") {
+			t.Error("log contains auth credentials — FORBIDDEN")
+		}
+	})
+
+	t.Run("invalid target produces no log output", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+		logs.SetDefault(slog.New(handler))
+
+		_, err := NewClient("invalid-target")
+		if err == nil {
+			t.Fatal("NewClient() expected error")
+		}
+
+		output := buf.String()
+		if output != "" {
+			t.Errorf("expected no log output for invalid target, got:\n%s", output)
+		}
+	})
 }

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -58,6 +59,7 @@ func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, err
 	if err != nil {
 		return nil, fmt.Errorf("invalid target %q: want app/name", rawTarget)
 	}
+	logs.InfoContext(context.Background(), "mongo client initializing", "app", target.App, "service", target.Service)
 
 	resolver, err := options.resolverBuilder()
 	if err != nil {
@@ -71,11 +73,14 @@ func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, err
 	if len(addresses) == 0 {
 		return nil, fmt.Errorf("resolve mongo endpoint for target %q/%q: no ready endpoints found", target.App, target.Service)
 	}
+	logs.InfoContext(context.Background(), "mongo endpoints resolved", "address_count", len(addresses))
 	address := addresses[0]
+	logs.InfoContext(context.Background(), "mongo endpoint selected", "address", address)
 
 	uri := buildMongoURI(target, address)
 	client, err := newMongoClient(uri)
 	if err != nil {
+		logs.ErrorContext(context.Background(), "mongo client failed", "target", rawTarget, "error", err)
 		return nil, fmt.Errorf("create mongo client for %q: %w", rawTarget, err)
 	}
 

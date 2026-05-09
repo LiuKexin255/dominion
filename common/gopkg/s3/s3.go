@@ -2,8 +2,11 @@
 package s3
 
 import (
+	"context"
 	"fmt"
 	"os"
+
+	"dominion/common/gopkg/logs"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -98,6 +101,8 @@ func NewS3Client(opts ...ClientOption) (*minio.Client, error) {
 		cfg.region = DefaultRegion
 	}
 
+	logs.InfoContext(context.Background(), "s3 client initializing", "endpoint", Endpoint, "region", cfg.region)
+
 	client, err := newMinioClient(Endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(cfg.accessKey, cfg.secretKey, ""),
 		Secure:       true,
@@ -105,6 +110,7 @@ func NewS3Client(opts ...ClientOption) (*minio.Client, error) {
 		BucketLookup: minio.BucketLookupPath,
 	})
 	if err != nil {
+		logs.ErrorContext(context.Background(), "s3 client creation failed", "endpoint", Endpoint, "error", err)
 		return nil, fmt.Errorf("create S3 client for endpoint %q: %w", Endpoint, err)
 	}
 
