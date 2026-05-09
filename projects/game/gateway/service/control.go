@@ -1,10 +1,17 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/projects/game/gateway/domain"
+)
+
+const (
+	logFieldOperationID   = "operation_id"
+	logFieldOperationKind = "operation_kind"
 )
 
 type inflight struct {
@@ -63,6 +70,12 @@ func (e *ControlExecutor) SubmitOperation(
 
 	e.inflight[sessionID] = op
 
+	logs.InfoContext(context.Background(), "control: operation submitted",
+		logFieldSessionID, sessionID,
+		logFieldOperationID, req.RequestID,
+		logFieldOperationKind, req.Kind,
+	)
+
 	return op.op, nil
 }
 
@@ -74,6 +87,10 @@ func (e *ControlExecutor) HandleAgentAck(sessionID string) (string, error) {
 	if !exists {
 		return "", domain.ErrSessionNotFound
 	}
+
+	logs.InfoContext(context.Background(), "control: agent ack",
+		logFieldSessionID, sessionID,
+	)
 
 	return op.op.RequesterConnID, nil
 }
@@ -90,6 +107,10 @@ func (e *ControlExecutor) HandleAgentResult(sessionID string) (string, bool, err
 	requesterConnID := op.op.RequesterConnID
 	flashSnapshot := op.op.FlashSnapshot
 	e.mu.Unlock()
+
+	logs.InfoContext(context.Background(), "control: agent result",
+		logFieldSessionID, sessionID,
+	)
 
 	return requesterConnID, flashSnapshot, nil
 }
@@ -115,6 +136,10 @@ func (e *ControlExecutor) HandleAgentDisconnect(sessionID string) {
 	}
 	onCompletion := e.completionCh
 	e.mu.Unlock()
+
+	logs.InfoContext(context.Background(), "control: agent disconnected",
+		logFieldSessionID, sessionID,
+	)
 
 	select {
 	case onCompletion <- completion:
@@ -143,6 +168,11 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 	}
 	onCompletion := e.completionCh
 	e.mu.Unlock()
+
+	logs.ErrorContext(context.Background(), "control: operation timed out",
+		logFieldSessionID, sessionID,
+		logFieldOperationID, operationID,
+	)
 
 	select {
 	case onCompletion <- completion:

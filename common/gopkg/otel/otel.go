@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -62,15 +63,21 @@ var (
 	initShutdown Shutdown
 )
 
-// LoggerProviderSet indicates whether the global LoggerProvider has been
-// initialized by initDeploy().  Non-deploy initialization does not create
-// a LoggerProvider, leaving this false.
-var LoggerProviderSet bool
+// loggerProviderSet is a concurrent-safe flag that indicates whether the
+// global LoggerProvider has been initialized by initDeploy().  Non-deploy
+// initialization does not create a LoggerProvider, leaving this false.
+var loggerProviderSet atomic.Bool
+
+// setLoggerProviderReady marks the global LoggerProvider as initialized.
+// It is called only from initDeploy().
+func setLoggerProviderReady() {
+	loggerProviderSet.Store(true)
+}
 
 // IsLoggerProviderSet reports whether initDeploy() has set a global
 // LoggerProvider.
 func IsLoggerProviderSet() bool {
-	return LoggerProviderSet
+	return loggerProviderSet.Load()
 }
 
 // isDeploy returns true when SERVICE_APP, DOMINION_ENVIRONMENT, and POD_NAMESPACE
@@ -199,7 +206,7 @@ func initDeploy(ctx context.Context, cfg *config) (Shutdown, error) {
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
 	logglobal.SetLoggerProvider(lp)
-	LoggerProviderSet = true
+	setLoggerProviderReady()
 
 	// Set global propagator.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(

@@ -12,6 +12,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/logs",
+        "//common/gopkg/otel",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",
         "//projects/game/gateway/domain/sessionmanager",

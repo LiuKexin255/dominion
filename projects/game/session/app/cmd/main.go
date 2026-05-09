@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/grpc"
+	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/mongo"
 	"dominion/common/gopkg/solver"
 	"dominion/projects/game/pkg/token"
@@ -79,11 +81,12 @@ func main() {
 	handler := session.NewHandler(svc)
 
 	// Server component.
-	httpMux := runtime.NewServeMux()
+	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
 	session.RegisterSessionServiceHandlerServer(context.Background(), httpMux, handler)
-	httpServer := &http.Server{Addr: httpAddr, Handler: httpMux}
+	httpServer := &http.Server{Addr: httpAddr, Handler: phttp.Handler(httpMux, "session-http")}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
+	bs.Register(bootstrap.OTel())
 	bs.Register(bootstrap.MongoClient("mongo", client))
 	bs.Register(bootstrap.HTTPServer("session-http", httpServer))
 	if err := bs.Run(context.Background()); err != nil {

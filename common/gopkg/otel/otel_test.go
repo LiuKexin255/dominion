@@ -186,8 +186,8 @@ func Test_isDeploy(t *testing.T) {
 func TestInit_NonDeploy(t *testing.T) {
 	resetInitState(t)
 	restoreGlobalProviders(t)
-	LoggerProviderSet = false
-	t.Cleanup(func() { LoggerProviderSet = false })
+	loggerProviderSet.Store(false)
+	t.Cleanup(func() { loggerProviderSet.Store(false) })
 
 	stubEnv(t, nil)
 
@@ -228,7 +228,7 @@ func TestInit_NonDeploy(t *testing.T) {
 	}
 
 	// Non-deploy path should NOT set LoggerProviderSet.
-	if LoggerProviderSet {
+	if IsLoggerProviderSet() {
 		t.Fatal("LoggerProviderSet = true after non-deploy init, want false")
 	}
 }
@@ -236,8 +236,8 @@ func TestInit_NonDeploy(t *testing.T) {
 func TestInit_Deploy(t *testing.T) {
 	resetInitState(t)
 	restoreGlobalProviders(t)
-	LoggerProviderSet = false
-	t.Cleanup(func() { LoggerProviderSet = false })
+	loggerProviderSet.Store(false)
+	t.Cleanup(func() { loggerProviderSet.Store(false) })
 
 	stubEnv(t, map[string]string{
 		"SERVICE_APP":          "myapp",
@@ -295,7 +295,7 @@ func TestInit_Deploy(t *testing.T) {
 	}
 
 	// Deploy path should set LoggerProviderSet.
-	if !LoggerProviderSet {
+	if !IsLoggerProviderSet() {
 		t.Fatal("LoggerProviderSet = false after deploy init, want true")
 	}
 }
@@ -343,8 +343,8 @@ func TestTraceID_WithSpan(t *testing.T) {
 func TestInit_PartialFailure(t *testing.T) {
 	resetInitState(t)
 	restoreGlobalProviders(t)
-	LoggerProviderSet = false
-	t.Cleanup(func() { LoggerProviderSet = false })
+	loggerProviderSet.Store(false)
+	t.Cleanup(func() { loggerProviderSet.Store(false) })
 
 	stubEnv(t, map[string]string{
 		"SERVICE_APP":          "myapp",
@@ -388,7 +388,7 @@ func TestInit_PartialFailure(t *testing.T) {
 	}
 
 	// LoggerProviderSet should remain false after partial failure.
-	if LoggerProviderSet {
+	if IsLoggerProviderSet() {
 		t.Fatal("LoggerProviderSet = true after partial failure, want false")
 	}
 }
@@ -424,8 +424,8 @@ func TestOptions(t *testing.T) {
 func TestInit_Idempotent(t *testing.T) {
 	resetInitState(t)
 	restoreGlobalProviders(t)
-	LoggerProviderSet = false
-	t.Cleanup(func() { LoggerProviderSet = false })
+	loggerProviderSet.Store(false)
+	t.Cleanup(func() { loggerProviderSet.Store(false) })
 
 	stubEnv(t, nil)
 
@@ -455,7 +455,7 @@ func TestInit_Idempotent(t *testing.T) {
 	}
 
 	// Non-deploy path should NOT set LoggerProviderSet.
-	if LoggerProviderSet {
+	if IsLoggerProviderSet() {
 		t.Fatal("LoggerProviderSet = true after non-deploy init, want false")
 	}
 }

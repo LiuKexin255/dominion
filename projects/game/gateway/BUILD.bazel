@@ -46,9 +46,12 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/logs",
+        "//common/gopkg/otel",
         "//projects/game/gateway/domain",
         "//projects/game/pkg/token",
         "@com_github_coder_websocket//:websocket",
+        "@io_opentelemetry_go_otel//attribute",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
         "@org_golang_google_protobuf//encoding/protojson",

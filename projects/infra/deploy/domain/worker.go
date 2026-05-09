@@ -5,12 +5,26 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
 	defaultMaxRetries  = 5
 	defaultIterTimeout = 5 * time.Minute
 	maxRetryDelay      = 30 * time.Second
+
+	spanProcess      = "deploy.worker.process"
+	spanApplyPresent = "deploy.worker.apply_present"
+	spanDeleteAbsent = "deploy.worker.delete_absent"
+
+	logFieldEnvName    = "env_name"
+	logFieldRetryCount = "retry_count"
+	logFieldGeneration = "generation"
+	logFieldError      = "error"
 )
 
 // EnvironmentRuntime reconciles domain environments with the runtime.
@@ -62,17 +76,35 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 
 		iterCtx, cancel := context.WithTimeout(ctx, w.iterTimeout)
-		err := w.process(iterCtx, item)
+
+		logs.InfoContext(iterCtx, "dequeue environment",
+			logFieldEnvName, item.EnvName.String(),
+			logFieldRetryCount, item.RetryCount,
+		)
+
+		iterCtx, processSpan := otel.Tracer().Start(iterCtx, spanProcess)
+		processErr := w.process(iterCtx, item)
+		processSpan.End()
 		cancel()
 		w.queue.Complete(item.EnvName)
 
 		switch {
-		case err == nil:
+		case processErr == nil:
 			continue
-		case errors.Is(err, ErrRetryCounted):
+		case errors.Is(processErr, ErrRetryCounted):
 			if item.RetryCount >= w.maxRetries {
+				logs.ErrorContext(ctx, "max retry exceeded, dropping work item",
+					logFieldEnvName, item.EnvName.String(),
+					logFieldRetryCount, item.RetryCount,
+					logFieldError, processErr,
+				)
 				continue
 			}
+			logs.WarnContext(ctx, "apply/delete failed, scheduling retry",
+				logFieldEnvName, item.EnvName.String(),
+				logFieldRetryCount, item.RetryCount,
+				logFieldError, processErr,
+			)
 			w.scheduleRetry(ctx, &WorkItem{EnvName: item.EnvName, RetryCount: item.RetryCount + 1}, retryBackoff(item.RetryCount))
 		default:
 			continue
@@ -112,6 +144,10 @@ func (w *Worker) process(ctx context.Context, item *WorkItem) error {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
+		logs.ErrorContext(ctx, "worker fatal: load environment",
+			logFieldEnvName, item.EnvName.String(),
+			logFieldError, err,
+		)
 		return fmt.Errorf("%w: load environment %s: %v", ErrWorkerFatal, item.EnvName, err)
 	}
 	processedGeneration := env.Generation()
@@ -123,6 +159,10 @@ func (w *Worker) process(ctx context.Context, item *WorkItem) error {
 	case DesiredAbsent:
 		processErr = w.processAbsent(ctx, env)
 	default:
+		logs.ErrorContext(ctx, "worker fatal: unsupported desired state",
+			logFieldEnvName, env.Name().String(),
+			logFieldError, fmt.Errorf("unsupported desired state %v", env.Status().Desired),
+		)
 		return fmt.Errorf("%w: unsupported desired state %v for %s", ErrWorkerFatal, env.Status().Desired, env.Name())
 	}
 
@@ -150,6 +190,13 @@ func (w *Worker) processPresent(ctx context.Context, env *Environment, processed
 }
 
 func (w *Worker) applyPresent(ctx context.Context, env *Environment, processedGeneration int64) error {
+	ctx, span := otel.Tracer().Start(ctx, spanApplyPresent)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(logFieldEnvName, env.Name().String()),
+		attribute.Int64(logFieldGeneration, processedGeneration),
+	)
+
 	progress := func(msg string) {
 		_ = env.SetReconcilingMessage(msg)
 	}
@@ -175,6 +222,11 @@ func (w *Worker) applyPresent(ctx context.Context, env *Environment, processedGe
 		return fmt.Errorf("%w: save ready %s: %v", ErrWorkerFatal, env.Name(), err)
 	}
 
+	logs.InfoContext(ctx, "apply succeeded",
+		logFieldEnvName, env.Name().String(),
+		logFieldGeneration, processedGeneration,
+	)
+
 	return nil
 }
 
@@ -196,6 +248,12 @@ func (w *Worker) processAbsent(ctx context.Context, env *Environment) error {
 }
 
 func (w *Worker) deleteAbsent(ctx context.Context, env *Environment) error {
+	ctx, span := otel.Tracer().Start(ctx, spanDeleteAbsent)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(logFieldEnvName, env.Name().String()),
+	)
+
 	if err := w.runtime.Delete(ctx, env.Name()); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
@@ -212,6 +270,10 @@ func (w *Worker) deleteAbsent(ctx context.Context, env *Environment) error {
 	if err := w.repo.Delete(ctx, env.Name()); err != nil {
 		return fmt.Errorf("%w: delete environment %s: %v", ErrWorkerFatal, env.Name(), err)
 	}
+
+	logs.InfoContext(ctx, "delete succeeded",
+		logFieldEnvName, env.Name().String(),
+	)
 
 	return nil
 }

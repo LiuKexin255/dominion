@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	infraResourceMongoDB          = "mongodb"
-	maxInfraPersistenceCapacity   = "1Ti"
+	infraResourceMongoDB        = "mongodb"
+	maxInfraPersistenceCapacity = "1Ti"
 )
 
 // DeployObjects 表示一次部署所需的 Kubernetes 工作负载对象集合。

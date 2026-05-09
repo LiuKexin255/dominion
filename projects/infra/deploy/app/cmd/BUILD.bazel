@@ -10,6 +10,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/http",
         "//common/gopkg/mongo",
         "//projects/infra/deploy",
         "//projects/infra/deploy/app",

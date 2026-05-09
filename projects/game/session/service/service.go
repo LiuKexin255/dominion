@@ -7,12 +7,27 @@ import (
 	"fmt"
 	"net/url"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/runtime/gateway"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
-const sessionNamePrefix = "sessions/"
+const (
+	sessionNamePrefix = "sessions/"
+
+	spanCreate    = "session.create"
+	spanReconnect = "session.reconnect"
+
+	logFieldSessionID    = "session_id"
+	logFieldGatewayID    = "gateway_id"
+	logFieldNewGatewayID = "new_gateway_id"
+	logFieldCount        = "count"
+	logFieldError        = "error"
+)
 
 // SessionService orchestrates session lifecycle operations.
 type SessionService struct {
@@ -32,6 +47,9 @@ func NewSessionService(repo domain.Repository, tokenIssuer token.Issuer, gateway
 
 // CreateSession creates, assigns, persists, and returns a new session.
 func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.SessionType, sessionID string) (*domain.Session, error) {
+	ctx, span := otel.Tracer().Start(ctx, spanCreate)
+	defer span.End()
+
 	session, err := domain.NewSession(sessionType, sessionID)
 	if err != nil {
 		return nil, err
@@ -43,6 +61,9 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
+	logs.InfoContext(ctx, "gateway assigned", logFieldSessionID, session.Snapshot().ID, logFieldGatewayID, assignment.GatewayID)
+	span.SetAttributes(attribute.String(logFieldSessionID, session.Snapshot().ID))
+	span.SetAttributes(attribute.String(logFieldGatewayID, assignment.GatewayID))
 
 	if err := s.enrichWithConnectURL(ctx, session); err != nil {
 		return nil, err
@@ -50,6 +71,7 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, err
 	}
+	logs.InfoContext(ctx, "session saved", logFieldSessionID, session.Snapshot().ID)
 
 	return session, nil
 }
@@ -60,6 +82,8 @@ func (s *SessionService) GetSession(ctx context.Context, name string) (*domain.S
 	if err != nil {
 		return nil, err
 	}
+
+	logs.InfoContext(ctx, "session loaded", logFieldSessionID, session.Snapshot().ID)
 
 	if err := s.enrichWithConnectURL(ctx, session); err != nil {
 		return nil, err
@@ -75,6 +99,8 @@ func (s *SessionService) ListSessions(ctx context.Context) ([]*domain.Session, e
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 
+	logs.InfoContext(ctx, "sessions listed", logFieldCount, len(sessions))
+
 	for _, session := range sessions {
 		if err := s.enrichWithConnectURL(ctx, session); err != nil {
 			return nil, err
@@ -86,11 +112,20 @@ func (s *SessionService) ListSessions(ctx context.Context) ([]*domain.Session, e
 
 // DeleteSession removes a session by resource name.
 func (s *SessionService) DeleteSession(ctx context.Context, name string) error {
-	return s.repo.Delete(ctx, name)
+	err := s.repo.Delete(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	logs.InfoContext(ctx, "session deleted", logFieldSessionID, name)
+	return nil
 }
 
 // ReconnectSession reassigns a gateway, issues a new token, and persists the updated session.
 func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*domain.Session, error) {
+	ctx, span := otel.Tracer().Start(ctx, spanReconnect)
+	defer span.End()
+
 	session, err := s.repo.Get(ctx, name)
 	if err != nil {
 		return nil, err
@@ -103,6 +138,10 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
+	logs.InfoContext(ctx, "gateway reassigned", logFieldSessionID, session.Snapshot().ID, logFieldNewGatewayID, assignment.GatewayID)
+	span.SetAttributes(attribute.String(logFieldSessionID, session.Snapshot().ID))
+	span.SetAttributes(attribute.String(logFieldNewGatewayID, assignment.GatewayID))
+
 	if err := session.MarkActive(); err != nil {
 		return nil, err
 	}
@@ -113,6 +152,7 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, err
 	}
+	logs.InfoContext(ctx, "session saved", logFieldSessionID, session.Snapshot().ID)
 
 	return session, nil
 }

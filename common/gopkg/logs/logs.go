@@ -18,6 +18,17 @@ var (
 	newDeployHandler = func(name string) slog.Handler {
 		return otelslog.NewHandler(name)
 	}
+
+	// newConsoleHandler creates the handler for the console path.
+	// Overridable for tests.
+	newConsoleHandler = func() slog.Handler {
+		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+
+	// isInDeployMode reports whether the process is running in a dominion
+	// deployment with a valid OTel log provider. It is overridable for tests.
+	// In production it delegates to otel.IsLoggerProviderSet.
+	isInDeployMode = otel.IsLoggerProviderSet
 )
 
 var (
@@ -25,22 +36,75 @@ var (
 	initOnce      = new(sync.Once)
 )
 
-func initLogger() {
-	if otel.IsLoggerProviderSet() {
-		defaultLogger = slog.New(newDeployHandler("dominion/common/gopkg/logs"))
-	} else {
-		handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-		defaultLogger = slog.New(handler)
+// dynamicHandler switches between console and OTel backends at log-write
+// time based on whether the OTel LoggerProvider is available. Both handlers
+// are pre-constructed; calls to Enabled and Handle are delegated to the
+// currently-active handler.
+type dynamicHandler struct {
+	console slog.Handler
+	otel    slog.Handler
+}
+
+// active returns the handler that should handle log records right now.
+// The decision is made at call time, not construction time, so that a
+// process can start logging before OTel is initialised and transparently
+// switch to the OTel backend as soon as it becomes available.
+func (h *dynamicHandler) active() slog.Handler {
+	if isInDeployMode() {
+		return h.otel
+	}
+	return h.console
+}
+
+// newDynamicHandler creates a dynamicHandler with both console and deploy
+// handlers pre-constructed.
+func newDynamicHandler() *dynamicHandler {
+	return &dynamicHandler{
+		console: newConsoleHandler(),
+		otel:    newDeployHandler("dominion/common/gopkg/logs"),
+	}
+}
+
+// Enabled reports whether the handler handles records at the given level.
+// Delegates to the currently-active handler.
+func (h *dynamicHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.active().Enabled(ctx, level)
+}
+
+// Handle processes the log record.
+// Delegates to the currently-active handler.
+func (h *dynamicHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.active().Handle(ctx, r)
+}
+
+// WithAttrs returns a new dynamicHandler with the given attributes applied
+// to both the console and OTel handlers. This guarantees that attributes
+// remain available regardless of which backend is active at write time.
+func (h *dynamicHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &dynamicHandler{
+		console: h.console.WithAttrs(attrs),
+		otel:    h.otel.WithAttrs(attrs),
+	}
+}
+
+// WithGroup returns a new dynamicHandler that opens a named group on both
+// the console and OTel handlers.
+func (h *dynamicHandler) WithGroup(name string) slog.Handler {
+	return &dynamicHandler{
+		console: h.console.WithGroup(name),
+		otel:    h.otel.WithGroup(name),
 	}
 }
 
 type loggerKey struct{}
 
 // Default returns the lazily-initialized default logger.
-// The first call auto-detects whether the process runs in a dominion
-// deployment or local environment and creates an appropriate handler.
+// The underlying handler auto-switches between console and OTel backends
+// based on the runtime deployment environment.
 func Default() *slog.Logger {
-	initOnce.Do(initLogger)
+	initOnce.Do(func() {
+		defaultLogger = slog.New(newDynamicHandler())
+	})
 	return defaultLogger
 }
 
@@ -91,8 +155,10 @@ func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 }
 
 // SetDefault replaces the package-level default logger.
-// This is intended for testing; production code should rely on
-// the auto-detected default.
+// This is intended for testing ONLY; production code should rely on
+// the auto-switching mechanism provided by Default().
+// Calling SetDefault bypasses the dynamic handler — the injected logger
+// will not participate in console/OTel automatic switching.
 func SetDefault(logger *slog.Logger) {
 	initOnce.Do(func() {})
 	defaultLogger = logger

@@ -16,5 +16,4 @@ go_unittest(
     name = "logs_test",
     srcs = ["logs_test.go"],
     embed = [":logs"],
-    deps = ["//common/gopkg/otel"],
 )

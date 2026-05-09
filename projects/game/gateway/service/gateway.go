@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
@@ -17,6 +18,10 @@ import (
 var (
 	errGatewayMismatch = errors.New("gateway ID mismatch")
 	errSessionMismatch = errors.New("session ID mismatch")
+)
+
+const (
+	logFieldRequesterConnID = "requester_conn_id"
 )
 
 type GatewayService struct {
@@ -61,6 +66,11 @@ func (s *GatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
 // output channel. Returns true if the message was sent, false if the context
 // was cancelled.
 func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.ControlCompletion) bool {
+	logs.InfoContext(ctx, "gateway: handling control completion",
+		logFieldSessionID, comp.SessionID,
+		logFieldRequesterConnID, comp.RequesterConnID,
+	)
+
 	if comp.FlashSnapshot {
 		cache := s.getOrCreateMediaCache(comp.SessionID)
 		if snap, err := cache.RefreshSnapshot(); err == nil && snap != nil {
@@ -90,7 +100,7 @@ func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.Contr
 // and embedded claims. It verifies the token signature and expiry, confirms the
 // gateway ID matches this instance, and ensures the session ID in the token
 // matches the path parameter.
-func (s *GatewayService) ConnectSession(_ context.Context, pathSessionID, tokenStr string) (*domain.SessionRuntime, *token.Claims, error) {
+func (s *GatewayService) ConnectSession(ctx context.Context, pathSessionID, tokenStr string) (*domain.SessionRuntime, *token.Claims, error) {
 	claims, err := s.tokenVerifier.Verify(tokenStr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("verify token: %w", err)
@@ -105,6 +115,11 @@ func (s *GatewayService) ConnectSession(_ context.Context, pathSessionID, tokenS
 	}
 
 	rt := s.sessions.GetOrCreateRuntime(pathSessionID)
+
+	logs.InfoContext(ctx, "gateway: session connected",
+		logFieldSessionID, pathSessionID,
+	)
+
 	return rt, claims, nil
 }
 

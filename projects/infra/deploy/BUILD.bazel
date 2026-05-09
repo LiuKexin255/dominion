@@ -43,6 +43,7 @@ go_library(
     importpath = "dominion/projects/infra/deploy",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
         "//projects/infra/deploy/domain",
         "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//codes",

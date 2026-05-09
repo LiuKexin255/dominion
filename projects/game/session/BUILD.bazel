@@ -42,6 +42,7 @@ go_library(
     importpath = "dominion/projects/game/session",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
         "//projects/game/session/domain",
         "//projects/game/session/service",
         "@org_golang_google_grpc//codes",

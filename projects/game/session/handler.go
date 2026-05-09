@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/service"
 
@@ -17,7 +18,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const sessionResourcePrefix = "sessions/"
+const (
+	sessionResourcePrefix = "sessions/"
+
+	logFieldSessionID  = "session_id"
+	logFieldSessionType = "session_type"
+	logFieldCount      = "count"
+	logFieldError      = "error"
+)
 
 // parseSessionName validates that name has format "sessions/{id}" and returns the ID.
 func parseSessionName(name string) (string, error) {
@@ -49,15 +57,18 @@ func NewHandler(svc *service.SessionService) *Handler {
 
 // GetSession returns the latest persisted Session resource.
 func (h *Handler) GetSession(ctx context.Context, req *GetSessionRequest) (*Session, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
 	session, err := h.svc.GetSession(ctx, req.GetName())
 	if err != nil {
+		logs.ErrorContext(ctx, "get session failed", logFieldSessionID, sessionID, logFieldError, err)
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "get session succeeded", logFieldSessionID, sessionID)
 	return toProtoSession(session), nil
 }
 
@@ -70,9 +81,11 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 
 	session, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
 	if err != nil {
+		logs.ErrorContext(ctx, "create session failed", logFieldSessionType, req.GetType().String(), logFieldError, err)
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "create session succeeded", logFieldSessionID, session.Snapshot().ID, logFieldSessionType, req.GetType().String())
 	return &CreateSessionResponse{
 		Session: toProtoSession(session),
 	}, nil
@@ -80,28 +93,34 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 
 // DeleteSession ends a Session and removes it from the control plane.
 func (h *Handler) DeleteSession(ctx context.Context, req *DeleteSessionRequest) (*emptypb.Empty, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
 	if err := h.svc.DeleteSession(ctx, req.GetName()); err != nil {
+		logs.ErrorContext(ctx, "delete session failed", logFieldSessionID, sessionID, logFieldError, err)
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "delete session succeeded", logFieldSessionID, sessionID)
 	return new(emptypb.Empty), nil
 }
 
 // ReconnectSession reallocates a gateway for an existing Session.
 func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionRequest) (*ReconnectSessionResponse, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
 	session, err := h.svc.ReconnectSession(ctx, req.GetName())
 	if err != nil {
+		logs.ErrorContext(ctx, "reconnect session failed", logFieldSessionID, sessionID, logFieldError, err)
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "reconnect session succeeded", logFieldSessionID, sessionID)
 	return &ReconnectSessionResponse{
 		Session: toProtoSession(session),
 	}, nil
@@ -111,13 +130,16 @@ func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionReq
 func (h *Handler) ListSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
 	sessions, err := h.svc.ListSessions(ctx)
 	if err != nil {
+		logs.ErrorContext(ctx, "list sessions failed", logFieldError, err)
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "list sessions succeeded", logFieldCount, len(sessions))
 	protos := make([]*Session, 0, len(sessions))
 	for _, s := range sessions {
 		protos = append(protos, toProtoSession(s))
 	}
+
 	return &ListSessionsResponse{Sessions: protos}, nil
 }
 

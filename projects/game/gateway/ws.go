@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -32,6 +35,13 @@ const (
 	wsPathPrefix = "/v1/sessions/"
 	wsPathSuffix = "/game/connect"
 	helloTimeout = 10 * time.Second
+
+	spanConnect = "gateway.ws.connect"
+	spanHello   = "gateway.ws.hello"
+
+	logFieldSessionID  = "session_id"
+	logFieldConnID     = "conn_id"
+	logFieldClientRole = "client_role"
 )
 
 // WebSocketHandler handles WebSocket upgrade and message routing for the game
@@ -54,7 +64,7 @@ func NewWebSocketHandler(svc gatewayService) (*WebSocketHandler, bootstrap.Worke
 		agentConnID: make(map[string]string),
 	}
 	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
-		return &routingWorker{messages: svc.AsyncMessages(), route: h.RouteRoutedMessage}, nil
+		return NewRoutingWorker(svc.AsyncMessages(), h.RouteRoutedMessage), nil
 	})
 	return h, builder
 }
@@ -96,14 +106,22 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, connectSpan := otel.Tracer().Start(r.Context(), spanConnect)
+	defer connectSpan.End()
+	connectSpan.SetAttributes(attribute.String(logFieldSessionID, sessionID))
+
+	logs.InfoContext(ctx, "gateway: ws connect started", logFieldSessionID, sessionID)
+
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
+		logs.WarnContext(ctx, "gateway: ws token missing", logFieldSessionID, sessionID)
 		http.Error(w, "missing token", http.StatusUnauthorized)
 		return
 	}
 
-	rt, claims, err := h.svc.ConnectSession(r.Context(), sessionID, tokenStr)
+	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
 	if err != nil {
+		logs.WarnContext(ctx, "gateway: ws token validation failed", logFieldSessionID, sessionID, "error", err)
 		http.Error(w, fmt.Sprintf("connect session: %v", err), http.StatusUnauthorized)
 		return
 	}
@@ -116,26 +134,38 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(int64(domain.MaxSegmentSize)*2 + 4096)
 
 	connID := nextConnID()
+	connectSpan.SetAttributes(attribute.String(logFieldConnID, connID))
+
+	logs.InfoContext(ctx, "gateway: ws connected", logFieldSessionID, sessionID, logFieldConnID, connID)
+
 	wc := &wsConn{conn: conn, connID: connID}
 
 	h.registerConn(wc)
 	defer h.unregisterConn(connID)
 
-	h.serveConn(r.Context(), wc, sessionID, rt, claims)
+	h.serveConn(ctx, wc, sessionID, rt, claims)
 }
 
 func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID string, rt *domain.SessionRuntime, claims *token.Claims) {
 	helloCtx, helloCancel := context.WithTimeout(ctx, helloTimeout)
 	defer helloCancel()
 
+	_, helloSpan := otel.Tracer().Start(helloCtx, spanHello)
+	helloSpan.SetAttributes(
+		attribute.String(logFieldSessionID, sessionID),
+		attribute.String(logFieldConnID, wc.connID),
+	)
+
 	env, err := readEnvelope(helloCtx, wc.conn)
 	if err != nil {
+		helloSpan.End()
 		wc.conn.Close(websocket.StatusPolicyViolation, "hello timeout or read error")
 		return
 	}
 
 	hello := env.GetHello()
 	if hello == nil {
+		helloSpan.End()
 		wc.conn.Close(websocket.StatusPolicyViolation, "expected hello message")
 		return
 	}
@@ -143,13 +173,27 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 
 	initMsgs, svcErr := h.svc.ProcessHello(rt, claims, wc.role, wc.connID)
 	if svcErr != nil {
+		helloSpan.End()
 		sendErrorAndClose(wc, ctx, svcErr.Error())
 		return
 	}
 
+	helloSpan.SetAttributes(attribute.String(logFieldClientRole, clientRoleString(wc.role)))
+	helloSpan.End()
+
+	logs.InfoContext(ctx, "gateway: ws hello completed",
+		logFieldSessionID, sessionID,
+		logFieldConnID, wc.connID,
+		logFieldClientRole, clientRoleString(wc.role),
+	)
+
 	h.trackConn(sessionID, wc)
 	defer h.cleanupDisconnect(sessionID, wc)
 	defer wc.conn.Close(websocket.StatusNormalClosure, "")
+	defer logs.InfoContext(ctx, "gateway: ws disconnect",
+		logFieldSessionID, sessionID,
+		logFieldConnID, wc.connID,
+	)
 
 	for _, r := range initMsgs {
 		if writeErr := wc.write(ctx, toProtoMessage(r.Message)); writeErr != nil {
@@ -172,6 +216,11 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 			routed, svcErr = h.svc.HandleWebMessage(ctx, sessionID, wc.connID, msg)
 		}
 		if svcErr != nil {
+			logs.WarnContext(ctx, "gateway: ws message routing error",
+				logFieldSessionID, sessionID,
+				logFieldConnID, wc.connID,
+				"error", svcErr,
+			)
 			sendErrorAndClose(wc, ctx, svcErr.Error())
 			return
 		}
@@ -564,5 +613,16 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 				Message: "unrecognized payload type",
 			},
 		}
+	}
+}
+
+func clientRoleString(r domain.ClientRole) string {
+	switch r {
+	case domain.ClientRoleWindowsAgent:
+		return "agent"
+	case domain.ClientRoleWeb:
+		return "web"
+	default:
+		return "unspecified"
 	}
 }

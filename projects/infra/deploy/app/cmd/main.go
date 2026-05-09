@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/grpc"
+	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/mongo"
 	"dominion/projects/infra/deploy"
 	"dominion/projects/infra/deploy/app"
@@ -53,9 +55,9 @@ func main() {
 	handler := deploy.NewHandler(repo, queue, runtimeImpl)
 
 	// Server component.
-	httpMux := runtime.NewServeMux()
+	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
 	deploy.RegisterDeployServiceHandlerServer(context.Background(), httpMux, handler)
-	httpServer := &http.Server{Addr: normalizeListenAddr(*httpPort), Handler: httpMux}
+	httpServer := &http.Server{Addr: normalizeListenAddr(*httpPort), Handler: phttp.Handler(httpMux, "deploy-http")}
 	server := bootstrap.HTTPServer("deploy-http", httpServer)
 
 	// Daemon component.
@@ -70,6 +72,7 @@ func main() {
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
 	bs.Register(bootstrap.MongoClient("mongo", client))
+	bs.Register(bootstrap.OTel())
 	bs.Register(server)
 	bs.Register(daemon)
 	if err := bs.Run(context.Background()); err != nil {

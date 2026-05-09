@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
 	"dominion/projects/infra/deploy/domain"
 )
 
@@ -22,6 +23,7 @@ func (b *DeployWorkerBuilder) Build(ctx context.Context) (bootstrap.Worker, erro
 	if err := domain.Recover(ctx, b.Repo, b.Queue); err != nil {
 		return nil, fmt.Errorf("build deploy worker: %w", err)
 	}
+	logs.InfoContext(ctx, "deploy worker built, recovery complete")
 	w := domain.NewWorker(b.Repo, b.Queue, b.Runtime)
 	return &workerAdapter{worker: w}, nil
 }

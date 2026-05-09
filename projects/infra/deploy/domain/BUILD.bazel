@@ -18,6 +18,11 @@ go_library(
     ],
     importpath = "dominion/projects/infra/deploy/domain",
     visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/otel",
+        "@io_opentelemetry_go_otel//attribute",
+    ],
 )
 
 go_unittest(

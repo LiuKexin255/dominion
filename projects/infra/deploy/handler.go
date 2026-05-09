@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/projects/infra/deploy/domain"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -24,6 +25,11 @@ const (
 	invalidViewReason               = "INVALID_VIEW"
 	serviceEndpointsNotFoundReason  = "SERVICE_ENDPOINTS_NOT_FOUND"
 	servicePortMapUnavailableReason = "SERVICE_PORT_MAP_UNAVAILABLE"
+
+	logFieldEnvName      = "env_name"
+	logFieldGeneration   = "generation"
+	logFieldDesiredState = "desired_state"
+	logFieldError        = "error"
 )
 
 // Enqueuer enqueues environment reconciliation requests.
@@ -93,16 +99,38 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 	result, err := queryEndpoints(ctx, name.EnvLabel(), name.App(), name.Service())
 	if err == nil {
+		logs.InfoContext(ctx, "service endpoints resolved (same env)",
+			logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+			"endpoint_count", len(result.Endpoints)+len(result.StatefulInstances),
+		)
 		return newServiceEndpointsResponse(name, result, env.Name(), ResolutionMode_RESOLUTION_MODE_SAME_ENV, view), nil
 	}
 	if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+		logs.WarnContext(ctx, "service endpoints port map unavailable",
+			logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+		)
 		return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
 	}
 
 	switch {
 	case !errors.Is(err, domain.ErrServiceNotFound):
+		logs.ErrorContext(ctx, "failed to query service endpoints",
+			logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+			logFieldError, err,
+		)
 		return nil, toStatusError(err)
 	case env.Type() != domain.EnvironmentTypeProd:
+		logs.WarnContext(ctx, "service endpoints not found in non-prod environment",
+			logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+		)
 		return nil, newServiceEndpointsNotFoundError(name)
 	}
 
@@ -113,6 +141,11 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 	prodCandidates := filterProdCandidates(fallbackEnvs, env.Name())
 	if len(prodCandidates) == 0 {
+		logs.WarnContext(ctx, "no prod candidates for service endpoints fallback",
+			logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+		)
 		return nil, newServiceEndpointsNotFoundError(name)
 	}
 
@@ -128,17 +161,39 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 		result, err = candidateQuery(ctx, candidate.Name().Label(), name.App(), name.Service())
 		if err == nil {
+			logs.InfoContext(ctx, "service endpoints resolved (prod fallback)",
+				logFieldEnvName, env.Name().String(),
+				"app", name.App(),
+				"service", name.Service(),
+				"endpoint_count", len(result.Endpoints)+len(result.StatefulInstances),
+			)
 			return newServiceEndpointsResponse(name, result, candidate.Name(), ResolutionMode_RESOLUTION_MODE_PROD_FALLBACK, view), nil
 		}
 		if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+			logs.WarnContext(ctx, "fallback service endpoints port map unavailable",
+				logFieldEnvName, env.Name().String(),
+				"app", name.App(),
+				"service", name.Service(),
+			)
 			return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
 		}
 		if errors.Is(err, domain.ErrServiceNotFound) {
 			continue
 		}
+		logs.ErrorContext(ctx, "failed to query fallback service endpoints",
+				logFieldEnvName, env.Name().String(),
+			"app", name.App(),
+			"service", name.Service(),
+			logFieldError, err,
+		)
 		return nil, toStatusError(err)
 	}
 
+	logs.WarnContext(ctx, "service endpoints not found in any environment",
+		logFieldEnvName, env.Name().String(),
+		"app", name.App(),
+		"service", name.Service(),
+	)
 	return nil, newServiceEndpointsNotFoundError(name)
 }
 
@@ -210,9 +265,21 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "environment created",
+		logFieldEnvName, envName.String(),
+		logFieldDesiredState, env.Status().Desired.String(),
+	)
+
 	if err := h.queue.Enqueue(ctx, envName); err != nil {
+		logs.ErrorContext(ctx, "failed to enqueue environment after create",
+			logFieldEnvName, envName.String(),
+			logFieldError, err,
+		)
 		return nil, toStatusError(err)
 	}
+	logs.InfoContext(ctx, "environment enqueued after create",
+		logFieldEnvName, envName.String(),
+	)
 
 	return toProtoEnvironment(env), nil
 }
@@ -261,9 +328,22 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "environment updated",
+		logFieldEnvName, envName.String(),
+		logFieldGeneration, env.Generation(),
+		logFieldDesiredState, env.Status().Desired.String(),
+	)
+
 	if err := h.queue.Enqueue(ctx, envName); err != nil {
+		logs.ErrorContext(ctx, "failed to enqueue environment after update",
+			logFieldEnvName, envName.String(),
+			logFieldError, err,
+		)
 		return nil, toStatusError(err)
 	}
+	logs.InfoContext(ctx, "environment enqueued after update",
+		logFieldEnvName, envName.String(),
+	)
 
 	return toProtoEnvironment(env), nil
 }
@@ -288,9 +368,21 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
+	logs.InfoContext(ctx, "environment marked for deletion",
+		logFieldEnvName, envName.String(),
+		logFieldDesiredState, env.Status().Desired.String(),
+	)
+
 	if err := h.queue.Enqueue(ctx, envName); err != nil {
+		logs.ErrorContext(ctx, "failed to enqueue environment for deletion",
+			logFieldEnvName, envName.String(),
+			logFieldError, err,
+		)
 		return nil, toStatusError(err)
 	}
+	logs.InfoContext(ctx, "environment enqueued for deletion",
+		logFieldEnvName, envName.String(),
+	)
 
 	return new(emptypb.Empty), nil
 }

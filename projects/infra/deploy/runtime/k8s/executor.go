@@ -8,8 +8,12 @@ import (
 	"strconv"
 	"strings"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/infra/deploy/domain"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -28,6 +32,15 @@ const (
 	resourceKindPVC         = "PersistentVolumeClaim"
 	resourceKindSecret      = "Secret"
 	resourceKindStatefulSet = "StatefulSet"
+
+	spanApply  = "deploy.runtime.apply"
+	spanDelete = "deploy.runtime.delete"
+
+	logFieldEnvName          = "env_name"
+	logFieldDeploymentCount  = "deployment_count"
+	logFieldServiceCount     = "service_count"
+	logFieldStatefulSetCount = "statefulset_count"
+	logFieldError            = "error"
 )
 
 // K8sRuntime reconciles deploy environments into Kubernetes resources.
@@ -42,6 +55,9 @@ func NewK8sRuntime(client *RuntimeClient) *K8sRuntime {
 
 // Apply converts an environment into workloads and applies all owned resources.
 func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progress func(msg string)) error {
+	ctx, span := otel.Tracer().Start(ctx, spanApply)
+	defer span.End()
+
 	if r == nil || r.client == nil {
 		return fmt.Errorf("runtime client 为空")
 	}
@@ -49,10 +65,43 @@ func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progres
 		return fmt.Errorf("environment 为空")
 	}
 
+	envName := env.Name().String()
+	span.SetAttributes(attribute.String(logFieldEnvName, envName))
+
+	err := r.applyInner(ctx, env, progress, envName, span)
+	if err != nil {
+		logs.ErrorContext(ctx, "apply failed", logFieldEnvName, envName, logFieldError, err)
+	} else {
+		logs.InfoContext(ctx, "apply succeeded", logFieldEnvName, envName)
+	}
+	return err
+}
+
+func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, progress func(msg string), envName string, span trace.Span) error {
 	objects, err := ConvertToWorkloads(env, r.client.K8sConfig)
 	if err != nil {
 		return fmt.Errorf("转换 environment 为 workloads 失败: %w", err)
 	}
+
+	deploymentCount := len(objects.Deployments) + len(objects.MongoDBWorkloads)
+	statefulsetCount := len(objects.StatefulWorkloads)
+	serviceCount := len(objects.Deployments) + len(objects.StatefulWorkloads) + len(objects.MongoDBWorkloads)
+	for _, sw := range objects.StatefulWorkloads {
+		serviceCount += int(sw.Replicas)
+	}
+
+	span.SetAttributes(
+		attribute.Int(logFieldDeploymentCount, deploymentCount),
+		attribute.Int(logFieldServiceCount, serviceCount),
+		attribute.Int(logFieldStatefulSetCount, statefulsetCount),
+	)
+
+	logs.InfoContext(ctx, "apply started",
+		logFieldEnvName, envName,
+		logFieldDeploymentCount, deploymentCount,
+		logFieldServiceCount, serviceCount,
+		logFieldStatefulSetCount, statefulsetCount,
+	)
 
 	for _, workload := range objects.Deployments {
 		if err := r.applyDeployment(ctx, workload); err != nil {
@@ -247,7 +296,21 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 }
 
 // Delete removes all owned runtime resources for the target environment.
-func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName) error {
+func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName) (deleteErr error) {
+	ctx, span := otel.Tracer().Start(ctx, spanDelete)
+	defer span.End()
+
+	envNameStr := envName.String()
+	span.SetAttributes(attribute.String(logFieldEnvName, envNameStr))
+
+	defer func() {
+		if deleteErr != nil {
+			logs.ErrorContext(ctx, "delete failed", logFieldEnvName, envNameStr, logFieldError, deleteErr)
+		} else {
+			logs.InfoContext(ctx, "delete succeeded", logFieldEnvName, envNameStr)
+		}
+	}()
+
 	if r == nil || r.client == nil {
 		return fmt.Errorf("runtime client 为空")
 	}

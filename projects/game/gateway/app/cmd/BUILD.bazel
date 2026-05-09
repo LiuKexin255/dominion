@@ -9,13 +9,14 @@ go_library(
     deps = [
         "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
+        "//common/gopkg/http",
         "//projects/game/gateway",
         "//projects/game/gateway/app",
         "//projects/game/gateway/domain/sessionmanager",
         "//projects/game/gateway/service",
         "//projects/game/pkg/token",
         "@grpc_ecosystem_grpc_gateway//runtime",
-        "@org_golang_google_grpc//:grpc",
+        "@io_opentelemetry_go_contrib_instrumentation_net_http_otelhttp//:otelhttp",
     ],
 )
 

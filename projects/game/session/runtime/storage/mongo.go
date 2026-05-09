@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/game/session/domain"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -28,6 +31,15 @@ const (
 	mongoFieldEndedAt             = "ended_at"
 	mongoFieldReconnectGeneration = "reconnect_generation"
 	mongoFieldLastError           = "last_error"
+
+	spanSave   = "session.storage.save"
+	spanGet    = "session.storage.get"
+	spanList   = "session.storage.list"
+	spanDelete = "session.storage.delete"
+
+	logFieldSessionID = "session_id"
+	logFieldCount     = "count"
+	logFieldError     = "error"
 )
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
@@ -129,21 +141,36 @@ func (r *MongoRepository) ensureIndexes(ctx context.Context) error {
 
 // Get retrieves a session by name.
 func (r *MongoRepository) Get(ctx context.Context, name string) (*domain.Session, error) {
+	ctx, span := otel.Tracer().Start(ctx, spanGet)
+	defer span.End()
+
+	sessionID := sessionIDFromName(name)
+	span.SetAttributes(attribute.String(logFieldSessionID, sessionID))
+
 	filter := bson.M{mongoFieldName: name}
 	doc := new(mongoSession)
 	if err := r.collection.FindOne(ctx, filter).Decode(doc); err != nil {
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
 			return nil, domain.ErrNotFound
 		}
+		logs.ErrorContext(ctx, "failed to get session", logFieldSessionID, sessionID, logFieldError, err)
 		return nil, err
 	}
 
+	logs.InfoContext(ctx, "session retrieved", logFieldSessionID, sessionID)
 	return doc.toDomain()
 }
 
 // Save upserts a session document by resource name.
 func (r *MongoRepository) Save(ctx context.Context, session *domain.Session) error {
-	doc := toMongoSession(session.Snapshot())
+	ctx, span := otel.Tracer().Start(ctx, spanSave)
+	defer span.End()
+
+	snapshot := session.Snapshot()
+	sessionID := snapshot.ID
+	span.SetAttributes(attribute.String(logFieldSessionID, sessionID))
+
+	doc := toMongoSession(snapshot)
 
 	_, err := r.collection.UpdateOne(
 		ctx,
@@ -158,31 +185,45 @@ func (r *MongoRepository) Save(ctx context.Context, session *domain.Session) err
 		if mongodriver.IsDuplicateKeyError(err) {
 			return domain.ErrAlreadyExists
 		}
+		logs.ErrorContext(ctx, "failed to save session", logFieldSessionID, sessionID, logFieldError, err)
 		return err
 	}
 
+	logs.InfoContext(ctx, "session saved", logFieldSessionID, sessionID)
 	return nil
 }
 
 // Delete removes a session by name.
 func (r *MongoRepository) Delete(ctx context.Context, name string) error {
+	ctx, span := otel.Tracer().Start(ctx, spanDelete)
+	defer span.End()
+
+	sessionID := sessionIDFromName(name)
+	span.SetAttributes(attribute.String(logFieldSessionID, sessionID))
+
 	result, err := r.collection.DeleteOne(ctx, bson.M{mongoFieldName: name})
 	if err != nil {
+		logs.ErrorContext(ctx, "failed to delete session", logFieldSessionID, sessionID, logFieldError, err)
 		return err
 	}
 	if result.DeletedCount == 0 {
 		return domain.ErrNotFound
 	}
 
+	logs.InfoContext(ctx, "session deleted", logFieldSessionID, sessionID)
 	return nil
 }
 
 // List retrieves all sessions that have not ended.
 func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
+	ctx, span := otel.Tracer().Start(ctx, spanList)
+	defer span.End()
+
 	filter := bson.D{{Key: mongoFieldStatus, Value: bson.D{{Key: "$ne", Value: int32(domain.StatusEnded)}}}}
 
 	cursor, err := r.collection.Find(ctx, filter)
 	if err != nil {
+		logs.ErrorContext(ctx, "failed to list sessions", logFieldError, err)
 		return nil, fmt.Errorf("find sessions: %w", err)
 	}
 	defer cursor.Close(ctx)
@@ -191,6 +232,7 @@ func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
 	for cursor.Next(ctx) {
 		doc := new(mongoSession)
 		if err := cursor.Decode(doc); err != nil {
+			logs.ErrorContext(ctx, "failed to decode session", logFieldError, err)
 			return nil, fmt.Errorf("decode session: %w", err)
 		}
 		session, err := doc.toDomain()
@@ -199,6 +241,9 @@ func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
 		}
 		results = append(results, session)
 	}
+
+	span.SetAttributes(attribute.Int(logFieldCount, len(results)))
+	logs.InfoContext(ctx, "sessions listed", logFieldCount, len(results))
 
 	if len(results) == 0 {
 		return nil, nil

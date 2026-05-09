@@ -10,7 +10,10 @@ go_library(
     importpath = "dominion/projects/game/session/runtime/storage",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/otel",
         "//projects/game/session/domain",
+        "@io_opentelemetry_go_otel//attribute",
         "@org_mongodb_go_mongo_driver//bson",
         "@org_mongodb_go_mongo_driver//bson/primitive",
         "@org_mongodb_go_mongo_driver//mongo",

@@ -34,7 +34,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + *port,
-		Handler: phttp.Handler(mux),
+		Handler: phttp.Handler(mux, "grpc-hello-world-gateway"),
 	}
 
 	log.Printf("gRPC hello world gateway listening :%s", *port)

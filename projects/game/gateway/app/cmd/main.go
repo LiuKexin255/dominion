@@ -10,6 +10,7 @@ import (
 
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/grpc"
+	phttp "dominion/common/gopkg/http"
 	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
 	"dominion/projects/game/gateway/domain/sessionmanager"
@@ -17,7 +18,6 @@ import (
 	"dominion/projects/game/pkg/token"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	grpcgo "google.golang.org/grpc"
 )
 
 const (
@@ -45,14 +45,18 @@ func main() {
 	wsHandler, routingWorker := gateway.NewWebSocketHandler(svc)
 	handler := gateway.NewHandler(svc)
 
-	grpcServer := grpcgo.NewServer(grpc.ServiceDefault()...)
-	gateway.RegisterGameGatewayServiceServer(grpcServer, handler)
-	httpMux := runtime.NewServeMux()
+	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
 	_ = gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), httpMux, handler)
-	router := &app.Router{WSHandler: wsHandler, GRPCMux: httpMux}
+	router := &app.Router{
+		WSHandler: phttp.Handler(wsHandler, "GET /v1/sessions/{id}/game/connect"),
+		GRPCMux:   phttp.Handler(httpMux, "gateway-http"),
+	}
 	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
+	if err := bs.Register(bootstrap.OTel()); err != nil {
+		log.Fatalf("register otel: %v", err)
+	}
 	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {
 		log.Fatalf("register gateway server: %v", err)
 	}
