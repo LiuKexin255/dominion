@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -55,7 +56,7 @@ func saveConfig(workspaceRoot string, cfg *cliConfig) error {
 	return os.WriteFile(filepath.Join(dir, cliConfigFile), raw, 0o644)
 }
 
-func scopeCommand(opts *options) error {
+func scopeCommand(_ context.Context, opts *options) error {
 	root := workspace.MustRoot()
 	cfg, err := loadConfig(root)
 	if err != nil {

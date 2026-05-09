@@ -10,6 +10,7 @@ go_library(
     importpath = "dominion/common/gopkg/otel",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//propagation",
         "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",

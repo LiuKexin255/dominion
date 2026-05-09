@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	"dominion/tools/release/deploy/v2/client"
 
 	"github.com/spf13/pflag"
@@ -37,7 +39,7 @@ type options struct {
 	apiClient *client.Client
 }
 
-type commandExecFunc func(opts *options) error
+type commandExecFunc func(ctx context.Context, opts *options) error
 type commandValidatorFunc func(opts *options) error
 
 type flagSpec struct {
@@ -128,8 +130,11 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command: %s", opts.command)
 	}
 
-	opts.apiClient = client.NewClient(opts.endpoint)
-	return exec(opts)
+	ctx := tracecontext.FromEnv(context.Background())
+	fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
+
+	opts.apiClient = client.NewClient(opts.endpoint, client.WithHTTPTransport(tracecontext.NewHTTPTransport(nil)))
+	return exec(ctx, opts)
 }
 
 func parseOptions(args []string) (*options, error) {

@@ -12,11 +12,11 @@ import (
 
 const deletePollInterval = 100 * time.Millisecond
 
-func delCommand(opts *options) error {
-	return deleteCommand(opts)
+func delCommand(ctx context.Context, opts *options) error {
+	return deleteCommand(ctx, opts)
 }
 
-func deleteCommand(opts *options) error {
+func deleteCommand(ctx context.Context, opts *options) error {
 	root := workspace.MustRoot()
 	cfg, err := loadConfig(root)
 	if err != nil {
@@ -38,11 +38,11 @@ func deleteCommand(opts *options) error {
 	}
 	resourceName := environmentResourceName(scope, envName)
 
-	if err := opts.apiClient.DeleteEnvironment(context.Background(), resourceName); err != nil {
+	if err := opts.apiClient.DeleteEnvironment(ctx, resourceName); err != nil {
 		return err
 	}
 
-	if err := client.PollUntilDeleted(context.Background(), opts.apiClient, resourceName, deletePollInterval, opts.timeout); err != nil {
+	if err := client.PollUntilDeleted(ctx, opts.apiClient, resourceName, deletePollInterval, opts.timeout); err != nil {
 		return err
 	}
 

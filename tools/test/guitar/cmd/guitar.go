@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	guitarconfig "dominion/tools/test/guitar/pkg/config"
 	"dominion/tools/test/guitar/pkg/run"
 	"dominion/tools/test/guitar/pkg/validate"
@@ -122,7 +123,8 @@ func runCommand(opts *options) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx := tracecontext.Ensure(context.Background())
+	fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
 	return run.Run(ctx, cfg, run.WithTimeout(opts.timeout))
 }
 

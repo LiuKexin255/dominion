@@ -15,6 +15,7 @@ go_library(
     importpath = "dominion/tools/release/deploy/v3",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
         "//projects/infra/deploy",
         "//tools/release/deploy/pkg/config",
         "//tools/release/deploy/pkg/imagepush",

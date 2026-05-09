@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -246,9 +247,5 @@ func Meter() metric.Meter {
 // TraceID extracts the trace ID from the context's span and returns it as a hex string.
 // Returns an empty string if the context contains no valid span.
 func TraceID(ctx context.Context) string {
-	spanCtx := trace.SpanContextFromContext(ctx)
-	if !spanCtx.IsValid() {
-		return ""
-	}
-	return spanCtx.TraceID().String()
+	return tracecontext.ID(ctx)
 }

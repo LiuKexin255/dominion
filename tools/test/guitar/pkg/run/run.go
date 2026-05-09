@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	deployconfig "dominion/tools/release/deploy/pkg/config"
 	"dominion/tools/release/deploy/pkg/workspace"
 	guitarconfig "dominion/tools/test/guitar/pkg/config"
@@ -136,5 +137,6 @@ func defaultRunCommand(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Env = append(os.Environ(), tracecontext.Environ(ctx)...)
 	return cmd.Run()
 }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"dominion/common/gopkg/otel/tracecontext"
 )
 
 func TestParseOptions_Validate(t *testing.T) {
@@ -88,6 +91,17 @@ func TestParseOptions_UnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("error should mention unknown command, got: %v", err)
+	}
+}
+
+func TestEnsure_PrintsTraceID(t *testing.T) {
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
+	if traceID == "" {
+		t.Fatal("Ensure() should produce a non-empty trace ID")
+	}
+	if len(traceID) != 32 {
+		t.Fatalf("trace ID length = %d, want 32", len(traceID))
 	}
 }
 
