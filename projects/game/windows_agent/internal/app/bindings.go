@@ -5,22 +5,16 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	gw "dominion/projects/game/gateway"
+	"dominion/common/gopkg/otel/tracecontext"
 	agentruntime "dominion/projects/game/windows_agent/internal/runtime"
 	"dominion/projects/game/windows_agent/internal/window"
 
 	sessionpb "dominion/projects/game/session"
-
-	"google.golang.org/protobuf/encoding/protojson"
 )
-
-var protojsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 
 const logModuleApp = "app"
 
@@ -91,9 +85,11 @@ func (a *App) Disconnect() error {
 // ListSessions returns active remote sessions from the session service.
 // Callable from frontend via window.go.main.App.ListSessions().
 func (a *App) ListSessions() ([]Session, error) {
-	sessions, err := a.sc.ListSessions(context.Background())
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
+	sessions, err := a.sc.ListSessions(ctx)
 	if err != nil {
-		a.log("error", "list sessions failed", map[string]string{"error": err.Error()})
+		a.log("error", "list sessions failed", map[string]string{"error": err.Error(), "traceId": traceID})
 		a.setSessionServiceState("error", err.Error())
 		return nil, err
 	}
@@ -105,32 +101,36 @@ func (a *App) ListSessions() ([]Session, error) {
 	if len(result) == 0 {
 		return nil, nil
 	}
-	a.log("info", "listed sessions", map[string]string{"count": fmt.Sprintf("%d", len(result))})
+	a.log("info", "listed sessions", map[string]string{"count": fmt.Sprintf("%d", len(result)), "traceId": traceID})
 	return result, nil
 }
 
 // CreateSession creates a remote session of the requested type.
 // Callable from frontend via window.go.main.App.CreateSession(type).
 func (a *App) CreateSession(sessionType string) (*Session, error) {
-	session, err := a.sc.CreateSession(context.Background(), sessionType)
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
+	session, err := a.sc.CreateSession(ctx, sessionType)
 	if err != nil {
-		a.log("error", "create session failed", map[string]string{"type": sessionType, "error": err.Error()})
+		a.log("error", "create session failed", map[string]string{"type": sessionType, "error": err.Error(), "traceId": traceID})
 		a.setSessionServiceState("error", err.Error())
 		return nil, err
 	}
 	a.setSessionServiceState("ok", "")
 	result := convertSession(session)
-	a.log("info", "created session", map[string]string{"name": result.Name, "type": result.Type, "gateway": sanitizeURL(result.AgentConnectURL)})
+	a.log("info", "created session", map[string]string{"name": result.Name, "type": result.Type, "gateway": sanitizeURL(result.AgentConnectURL), "traceId": traceID})
 	return &result, nil
 }
 
 // ConnectSession connects to a remote session, reconnecting it once if needed.
 // Callable from frontend via window.go.main.App.ConnectSession(session).
 func (a *App) ConnectSession(session Session) error {
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
 	activeSession := session
 	if err := a.rt.Connect(context.Background(), session.AgentConnectURL); err != nil {
-		a.log("info", "session connect failed; reconnecting", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL)})
-		newSession, reconnectErr := a.sc.ReconnectSession(context.Background(), session.Name)
+		a.log("info", "session connect failed; reconnecting", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "traceId": traceID})
+		newSession, reconnectErr := a.sc.ReconnectSession(ctx, session.Name)
 		if reconnectErr != nil {
 			err = fmt.Errorf("connect failed (%w), reconnect failed (%w)", err, reconnectErr)
 			a.setStatus(func(s *AgentStatus) {
@@ -139,7 +139,7 @@ func (a *App) ConnectSession(session Session) error {
 			})
 			a.emitStatusChanged()
 			a.emitEvent(EventErrorOccurred, "session reconnect failed")
-			a.log("error", "session reconnect failed", map[string]string{"name": session.Name, "error": err.Error()})
+			a.log("error", "session reconnect failed", map[string]string{"name": session.Name, "error": err.Error(), "traceId": traceID})
 			return err
 		}
 		activeSession = convertSession(newSession)
@@ -150,7 +150,7 @@ func (a *App) ConnectSession(session Session) error {
 			})
 			a.emitStatusChanged()
 			a.emitEvent(EventErrorOccurred, retryErr.Error())
-			a.log("error", "session reconnect retry failed", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL), "error": retryErr.Error()})
+			a.log("error", "session reconnect retry failed", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL), "error": retryErr.Error(), "traceId": traceID})
 			return retryErr
 		}
 	}
@@ -173,26 +173,28 @@ func (a *App) ConnectSession(session Session) error {
 		s.StreamingLastError = ""
 	})
 	a.emitStatusChanged()
-	a.log("info", "connected to session", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL)})
+	a.log("info", "connected to session", map[string]string{"name": activeSession.Name, "gateway": sanitizeURL(activeSession.AgentConnectURL), "traceId": traceID})
 	return nil
 }
 
 // DeleteSession deletes a remote session, safely disconnecting if it is current.
 // Callable from frontend via window.go.main.App.DeleteSession(name).
 func (a *App) DeleteSession(name string) error {
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
 	if a.isCurrentSession(name) {
 		if err := a.Disconnect(); err != nil {
-			a.log("error", "disconnect before delete failed", map[string]string{"name": name, "error": err.Error()})
+			a.log("error", "disconnect before delete failed", map[string]string{"name": name, "error": err.Error(), "traceId": traceID})
 			return err
 		}
 	}
-	if err := a.sc.DeleteSession(context.Background(), name); err != nil {
-		a.log("error", "delete session failed", map[string]string{"name": name, "error": err.Error()})
+	if err := a.sc.DeleteSession(ctx, name); err != nil {
+		a.log("error", "delete session failed", map[string]string{"name": name, "error": err.Error(), "traceId": traceID})
 		a.setSessionServiceState("error", err.Error())
 		return err
 	}
 	a.setSessionServiceState("ok", "")
-	a.log("info", "deleted session", map[string]string{"name": name})
+	a.log("info", "deleted session", map[string]string{"name": name, "traceId": traceID})
 	return nil
 }
 
@@ -325,57 +327,40 @@ func (a *App) StopCapture() error {
 // TakeScreenshot fetches the latest game snapshot through the session gateway.
 // Callable from frontend via window.go.main.App.TakeScreenshot().
 func (a *App) TakeScreenshot() (ScreenshotResult, error) {
+	ctx := tracecontext.Ensure(context.Background())
+	traceID := tracecontext.ID(ctx)
 	a.sessionMu.RLock()
 	session := a.currentSession
 	a.sessionMu.RUnlock()
 	if session == nil {
 		err := fmt.Errorf("no active session")
-		a.log("error", "take screenshot failed", map[string]string{"error": err.Error()})
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "traceId": traceID})
 		return ScreenshotResult{Error: err.Error()}, err
 	}
 	parsed, err := url.Parse(session.AgentConnectURL)
 	if err != nil {
-		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name})
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "traceId": traceID})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
 	}
-	snapshotURL := fmt.Sprintf("https://%s/v1/%s/game/snapshot", parsed.Host, session.Name)
-	resp, err := http.Get(snapshotURL)
+	snapshot, err := a.sc.GetSnapshot(ctx, parsed.Host, session.Name)
 	if err != nil {
-		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "url": snapshotURL})
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		body, _ := io.ReadAll(resp.Body)
-		a.log("error", "take screenshot failed", map[string]string{"status": fmt.Sprintf("%d", resp.StatusCode), "body": string(body), "session": session.Name, "url": snapshotURL})
-		err := fmt.Errorf("snapshot HTTP %d", resp.StatusCode)
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, body)}, err
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name})
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
-	}
-	snapshot := new(gw.GameSnapshot)
-	if err := protojsonUnmarshaler.Unmarshal(body, snapshot); err != nil {
-		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "body": string(body)})
+		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "traceId": traceID})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
 	}
 
 	imageURL := dataURL(snapshot.GetMimeType(), snapshot.GetImage())
 	if imageURL == "" {
-		a.log("error", "take screenshot failed", map[string]string{"error": "snapshot image is empty", "session": session.Name})
+		a.log("error", "take screenshot failed", map[string]string{"error": "snapshot image is empty", "session": session.Name, "traceId": traceID})
 		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: "snapshot image is empty"}, fmt.Errorf("snapshot image is empty")
 	}
 
 	a.log("info", "snapshot received", map[string]string{
-		"session":   session.Name,
-		"mime":      snapshot.GetMimeType(),
-		"imageSize": fmt.Sprintf("%d", len(snapshot.GetImage())),
+		"session":    session.Name,
+		"mime":       snapshot.GetMimeType(),
+		"imageSize":  fmt.Sprintf("%d", len(snapshot.GetImage())),
 		"snapshotId": snapshot.GetSnapshotId(),
-		"urlLen":    fmt.Sprintf("%d", len(imageURL)),
+		"urlLen":     fmt.Sprintf("%d", len(imageURL)),
+		"traceId":    traceID,
 	})
 
 	var captureTime string
@@ -390,7 +375,7 @@ func (a *App) TakeScreenshot() (ScreenshotResult, error) {
 		SessionName: session.Name,
 		GatewayID:   session.GatewayID,
 	}
-	a.log("info", "took screenshot", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "snapshot": snapshot.GetSnapshotId()})
+	a.log("info", "took screenshot", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "snapshot": snapshot.GetSnapshotId(), "traceId": traceID})
 	return result, nil
 }
 

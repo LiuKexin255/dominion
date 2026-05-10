@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	session "dominion/projects/game/session"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -206,8 +207,57 @@ func TestNewClient_DefaultHTTPClient(t *testing.T) {
 	client := NewClient(nil)
 
 	// then
-	if client.httpClient != http.DefaultClient {
-		t.Fatalf("httpClient = %+v, want default client", client.httpClient)
+	transport, ok := client.httpClient.Transport.(*tracecontext.HTTPTransport)
+	if !ok {
+		t.Fatalf("httpClient.Transport = %T, want *tracecontext.HTTPTransport", client.httpClient.Transport)
+	}
+	_ = transport
+}
+
+func TestClient_GetSnapshot(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantErr    bool
+		wantSnapID string
+	}{
+		{name: "success", statusCode: http.StatusOK, body: `{"snapshotId":"snap-1","mimeType":"image/png","image":"aW1n"}`, wantSnapID: "snap-1"},
+		{name: "gateway error", statusCode: http.StatusBadGateway, body: `bad gateway`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("Method = %q, want %q", r.Method, http.MethodGet)
+				}
+				if r.URL.Path != "/v1/sessions/s-1/game/snapshot" {
+					t.Fatalf("Path = %q, want /v1/sessions/s-1/game/snapshot", r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			gatewayHost := strings.TrimPrefix(server.URL, "https://")
+			client := &Client{baseURL: server.URL, httpClient: server.Client()}
+
+			// when
+			got, err := client.GetSnapshot(context.Background(), gatewayHost, "sessions/s-1")
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatalf("GetSnapshot expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("GetSnapshot unexpected error: %v", err)
+			}
+			if !tt.wantErr && got.GetSnapshotId() != tt.wantSnapID {
+				t.Fatalf("SnapshotId = %q, want %q", got.GetSnapshotId(), tt.wantSnapID)
+			}
+		})
 	}
 }
 

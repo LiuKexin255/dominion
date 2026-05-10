@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -681,21 +680,16 @@ func TestTakeScreenshot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/sessions/s-1/game/snapshot" {
-					t.Fatalf("path = %q, want snapshot path", r.URL.Path)
-				}
-				w.WriteHeader(tt.statusCode)
-				_, _ = io.WriteString(w, tt.body)
-			}))
-			defer server.Close()
-			origClient := http.DefaultClient
-			http.DefaultClient = server.Client()
-			defer func() { http.DefaultClient = origClient }()
 			a := newTestApp(&mockRuntime{}, newEmitRecorder())
+			a.sc = newSessionClient(func(r *http.Request) (int, string) {
+				if r.Method != http.MethodGet || r.URL.Path != "/v1/sessions/s-1/game/snapshot" {
+					return http.StatusNotFound, r.URL.Path
+				}
+				return tt.statusCode, tt.body
+			})
 			if tt.session != nil {
 				session := *tt.session
-				session.AgentConnectURL = server.URL + "/v1/sessions/s-1/game/connect?token=secret"
+				session.AgentConnectURL = "https://gateway.test/v1/sessions/s-1/game/connect?token=secret"
 				a.currentSession = &session
 			}
 

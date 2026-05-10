@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 
+	"dominion/common/gopkg/otel/tracecontext"
+	gw "dominion/projects/game/gateway"
 	session "dominion/projects/game/session"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -24,7 +26,9 @@ type Client struct {
 // NewClient creates a session service REST client.
 func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{
+			Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
+		}
 	}
 	return &Client{
 		baseURL:    defaultBaseURL,
@@ -93,6 +97,20 @@ func (c *Client) DeleteSession(ctx context.Context, name string) error {
 	return c.do(req, nil)
 }
 
+// GetSnapshot fetches the latest game snapshot from the gateway.
+func (c *Client) GetSnapshot(ctx context.Context, gatewayHost, sessionName string) (*gw.GameSnapshot, error) {
+	snapshotURL := fmt.Sprintf("https://%s/v1/%s/game/snapshot", gatewayHost, sessionName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, snapshotURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
+	result := new(gw.GameSnapshot)
+	if err := c.do(req, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (c *Client) do(req *http.Request, result any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -119,8 +137,10 @@ func (c *Client) do(req *http.Request, result any) error {
 	if err != nil {
 		return fmt.Errorf("read response body: %w", err)
 	}
-	return protojson.Unmarshal(body, msg)
+	return protojsonUnmarshaler.Unmarshal(body, msg)
 }
+
+var protojsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 
 // parseSessionType converts a frontend session type string to a proto enum.
 // It accepts both enum names (e.g. "SESSION_TYPE_SAOLEI") and short names (e.g. "saolei").
