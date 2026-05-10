@@ -16,7 +16,7 @@ import (
 	"dominion/tools/release/deploy/v2/compiler"
 )
 
-const applyPollInterval = 100 * time.Millisecond
+const applyPollInterval = 5 * time.Second
 
 var (
 	newV3ImageRunner = func() (imagepush.V3Runner, error) {
