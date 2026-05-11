@@ -45,9 +45,10 @@ func TestParseOptions_Validate(t *testing.T) {
 
 func TestParseOptions_Run(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantErr bool
+		name        string
+		args        []string
+		wantErr     bool
+		wantVerbose bool
 	}{
 		{
 			name: "run with target",
@@ -58,6 +59,16 @@ func TestParseOptions_Run(t *testing.T) {
 			args: []string{"run", "--timeout=5m", "plan.yaml"},
 		},
 		{
+			name:        "run with verbose flag",
+			args:        []string{"run", "-v", "plan.yaml"},
+			wantVerbose: true,
+		},
+		{
+			name:        "run with long verbose flag",
+			args:        []string{"run", "--verbose", "plan.yaml"},
+			wantVerbose: true,
+		},
+		{
 			name:    "run without target",
 			args:    []string{"run"},
 			wantErr: true,
@@ -66,12 +77,15 @@ func TestParseOptions_Run(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := parseOptions(tt.args)
+			opts, err := parseOptions(tt.args)
 			if tt.wantErr && err == nil {
 				t.Fatalf("parseOptions(%v) expected error", tt.args)
 			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("parseOptions(%v) unexpected error: %v", tt.args, err)
+			}
+			if !tt.wantErr && opts.verbose != tt.wantVerbose {
+				t.Fatalf("parseOptions(%v) verbose = %v, want %v", tt.args, opts.verbose, tt.wantVerbose)
 			}
 		})
 	}
@@ -132,6 +146,9 @@ func TestRunCLI_Help(t *testing.T) {
 			}
 			if !strings.Contains(output, "validate") || !strings.Contains(output, "run") {
 				t.Fatalf("help output should list commands, got: %q", output)
+			}
+			if !strings.Contains(output, "--verbose") {
+				t.Fatalf("help output should list verbose flag, got: %q", output)
 			}
 		})
 	}

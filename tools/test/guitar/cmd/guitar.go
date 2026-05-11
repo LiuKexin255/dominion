@@ -28,6 +28,7 @@ type options struct {
 	command string
 	target  string
 	timeout time.Duration
+	verbose bool
 }
 
 type commandExecFunc func(opts *options) error
@@ -79,7 +80,9 @@ func parseOptions(args []string) (*options, error) {
 	fs.SetOutput(io.Discard)
 
 	var timeout time.Duration
+	var verbose bool
 	fs.DurationVar(&timeout, flagTimeout, defaultTimeout, "overall execution timeout")
+	fs.BoolVarP(&verbose, "verbose", "v", false, "show hidden information such as trace ID")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return nil, err
@@ -94,6 +97,7 @@ func parseOptions(args []string) (*options, error) {
 		command: command,
 		target:  strings.TrimSpace(positionArgs[0]),
 		timeout: timeout,
+		verbose: verbose,
 	}
 
 	if opts.target == "" {
@@ -124,7 +128,9 @@ func runCommand(opts *options) error {
 	}
 
 	ctx := tracecontext.Ensure(context.Background())
-	fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
+	if opts.verbose {
+		fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
+	}
 	return run.Run(ctx, cfg, run.WithTimeout(opts.timeout))
 }
 
@@ -148,5 +154,8 @@ func usageText() string {
 		"Commands:",
 		"  validate [--timeout=10m] <plan.yaml>",
 		"  run [--timeout=10m] <plan.yaml>",
+		"",
+		"Flags:",
+		"  -v, --verbose   show hidden information such as trace ID",
 	}, "\n") + "\n"
 }

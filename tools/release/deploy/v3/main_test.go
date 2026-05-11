@@ -77,6 +77,17 @@ func Test_parseOptions(t *testing.T) {
 		{name: "delete missing target", args: []string{"del"}, wantErr: true},
 		{name: "list positional arg rejected", args: []string{"list", "team"}, wantErr: true},
 		{name: "scope invalid target", args: []string{"scope", "TEAM"}, wantErr: true},
+		{
+			name: "apply with verbose flag",
+			args: []string{"apply", "-v", "--endpoint=http://localhost:8081", "--timeout=30s", "deploy.yaml"},
+			want: &options{
+				command:  commandApply,
+				target:   "deploy.yaml",
+				endpoint: "http://localhost:8081",
+				timeout:  30 * time.Second,
+				verbose:  true,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -120,5 +131,8 @@ func TestRun_Help(t *testing.T) {
 	}
 	if !strings.Contains(got, "--run") {
 		t.Fatalf("run(--help) output = %q, want run flag", got)
+	}
+	if !strings.Contains(got, "--verbose") {
+		t.Fatalf("run(--help) output = %q, want verbose flag", got)
 	}
 }
