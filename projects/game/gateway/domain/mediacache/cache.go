@@ -3,6 +3,7 @@
 package mediacache
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -135,7 +136,7 @@ func (c *Cache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 
 	jpeg, err := ExtractJPEGFromSegment(c.initSegmentBytes(), seg)
 	if err != nil {
-		jpeg = ExtractJPEGFallback()
+		return nil, fmt.Errorf("extract JPEG from segment: %w", err)
 	}
 
 	snap := &domain.SnapshotRef{

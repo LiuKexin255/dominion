@@ -68,6 +68,9 @@ type Config struct {
 	VideoURL string
 	// VideoFile is an optional local file path for real video data.
 	VideoFile string
+	// HTTPClient is the HTTP client used for the WebSocket handshake.
+	// If nil, http.DefaultClient is used.
+	HTTPClient *http.Client
 }
 
 // Agent connects to a game gateway and runs the agent side of the WebSocket
@@ -99,9 +102,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer cancel()
 
 	log.Printf("fakeagent: connecting to %s", maskURL(a.cfg.ConnectURL))
-	opts := &websocket.DialOptions{}
+	headers := http.Header{}
 	if a.cfg.EnvHeader != "" {
-		opts.HTTPHeader = http.Header{"env": {a.cfg.EnvHeader}}
+		headers.Set("env", a.cfg.EnvHeader)
+	}
+	opts := &websocket.DialOptions{
+		HTTPClient: a.cfg.HTTPClient,
+		HTTPHeader: headers,
 	}
 	conn, _, err := websocket.Dial(ctx, a.cfg.ConnectURL, opts)
 	if err != nil {

@@ -1,8 +1,10 @@
 package testplan
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	"dominion/common/gopkg/solver"
 	"dominion/common/gopkg/testtool"
 	gw "dominion/projects/game/gateway"
@@ -44,11 +47,28 @@ var (
 	jsonMarshaler   = protojson.MarshalOptions{}
 	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-	httpClient = &http.Client{Timeout: httpClientTimeout}
+	httpClient = &http.Client{
+		Timeout:   httpClientTimeout,
+		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
+	}
+
+	// wsHTTPClient is used for WebSocket dial without HTTP timeout,
+	// but with trace propagation via HTTPTransport.
+	wsHTTPClient = &http.Client{
+		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
+	}
 )
 
 func uniqueSessionID() string {
 	return fmt.Sprintf("test-session-%d", time.Now().UnixNano())
+}
+
+// tracedCtx creates a context with a new trace span and logs the trace ID.
+func tracedCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx := tracecontext.Ensure(context.Background())
+	t.Logf("trace_id=%s", tracecontext.ID(ctx))
+	return ctx
 }
 
 func mustSigner(t *testing.T) *token.HMACSigner {
@@ -139,6 +159,7 @@ func startAgent(ctx context.Context, t *testing.T, hostURL, sessionID, gatewayID
 		EnvHeader:  testtool.MustEnv(),
 		Scenario:   scenario,
 		VideoURL:   testVideoURL,
+		HTTPClient: wsHTTPClient,
 	})
 	errCh := make(chan error, 1)
 	go func() {
@@ -223,13 +244,13 @@ func mustReadControlResult(ctx context.Context, t *testing.T, conn *websocket.Co
 	}
 }
 
-func doHTTPGet(t *testing.T, url string) *http.Response {
+func doHTTPGet(ctx context.Context, t *testing.T, url string) *http.Response {
 	t.Helper()
 	sutEnvName := testtool.MustEnv()
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		t.Fatalf("http.NewRequest GET %s: %v", url, err)
+		t.Fatalf("http.NewRequestWithContext GET %s: %v", url, err)
 	}
 	req.Header.Set(headerEnv, sutEnvName)
 
@@ -268,15 +289,60 @@ func decodeGameRuntime(t *testing.T, resp *http.Response) *gw.GameRuntime {
 	return rt
 }
 
+// assertNotBlackFrame decodes JPEG data and verifies the image contains
+// real video content rather than a uniform black or fallback frame.
+func assertNotBlackFrame(t *testing.T, data []byte) {
+	t.Helper()
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode snapshot JPEG: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() <= 1 || bounds.Dy() <= 1 {
+		t.Fatalf("snapshot image %dx%d, expected real video frame > 1x1", bounds.Dx(), bounds.Dy())
+	}
+
+	stepX := 1
+	if w := bounds.Dx(); w > 32 {
+		stepX = w / 32
+	}
+	stepY := 1
+	if h := bounds.Dy(); h > 32 {
+		stepY = h / 32
+	}
+
+	sampled, nonBlack := 0, 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += stepY {
+		for x := bounds.Min.X; x < bounds.Max.X; x += stepX {
+			r, g, b, _ := img.At(x, y).RGBA()
+			sampled++
+			if r > 2560 || g > 2560 || b > 2560 {
+				nonBlack++
+			}
+		}
+	}
+
+	if sampled == 0 {
+		t.Fatal("no pixels sampled from snapshot image")
+	}
+	ratio := float64(nonBlack) / float64(sampled)
+	if ratio < 0.01 {
+		t.Fatalf("snapshot appears to be a black frame: only %.2f%% non-black pixels (%d/%d sampled)",
+			ratio*100, nonBlack, sampled)
+	}
+}
+
 func messageID(prefix string) string {
 	return fmt.Sprintf("test-%s-%d", prefix, time.Now().UnixNano())
 }
 
 func wsDialOptions() *websocket.DialOptions {
+	headers := http.Header{
+		headerEnv: {testtool.MustEnv()},
+	}
 	return &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			headerEnv: {testtool.MustEnv()},
-		},
+		HTTPClient: wsHTTPClient,
+		HTTPHeader: headers,
 	}
 }
 
@@ -291,7 +357,7 @@ func TestInterface_WebConnect_Success(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	conn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
@@ -303,7 +369,7 @@ func TestInterface_AgentConnect_Success(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -318,7 +384,7 @@ func TestInterface_PathSessionMismatch_Rejected(t *testing.T) {
 	tok := issueToken(t, sessionID, gatewayID)
 	url := wsURL(hostURL, "different-session-id", tok)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	_, _, err := websocket.Dial(ctx, url, wsDialOptions())
@@ -332,7 +398,7 @@ func TestInterface_DuplicateAgent_Rejected(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -375,7 +441,7 @@ func TestInterface_MediaDelivery(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -400,7 +466,7 @@ func TestInterface_CatchupFromKeyframe(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -424,7 +490,7 @@ func TestInterface_Snapshot_Cached(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -433,7 +499,7 @@ func TestInterface_Snapshot_Cached(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
-	resp := doHTTPGet(t, snapshotURL)
+	resp := doHTTPGet(ctx, t, snapshotURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -453,7 +519,7 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -462,7 +528,7 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
-	resp := doHTTPGet(t, snapshotURL)
+	resp := doHTTPGet(ctx, t, snapshotURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -477,19 +543,51 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	}
 }
 
+func TestInterface_Snapshot_ImageNotBlack(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
+	resp := doHTTPGet(ctx, t, snapshotURL)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GetGameSnapshot status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	snap := decodeGameSnapshot(t, resp)
+
+	image := snap.GetImage()
+	if len(image) == 0 {
+		t.Fatal("snapshot image is empty, want non-empty JPEG data")
+	}
+
+	assertNotBlackFrame(t, image)
+}
+
 func TestInterface_Runtime_Fields(t *testing.T) {
 	hostURL := testtool.MustEndpoint("http", "public")
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
 	defer agent.Close()
 
 	runtimeURL := hostURL + fmt.Sprintf(runtimePathFormat, sessionID)
-	resp := doHTTPGet(t, runtimeURL)
+	resp := doHTTPGet(ctx, t, runtimeURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -515,7 +613,7 @@ func TestInterface_ControlRoundtrip(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -567,7 +665,7 @@ func TestInterface_FlashSnapshot(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -610,7 +708,7 @@ func TestInterface_ConcurrentOperations(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
@@ -670,7 +768,7 @@ func TestInterface_TimeoutSemantics(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), 5*time.Second)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
@@ -698,7 +796,7 @@ func TestInterface_TimeoutSemantics(t *testing.T) {
 		t.Fatalf("web write control_request: %v", err)
 	}
 
-	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), readTimeout)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, readTimeout)
 	defer timeoutCancel()
 
 	for {
@@ -720,7 +818,7 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Disconnect)
@@ -748,7 +846,7 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 		t.Fatalf("web write control_request: %v", err)
 	}
 
-	disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), readTimeout)
+	disconnectCtx, disconnectCancel := context.WithTimeout(ctx, readTimeout)
 	defer disconnectCancel()
 
 	for {

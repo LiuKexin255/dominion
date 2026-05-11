@@ -185,9 +185,9 @@ func TestGetLatestSnapshot_CacheHitWithinThreshold(t *testing.T) {
 	c := NewCache()
 	now := time.Now()
 
-	jpeg := ExtractJPEGFallback()
+	snapData := []byte("cached-jpeg-data")
 	c.snapshot = &domain.SnapshotRef{
-		Data:        jpeg,
+		Data:        snapData,
 		MimeType:    "image/jpeg",
 		CaptureTime: now,
 		Cached:      false,
@@ -206,7 +206,7 @@ func TestGetLatestSnapshot_CacheHitWithinThreshold(t *testing.T) {
 	if snap.MimeType != "image/jpeg" {
 		t.Fatalf("MimeType = %q, want %q", snap.MimeType, "image/jpeg")
 	}
-	if string(snap.Data) != string(jpeg) {
+	if string(snap.Data) != string(snapData) {
 		t.Fatal("snapshot data mismatch")
 	}
 }
@@ -215,7 +215,7 @@ func TestGetLatestSnapshot_CacheMissAfterThreshold(t *testing.T) {
 	c := NewCache()
 
 	c.snapshot = &domain.SnapshotRef{
-		Data:        ExtractJPEGFallback(),
+		Data:        []byte("stale-jpeg-data"),
 		MimeType:    "image/jpeg",
 		CaptureTime: time.Now().Add(-2 * time.Second),
 		Cached:      false,
@@ -251,7 +251,7 @@ func TestRefreshSnapshot_NoKeyFrame(t *testing.T) {
 	}
 }
 
-func TestRefreshSnapshot_WithKeyFrameSegment(t *testing.T) {
+func TestRefreshSnapshot_WithKeyFrameSegment_InvalidData(t *testing.T) {
 	c := NewCache()
 
 	// when: key frame segment with data that will fail fMP4 parsing
@@ -265,16 +265,10 @@ func TestRefreshSnapshot_WithKeyFrameSegment(t *testing.T) {
 		t.Fatalf("AddSegment error: %v", err)
 	}
 
-	// then: RefreshSnapshot returns a fallback snapshot because data is not valid fMP4
-	snap, err := c.RefreshSnapshot()
-	if err != nil {
-		t.Fatalf("RefreshSnapshot error: %v", err)
-	}
-	if snap == nil {
-		t.Fatal("expected fallback snapshot for invalid fMP4 data")
-	}
-	if snap.MimeType != "image/jpeg" {
-		t.Fatalf("snapshot MimeType = %q, want image/jpeg", snap.MimeType)
+	// then: RefreshSnapshot returns error because data is not valid fMP4
+	_, err := c.RefreshSnapshot()
+	if err == nil {
+		t.Fatal("expected error for invalid fMP4 data in key frame segment")
 	}
 }
 
@@ -294,7 +288,7 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			seg := &domain.SegmentRef{
 				SegmentID: "seg-concurrent",
-				Data:      ExtractJPEGFallback(),
+				Data:      []byte("concurrent-seg-data"),
 				KeyFrame:  idx%3 == 0,
 				MediaTime: base.Add(time.Duration(idx) * 500 * time.Millisecond),
 			}
@@ -321,21 +315,5 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	if init.MimeType != "video/mp4" {
 		t.Fatalf("MimeType = %q, want %q", init.MimeType, "video/mp4")
-	}
-}
-
-func TestExtractJPEGFallback(t *testing.T) {
-	// when: calling ExtractJPEGFallback
-	jpeg := ExtractJPEGFallback()
-
-	// then: returns valid JPEG data (starts with SOI, ends with EOI)
-	if len(jpeg) == 0 {
-		t.Fatal("expected non-empty JPEG data")
-	}
-	if jpeg[0] != 0xFF || jpeg[1] != 0xD8 {
-		t.Fatalf("JPEG does not start with SOI marker: %02X %02X", jpeg[0], jpeg[1])
-	}
-	if jpeg[len(jpeg)-2] != 0xFF || jpeg[len(jpeg)-1] != 0xD9 {
-		t.Fatalf("JPEG does not end with EOI marker: %02X %02X", jpeg[len(jpeg)-2], jpeg[len(jpeg)-1])
 	}
 }
