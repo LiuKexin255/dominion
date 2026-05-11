@@ -13,6 +13,7 @@ go_library(
         "//common/gopkg/grpc",
         "//common/gopkg/http",
         "//common/gopkg/mongo",
+        "//common/gopkg/otel",
         "//projects/infra/deploy",
         "//projects/infra/deploy/app",
         "//projects/infra/deploy/domain",

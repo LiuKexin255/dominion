@@ -1,54 +1,66 @@
-package bootstrap
+package otel
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
-	"dominion/common/gopkg/otel"
+	"dominion/common/gopkg/bootstrap"
 )
 
-// stubOtelInit replaces otelInit for the duration of the test and restores it on cleanup.
-func stubOtelInit(t *testing.T, fn func(ctx context.Context, opts ...otel.Option) (otel.Shutdown, error)) {
+// stubInit replaces initFn for the duration of the test and restores it on cleanup.
+func stubInit(t *testing.T, fn func(ctx context.Context, opts ...Option) (Shutdown, error)) {
 	t.Helper()
-	original := otelInit
-	otelInit = fn
-	t.Cleanup(func() { otelInit = original })
+	original := initFn
+	initFn = fn
+	t.Cleanup(func() { initFn = original })
 }
 
-func TestOTel_StartCallsInit(t *testing.T) {
+// captureSlog redirects the default slog output to a buffer for the duration
+// of the test and restores it on cleanup.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+func TestComponent_StartCallsInit(t *testing.T) {
 	initCalled := false
-	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		initCalled = true
 		return func(_ context.Context) error { return nil }, nil
 	})
 
-	c := OTel()
+	c := Component()
 	err := c.Start(context.Background())
 
 	if !initCalled {
-		t.Fatal("otelInit was not called")
+		t.Fatal("initFn was not called")
 	}
 	if err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
-	// Verify shutdown was saved by calling Stop.
 	if err := c.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop returned unexpected error: %v", err)
 	}
 }
 
-func TestOTel_StopCallsShutdown(t *testing.T) {
+func TestComponent_StopCallsShutdown(t *testing.T) {
 	shutdownCalled := false
-	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return func(_ context.Context) error {
 			shutdownCalled = true
 			return nil
 		}, nil
 	})
 
-	c := OTel()
+	c := Component()
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start returned unexpected error: %v", err)
 	}
@@ -61,21 +73,21 @@ func TestOTel_StopCallsShutdown(t *testing.T) {
 	}
 }
 
-func TestOTel_StageIsFoundation(t *testing.T) {
-	c := OTel()
+func TestComponent_StageIsFoundation(t *testing.T) {
+	c := Component()
 
-	if got := c.Stage(); got != StageFoundation {
-		t.Fatalf("Stage() = %v, want %v", got, StageFoundation)
+	if got := c.Stage(); got != bootstrap.StageFoundation {
+		t.Fatalf("Stage() = %v, want %v", got, bootstrap.StageFoundation)
 	}
 }
 
-func TestOTel_StartFailureReturnsError(t *testing.T) {
+func TestComponent_StartFailureReturnsError(t *testing.T) {
 	wantErr := errors.New("init failed")
-	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return nil, wantErr
 	})
 
-	c := OTel()
+	c := Component()
 	err := c.Start(context.Background())
 
 	if err == nil {
@@ -84,19 +96,18 @@ func TestOTel_StartFailureReturnsError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Start error = %v, want %v", err, wantErr)
 	}
-	// Stop on failed start should return nil (shutdown is nil).
 	if err := c.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after failed Start returned unexpected error: %v", err)
 	}
 }
 
-func TestOTel_StartSuccessLog(t *testing.T) {
+func TestComponent_StartSuccessLog(t *testing.T) {
 	buf := captureSlog(t)
-	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return func(_ context.Context) error { return nil }, nil
 	})
 
-	c := OTel()
+	c := Component()
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -110,13 +121,13 @@ func TestOTel_StartSuccessLog(t *testing.T) {
 	}
 }
 
-func TestOTel_StartFailureLog(t *testing.T) {
+func TestComponent_StartFailureLog(t *testing.T) {
 	buf := captureSlog(t)
-	stubOtelInit(t, func(_ context.Context, _ ...otel.Option) (otel.Shutdown, error) {
+	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return nil, errors.New("init failed")
 	})
 
-	c := OTel()
+	c := Component()
 	_ = c.Start(context.Background())
 
 	output := buf.String()

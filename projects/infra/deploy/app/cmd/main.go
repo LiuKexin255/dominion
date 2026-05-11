@@ -13,6 +13,7 @@ import (
 	"dominion/common/gopkg/grpc"
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/mongo"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/infra/deploy"
 	"dominion/projects/infra/deploy/app"
 	"dominion/projects/infra/deploy/domain"
@@ -72,7 +73,7 @@ func main() {
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
 	bs.Register(bootstrap.MongoClient("mongo", client))
-	bs.Register(bootstrap.OTel())
+	bs.Register(otel.Component())
 	bs.Register(server)
 	bs.Register(daemon)
 	if err := bs.Run(context.Background()); err != nil {

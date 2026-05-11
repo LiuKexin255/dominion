@@ -11,6 +11,7 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/grpc"
 	phttp "dominion/common/gopkg/http"
+	"dominion/common/gopkg/otel"
 	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
 	"dominion/projects/game/gateway/domain/sessionmanager"
@@ -54,7 +55,7 @@ func main() {
 	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
-	if err := bs.Register(bootstrap.OTel()); err != nil {
+	if err := bs.Register(otel.Component()); err != nil {
 		log.Fatalf("register otel: %v", err)
 	}
 	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {

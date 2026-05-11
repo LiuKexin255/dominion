@@ -4,12 +4,14 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "otel",
     srcs = [
+        "bootstrap.go",
         "options.go",
         "otel.go",
     ],
     importpath = "dominion/common/gopkg/otel",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/bootstrap",
         "//common/gopkg/otel/tracecontext",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//propagation",
@@ -28,9 +30,13 @@ go_library(
 
 go_unittest(
     name = "otel_test",
-    srcs = ["otel_test.go"],
+    srcs = [
+        "bootstrap_test.go",
+        "otel_test.go",
+    ],
     embed = [":otel"],
     deps = [
+        "//common/gopkg/bootstrap",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",
         "@io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetricgrpc//:otlpmetricgrpc",

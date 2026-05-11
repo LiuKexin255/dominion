@@ -10,6 +10,7 @@ import (
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/grpc/solver"
 	phttp "dominion/common/gopkg/http"
+	"dominion/common/gopkg/otel"
 	"dominion/experimental/golang/grpc_hello_world"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -40,7 +41,7 @@ func main() {
 	log.Printf("gRPC hello world gateway listening :%s", *port)
 
 	b := bootstrap.New()
-	b.Register(bootstrap.OTel())
+	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCConn("backend", conn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))

@@ -9,6 +9,7 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/otel"
 	"dominion/experimental/golang/grpc_hello_world"
 
 	grpcgo "google.golang.org/grpc"
@@ -48,7 +49,7 @@ func main() {
 	log.Printf("gRPC hello world server listening: %s", *port)
 
 	b := bootstrap.New()
-	b.Register(bootstrap.OTel())
+	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCServer("grpc", grpcServer, listener))
 	log.Fatal(b.Run(context.Background()))
 }
