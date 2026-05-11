@@ -48,8 +48,8 @@ func main() {
 	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
 	_ = gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), httpMux, handler)
 	router := &app.Router{
-		WSHandler: wsHandler,
-		GRPCMux:   phttp.Handler(httpMux, "gateway-http"),
+		WSHandler: phttp.Handler(wsHandler, "GET /v1/sessions/{id}/game/connect"),
+		GRPCMux: phttp.Handler(httpMux, "gateway-http"),
 	}
 	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
