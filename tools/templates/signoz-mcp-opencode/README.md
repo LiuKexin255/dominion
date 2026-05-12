@@ -1,8 +1,7 @@
 # SigNoz MCP OpenCode template
 
 This template configures OpenCode to start a local `signoz-mcp-server` process
-through stdio, expose only logs/traces related SigNoz MCP tools, and provide an
-optional `/signoz` command prompt in the same personal config file.
+through stdio and expose only logs/traces related SigNoz MCP tools.
 
 ## Prerequisites
 
@@ -15,8 +14,7 @@ optional `/signoz` command prompt in the same personal config file.
 
 ## Files
 
-* `opencode.jsonc` — personal OpenCode MCP configuration template, including an
-  optional `/signoz` command prompt.
+* `opencode.jsonc` — personal OpenCode MCP configuration template.
 
 ## Install locally
 
@@ -37,12 +35,12 @@ Then edit `~/.config/opencode/opencode.json` and replace:
 Do not copy this template into `.opencode/opencode.json`; project-local MCP
 configuration would be loaded automatically for everyone using the repository.
 
-## Fixed prompt
+## Shared skill
 
-The template defines a `/signoz` command in `opencode.jsonc`. Use it for common
-SigNoz log/trace investigations so the agent consistently applies the repository
-field mapping and tool restrictions.
+The repository defines a shared `signoz` skill in `.opencode/skills/signoz/SKILL.md`.
+Load it for common SigNoz log/trace investigations so the agent consistently
+applies the repository field mapping and tool restrictions.
 
-OpenCode supports Markdown files for commands, but MCP server configuration is
-JSON/JSONC config only. Keeping the command prompt in `opencode.jsonc` lets the
-MCP configuration and its usage prompt stay in one personal file.
+OpenCode supports Markdown files for skills, but MCP server configuration is
+JSON/JSONC config only. This template only configures the personal MCP connection;
+the shared skill stays in the repository.

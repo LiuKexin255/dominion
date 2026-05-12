@@ -11,6 +11,6 @@ paths after filling in a template.
 
 ## Available templates
 
-* `signoz-mcp-opencode/` — personal OpenCode configuration and optional command
-  prompt for querying SigNoz logs and traces through the SigNoz MCP server in
-  stdio mode.
+* `signoz-mcp-opencode/` — personal OpenCode configuration for querying SigNoz
+  logs and traces through the repository `signoz` skill and the SigNoz MCP
+  server in stdio mode.

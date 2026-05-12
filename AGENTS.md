@@ -86,6 +86,7 @@ Golang 代码格式化与依赖更新步骤如下：
 * 单元测试使用 `bazel test` 执行，且随 `bazel build` 一起作为编译验证的一部分。
 * 服务代码需要进行大型测试。先编写测试计划并放到 `testplan` 目录，然后按计划部署服务、执行测试用例。
 * 更多大型测试信息参阅 `style` 目录。
+* 遇到测试失败或需要排查问题，可以使用 `signoz` skill 查询日志以及 `traces`。
 
 > FOR `Prometheus`: 
 > * 使用 `testplan` SKILL 执行测试计划。

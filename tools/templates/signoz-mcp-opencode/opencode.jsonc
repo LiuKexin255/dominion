@@ -15,33 +15,29 @@
   },
   "tools": {
     "obs_*": false,
-    "obs_signoz_search_logs": true,
-    "obs_signoz_aggregate_logs": true,
-    "obs_signoz_search_traces": true,
-    "obs_signoz_aggregate_traces": true,
-    "obs_signoz_get_trace_details": true,
 
     // Optional read-only field discovery tools. Enable only when debugging
     // field mappings such as env -> deployment.environment.name.
     // "obs_signoz_get_field_keys": true,
-    // "obs_signoz_get_field_values": true
+    // "obs_signoz_get_field_values": true,
+
+    "obs_signoz_search_logs": true,
+    "obs_signoz_aggregate_logs": true,
+    "obs_signoz_search_traces": true,
+    "obs_signoz_aggregate_traces": true,
+    "obs_signoz_get_trace_details": true
   },
   "permission": {
     "obs_*": "deny",
+
+    // If field discovery tools are enabled above, also allow them here.
+    // "obs_signoz_get_field_keys": "allow",
+    // "obs_signoz_get_field_values": "allow",
+
     "obs_signoz_search_logs": "allow",
     "obs_signoz_aggregate_logs": "allow",
     "obs_signoz_search_traces": "allow",
     "obs_signoz_aggregate_traces": "allow",
-    "obs_signoz_get_trace_details": "allow",
-
-    // If field discovery tools are enabled above, also allow them here.
-    // "obs_signoz_get_field_keys": "allow",
-    // "obs_signoz_get_field_values": "allow"
-  },
-  "command": {
-    "signoz": {
-      "description": "Query SigNoz logs and traces through the local SigNoz MCP server",
-      "template": "Use the obs MCP server to investigate SigNoz logs and traces.\n\nAllowed tools:\n- obs_signoz_search_logs\n- obs_signoz_aggregate_logs\n- obs_signoz_search_traces\n- obs_signoz_aggregate_traces\n- obs_signoz_get_trace_details\n\nDo not use dashboard, alert, notification, view, metric, or write tools.\n\nParameter mapping:\n- User service means SigNoz field service.name.\n- User env means SigNoz field deployment.environment.name.\n- User trace_id means SigNoz field trace_id.\n\nDefault behavior:\n1. If trace_id is provided, call obs_signoz_get_trace_details first, then use obs_signoz_search_logs for logs with the same trace_id when log context is needed.\n2. If service and env are provided, include both filters in every log/trace query.\n3. If no time range is provided, use the last 30 minutes for errors and the last 1 hour for broader investigation.\n4. Prefer narrow queries first: service + env + severity/error + time range.\n5. Summarize findings with timestamps, service, env, trace IDs, and the likely root cause. Do not expose secrets or tokens from log bodies.\n\nUseful request forms:\n- service=<app/service> env=<environment> recent errors\n- service=<app/service> env=<environment> trace errors last 1h\n- trace_id=<trace_id> explain request path and related logs\n\nUser request: $ARGUMENTS"
-    }
+    "obs_signoz_get_trace_details": "allow"
   }
 }
