@@ -20,7 +20,7 @@ mongodb:
     port: 27017
     admin_username: "admin"
     storage:
-      storage_class_name: "truenas-iscsi"
+      storage_class_name: "truenas-iscsi-v2"
       capacity: "4Gi"
       access_modes:
         - "ReadWriteOncePod"
