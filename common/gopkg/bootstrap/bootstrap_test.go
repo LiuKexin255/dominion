@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"dominion/common/gopkg/logs"
 )
 
 // mockComponent implements Component for testing.
@@ -514,14 +516,14 @@ func TestBootstrap_DaemonExitWatcher(t *testing.T) {
 	}
 }
 
-// captureSlog replaces the default slog logger with a TextHandler writing to
+// captureSlog replaces the default logs logger with a TextHandler writing to
 // a buffer and returns the buffer. The original logger is restored on cleanup.
 func captureSlog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	old := logs.Default()
+	logs.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { logs.SetDefault(old) })
 	return &buf
 }
 

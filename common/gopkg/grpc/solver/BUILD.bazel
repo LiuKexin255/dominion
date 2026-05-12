@@ -11,6 +11,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/solver",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//credentials/insecure",

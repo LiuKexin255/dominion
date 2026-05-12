@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
 )
@@ -38,8 +39,8 @@ func (w *CompletionWorker) Start(ctx context.Context) error {
 				return nil
 			}
 			ctx, span := otel.Tracer().Start(ctx, spanCompletion)
-			logs.InfoContext(ctx, "completion processed",
-				logFieldSessionID, comp.SessionID,
+			logs.Info(ctx, "completion processed",
+				event.String(logFieldSessionID, comp.SessionID),
 			)
 			w.handle(ctx, comp)
 			span.End()

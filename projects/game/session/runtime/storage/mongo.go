@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/session/domain"
 
@@ -153,11 +154,11 @@ func (r *MongoRepository) Get(ctx context.Context, name string) (*domain.Session
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
 			return nil, domain.ErrNotFound
 		}
-		logs.ErrorContext(ctx, "failed to get session", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "failed to get session", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, err
 	}
 
-	logs.InfoContext(ctx, "session retrieved", logFieldSessionID, sessionID)
+	logs.Info(ctx, "session retrieved", event.String(logFieldSessionID, sessionID))
 	return doc.toDomain()
 }
 
@@ -185,11 +186,11 @@ func (r *MongoRepository) Save(ctx context.Context, session *domain.Session) err
 		if mongodriver.IsDuplicateKeyError(err) {
 			return domain.ErrAlreadyExists
 		}
-		logs.ErrorContext(ctx, "failed to save session", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "failed to save session", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return err
 	}
 
-	logs.InfoContext(ctx, "session saved", logFieldSessionID, sessionID)
+	logs.Info(ctx, "session saved", event.String(logFieldSessionID, sessionID))
 	return nil
 }
 
@@ -203,14 +204,14 @@ func (r *MongoRepository) Delete(ctx context.Context, name string) error {
 
 	result, err := r.collection.DeleteOne(ctx, bson.M{mongoFieldName: name})
 	if err != nil {
-		logs.ErrorContext(ctx, "failed to delete session", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "failed to delete session", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return err
 	}
 	if result.DeletedCount == 0 {
 		return domain.ErrNotFound
 	}
 
-	logs.InfoContext(ctx, "session deleted", logFieldSessionID, sessionID)
+	logs.Info(ctx, "session deleted", event.String(logFieldSessionID, sessionID))
 	return nil
 }
 
@@ -223,7 +224,7 @@ func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
 
 	cursor, err := r.collection.Find(ctx, filter)
 	if err != nil {
-		logs.ErrorContext(ctx, "failed to list sessions", logFieldError, err)
+		logs.Error(ctx, "failed to list sessions", event.Err(err))
 		return nil, fmt.Errorf("find sessions: %w", err)
 	}
 	defer cursor.Close(ctx)
@@ -232,7 +233,7 @@ func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
 	for cursor.Next(ctx) {
 		doc := new(mongoSession)
 		if err := cursor.Decode(doc); err != nil {
-			logs.ErrorContext(ctx, "failed to decode session", logFieldError, err)
+			logs.Error(ctx, "failed to decode session", event.Err(err))
 			return nil, fmt.Errorf("decode session: %w", err)
 		}
 		session, err := doc.toDomain()
@@ -243,7 +244,7 @@ func (r *MongoRepository) List(ctx context.Context) ([]*domain.Session, error) {
 	}
 
 	span.SetAttributes(attribute.Int(logFieldCount, len(results)))
-	logs.InfoContext(ctx, "sessions listed", logFieldCount, len(results))
+	logs.Info(ctx, "sessions listed", event.Int(logFieldCount, len(results)))
 
 	if len(results) == 0 {
 		return nil, nil

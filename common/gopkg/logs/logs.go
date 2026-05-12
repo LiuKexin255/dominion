@@ -7,28 +7,15 @@ import (
 	"os"
 	"sync"
 
-	"dominion/common/gopkg/otel"
-
-	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"dominion/common/gopkg/logs/event"
 )
 
 var (
-	// newDeployHandler creates the handler for the deploy path.
-	// Overridable for tests.
-	newDeployHandler = func(name string) slog.Handler {
-		return otelslog.NewHandler(name)
-	}
-
 	// newConsoleHandler creates the handler for the console path.
 	// Overridable for tests.
 	newConsoleHandler = func() slog.Handler {
 		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
 	}
-
-	// isInDeployMode reports whether the process is running in a dominion
-	// deployment with a valid OTel log provider. It is overridable for tests.
-	// In production it delegates to otel.IsLoggerProviderSet.
-	isInDeployMode = otel.IsLoggerProviderSet
 )
 
 var (
@@ -36,80 +23,27 @@ var (
 	initOnce      = new(sync.Once)
 )
 
-// dynamicHandler switches between console and OTel backends at log-write
-// time based on whether the OTel LoggerProvider is available. Both handlers
-// are pre-constructed; calls to Enabled and Handle are delegated to the
-// currently-active handler.
-type dynamicHandler struct {
-	console slog.Handler
-	otel    slog.Handler
-}
-
-// active returns the handler that should handle log records right now.
-// The decision is made at call time, not construction time, so that a
-// process can start logging before OTel is initialised and transparently
-// switch to the OTel backend as soon as it becomes available.
-func (h *dynamicHandler) active() slog.Handler {
-	if isInDeployMode() {
-		return h.otel
-	}
-	return h.console
-}
-
-// newDynamicHandler creates a dynamicHandler with both console and deploy
-// handlers pre-constructed.
-func newDynamicHandler() *dynamicHandler {
-	return &dynamicHandler{
-		console: newConsoleHandler(),
-		otel:    newDeployHandler("dominion/common/gopkg/logs"),
-	}
-}
-
-// Enabled reports whether the handler handles records at the given level.
-// Delegates to the currently-active handler.
-func (h *dynamicHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.active().Enabled(ctx, level)
-}
-
-// Handle processes the log record.
-// Delegates to the currently-active handler.
-func (h *dynamicHandler) Handle(ctx context.Context, r slog.Record) error {
-	return h.active().Handle(ctx, r)
-}
-
-// WithAttrs returns a new dynamicHandler with the given attributes applied
-// to both the console and OTel handlers. This guarantees that attributes
-// remain available regardless of which backend is active at write time.
-func (h *dynamicHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &dynamicHandler{
-		console: h.console.WithAttrs(attrs),
-		otel:    h.otel.WithAttrs(attrs),
-	}
-}
-
-// WithGroup returns a new dynamicHandler that opens a named group on both
-// the console and OTel handlers.
-func (h *dynamicHandler) WithGroup(name string) slog.Handler {
-	return &dynamicHandler{
-		console: h.console.WithGroup(name),
-		otel:    h.otel.WithGroup(name),
-	}
-}
+var (
+	reporterMu     sync.Mutex
+	activeReporter *slog.Logger
+)
 
 type loggerKey struct{}
 
-// Default returns the lazily-initialized default logger.
-// The underlying handler auto-switches between console and OTel backends
-// based on the runtime deployment environment.
+// Default returns the lazily-initialized default logger using the console
+// handler. Once a reporter is installed via InstallReporter the package-level
+// Info/Warn/Error/Debug functions route log records to that reporter instead;
+// Default() continues to return the console logger for callers that bypass the
+// package-level helpers.
 func Default() *slog.Logger {
 	initOnce.Do(func() {
-		defaultLogger = slog.New(newDynamicHandler())
+		defaultLogger = slog.New(newConsoleHandler())
 	})
 	return defaultLogger
 }
 
-// FromContext retrieves the logger stored in ctx.  If no logger is
-// associated with ctx, it returns Default().
+// FromContext retrieves the logger stored in ctx. If no logger is associated
+// with ctx, it returns Default().
 func FromContext(ctx context.Context) *slog.Logger {
 	if logger, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok {
 		return logger
@@ -117,31 +51,23 @@ func FromContext(ctx context.Context) *slog.Logger {
 	return Default()
 }
 
-// InfoContext logs at LevelInfo using the logger associated with ctx.
-func InfoContext(ctx context.Context, msg string, args ...any) {
-	FromContext(ctx).InfoContext(ctx, msg, args...)
-}
-
-// ErrorContext logs at LevelError using the logger associated with ctx.
-func ErrorContext(ctx context.Context, msg string, args ...any) {
-	FromContext(ctx).ErrorContext(ctx, msg, args...)
-}
-
-// With attaches additional structured fields to the logger stored in ctx
-// and returns a child context carrying the enriched logger.
-func With(ctx context.Context, args ...any) context.Context {
-	logger := FromContext(ctx).With(args...)
+// With attaches the given events to the logger stored in ctx and returns a
+// child context carrying the enriched logger.
+func With(ctx context.Context, events ...event.Event) context.Context {
+	var kvs []any
+	for _, ev := range events {
+		if ev.Key == "" && ev.Value == nil {
+			continue
+		}
+		kvs = append(kvs, ev.Key, ev.Value)
+	}
+	var logger *slog.Logger
+	if len(kvs) > 0 {
+		logger = FromContext(ctx).With(kvs...)
+	} else {
+		logger = FromContext(ctx)
+	}
 	return context.WithValue(ctx, loggerKey{}, logger)
-}
-
-// DebugContext logs at LevelDebug using the logger associated with ctx.
-func DebugContext(ctx context.Context, msg string, args ...any) {
-	FromContext(ctx).DebugContext(ctx, msg, args...)
-}
-
-// WarnContext logs at LevelWarn using the logger associated with ctx.
-func WarnContext(ctx context.Context, msg string, args ...any) {
-	FromContext(ctx).WarnContext(ctx, msg, args...)
 }
 
 // WithLogger stores the given logger in ctx and returns the new context.
@@ -155,11 +81,81 @@ func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 }
 
 // SetDefault replaces the package-level default logger.
-// This is intended for testing ONLY; production code should rely on
-// the auto-switching mechanism provided by Default().
-// Calling SetDefault bypasses the dynamic handler — the injected logger
-// will not participate in console/OTel automatic switching.
+// Calling SetDefault bypasses the console handler — the injected logger is
+// used directly. Intended for testing.
 func SetDefault(logger *slog.Logger) {
 	initOnce.Do(func() {})
 	defaultLogger = logger
+}
+
+// Info logs at LevelInfo using the logger associated with ctx. If a reporter
+// has been installed via InstallReporter the record is routed there instead of
+// the context logger.
+func Info(ctx context.Context, msg string, events ...event.Event) {
+	logAttrs(ctx, slog.LevelInfo, msg, events...)
+}
+
+// Error logs at LevelError using the logger associated with ctx.
+func Error(ctx context.Context, msg string, events ...event.Event) {
+	logAttrs(ctx, slog.LevelError, msg, events...)
+}
+
+// Debug logs at LevelDebug using the logger associated with ctx.
+func Debug(ctx context.Context, msg string, events ...event.Event) {
+	logAttrs(ctx, slog.LevelDebug, msg, events...)
+}
+
+// Warn logs at LevelWarn using the logger associated with ctx.
+func Warn(ctx context.Context, msg string, events ...event.Event) {
+	logAttrs(ctx, slog.LevelWarn, msg, events...)
+}
+
+// logAttrs converts event.Event values to slog.Attr, skips zero-value events,
+// and routes the log record to the active reporter (if installed) or the
+// context logger.
+func logAttrs(ctx context.Context, level slog.Level, msg string, events ...event.Event) {
+	attrs := make([]slog.Attr, 0, len(events))
+	for _, ev := range events {
+		if ev.Key == "" && ev.Value == nil {
+			continue
+		}
+		attrs = append(attrs, slog.Attr{Key: ev.Key, Value: slog.AnyValue(ev.Value)})
+	}
+	logger := FromContext(ctx)
+	reporterMu.Lock()
+	r := activeReporter
+	reporterMu.Unlock()
+	if r != nil {
+		r.LogAttrs(ctx, level, msg, attrs...)
+	} else {
+		logger.LogAttrs(ctx, level, msg, attrs...)
+	}
+}
+
+// InstallReporter installs logger as the active reporter. Package-level
+// Info/Warn/Error/Debug calls route log records to the reporter while it is
+// installed. Returns an uninstall function that restores the previous
+// behaviour; the function only uninstalls the reporter it was created for,
+// leaving any subsequently installed reporter in place.
+// Panics if logger is nil.
+func InstallReporter(logger *slog.Logger) func() {
+	if logger == nil {
+		panic("logs: InstallReporter called with nil logger")
+	}
+	reporterMu.Lock()
+	activeReporter = logger
+	reporterMu.Unlock()
+	return func() {
+		uninstallReporter(logger)
+	}
+}
+
+// uninstallReporter removes logger from the active reporter slot only if it
+// is still the current reporter.
+func uninstallReporter(logger *slog.Logger) {
+	reporterMu.Lock()
+	defer reporterMu.Unlock()
+	if activeReporter == logger {
+		activeReporter = nil
+	}
 }

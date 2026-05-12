@@ -11,6 +11,7 @@ import (
 
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
@@ -110,18 +111,18 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer connectSpan.End()
 	connectSpan.SetAttributes(attribute.String(logFieldSessionID, sessionID))
 
-	logs.InfoContext(ctx, "gateway: ws connect started", logFieldSessionID, sessionID)
+	logs.Info(ctx, "gateway: ws connect started", event.String(logFieldSessionID, sessionID))
 
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
-		logs.WarnContext(ctx, "gateway: ws token missing", logFieldSessionID, sessionID)
+		logs.Warn(ctx, "gateway: ws token missing", event.String(logFieldSessionID, sessionID))
 		http.Error(w, "missing token", http.StatusUnauthorized)
 		return
 	}
 
 	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
 	if err != nil {
-		logs.WarnContext(ctx, "gateway: ws token validation failed", logFieldSessionID, sessionID, "error", err)
+		logs.Warn(ctx, "gateway: ws token validation failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		http.Error(w, fmt.Sprintf("connect session: %v", err), http.StatusUnauthorized)
 		return
 	}
@@ -136,7 +137,7 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	connID := nextConnID()
 	connectSpan.SetAttributes(attribute.String(logFieldConnID, connID))
 
-	logs.InfoContext(ctx, "gateway: ws connected", logFieldSessionID, sessionID, logFieldConnID, connID)
+	logs.Info(ctx, "gateway: ws connected", event.String(logFieldSessionID, sessionID), event.String(logFieldConnID, connID))
 
 	wc := &wsConn{conn: conn, connID: connID}
 
@@ -181,18 +182,18 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 	helloSpan.SetAttributes(attribute.String(logFieldClientRole, clientRoleString(wc.role)))
 	helloSpan.End()
 
-	logs.InfoContext(ctx, "gateway: ws hello completed",
-		logFieldSessionID, sessionID,
-		logFieldConnID, wc.connID,
-		logFieldClientRole, clientRoleString(wc.role),
+	logs.Info(ctx, "gateway: ws hello completed",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldConnID, wc.connID),
+		event.String(logFieldClientRole, clientRoleString(wc.role)),
 	)
 
 	h.trackConn(sessionID, wc)
 	defer h.cleanupDisconnect(sessionID, wc)
 	defer wc.conn.Close(websocket.StatusNormalClosure, "")
-	defer logs.InfoContext(ctx, "gateway: ws disconnect",
-		logFieldSessionID, sessionID,
-		logFieldConnID, wc.connID,
+	defer logs.Info(ctx, "gateway: ws disconnect",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldConnID, wc.connID),
 	)
 
 	for _, r := range initMsgs {
@@ -216,10 +217,10 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 			routed, svcErr = h.svc.HandleWebMessage(ctx, sessionID, wc.connID, msg)
 		}
 		if svcErr != nil {
-			logs.WarnContext(ctx, "gateway: ws message routing error",
-				logFieldSessionID, sessionID,
-				logFieldConnID, wc.connID,
-				"error", svcErr,
+			logs.Warn(ctx, "gateway: ws message routing error",
+				event.String(logFieldSessionID, sessionID),
+				event.String(logFieldConnID, wc.connID),
+				event.Err(svcErr),
 			)
 			sendErrorAndClose(wc, ctx, svcErr.Error())
 			return

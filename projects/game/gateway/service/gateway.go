@@ -9,6 +9,7 @@ import (
 
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
@@ -66,9 +67,9 @@ func (s *GatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
 // output channel. Returns true if the message was sent, false if the context
 // was cancelled.
 func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.ControlCompletion) bool {
-	logs.InfoContext(ctx, "gateway: handling control completion",
-		logFieldSessionID, comp.SessionID,
-		logFieldRequesterConnID, comp.RequesterConnID,
+	logs.Info(ctx, "gateway: handling control completion",
+		event.String(logFieldSessionID, comp.SessionID),
+		event.String(logFieldRequesterConnID, comp.RequesterConnID),
 	)
 
 	if comp.FlashSnapshot {
@@ -116,8 +117,8 @@ func (s *GatewayService) ConnectSession(ctx context.Context, pathSessionID, toke
 
 	rt := s.sessions.GetOrCreateRuntime(pathSessionID)
 
-	logs.InfoContext(ctx, "gateway: session connected",
-		logFieldSessionID, pathSessionID,
+	logs.Info(ctx, "gateway: session connected",
+		event.String(logFieldSessionID, pathSessionID),
 	)
 
 	return rt, claims, nil

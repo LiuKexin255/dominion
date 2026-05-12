@@ -8,6 +8,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "@com_github_minio_minio_go_v7//:minio-go",
         "@com_github_minio_minio_go_v7//pkg/credentials",
     ],

@@ -44,6 +44,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//projects/infra/deploy/domain",
         "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//codes",

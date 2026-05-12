@@ -8,6 +8,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "@org_golang_google_grpc//credentials",
     ],
 )

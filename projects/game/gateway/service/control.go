@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
 )
 
@@ -70,10 +71,10 @@ func (e *ControlExecutor) SubmitOperation(
 
 	e.inflight[sessionID] = op
 
-	logs.InfoContext(context.Background(), "control: operation submitted",
-		logFieldSessionID, sessionID,
-		logFieldOperationID, req.RequestID,
-		logFieldOperationKind, req.Kind,
+	logs.Info(context.Background(), "control: operation submitted",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldOperationID, req.RequestID),
+		event.String(logFieldOperationKind, string(req.Kind)),
 	)
 
 	return op.op, nil
@@ -88,8 +89,8 @@ func (e *ControlExecutor) HandleAgentAck(sessionID string) (string, error) {
 		return "", domain.ErrSessionNotFound
 	}
 
-	logs.InfoContext(context.Background(), "control: agent ack",
-		logFieldSessionID, sessionID,
+	logs.Info(context.Background(), "control: agent ack",
+		event.String(logFieldSessionID, sessionID),
 	)
 
 	return op.op.RequesterConnID, nil
@@ -108,8 +109,8 @@ func (e *ControlExecutor) HandleAgentResult(sessionID string) (string, bool, err
 	flashSnapshot := op.op.FlashSnapshot
 	e.mu.Unlock()
 
-	logs.InfoContext(context.Background(), "control: agent result",
-		logFieldSessionID, sessionID,
+	logs.Info(context.Background(), "control: agent result",
+		event.String(logFieldSessionID, sessionID),
 	)
 
 	return requesterConnID, flashSnapshot, nil
@@ -137,8 +138,8 @@ func (e *ControlExecutor) HandleAgentDisconnect(sessionID string) {
 	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	logs.InfoContext(context.Background(), "control: agent disconnected",
-		logFieldSessionID, sessionID,
+	logs.Info(context.Background(), "control: agent disconnected",
+		event.String(logFieldSessionID, sessionID),
 	)
 
 	select {
@@ -169,9 +170,9 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	logs.ErrorContext(context.Background(), "control: operation timed out",
-		logFieldSessionID, sessionID,
-		logFieldOperationID, operationID,
+	logs.Error(context.Background(), "control: operation timed out",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldOperationID, operationID),
 	)
 
 	select {

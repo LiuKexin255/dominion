@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/infra/deploy/domain"
 
@@ -70,9 +71,9 @@ func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progres
 
 	err := r.applyInner(ctx, env, progress, envName, span)
 	if err != nil {
-		logs.ErrorContext(ctx, "apply failed", logFieldEnvName, envName, logFieldError, err)
+		logs.Error(ctx, "apply failed", event.String(logFieldEnvName, envName), event.Err(err))
 	} else {
-		logs.InfoContext(ctx, "apply succeeded", logFieldEnvName, envName)
+		logs.Info(ctx, "apply succeeded", event.String(logFieldEnvName, envName))
 	}
 	return err
 }
@@ -96,11 +97,11 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, pr
 		attribute.Int(logFieldStatefulSetCount, statefulsetCount),
 	)
 
-	logs.InfoContext(ctx, "apply started",
-		logFieldEnvName, envName,
-		logFieldDeploymentCount, deploymentCount,
-		logFieldServiceCount, serviceCount,
-		logFieldStatefulSetCount, statefulsetCount,
+	logs.Info(ctx, "apply started",
+		event.String(logFieldEnvName, envName),
+		event.Int(logFieldDeploymentCount, deploymentCount),
+		event.Int(logFieldServiceCount, serviceCount),
+		event.Int(logFieldStatefulSetCount, statefulsetCount),
 	)
 
 	for _, workload := range objects.Deployments {
@@ -305,9 +306,9 @@ func (r *K8sRuntime) Delete(ctx context.Context, envName domain.EnvironmentName)
 
 	defer func() {
 		if deleteErr != nil {
-			logs.ErrorContext(ctx, "delete failed", logFieldEnvName, envNameStr, logFieldError, deleteErr)
+			logs.Error(ctx, "delete failed", event.String(logFieldEnvName, envNameStr), event.Err(deleteErr))
 		} else {
-			logs.InfoContext(ctx, "delete succeeded", logFieldEnvName, envNameStr)
+			logs.Info(ctx, "delete succeeded", event.String(logFieldEnvName, envNameStr))
 		}
 	}()
 

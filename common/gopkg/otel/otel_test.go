@@ -205,10 +205,15 @@ func TestInit_NonDeploy(t *testing.T) {
 		t.Fatal("Tracer() = nil")
 	}
 
-	// Verify Meter returns a non-nil meter.
+	// Verify Meter returns a non-nil meter via the default noop provider.
 	meter := Meter()
 	if meter == nil {
 		t.Fatal("Meter() = nil")
+	}
+
+	// Verify no explicit SDK MeterProvider was set.
+	if _, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); ok {
+		t.Fatal("global MeterProvider should not be an SDK MeterProvider after non-deploy init")
 	}
 
 	// Verify TraceID with a span returns a non-empty trace ID.
@@ -238,6 +243,9 @@ func TestInit_Deploy(t *testing.T) {
 	restoreGlobalProviders(t)
 	loggerProviderSet.Store(false)
 	t.Cleanup(func() { loggerProviderSet.Store(false) })
+
+	savedUninstallLogs := uninstallLogs
+	t.Cleanup(func() { uninstallLogs = savedUninstallLogs })
 
 	stubEnv(t, map[string]string{
 		"SERVICE_APP":          "myapp",
@@ -287,6 +295,11 @@ func TestInit_Deploy(t *testing.T) {
 	}
 	if lp := logglobal.GetLoggerProvider(); lp == nil {
 		t.Fatal("global LoggerProvider is nil")
+	}
+
+	// Verify logs reporter was installed.
+	if uninstallLogs == nil {
+		t.Fatal("uninstallLogs = nil after deploy init, want non-nil")
 	}
 
 	// Verify shutdown doesn't error.

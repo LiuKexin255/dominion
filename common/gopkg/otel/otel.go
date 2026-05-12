@@ -4,12 +4,16 @@ package otel
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/otel/tracecontext"
+
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -69,6 +73,11 @@ var (
 // initialization does not create a LoggerProvider, leaving this false.
 var loggerProviderSet atomic.Bool
 
+// uninstallLogs is the function returned by logs.InstallReporter;
+// called during shutdown to restore console logging before OTel providers
+// are torn down.
+var uninstallLogs func()
+
 // setLoggerProviderReady marks the global LoggerProvider as initialized.
 // It is called only from initDeploy().
 func setLoggerProviderReady() {
@@ -120,9 +129,6 @@ func initNonDeploy() (Shutdown, error) {
 	)
 	otel.SetTracerProvider(tp)
 
-	mp := sdkmetric.NewMeterProvider()
-	otel.SetMeterProvider(mp)
-
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
@@ -132,9 +138,6 @@ func initNonDeploy() (Shutdown, error) {
 		var firstErr error
 		if err := tp.Shutdown(shutdownCtx); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("trace provider shutdown: %w", err)
-		}
-		if err := mp.Shutdown(shutdownCtx); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("metric provider shutdown: %w", err)
 		}
 		return firstErr
 	}, nil
@@ -209,6 +212,10 @@ func initDeploy(ctx context.Context, cfg *config) (Shutdown, error) {
 	logglobal.SetLoggerProvider(lp)
 	setLoggerProviderReady()
 
+	// Install the logs reporter so that package-level logs.Info/Error/etc.
+	// route through the OTel LoggerProvider.
+	uninstallLogs = logs.InstallReporter(slog.New(otelslog.NewHandler("dominion/common/gopkg/logs")))
+
 	// Set global propagator.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -216,6 +223,10 @@ func initDeploy(ctx context.Context, cfg *config) (Shutdown, error) {
 	))
 
 	return func(shutdownCtx context.Context) error {
+		// Restore console logging before tearing down OTel providers.
+		if uninstallLogs != nil {
+			uninstallLogs()
+		}
 		var firstErr error
 		if err := tpForCleanup.Shutdown(shutdownCtx); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("trace provider shutdown: %w", err)

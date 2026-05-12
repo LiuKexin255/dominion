@@ -2,8 +2,10 @@ package bootstrap
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // httpServerComponent adapts an *http.Server into a bootstrap Component.
@@ -49,11 +51,11 @@ func (c *httpServerComponent) Start(_ context.Context) error {
 		if err == http.ErrServerClosed {
 			c.done <- nil
 		} else {
-			slog.Error("http server exited", "component", c.name, "error", err)
+			logs.Error(context.Background(), "http server exited", event.String(logFieldComponent, c.name), event.Err(err))
 			c.done <- err
 		}
 	}()
-	slog.Info("http server started", "component", c.name)
+	logs.Info(context.Background(), "http server started", event.String(logFieldComponent, c.name))
 	return nil
 }
 

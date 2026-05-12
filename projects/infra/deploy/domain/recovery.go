@@ -2,7 +2,9 @@ package domain
 
 import (
 	"context"
+
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 type recoveryRepository interface {
@@ -20,7 +22,7 @@ func Recover(ctx context.Context, repo recoveryRepository, queue recoveryQueue) 
 		return err
 	}
 
-	logs.InfoContext(ctx, "recovery: found in-flight environments", "count", len(envs))
+	logs.Info(ctx, "recovery: found in-flight environments", event.Int("count", len(envs)))
 	for _, env := range envs {
 		if env == nil || env.Status() == nil {
 			continue
@@ -30,7 +32,7 @@ func Recover(ctx context.Context, repo recoveryRepository, queue recoveryQueue) 
 		if err := queue.Enqueue(ctx, name); err != nil {
 			return err
 		}
-		logs.InfoContext(ctx, "recovery: requeued environment", "env_name", name.String())
+		logs.Info(ctx, "recovery: requeued environment", event.String("env_name", name.String()))
 	}
 
 	return nil

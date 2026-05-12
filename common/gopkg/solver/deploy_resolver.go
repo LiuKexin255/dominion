@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // ServiceEndpointsInfo holds endpoint data resolved from the deploy service.
@@ -67,7 +68,7 @@ func (r *DeployResolver) Resolve(ctx context.Context, target *Target) ([]string,
 		return nil, fmt.Errorf("deploy GetServiceEndpoints(%q): %w", name, err)
 	}
 	if info == nil {
-		logs.WarnContext(ctx, "deploy resolver returned no endpoints", "app", target.App, "service", target.Service, "endpoint_count", 0)
+		logs.Warn(ctx, "deploy resolver returned no endpoints", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service), event.Int("endpoint_count", 0))
 		return nil, nil
 	}
 	endpoints, filterErr := filterEndpoints(info.Endpoints, info.Ports, target.PortSelector)
@@ -75,7 +76,7 @@ func (r *DeployResolver) Resolve(ctx context.Context, target *Target) ([]string,
 		return nil, filterErr
 	}
 	if len(endpoints) == 0 {
-		logs.WarnContext(ctx, "deploy resolver returned no endpoints", "app", target.App, "service", target.Service, "endpoint_count", 0)
+		logs.Warn(ctx, "deploy resolver returned no endpoints", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service), event.Int("endpoint_count", 0))
 	}
 	return endpoints, nil
 }

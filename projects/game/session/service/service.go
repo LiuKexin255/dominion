@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/domain"
@@ -61,7 +62,7 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
-	logs.InfoContext(ctx, "gateway assigned", logFieldSessionID, session.Snapshot().ID, logFieldGatewayID, assignment.GatewayID)
+	logs.Info(ctx, "gateway assigned", event.String(logFieldSessionID, session.Snapshot().ID), event.String(logFieldGatewayID, assignment.GatewayID))
 	span.SetAttributes(attribute.String(logFieldSessionID, session.Snapshot().ID))
 	span.SetAttributes(attribute.String(logFieldGatewayID, assignment.GatewayID))
 
@@ -71,7 +72,7 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, err
 	}
-	logs.InfoContext(ctx, "session saved", logFieldSessionID, session.Snapshot().ID)
+	logs.Info(ctx, "session saved", event.String(logFieldSessionID, session.Snapshot().ID))
 
 	return session, nil
 }
@@ -83,7 +84,7 @@ func (s *SessionService) GetSession(ctx context.Context, name string) (*domain.S
 		return nil, err
 	}
 
-	logs.InfoContext(ctx, "session loaded", logFieldSessionID, session.Snapshot().ID)
+	logs.Info(ctx, "session loaded", event.String(logFieldSessionID, session.Snapshot().ID))
 
 	if err := s.enrichWithConnectURL(ctx, session); err != nil {
 		return nil, err
@@ -99,7 +100,7 @@ func (s *SessionService) ListSessions(ctx context.Context) ([]*domain.Session, e
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 
-	logs.InfoContext(ctx, "sessions listed", logFieldCount, len(sessions))
+	logs.Info(ctx, "sessions listed", event.Int(logFieldCount, len(sessions)))
 
 	for _, session := range sessions {
 		if err := s.enrichWithConnectURL(ctx, session); err != nil {
@@ -117,7 +118,7 @@ func (s *SessionService) DeleteSession(ctx context.Context, name string) error {
 		return err
 	}
 
-	logs.InfoContext(ctx, "session deleted", logFieldSessionID, name)
+	logs.Info(ctx, "session deleted", event.String(logFieldSessionID, name))
 	return nil
 }
 
@@ -138,7 +139,7 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	}
 
 	session.SetGatewayID(assignment.GatewayID)
-	logs.InfoContext(ctx, "gateway reassigned", logFieldSessionID, session.Snapshot().ID, logFieldNewGatewayID, assignment.GatewayID)
+	logs.Info(ctx, "gateway reassigned", event.String(logFieldSessionID, session.Snapshot().ID), event.String(logFieldNewGatewayID, assignment.GatewayID))
 	span.SetAttributes(attribute.String(logFieldSessionID, session.Snapshot().ID))
 	span.SetAttributes(attribute.String(logFieldNewGatewayID, assignment.GatewayID))
 
@@ -152,7 +153,7 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, err
 	}
-	logs.InfoContext(ctx, "session saved", logFieldSessionID, session.Snapshot().ID)
+	logs.Info(ctx, "session saved", event.String(logFieldSessionID, session.Snapshot().ID))
 
 	return session, nil
 }

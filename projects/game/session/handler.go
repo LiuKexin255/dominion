@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/service"
 
@@ -21,10 +22,10 @@ import (
 const (
 	sessionResourcePrefix = "sessions/"
 
-	logFieldSessionID  = "session_id"
+	logFieldSessionID   = "session_id"
 	logFieldSessionType = "session_type"
-	logFieldCount      = "count"
-	logFieldError      = "error"
+	logFieldCount       = "count"
+	logFieldError       = "error"
 )
 
 // parseSessionName validates that name has format "sessions/{id}" and returns the ID.
@@ -64,11 +65,11 @@ func (h *Handler) GetSession(ctx context.Context, req *GetSessionRequest) (*Sess
 
 	session, err := h.svc.GetSession(ctx, req.GetName())
 	if err != nil {
-		logs.ErrorContext(ctx, "get session failed", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "get session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "get session succeeded", logFieldSessionID, sessionID)
+	logs.Info(ctx, "get session succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoSession(session), nil
 }
 
@@ -81,11 +82,11 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 
 	session, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
 	if err != nil {
-		logs.ErrorContext(ctx, "create session failed", logFieldSessionType, req.GetType().String(), logFieldError, err)
+		logs.Error(ctx, "create session failed", event.String(logFieldSessionType, req.GetType().String()), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "create session succeeded", logFieldSessionID, session.Snapshot().ID, logFieldSessionType, req.GetType().String())
+	logs.Info(ctx, "create session succeeded", event.String(logFieldSessionID, session.Snapshot().ID), event.String(logFieldSessionType, req.GetType().String()))
 	return &CreateSessionResponse{
 		Session: toProtoSession(session),
 	}, nil
@@ -99,11 +100,11 @@ func (h *Handler) DeleteSession(ctx context.Context, req *DeleteSessionRequest) 
 	}
 
 	if err := h.svc.DeleteSession(ctx, req.GetName()); err != nil {
-		logs.ErrorContext(ctx, "delete session failed", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "delete session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "delete session succeeded", logFieldSessionID, sessionID)
+	logs.Info(ctx, "delete session succeeded", event.String(logFieldSessionID, sessionID))
 	return new(emptypb.Empty), nil
 }
 
@@ -116,11 +117,11 @@ func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionReq
 
 	session, err := h.svc.ReconnectSession(ctx, req.GetName())
 	if err != nil {
-		logs.ErrorContext(ctx, "reconnect session failed", logFieldSessionID, sessionID, logFieldError, err)
+		logs.Error(ctx, "reconnect session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "reconnect session succeeded", logFieldSessionID, sessionID)
+	logs.Info(ctx, "reconnect session succeeded", event.String(logFieldSessionID, sessionID))
 	return &ReconnectSessionResponse{
 		Session: toProtoSession(session),
 	}, nil
@@ -130,11 +131,11 @@ func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionReq
 func (h *Handler) ListSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
 	sessions, err := h.svc.ListSessions(ctx)
 	if err != nil {
-		logs.ErrorContext(ctx, "list sessions failed", logFieldError, err)
+		logs.Error(ctx, "list sessions failed", event.Err(err))
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "list sessions succeeded", logFieldCount, len(sessions))
+	logs.Info(ctx, "list sessions succeeded", event.Int(logFieldCount, len(sessions)))
 	protos := make([]*Session, 0, len(sessions))
 	for _, s := range sessions {
 		protos = append(protos, toProtoSession(s))

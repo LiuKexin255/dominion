@@ -16,6 +16,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//projects/infra/deploy",
         "@io_k8s_api//discovery/v1:discovery",
         "@io_k8s_apimachinery//pkg/api/errors",

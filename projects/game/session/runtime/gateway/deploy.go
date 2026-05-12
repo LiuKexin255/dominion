@@ -6,6 +6,7 @@ import (
 	"math/rand"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/common/gopkg/solver"
 
@@ -56,7 +57,7 @@ func (r *DeployRegistry) PickRandom(ctx context.Context) (*Assignment, error) {
 	ready := filterReady(instances)
 	span.SetAttributes(attribute.Int(logFieldReadyCount, len(ready)))
 	if len(ready) == 0 {
-		logs.WarnContext(ctx, "no gateways available")
+		logs.Warn(ctx, "no gateways available")
 		return nil, ErrNoGatewayAvailable
 	}
 
@@ -67,7 +68,7 @@ func (r *DeployRegistry) PickRandom(ctx context.Context) (*Assignment, error) {
 		PublicHost: fmt.Sprintf(r.hostPattern, instance.Index),
 	}
 	span.SetAttributes(attribute.String(logFieldSelectedGateway, assignment.GatewayID))
-	logs.InfoContext(ctx, "gateway picked", logFieldSelectedGateway, assignment.GatewayID, logFieldReadyCount, len(ready))
+	logs.Info(ctx, "gateway picked", event.String(logFieldSelectedGateway, assignment.GatewayID), event.Int(logFieldReadyCount, len(ready)))
 	return assignment, nil
 }
 
@@ -87,7 +88,7 @@ func (r *DeployRegistry) PickRandomExcluding(ctx context.Context, gatewayID stri
 	ready := filterReady(instances)
 	span.SetAttributes(attribute.Int(logFieldReadyCount, len(ready)))
 	if len(ready) == 0 {
-		logs.WarnContext(ctx, "no gateways available", logFieldExcludedGateway, gatewayID)
+		logs.Warn(ctx, "no gateways available", event.String(logFieldExcludedGateway, gatewayID))
 		return nil, ErrNoGatewayAvailable
 	}
 
@@ -106,7 +107,7 @@ func (r *DeployRegistry) PickRandomExcluding(ctx context.Context, gatewayID stri
 			PublicHost: fmt.Sprintf(r.hostPattern, ready[0].Index),
 		}
 		span.SetAttributes(attribute.String(logFieldSelectedGateway, assignment.GatewayID))
-		logs.InfoContext(ctx, "gateway picked", logFieldSelectedGateway, assignment.GatewayID, logFieldReadyCount, len(ready), logFieldExcludedGateway, gatewayID)
+		logs.Info(ctx, "gateway picked", event.String(logFieldSelectedGateway, assignment.GatewayID), event.Int(logFieldReadyCount, len(ready)), event.String(logFieldExcludedGateway, gatewayID))
 		return assignment, nil
 	}
 
@@ -117,7 +118,7 @@ func (r *DeployRegistry) PickRandomExcluding(ctx context.Context, gatewayID stri
 		PublicHost: fmt.Sprintf(r.hostPattern, instance.Index),
 	}
 	span.SetAttributes(attribute.String(logFieldSelectedGateway, assignment.GatewayID))
-	logs.InfoContext(ctx, "gateway picked", logFieldSelectedGateway, assignment.GatewayID, logFieldReadyCount, len(ready), logFieldExcludedGateway, gatewayID)
+	logs.Info(ctx, "gateway picked", event.String(logFieldSelectedGateway, assignment.GatewayID), event.Int(logFieldReadyCount, len(ready)), event.String(logFieldExcludedGateway, gatewayID))
 	return assignment, nil
 }
 

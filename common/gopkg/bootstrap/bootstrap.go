@@ -9,13 +9,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
+)
+
+var (
+	logFieldComponent = "component"
+	logFieldStage     = "stage"
+	logFieldAttempt   = "attempt"
+	logFieldAttempts  = "attempts"
+	logFieldBackoff   = "backoff"
 )
 
 // Bootstrap manages a set of application components through their lifecycle.
@@ -100,17 +110,17 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 	})
 
 	// 3. Start each component sequentially. Track which ones started successfully.
-	slog.InfoContext(ctx, "bootstrap starting", "components", len(sorted), "signals", fmtSignalNames(signals))
+	logs.Info(ctx, "bootstrap starting", event.Int("components", len(sorted)), event.String("signals", fmtSignalNames(signals)))
 	var started []Component
 	for _, c := range sorted {
 		if err := c.Start(ctx); err != nil {
-			slog.ErrorContext(ctx, "component start failed, rolling back", "component", c.Name(), "stage", c.Stage().String(), "error", err)
+			logs.Error(ctx, "component start failed, rolling back", event.String(logFieldComponent, c.Name()), event.String(logFieldStage, c.Stage().String()), event.Err(err))
 			// 4. Rollback: stop all successfully-started components in reverse order.
 			rollbackErr := b.shutdown(started)
 			startErr := fmt.Errorf("bootstrap: component %q failed to start: %w", c.Name(), err)
 			return errors.Join(startErr, rollbackErr)
 		}
-		slog.InfoContext(ctx, "component started", "component", c.Name(), "stage", c.Stage().String())
+		logs.Info(ctx, "component started", event.String(logFieldComponent, c.Name()), event.String(logFieldStage, c.Stage().String()))
 		started = append(started, c)
 	}
 
@@ -148,7 +158,7 @@ func (b *Bootstrap) RunSignal(ctx context.Context, signals ...os.Signal) error {
 // shutdown stops all started components in reverse order using the
 // configured shutdown timeout as a unified deadline.
 func (b *Bootstrap) shutdown(started []Component) error {
-	slog.Info("shutdown starting", "components", len(started), "timeout", b.cfg.shutdownTimeout)
+	logs.Info(context.Background(), "shutdown starting", event.Int("components", len(started)), event.Any("timeout", b.cfg.shutdownTimeout))
 	stopCtx, cancel := context.WithTimeout(context.Background(), b.cfg.shutdownTimeout)
 	defer cancel()
 
@@ -162,7 +172,7 @@ func (b *Bootstrap) shutdown(started []Component) error {
 				}
 			}()
 			if err := c.Stop(stopCtx); err != nil {
-				slog.Error("component stop failed", "component", c.Name(), "error", err)
+				logs.Error(context.Background(), "component stop failed", event.String(logFieldComponent, c.Name()), event.Err(err))
 				errs = append(errs, fmt.Errorf("bootstrap: component %q Stop: %w", c.Name(), err))
 			}
 		}()
@@ -180,7 +190,7 @@ func (b *Bootstrap) monitorExitWatchers(components []Component, exitCh chan<- er
 		}
 		go func(name string, done <-chan error) {
 			if err := <-done; err != nil {
-				slog.Error("component exited unexpectedly", "component", name, "error", err)
+				logs.Error(context.Background(), "component exited unexpectedly", event.String(logFieldComponent, name), event.Err(err))
 				select {
 				case exitCh <- fmt.Errorf("bootstrap: component %q exited: %w", name, err):
 				default:

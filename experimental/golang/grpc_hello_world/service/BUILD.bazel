@@ -10,6 +10,7 @@ go_library(
         "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//experimental/golang/grpc_hello_world",
         "@org_golang_google_grpc//:grpc",

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -34,6 +35,9 @@ var (
 	// newMinioClient is the function used to create a new minio client.
 	// It can be overridden in tests to avoid connecting to a real S3 service.
 	newMinioClient = minio.New
+
+	logFieldEndpoint = "endpoint"
+	logFieldRegion   = "region"
 )
 
 // clientConfig holds the configuration for creating an S3 client.
@@ -101,7 +105,7 @@ func NewS3Client(opts ...ClientOption) (*minio.Client, error) {
 		cfg.region = DefaultRegion
 	}
 
-	logs.InfoContext(context.Background(), "s3 client initializing", "endpoint", Endpoint, "region", cfg.region)
+	logs.Info(context.Background(), "s3 client initializing", event.String(logFieldEndpoint, Endpoint), event.String(logFieldRegion, cfg.region))
 
 	client, err := newMinioClient(Endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(cfg.accessKey, cfg.secretKey, ""),
@@ -110,7 +114,7 @@ func NewS3Client(opts ...ClientOption) (*minio.Client, error) {
 		BucketLookup: minio.BucketLookupPath,
 	})
 	if err != nil {
-		logs.ErrorContext(context.Background(), "s3 client creation failed", "endpoint", Endpoint, "error", err)
+		logs.Error(context.Background(), "s3 client creation failed", event.String(logFieldEndpoint, Endpoint), event.Err(err))
 		return nil, fmt.Errorf("create S3 client for endpoint %q: %w", Endpoint, err)
 	}
 

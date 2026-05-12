@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // Worker is a single run instance managed by a Daemon.
@@ -223,7 +225,7 @@ func (c *daemonComponent) supervise() {
 
 		startErr := c.startWorker(worker)
 		if startErr == nil {
-			slog.Info("daemon started", "component", c.name)
+			logs.Info(context.Background(), "daemon started", event.String(logFieldComponent, c.name))
 		}
 		// Shutdown context: worker exit is not an error to restart on.
 		if c.daemonCtx.Err() != nil {
@@ -244,11 +246,11 @@ func (c *daemonComponent) applyRestartPolicy(err error, restartCount *int, backo
 	case DaemonRestart:
 		*restartCount++
 		if c.restartsExhausted(*restartCount) {
-			slog.Error("restart policy exhausted", "component", c.name, "attempts", c.cfg.maxRestarts)
+			logs.Error(context.Background(), "restart policy exhausted", event.String(logFieldComponent, c.name), event.Int(logFieldAttempts, c.cfg.maxRestarts))
 			c.reportFatal(err)
 			return false
 		}
-		slog.Warn("restarting daemon", "component", c.name, "attempt", *restartCount, "backoff", *backoff)
+		logs.Warn(context.Background(), "restarting daemon", event.String(logFieldComponent, c.name), event.Int(logFieldAttempt, *restartCount), event.Any(logFieldBackoff, *backoff))
 		if !c.sleepBackoff(*backoff) {
 			return false
 		}
@@ -268,7 +270,7 @@ func (c *daemonComponent) applyRestartPolicy(err error, restartCount *int, backo
 func (c *daemonComponent) buildWorker() (worker Worker, err error) {
 	defer func() {
 		if err != nil {
-			slog.Error("daemon build failed", "component", c.name, "error", err)
+			logs.Error(context.Background(), "daemon build failed", event.String(logFieldComponent, c.name), event.Err(err))
 		}
 	}()
 	defer func() {
@@ -283,7 +285,7 @@ func (c *daemonComponent) buildWorker() (worker Worker, err error) {
 func (c *daemonComponent) startWorker(worker Worker) (err error) {
 	defer func() {
 		if err != nil {
-			slog.Error("daemon start failed", "component", c.name, "error", err)
+			logs.Error(context.Background(), "daemon start failed", event.String(logFieldComponent, c.name), event.Err(err))
 		}
 	}()
 	defer func() {
@@ -330,7 +332,7 @@ func (c *daemonComponent) nextBackoff(current time.Duration) time.Duration {
 // reportFatal sends an error to the done channel exactly once.
 func (c *daemonComponent) reportFatal(err error) {
 	c.fatalOnce.Do(func() {
-		slog.Error("daemon fatal error", "component", c.name, "error", err)
+		logs.Error(context.Background(), "daemon fatal error", event.String(logFieldComponent, c.name), event.Err(err))
 		c.done <- err
 	})
 }

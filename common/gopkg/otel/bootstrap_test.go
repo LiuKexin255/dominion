@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
 )
 
 // stubInit replaces initFn for the duration of the test and restores it on cleanup.
@@ -19,14 +20,14 @@ func stubInit(t *testing.T, fn func(ctx context.Context, opts ...Option) (Shutdo
 	t.Cleanup(func() { initFn = original })
 }
 
-// captureSlog redirects the default slog output to a buffer for the duration
-// of the test and restores it on cleanup.
-func captureSlog(t *testing.T) *bytes.Buffer {
+// captureLogs replaces the logs package default logger with one that writes to a
+// buffer, allowing tests to inspect logged messages.
+func captureLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(old) })
+	old := logs.Default()
+	logs.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { logs.SetDefault(old) })
 	return &buf
 }
 
@@ -102,7 +103,7 @@ func TestComponent_StartFailureReturnsError(t *testing.T) {
 }
 
 func TestComponent_StartSuccessLog(t *testing.T) {
-	buf := captureSlog(t)
+	buf := captureLogs(t)
 	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return func(_ context.Context) error { return nil }, nil
 	})
@@ -122,7 +123,7 @@ func TestComponent_StartSuccessLog(t *testing.T) {
 }
 
 func TestComponent_StartFailureLog(t *testing.T) {
-	buf := captureSlog(t)
+	buf := captureLogs(t)
 	stubInit(t, func(_ context.Context, _ ...Option) (Shutdown, error) {
 		return nil, errors.New("init failed")
 	})

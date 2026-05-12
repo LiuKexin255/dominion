@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
 )
@@ -32,9 +33,9 @@ func (w *routingWorker) Start(ctx context.Context) error {
 				return nil
 			}
 			ctx, span := otel.Tracer().Start(ctx, spanRoute)
-			logs.InfoContext(ctx, "routing message",
-				logFieldSessionID, msg.Message.SessionID,
-				logFieldTargetConn, msg.TargetConnID,
+			logs.Info(ctx, "routing message",
+				event.String(logFieldSessionID, msg.Message.SessionID),
+				event.String(logFieldTargetConn, msg.TargetConnID),
 			)
 			w.route(ctx, msg)
 			span.End()

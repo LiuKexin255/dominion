@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"dominion/common/gopkg/logs/event"
 )
 
 // captureStdout returns a function that redirects os.Stdout to a pipe and
-// provides a reader.  Call the returned stop function to restore os.Stdout
+// provides a reader. Call the returned stop function to restore os.Stdout
 // and read all captured output.
 func captureStdout(t testing.TB) (stop func() string) {
 	t.Helper()
@@ -43,68 +45,29 @@ func resetInit() {
 	defaultLogger = nil
 }
 
-func TestDefault_NonDeploy(t *testing.T) {
+// resetReporter clears the active reporter for a clean test state.
+func resetReporter() {
+	reporterMu.Lock()
+	activeReporter = nil
+	reporterMu.Unlock()
+}
+
+func TestDefault(t *testing.T) {
 	resetInit()
 
-	// isInDeployMode defaults to otel.IsLoggerProviderSet(), which returns
-	// false when OTel is not initialised. No explicit setup needed.
 	stop := captureStdout(t)
-	logger := Default()
+	defer stop()
 
+	logger := Default()
 	if logger == nil {
-		stop()
 		t.Fatal("Default() returned nil")
 	}
 
 	logger.Info("hello")
 	output := stop()
 
-	// In non-deploy mode we use a TextHandler; output should contain the
-	// message key ("msg=") rather than OTLP JSON.
 	if !strings.Contains(output, "msg=") {
 		t.Errorf("expected text handler output containing 'msg=', got: %s", output)
-	}
-}
-
-func TestDefault_Deploy(t *testing.T) {
-	resetInit()
-
-	oldIsDeploy := isInDeployMode
-	oldDeploy := newDeployHandler
-	t.Cleanup(func() {
-		isInDeployMode = oldIsDeploy
-		newDeployHandler = oldDeploy
-	})
-
-	// Route log writes to the deploy handler.
-	isInDeployMode = func() bool { return true }
-
-	var deployCalled bool
-	var buf bytes.Buffer
-	newDeployHandler = func(name string) slog.Handler {
-		deployCalled = true
-		if name != "dominion/common/gopkg/logs" {
-			t.Errorf("newDeployHandler name = %q, want 'dominion/common/gopkg/logs'", name)
-		}
-		return slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	}
-
-	logger := Default()
-	if logger == nil {
-		t.Fatal("Default() returned nil")
-	}
-
-	if !deployCalled {
-		t.Error("deploy handler was not called")
-	}
-
-	logger.Info("deploy-test")
-	output := buf.String()
-	if !strings.Contains(output, "msg=") {
-		t.Errorf("expected output containing 'msg=', got: %s", output)
-	}
-	if !strings.Contains(output, "deploy-test") {
-		t.Errorf("expected output containing 'deploy-test', got: %s", output)
 	}
 }
 
@@ -114,7 +77,6 @@ func TestFromContext_NoLogger(t *testing.T) {
 	if logger == nil {
 		t.Fatal("FromContext(empty ctx) returned nil")
 	}
-	// Should be the same instance as Default().
 	if logger != Default() {
 		t.Error("FromContext(empty ctx) should return Default()")
 	}
@@ -130,13 +92,13 @@ func TestFromContext_WithLogger(t *testing.T) {
 	}
 }
 
-func TestInfoContext(t *testing.T) {
+func TestInfo(t *testing.T) {
 	resetInit()
 
 	stop := captureStdout(t)
-	defer stop() // Ensure stdout is restored even on failure.
+	defer stop()
 
-	InfoContext(context.Background(), "info-message", "key", "value")
+	Info(context.Background(), "info-message", event.String("key", "value"))
 
 	output := stop()
 	if !strings.Contains(output, "msg=") {
@@ -150,14 +112,14 @@ func TestInfoContext(t *testing.T) {
 	}
 }
 
-func TestErrorContext(t *testing.T) {
+func TestError(t *testing.T) {
 	resetInit()
 
 	stop := captureStdout(t)
 	defer stop()
 
 	err := errors.New("something went wrong")
-	ErrorContext(context.Background(), "failed", "error", err, "user", "alice")
+	Error(context.Background(), "failed", event.String("error", err.Error()), event.String("user", "alice"))
 
 	output := stop()
 	if !strings.Contains(output, "msg=") {
@@ -169,11 +131,60 @@ func TestErrorContext(t *testing.T) {
 	if !strings.Contains(output, "error=") {
 		t.Errorf("expected output containing 'error=', got: %s", output)
 	}
-	if !strings.Contains(output, "something went wrong") {
-		t.Errorf("expected output containing 'something went wrong', got: %s", output)
+	if !strings.Contains(output, "user=alice") {
+		t.Errorf("expected output containing 'user=alice', got: %s", output)
+	}
+}
+
+func TestError_ErrNil(t *testing.T) {
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	// Err(nil) returns zero event.Event — should be skipped, not produce "error=nil".
+	Error(context.Background(), "op-failed", event.Err(nil), event.String("user", "alice"))
+
+	output := stop()
+	if strings.Contains(output, "error=nil") {
+		t.Errorf("expected nil error to be filtered, got: %s", output)
 	}
 	if !strings.Contains(output, "user=alice") {
 		t.Errorf("expected output containing 'user=alice', got: %s", output)
+	}
+}
+
+func TestDebug(t *testing.T) {
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	Debug(context.Background(), "debug-message", event.String("key", "value"))
+
+	output := stop()
+	if strings.Contains(output, "debug-message") {
+		t.Errorf("expected debug message to be suppressed, got: %s", output)
+	}
+}
+
+func TestWarn(t *testing.T) {
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	Warn(context.Background(), "warn-message", event.String("key", "value"))
+
+	output := stop()
+	if !strings.Contains(output, "msg=") {
+		t.Errorf("expected text output containing 'msg=', got: %s", output)
+	}
+	if !strings.Contains(output, "warn-message") {
+		t.Errorf("expected output containing 'warn-message', got: %s", output)
+	}
+	if !strings.Contains(output, "key=value") {
+		t.Errorf("expected output containing 'key=value', got: %s", output)
 	}
 }
 
@@ -183,7 +194,7 @@ func TestWith(t *testing.T) {
 	stop := captureStdout(t)
 	defer stop()
 
-	ctx := With(context.Background(), "request_id", "abc123")
+	ctx := With(context.Background(), event.String("request_id", "abc123"))
 	logger := FromContext(ctx)
 	logger.Info("with-test")
 
@@ -199,8 +210,8 @@ func TestWith_Multiple(t *testing.T) {
 	stop := captureStdout(t)
 	defer stop()
 
-	ctx := With(context.Background(), "first", "1")
-	ctx = With(ctx, "second", "2")
+	ctx := With(context.Background(), event.String("first", "1"))
+	ctx = With(ctx, event.String("second", "2"))
 	logger := FromContext(ctx)
 	logger.Info("accumulated")
 
@@ -213,10 +224,28 @@ func TestWith_Multiple(t *testing.T) {
 	}
 }
 
+func TestWith_NilEventSkipped(t *testing.T) {
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	ctx := With(context.Background(), event.Err(nil), event.String("key", "val"))
+	logger := FromContext(ctx)
+	logger.Info("msg")
+
+	output := stop()
+	if strings.Contains(output, "error=nil") {
+		t.Errorf("expected nil event to be filtered, got: %s", output)
+	}
+	if !strings.Contains(output, "key=val") {
+		t.Errorf("expected output containing 'key=val', got: %s", output)
+	}
+}
+
 func TestLazyInit(t *testing.T) {
 	resetInit()
 
-	// Call Default() multiple times — should return the same logger.
 	l1 := Default()
 	l2 := Default()
 	l3 := Default()
@@ -226,40 +255,6 @@ func TestLazyInit(t *testing.T) {
 	}
 	if l1 != l3 {
 		t.Error("Default() returned different loggers across calls")
-	}
-}
-
-func TestDebugContext(t *testing.T) {
-	resetInit()
-
-	stop := captureStdout(t)
-	defer stop()
-
-	DebugContext(context.Background(), "debug-message", "key", "value")
-
-	output := stop()
-	if strings.Contains(output, "debug-message") {
-		t.Errorf("expected debug message to be suppressed, got: %s", output)
-	}
-}
-
-func TestWarnContext(t *testing.T) {
-	resetInit()
-
-	stop := captureStdout(t)
-	defer stop()
-
-	WarnContext(context.Background(), "warn-message", "key", "value")
-
-	output := stop()
-	if !strings.Contains(output, "msg=") {
-		t.Errorf("expected text output containing 'msg=', got: %s", output)
-	}
-	if !strings.Contains(output, "warn-message") {
-		t.Errorf("expected output containing 'warn-message', got: %s", output)
-	}
-	if !strings.Contains(output, "key=value") {
-		t.Errorf("expected output containing 'key=value', got: %s", output)
 	}
 }
 
@@ -286,182 +281,93 @@ func TestWithLogger_NilLogger(t *testing.T) {
 	}
 }
 
-func Test_DynamicSwitch(t *testing.T) {
+func TestInstallReporter(t *testing.T) {
 	resetInit()
+	resetReporter()
 
-	oldIsDeploy := isInDeployMode
-	oldDeploy := newDeployHandler
-	oldConsole := newConsoleHandler
-	t.Cleanup(func() {
-		isInDeployMode = oldIsDeploy
-		newDeployHandler = oldDeploy
-		newConsoleHandler = oldConsole
-	})
+	var buf bytes.Buffer
+	reporter := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	uninstall := InstallReporter(reporter)
+	defer uninstall()
 
-	var consoleBuf, deployBuf bytes.Buffer
+	Info(context.Background(), "reporter-msg", event.String("k", "v"))
 
-	newConsoleHandler = func() slog.Handler {
-		return slog.NewTextHandler(&consoleBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	output := buf.String()
+	if !strings.Contains(output, "reporter-msg") {
+		t.Errorf("expected reporter output containing 'reporter-msg', got: %s", output)
 	}
-	newDeployHandler = func(name string) slog.Handler {
-		return slog.NewTextHandler(&deployBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	}
-
-	// given: OTel is not ready
-	isInDeployMode = func() bool { return false }
-
-	resetInit()
-	logger := Default()
-
-	// when: log in console mode
-	logger.Info("console-msg")
-
-	// then: console handler receives the message, deploy handler does not
-	if !strings.Contains(consoleBuf.String(), "console-msg") {
-		t.Errorf("console message missing, got: %s", consoleBuf.String())
-	}
-	if strings.Contains(deployBuf.String(), "console-msg") {
-		t.Error("deploy handler should not receive messages in console mode")
-	}
-
-	// given: OTel becomes ready
-	consoleBuf.Reset()
-	deployBuf.Reset()
-	isInDeployMode = func() bool { return true }
-
-	// when: log after the switch
-	logger.Info("deploy-msg")
-
-	// then: deploy handler receives the message, console handler does not
-	if strings.Contains(consoleBuf.String(), "deploy-msg") {
-		t.Errorf("console handler should not receive messages in deploy mode, got: %s", consoleBuf.String())
-	}
-	if !strings.Contains(deployBuf.String(), "deploy-msg") {
-		t.Errorf("deploy handler should receive messages after switch, got: %s", deployBuf.String())
+	if !strings.Contains(output, "k=v") {
+		t.Errorf("expected reporter output containing 'k=v', got: %s", output)
 	}
 }
 
-func Test_DynamicSwitch_WithAttrs(t *testing.T) {
+func TestUninstallReporter(t *testing.T) {
 	resetInit()
+	resetReporter()
 
-	oldIsDeploy := isInDeployMode
-	oldDeploy := newDeployHandler
-	oldConsole := newConsoleHandler
-	t.Cleanup(func() {
-		isInDeployMode = oldIsDeploy
-		newDeployHandler = oldDeploy
-		newConsoleHandler = oldConsole
-	})
+	var buf bytes.Buffer
+	reporter := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	uninstall := InstallReporter(reporter)
+	uninstall()
 
-	var consoleBuf, deployBuf bytes.Buffer
+	stop := captureStdout(t)
+	defer stop()
 
-	newConsoleHandler = func() slog.Handler {
-		return slog.NewTextHandler(&consoleBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	Info(context.Background(), "console-msg")
+	output := stop()
+
+	if !strings.Contains(output, "console-msg") {
+		t.Errorf("expected console output containing 'console-msg' after uninstall, got: %s", output)
 	}
-	newDeployHandler = func(name string) slog.Handler {
-		return slog.NewTextHandler(&deployBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
-	}
-
-	// given: WithAttrs is called when OTel is not ready
-	isInDeployMode = func() bool { return false }
-
-	resetInit()
-	logger := Default()
-	enriched := logger.With("key", "value")
-
-	// given: OTel becomes ready after WithAttrs
-	isInDeployMode = func() bool { return true }
-
-	// when: log through the enriched logger
-	enriched.Info("with-attrs-test")
-
-	// then: attrs are present in the deploy handler output
-	output := deployBuf.String()
-	if !strings.Contains(output, "key=value") {
-		t.Errorf("attr 'key=value' should be present in deploy output, got: %s", output)
-	}
-	if !strings.Contains(output, "with-attrs-test") {
-		t.Errorf("message missing in deploy output: %s", output)
-	}
-	// Attrs should not appear in console output after the switch
-	if strings.Contains(consoleBuf.String(), "with-attrs-test") {
-		t.Errorf("console should not receive messages after switch, got: %s", consoleBuf.String())
+	if buf.Len() != 0 {
+		t.Errorf("expected empty reporter buffer after uninstall, got: %s", buf.String())
 	}
 }
 
-func Test_DynamicSwitch_WithGroup(t *testing.T) {
+func TestUninstallOnlyOwn(t *testing.T) {
 	resetInit()
+	resetReporter()
 
-	oldIsDeploy := isInDeployMode
-	oldDeploy := newDeployHandler
-	oldConsole := newConsoleHandler
-	t.Cleanup(func() {
-		isInDeployMode = oldIsDeploy
-		newDeployHandler = oldDeploy
-		newConsoleHandler = oldConsole
-	})
+	var bufA, bufB bytes.Buffer
+	reporterA := slog.New(slog.NewTextHandler(&bufA, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	reporterB := slog.New(slog.NewTextHandler(&bufB, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	var consoleBuf, deployBuf bytes.Buffer
+	unA := InstallReporter(reporterA)
+	unB := InstallReporter(reporterB)
+	unA() // uninstall A — B should remain active
 
-	newConsoleHandler = func() slog.Handler {
-		return slog.NewTextHandler(&consoleBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	Info(context.Background(), "msg-after-unA")
+
+	if bufA.Len() != 0 {
+		t.Errorf("reporter A should be inactive after uninstall, got: %s", bufA.String())
 	}
-	newDeployHandler = func(name string) slog.Handler {
-		return slog.NewTextHandler(&deployBuf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	if !strings.Contains(bufB.String(), "msg-after-unA") {
+		t.Errorf("reporter B should be active after uninstalling A, got: %s", bufB.String())
 	}
-
-	// given: WithGroup is called when OTel is not ready
-	isInDeployMode = func() bool { return false }
-
-	resetInit()
-	logger := Default()
-	grouped := logger.WithGroup("grp")
-
-	// given: OTel becomes ready after WithGroup
-	isInDeployMode = func() bool { return true }
-
-	// when: log through the grouped logger
-	grouped.Info("with-group-test")
-
-	// then: message reaches the deploy handler
-	output := deployBuf.String()
-	if !strings.Contains(output, "with-group-test") {
-		t.Errorf("message missing in deploy output: %s", output)
-	}
-	// Console handler should not receive the message
-	if strings.Contains(consoleBuf.String(), "with-group-test") {
-		t.Errorf("console should not receive messages after switch, got: %s", consoleBuf.String())
-	}
+	_ = unB
 }
 
-func Test_SetDefault_BypassesDynamicSwitch(t *testing.T) {
-	resetInit()
+func TestInstallReporterNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("InstallReporter(nil) should panic")
+		}
+	}()
+	InstallReporter(nil)
+}
 
-	oldIsDeploy := isInDeployMode
-	t.Cleanup(func() { isInDeployMode = oldIsDeploy })
+func TestSetDefault(t *testing.T) {
+	resetInit()
+	resetReporter()
 
 	var buf bytes.Buffer
 	mockLogger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	SetDefault(mockLogger)
 
-	// given: deploy mode toggled — SetDefault bypasses the dynamic handler
-	isInDeployMode = func() bool { return false }
-
-	// when: log with deploy mode off
-	Default().Info("bypass-1")
+	Default().Info("bypass")
 
 	output := buf.String()
-	if !strings.Contains(output, "bypass-1") {
-		t.Errorf("expected output 'bypass-1' in deploy-off mode, got: %s", output)
-	}
-
-	// when: log with deploy mode on
-	buf.Reset()
-	isInDeployMode = func() bool { return true }
-	Default().Info("bypass-2")
-
-	output = buf.String()
-	if !strings.Contains(output, "bypass-2") {
-		t.Errorf("expected output 'bypass-2' in deploy-on mode, got: %s", output)
+	if !strings.Contains(output, "bypass") {
+		t.Errorf("expected output 'bypass' after SetDefault, got: %s", output)
 	}
 }

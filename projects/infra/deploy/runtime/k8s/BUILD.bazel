@@ -19,6 +19,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/infra/deploy/domain",
         "@com_github_goccy_go_yaml//:go-yaml",

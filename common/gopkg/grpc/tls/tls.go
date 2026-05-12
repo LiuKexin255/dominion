@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 
 	"google.golang.org/grpc/credentials"
 )
@@ -40,6 +41,11 @@ var (
 	loadX509KeyPair = stdtls.LoadX509KeyPair
 	// lookupEnv reads process environment variables and allows tests to stub runtime TLS inputs.
 	lookupEnv = os.LookupEnv
+
+	logFieldCAFile     = "ca_file"
+	logFieldServerName = "server_name"
+	logFieldCertFile   = "cert_file"
+	logFieldKeyFile    = "key_file"
 )
 
 // ClientConfig defines the trusted inputs for client-side gRPC TLS credentials.
@@ -60,11 +66,11 @@ type ServerConfig struct {
 func NewClientTransportCredentials(config *ClientConfig) (credentials.TransportCredentials, error) {
 	tlsConfig, err := newClientTLSConfig(config)
 	if err != nil {
-		logs.ErrorContext(context.Background(), "client TLS config build failed", "error", err)
+		logs.Error(context.Background(), "client TLS config build failed", event.Err(err))
 		return nil, err
 	}
 
-	logs.InfoContext(context.Background(), "client TLS credentials created", "ca_file", config.CAFile, "server_name", config.ServerName)
+	logs.Info(context.Background(), "client TLS credentials created", event.String(logFieldCAFile, config.CAFile), event.String(logFieldServerName, config.ServerName))
 	return credentials.NewTLS(tlsConfig), nil
 }
 
@@ -72,11 +78,11 @@ func NewClientTransportCredentials(config *ClientConfig) (credentials.TransportC
 func NewServerTransportCredentials(config *ServerConfig) (credentials.TransportCredentials, error) {
 	tlsConfig, err := newServerTLSConfig(config)
 	if err != nil {
-		logs.ErrorContext(context.Background(), "server TLS config build failed", "error", err)
+		logs.Error(context.Background(), "server TLS config build failed", event.Err(err))
 		return nil, err
 	}
 
-	logs.InfoContext(context.Background(), "server TLS credentials created", "cert_file", config.CertFile, "key_file", config.KeyFile)
+	logs.Info(context.Background(), "server TLS credentials created", event.String(logFieldCertFile, config.CertFile), event.String(logFieldKeyFile, config.KeyFile))
 	return credentials.NewTLS(tlsConfig), nil
 }
 
@@ -86,11 +92,11 @@ func ClientTransportCredentials() credentials.TransportCredentials {
 	serverName, hasServerName := lookupTrimmedEnv(envTLSServerName)
 	caFile, hasCAFile := lookupTrimmedEnv(envTLSCAFile)
 	if !hasServerName && !hasCAFile {
-		logs.InfoContext(context.Background(), "TLS not configured for client, using plain connection")
+		logs.Info(context.Background(), "TLS not configured for client, using plain connection")
 		return nil
 	}
 	if serverName == "" {
-		logs.InfoContext(context.Background(), "TLS not configured for client, using plain connection")
+		logs.Info(context.Background(), "TLS not configured for client, using plain connection")
 		return nil
 	}
 
@@ -102,7 +108,7 @@ func ClientTransportCredentials() credentials.TransportCredentials {
 		panic(fmt.Sprintf("failed to create client TLS credentials: %v", err))
 	}
 
-	logs.InfoContext(context.Background(), "client TLS configured from environment", "server_name", serverName)
+	logs.Info(context.Background(), "client TLS configured from environment", event.String(logFieldServerName, serverName))
 	return transportCredentials
 }
 
@@ -114,7 +120,7 @@ func ServerTransportCredentials() credentials.TransportCredentials {
 	_, hasCAFile := lookupTrimmedEnv(envTLSCAFile)
 	_, hasServerName := lookupTrimmedEnv(envTLSServerName)
 	if !hasCertFile && !hasKeyFile && !hasCAFile && !hasServerName {
-		logs.InfoContext(context.Background(), "TLS not configured for server, using plain connection")
+		logs.Info(context.Background(), "TLS not configured for server, using plain connection")
 		return nil
 	}
 
@@ -126,7 +132,7 @@ func ServerTransportCredentials() credentials.TransportCredentials {
 		panic(fmt.Sprintf("failed to create server TLS credentials: %v", err))
 	}
 
-	logs.InfoContext(context.Background(), "server TLS configured from environment", "cert_file", certFile)
+	logs.Info(context.Background(), "server TLS configured from environment", event.String(logFieldCertFile, certFile))
 	return transportCredentials
 }
 

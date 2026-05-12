@@ -13,6 +13,7 @@ go_library(
     deps = [
         "//common/gopkg/bootstrap",
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",

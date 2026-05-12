@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
 
@@ -56,14 +57,14 @@ func (h *Handler) GetGameSnapshot(ctx context.Context, req *GetGameSnapshotReque
 	snap, err := h.svc.GetSnapshot(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, domain.ErrSessionNotFound) {
-			logs.WarnContext(ctx, "get game snapshot: session not found", logFieldSessionID, sessionID)
+			logs.Warn(ctx, "get game snapshot: session not found", event.String(logFieldSessionID, sessionID))
 		} else {
-			logs.ErrorContext(ctx, "get game snapshot failed", logFieldSessionID, sessionID, "error", err)
+			logs.Error(ctx, "get game snapshot failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		}
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "get game snapshot succeeded", logFieldSessionID, sessionID)
+	logs.Info(ctx, "get game snapshot succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoSnapshot(sessionID, snap), nil
 }
 
@@ -78,14 +79,14 @@ func (h *Handler) GetGameRuntime(ctx context.Context, req *GetGameRuntimeRequest
 	rt, err := h.svc.GetRuntime(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, domain.ErrSessionNotFound) {
-			logs.WarnContext(ctx, "get game runtime: session not found", logFieldSessionID, sessionID)
+			logs.Warn(ctx, "get game runtime: session not found", event.String(logFieldSessionID, sessionID))
 		} else {
-			logs.ErrorContext(ctx, "get game runtime failed", logFieldSessionID, sessionID, "error", err)
+			logs.Error(ctx, "get game runtime failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		}
 		return nil, toStatusError(err)
 	}
 
-	logs.InfoContext(ctx, "get game runtime succeeded", logFieldSessionID, sessionID)
+	logs.Info(ctx, "get game runtime succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoRuntime(rt), nil
 }
 

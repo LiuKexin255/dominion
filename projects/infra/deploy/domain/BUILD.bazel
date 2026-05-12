@@ -20,6 +20,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "@io_opentelemetry_go_otel//attribute",
     ],

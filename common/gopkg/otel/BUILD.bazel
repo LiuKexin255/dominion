@@ -12,7 +12,10 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel/tracecontext",
+        "@io_opentelemetry_go_contrib_bridges_otelslog//:otelslog",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//propagation",
         "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",
@@ -37,6 +40,7 @@ go_unittest(
     embed = [":otel"],
     deps = [
         "//common/gopkg/bootstrap",
+        "//common/gopkg/logs",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",
         "@io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetricgrpc//:otlpmetricgrpc",

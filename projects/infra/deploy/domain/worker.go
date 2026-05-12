@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -77,9 +78,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		iterCtx, cancel := context.WithTimeout(ctx, w.iterTimeout)
 
-		logs.InfoContext(iterCtx, "dequeue environment",
-			logFieldEnvName, item.EnvName.String(),
-			logFieldRetryCount, item.RetryCount,
+		logs.Info(iterCtx, "dequeue environment",
+			event.String(logFieldEnvName, item.EnvName.String()),
+			event.Int(logFieldRetryCount, item.RetryCount),
 		)
 
 		iterCtx, processSpan := otel.Tracer().Start(iterCtx, spanProcess)
@@ -93,17 +94,17 @@ func (w *Worker) Run(ctx context.Context) error {
 			continue
 		case errors.Is(processErr, ErrRetryCounted):
 			if item.RetryCount >= w.maxRetries {
-				logs.ErrorContext(ctx, "max retry exceeded, dropping work item",
-					logFieldEnvName, item.EnvName.String(),
-					logFieldRetryCount, item.RetryCount,
-					logFieldError, processErr,
+				logs.Error(ctx, "max retry exceeded, dropping work item",
+					event.String(logFieldEnvName, item.EnvName.String()),
+					event.Int(logFieldRetryCount, item.RetryCount),
+					event.Err(processErr),
 				)
 				continue
 			}
-			logs.WarnContext(ctx, "apply/delete failed, scheduling retry",
-				logFieldEnvName, item.EnvName.String(),
-				logFieldRetryCount, item.RetryCount,
-				logFieldError, processErr,
+			logs.Warn(ctx, "apply/delete failed, scheduling retry",
+				event.String(logFieldEnvName, item.EnvName.String()),
+				event.Int(logFieldRetryCount, item.RetryCount),
+				event.Err(processErr),
 			)
 			w.scheduleRetry(ctx, &WorkItem{EnvName: item.EnvName, RetryCount: item.RetryCount + 1}, retryBackoff(item.RetryCount))
 		default:
@@ -144,9 +145,9 @@ func (w *Worker) process(ctx context.Context, item *WorkItem) error {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
-		logs.ErrorContext(ctx, "worker fatal: load environment",
-			logFieldEnvName, item.EnvName.String(),
-			logFieldError, err,
+		logs.Error(ctx, "worker fatal: load environment",
+			event.String(logFieldEnvName, item.EnvName.String()),
+			event.Err(err),
 		)
 		return fmt.Errorf("%w: load environment %s: %v", ErrWorkerFatal, item.EnvName, err)
 	}
@@ -159,9 +160,9 @@ func (w *Worker) process(ctx context.Context, item *WorkItem) error {
 	case DesiredAbsent:
 		processErr = w.processAbsent(ctx, env)
 	default:
-		logs.ErrorContext(ctx, "worker fatal: unsupported desired state",
-			logFieldEnvName, env.Name().String(),
-			logFieldError, fmt.Errorf("unsupported desired state %v", env.Status().Desired),
+		logs.Error(ctx, "worker fatal: unsupported desired state",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.Err(fmt.Errorf("unsupported desired state %v", env.Status().Desired)),
 		)
 		return fmt.Errorf("%w: unsupported desired state %v for %s", ErrWorkerFatal, env.Status().Desired, env.Name())
 	}
@@ -222,9 +223,9 @@ func (w *Worker) applyPresent(ctx context.Context, env *Environment, processedGe
 		return fmt.Errorf("%w: save ready %s: %v", ErrWorkerFatal, env.Name(), err)
 	}
 
-	logs.InfoContext(ctx, "apply succeeded",
-		logFieldEnvName, env.Name().String(),
-		logFieldGeneration, processedGeneration,
+	logs.Info(ctx, "apply succeeded",
+		event.String(logFieldEnvName, env.Name().String()),
+		event.Int64(logFieldGeneration, processedGeneration),
 	)
 
 	return nil
@@ -271,8 +272,8 @@ func (w *Worker) deleteAbsent(ctx context.Context, env *Environment) error {
 		return fmt.Errorf("%w: delete environment %s: %v", ErrWorkerFatal, env.Name(), err)
 	}
 
-	logs.InfoContext(ctx, "delete succeeded",
-		logFieldEnvName, env.Name().String(),
+	logs.Info(ctx, "delete succeeded",
+		event.String(logFieldEnvName, env.Name().String()),
 	)
 
 	return nil

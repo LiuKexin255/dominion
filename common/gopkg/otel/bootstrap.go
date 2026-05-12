@@ -2,14 +2,17 @@ package otel
 
 import (
 	"context"
-	"log/slog"
 
 	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // initFn is a package-level variable pointing to Init, allowing tests
 // to override it with a stub.
 var initFn = Init
+
+var logFieldComponent = "component"
 
 // component adapts the otel package into a bootstrap.Component.
 type component struct {
@@ -43,11 +46,11 @@ func (c *component) Stage() bootstrap.Stage {
 func (c *component) Start(ctx context.Context) error {
 	shutdown, err := initFn(ctx, c.opts...)
 	if err != nil {
-		slog.ErrorContext(ctx, "otel start failed", "component", c.name, "error", err)
+		logs.Error(ctx, "otel start failed", event.String(logFieldComponent, c.name), event.Err(err))
 		return err
 	}
 	c.shutdown = shutdown
-	slog.InfoContext(ctx, "otel started", "component", c.name)
+	logs.Info(ctx, "otel started", event.String(logFieldComponent, c.name))
 	return nil
 }
 

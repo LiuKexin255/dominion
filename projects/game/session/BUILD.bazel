@@ -43,6 +43,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//projects/game/session/domain",
         "//projects/game/session/service",
         "@org_golang_google_grpc//codes",

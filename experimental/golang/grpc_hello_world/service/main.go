@@ -9,6 +9,7 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/experimental/golang/grpc_hello_world"
 
@@ -28,7 +29,7 @@ func (s *greeterServer) GetHello(ctx context.Context, req *grpc_hello_world.Hell
 		name = "world"
 	}
 
-	logs.InfoContext(ctx, "handle GetHello", "name", name)
+	logs.Info(ctx, "handle GetHello", event.String("name", name))
 
 	return &grpc_hello_world.Hello{Name: name, Message: "Hello, " + name + "!"}, nil
 }

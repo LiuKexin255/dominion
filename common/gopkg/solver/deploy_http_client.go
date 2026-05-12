@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/infra/deploy"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -42,7 +43,7 @@ func (c *DeployHTTPClient) GetServiceEndpoints(ctx context.Context, name string)
 	url := fmt.Sprintf("%s/v1/%s", c.baseURL, name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		logs.WarnContext(ctx, "deploy http request creation failed", "error", err)
+		logs.Warn(ctx, "deploy http request creation failed", event.Err(err))
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
@@ -57,7 +58,7 @@ func (c *DeployHTTPClient) GetServiceEndpoints(ctx context.Context, name string)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logs.WarnContext(ctx, "deploy http non-200 response", "status", resp.StatusCode, "error", string(body))
+		logs.Warn(ctx, "deploy http non-200 response", event.Int(logFieldStatus, resp.StatusCode), event.Err(fmt.Errorf("response body: %s", string(body))))
 		return nil, fmt.Errorf("get service endpoints: status %d: %s", resp.StatusCode, string(body))
 	}
 
