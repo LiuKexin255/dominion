@@ -145,6 +145,11 @@ func parseFragmented(file *mp4.File) *mediaData {
 		result.initSegment = append(result.initSegment, buf.Bytes()...)
 	}
 
+	var trex *mp4.TrexBox
+	if file.Moov != nil && file.Moov.Mvex != nil {
+		trex = file.Moov.Mvex.Trex
+	}
+
 	for _, seg := range file.Segments {
 		for _, frag := range seg.Fragments {
 			var segBuf []byte
@@ -165,10 +170,9 @@ func parseFragmented(file *mp4.File) *mediaData {
 			}
 
 			if len(segBuf) > 0 {
+				isKeyFrame := detectKeyFrame(trex, frag)
 				result.mediaSegs = append(result.mediaSegs, segBuf)
-				// fMP4 encoded with frag_keyframe starts every fragment at a
-				// keyframe boundary, so all fragments are keyframes.
-				result.keyFrameMask = append(result.keyFrameMask, true)
+				result.keyFrameMask = append(result.keyFrameMask, isKeyFrame)
 			}
 		}
 	}
@@ -178,6 +182,21 @@ func parseFragmented(file *mp4.File) *mediaData {
 	}
 
 	return result
+}
+
+// detectKeyFrame determines whether the first sample in a fragment is a sync
+// sample (keyframe) by inspecting the sample flags from the fMP4 trun box.
+// The sample_is_non_sync_sample bit is bit 16 (0x10000) in the ISO 14496-12
+// sample flags: 0 = sync sample (keyframe), 1 = non-sync.
+func detectKeyFrame(trex *mp4.TrexBox, frag *mp4.Fragment) bool {
+	if trex == nil {
+		return false
+	}
+	samples, err := frag.GetFullSamples(trex)
+	if err != nil || len(samples) == 0 {
+		return false
+	}
+	return samples[0].Flags&0x10000 == 0
 }
 
 func generateFakeMedia() *mediaData {
