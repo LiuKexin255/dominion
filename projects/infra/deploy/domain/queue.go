@@ -3,24 +3,30 @@ package domain
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 const (
 	maxQueueCap = 256
 )
 
-type enqueueSource int
+// WorkItemSource identifies the origin of a work item in the queue.
+type WorkItemSource int
 
 const (
-	enqueueSourceRetry enqueueSource = iota
-	enqueueSourceUser
+	// WorkItemSourceRetry is a retry from a previous failed attempt.
+	WorkItemSourceRetry WorkItemSource = iota
+	// WorkItemSourceUser is a user-triggered enqueue.
+	WorkItemSourceUser
+	// WorkItemSourcePoll is a poll-triggered enqueue.
+	WorkItemSourcePoll
 )
 
 // WorkItem is a single in-memory queue item for an environment.
 type WorkItem struct {
 	EnvName    EnvironmentName
 	RetryCount int
-	Source     enqueueSource
+	Source     WorkItemSource
 }
 
 // Queue is an in-memory single-lane queue for environment operations.
@@ -53,54 +59,37 @@ func (q *Queue) stop() {
 	q.stopOnce.Do(func() { close(q.done) })
 }
 
-// Enqueue adds a user work item for envName.
+// Enqueue adds a user work item for envName using WorkItemSourceUser. It resets the retry count to zero.
 func (q *Queue) Enqueue(_ context.Context, envName EnvironmentName) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	item := &WorkItem{EnvName: envName, RetryCount: 0, Source: enqueueSourceUser}
-
-	if _, ok := q.items[envName]; ok {
-		q.items[envName] = item
-		return nil
-	}
-
-	if q.inFlight[envName] {
-		q.followUps[envName] = item
-		return nil
-	}
-
-	q.enqueueLocked(item)
+	q.enqueueNow(&WorkItem{EnvName: envName, RetryCount: 0, Source: WorkItemSourceUser})
 	return nil
 }
 
-// EnqueueRetry adds a retry work item.
-func (q *Queue) EnqueueRetry(_ context.Context, item *WorkItem) error {
-	envName := item.EnvName
-	item.Source = enqueueSourceRetry
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if queuedItem, ok := q.items[envName]; ok {
-		if queuedItem.Source == enqueueSourceUser {
-			return nil
-		}
-
-		q.items[envName] = item
+// EnqueueAfter schedules the item to be enqueued after the given delay.
+// The item's Source field determines dedup behavior: user overrides everything,
+// retry overrides retry/poll, poll only overrides poll.
+// If delay is zero or negative, the item is enqueued immediately.
+// If ctx is cancelled before enqueue, the item is dropped.
+func (q *Queue) EnqueueAfter(ctx context.Context, item *WorkItem, delay time.Duration) error {
+	if delay <= 0 {
+		q.enqueueNow(item)
 		return nil
 	}
 
-	if q.inFlight[envName] {
-		if followUpItem, ok := q.followUps[envName]; ok && followUpItem.Source == enqueueSourceUser {
-			return nil
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
 		}
 
-		q.followUps[envName] = item
-		return nil
-	}
+		if ctx.Err() != nil {
+			return
+		}
 
-	q.enqueueLocked(item)
+		q.enqueueNow(item)
+	}()
+
 	return nil
 }
 
@@ -134,20 +123,54 @@ func (q *Queue) Complete(envName EnvironmentName) {
 	if !ok {
 		return
 	}
-
 	delete(q.followUps, envName)
 
 	if _, ok := q.items[envName]; ok || q.inFlight[envName] {
 		return
 	}
 
-	q.enqueueLocked(followUpItem)
+	q.items[envName] = followUpItem
+	go func() { q.pendingCh <- envName }()
 }
 
-func (q *Queue) enqueueLocked(item *WorkItem) {
+// enqueueNow enqueues the item immediately, respecting source-priority dedup rules.
+func (q *Queue) enqueueNow(item *WorkItem) {
 	envName := item.EnvName
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if queuedItem, ok := q.items[envName]; ok {
+		if !canOverride(queuedItem, item) {
+			return
+		}
+		q.items[envName] = item
+		return
+	}
+	if q.inFlight[envName] {
+		if followUpItem, ok := q.followUps[envName]; ok && !canOverride(followUpItem, item) {
+			return
+		}
+		q.followUps[envName] = item
+		return
+	}
 	q.items[envName] = item
-	q.pendingCh <- envName
+	go func() { q.pendingCh <- envName }()
+}
+
+// canOverride returns true when incoming may replace existing based on source priority.
+// User overrides everything; retry overrides retry and poll, not user; poll only overrides poll.
+func canOverride(existing, incoming *WorkItem) bool {
+	switch incoming.Source {
+	case WorkItemSourceUser:
+		return true
+	case WorkItemSourceRetry:
+		return existing.Source != WorkItemSourceUser
+	case WorkItemSourcePoll:
+		return existing.Source == WorkItemSourcePoll
+	default:
+		return false
+	}
 }
 
 func (q *Queue) markInFlight(envName EnvironmentName) (*WorkItem, bool) {

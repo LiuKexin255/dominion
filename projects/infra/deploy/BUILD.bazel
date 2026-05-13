@@ -46,6 +46,7 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/service",
         "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
@@ -63,6 +64,7 @@ go_unittest(
     embed = [":deploy"],
     deps = [
         "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/service",
         "@org_golang_google_genproto_googleapis_rpc//errdetails",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

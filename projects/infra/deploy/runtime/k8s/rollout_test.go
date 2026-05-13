@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"dominion/projects/infra/deploy/domain"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -444,4 +446,330 @@ func seedRolloutTestDeployment(t *testing.T, client *kubernetesfake.Clientset, d
 	if err := client.Tracker().Add(dep); err != nil {
 		t.Fatalf("seed deployment failed: %v", err)
 	}
+}
+
+func TestCheckRollout(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T) (*K8sRuntime, *domain.Environment)
+		wantState  domain.RolloutState
+		wantMsgSub string
+		wantErr    bool
+	}{
+		{
+			name: "all deployments ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 2}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 2, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 2, AvailableReplicas: 2},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+		},
+		{
+			name: "all statefulsets ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{statefulArtifacts: []checkRolloutArtifactOpt{{name: "cache", replicas: 3}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.StatefulWorkloads {
+						seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+							w.WorkloadName(), 3, 1,
+							appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+		},
+		{
+			name: "mixed deployments and statefulsets all ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{
+					artifacts:         []checkRolloutArtifactOpt{{name: "api", replicas: 2}},
+					statefulArtifacts: []checkRolloutArtifactOpt{{name: "cache", replicas: 3}},
+				})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 2, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 2, AvailableReplicas: 2},
+						))
+					}
+					for _, w := range objects.StatefulWorkloads {
+						seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+							w.WorkloadName(), 3, 1,
+							appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+		},
+		{
+			name: "deployment progress deadline exceeded",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 2}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 2, 1,
+							appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+								Type:    appsv1.DeploymentProgressing,
+								Reason:  "ProgressDeadlineExceeded",
+								Message: "deployment exceeded its progress deadline",
+							}}},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutFailed,
+			wantMsgSub: "deployment exceeded its progress deadline",
+		},
+		{
+			name: "deployment replica failure",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 2}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 2, 1,
+							appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+								Type:    appsv1.DeploymentReplicaFailure,
+								Status:  corev1.ConditionTrue,
+								Reason:  "FailedCreate",
+								Message: "pods are forbidden",
+							}}},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutFailed,
+			wantMsgSub: "pods are forbidden",
+		},
+		{
+			name: "deployment observed generation lag",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 2}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 2, 3,
+							appsv1.DeploymentStatus{ObservedGeneration: 2, UpdatedReplicas: 2, AvailableReplicas: 2},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutWaiting,
+			wantMsgSub: "尚未观察到最新 generation",
+		},
+		{
+			name: "deployment replicas not updated",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 3}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 3, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 2, AvailableReplicas: 3},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutWaiting,
+			wantMsgSub: "更新副本未完成",
+		},
+		{
+			name: "deployment available replicas insufficient",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 3}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 3, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 3, AvailableReplicas: 2},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutWaiting,
+			wantMsgSub: "可用副本不足",
+		},
+		{
+			name: "statefulset not ready returns waiting not failed",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{statefulArtifacts: []checkRolloutArtifactOpt{{name: "cache", replicas: 3}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.StatefulWorkloads {
+						seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+							w.WorkloadName(), 3, 1,
+							appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 2},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutWaiting,
+			wantMsgSub: "就绪副本不足",
+		},
+		{
+			name: "statefulset observed generation lag",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{statefulArtifacts: []checkRolloutArtifactOpt{{name: "cache", replicas: 3}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.StatefulWorkloads {
+						seedRolloutTestStatefulSet(t, client, newRolloutTestStatefulSet(
+							w.WorkloadName(), 3, 2,
+							appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 3},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutWaiting,
+			wantMsgSub: "尚未观察到最新 generation",
+		},
+		{
+			name: "no workloads returns ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{})
+				runtime := newCheckRolloutTestRuntime(t, kubernetesfake.NewSimpleClientset())
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+		},
+		{
+			name: "k8s api error on get deployment",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{{name: "api", replicas: 2}}})
+				runtime := newCheckRolloutTestRuntime(t, kubernetesfake.NewSimpleClientset())
+				return runtime, env
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime, env := tt.setup(t)
+
+			got, err := runtime.CheckRollout(context.Background(), env)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("CheckRollout() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CheckRollout() unexpected error: %v", err)
+			}
+			if got.State != tt.wantState {
+				t.Fatalf("CheckRollout() state = %v, want %v", got.State, tt.wantState)
+			}
+			if tt.wantMsgSub != "" && !strings.Contains(got.Message, tt.wantMsgSub) {
+				t.Fatalf("CheckRollout() message = %q, want substring %q", got.Message, tt.wantMsgSub)
+			}
+		})
+	}
+}
+
+type checkRolloutArtifactOpt struct {
+	name     string
+	replicas int32
+}
+
+type checkRolloutEnvOpt struct {
+	artifacts         []checkRolloutArtifactOpt
+	statefulArtifacts []checkRolloutArtifactOpt
+}
+
+func newCheckRolloutTestEnv(t *testing.T, opt checkRolloutEnvOpt) *domain.Environment {
+	t.Helper()
+	envName, err := domain.NewEnvironmentName("tstscope", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() failed: %v", err)
+	}
+
+	var artifacts []*domain.ArtifactSpec
+	for _, a := range opt.artifacts {
+		artifacts = append(artifacts, &domain.ArtifactSpec{
+			Name:     a.name,
+			App:      "demo",
+			Image:    "repo/demo:v1",
+			Replicas: a.replicas,
+			Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+		})
+	}
+	for _, a := range opt.statefulArtifacts {
+		artifacts = append(artifacts, &domain.ArtifactSpec{
+			Name:         a.name,
+			App:          "demo",
+			Image:        "repo/demo:v1",
+			Replicas:     a.replicas,
+			WorkloadKind: domain.WorkloadKindStateful,
+			Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+		})
+	}
+
+	env, err := domain.NewEnvironment(envName, domain.EnvironmentTypeProd, "check rollout test",
+		&domain.DesiredState{Artifacts: artifacts},
+	)
+	if err != nil {
+		t.Fatalf("NewEnvironment() failed: %v", err)
+	}
+
+	return env
+}
+
+func newCheckRolloutSeededRuntime(t *testing.T, env *domain.Environment, seed func(objects *DeployObjects, client *kubernetesfake.Clientset)) *K8sRuntime {
+	t.Helper()
+	client := kubernetesfake.NewSimpleClientset()
+	config := newExecutorTestConfig()
+
+	objects, err := ConvertToWorkloads(env, config)
+	if err != nil {
+		t.Fatalf("ConvertToWorkloads() failed: %v", err)
+	}
+
+	seed(objects, client)
+
+	return NewK8sRuntime(&RuntimeClient{
+		TypedClient:   client,
+		DynamicClient: nil,
+		K8sConfig:     config,
+	})
+}
+
+func newCheckRolloutTestRuntime(t *testing.T, typedClient *kubernetesfake.Clientset) *K8sRuntime {
+	t.Helper()
+
+	return NewK8sRuntime(&RuntimeClient{
+		TypedClient:   typedClient,
+		DynamicClient: nil,
+		K8sConfig:     newExecutorTestConfig(),
+	})
 }

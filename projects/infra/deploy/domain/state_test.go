@@ -45,6 +45,7 @@ func TestEnvironmentState_String(t *testing.T) {
 		{name: "ready", got: StateReady, want: "StateReady"},
 		{name: "failed", got: StateFailed, want: "StateFailed"},
 		{name: "deleting", got: StateDeleting, want: "StateDeleting"},
+		{name: "waiting rollout", got: StateWaitingRollout, want: "StateWaitingRollout"},
 	}
 
 	for _, tt := range tests {
@@ -82,6 +83,12 @@ func TestCanTransition(t *testing.T) {
 		{name: "deleting to ready", from: StateDeleting, to: StateReady, want: false},
 		{name: "unspecified to pending", from: StateUnspecified, to: StatePending, want: false},
 		{name: "deleting to deleting", from: StateDeleting, to: StateDeleting, want: false},
+		{name: "reconciling to waiting rollout", from: StateReconciling, to: StateWaitingRollout, want: true},
+		{name: "waiting rollout to ready", from: StateWaitingRollout, to: StateReady, want: true},
+		{name: "waiting rollout to failed", from: StateWaitingRollout, to: StateFailed, want: true},
+		{name: "waiting rollout to deleting", from: StateWaitingRollout, to: StateDeleting, want: true},
+		{name: "pending to waiting rollout", from: StatePending, to: StateWaitingRollout, want: false},
+		{name: "waiting rollout to reconciling", from: StateWaitingRollout, to: StateReconciling, want: false},
 	}
 
 	for _, tt := range tests {

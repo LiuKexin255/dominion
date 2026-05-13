@@ -23,11 +23,23 @@ type Repository interface {
 	// It returns the matching environments, the next page token, and an error.
 	ListByScope(ctx context.Context, scope string, pageSize int32, pageToken string) ([]*Environment, string, error)
 
-	// Save persists an environment, creating or updating it as needed.
-	Save(ctx context.Context, env *Environment) error
+	// Create persists a new environment. Returns ErrAlreadyExists if an environment
+	// with the same name already exists.
+	Create(ctx context.Context, env *Environment) error
+
+	// UpdateDesired atomically updates the desired state with a generation precondition.
+	// The update only succeeds if the persisted generation equals the expected generation.
+	// Returns ErrStaleGeneration if generation changed.
+	UpdateDesired(ctx context.Context, name EnvironmentName, expectedGeneration int64, desiredState *DesiredState, desired EnvironmentDesired) error
 
 	// Delete removes an environment by name.
 	Delete(ctx context.Context, name EnvironmentName) error
+
+	// TransitionStatus atomically updates the environment status with preconditions.
+	// It verifies that generation and current state match expectations.
+	// Only non-zero fields of toStatus are written; Desired is never updated.
+	// Returns ErrStaleGeneration or ErrStaleState if preconditions are not met.
+	TransitionStatus(ctx context.Context, name EnvironmentName, expectedGeneration int64, fromState EnvironmentState, toStatus *EnvironmentStatus) error
 }
 
 // EncodePageToken encodes an offset into a page token string.

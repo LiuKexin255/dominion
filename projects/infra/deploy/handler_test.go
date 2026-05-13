@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
+	"dominion/projects/infra/deploy/service"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -16,16 +17,33 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
-type fakeQueue struct {
+func newTestHandler(repo *fakeRepository, runtime domain.EnvironmentRuntime) *Handler {
+	if runtime == nil {
+		runtime = &fakeServiceEndpointQuery{}
+	}
+	queue := newTestQueue()
+	cmdSvc := service.NewEnvironmentCommandService(repo, queue, runtime)
+	return NewHandler(repo, runtime, cmdSvc)
+}
+
+func newTestHandlerWithQueue(repo *fakeRepository, queue *testQueue, runtime domain.EnvironmentRuntime) *Handler {
+	if runtime == nil {
+		runtime = &fakeServiceEndpointQuery{}
+	}
+	cmdSvc := service.NewEnvironmentCommandService(repo, queue, runtime)
+	return NewHandler(repo, runtime, cmdSvc)
+}
+
+type testQueue struct {
 	enqueued []domain.EnvironmentName
 	err      error
 }
 
-func newFakeQueue() *fakeQueue {
-	return &fakeQueue{}
+func newTestQueue() *testQueue {
+	return &testQueue{}
 }
 
-func (q *fakeQueue) Enqueue(_ context.Context, envName domain.EnvironmentName) error {
+func (q *testQueue) Enqueue(_ context.Context, envName domain.EnvironmentName) error {
 	if q.err != nil {
 		return q.err
 	}
@@ -62,7 +80,7 @@ func TestHandler_GetEnvironment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+			handler := newTestHandler(repo, nil)
 
 			// when
 			got, err := handler.GetEnvironment(ctx, tt.request)
@@ -132,7 +150,7 @@ func TestHandler_ListEnvironments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+			handler := newTestHandler(repo, nil)
 
 			// when
 			got, err := handler.ListEnvironments(ctx, tt.request)
@@ -211,7 +229,7 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 		{
 			name: "repository save error",
 			repoSetup: func(repo *fakeRepository) {
-				repo.saveErr = errors.New("save failed")
+				repo.createErr = errors.New("save failed")
 			},
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
@@ -239,11 +257,11 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			if tt.repoSetup != nil {
 				tt.repoSetup(repo)
 			}
-			q := newFakeQueue()
+			q := newTestQueue()
 			if tt.name == "enqueue error" {
 				q.err = errors.New("queue full")
 			}
-			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
+			handler := newTestHandlerWithQueue(repo, q, nil)
 
 			// when
 			got, err := handler.CreateEnvironment(ctx, tt.request)
@@ -281,7 +299,7 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 
 	// given
 	repo := newFakeRepository()
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 	createReq := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
@@ -379,12 +397,12 @@ func TestHandler_UpdateEnvironment(t *testing.T) {
 			// given
 			repo := newFakeRepository()
 			if tt.seed != nil {
-				if err := repo.Save(ctx, tt.seed(t)); err != nil {
-					t.Fatalf("repo.Save() error = %v", err)
+				if err := repo.Create(ctx, tt.seed(t)); err != nil {
+					t.Fatalf("repo.Create() error = %v", err)
 				}
 			}
-			q := newFakeQueue()
-			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
+			q := newTestQueue()
+			handler := newTestHandlerWithQueue(repo, q, nil)
 
 			// when
 			got, err := handler.UpdateEnvironment(ctx, tt.request)
@@ -429,10 +447,10 @@ func TestHandler_UpdateEnvironmentThenGet(t *testing.T) {
 	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
-	if err := repo.Save(ctx, seed); err != nil {
-		t.Fatalf("repo.Save() error = %v", err)
+	if err := repo.Create(ctx, seed); err != nil {
+		t.Fatalf("repo.Create() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 	updateReq := &UpdateEnvironmentRequest{
 		Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()},
 		UpdateMask:  &fieldmaskpb.FieldMask{Paths: []string{"desired_state"}},
@@ -490,8 +508,8 @@ func TestHandler_DeleteEnvironment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository(tt.seed...)
-			q := newFakeQueue()
-			handler := NewHandler(repo, q, &fakeServiceEndpointQuery{})
+			q := newTestQueue()
+			handler := newTestHandlerWithQueue(repo, q, nil)
 
 			// when
 			got, err := handler.DeleteEnvironment(ctx, tt.request)
@@ -527,7 +545,7 @@ func TestHandler_DeleteEnvironmentKeepsEnvInRepo(t *testing.T) {
 	// given
 	env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
 	repo := newFakeRepository(env)
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 
 	// when
 	_, err := handler.DeleteEnvironment(ctx, &DeleteEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
@@ -563,7 +581,7 @@ func TestHandler_GetServiceEndpoints_SameEnv(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(env), query)
 	req := &GetServiceEndpointsRequest{
 		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
 	}
@@ -623,7 +641,7 @@ func TestHandler_GetServiceEndpoints_StatefulSameEnv(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(env), query)
 
 	// when
 	got, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
@@ -666,7 +684,7 @@ func TestHandler_GetServiceEndpoints_ProdFallback(t *testing.T) {
 			serviceQueryKey("prod.aardvark", "gateway", "api"): nil,
 		},
 	}
-	handler := NewHandler(newFakeRepository(primary, fallbackA, fallbackB), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(primary, fallbackA, fallbackB), query)
 	req := &GetServiceEndpointsRequest{
 		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
 		View: ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION,
@@ -727,7 +745,7 @@ func TestHandler_GetServiceEndpoints_StatefulProdFallback(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHandler(newFakeRepository(primary, fallback), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(primary, fallback), query)
 
 	// when
 	got, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{
@@ -758,7 +776,7 @@ func TestHandler_GetServiceEndpoints_NonProdNotFound(t *testing.T) {
 			serviceQueryKey("dev.alpha", "gateway", "api"): domain.ErrServiceNotFound,
 		},
 	}
-	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(env), query)
 
 	// when
 	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/dev/environments/alpha/apps/gateway/services/api/endpoints"})
@@ -789,7 +807,7 @@ func TestHandler_GetServiceEndpoints_ResolutionView(t *testing.T) {
 			},
 		},
 	}
-	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(env), query)
 	req := &GetServiceEndpointsRequest{
 		Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints",
 		View: ServiceEndpointsView_SERVICE_ENDPOINTS_VIEW_RESOLUTION,
@@ -934,7 +952,7 @@ func TestHandler_GetServiceEndpoints_InvalidName(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	handler := NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(newFakeRepository(), nil)
 
 	// when
 	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "bad-name"})
@@ -953,7 +971,7 @@ func TestHandler_GetServiceEndpoints_FallbackNoCandidates(t *testing.T) {
 			serviceQueryKey("prod.alpha", "gateway", "api"): domain.ErrServiceNotFound,
 		},
 	}
-	handler := NewHandler(newFakeRepository(primary), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(primary), query)
 
 	// when
 	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
@@ -978,7 +996,7 @@ func TestHandler_GetServiceEndpoints_ServicePortMapUnavailable(t *testing.T) {
 			serviceQueryKey("prod.alpha", "gateway", "api"): domain.ErrServicePortMapUnavailable,
 		},
 	}
-	handler := NewHandler(newFakeRepository(env), newFakeQueue(), query)
+	handler := newTestHandler(newFakeRepository(env), query)
 
 	// when
 	_, err := handler.GetServiceEndpoints(ctx, &GetServiceEndpointsRequest{Name: "deploy/scopes/prod/environments/alpha/apps/gateway/services/api/endpoints"})
@@ -1017,7 +1035,7 @@ func TestHandler_CreateEnvironment_WithValidType(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			repo := newFakeRepository()
-			handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+			handler := newTestHandler(repo, nil)
 			req := &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/dev",
 				EnvName:     "alpha",
@@ -1043,7 +1061,7 @@ func TestHandler_CreateEnvironment_RejectUnspecified(t *testing.T) {
 
 	// given
 	repo := newFakeRepository()
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 	req := &CreateEnvironmentRequest{
 		Parent:      "deploy/scopes/dev",
 		EnvName:     "alpha",
@@ -1069,10 +1087,10 @@ func TestHandler_UpdateEnvironment_RejectTypeModification(t *testing.T) {
 	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
-	if err := repo.Save(ctx, seed); err != nil {
-		t.Fatalf("repo.Save() error = %v", err)
+	if err := repo.Create(ctx, seed); err != nil {
+		t.Fatalf("repo.Create() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 	req := &UpdateEnvironmentRequest{
 		Environment: &Environment{
 			Name:         "deploy/scopes/dev/environments/alpha",
@@ -1101,10 +1119,10 @@ func TestHandler_UpdateEnvironment_AllowWithoutType(t *testing.T) {
 	if err := seed.MarkReady(seed.Generation()); err != nil {
 		t.Fatalf("MarkReady() error = %v", err)
 	}
-	if err := repo.Save(ctx, seed); err != nil {
-		t.Fatalf("repo.Save() error = %v", err)
+	if err := repo.Create(ctx, seed); err != nil {
+		t.Fatalf("repo.Create() error = %v", err)
 	}
-	handler := NewHandler(repo, newFakeQueue(), &fakeServiceEndpointQuery{})
+	handler := newTestHandler(repo, nil)
 	req := &UpdateEnvironmentRequest{
 		Environment: &Environment{
 			Name:         "deploy/scopes/dev/environments/alpha",
@@ -1170,6 +1188,30 @@ func Test_toProtoEnvironmentType(t *testing.T) {
 			// then
 			if got != tt.want {
 				t.Fatalf("toProtoEnvironmentType(%v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_toProtoState(t *testing.T) {
+	tests := []struct {
+		input domain.EnvironmentState
+		want  EnvironmentState
+	}{
+		{domain.StatePending, EnvironmentState_ENVIRONMENT_STATE_PENDING},
+		{domain.StateReconciling, EnvironmentState_ENVIRONMENT_STATE_RECONCILING},
+		{domain.StateReady, EnvironmentState_ENVIRONMENT_STATE_READY},
+		{domain.StateFailed, EnvironmentState_ENVIRONMENT_STATE_FAILED},
+		{domain.StateDeleting, EnvironmentState_ENVIRONMENT_STATE_DELETING},
+		{domain.StateWaitingRollout, EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT},
+		{domain.EnvironmentState(99), EnvironmentState_ENVIRONMENT_STATE_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("domain_%d", tt.input), func(t *testing.T) {
+			got := toProtoState(tt.input)
+			if got != tt.want {
+				t.Fatalf("toProtoState(%v) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -1375,7 +1417,7 @@ func TestHandler_CreateEnvironment_ReservedEnvConflict(t *testing.T) {
 				reservedVars: tt.reserved,
 				reservedErr:  tt.reservedErr,
 			}
-			handler := NewHandler(repo, newFakeQueue(), runtime)
+			handler := newTestHandler(repo, runtime)
 			req := &CreateEnvironmentRequest{
 				Parent:  "deploy/scopes/dev",
 				EnvName: "alpha",
@@ -1451,14 +1493,14 @@ func TestHandler_UpdateEnvironment_ReservedEnvConflict(t *testing.T) {
 			if err := seed.MarkReady(seed.Generation()); err != nil {
 				t.Fatalf("MarkReady() error = %v", err)
 			}
-			if err := repo.Save(ctx, seed); err != nil {
-				t.Fatalf("repo.Save() error = %v", err)
+			if err := repo.Create(ctx, seed); err != nil {
+				t.Fatalf("repo.Create() error = %v", err)
 			}
 			runtime := &fakeServiceEndpointQuery{
 				reservedVars: tt.reserved,
 				reservedErr:  tt.reservedErr,
 			}
-			handler := NewHandler(repo, newFakeQueue(), runtime)
+			handler := newTestHandler(repo, runtime)
 			req := &UpdateEnvironmentRequest{
 				Environment: &Environment{
 					Name: "deploy/scopes/dev/environments/alpha",
@@ -1505,6 +1547,15 @@ func Test_toProtoArtifacts_envNilBackwardCompatible(t *testing.T) {
 	}
 }
 
+func newErrorHandler(errRepo *errorRepository, runtime domain.EnvironmentRuntime) *Handler {
+	if runtime == nil {
+		runtime = &fakeServiceEndpointQuery{}
+	}
+	queue := newTestQueue()
+	cmdSvc := service.NewEnvironmentCommandService(errRepo, queue, runtime)
+	return NewHandler(errRepo, runtime, cmdSvc)
+}
+
 func TestHandler_errorMapping(t *testing.T) {
 	ctx := context.Background()
 
@@ -1516,7 +1567,7 @@ func TestHandler_errorMapping(t *testing.T) {
 	}{
 		{
 			name:    "not found maps to not found",
-			handler: NewHandler(&errorRepository{getErr: domain.ErrNotFound}, newFakeQueue(), &fakeServiceEndpointQuery{}),
+			handler: newErrorHandler(&errorRepository{getErr: domain.ErrNotFound}, nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
 				return err
@@ -1525,7 +1576,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "already exists maps to already exists",
-			handler: NewHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, newFakeQueue(), &fakeServiceEndpointQuery{}),
+			handler: newErrorHandler(&errorRepository{getEnv: mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())}, nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD}})
 				return err
@@ -1534,7 +1585,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid state maps to failed precondition",
-			handler: NewHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, newFakeQueue(), &fakeServiceEndpointQuery{}),
+			handler: newErrorHandler(&errorRepository{getEnv: mustDeletingEnvironment(t, "dev", "alpha")}, nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.UpdateEnvironment(ctx, &UpdateEnvironmentRequest{Environment: &Environment{Name: "deploy/scopes/dev/environments/alpha", DesiredState: newUpdatedProtoDesiredState()}})
 				return err
@@ -1543,7 +1594,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid name maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{}),
+			handler: newTestHandler(newFakeRepository(), nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "bad-name"})
 				return err
@@ -1552,7 +1603,7 @@ func TestHandler_errorMapping(t *testing.T) {
 		},
 		{
 			name:    "invalid spec maps to invalid argument",
-			handler: NewHandler(newFakeRepository(), newFakeQueue(), &fakeServiceEndpointQuery{}),
+			handler: newTestHandler(newFakeRepository(), nil),
 			call: func(ctx context.Context, handler *Handler) error {
 				_, err := handler.CreateEnvironment(ctx, &CreateEnvironmentRequest{Parent: "deploy/scopes/dev", EnvName: "alpha", Environment: &Environment{}})
 				return err
@@ -1579,6 +1630,10 @@ type errorRepository struct {
 	listErr   error
 	saveErr   error
 	deleteErr error
+}
+
+func (r *errorRepository) TransitionStatus(_ context.Context, _ domain.EnvironmentName, _ int64, _ domain.EnvironmentState, _ *domain.EnvironmentStatus) error {
+	return nil
 }
 
 type fakeServiceEndpointQuery struct {
@@ -1649,6 +1704,14 @@ func (q *fakeServiceEndpointQuery) QueryStatefulServiceEndpoints(_ context.Conte
 	return nil, domain.ErrServiceNotFound
 }
 
+func (q *fakeServiceEndpointQuery) ApplyResources(_ context.Context, _ *domain.Environment) error {
+	return nil
+}
+
+func (q *fakeServiceEndpointQuery) CheckRollout(_ context.Context, _ *domain.Environment) (*domain.RolloutStatus, error) {
+	return nil, nil
+}
+
 func (q *fakeServiceEndpointQuery) Apply(_ context.Context, _ *domain.Environment, _ func(msg string)) error {
 	return nil
 }
@@ -1699,7 +1762,11 @@ func (r *errorRepository) ListByScope(_ context.Context, _ string, _ int32, _ st
 	return r.listEnvs, "", nil
 }
 
-func (r *errorRepository) Save(_ context.Context, _ *domain.Environment) error {
+func (r *errorRepository) Create(_ context.Context, _ *domain.Environment) error {
+	return r.saveErr
+}
+
+func (r *errorRepository) UpdateDesired(_ context.Context, _ domain.EnvironmentName, _ int64, _ *domain.DesiredState, _ domain.EnvironmentDesired) error {
 	return r.saveErr
 }
 

@@ -21,21 +21,24 @@ const (
 	// collectionName is the MongoDB collection used for environments.
 	collectionName = "environments"
 	// mongoDefaultPageSize is the default number of environments returned by ListByScope.
-	mongoDefaultPageSize        = 100
-	mongoFieldName              = "name"
-	mongoFieldScope             = "scope"
-	mongoFieldEnvName           = "env_name"
-	mongoFieldEnvType           = "env_type"
-	mongoFieldDescription       = "description"
-	mongoFieldDesiredState      = "desired_state"
-	mongoFieldStatus            = "status"
-	mongoFieldStatusState       = "status.state"
-	mongoFieldStatusDesired     = "status.desired"
-	mongoFieldStatusObservedGen = "status.observed_generation"
-	mongoFieldGeneration        = "generation"
-	mongoFieldCreateTime        = "create_time"
-	mongoFieldUpdateTime        = "update_time"
-	mongoFieldETag              = "etag"
+	mongoDefaultPageSize          = 100
+	mongoFieldName                = "name"
+	mongoFieldScope               = "scope"
+	mongoFieldEnvName             = "env_name"
+	mongoFieldEnvType             = "env_type"
+	mongoFieldDescription         = "description"
+	mongoFieldDesiredState        = "desired_state"
+	mongoFieldStatus              = "status"
+	mongoFieldStatusState         = "status.state"
+	mongoFieldStatusDesired       = "status.desired"
+	mongoFieldStatusObservedGen   = "status.observed_generation"
+	mongoFieldGeneration          = "generation"
+	mongoFieldCreateTime          = "create_time"
+	mongoFieldUpdateTime          = "update_time"
+	mongoFieldETag                = "etag"
+	mongoFieldStatusMessage       = "status.message"
+	mongoFieldStatusLastReconcile = "status.last_reconcile_time"
+	mongoFieldStatusLastSuccess   = "status.last_success_time"
 
 	EnvironmentTypeProd        = "prod"
 	EnvironmentTypeDev         = "dev"
@@ -63,6 +66,7 @@ type indexViewOps interface {
 type collectionOps interface {
 	FindOne(ctx context.Context, filter any, opts ...*options.FindOneOptions) singleResult
 	Find(ctx context.Context, filter any, opts ...*options.FindOptions) (cursor, error)
+	InsertOne(ctx context.Context, document any, opts ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error)
 	UpdateOne(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter any, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	CountDocuments(ctx context.Context, filter any, opts ...*options.CountOptions) (int64, error)
@@ -83,6 +87,10 @@ func (c *mongoCollection) FindOne(ctx context.Context, filter any, opts ...*opti
 
 func (c *mongoCollection) Find(ctx context.Context, filter any, opts ...*options.FindOptions) (cursor, error) {
 	return c.Collection.Find(ctx, filter, opts...)
+}
+
+func (c *mongoCollection) InsertOne(ctx context.Context, document any, opts ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
+	return c.Collection.InsertOne(ctx, document, opts...)
 }
 
 func (c *mongoCollection) UpdateOne(ctx context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error) {
@@ -281,13 +289,10 @@ func (r *MongoRepository) ListNeedingReconcile(ctx context.Context) ([]*domain.E
 						{Key: "$lt", Value: bson.A{"$" + mongoFieldStatusObservedGen, "$" + mongoFieldGeneration}},
 					}},
 				},
-				// Condition 2: desired == Present && state == Failed && observed_generation == generation
+				// Condition 2: desired == Present && state IN (Pending, Reconciling, WaitingRollout)
 				bson.D{
 					{Key: mongoFieldStatusDesired, Value: int(domain.DesiredPresent)},
-					{Key: mongoFieldStatusState, Value: int(domain.StateFailed)},
-					{Key: "$expr", Value: bson.D{
-						{Key: "$eq", Value: bson.A{"$" + mongoFieldStatusObservedGen, "$" + mongoFieldGeneration}},
-					}},
+					{Key: mongoFieldStatusState, Value: bson.M{"$in": []int{int(domain.StatePending), int(domain.StateReconciling), int(domain.StateWaitingRollout)}}},
 				},
 				// Condition 3: desired == Absent
 				bson.D{
@@ -370,32 +375,92 @@ func (r *MongoRepository) ListByScope(ctx context.Context, scope string, pageSiz
 	return envs, domain.EncodePageToken(nextSkip), nil
 }
 
-// Save upserts an environment document by resource name.
-func (r *MongoRepository) Save(ctx context.Context, env *domain.Environment) error {
+func (r *MongoRepository) Create(ctx context.Context, env *domain.Environment) error {
 	doc, err := mongoEnvironmentFromDomain(env)
 	if err != nil {
 		return err
 	}
+	_, err = r.collection.InsertOne(ctx, doc)
+	if mongodriver.IsDuplicateKeyError(err) {
+		return domain.ErrAlreadyExists
+	}
+	return err
+}
 
-	result, err := r.collection.UpdateOne(
-		ctx,
-		bson.M{mongoFieldName: doc.Name, mongoFieldGeneration: bson.M{"$lte": doc.Generation}},
-		bson.M{
-			"$set":         doc.updateDocument(),
-			"$setOnInsert": doc.insertDocument(),
+func (r *MongoRepository) UpdateDesired(ctx context.Context, name domain.EnvironmentName, expectedGeneration int64, desiredState *domain.DesiredState, desired domain.EnvironmentDesired) error {
+	filter := bson.D{
+		{Key: mongoFieldName, Value: name.String()},
+		{Key: mongoFieldGeneration, Value: expectedGeneration},
+	}
+	setFields := bson.M{
+		mongoFieldStatusDesired: int(desired),
+		mongoFieldUpdateTime:    time.Now().UTC(),
+	}
+	if desiredState != nil {
+		setFields[mongoFieldDesiredState] = desiredStateToMongo(desiredState)
+	}
+	update := bson.M{
+		"$set": setFields,
+		"$inc": bson.M{
+			mongoFieldGeneration: 1,
 		},
-		options.Update().SetUpsert(true),
-	)
+	}
+	result, err := r.collection.UpdateOne(ctx, filter, update)
 	if err != nil {
-		if mongodriver.IsDuplicateKeyError(err) {
-			return nil
-		}
 		return err
 	}
 	if result.MatchedCount == 0 {
-		return nil
+		return domain.ErrStaleGeneration
+	}
+	return nil
+}
+
+func (r *MongoRepository) TransitionStatus(ctx context.Context, name domain.EnvironmentName, expectedGeneration int64, fromState domain.EnvironmentState, toStatus *domain.EnvironmentStatus) error {
+	filter := bson.D{
+		{Key: mongoFieldName, Value: name.String()},
+		{Key: mongoFieldGeneration, Value: expectedGeneration},
+		{Key: mongoFieldStatusState, Value: int(fromState)},
 	}
 
+	setFields := bson.M{
+		mongoFieldStatusState: int(toStatus.State),
+		mongoFieldUpdateTime:  time.Now().UTC(),
+	}
+	if toStatus.Message != "" {
+		setFields[mongoFieldStatusMessage] = toStatus.Message
+	}
+	if toStatus.ObservedGeneration != 0 {
+		setFields[mongoFieldStatusObservedGen] = toStatus.ObservedGeneration
+	}
+	if !toStatus.LastReconcileTime.IsZero() {
+		setFields[mongoFieldStatusLastReconcile] = toStatus.LastReconcileTime
+	}
+	if !toStatus.LastSuccessTime.IsZero() {
+		setFields[mongoFieldStatusLastSuccess] = toStatus.LastSuccessTime
+	}
+
+	update := bson.M{"$set": setFields}
+
+	result, err := r.collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		doc := new(mongoEnvironment)
+		if err := r.collection.FindOne(ctx, bson.M{mongoFieldName: name.String()}).Decode(doc); err != nil {
+			if errors.Is(err, mongodriver.ErrNoDocuments) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+
+		if doc.Generation != expectedGeneration {
+			return domain.ErrStaleGeneration
+		}
+
+		return domain.ErrStaleState
+	}
 	return nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/projects/infra/deploy/domain"
+	"dominion/projects/infra/deploy/service"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -33,26 +34,21 @@ const (
 	logFieldError        = "error"
 )
 
-// Enqueuer enqueues environment reconciliation requests.
-type Enqueuer interface {
-	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
-}
-
 // Handler implements DeployServiceServer.
 type Handler struct {
 	UnimplementedDeployServiceServer
 
-	repo    domain.Repository
-	queue   Enqueuer
-	runtime domain.EnvironmentRuntime
+	repo           domain.Repository
+	runtime        domain.EnvironmentRuntime
+	commandService *service.EnvironmentCommandService
 }
 
 // NewHandler creates a deploy gRPC handler.
-func NewHandler(repo domain.Repository, queue Enqueuer, runtime domain.EnvironmentRuntime) *Handler {
+func NewHandler(repo domain.Repository, runtime domain.EnvironmentRuntime, commandService *service.EnvironmentCommandService) *Handler {
 	return &Handler{
-		repo:    repo,
-		queue:   queue,
-		runtime: runtime,
+		repo:           repo,
+		runtime:        runtime,
+		commandService: commandService,
 	}
 }
 
@@ -238,48 +234,21 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if _, err := h.repo.Get(ctx, envName); err == nil {
-		return nil, toStatusError(domain.ErrAlreadyExists)
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return nil, toStatusError(err)
-	}
-
-	env, err := fromProtoEnvironment(&Environment{
-		Name:         envName.String(),
-		Description:  req.GetEnvironment().GetDescription(),
-		DesiredState: req.GetEnvironment().GetDesiredState(),
-		Type:         req.GetEnvironment().GetType(),
-	})
+	envType := fromProtoEnvironmentType(req.GetEnvironment().GetType())
+	description := req.GetEnvironment().GetDescription()
+	desiredState, err := fromProtoDesiredState(req.GetEnvironment().GetDesiredState())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	env, err := h.commandService.Create(ctx, envName, envType, description, desiredState)
 	if err != nil {
-		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
-	}
-	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.repo.Save(ctx, env); err != nil {
 		return nil, toStatusError(err)
 	}
 
 	logs.Info(ctx, "environment created",
 		event.String(logFieldEnvName, envName.String()),
 		event.String(logFieldDesiredState, env.Status().Desired.String()),
-	)
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		logs.Error(ctx, "failed to enqueue environment after create",
-			event.String(logFieldEnvName, envName.String()),
-			event.Err(err),
-		)
-		return nil, toStatusError(err)
-	}
-	logs.Info(ctx, "environment enqueued after create",
-		event.String(logFieldEnvName, envName.String()),
 	)
 
 	return toProtoEnvironment(env), nil
@@ -300,32 +269,13 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	env, err := h.repo.Get(ctx, envName)
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-	if env.Status() != nil && env.Status().State == domain.StateDeleting {
-		return nil, toStatusError(domain.ErrInvalidState)
-	}
-
 	desiredState, err := fromProtoDesiredState(req.GetEnvironment().GetDesiredState())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := env.SetDesiredPresent(desiredState); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	env, err := h.commandService.Update(ctx, envName, desiredState)
 	if err != nil {
-		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
-	}
-	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.repo.Save(ctx, env); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -333,17 +283,6 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		event.String(logFieldEnvName, envName.String()),
 		event.Int64(logFieldGeneration, env.Generation()),
 		event.String(logFieldDesiredState, env.Status().Desired.String()),
-	)
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		logs.Error(ctx, "failed to enqueue environment after update",
-			event.String(logFieldEnvName, envName.String()),
-			event.Err(err),
-		)
-		return nil, toStatusError(err)
-	}
-	logs.Info(ctx, "environment enqueued after update",
-		event.String(logFieldEnvName, envName.String()),
 	)
 
 	return toProtoEnvironment(env), nil
@@ -356,32 +295,11 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	env, err := h.repo.Get(ctx, envName)
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := env.SetDesiredAbsent(); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.repo.Save(ctx, env); err != nil {
+	if err := h.commandService.Delete(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 
 	logs.Info(ctx, "environment marked for deletion",
-		event.String(logFieldEnvName, envName.String()),
-		event.String(logFieldDesiredState, env.Status().Desired.String()),
-	)
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		logs.Error(ctx, "failed to enqueue environment for deletion",
-			event.String(logFieldEnvName, envName.String()),
-			event.Err(err),
-		)
-		return nil, toStatusError(err)
-	}
-	logs.Info(ctx, "environment enqueued for deletion",
 		event.String(logFieldEnvName, envName.String()),
 	)
 
@@ -435,6 +353,8 @@ func toProtoState(state domain.EnvironmentState) EnvironmentState {
 		return EnvironmentState_ENVIRONMENT_STATE_FAILED
 	case domain.StateDeleting:
 		return EnvironmentState_ENVIRONMENT_STATE_DELETING
+	case domain.StateWaitingRollout:
+		return EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT
 	default:
 		return EnvironmentState_ENVIRONMENT_STATE_UNSPECIFIED
 	}

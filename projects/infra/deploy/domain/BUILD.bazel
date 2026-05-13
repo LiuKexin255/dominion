@@ -9,6 +9,7 @@ go_library(
         "environment_type.go",
         "errors.go",
         "queue.go",
+        "reconcile_types.go",
         "recovery.go",
         "repository.go",
         "service_endpoints_name.go",
@@ -22,7 +23,6 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
-        "@io_opentelemetry_go_otel//attribute",
     ],
 )
 

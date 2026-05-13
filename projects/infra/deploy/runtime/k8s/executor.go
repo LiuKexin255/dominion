@@ -54,8 +54,9 @@ func NewK8sRuntime(client *RuntimeClient) *K8sRuntime {
 	return &K8sRuntime{client: client}
 }
 
-// Apply converts an environment into workloads and applies all owned resources.
-func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progress func(msg string)) error {
+// ApplyResources submits the environment's desired state to Kubernetes by
+// creating, updating, and pruning resources. It does NOT wait for rollout.
+func (r *K8sRuntime) ApplyResources(ctx context.Context, env *domain.Environment) error {
 	ctx, span := otel.Tracer().Start(ctx, spanApply)
 	defer span.End()
 
@@ -69,16 +70,16 @@ func (r *K8sRuntime) Apply(ctx context.Context, env *domain.Environment, progres
 	envName := env.Name().String()
 	span.SetAttributes(attribute.String(logFieldEnvName, envName))
 
-	err := r.applyInner(ctx, env, progress, envName, span)
+	err := r.applyInner(ctx, env, envName, span)
 	if err != nil {
-		logs.Error(ctx, "apply failed", event.String(logFieldEnvName, envName), event.Err(err))
+		logs.Error(ctx, "apply resources failed", event.String(logFieldEnvName, envName), event.Err(err))
 	} else {
-		logs.Info(ctx, "apply succeeded", event.String(logFieldEnvName, envName))
+		logs.Info(ctx, "apply resources succeeded", event.String(logFieldEnvName, envName))
 	}
 	return err
 }
 
-func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, progress func(msg string), envName string, span trace.Span) error {
+func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, envName string, span trace.Span) error {
 	objects, err := ConvertToWorkloads(env, r.client.K8sConfig)
 	if err != nil {
 		return fmt.Errorf("转换 environment 为 workloads 失败: %w", err)
@@ -164,41 +165,6 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, pr
 		}
 	}
 	if err := r.pruneResources(ctx, env.Name().Label(), objects); err != nil {
-		return err
-	}
-
-	var deploymentNames []string
-	for _, workload := range objects.Deployments {
-		if workload == nil {
-			continue
-		}
-		deploymentNames = append(deploymentNames, workload.WorkloadName())
-	}
-	for _, workload := range objects.MongoDBWorkloads {
-		if workload == nil {
-			continue
-		}
-		deploymentNames = append(deploymentNames, workload.ResourceName())
-	}
-	var statefulSetNames []string
-	for _, workload := range objects.StatefulWorkloads {
-		if workload == nil {
-			continue
-		}
-		statefulSetNames = append(statefulSetNames, workload.WorkloadName())
-	}
-	if len(deploymentNames) == 0 && len(statefulSetNames) == 0 {
-		return nil
-	}
-
-	if err := waitForRollout(
-		ctx,
-		r.client.TypedClient,
-		r.client.K8sConfig.Namespace,
-		deploymentNames,
-		statefulSetNames,
-		progress,
-	); err != nil {
 		return err
 	}
 

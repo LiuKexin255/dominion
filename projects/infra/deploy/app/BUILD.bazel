@@ -9,5 +9,6 @@ go_library(
         "//common/gopkg/bootstrap",
         "//common/gopkg/logs",
         "//projects/infra/deploy/domain",
+        "//projects/infra/deploy/service",
     ],
 )

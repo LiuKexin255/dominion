@@ -11,14 +11,40 @@ import (
 	"dominion/projects/infra/deploy/domain"
 )
 
+func cloneDeployEnv(env *domain.Environment) *domain.Environment {
+	cloned, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         env.Name(),
+		EnvType:      env.Type(),
+		Description:  env.Description(),
+		DesiredState: env.DesiredState(),
+		Status: &domain.EnvironmentStatus{
+			Desired:            env.Status().Desired,
+			State:              env.Status().State,
+			ObservedGeneration: env.Status().ObservedGeneration,
+			Message:            env.Status().Message,
+			LastReconcileTime:  env.Status().LastReconcileTime,
+			LastSuccessTime:    env.Status().LastSuccessTime,
+		},
+		Generation: env.Generation(),
+		CreateTime: env.CreateTime(),
+		UpdateTime: env.UpdateTime(),
+		ETag:       env.ETag(),
+	})
+	if err != nil {
+		panic(fmt.Sprintf("cloneDeployEnv: %v", err))
+	}
+	return cloned
+}
+
 type fakeRepository struct {
-	mu        sync.RWMutex
-	envs      map[string]*domain.Environment
-	getErr    error
-	listErr   error
-	saveErr   error
-	deleteErr error
-	saveCalls int
+	mu               sync.RWMutex
+	envs             map[string]*domain.Environment
+	getErr           error
+	listErr          error
+	createErr        error
+	updateDesiredErr error
+	deleteErr        error
+	saveCalls        int
 }
 
 func newFakeRepository(seed ...*domain.Environment) *fakeRepository {
@@ -27,7 +53,7 @@ func newFakeRepository(seed ...*domain.Environment) *fakeRepository {
 		if env == nil {
 			continue
 		}
-		r.envs[env.Name().String()] = env
+		r.envs[env.Name().String()] = cloneDeployEnv(env)
 	}
 	return r
 }
@@ -45,7 +71,7 @@ func (r *fakeRepository) Get(_ context.Context, name domain.EnvironmentName) (*d
 		return nil, domain.ErrNotFound
 	}
 
-	return env, nil
+	return cloneDeployEnv(env), nil
 }
 
 func (r *fakeRepository) ListByStates(_ context.Context, states ...domain.EnvironmentState) ([]*domain.Environment, error) {
@@ -152,16 +178,69 @@ func (r *fakeRepository) ListByScope(_ context.Context, scope string, pageSize i
 	return filtered[skip:end], nextToken, nil
 }
 
-func (r *fakeRepository) Save(_ context.Context, env *domain.Environment) error {
-	if r.saveErr != nil {
-		return r.saveErr
+func (r *fakeRepository) Create(_ context.Context, env *domain.Environment) error {
+	if r.createErr != nil {
+		return r.createErr
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if _, exists := r.envs[env.Name().String()]; exists {
+		return domain.ErrAlreadyExists
+	}
+
 	r.saveCalls++
-	r.envs[env.Name().String()] = env
+	r.envs[env.Name().String()] = cloneDeployEnv(env)
+	return nil
+}
+
+func (r *fakeRepository) UpdateDesired(_ context.Context, name domain.EnvironmentName, expectedGeneration int64, desiredState *domain.DesiredState, desired domain.EnvironmentDesired) error {
+	if r.updateDesiredErr != nil {
+		return r.updateDesiredErr
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	env, ok := r.envs[name.String()]
+	if !ok {
+		return domain.ErrStaleGeneration
+	}
+
+	if env.Generation() != expectedGeneration {
+		return domain.ErrStaleGeneration
+	}
+
+	effectiveDesiredState := desiredState
+	if effectiveDesiredState == nil {
+		effectiveDesiredState = env.DesiredState()
+	}
+
+	updated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         env.Name(),
+		EnvType:      env.Type(),
+		Description:  env.Description(),
+		DesiredState: effectiveDesiredState,
+		Status: &domain.EnvironmentStatus{
+			Desired:            desired,
+			State:              domain.StatePending,
+			ObservedGeneration: env.Status().ObservedGeneration,
+			Message:            "",
+			LastReconcileTime:  env.Status().LastReconcileTime,
+			LastSuccessTime:    env.Status().LastSuccessTime,
+		},
+		Generation: env.Generation() + 1,
+		CreateTime: env.CreateTime(),
+		UpdateTime: env.UpdateTime(),
+		ETag:       env.ETag(),
+	})
+	if err != nil {
+		return err
+	}
+
+	r.saveCalls++
+	r.envs[name.String()] = updated
 	return nil
 }
 
@@ -178,6 +257,48 @@ func (r *fakeRepository) Delete(_ context.Context, name domain.EnvironmentName) 
 	}
 
 	delete(r.envs, name.String())
+	return nil
+}
+
+func (r *fakeRepository) TransitionStatus(_ context.Context, name domain.EnvironmentName, expectedGeneration int64, fromState domain.EnvironmentState, toStatus *domain.EnvironmentStatus) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	env, ok := r.envs[name.String()]
+	if !ok {
+		return domain.ErrNotFound
+	}
+
+	status := env.Status()
+	if status == nil || env.Generation() != expectedGeneration || status.State != fromState {
+		return domain.ErrStaleState
+	}
+
+	newStatus := &domain.EnvironmentStatus{
+		Desired:            toStatus.Desired,
+		State:              toStatus.State,
+		ObservedGeneration: toStatus.ObservedGeneration,
+		Message:            toStatus.Message,
+		LastReconcileTime:  toStatus.LastReconcileTime,
+		LastSuccessTime:    toStatus.LastSuccessTime,
+	}
+
+	updated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{
+		Name:         env.Name(),
+		EnvType:      env.Type(),
+		Description:  env.Description(),
+		DesiredState: env.DesiredState(),
+		Status:       newStatus,
+		Generation:   env.Generation(),
+		CreateTime:   env.CreateTime(),
+		UpdateTime:   env.UpdateTime(),
+		ETag:         env.ETag(),
+	})
+	if err != nil {
+		return err
+	}
+
+	r.envs[name.String()] = updated
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/logs"
 	"dominion/projects/infra/deploy/domain"
+	"dominion/projects/infra/deploy/service"
 )
 
 // DeployWorkerBuilder implements bootstrap.WorkerBuilder for the deploy worker.
@@ -24,7 +25,8 @@ func (b *DeployWorkerBuilder) Build(ctx context.Context) (bootstrap.Worker, erro
 		return nil, fmt.Errorf("build deploy worker: %w", err)
 	}
 	logs.Info(ctx, "deploy worker built, recovery complete")
-	w := domain.NewWorker(b.Repo, b.Queue, b.Runtime)
+	reconciler := service.NewReconcileService(b.Repo, b.Runtime)
+	w := domain.NewWorker(b.Queue, reconciler)
 	return &workerAdapter{worker: w}, nil
 }
 

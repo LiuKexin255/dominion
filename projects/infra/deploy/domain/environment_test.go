@@ -705,6 +705,190 @@ func TestSetReconcilingMessage_ReconcilingState_OverridesMessage(t *testing.T) {
 	}
 }
 
+func TestEnvironment_MarkWaitingRollout(t *testing.T) {
+	tests := []struct {
+		name                   string
+		prepare                func(*testing.T, *Environment)
+		processedGeneration    int64
+		wantErr                error
+		wantState              EnvironmentState
+		wantObservedGeneration int64
+	}{
+		{
+			name: "reconciling to waiting rollout",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+			},
+			processedGeneration:    7,
+			wantState:              StateWaitingRollout,
+			wantObservedGeneration: 7,
+		},
+		{
+			name:                "pending to waiting rollout is invalid",
+			processedGeneration: 7,
+			wantErr:             ErrInvalidState,
+			wantState:           StatePending,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkWaitingRollout(tt.processedGeneration)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkWaitingRollout() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkWaitingRollout() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if env.status.ObservedGeneration != tt.wantObservedGeneration {
+				t.Fatalf("status.ObservedGeneration = %d, want %d", env.status.ObservedGeneration, tt.wantObservedGeneration)
+			}
+		})
+	}
+}
+
+func TestEnvironment_SetWaitingRolloutMessage(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(*testing.T, *Environment)
+		message     string
+		wantErr     error
+		wantState   EnvironmentState
+		wantMessage string
+	}{
+		{
+			name:    "waiting rollout sets message",
+			message: "waiting for deployment rollout",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkWaitingRollout(env.Generation()); err != nil {
+					t.Fatalf("MarkWaitingRollout() unexpected error: %v", err)
+				}
+			},
+			wantState:   StateWaitingRollout,
+			wantMessage: "waiting for deployment rollout",
+		},
+		{
+			name:        "pending is invalid",
+			message:     "waiting for deployment rollout",
+			wantErr:     ErrInvalidState,
+			wantState:   StatePending,
+			wantMessage: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.SetWaitingRolloutMessage(tt.message)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("SetWaitingRolloutMessage() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("SetWaitingRolloutMessage() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if env.status.Message != tt.wantMessage {
+				t.Fatalf("status.Message = %q, want %q", env.status.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+func TestEnvironment_MarkReadyFromRollout(t *testing.T) {
+	tests := []struct {
+		name                   string
+		prepare                func(*testing.T, *Environment)
+		processedGeneration    int64
+		wantErr                error
+		wantState              EnvironmentState
+		wantObservedGeneration int64
+	}{
+		{
+			name: "waiting rollout to ready",
+			prepare: func(t *testing.T, env *Environment) {
+				if err := env.MarkReconciling(); err != nil {
+					t.Fatalf("MarkReconciling() unexpected error: %v", err)
+				}
+				if err := env.MarkWaitingRollout(env.Generation()); err != nil {
+					t.Fatalf("MarkWaitingRollout() unexpected error: %v", err)
+				}
+			},
+			processedGeneration:    7,
+			wantState:              StateReady,
+			wantObservedGeneration: 7,
+		},
+		{
+			name:                "pending to ready from rollout is invalid",
+			processedGeneration: 7,
+			wantErr:             ErrInvalidState,
+			wantState:           StatePending,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			env := mustNewEnvironment(t)
+			if tt.prepare != nil {
+				tt.prepare(t, env)
+			}
+
+			// when
+			err := env.MarkReadyFromRollout(tt.processedGeneration)
+
+			// then
+			if tt.wantErr != nil {
+				if err != tt.wantErr {
+					t.Fatalf("MarkReadyFromRollout() error = %v, want %v", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("MarkReadyFromRollout() unexpected error: %v", err)
+			}
+			if env.status.State != tt.wantState {
+				t.Fatalf("status.State = %v, want %v", env.status.State, tt.wantState)
+			}
+			if tt.wantErr == nil && env.status.LastSuccessTime.IsZero() {
+				t.Fatalf("LastSuccessTime should be set")
+			}
+			if env.status.ObservedGeneration != tt.wantObservedGeneration {
+				t.Fatalf("status.ObservedGeneration = %d, want %d", env.status.ObservedGeneration, tt.wantObservedGeneration)
+			}
+			if tt.wantErr == nil && env.status.Message != "" {
+				t.Fatalf("status.Message = %q, want empty", env.status.Message)
+			}
+		})
+	}
+}
+
 func TestEnvironment_MarkDeleting(t *testing.T) {
 	tests := []struct {
 		name      string

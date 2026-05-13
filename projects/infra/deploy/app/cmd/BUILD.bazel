@@ -18,6 +18,7 @@ go_library(
         "//projects/infra/deploy/app",
         "//projects/infra/deploy/domain",
         "//projects/infra/deploy/runtime/k8s",
+        "//projects/infra/deploy/service",
         "//projects/infra/deploy/storage",
         "@grpc_ecosystem_grpc_gateway//runtime",
     ],

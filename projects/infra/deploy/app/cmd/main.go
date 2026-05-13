@@ -18,6 +18,7 @@ import (
 	"dominion/projects/infra/deploy/app"
 	"dominion/projects/infra/deploy/domain"
 	"dominion/projects/infra/deploy/runtime/k8s"
+	"dominion/projects/infra/deploy/service"
 	"dominion/projects/infra/deploy/storage"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -51,9 +52,10 @@ func main() {
 	}
 	runtimeImpl := k8s.NewK8sRuntime(runtimeClient)
 
-	// Create queue and handler.
+	// Create queue, command service, and handler.
 	queue := domain.NewQueue()
-	handler := deploy.NewHandler(repo, queue, runtimeImpl)
+	cmdSvc := service.NewEnvironmentCommandService(repo, queue, runtimeImpl)
+	handler := deploy.NewHandler(repo, runtimeImpl, cmdSvc)
 
 	// Server component.
 	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
