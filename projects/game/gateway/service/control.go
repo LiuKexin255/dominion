@@ -57,8 +57,8 @@ func (e *ControlExecutor) SubmitOperation(
 
 	op := &inflight{
 		op: &domain.InflightOperation{
-			OperationID:     req.RequestID,
-			Kind:            req.Kind,
+			OperationID:     req.OperationID,
+			Kind:            req.ActionKind,
 			FlashSnapshot:   req.FlashSnapshot,
 			CreateTime:      time.Now(),
 			RequesterConnID: requesterConnID,
@@ -66,15 +66,15 @@ func (e *ControlExecutor) SubmitOperation(
 	}
 
 	op.timer = time.AfterFunc(timeout, func() {
-		e.sendTimeout(sessionID, req.RequestID)
+		e.sendTimeout(sessionID, req.OperationID)
 	})
 
 	e.inflight[sessionID] = op
 
 	logs.Info(context.Background(), "control: operation submitted",
 		event.String(logFieldSessionID, sessionID),
-		event.String(logFieldOperationID, req.RequestID),
-		event.String(logFieldOperationKind, string(req.Kind)),
+		event.String(logFieldOperationID, req.OperationID),
+		event.String(logFieldOperationKind, string(req.ActionKind)),
 	)
 
 	return op.op, nil
@@ -129,9 +129,9 @@ func (e *ControlExecutor) HandleAgentDisconnect(sessionID string) {
 		SessionID:       sessionID,
 		RequesterConnID: op.op.RequesterConnID,
 		Result: domain.ControlResultPayload{
-			RequestID: op.op.OperationID,
-			Success:   false,
-			Error:     "agent disconnected",
+			OperationID:  op.op.OperationID,
+			Status:       domain.ControlResultStatusFailed,
+			ErrorMessage: "agent disconnected",
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
@@ -160,10 +160,9 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 		SessionID:       sessionID,
 		RequesterConnID: op.op.RequesterConnID,
 		Result: domain.ControlResultPayload{
-			RequestID: operationID,
-			Success:   false,
-			Error:     "timed out",
-			TimedOut:  true,
+			OperationID:  operationID,
+			Status:       domain.ControlResultStatusTimedOut,
+			ErrorMessage: "timed out",
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
@@ -182,7 +181,7 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 }
 
 func validateRequest(req domain.ControlRequestPayload) (time.Duration, error) {
-	switch req.Kind {
+	switch req.ActionKind {
 	case domain.OperationKindMouseClick,
 		domain.OperationKindMouseDoubleClick,
 		domain.OperationKindMouseHover:
@@ -192,15 +191,7 @@ func validateRequest(req domain.ControlRequestPayload) (time.Duration, error) {
 		return domain.TimeoutDrag, nil
 
 	case domain.OperationKindMouseHold:
-		durationMs := req.DurationMs
-		if durationMs <= 0 {
-			return 0, domain.ErrInvalidMouseAction
-		}
-		duration := time.Duration(durationMs) * time.Millisecond
-		if duration > domain.MaxHoldDuration {
-			return 0, domain.ErrHoldDurationExceeded
-		}
-		return duration, nil
+		return domain.MaxHoldDuration, nil
 
 	default:
 		return 0, domain.ErrInvalidMouseAction

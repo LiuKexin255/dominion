@@ -45,6 +45,7 @@ const (
 	controlAckDelay    = 50 * time.Millisecond
 	controlResultDelay = 100 * time.Millisecond
 
+	// Must match transport.MimeTypeMP4
 	mimeTypeMP4 = "video/mp4; codecs=\"avc1.64001f\""
 )
 
@@ -304,7 +305,7 @@ func (a *Agent) readControlLoop(ctx context.Context, ch chan<- *gw.GameControlRe
 		}
 
 		if req := envelope.GetControlRequest(); req != nil {
-			log.Printf("fakeagent: received control_request: %s kind=%v", req.OperationId, req.Kind)
+			log.Printf("fakeagent: received control_request: %s action=%T", req.OperationId, req.GetAction())
 			ch <- req
 		} else if ping := envelope.GetPing(); ping != nil {
 			a.mu.Lock()

@@ -20,6 +20,16 @@ const (
 	OperationKindMouseHold OperationKind = "mouse_hold"
 )
 
+// ControlRequestPayload requests one control operation from web to agent.
+type ControlRequestPayload struct {
+	OperationID   string
+	ActionKind    OperationKind
+	FlashSnapshot bool
+	RawRequest    any // stores *GameControlRequest for proto pass-through to agent
+}
+
+func (ControlRequestPayload) isMessagePayload() {}
+
 // InflightOperation tracks a control operation that has been forwarded to the
 // agent and is awaiting a result.
 type InflightOperation struct {

@@ -176,28 +176,9 @@ func toProtoOperation(op *domain.InflightOperation) *GameOperation {
 
 	return &GameOperation{
 		OperationId:   op.OperationID,
-		Kind:          toProtoOperationKind(op.Kind),
+		Kind:          ProtoOperationKind(op.Kind),
 		FlashSnapshot: op.FlashSnapshot,
 		CreateTime:    timestamppb.New(op.CreateTime),
-	}
-}
-
-// toProtoOperationKind converts a domain OperationKind to a proto
-// GameControlOperationKind.
-func toProtoOperationKind(k domain.OperationKind) GameControlOperationKind {
-	switch k {
-	case domain.OperationKindMouseClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK
-	case domain.OperationKindMouseDoubleClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK
-	case domain.OperationKindMouseDrag:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG
-	case domain.OperationKindMouseHover:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER
-	case domain.OperationKindMouseHold:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD
-	default:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED
 	}
 }
 

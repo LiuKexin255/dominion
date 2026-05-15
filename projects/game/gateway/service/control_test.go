@@ -15,95 +15,65 @@ func TestControlExecutor_Validate(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "click with coordinates accepted",
+			name: "click accepted",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-1",
-				Kind:      domain.OperationKindMouseClick,
-				X:         100,
-				Y:         200,
+				OperationID: "op-1",
+				ActionKind:  domain.OperationKindMouseClick,
 			},
 			wantErr: nil,
 		},
 		{
-			name: "double click with coordinates accepted",
+			name: "double click accepted",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-2",
-				Kind:      domain.OperationKindMouseDoubleClick,
-				X:         50,
-				Y:         75,
+				OperationID: "op-2",
+				ActionKind:  domain.OperationKindMouseDoubleClick,
 			},
 			wantErr: nil,
 		},
 		{
-			name: "hover with coordinates accepted",
+			name: "hover accepted",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-3",
-				Kind:      domain.OperationKindMouseHover,
-				X:         0,
-				Y:         0,
+				OperationID: "op-3",
+				ActionKind:  domain.OperationKindMouseHover,
 			},
 			wantErr: nil,
 		},
 		{
-			name: "drag with source and target coordinates accepted",
+			name: "drag accepted",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-4",
-				Kind:      domain.OperationKindMouseDrag,
-				Button:    "left",
-				FromX:     10,
-				FromY:     20,
-				ToX:       100,
-				ToY:       200,
+				OperationID: "op-4",
+				ActionKind:  domain.OperationKindMouseDrag,
 			},
 			wantErr: nil,
 		},
 		{
-			name: "hold with valid duration accepted",
+			name: "hold accepted",
 			req: domain.ControlRequestPayload{
-				RequestID:  "op-5",
-				Kind:       domain.OperationKindMouseHold,
-				X:          100,
-				Y:          200,
-				DurationMs: 5000,
+				OperationID: "op-5",
+				ActionKind:  domain.OperationKindMouseHold,
 			},
 			wantErr: nil,
 		},
 		{
 			name: "zero value request rejected",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-empty",
+				OperationID: "op-empty",
 			},
 			wantErr: domain.ErrInvalidMouseAction,
 		},
 		{
 			name: "unspecified kind rejected",
 			req: domain.ControlRequestPayload{
-				RequestID: "op-unspec",
-				Kind:      domain.OperationKind(""),
-				X:         0,
-				Y:         0,
+				OperationID: "op-unspec",
+				ActionKind:  domain.OperationKind(""),
 			},
 			wantErr: domain.ErrInvalidMouseAction,
 		},
 		{
-			name: "hold with zero duration rejected",
+			name: "unknown kind rejected",
 			req: domain.ControlRequestPayload{
-				RequestID:  "op-zero",
-				Kind:       domain.OperationKindMouseHold,
-				X:          100,
-				Y:          200,
-				DurationMs: 0,
-			},
-			wantErr: domain.ErrInvalidMouseAction,
-		},
-		{
-			name: "hold with negative duration rejected",
-			req: domain.ControlRequestPayload{
-				RequestID:  "op-neg",
-				Kind:       domain.OperationKindMouseHold,
-				X:          100,
-				Y:          200,
-				DurationMs: -1,
+				OperationID: "op-unknown",
+				ActionKind:  domain.OperationKind("unknown_action"),
 			},
 			wantErr: domain.ErrInvalidMouseAction,
 		},
@@ -118,77 +88,33 @@ func TestControlExecutor_Validate(t *testing.T) {
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("SubmitOperation() error = %v, want %v", err, tt.wantErr)
 			}
-			if tt.req.Kind == domain.OperationKindMouseDrag {
-				if tt.req.FromX != 10 || tt.req.FromY != 20 || tt.req.ToX != 100 || tt.req.ToY != 200 {
-					t.Fatalf("drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
-						tt.req.FromX, tt.req.FromY, tt.req.ToX, tt.req.ToY)
-				}
-			}
 		})
 	}
 }
 
 func TestControlExecutor_HoldDuration(t *testing.T) {
-	tests := []struct {
-		name        string
-		durationMs  int32
-		wantErr     error
-		wantTimeout time.Duration
-	}{
-		{
-			name:        "30000ms accepted",
-			durationMs:  30000,
-			wantErr:     nil,
-			wantTimeout: 30000 * time.Millisecond,
-		},
-		{
-			name:       "30001ms rejected",
-			durationMs: 30001,
-			wantErr:    domain.ErrHoldDurationExceeded,
-		},
-		{
-			name:        "1ms accepted",
-			durationMs:  1,
-			wantErr:     nil,
-			wantTimeout: 1 * time.Millisecond,
-		},
+	e := NewControlExecutor()
+	req := domain.ControlRequestPayload{
+		OperationID: "op-hold",
+		ActionKind:  domain.OperationKindMouseHold,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e := NewControlExecutor()
-			req := domain.ControlRequestPayload{
-				RequestID:  "op-hold",
-				Kind:       domain.OperationKindMouseHold,
-				X:          100,
-				Y:          200,
-				DurationMs: tt.durationMs,
-			}
+	_, err := e.SubmitOperation("session-1", req, "conn-1")
+	if err != nil {
+		t.Fatalf("SubmitOperation() error = %v", err)
+	}
 
-			_, err := e.SubmitOperation("session-1", req, "conn-1")
-
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("SubmitOperation() error = %v, want %v", err, tt.wantErr)
-			}
-			if tt.wantErr != nil {
-				return
-			}
-
-			op := e.GetInflightOperation("session-1")
-			if op == nil {
-				t.Fatal("GetInflightOperation() returned nil, expected inflight")
-			}
-		})
+	op := e.GetInflightOperation("session-1")
+	if op == nil {
+		t.Fatal("GetInflightOperation() returned nil, expected inflight")
 	}
 }
 
 func TestControlExecutor_Inflight(t *testing.T) {
 	e := NewControlExecutor()
 	req := domain.ControlRequestPayload{
-		RequestID: "op-1",
-		Kind:      domain.OperationKindMouseClick,
-		X:         100,
-		Y:         200,
+		OperationID: "op-1",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -221,10 +147,8 @@ func TestControlExecutor_Timeout(t *testing.T) {
 	e := NewControlExecutor()
 
 	req := domain.ControlRequestPayload{
-		RequestID: "op-timeout",
-		Kind:      domain.OperationKindMouseClick,
-		X:         100,
-		Y:         200,
+		OperationID: "op-timeout",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -245,17 +169,14 @@ func TestControlExecutor_Timeout(t *testing.T) {
 	if gotCompletion.RequesterConnID != "conn-1" {
 		t.Fatalf("RequesterConnID = %q, want %q", gotCompletion.RequesterConnID, "conn-1")
 	}
-	if gotCompletion.Result.RequestID != "op-timeout" {
-		t.Fatalf("result RequestID = %q, want %q", gotCompletion.Result.RequestID, "op-timeout")
+	if gotCompletion.Result.OperationID != "op-timeout" {
+		t.Fatalf("result OperationID = %q, want %q", gotCompletion.Result.OperationID, "op-timeout")
 	}
-	if gotCompletion.Result.Success {
-		t.Fatal("result.Success = true, want false for timeout")
+	if gotCompletion.Result.Status != domain.ControlResultStatusTimedOut {
+		t.Fatalf("result Status = %d, want %d (TimedOut)", gotCompletion.Result.Status, domain.ControlResultStatusTimedOut)
 	}
-	if gotCompletion.Result.Error != "timed out" {
-		t.Fatalf("result.Error = %q, want %q", gotCompletion.Result.Error, "timed out")
-	}
-	if !gotCompletion.Result.TimedOut {
-		t.Fatal("result.TimedOut = false, want true")
+	if gotCompletion.Result.ErrorMessage != "timed out" {
+		t.Fatalf("result ErrorMessage = %q, want %q", gotCompletion.Result.ErrorMessage, "timed out")
 	}
 
 	if e.HasInflightOperation("session-1") {
@@ -267,11 +188,9 @@ func TestControlExecutor_FlashSnapshot(t *testing.T) {
 	e := NewControlExecutor()
 
 	req := domain.ControlRequestPayload{
-		RequestID:     "op-flash",
-		Kind:          domain.OperationKindMouseClick,
+		OperationID:   "op-flash",
+		ActionKind:    domain.OperationKindMouseClick,
 		FlashSnapshot: true,
-		X:             100,
-		Y:             200,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -305,10 +224,8 @@ func TestControlExecutor_FlashSnapshot(t *testing.T) {
 func TestControlExecutor_AckAndResult(t *testing.T) {
 	e := NewControlExecutor()
 	req := domain.ControlRequestPayload{
-		RequestID: "op-ack-result",
-		Kind:      domain.OperationKindMouseClick,
-		X:         50,
-		Y:         75,
+		OperationID: "op-ack-result",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -344,10 +261,8 @@ func TestControlExecutor_AgentDisconnect(t *testing.T) {
 	e := NewControlExecutor()
 
 	req := domain.ControlRequestPayload{
-		RequestID: "op-disc",
-		Kind:      domain.OperationKindMouseClick,
-		X:         100,
-		Y:         200,
+		OperationID: "op-disc",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -370,14 +285,14 @@ func TestControlExecutor_AgentDisconnect(t *testing.T) {
 	if gotCompletion.RequesterConnID != "conn-1" {
 		t.Fatalf("RequesterConnID = %q, want %q", gotCompletion.RequesterConnID, "conn-1")
 	}
-	if gotCompletion.Result.RequestID != "op-disc" {
-		t.Fatalf("result RequestID = %q, want %q", gotCompletion.Result.RequestID, "op-disc")
+	if gotCompletion.Result.OperationID != "op-disc" {
+		t.Fatalf("result OperationID = %q, want %q", gotCompletion.Result.OperationID, "op-disc")
 	}
-	if gotCompletion.Result.Success {
-		t.Fatal("result.Success = true, want false for disconnect")
+	if gotCompletion.Result.Status != domain.ControlResultStatusFailed {
+		t.Fatalf("result Status = %d, want %d (Failed)", gotCompletion.Result.Status, domain.ControlResultStatusFailed)
 	}
-	if gotCompletion.Result.Error != "agent disconnected" {
-		t.Fatalf("result.Error = %q, want %q", gotCompletion.Result.Error, "agent disconnected")
+	if gotCompletion.Result.ErrorMessage != "agent disconnected" {
+		t.Fatalf("result ErrorMessage = %q, want %q", gotCompletion.Result.ErrorMessage, "agent disconnected")
 	}
 
 	if e.HasInflightOperation("session-1") {
@@ -419,10 +334,8 @@ func TestControlExecutor_HasInflightOperation(t *testing.T) {
 	}
 
 	req := domain.ControlRequestPayload{
-		RequestID: "op-1",
-		Kind:      domain.OperationKindMouseClick,
-		X:         0,
-		Y:         0,
+		OperationID: "op-1",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 
 	_, err := e.SubmitOperation("session-1", req, "conn-1")
@@ -452,48 +365,37 @@ func TestControlExecutor_TimeoutDuration(t *testing.T) {
 		{
 			name: "click timeout is 1s",
 			req: domain.ControlRequestPayload{
-				Kind: domain.OperationKindMouseClick,
-				X:    0,
-				Y:    0,
+				ActionKind: domain.OperationKindMouseClick,
 			},
 			wantTimeout: domain.TimeoutClick,
 		},
 		{
 			name: "double click timeout is 1s",
 			req: domain.ControlRequestPayload{
-				Kind: domain.OperationKindMouseDoubleClick,
-				X:    0,
-				Y:    0,
+				ActionKind: domain.OperationKindMouseDoubleClick,
 			},
 			wantTimeout: domain.TimeoutClick,
 		},
 		{
 			name: "hover timeout is 1s",
 			req: domain.ControlRequestPayload{
-				Kind: domain.OperationKindMouseHover,
-				X:    0,
-				Y:    0,
+				ActionKind: domain.OperationKindMouseHover,
 			},
 			wantTimeout: domain.TimeoutClick,
 		},
 		{
 			name: "drag timeout is 30s",
 			req: domain.ControlRequestPayload{
-				Kind: domain.OperationKindMouseDrag,
-				X:    0,
-				Y:    0,
+				ActionKind: domain.OperationKindMouseDrag,
 			},
 			wantTimeout: domain.TimeoutDrag,
 		},
 		{
-			name: "hold timeout equals duration",
+			name: "hold timeout equals max hold duration",
 			req: domain.ControlRequestPayload{
-				Kind:       domain.OperationKindMouseHold,
-				X:          0,
-				Y:          0,
-				DurationMs: 5000,
+				ActionKind: domain.OperationKindMouseHold,
 			},
-			wantTimeout: 5 * time.Second,
+			wantTimeout: domain.MaxHoldDuration,
 		},
 	}
 

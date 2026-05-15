@@ -19,7 +19,6 @@ go_library(
         "//projects/game/windows_agent/internal/log",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
-        "@org_golang_google_protobuf//proto",
     ],
 )
 

@@ -5,7 +5,7 @@ package input
 import (
 	"fmt"
 
-	gw "dominion/projects/game/gateway/domain"
+	gw "dominion/projects/game/gateway"
 )
 
 // IMPORTANT: These types MUST exactly match the helper's protocol defined in:
@@ -57,77 +57,153 @@ type Command struct {
 // This must match the helper's maxHoldDurationMS constant.
 const MaxHoldDurationMS = 30000
 
-// ConvertControlRequest converts a gateway ControlRequestPayload to a helper
-// Command ready for JSON serialization over the IPC pipe.
-func ConvertControlRequest(payload *gw.ControlRequestPayload, hwnd uintptr) (Command, error) {
-	if payload == nil {
-		return Command{}, fmt.Errorf("payload is nil")
+// CommandFromMouseClick converts a proto GameMouseClick to an input Command.
+func CommandFromMouseClick(click *gw.GameMouseClick, hwnd uintptr) (Command, error) {
+	if click == nil {
+		return Command{}, fmt.Errorf("mouse click is nil")
 	}
-
-	action, err := convertAction(payload.Kind)
+	button, err := protoMouseButton(click.GetButton())
 	if err != nil {
 		return Command{}, err
 	}
-
-	button, err := convertButton(payload.Button)
-	if err != nil {
-		return Command{}, err
+	x, y := click.GetX(), click.GetY()
+	if x < 0 {
+		return Command{}, fmt.Errorf("x must be >= 0")
 	}
-
-	cmd := Command{
-		Action: action,
+	if y < 0 {
+		return Command{}, fmt.Errorf("y must be >= 0")
+	}
+	return Command{
+		Action: ActionMouseClick,
 		Button: button,
+		X:      int(x),
+		Y:      int(y),
 		HWND:   hwnd,
-	}
-
-	switch action {
-	case ActionMouseClick, ActionMouseDoubleClick, ActionMouseHover, ActionMouseHold:
-		cmd.X = int(payload.X)
-		cmd.Y = int(payload.Y)
-	case ActionMouseDrag:
-		cmd.FromX = int(payload.FromX)
-		cmd.FromY = int(payload.FromY)
-		cmd.ToX = int(payload.ToX)
-		cmd.ToY = int(payload.ToY)
-	}
-
-	if action == ActionMouseHold {
-		cmd.DurationMS = int(payload.DurationMs)
-		if cmd.DurationMS <= 0 {
-			return Command{}, fmt.Errorf("hold requires positive duration_ms, got %d", cmd.DurationMS)
-		}
-		if cmd.DurationMS > MaxHoldDurationMS {
-			return Command{}, fmt.Errorf("duration_ms %d exceeds maximum %d", cmd.DurationMS, MaxHoldDurationMS)
-		}
-	}
-
-	return cmd, nil
+	}, nil
 }
 
-// convertAction maps a domain OperationKind to a helper Action.
-func convertAction(kind gw.OperationKind) (Action, error) {
-	switch kind {
-	case gw.OperationKindMouseClick:
-		return ActionMouseClick, nil
-	case gw.OperationKindMouseDoubleClick:
-		return ActionMouseDoubleClick, nil
-	case gw.OperationKindMouseDrag:
-		return ActionMouseDrag, nil
-	case gw.OperationKindMouseHover:
-		return ActionMouseHover, nil
-	case gw.OperationKindMouseHold:
-		return ActionMouseHold, nil
-	default:
-		return "", fmt.Errorf("unsupported operation kind: %s", kind)
+// CommandFromMouseDoubleClick converts a proto GameMouseDoubleClick to an input Command.
+func CommandFromMouseDoubleClick(dc *gw.GameMouseDoubleClick, hwnd uintptr) (Command, error) {
+	if dc == nil {
+		return Command{}, fmt.Errorf("mouse double click is nil")
 	}
+	button, err := protoMouseButton(dc.GetButton())
+	if err != nil {
+		return Command{}, err
+	}
+	x, y := dc.GetX(), dc.GetY()
+	if x < 0 {
+		return Command{}, fmt.Errorf("x must be >= 0")
+	}
+	if y < 0 {
+		return Command{}, fmt.Errorf("y must be >= 0")
+	}
+	return Command{
+		Action: ActionMouseDoubleClick,
+		Button: button,
+		X:      int(x),
+		Y:      int(y),
+		HWND:   hwnd,
+	}, nil
 }
 
-// convertButton maps a button string to a helper Button.
-func convertButton(button string) (Button, error) {
-	switch Button(button) {
-	case ButtonLeft, ButtonRight, ButtonMiddle:
-		return Button(button), nil
+// CommandFromMouseDrag converts a proto GameMouseDrag to an input Command.
+func CommandFromMouseDrag(drag *gw.GameMouseDrag, hwnd uintptr) (Command, error) {
+	if drag == nil {
+		return Command{}, fmt.Errorf("mouse drag is nil")
+	}
+	button, err := protoMouseButton(drag.GetButton())
+	if err != nil {
+		return Command{}, err
+	}
+	fromX, fromY := drag.GetFromX(), drag.GetFromY()
+	toX, toY := drag.GetToX(), drag.GetToY()
+	if fromX < 0 {
+		return Command{}, fmt.Errorf("from_x must be >= 0")
+	}
+	if fromY < 0 {
+		return Command{}, fmt.Errorf("from_y must be >= 0")
+	}
+	if toX < 0 {
+		return Command{}, fmt.Errorf("to_x must be >= 0")
+	}
+	if toY < 0 {
+		return Command{}, fmt.Errorf("to_y must be >= 0")
+	}
+	return Command{
+		Action: ActionMouseDrag,
+		Button: button,
+		FromX:  int(fromX),
+		FromY:  int(fromY),
+		ToX:    int(toX),
+		ToY:    int(toY),
+		HWND:   hwnd,
+	}, nil
+}
+
+// CommandFromMouseHover converts a proto GameMouseHover to an input Command.
+func CommandFromMouseHover(hover *gw.GameMouseHover, hwnd uintptr) (Command, error) {
+	if hover == nil {
+		return Command{}, fmt.Errorf("mouse hover is nil")
+	}
+	x, y := hover.GetX(), hover.GetY()
+	if x < 0 {
+		return Command{}, fmt.Errorf("x must be >= 0")
+	}
+	if y < 0 {
+		return Command{}, fmt.Errorf("y must be >= 0")
+	}
+	return Command{
+		Action: ActionMouseHover,
+		X:      int(x),
+		Y:      int(y),
+		HWND:   hwnd,
+	}, nil
+}
+
+// CommandFromMouseHold converts a proto GameMouseHold to an input Command.
+func CommandFromMouseHold(hold *gw.GameMouseHold, hwnd uintptr) (Command, error) {
+	if hold == nil {
+		return Command{}, fmt.Errorf("mouse hold is nil")
+	}
+	button, err := protoMouseButton(hold.GetButton())
+	if err != nil {
+		return Command{}, err
+	}
+	x, y := hold.GetX(), hold.GetY()
+	if x < 0 {
+		return Command{}, fmt.Errorf("x must be >= 0")
+	}
+	if y < 0 {
+		return Command{}, fmt.Errorf("y must be >= 0")
+	}
+	durationMs := hold.GetDurationMs()
+	if durationMs <= 0 {
+		return Command{}, fmt.Errorf("duration_ms must be > 0")
+	}
+	if durationMs > MaxHoldDurationMS {
+		return Command{}, fmt.Errorf("duration_ms %d exceeds maximum %d", durationMs, MaxHoldDurationMS)
+	}
+	return Command{
+		Action:     ActionMouseHold,
+		Button:     button,
+		X:          int(x),
+		Y:          int(y),
+		DurationMS: int(durationMs),
+		HWND:       hwnd,
+	}, nil
+}
+
+// protoMouseButton converts a proto GameMouseButton to an input Button.
+func protoMouseButton(button gw.GameMouseButton) (Button, error) {
+	switch button {
+	case gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT:
+		return ButtonLeft, nil
+	case gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT:
+		return ButtonRight, nil
+	case gw.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE:
+		return ButtonMiddle, nil
 	default:
-		return "", fmt.Errorf("unsupported button: %s", button)
+		return "", fmt.Errorf("unsupported mouse button: %v", button)
 	}
 }

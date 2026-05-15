@@ -17,7 +17,6 @@ go_library(
     visibility = ["//projects/game/windows_agent:__subpackages__"],
     deps = [
         "//projects/game/gateway",
-        "//projects/game/gateway/domain",
         "//projects/game/windows_agent/internal/capture",
         "//projects/game/windows_agent/internal/encoder",
         "//projects/game/windows_agent/internal/input",

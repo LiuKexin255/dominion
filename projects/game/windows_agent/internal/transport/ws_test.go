@@ -411,7 +411,13 @@ func TestClient_ReadLoopDispatchesControlRequest(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-789",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
+				},
 			},
 		},
 	}

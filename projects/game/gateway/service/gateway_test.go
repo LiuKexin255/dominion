@@ -367,10 +367,8 @@ func TestGatewayService_HandleAgentMessage_ControlAck(t *testing.T) {
 
 	// given: inflight operation from web-1
 	req := domain.ControlRequestPayload{
-		RequestID: "op-ack",
-		Kind:      domain.OperationKindMouseClick,
-		X:         100,
-		Y:         200,
+		OperationID: "op-ack",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-1")
 
@@ -413,18 +411,16 @@ func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
-		RequestID: "op-result",
-		Kind:      domain.OperationKindMouseClick,
-		X:         50,
-		Y:         75,
+		OperationID: "op-result",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-2")
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-result",
-			Success:   true,
+			OperationID: "op-result",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -445,11 +441,11 @@ func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
 	if !ok {
 		t.Fatal("payload is not control_result")
 	}
-	if resultPayload.RequestID != "op-result" {
-		t.Fatalf("RequestID = %q, want %q", resultPayload.RequestID, "op-result")
+	if resultPayload.OperationID != "op-result" {
+		t.Fatalf("OperationID = %q, want %q", resultPayload.OperationID, "op-result")
 	}
-	if !resultPayload.Success {
-		t.Fatal("Success = false, want true")
+	if resultPayload.Status != domain.ControlResultStatusSucceeded {
+		t.Fatalf("Status = %d, want %d (Succeeded)", resultPayload.Status, domain.ControlResultStatusSucceeded)
 	}
 
 	// inflight cleared
@@ -463,11 +459,9 @@ func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
-		RequestID:     "op-flash",
-		Kind:          domain.OperationKindMouseClick,
+		OperationID:   "op-flash",
+		ActionKind:    domain.OperationKindMouseClick,
 		FlashSnapshot: true,
-		X:             0,
-		Y:             0,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-3")
 
@@ -485,8 +479,8 @@ func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-flash",
-			Success:   true,
+			OperationID: "op-flash",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -541,8 +535,8 @@ func TestGatewayService_HandleAgentMessage_ControlResultNoInflight(t *testing.T)
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-missing",
-			Success:   true,
+			OperationID: "op-missing",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -583,10 +577,8 @@ func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlRequestPayload{
-			RequestID: "op-req",
-			Kind:      domain.OperationKindMouseClick,
-			X:         10,
-			Y:         20,
+			OperationID: "op-req",
+			ActionKind:  domain.OperationKindMouseClick,
 		},
 	}
 
@@ -600,16 +592,15 @@ func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
-	// forwarded to agent (TargetConnID="" = agent is single)
-	if msgs[0].TargetConnID != "" {
-		t.Fatalf("TargetConnID = %q, want empty (forward to agent)", msgs[0].TargetConnID)
+	if msgs[0].TargetKind != domain.RouteTargetAgent {
+		t.Fatalf("TargetKind = %d, want %d (Agent)", msgs[0].TargetKind, domain.RouteTargetAgent)
 	}
 	reqPayload, ok := msgs[0].Message.Payload.(domain.ControlRequestPayload)
 	if !ok {
 		t.Fatal("payload is not control_request")
 	}
-	if reqPayload.RequestID != "op-req" {
-		t.Fatalf("RequestID = %q, want %q", reqPayload.RequestID, "op-req")
+	if reqPayload.OperationID != "op-req" {
+		t.Fatalf("OperationID = %q, want %q", reqPayload.OperationID, "op-req")
 	}
 
 	// inflight registered with correct requester
@@ -632,8 +623,8 @@ func TestGatewayService_HandleWebMessage_ControlRequestInvalid(t *testing.T) {
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlRequestPayload{
-			RequestID: "op-bad",
-			Kind:      domain.OperationKind(""),
+			OperationID: "op-bad",
+			ActionKind:  domain.OperationKind(""),
 		},
 	}
 
@@ -848,25 +839,25 @@ func TestRoutedMessage(t *testing.T) {
 		name       string
 		routed     domain.RoutedMessage
 		wantTarget string
-		wantNil    bool
+		wantEmpty  bool
 	}{
 		{
 			name:       "broadcast has empty target",
-			routed:     domain.RoutedMessage{TargetConnID: "", Message: &domain.Message{SessionID: "s1"}},
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetWebBroadcast, Message: domain.Message{SessionID: "s1"}},
 			wantTarget: "",
-			wantNil:    false,
+			wantEmpty:  false,
 		},
 		{
 			name:       "unicast has specific target",
-			routed:     domain.RoutedMessage{TargetConnID: "web-1", Message: &domain.Message{SessionID: "s1"}},
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetConn, TargetConnID: "web-1", Message: domain.Message{SessionID: "s1"}},
 			wantTarget: "web-1",
-			wantNil:    false,
+			wantEmpty:  false,
 		},
 		{
-			name:       "nil message is allowed",
-			routed:     domain.RoutedMessage{TargetConnID: ""},
+			name:       "agent route",
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetAgent},
 			wantTarget: "",
-			wantNil:    true,
+			wantEmpty:  true,
 		},
 	}
 
@@ -874,14 +865,14 @@ func TestRoutedMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
 			gotTarget := tt.routed.TargetConnID
-			gotNil := tt.routed.Message == nil
+			gotEmpty := tt.routed.Message.SessionID == ""
 
 			// then
 			if gotTarget != tt.wantTarget {
 				t.Fatalf("TargetConnID = %q, want %q", gotTarget, tt.wantTarget)
 			}
-			if gotNil != tt.wantNil {
-				t.Fatalf("Message == nil = %v, want %v", gotNil, tt.wantNil)
+			if gotEmpty != tt.wantEmpty {
+				t.Fatalf("Message.SessionID empty = %v, want %v", gotEmpty, tt.wantEmpty)
 			}
 		})
 	}

@@ -90,31 +90,137 @@ func connectAndHello(ctx context.Context, url, sessionID string, role GameClient
 	return conn, nil
 }
 
-func Test_toDomainPayload_controlRequestMouseDragRoundTrip(t *testing.T) {
+func Test_toDomainPayload_controlRequest_allActions(t *testing.T) {
 	tests := []struct {
-		name string
-		env  *GameWebSocketEnvelope
+		name      string
+		env       *GameWebSocketEnvelope
+		wantKind  domain.OperationKind
+		wantFlash bool
 	}{
 		{
-			name: "mouse drag keeps button coordinates and duration",
+			name: "mouse click action",
 			env: &GameWebSocketEnvelope{
 				SessionId: "test-session",
 				MessageId: "control-1",
 				Payload: &GameWebSocketEnvelope_ControlRequest{
 					ControlRequest: &GameControlRequest{
-						OperationId: "op-drag",
-						Kind:        GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG,
-						Mouse: &GameMouseAction{
-							Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-							FromX:      10,
-							FromY:      20,
-							ToX:        100,
-							ToY:        200,
-							DurationMs: 500,
+						OperationId: "op-click",
+						Action: &GameControlRequest_MouseClick{
+							MouseClick: &GameMouseClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      100,
+								Y:      200,
+							},
 						},
 					},
 				},
 			},
+			wantKind:  domain.OperationKindMouseClick,
+			wantFlash: false,
+		},
+		{
+			name: "mouse double click action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-2",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-dblclick",
+						Action: &GameControlRequest_MouseDoubleClick{
+							MouseDoubleClick: &GameMouseDoubleClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      50,
+								Y:      75,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseDoubleClick,
+		},
+		{
+			name: "mouse drag action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-3",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-drag",
+						Action: &GameControlRequest_MouseDrag{
+							MouseDrag: &GameMouseDrag{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								FromX:  10,
+								FromY:  20,
+								ToX:    100,
+								ToY:    200,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseDrag,
+		},
+		{
+			name: "mouse hover action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-4",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-hover",
+						Action: &GameControlRequest_MouseHover{
+							MouseHover: &GameMouseHover{
+								X: 300,
+								Y: 400,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseHover,
+		},
+		{
+			name: "mouse hold action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-5",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-hold",
+						Action: &GameControlRequest_MouseHold{
+							MouseHold: &GameMouseHold{
+								Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:          500,
+								Y:          600,
+								DurationMs: 3000,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseHold,
+		},
+		{
+			name: "control request with flash_snapshot",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-flash",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId:   "op-flash",
+						FlashSnapshot: true,
+						Action: &GameControlRequest_MouseClick{
+							MouseClick: &GameMouseClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      0,
+								Y:      0,
+							},
+						},
+					},
+				},
+			},
+			wantKind:  domain.OperationKindMouseClick,
+			wantFlash: true,
 		},
 	}
 
@@ -122,35 +228,107 @@ func Test_toDomainPayload_controlRequestMouseDragRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			domainPayload, ok := toDomainPayload(tt.env).(domain.ControlRequestPayload)
 			if !ok {
-				t.Fatal("toDomainPayload() is not control_request")
+				t.Fatal("toDomainPayload() is not ControlRequestPayload")
 			}
-			if domainPayload.Kind != domain.OperationKindMouseDrag {
-				t.Fatalf("Kind = %q, want %q", domainPayload.Kind, domain.OperationKindMouseDrag)
+			if domainPayload.ActionKind != tt.wantKind {
+				t.Fatalf("ActionKind = %q, want %q", domainPayload.ActionKind, tt.wantKind)
 			}
-			if domainPayload.Button != "left" {
-				t.Fatalf("Button = %q, want %q", domainPayload.Button, "left")
-			}
-			if domainPayload.FromX != 10 || domainPayload.FromY != 20 || domainPayload.ToX != 100 || domainPayload.ToY != 200 {
-				t.Fatalf("domain drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
-					domainPayload.FromX, domainPayload.FromY, domainPayload.ToX, domainPayload.ToY)
-			}
-
-			protoPayload, ok := toProtoPayload(domainPayload).(*GameWebSocketEnvelope_ControlRequest)
-			if !ok {
-				t.Fatal("toProtoPayload() is not control_request")
-			}
-			mouse := protoPayload.ControlRequest.GetMouse()
-			if mouse.GetButton() != GameMouseButton_GAME_MOUSE_BUTTON_LEFT {
-				t.Fatalf("Button = %v, want %v", mouse.GetButton(), GameMouseButton_GAME_MOUSE_BUTTON_LEFT)
-			}
-			if mouse.GetFromX() != 10 || mouse.GetFromY() != 20 || mouse.GetToX() != 100 || mouse.GetToY() != 200 {
-				t.Fatalf("proto drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
-					mouse.GetFromX(), mouse.GetFromY(), mouse.GetToX(), mouse.GetToY())
-			}
-			if mouse.GetDurationMs() != 500 {
-				t.Fatalf("DurationMs = %d, want %d", mouse.GetDurationMs(), 500)
+			if domainPayload.FlashSnapshot != tt.wantFlash {
+				t.Fatalf("FlashSnapshot = %v, want %v", domainPayload.FlashSnapshot, tt.wantFlash)
 			}
 		})
+	}
+}
+
+func Test_toDomainPayload_controlRequest_allButtons(t *testing.T) {
+	buttons := []struct {
+		name   string
+		button GameMouseButton
+	}{
+		{name: "left", button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT},
+		{name: "right", button: GameMouseButton_GAME_MOUSE_BUTTON_RIGHT},
+		{name: "middle", button: GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE},
+	}
+
+	actions := []struct {
+		name    string
+		build   func(b GameMouseButton) isGameControlRequest_Action
+		wantErr bool
+	}{
+		{
+			name: "click",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseClick{MouseClick: &GameMouseClick{Button: b, X: 1, Y: 1}}
+			},
+		},
+		{
+			name: "double_click",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseDoubleClick{MouseDoubleClick: &GameMouseDoubleClick{Button: b, X: 1, Y: 1}}
+			},
+		},
+		{
+			name: "drag",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseDrag{MouseDrag: &GameMouseDrag{Button: b, FromX: 0, FromY: 0, ToX: 1, ToY: 1}}
+			},
+		},
+		{
+			name: "hold",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseHold{MouseHold: &GameMouseHold{Button: b, X: 1, Y: 1, DurationMs: 1000}}
+			},
+		},
+	}
+
+	for _, action := range actions {
+		for _, btn := range buttons {
+			t.Run(action.name+"_"+btn.name, func(t *testing.T) {
+				env := &GameWebSocketEnvelope{
+					SessionId: "test-session",
+					MessageId: "btn-test",
+					Payload: &GameWebSocketEnvelope_ControlRequest{
+						ControlRequest: &GameControlRequest{
+							OperationId: "op-btn",
+							Action:      action.build(btn.button),
+						},
+					},
+				}
+
+				domainPayload, ok := toDomainPayload(env).(domain.ControlRequestPayload)
+				if !ok {
+					t.Fatal("toDomainPayload() is not ControlRequestPayload")
+				}
+				if domainPayload.OperationID != "op-btn" {
+					t.Fatalf("OperationID = %q, want %q", domainPayload.OperationID, "op-btn")
+				}
+			})
+		}
+	}
+}
+
+func Test_toDomainPayload_controlRequest_noAction(t *testing.T) {
+	// given: control request with no action set
+	env := &GameWebSocketEnvelope{
+		SessionId: "test-session",
+		MessageId: "control-no-action",
+		Payload: &GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &GameControlRequest{
+				OperationId: "op-no-action",
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then: should return ErrorPayload since action is missing
+	errPayload, ok := payload.(domain.ErrorPayload)
+	if !ok {
+		t.Fatalf("expected ErrorPayload for missing action, got %T", payload)
+	}
+	if errPayload.Code != "protocol_error" {
+		t.Fatalf("Code = %q, want %q", errPayload.Code, "protocol_error")
 	}
 }
 

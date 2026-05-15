@@ -54,29 +54,28 @@ type MediaSegmentPayload struct {
 	KeyFrame  bool
 }
 
-// ControlRequestPayload requests one complete mouse action from web to agent.
-type ControlRequestPayload struct {
-	RequestID     string
-	Kind          OperationKind
-	Button        string
-	X, Y          int32
-	FromX, FromY  int32
-	ToX, ToY      int32
-	DurationMs    int32
-	FlashSnapshot bool
-}
-
 // ControlAckPayload acknowledges receipt of a control request by the agent.
 type ControlAckPayload struct {
 	RequestID string
 }
 
+// ControlResultStatus represents the outcome status of a control operation.
+type ControlResultStatus int
+
+const (
+	// ControlResultStatusSucceeded indicates the operation completed successfully.
+	ControlResultStatusSucceeded ControlResultStatus = iota + 1
+	// ControlResultStatusFailed indicates the operation failed.
+	ControlResultStatusFailed
+	// ControlResultStatusTimedOut indicates the operation timed out.
+	ControlResultStatusTimedOut
+)
+
 // ControlResultPayload reports the outcome of a control operation.
 type ControlResultPayload struct {
-	RequestID string
-	Success   bool
-	Error     string
-	TimedOut  bool
+	OperationID  string
+	Status       ControlResultStatus
+	ErrorMessage string
 }
 
 // ErrorPayload carries an application-level error.
@@ -86,25 +85,30 @@ type ErrorPayload struct {
 }
 
 // Implement MessagePayload interface for each payload type.
-func (HelloPayload) isMessagePayload()          {}
-func (PingPayload) isMessagePayload()           {}
-func (PongPayload) isMessagePayload()           {}
-func (MediaInitPayload) isMessagePayload()      {}
-func (MediaSegmentPayload) isMessagePayload()   {}
-func (ControlRequestPayload) isMessagePayload() {}
-func (ControlAckPayload) isMessagePayload()     {}
-func (ControlResultPayload) isMessagePayload()  {}
-func (ErrorPayload) isMessagePayload()          {}
+func (HelloPayload) isMessagePayload()         {}
+func (PingPayload) isMessagePayload()          {}
+func (PongPayload) isMessagePayload()          {}
+func (MediaInitPayload) isMessagePayload()     {}
+func (MediaSegmentPayload) isMessagePayload()  {}
+func (ControlAckPayload) isMessagePayload()    {}
+func (ControlResultPayload) isMessagePayload() {}
+func (ErrorPayload) isMessagePayload()         {}
 
-// RoutedMessage represents a message to be routed to a specific connection
-// (domain equivalent of RoutedEnvelope).
-//
-// TargetConnID determines the routing behavior:
-//   - empty string: broadcast to all web connections
-//   - non-empty: deliver to the specific web connection
+// RouteTargetKind indicates how a message should be routed.
+type RouteTargetKind int
+
+const (
+	// RouteTargetAgent routes to the agent connection.
+	RouteTargetAgent RouteTargetKind = iota
+	// RouteTargetWebBroadcast broadcasts to all web connections.
+	RouteTargetWebBroadcast
+	// RouteTargetConn routes to a specific connection by TargetConnID.
+	RouteTargetConn
+)
+
+// RoutedMessage represents a message to be routed based on TargetKind.
 type RoutedMessage struct {
-	// TargetConnID is the destination connection ID. Empty means broadcast.
+	Message      Message
+	TargetKind   RouteTargetKind
 	TargetConnID string
-	// Message is the domain message to send on the target connection.
-	Message *Message
 }

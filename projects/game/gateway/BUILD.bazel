@@ -40,6 +40,9 @@ go_library(
         "handler.go",
         "worker.go",
         "ws.go",
+        "ws_action.go",
+        "ws_constants.go",
+        "ws_validate.go",
     ],
     embed = [":gateway_go_proto"],
     importpath = "dominion/projects/game/gateway",
@@ -64,7 +67,9 @@ go_unittest(
     name = "gateway_test",
     srcs = [
         "handler_test.go",
+        "ws_action_test.go",
         "ws_test.go",
+        "ws_validate_test.go",
     ],
     embed = [":gateway"],
     deps = [

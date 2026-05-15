@@ -260,3 +260,244 @@ func TestInitSegmentRef(t *testing.T) {
 		t.Fatalf("Data = %q, want %q", string(ref.Data), "init-segment")
 	}
 }
+
+func TestRouteTargetKind(t *testing.T) {
+	// given
+	tests := []struct {
+		name string
+		kind RouteTargetKind
+		want int
+	}{
+		{name: "agent is 0", kind: RouteTargetAgent, want: 0},
+		{name: "web broadcast is 1", kind: RouteTargetWebBroadcast, want: 1},
+		{name: "conn is 2", kind: RouteTargetConn, want: 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := int(tt.kind)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("int(%v) = %d, want %d", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouteTargetKindDistinct(t *testing.T) {
+	// given
+	values := map[int]string{
+		int(RouteTargetAgent):        "RouteTargetAgent",
+		int(RouteTargetWebBroadcast): "RouteTargetWebBroadcast",
+		int(RouteTargetConn):         "RouteTargetConn",
+	}
+
+	// when / then
+	if len(values) != 3 {
+		t.Fatalf("expected 3 distinct values, got %d", len(values))
+	}
+}
+
+func TestControlResultStatus(t *testing.T) {
+	// given
+	tests := []struct {
+		name   string
+		status ControlResultStatus
+		want   int
+	}{
+		{name: "succeeded is 1", status: ControlResultStatusSucceeded, want: 1},
+		{name: "failed is 2", status: ControlResultStatusFailed, want: 2},
+		{name: "timed out is 3", status: ControlResultStatusTimedOut, want: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := int(tt.status)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("int(%v) = %d, want %d", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestControlResultPayload(t *testing.T) {
+	// given
+	tests := []struct {
+		name    string
+		payload ControlResultPayload
+		check   func(t *testing.T, p ControlResultPayload)
+	}{
+		{
+			name: "succeeded result",
+			payload: ControlResultPayload{
+				OperationID: "op-1",
+				Status:      ControlResultStatusSucceeded,
+			},
+			check: func(t *testing.T, p ControlResultPayload) {
+				if p.OperationID != "op-1" {
+					t.Fatalf("OperationID = %q, want %q", p.OperationID, "op-1")
+				}
+				if p.Status != ControlResultStatusSucceeded {
+					t.Fatalf("Status = %d, want %d", p.Status, ControlResultStatusSucceeded)
+				}
+				if p.ErrorMessage != "" {
+					t.Fatalf("ErrorMessage = %q, want empty", p.ErrorMessage)
+				}
+			},
+		},
+		{
+			name: "failed result with error",
+			payload: ControlResultPayload{
+				OperationID:  "op-2",
+				Status:       ControlResultStatusFailed,
+				ErrorMessage: "agent error",
+			},
+			check: func(t *testing.T, p ControlResultPayload) {
+				if p.Status != ControlResultStatusFailed {
+					t.Fatalf("Status = %d, want %d", p.Status, ControlResultStatusFailed)
+				}
+				if p.ErrorMessage != "agent error" {
+					t.Fatalf("ErrorMessage = %q, want %q", p.ErrorMessage, "agent error")
+				}
+			},
+		},
+		{
+			name: "timed out result",
+			payload: ControlResultPayload{
+				OperationID: "op-3",
+				Status:      ControlResultStatusTimedOut,
+			},
+			check: func(t *testing.T, p ControlResultPayload) {
+				if p.Status != ControlResultStatusTimedOut {
+					t.Fatalf("Status = %d, want %d", p.Status, ControlResultStatusTimedOut)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when / then
+			tt.check(t, tt.payload)
+		})
+	}
+}
+
+func TestControlRequestPayload(t *testing.T) {
+	// given
+	tests := []struct {
+		name    string
+		payload ControlRequestPayload
+		check   func(t *testing.T, p ControlRequestPayload)
+	}{
+		{
+			name: "click with snapshot",
+			payload: ControlRequestPayload{
+				OperationID:   "op-1",
+				ActionKind:    OperationKindMouseClick,
+				FlashSnapshot: true,
+			},
+			check: func(t *testing.T, p ControlRequestPayload) {
+				if p.OperationID != "op-1" {
+					t.Fatalf("OperationID = %q, want %q", p.OperationID, "op-1")
+				}
+				if p.ActionKind != OperationKindMouseClick {
+					t.Fatalf("ActionKind = %q, want %q", p.ActionKind, OperationKindMouseClick)
+				}
+				if !p.FlashSnapshot {
+					t.Fatalf("FlashSnapshot = false, want true")
+				}
+			},
+		},
+		{
+			name: "drag without snapshot",
+			payload: ControlRequestPayload{
+				OperationID: "op-2",
+				ActionKind:  OperationKindMouseDrag,
+			},
+			check: func(t *testing.T, p ControlRequestPayload) {
+				if p.ActionKind != OperationKindMouseDrag {
+					t.Fatalf("ActionKind = %q, want %q", p.ActionKind, OperationKindMouseDrag)
+				}
+				if p.FlashSnapshot {
+					t.Fatalf("FlashSnapshot = true, want false")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when / then
+			tt.check(t, tt.payload)
+		})
+	}
+}
+
+func TestRoutedMessage(t *testing.T) {
+	// given
+	tests := []struct {
+		name   string
+		routed RoutedMessage
+		check  func(t *testing.T, r RoutedMessage)
+	}{
+		{
+			name: "agent route",
+			routed: RoutedMessage{
+				Message:    Message{SessionID: "s1", MessageID: "m1"},
+				TargetKind: RouteTargetAgent,
+			},
+			check: func(t *testing.T, r RoutedMessage) {
+				if r.TargetKind != RouteTargetAgent {
+					t.Fatalf("TargetKind = %d, want %d", r.TargetKind, RouteTargetAgent)
+				}
+				if r.TargetConnID != "" {
+					t.Fatalf("TargetConnID = %q, want empty", r.TargetConnID)
+				}
+				if r.Message.SessionID != "s1" {
+					t.Fatalf("Message.SessionID = %q, want %q", r.Message.SessionID, "s1")
+				}
+			},
+		},
+		{
+			name: "conn route with target",
+			routed: RoutedMessage{
+				Message:      Message{SessionID: "s2"},
+				TargetKind:   RouteTargetConn,
+				TargetConnID: "conn-1",
+			},
+			check: func(t *testing.T, r RoutedMessage) {
+				if r.TargetKind != RouteTargetConn {
+					t.Fatalf("TargetKind = %d, want %d", r.TargetKind, RouteTargetConn)
+				}
+				if r.TargetConnID != "conn-1" {
+					t.Fatalf("TargetConnID = %q, want %q", r.TargetConnID, "conn-1")
+				}
+			},
+		},
+		{
+			name: "web broadcast",
+			routed: RoutedMessage{
+				Message:    Message{SessionID: "s3"},
+				TargetKind: RouteTargetWebBroadcast,
+			},
+			check: func(t *testing.T, r RoutedMessage) {
+				if r.TargetKind != RouteTargetWebBroadcast {
+					t.Fatalf("TargetKind = %d, want %d", r.TargetKind, RouteTargetWebBroadcast)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when / then
+			tt.check(t, tt.routed)
+		})
+	}
+}

@@ -83,11 +83,12 @@ func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.Contr
 	}
 
 	msg := &domain.RoutedMessage{
-		TargetConnID: comp.RequesterConnID,
-		Message: &domain.Message{
+		Message: domain.Message{
 			SessionID: comp.SessionID,
 			Payload:   comp.Result,
 		},
+		TargetKind:   domain.RouteTargetConn,
+		TargetConnID: comp.RequesterConnID,
 	}
 	select {
 	case s.asyncCh <- msg:
@@ -156,8 +157,8 @@ func (s *GatewayService) buildCatchUpMessages(sessionID string) []*domain.Routed
 
 	if init, ok := cache.GetInitSegment(); ok {
 		msgs = append(msgs, &domain.RoutedMessage{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaInitPayload{
 					MimeType: init.MimeType,
@@ -169,8 +170,8 @@ func (s *GatewayService) buildCatchUpMessages(sessionID string) []*domain.Routed
 
 	for _, seg := range cache.GetSegmentsFromLastKeyframe() {
 		msgs = append(msgs, &domain.RoutedMessage{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaSegmentPayload{
 					SegmentID: seg.SegmentID,
@@ -212,8 +213,8 @@ func (s *GatewayService) handleMediaInit(sessionID string, init domain.MediaInit
 
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   init,
 			},
@@ -236,8 +237,8 @@ func (s *GatewayService) handleMediaSegment(sessionID string, seg domain.MediaSe
 
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   seg,
 			},
@@ -255,8 +256,9 @@ func (s *GatewayService) handleControlAck(sessionID string, ack domain.ControlAc
 
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetWebBroadcast,
 			TargetConnID: requesterConnID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   ack,
 			},
@@ -285,8 +287,9 @@ func (s *GatewayService) handleControlResult(sessionID string, result domain.Con
 
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetWebBroadcast,
 			TargetConnID: requesterConnID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   result,
 			},
@@ -303,6 +306,16 @@ func (s *GatewayService) HandleWebMessage(_ context.Context, sessionID string, c
 		return s.handleControlRequest(sessionID, connID, p)
 	case domain.PingPayload:
 		return s.handlePing(sessionID, connID, p)
+	case domain.ErrorPayload:
+		// Validation/protocol errors (e.g., old kind/mouse format rejected).
+		return []*domain.RoutedMessage{{
+			TargetKind:   domain.RouteTargetConn,
+			TargetConnID: connID,
+			Message: domain.Message{
+				SessionID: sessionID,
+				Payload:   p,
+			},
+		}}, nil
 	default:
 		return nil, nil
 	}
@@ -318,8 +331,8 @@ func (s *GatewayService) handleControlRequest(sessionID, connID string, req doma
 
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetAgent,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   req,
 			},
@@ -331,8 +344,9 @@ func (s *GatewayService) handleControlRequest(sessionID, connID string, req doma
 func (s *GatewayService) handlePing(sessionID, connID string, ping domain.PingPayload) ([]*domain.RoutedMessage, error) {
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetConn,
 			TargetConnID: connID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.PongPayload{
 					Nonce: ping.Nonce,

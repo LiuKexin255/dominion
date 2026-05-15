@@ -7,9 +7,8 @@ import (
 
 	"dominion/projects/game/windows_agent/internal/log"
 	"dominion/projects/game/windows_agent/internal/media"
+	"dominion/projects/game/windows_agent/internal/transport"
 )
-
-const mediaMimeType = "video/mp4; codecs=\"avc1.42E01E\""
 
 // startMediaFlow reads encoder stdout, parses fMP4, and forwards media to transport.
 func (r *Runtime) startMediaFlow() error {
@@ -38,7 +37,7 @@ func (r *Runtime) startMediaFlow() error {
 		err := r.parseMedia(reader,
 			func(initData []byte) error {
 				log.Printf("media-flow", "sending init segment: session=%s size=%d", sessionID, len(initData))
-				if err := r.transport.SendMediaInit(ctx, sessionID, mediaMimeType, initData); err != nil {
+				if err := r.transport.SendMediaInit(ctx, sessionID, transport.MimeTypeMP4, initData); err != nil {
 					log.Errorf("media-flow", "send init failed: session=%s error=%v", sessionID, err)
 					return err
 				}
