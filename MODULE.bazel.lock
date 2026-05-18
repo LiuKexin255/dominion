@@ -291,7 +291,7 @@
   "moduleExtensions": {
     "//third_party/www.gyan.dev/ffmpeg:defs.bzl%ffmpeg_windows_amd64": {
       "general": {
-        "bzlTransitiveDigest": "AQZHOBBsuy1w70YSD/ua78VbAiT/NRV6o6QWaEPd8pw=",
+        "bzlTransitiveDigest": "lRw0y04NnCQ2K1FtZf2eCn4bjP/79b+rdVIGfyh0KsA=",
         "usagesDigest": "6PAIeCsYyVmtvb9DPhVESwFph94FfaLswHFofSwMqhI=",
         "recordedInputs": [
           "REPO_MAPPING:,bazel_tools bazel_tools"
@@ -301,10 +301,10 @@
             "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
             "attributes": {
               "urls": [
-                "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+                "https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"
               ],
-              "sha256": "8748283d821613d930b0e7be685aaa9df4ca6f0ad4d0c42fd02622b3623463c6",
-              "strip_prefix": "ffmpeg-8.1-essentials_build",
+              "sha256": "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541",
+              "strip_prefix": "ffmpeg-8.1.1-essentials_build",
               "build_file_content": "exports_files([\n    \"bin/ffmpeg.exe\",\n])\n"
             }
           }
