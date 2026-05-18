@@ -21,12 +21,24 @@ func BuildFFmpegArgs(config EncoderConfig, ffmpegPath string) []string {
 		bufsize = strconv.Itoa(bitrateNumber*2) + config.Bitrate[len(config.Bitrate)-1:]
 	}
 
+	targetW := config.MaxWidth
+	targetH := config.MaxHeight
+	if config.CaptureWidth > 0 && config.CaptureWidth < targetW {
+		targetW = config.CaptureWidth
+	}
+	if config.CaptureHeight > 0 && config.CaptureHeight < targetH {
+		targetH = config.CaptureHeight
+	}
+
 	return []string{
 		ffmpegPath,
 		"-f", "gdigrab",
+		"-draw_mouse", "0",
 		"-framerate", strconv.Itoa(config.FrameRate),
 		"-i", input,
 		"-c:v", "libx264",
+		"-profile:v", "baseline",
+		"-pix_fmt", "yuv420p",
 		"-preset", config.Preset,
 		"-tune", config.Tune,
 		"-b:v", config.Bitrate,
@@ -34,7 +46,8 @@ func BuildFFmpegArgs(config EncoderConfig, ffmpegPath string) []string {
 		"-bufsize", bufsize,
 		"-g", strconv.Itoa(config.FrameRate * 2),
 		"-keyint_min", strconv.Itoa(config.FrameRate),
-		"-vf", "scale=" + strconv.Itoa(config.MaxWidth) + ":" + strconv.Itoa(config.MaxHeight) + ":force_original_aspect_ratio=decrease",
+		"-x264-params", "sliced-threads=0:slices=1",
+		"-vf", "scale=" + strconv.Itoa(targetW) + ":" + strconv.Itoa(targetH) + ":force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
 		"-movflags", fmp4Movflags,
 		"-f", "mp4",
 		"pipe:1",

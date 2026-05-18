@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -220,6 +221,11 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 			return
 		}
 
+		if err := validateMediaPayload(msgEnv); err != nil {
+			sendErrorAndClose(wc, ctx, ErrCodeProtocolError, err.Error())
+			return
+		}
+
 		msg := toDomainMessage(msgEnv)
 
 		var routed []*domain.RoutedMessage
@@ -229,17 +235,49 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 			routed, svcErr = h.svc.HandleWebMessage(ctx, sessionID, wc.connID, msg)
 		}
 		if svcErr != nil {
-			logs.Warn(ctx, "gateway: ws message routing error",
+			if isFatalAgentError(svcErr) {
+				logs.Warn(ctx, "gateway: ws fatal protocol error",
+					event.String(logFieldSessionID, sessionID),
+					event.String(logFieldConnID, wc.connID),
+					event.Err(svcErr),
+				)
+				sendErrorAndClose(wc, ctx, ErrCodeProtocolError, svcErr.Error())
+				return
+			}
+			logs.Warn(ctx, "gateway: ws discarding segment",
 				event.String(logFieldSessionID, sessionID),
 				event.String(logFieldConnID, wc.connID),
 				event.Err(svcErr),
 			)
-			sendErrorAndClose(wc, ctx, "gateway_error", svcErr.Error())
-			return
+			continue
 		}
 
 		h.routeMessages(ctx, sessionID, wc, routed)
 	}
+}
+
+// validateMediaPayload validates media-specific proto fields before domain
+// conversion. Returns nil for non-media payloads.
+func validateMediaPayload(env *GameWebSocketEnvelope) error {
+	switch p := env.Payload.(type) {
+	case *GameWebSocketEnvelope_MediaInit:
+		return ValidateMediaInit(p.MediaInit)
+	case *GameWebSocketEnvelope_MediaSegment:
+		return ValidateMediaSegment(p.MediaSegment)
+	default:
+		return nil
+	}
+}
+
+// isFatalAgentError returns true for sentinel errors that indicate a protocol
+// violation requiring disconnection (unknown init, stream mismatch, init hash
+// mismatch, unsupported codec). Non-fatal errors (sequence not increasing,
+// random access missing) are logged and the segment is discarded.
+func isFatalAgentError(err error) bool {
+	return errors.Is(err, domain.ErrUnknownInitID) ||
+		errors.Is(err, domain.ErrStreamMismatch) ||
+		errors.Is(err, domain.ErrInitHashMismatch) ||
+		errors.Is(err, domain.ErrUnsupportedCodec)
 }
 
 func (h *WebSocketHandler) registerConn(wc *wsConn) {
@@ -443,15 +481,24 @@ func toDomainPayload(env *GameWebSocketEnvelope) domain.MessagePayload {
 	case *GameWebSocketEnvelope_Pong:
 		return domain.PongPayload{Nonce: p.Pong.GetNonce()}
 	case *GameWebSocketEnvelope_MediaInit:
+		init := p.MediaInit
 		return domain.MediaInitPayload{
-			MimeType: p.MediaInit.GetMimeType(),
-			Segment:  p.MediaInit.GetSegment(),
+			StreamID: init.GetStreamId(),
+			InitID:   init.GetInitId(),
+			MimeType: init.GetMimeType(),
+			Codec:    init.GetCodec(),
+			Segment:  init.GetSegment(),
 		}
 	case *GameWebSocketEnvelope_MediaSegment:
+		seg := p.MediaSegment
 		return domain.MediaSegmentPayload{
-			SegmentID: p.MediaSegment.GetSegmentId(),
-			Segment:   p.MediaSegment.GetSegment(),
-			KeyFrame:  p.MediaSegment.GetKeyFrame(),
+			StreamID:      seg.GetStreamId(),
+			InitID:        seg.GetInitId(),
+			Sequence:      seg.GetSequence(),
+			Segment:       seg.GetSegment(),
+			RandomAccess:  seg.GetRandomAccess(),
+			DurationMS:    seg.GetDurationMs(),
+			Discontinuity: seg.GetDiscontinuity(),
 		}
 	case *GameWebSocketEnvelope_ControlRequest:
 		req := p.ControlRequest
@@ -514,16 +561,23 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 	case domain.MediaInitPayload:
 		return &GameWebSocketEnvelope_MediaInit{
 			MediaInit: &GameMediaInit{
+				StreamId: p.StreamID,
+				InitId:   p.InitID,
 				MimeType: p.MimeType,
+				Codec:    p.Codec,
 				Segment:  p.Segment,
 			},
 		}
 	case domain.MediaSegmentPayload:
 		return &GameWebSocketEnvelope_MediaSegment{
 			MediaSegment: &GameMediaSegment{
-				SegmentId: p.SegmentID,
-				Segment:   p.Segment,
-				KeyFrame:  p.KeyFrame,
+				StreamId:      p.StreamID,
+				InitId:        p.InitID,
+				Sequence:      p.Sequence,
+				Segment:       p.Segment,
+				RandomAccess:  &p.RandomAccess,
+				DurationMs:    p.DurationMS,
+				Discontinuity: p.Discontinuity,
 			},
 		}
 	case domain.ControlRequestPayload:

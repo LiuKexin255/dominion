@@ -1,7 +1,12 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
+
+	"dominion/projects/game/gateway/domain"
 )
 
 const (
@@ -152,6 +157,58 @@ func validateHoldAction(hold *GameMouseHold) error {
 	}
 	if hold.GetDurationMs() > MaxHoldDurationMs {
 		return fmt.Errorf("duration_ms exceeds maximum %d", MaxHoldDurationMs)
+	}
+	return nil
+}
+
+// ValidateMediaInit validates a media initialization segment message.
+func ValidateMediaInit(msg *GameMediaInit) error {
+	if msg.GetStreamId() == "" {
+		return fmt.Errorf("stream_id is empty")
+	}
+	if msg.GetInitId() == "" {
+		return fmt.Errorf("init_id is empty")
+	}
+	if msg.GetCodec() != "h264-avc" {
+		return fmt.Errorf("unsupported codec: %s", msg.GetCodec())
+	}
+	mime := msg.GetMimeType()
+	if mime == "" || !strings.Contains(mime, "video/mp4") || !strings.Contains(mime, "avc1") {
+		return fmt.Errorf("invalid mime_type: %s", mime)
+	}
+	if len(msg.GetSegment()) == 0 {
+		return fmt.Errorf("segment is empty")
+	}
+	if len(msg.GetSegment()) > domain.MaxSegmentSize {
+		return fmt.Errorf("segment size %d exceeds maximum %d", len(msg.GetSegment()), domain.MaxSegmentSize)
+	}
+	hash := sha256.Sum256(msg.GetSegment())
+	expectedID := hex.EncodeToString(hash[:])
+	if msg.GetInitId() != expectedID {
+		return fmt.Errorf("init_id mismatch: got %s, expected %s", msg.GetInitId(), expectedID)
+	}
+	return nil
+}
+
+// ValidateMediaSegment validates a media segment message.
+func ValidateMediaSegment(msg *GameMediaSegment) error {
+	if msg.GetStreamId() == "" {
+		return fmt.Errorf("stream_id is empty")
+	}
+	if msg.GetInitId() == "" {
+		return fmt.Errorf("init_id is empty")
+	}
+	if msg.GetSequence() == 0 {
+		return fmt.Errorf("sequence must be > 0")
+	}
+	if len(msg.GetSegment()) == 0 {
+		return fmt.Errorf("segment is empty")
+	}
+	if len(msg.GetSegment()) > domain.MaxSegmentSize {
+		return fmt.Errorf("segment size %d exceeds maximum %d", len(msg.GetSegment()), domain.MaxSegmentSize)
+	}
+	if msg.RandomAccess == nil {
+		return fmt.Errorf("random_access must be explicitly set")
 	}
 	return nil
 }

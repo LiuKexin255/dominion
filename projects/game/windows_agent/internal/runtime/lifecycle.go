@@ -9,6 +9,7 @@ import (
 	"dominion/projects/game/windows_agent/internal/capture"
 	"dominion/projects/game/windows_agent/internal/encoder"
 	"dominion/projects/game/windows_agent/internal/input"
+	"dominion/projects/game/windows_agent/internal/log"
 	"dominion/projects/game/windows_agent/internal/media"
 	"dominion/projects/game/windows_agent/internal/transport"
 	"dominion/projects/game/windows_agent/internal/window"
@@ -177,8 +178,17 @@ func (r *Runtime) StartCapture(ctx context.Context) error {
 	config.FrameRate = captureCfg.FrameRate
 	config.MaxWidth = captureCfg.MaxWidth
 	config.MaxHeight = captureCfg.MaxHeight
+	winW := int(captureCfg.Rect.Right - captureCfg.Rect.Left)
+	winH := int(captureCfg.Rect.Bottom - captureCfg.Rect.Top)
+	if winW > 0 && winH > 0 {
+		config.CaptureOffsetX = int(captureCfg.Rect.Left)
+		config.CaptureOffsetY = int(captureCfg.Rect.Top)
+		config.CaptureWidth = winW
+		config.CaptureHeight = winH
+	}
 
 	if err := r.encoder.Start(ctx, config); err != nil {
+		log.Errorf("lifecycle", "encoder start failed: %v", err)
 		r.setStreamError(err)
 		r.stopCaptureSubsystems()
 		return err
@@ -213,14 +223,24 @@ func (r *Runtime) StopCapture() error {
 	var err error
 	if r.encoder != nil {
 		err = r.encoder.Stop()
+		if err != nil {
+			log.Errorf("lifecycle", "encoder stop failed: %v", err)
+		}
 	}
 	if r.inputMgr != nil {
-		err = errors.Join(err, r.inputMgr.Stop())
+		inputErr := r.inputMgr.Stop()
+		if inputErr != nil {
+			log.Errorf("lifecycle", "input manager stop failed: %v", inputErr)
+		}
+		err = errors.Join(err, inputErr)
 	}
 
 	r.mu.Lock()
 	r.streamState = StreamIdle
 	r.lastStreamError = err
+	r.streamID = ""
+	r.initID = ""
+	r.sequence = 0
 	r.mu.Unlock()
 	return err
 }

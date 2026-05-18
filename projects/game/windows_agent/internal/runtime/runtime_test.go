@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"reflect"
@@ -175,10 +176,28 @@ func TestMediaFlow(t *testing.T) {
 		t.Fatalf("media flow did not complete")
 	}
 
-	// then
-	want := []string{"media_init", "media_segment:seg-0"}
+	// then: transport received expected event sequence
+	want := []string{"media_init", "media_segment:1"}
 	if got := ft.events; !reflect.DeepEqual(got, want) {
 		t.Fatalf("transport events = %v, want %v", got, want)
+	}
+
+	// then: v2 fields populated correctly
+	streamID, initID, codec, seq, ra := ft.snapshot()
+	if streamID == "" {
+		t.Fatalf("streamID is empty, expected non-empty v2 stream ID")
+	}
+	if initID == "" {
+		t.Fatalf("initID is empty, expected non-empty v2 init ID")
+	}
+	if codec != "h264-avc" {
+		t.Fatalf("codec = %q, want %q", codec, "h264-avc")
+	}
+	if seq != 1 {
+		t.Fatalf("lastSequence = %d, want 1", seq)
+	}
+	if ra == nil {
+		t.Fatalf("randomAccess is nil, expected non-nil *bool")
 	}
 }
 
@@ -443,6 +462,12 @@ type fakeTransport struct {
 	events       []string
 	readLoopMsgs []transport.InboundMessage
 	mu           sync.Mutex
+
+	lastStreamID     string
+	lastInitID       string
+	lastCodec        string
+	lastSequence     uint64
+	lastRandomAccess *bool
 }
 
 func (f *fakeTransport) Connect(context.Context, string) error { return nil }
@@ -453,12 +478,21 @@ func (f *fakeTransport) Close() error {
 	return nil
 }
 func (f *fakeTransport) SendHello(context.Context, string) error { return nil }
-func (f *fakeTransport) SendMediaInit(context.Context, string, string, []byte) error {
+func (f *fakeTransport) SendMediaInit(_ context.Context, _ string, streamID string, initID string, _ string, codec string, _ []byte) error {
+	f.mu.Lock()
+	f.lastStreamID = streamID
+	f.lastInitID = initID
+	f.lastCodec = codec
+	f.mu.Unlock()
 	f.addEvent("media_init")
 	return nil
 }
-func (f *fakeTransport) SendMediaSegment(_ context.Context, _ string, segmentID string, _ []byte, _ bool) error {
-	f.addEvent("media_segment:" + segmentID)
+func (f *fakeTransport) SendMediaSegment(_ context.Context, _ string, _ string, _ string, sequence uint64, _ []byte, randomAccess *bool, _ int32, _ bool) error {
+	f.mu.Lock()
+	f.lastSequence = sequence
+	f.lastRandomAccess = randomAccess
+	f.mu.Unlock()
+	f.addEvent(fmt.Sprintf("media_segment:%d", sequence))
 	return nil
 }
 func (f *fakeTransport) SendControlAck(_ context.Context, _ string, operationID string) error {
@@ -494,6 +528,12 @@ func (f *fakeTransport) eventSnapshot() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.events...)
+}
+
+func (f *fakeTransport) snapshot() (streamID, initID, codec string, seq uint64, ra *bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastStreamID, f.lastInitID, f.lastCodec, f.lastSequence, f.lastRandomAccess
 }
 
 type fakeWindowManager struct {
@@ -563,11 +603,56 @@ func (f *fakeEncoder) Wait() error { return nil }
 
 func fmp4Stream() []byte {
 	var data []byte
-	data = append(data, mp4Box("ftyp", []byte("init"))...)
-	data = append(data, mp4Box("moov", []byte("movie"))...)
-	data = append(data, mp4Box("moof", []byte("frag"))...)
-	data = append(data, mp4Box("mdat", []byte("media"))...)
+	ftypBody := make([]byte, 12)
+	copy(ftypBody[0:4], "isom")
+	binary.BigEndian.PutUint32(ftypBody[4:8], 0x200)
+	copy(ftypBody[8:12], "isom")
+	data = append(data, mp4Box("ftyp", ftypBody)...)
+
+	moovBody := append(mp4Box("mvhd", make([]byte, 92)), testMvexBox()...)
+	data = append(data, mp4Box("moov", moovBody)...)
+
+	mdatPayload := []byte("media")
+	moof := testMoofForMdat(0, uint32(len(mdatPayload)))
+	data = append(data, moof...)
+	data = append(data, mp4Box("mdat", mdatPayload)...)
 	return data
+}
+
+func testMvexBox() []byte {
+	trexBody := make([]byte, 24)
+	binary.BigEndian.PutUint32(trexBody[0:4], 0)
+	binary.BigEndian.PutUint32(trexBody[4:8], 1)
+	binary.BigEndian.PutUint32(trexBody[8:12], 1)
+	binary.BigEndian.PutUint32(trexBody[12:16], 1000)
+	binary.BigEndian.PutUint32(trexBody[16:20], 10)
+	binary.BigEndian.PutUint32(trexBody[20:24], 0)
+	return mp4Box("mvex", mp4Box("trex", trexBody))
+}
+
+func testMoofForMdat(seqNum int, sampleSize uint32) []byte {
+	mfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(mfhdBody[4:8], uint32(seqNum))
+	mfhd := mp4Box("mfhd", mfhdBody)
+
+	tfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(tfhdBody[0:4], 0x00020000)
+	binary.BigEndian.PutUint32(tfhdBody[4:8], 1)
+	tfhd := mp4Box("tfhd", tfhdBody)
+
+	tfdtBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(tfdtBody[0:4], 0x01000000)
+	binary.BigEndian.PutUint64(tfdtBody[4:12], 0)
+	tfdt := mp4Box("tfdt", tfdtBody)
+
+	trunBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(trunBody[0:4], 0x00000004)
+	binary.BigEndian.PutUint32(trunBody[4:8], 1)
+	binary.BigEndian.PutUint32(trunBody[8:12], 0)
+	trun := mp4Box("trun", trunBody)
+
+	traf := mp4Box("traf", append(append(tfhd, tfdt...), trun...))
+	return mp4Box("moof", append(mfhd, traf...))
 }
 
 func mp4Box(kind string, body []byte) []byte {

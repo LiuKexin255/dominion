@@ -219,26 +219,70 @@ func TestDomainErrors(t *testing.T) {
 	}
 }
 
+func TestV2DomainErrors(t *testing.T) {
+	// given
+	tests := []struct {
+		name    string
+		err     error
+		wantMsg string
+	}{
+		{name: "stream mismatch", err: ErrStreamMismatch, wantMsg: "stream mismatch"},
+		{name: "unknown init ID", err: ErrUnknownInitID, wantMsg: "unknown init segment ID"},
+		{name: "sequence not increasing", err: ErrSequenceNotIncreasing, wantMsg: "sequence not increasing"},
+		{name: "random access missing", err: ErrRandomAccessMissing, wantMsg: "random access point missing"},
+		{name: "init hash mismatch", err: ErrInitHashMismatch, wantMsg: "init segment hash mismatch"},
+		{name: "unsupported codec", err: ErrUnsupportedCodec, wantMsg: "unsupported codec"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := tt.err.Error()
+
+			// then
+			if got != tt.wantMsg {
+				t.Fatalf("Error() = %q, want %q", got, tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestSegmentRef(t *testing.T) {
 	now := time.Now().UTC()
 
 	// given
 	seg := &SegmentRef{
-		SegmentID: "seg-1",
-		Data:      []byte("fMP4-data"),
-		KeyFrame:  true,
-		MediaTime: now,
+		StreamID:      "stream-1",
+		InitID:        "init-1",
+		Sequence:      1,
+		Data:          []byte("fMP4-data"),
+		RandomAccess:  true,
+		DurationMS:    1000,
+		Discontinuity: false,
+		MediaTime:     now,
 	}
 
 	// when / then
-	if seg.SegmentID != "seg-1" {
-		t.Fatalf("SegmentID = %q, want %q", seg.SegmentID, "seg-1")
+	if seg.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", seg.StreamID, "stream-1")
+	}
+	if seg.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", seg.InitID, "init-1")
+	}
+	if seg.Sequence != 1 {
+		t.Fatalf("Sequence = %d, want %d", seg.Sequence, 1)
 	}
 	if string(seg.Data) != "fMP4-data" {
 		t.Fatalf("Data = %q, want %q", string(seg.Data), "fMP4-data")
 	}
-	if !seg.KeyFrame {
-		t.Fatalf("KeyFrame = false, want true")
+	if !seg.RandomAccess {
+		t.Fatalf("RandomAccess = false, want true")
+	}
+	if seg.DurationMS != 1000 {
+		t.Fatalf("DurationMS = %d, want %d", seg.DurationMS, 1000)
+	}
+	if seg.Discontinuity {
+		t.Fatalf("Discontinuity = true, want false")
 	}
 	if !seg.MediaTime.Equal(now) {
 		t.Fatalf("MediaTime = %v, want %v", seg.MediaTime, now)
@@ -248,11 +292,23 @@ func TestSegmentRef(t *testing.T) {
 func TestInitSegmentRef(t *testing.T) {
 	// given
 	ref := &InitSegmentRef{
+		StreamID: "stream-1",
+		InitID:   "init-1",
+		Codec:    "avc1.64001f",
 		MimeType: "video/mp4",
 		Data:     []byte("init-segment"),
 	}
 
 	// when / then
+	if ref.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", ref.StreamID, "stream-1")
+	}
+	if ref.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", ref.InitID, "init-1")
+	}
+	if ref.Codec != "avc1.64001f" {
+		t.Fatalf("Codec = %q, want %q", ref.Codec, "avc1.64001f")
+	}
 	if ref.MimeType != "video/mp4" {
 		t.Fatalf("MimeType = %q, want %q", ref.MimeType, "video/mp4")
 	}

@@ -3,9 +3,10 @@ package media
 import (
 	"bytes"
 	"encoding/binary"
-	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Eyevinn/mp4ff/mp4"
 )
 
 const testMaxSegmentSize = 1 << 20
@@ -39,7 +40,7 @@ func TestParseInitOnly(t *testing.T) {
 	}{
 		{
 			name: "ftyp and moov",
-			data: generateTestInitSegment(),
+			data: generateTestInitWithTrex(),
 		},
 	}
 
@@ -71,12 +72,12 @@ func TestParseInitOnly(t *testing.T) {
 func TestParseMediaSegment(t *testing.T) {
 	tests := []struct {
 		name   string
-		seqNum int
+		seqNum uint64
 		data   []byte
 	}{
 		{
 			name:   "single moof and mdat",
-			seqNum: 0,
+			seqNum: 1,
 			data:   generateTestMediaSegment(0),
 		},
 	}
@@ -89,7 +90,7 @@ func TestParseMediaSegment(t *testing.T) {
 			// when parsing the stream.
 			got, err := Parse(input)
 
-			// then one keyframe media segment is returned.
+			// then one random-access media segment is returned.
 			if err != nil {
 				t.Fatalf("Parse(media) unexpected error: %v", err)
 			}
@@ -100,11 +101,11 @@ func TestParseMediaSegment(t *testing.T) {
 			if !bytes.Equal(seg.Data, tt.data) {
 				t.Fatalf("Parse(media) data mismatch: got %d bytes, want %d", len(seg.Data), len(tt.data))
 			}
-			if !seg.KeyFrame {
-				t.Fatalf("Parse(media) KeyFrame = false, want true")
+			if !seg.RandomAccess {
+				t.Fatalf("Parse(media) RandomAccess = false, want true")
 			}
-			if seg.SeqNum != tt.seqNum {
-				t.Fatalf("Parse(media) SeqNum = %d, want %d", seg.SeqNum, tt.seqNum)
+			if seg.Sequence != tt.seqNum {
+				t.Fatalf("Parse(media) Sequence = %d, want %d", seg.Sequence, tt.seqNum)
 			}
 		})
 	}
@@ -119,8 +120,8 @@ func TestParseFullStream(t *testing.T) {
 	}{
 		{
 			name:         "init and one media segment",
-			data:         generateTestStream(1),
-			wantInitSize: len(generateTestInitSegment()),
+			data:         generateTestV2Stream(1),
+			wantInitSize: len(generateTestInitWithTrex()),
 			wantSegments: 1,
 		},
 	}
@@ -152,23 +153,23 @@ func TestParseFullStream(t *testing.T) {
 
 func TestParseMultipleSegments(t *testing.T) {
 	tests := []struct {
-		name         string
-		numSegments  int
-		wantSeqNums  []int
-		wantKeyFrame bool
+		name          string
+		numSegments   int
+		wantSequences []uint64
+		wantRandomAcc bool
 	}{
 		{
-			name:         "three moof and mdat pairs",
-			numSegments:  3,
-			wantSeqNums:  []int{0, 1, 2},
-			wantKeyFrame: true,
+			name:          "three moof and mdat pairs",
+			numSegments:   3,
+			wantSequences: []uint64{1, 2, 3},
+			wantRandomAcc: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given a stream with multiple moof+mdat pairs.
-			input := bytes.NewReader(generateTestStream(tt.numSegments))
+			input := bytes.NewReader(generateTestV2Stream(tt.numSegments))
 
 			// when parsing the stream.
 			got, err := Parse(input)
@@ -181,11 +182,11 @@ func TestParseMultipleSegments(t *testing.T) {
 				t.Fatalf("Parse(multiple segments) media segments = %d, want %d", len(got.MediaSegs), tt.numSegments)
 			}
 			for i, seg := range got.MediaSegs {
-				if seg.SeqNum != tt.wantSeqNums[i] {
-					t.Fatalf("Parse(multiple segments) segment %d SeqNum = %d, want %d", i, seg.SeqNum, tt.wantSeqNums[i])
+				if seg.Sequence != tt.wantSequences[i] {
+					t.Fatalf("Parse(multiple segments) segment %d Sequence = %d, want %d", i, seg.Sequence, tt.wantSequences[i])
 				}
-				if seg.KeyFrame != tt.wantKeyFrame {
-					t.Fatalf("Parse(multiple segments) segment %d KeyFrame = %v, want %v", i, seg.KeyFrame, tt.wantKeyFrame)
+				if seg.RandomAccess != tt.wantRandomAcc {
+					t.Fatalf("Parse(multiple segments) segment %d RandomAccess = %v, want %v", i, seg.RandomAccess, tt.wantRandomAcc)
 				}
 			}
 		})
@@ -199,7 +200,7 @@ func TestParseOversizeSegment(t *testing.T) {
 	}{
 		{
 			name: "media segment over one MiB",
-			data: generateTestMediaSegmentWithPayloadSize(0, testMaxSegmentSize-boxHeaderSize-32+1),
+			data: generateTestMediaSegmentWithPayloadSize(0, testMaxSegmentSize-112+1),
 		},
 	}
 
@@ -260,7 +261,7 @@ func TestParseBytes(t *testing.T) {
 	}{
 		{
 			name: "full stream bytes",
-			data: generateTestStream(2),
+			data: generateTestV2Stream(2),
 		},
 	}
 
@@ -302,7 +303,7 @@ func TestParseSegmentSizeAtLimit(t *testing.T) {
 	}{
 		{
 			name: "media segment exactly one MiB",
-			data: generateTestMediaSegmentWithPayloadSize(0, testMaxSegmentSize-boxHeaderSize-32),
+			data: generateTestMediaSegmentWithPayloadSize(0, testMaxSegmentSize-112),
 		},
 	}
 
@@ -330,14 +331,14 @@ func TestParseSegmentSizeAtLimit(t *testing.T) {
 
 func TestParseStreamingDeliversSegments(t *testing.T) {
 	// given a full fMP4 stream with init and 3 media segments.
-	input := bytes.NewReader(generateTestStream(3))
-	var initCalls [][]byte
+	input := bytes.NewReader(generateTestV2Stream(3))
+	var initCalls []*InitSegment
 	var mediaCalls []*MediaSegment
 
 	// when parsing with streaming callbacks.
 	err := ParseStreaming(input,
-		func(data []byte) error {
-			initCalls = append(initCalls, data)
+		func(init *InitSegment) error {
+			initCalls = append(initCalls, init)
 			return nil
 		},
 		func(seg *MediaSegment) error {
@@ -353,24 +354,172 @@ func TestParseStreamingDeliversSegments(t *testing.T) {
 	if len(initCalls) != 1 {
 		t.Fatalf("ParseStreaming() init calls = %d, want 1", len(initCalls))
 	}
-	wantInit := generateTestInitSegment()
-	if !bytes.Equal(initCalls[0], wantInit) {
-		t.Fatalf("ParseStreaming() init data mismatch: got %d bytes, want %d", len(initCalls[0]), len(wantInit))
+	wantInit := generateTestInitWithTrex()
+	if !bytes.Equal(initCalls[0].Data, wantInit) {
+		t.Fatalf("ParseStreaming() init data mismatch: got %d bytes, want %d", len(initCalls[0].Data), len(wantInit))
 	}
 	if len(mediaCalls) != 3 {
 		t.Fatalf("ParseStreaming() media calls = %d, want 3", len(mediaCalls))
 	}
 	for i, seg := range mediaCalls {
-		if seg.SeqNum != i {
-			t.Fatalf("ParseStreaming() segment %d SeqNum = %d, want %d", i, seg.SeqNum, i)
+		wantSeq := uint64(i + 1)
+		if seg.Sequence != wantSeq {
+			t.Fatalf("ParseStreaming() segment %d Sequence = %d, want %d", i, seg.Sequence, wantSeq)
 		}
-		if !seg.KeyFrame {
-			t.Fatalf("ParseStreaming() segment %d KeyFrame = false, want true", i)
+		if !seg.RandomAccess {
+			t.Fatalf("ParseStreaming() segment %d RandomAccess = false, want true", i)
 		}
 	}
 }
 
-func generateTestInitSegment() []byte {
+// --- New TDD tests (RED phase) ---
+
+func Test_randomAccessDetection(t *testing.T) {
+	tests := []struct {
+		name             string
+		firstSampleFlags uint32
+		wantRandomAccess bool
+	}{
+		{
+			name:             "sync sample (random access point)",
+			firstSampleFlags: mp4.SyncSampleFlags,
+			wantRandomAccess: true,
+		},
+		{
+			name:             "non-sync sample",
+			firstSampleFlags: mp4.NonSyncSampleFlags,
+			wantRandomAccess: false,
+		},
+		{
+			name:             "unspecified sample dependency is not random access",
+			firstSampleFlags: 0x00000000,
+			wantRandomAccess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given a media segment with specific sample flags.
+			segData := generateTestMediaWithSampleFlags(0, tt.firstSampleFlags)
+
+			// when detecting random access via mp4ff.
+			randomAccess := detectRandomAccessFromSegment(segData)
+
+			// then the result matches the expected random-access flag.
+			if randomAccess != tt.wantRandomAccess {
+				t.Fatalf("detectRandomAccessFromSegment() = %v, want %v", randomAccess, tt.wantRandomAccess)
+			}
+		})
+	}
+}
+
+func Test_initIDGeneration(t *testing.T) {
+	tests := []struct {
+		name     string
+		initData []byte
+		wantID   string
+	}{
+		{
+			name:     "sha256 hex of init bytes",
+			initData: []byte("test-init-data"),
+			wantID:   computeInitID([]byte("test-init-data")),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given init bytes.
+			initData := tt.initData
+
+			// when computing the InitID.
+			got := computeInitID(initData)
+
+			// then the ID matches the expected hex-encoded SHA-256.
+			if got != tt.wantID {
+				t.Fatalf("InitID = %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestParseMediaInit(t *testing.T) {
+	tests := []struct {
+		name     string
+		initData []byte
+	}{
+		{
+			name:     "valid init segment",
+			initData: generateTestInitWithTrex(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given fMP4 init bytes.
+			initData := tt.initData
+
+			// when calling ParseMediaInit.
+			got, err := ParseMediaInit(initData)
+
+			// then the result has InitID, Codec, and Data.
+			if err != nil {
+				t.Fatalf("ParseMediaInit() unexpected error: %v", err)
+			}
+			if got == nil {
+				t.Fatalf("ParseMediaInit() returned nil")
+			}
+			if got.InitID == "" {
+				t.Fatalf("ParseMediaInit() InitID is empty")
+			}
+			if got.Codec != "h264-avc" {
+				t.Fatalf("ParseMediaInit() Codec = %q, want %q", got.Codec, "h264-avc")
+			}
+			if !bytes.Equal(got.Data, initData) {
+				t.Fatalf("ParseMediaInit() Data mismatch")
+			}
+			// Verify InitID matches sha256 of initData.
+			expectedID := computeInitID(initData)
+			if got.InitID != expectedID {
+				t.Fatalf("ParseMediaInit() InitID = %q, want %q", got.InitID, expectedID)
+			}
+		})
+	}
+}
+
+func Test_sequenceResetOnNewStream(t *testing.T) {
+	// given two full streams (simulating stop/start cycle).
+	stream1 := generateTestV2Stream(2)
+	stream2 := generateTestV2Stream(3)
+
+	// when parsing the first stream.
+	result1, err := Parse(bytes.NewReader(stream1))
+	if err != nil {
+		t.Fatalf("Parse(stream1) unexpected error: %v", err)
+	}
+
+	// when parsing the second stream (new stream).
+	result2, err := Parse(bytes.NewReader(stream2))
+	if err != nil {
+		t.Fatalf("Parse(stream2) unexpected error: %v", err)
+	}
+
+	// then both streams start their sequences from 1.
+	if result1.MediaSegs[0].Sequence != 1 {
+		t.Fatalf("stream1 segment 0 Sequence = %d, want 1", result1.MediaSegs[0].Sequence)
+	}
+	if result2.MediaSegs[0].Sequence != 1 {
+		t.Fatalf("stream2 segment 0 Sequence = %d, want 1", result2.MediaSegs[0].Sequence)
+	}
+	if result2.MediaSegs[2].Sequence != 3 {
+		t.Fatalf("stream2 segment 2 Sequence = %d, want 3", result2.MediaSegs[2].Sequence)
+	}
+}
+
+// --- New test data generators with proper fMP4 box structure for mp4ff ---
+
+// generateTestInitWithTrex creates ftyp + moov(mvhd + mvex(trex)) bytes.
+func generateTestInitWithTrex() []byte {
+	// ftyp (20 bytes): size=20, type="ftyp", major="isom", minor=0x200, compatible=["isom"]
 	ftyp := make([]byte, 20)
 	binary.BigEndian.PutUint32(ftyp[0:4], 20)
 	copy(ftyp[4:8], BoxTypeFTYP)
@@ -378,49 +527,197 @@ func generateTestInitSegment() []byte {
 	binary.BigEndian.PutUint32(ftyp[12:16], 0x200)
 	copy(ftyp[16:20], "isom")
 
-	moov := make([]byte, 108)
-	binary.BigEndian.PutUint32(moov[0:4], 108)
-	copy(moov[4:8], BoxTypeMOOV)
-	binary.BigEndian.PutUint32(moov[8:12], 100)
-	copy(moov[12:16], "mvhd")
+	// mvhd body (92 bytes) - simple zeroed mvhd for test purposes
+	mvhdBody := make([]byte, 92)
+	mvhd := buildBox("mvhd", mvhdBody) // size=100
+
+	// trex body (24 bytes): version+flags(4) + trackID(4) + descIndex(4) + dur(4) + size(4) + flags(4)
+	trexBody := make([]byte, 24)
+	binary.BigEndian.PutUint32(trexBody[0:4], 0)      // version=0, flags=0
+	binary.BigEndian.PutUint32(trexBody[4:8], 1)      // trackID
+	binary.BigEndian.PutUint32(trexBody[8:12], 1)     // defaultSampleDescriptionIndex
+	binary.BigEndian.PutUint32(trexBody[12:16], 1000) // defaultSampleDuration
+	binary.BigEndian.PutUint32(trexBody[16:20], 10)   // defaultSampleSize
+	binary.BigEndian.PutUint32(trexBody[20:24], 0)    // defaultSampleFlags
+	trex := buildBox("trex", trexBody)                // size=32
+
+	// mvex container (contains trex):
+	//   size=40, type="mvex", payload=full-trex-box
+	mvex := buildBox("mvex", trex[:]) // size=8+32=40
+
+	// moov container: mvhd + mvex
+	moovPayload := append(mvhd[:], mvex[:]...)
+	moov := buildBox(BoxTypeMOOV, moovPayload) // size=8+100+40=148
 
 	return append(ftyp, moov...)
 }
 
-func generateTestMediaSegment(seqNum int) []byte {
-	payload := []byte("fake-video-frame-" + strconv.Itoa(seqNum))
-	return generateTestMediaSegmentWithPayload(seqNum, payload)
+// generateTestMediaWithSampleFlags creates a moof+mdat segment with proper
+// traf/tfhd/tfdt/trun boxes and the given firstSampleFlags for mp4ff parsing.
+func generateTestMediaWithSampleFlags(seqNum int, firstSampleFlags uint32) []byte {
+	// mfhd (16 bytes): size=16, type="mfhd", version+flags(4), seqNum(4)
+	mfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(mfhdBody[4:8], uint32(seqNum))
+	mfhd := buildBox("mfhd", mfhdBody)
+
+	// tfhd (16 bytes): size=16, type="tfhd"
+	//   flags=0x020000 (default-base-is-moof), trackID=1
+	tfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(tfhdBody[0:4], 0x00020000) // version=0, flags=0x020000
+	binary.BigEndian.PutUint32(tfhdBody[4:8], 1)          // trackID
+	tfhd := buildBox("tfhd", tfhdBody)
+
+	// tfdt (20 bytes): size=20, type="tfdt", version=1, baseMediaDecodeTime=0
+	tfdtBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(tfdtBody[0:4], 0x01000000) // version=1, flags=0
+	binary.BigEndian.PutUint64(tfdtBody[4:12], 0)         // baseMediaDecodeTime
+	tfdt := buildBox("tfdt", tfdtBody)
+
+	// trun (24 bytes): size=24, type="trun"
+	//   flags=0x000204 (first_sample_flags + sample_size), sampleCount=1, firstSampleFlags, sampleSize
+	trunBody := make([]byte, 16)
+	binary.BigEndian.PutUint32(trunBody[0:4], 0x00000204) // version=0, flags=0x000204
+	binary.BigEndian.PutUint32(trunBody[4:8], 1)          // sampleCount
+	binary.BigEndian.PutUint32(trunBody[8:12], firstSampleFlags)
+	binary.BigEndian.PutUint32(trunBody[12:16], 10) // sample size
+	trun := buildBox("trun", trunBody)
+
+	// traf container: tfhd + tfdt + trun
+	trafPayload := append(tfhd[:], tfdt[:]...)
+	trafPayload = append(trafPayload, trun[:]...)
+	traf := buildBox("traf", trafPayload) // size=8+16+20+24=68
+
+	// moof container: mfhd + traf
+	moofPayload := append(mfhd[:], traf[:]...)
+	moof := buildBox(BoxTypeMOOF, moofPayload) // size=8+16+68=92
+
+	// mdat: one length-prefixed IDR NALU padded to the trex default sample size.
+	mdat := buildBox(BoxTypeMDAT, generateTestIDRSamplePayload(10)) // size=18
+
+	return append(moof, mdat...)
 }
 
-func generateTestStream(numSegments int) []byte {
-	stream := generateTestInitSegment()
+// generateTestMediaSegment creates a moof+mdat segment with sync sample flags by default.
+func generateTestMediaSegment(seqNum int) []byte {
+	return generateTestMediaWithSampleFlags(seqNum, mp4.SyncSampleFlags)
+}
+
+// generateTestV2Stream creates an init segment with trex + numSegments media segments.
+func generateTestV2Stream(numSegments int) []byte {
+	stream := generateTestInitWithTrex()
 	for i := range numSegments {
 		stream = append(stream, generateTestMediaSegment(i)...)
 	}
 	return stream
 }
 
-func generateTestMediaSegmentWithPayloadSize(seqNum int, payloadSize int) []byte {
-	return generateTestMediaSegmentWithPayload(seqNum, bytes.Repeat([]byte{'x'}, payloadSize))
-}
-
+// generateTestMediaSegmentWithPayload creates a media segment with a given mdat payload.
 func generateTestMediaSegmentWithPayload(seqNum int, payload []byte) []byte {
-	moof := make([]byte, 32)
-	binary.BigEndian.PutUint32(moof[0:4], 32)
-	copy(moof[4:8], BoxTypeMOOF)
-	binary.BigEndian.PutUint32(moof[8:12], 16)
-	copy(moof[12:16], "mfhd")
-	binary.BigEndian.PutUint32(moof[24:28], uint32(seqNum))
+	// mfhd (16 bytes)
+	mfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(mfhdBody[4:8], uint32(seqNum))
+	mfhd := buildBox("mfhd", mfhdBody)
 
+	// tfhd (16 bytes): default-base-is-moof, trackID=1
+	tfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(tfhdBody[0:4], 0x00020000)
+	binary.BigEndian.PutUint32(tfhdBody[4:8], 1)
+	tfhd := buildBox("tfhd", tfhdBody)
+
+	// tfdt (20 bytes): version=1, baseMediaDecodeTime=0
+	tfdtBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(tfdtBody[0:4], 0x01000000)
+	binary.BigEndian.PutUint64(tfdtBody[4:12], 0)
+	tfdt := buildBox("tfdt", tfdtBody)
+
+	// trun: version=0, flags=0x000705 (data_offset + first_sample_flags + sample_dur + sample_size + sample_flags)
+	//   sampleCount=1, sync firstSampleFlags, per-sample: dur=1000, size=len(payload), sync flags
+	trunBody := make([]byte, 28)
+	binary.BigEndian.PutUint32(trunBody[0:4], 0x00000705)             // version+flags
+	binary.BigEndian.PutUint32(trunBody[4:8], 1)                      // sampleCount
+	binary.BigEndian.PutUint32(trunBody[8:12], 112)                   // data offset: moof(104)+mdat header(8)
+	binary.BigEndian.PutUint32(trunBody[12:16], mp4.SyncSampleFlags)  // firstSampleFlags
+	binary.BigEndian.PutUint32(trunBody[16:20], 1000)                 // sample duration
+	binary.BigEndian.PutUint32(trunBody[20:24], uint32(len(payload))) // sample size
+	binary.BigEndian.PutUint32(trunBody[24:28], mp4.SyncSampleFlags)  // sample flags (sync)
+	trun := buildBox("trun", trunBody)
+
+	// traf container
+	trafPayload := append(tfhd[:], tfdt[:]...)
+	trafPayload = append(trafPayload, trun[:]...)
+	traf := buildBox("traf", trafPayload) // size=8+16+20+36=80
+
+	// moof container
+	moofPayload := append(mfhd[:], traf[:]...)
+	moof := buildBox(BoxTypeMOOF, moofPayload) // size=8+16+80=104
+
+	// mdat: payload bytes
 	mdat := buildBox(BoxTypeMDAT, payload)
 
 	return append(moof, mdat...)
 }
 
+// generateTestMediaSegmentWithPayloadSize creates a media segment with payload of given size.
+func generateTestMediaSegmentWithPayloadSize(seqNum int, payloadSize int) []byte {
+	return generateTestMediaSegmentWithPayload(seqNum, generateTestIDRSamplePayload(payloadSize))
+}
+
+func generateTestIDRSamplePayload(size int) []byte {
+	payload := make([]byte, size)
+	if size >= 5 {
+		binary.BigEndian.PutUint32(payload[0:4], 1)
+		payload[4] = 0x65 // nal_ref_idc=3, nal_unit_type=5 (IDR)
+	}
+	return payload
+}
+
+func testIDRSampleData(size int) []byte {
+	if size < 5 {
+		size = 5
+	}
+	payload := bytes.Repeat([]byte{0}, size)
+	binary.BigEndian.PutUint32(payload[0:4], 1)
+	payload[4] = 0x65 // nal_ref_idc=3, nal_unit_type=5 (IDR)
+	return payload
+}
+
+// buildBox creates a box with the given type and payload bytes.
 func buildBox(boxType string, payload []byte) []byte {
 	box := make([]byte, boxHeaderSize+len(payload))
 	binary.BigEndian.PutUint32(box[0:4], uint32(len(box)))
 	copy(box[4:8], boxType)
 	copy(box[8:], payload)
 	return box
+}
+
+// --- Test helpers for mp4ff-based detection ---
+
+// detectRandomAccessFromSegment parses moof+mdat bytes and returns true if the
+// first sample is a sync sample (random access point). This mirrors the parser logic.
+func detectRandomAccessFromSegment(segData []byte) bool {
+	file, err := mp4.DecodeFile(bytes.NewReader(segData))
+	if err != nil {
+		return false
+	}
+	if len(file.Segments) == 0 || len(file.Segments[0].Fragments) == 0 {
+		return false
+	}
+	frag := file.Segments[0].Fragments[0]
+	trex := testTrex()
+	samples, err := frag.GetFullSamples(trex)
+	if err != nil || len(samples) == 0 {
+		return false
+	}
+	return samples[0].IsSync()
+}
+
+// testTrex returns a TrexBox matching the test init segment defaults.
+func testTrex() *mp4.TrexBox {
+	return &mp4.TrexBox{
+		TrackID:                       1,
+		DefaultSampleDescriptionIndex: 1,
+		DefaultSampleDuration:         1000,
+		DefaultSampleSize:             10,
+		DefaultSampleFlags:            mp4.SyncSampleFlags,
+	}
 }

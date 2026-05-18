@@ -1,4 +1,4 @@
 bazel-*
 .env/*
-.sisyphus
+.omo
 node_modules

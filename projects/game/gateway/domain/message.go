@@ -43,15 +43,22 @@ type PongPayload struct {
 
 // MediaInitPayload carries the latest fMP4 initialization segment.
 type MediaInitPayload struct {
+	StreamID string
+	InitID   string
 	MimeType string
+	Codec    string
 	Segment  []byte
 }
 
 // MediaSegmentPayload carries one fMP4 media segment.
 type MediaSegmentPayload struct {
-	SegmentID string
-	Segment   []byte
-	KeyFrame  bool
+	StreamID      string
+	InitID        string
+	Sequence      uint64
+	Segment       []byte
+	RandomAccess  bool
+	DurationMS    int32
+	Discontinuity bool
 }
 
 // ControlAckPayload acknowledges receipt of a control request by the agent.

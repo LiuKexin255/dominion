@@ -11,11 +11,13 @@ package fakeagent
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gw "dominion/projects/game/gateway"
@@ -77,12 +79,15 @@ type Config struct {
 // Agent connects to a game gateway and runs the agent side of the WebSocket
 // protocol according to the configured scenario.
 type Agent struct {
-	cfg    Config
-	conn   *websocket.Conn
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	ready  chan struct{}
-	once   sync.Once
+	cfg      Config
+	conn     *websocket.Conn
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	ready    chan struct{}
+	once     sync.Once
+	streamID string
+	initID   string
+	sequence uint64
 }
 
 // New creates a new Agent with the given configuration.
@@ -101,6 +106,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	defer cancel()
+
+	a.streamID = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s-%d", a.cfg.SessionID, time.Now().UnixNano()))))
 
 	log.Printf("fakeagent: connecting to %s", maskURL(a.cfg.ConnectURL))
 	headers := http.Header{}
@@ -129,6 +136,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.once.Do(func() { close(a.ready) })
 
 	md := prepareMediaData(a.cfg.VideoFile, a.cfg.VideoURL)
+	a.initID = md.initID
 
 	switch a.cfg.Scenario {
 	case Normal:
@@ -146,9 +154,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		return a.runScenario(ctx, md, scenarioConfig{pauseAfter: pauseMediaAfter})
 	case SnapshotFail:
 		failMD := &mediaData{
-			initSegment:  md.initSegment,
-			mediaSegs:    md.mediaSegs,
-			keyFrameMask: make([]bool, len(md.mediaSegs)),
+			initSegment:      md.initSegment,
+			mediaSegs:        md.mediaSegs,
+			randomAccessMask: make([]bool, len(md.mediaSegs)),
+			initID:           md.initID,
 		}
 		return a.runScenario(ctx, failMD, scenarioConfig{})
 	default:
@@ -184,8 +193,11 @@ func (a *Agent) sendHello(ctx context.Context) error {
 // runDisconnect sends media_init, then waits for a control_request.
 // When a control_request is received, the agent closes the connection.
 func (a *Agent) runDisconnect(ctx context.Context) error {
+	initSeg := generateFakeInitSegment()
+	a.initID = fmt.Sprintf("%x", sha256.Sum256(initSeg))
+
 	a.mu.Lock()
-	a.sendMediaInit(ctx, generateFakeInitSegment())
+	a.sendMediaInit(ctx, initSeg)
 	a.mu.Unlock()
 
 	log.Printf("fakeagent: disconnect scenario, waiting for control_request")
@@ -241,11 +253,11 @@ func (a *Agent) runScenario(ctx context.Context, md *mediaData, sc scenarioConfi
 	segCount := len(md.mediaSegs)
 
 	if segCount > 0 {
-		isKeyFrame := segIdx < len(md.keyFrameMask) && md.keyFrameMask[segIdx]
+		isRandomAccess := segIdx < len(md.randomAccessMask) && md.randomAccessMask[segIdx]
 		segData := md.mediaSegs[segIdx%segCount]
 		segIdx++
 		a.mu.Lock()
-		a.sendMediaSegment(ctx, segData, isKeyFrame)
+		a.sendMediaSegment(ctx, segData, isRandomAccess)
 		a.mu.Unlock()
 	}
 
@@ -276,12 +288,12 @@ func (a *Agent) runScenario(ctx context.Context, md *mediaData, sc scenarioConfi
 				continue
 			}
 
-			isKeyFrame := segIdx < len(md.keyFrameMask) && md.keyFrameMask[segIdx]
+			isRandomAccess := segIdx < len(md.randomAccessMask) && md.randomAccessMask[segIdx]
 			segData := md.mediaSegs[segIdx%segCount]
 			segIdx++
 
 			a.mu.Lock()
-			a.sendMediaSegment(ctx, segData, isKeyFrame)
+			a.sendMediaSegment(ctx, segData, isRandomAccess)
 			a.mu.Unlock()
 		}
 	}
@@ -354,7 +366,10 @@ func (a *Agent) sendMediaInit(ctx context.Context, segment []byte) {
 		MessageId: messageID("media-init"),
 		Payload: &gw.GameWebSocketEnvelope_MediaInit{
 			MediaInit: &gw.GameMediaInit{
+				StreamId: a.streamID,
+				InitId:   a.initID,
 				MimeType: mimeTypeMP4,
+				Codec:    "h264-avc",
 				Segment:  segment,
 			},
 		},
@@ -365,19 +380,25 @@ func (a *Agent) sendMediaInit(ctx context.Context, segment []byte) {
 	log.Printf("fakeagent: sent media_init (%d bytes)", len(segment))
 }
 
-func (a *Agent) sendMediaSegment(ctx context.Context, segment []byte, keyFrame bool) {
+func (a *Agent) sendMediaSegment(ctx context.Context, segment []byte, randomAccess bool) {
 	if len(segment) > domain.MaxSegmentSize {
 		log.Printf("fakeagent: skip media_segment: %d bytes exceeds %d limit", len(segment), domain.MaxSegmentSize)
 		return
 	}
+	seq := atomic.AddUint64(&a.sequence, 1)
+	ra := randomAccess
 	if err := a.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
 		SessionId: a.cfg.SessionID,
 		MessageId: messageID("media-seg"),
 		Payload: &gw.GameWebSocketEnvelope_MediaSegment{
 			MediaSegment: &gw.GameMediaSegment{
-				SegmentId: messageID("seg"),
-				Segment:   segment,
-				KeyFrame:  keyFrame,
+				StreamId:      a.streamID,
+				InitId:        a.initID,
+				Sequence:      seq,
+				Segment:       segment,
+				RandomAccess:  &ra,
+				DurationMs:    0,
+				Discontinuity: false,
 			},
 		},
 	}); err != nil {

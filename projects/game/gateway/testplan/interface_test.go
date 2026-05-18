@@ -451,17 +451,38 @@ func TestInterface_MediaDelivery(t *testing.T) {
 	defer closeConn(webConn)
 
 	mi := mustReadMediaInit(ctx, t, webConn)
+	if mi.GetStreamId() == "" {
+		t.Fatal("media_init stream_id is empty")
+	}
+	if mi.GetInitId() == "" {
+		t.Fatal("media_init init_id is empty")
+	}
 	if mi.GetMimeType() != mimeTypeMP4 {
 		t.Fatalf("media_init mime_type = %q, want %q", mi.GetMimeType(), mimeTypeMP4)
 	}
+	if mi.GetCodec() == "" {
+		t.Fatal("media_init codec is empty")
+	}
+	if len(mi.GetSegment()) == 0 {
+		t.Fatal("media_init segment is empty")
+	}
 
 	ms := mustReadMediaSegment(ctx, t, webConn)
-	if ms.GetSegmentId() == "" {
-		t.Fatal("media_segment segment_id is empty")
+	if ms.GetStreamId() == "" {
+		t.Fatal("media_segment stream_id is empty")
+	}
+	if ms.GetInitId() == "" {
+		t.Fatal("media_segment init_id is empty")
+	}
+	if ms.GetSequence() == 0 {
+		t.Fatal("media_segment sequence is 0")
+	}
+	if len(ms.GetSegment()) == 0 {
+		t.Fatal("media_segment segment data is empty")
 	}
 }
 
-func TestInterface_CatchupFromKeyframe(t *testing.T) {
+func TestInterface_CatchupFromRandomAccess(t *testing.T) {
 	hostURL := testtool.MustEndpoint("http", "public")
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
@@ -480,8 +501,48 @@ func TestInterface_CatchupFromKeyframe(t *testing.T) {
 	mustReadMediaInit(ctx, t, webConn)
 
 	ms := mustReadMediaSegment(ctx, t, webConn)
-	if !ms.GetKeyFrame() {
-		t.Fatal("expected catch-up segment to be a keyframe")
+	if !ms.GetRandomAccess() {
+		t.Fatal("expected catch-up segment to have random_access=true")
+	}
+
+	prevSeq := ms.GetSequence()
+	for i := 0; i < 2; i++ {
+		next := mustReadMediaSegment(ctx, t, webConn)
+		if next.GetSequence() <= prevSeq {
+			t.Fatalf("expected sequence %d > prev %d", next.GetSequence(), prevSeq)
+		}
+		prevSeq = next.GetSequence()
+	}
+}
+
+func TestInterface_V1MediaRejected(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	v1JSON := fmt.Sprintf(`{"sessionId":%q,"messageId":"v1-media-001","mediaSegment":{"segmentId":"seg-001","keyFrame":true,"segment":"dGVzdA==","streamId":"stream-1","initId":"init-1","sequence":1}}`, sessionID)
+	if err := webConn.Write(ctx, websocket.MessageText, []byte(v1JSON)); err != nil {
+		t.Fatalf("web write v1 media JSON: %v", err)
+	}
+
+	for {
+		env, err := readEnvelope(ctx, webConn)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		if errPayload := env.GetError(); errPayload != nil {
+			return
+		}
+		if env.GetMediaInit() != nil || env.GetMediaSegment() != nil || env.GetControlAck() != nil || env.GetPing() != nil {
+			continue
+		}
+		t.Fatalf("expected error for v1 media with segment_id/key_frame fields, got payload: %v", env.Payload)
 	}
 }
 
@@ -573,6 +634,32 @@ func TestInterface_Snapshot_ImageNotBlack(t *testing.T) {
 	}
 
 	assertNotBlackFrame(t, image)
+}
+
+func TestInterface_Snapshot_UnavailableWithoutRandomAccess(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.SnapshotFail)
+	defer agent.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
+	resp := doHTTPGet(ctx, t, snapshotURL)
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		snap := decodeGameSnapshot(t, resp)
+		image := snap.GetImage()
+		if len(image) > 0 {
+			t.Fatalf("expected snapshot to be unavailable without random-access segments, got %d bytes of image data", len(image))
+		}
+	}
 }
 
 func TestInterface_Runtime_Fields(t *testing.T) {

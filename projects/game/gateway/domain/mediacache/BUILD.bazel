@@ -15,6 +15,7 @@ go_library(
         "@com_github_eyevinn_hi264//pkg/decoder",
         "@com_github_eyevinn_hi264//pkg/frame",
         "@com_github_eyevinn_hi264//pkg/yuv",
+        "@com_github_eyevinn_mp4ff//avc",
         "@com_github_eyevinn_mp4ff//mp4",
     ],
 )

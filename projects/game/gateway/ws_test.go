@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -551,13 +553,19 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 	defer webConn.Close(websocket.StatusNormalClosure, "")
 
 	// when: agent sends media_init
+	segment := []byte("fake-init-segment")
+	initHash := sha256.Sum256(segment)
+	initID := hex.EncodeToString(initHash[:])
 	mediaEnv := &GameWebSocketEnvelope{
 		SessionId: "test-session",
 		MessageId: "media-1",
 		Payload: &GameWebSocketEnvelope_MediaInit{
 			MediaInit: &GameMediaInit{
-				MimeType: "video/mp4",
-				Segment:  []byte("fake-init-segment"),
+				StreamId: "stream-1",
+				InitId:   initID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  segment,
 			},
 		},
 	}
@@ -577,8 +585,8 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 	if initPayload == nil {
 		t.Fatal("expected media_init message on web connection")
 	}
-	if initPayload.GetMimeType() != "video/mp4" {
-		t.Fatalf("MimeType = %q, want %q", initPayload.GetMimeType(), "video/mp4")
+	if initPayload.GetMimeType() != "video/mp4; codecs=\"avc1.64001f\"" {
+		t.Fatalf("MimeType = %q, want %q", initPayload.GetMimeType(), "video/mp4; codecs=\"avc1.64001f\"")
 	}
 	if string(initPayload.GetSegment()) != "fake-init-segment" {
 		t.Fatalf("Segment = %q, want %q", string(initPayload.GetSegment()), "fake-init-segment")
@@ -626,5 +634,172 @@ func TestWebSocket_PingPong(t *testing.T) {
 	}
 	if pong.GetPong().GetNonce() != "nonce-123" {
 		t.Fatalf("Nonce = %q, want %q", pong.GetPong().GetNonce(), "nonce-123")
+	}
+}
+
+func Test_toDomainPayload_mediaInit(t *testing.T) {
+	// given
+	env := &GameWebSocketEnvelope{
+		SessionId: "session-1",
+		MessageId: "media-init-1",
+		Payload: &GameWebSocketEnvelope_MediaInit{
+			MediaInit: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "init-1",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  []byte("init-segment-bytes"),
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then
+	initPayload, ok := payload.(domain.MediaInitPayload)
+	if !ok {
+		t.Fatalf("toDomainPayload() returned %T, want MediaInitPayload", payload)
+	}
+	if initPayload.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", initPayload.StreamID, "stream-1")
+	}
+	if initPayload.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", initPayload.InitID, "init-1")
+	}
+	if initPayload.Codec != "h264-avc" {
+		t.Fatalf("Codec = %q, want %q", initPayload.Codec, "h264-avc")
+	}
+	if initPayload.MimeType != "video/mp4; codecs=\"avc1.64001f\"" {
+		t.Fatalf("MimeType = %q, want %q", initPayload.MimeType, "video/mp4; codecs=\"avc1.64001f\"")
+	}
+	if string(initPayload.Segment) != "init-segment-bytes" {
+		t.Fatalf("Segment = %q, want %q", string(initPayload.Segment), "init-segment-bytes")
+	}
+}
+
+func Test_toDomainPayload_mediaSegment(t *testing.T) {
+	// given
+	ra := true
+	env := &GameWebSocketEnvelope{
+		SessionId: "session-1",
+		MessageId: "media-seg-1",
+		Payload: &GameWebSocketEnvelope_MediaSegment{
+			MediaSegment: &GameMediaSegment{
+				StreamId:      "stream-1",
+				InitId:        "init-1",
+				Sequence:      42,
+				Segment:       []byte("fMP4-chunk"),
+				RandomAccess:  &ra,
+				DurationMs:    33,
+				Discontinuity: true,
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then
+	segPayload, ok := payload.(domain.MediaSegmentPayload)
+	if !ok {
+		t.Fatalf("toDomainPayload() returned %T, want MediaSegmentPayload", payload)
+	}
+	if segPayload.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", segPayload.StreamID, "stream-1")
+	}
+	if segPayload.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", segPayload.InitID, "init-1")
+	}
+	if segPayload.Sequence != 42 {
+		t.Fatalf("Sequence = %d, want %d", segPayload.Sequence, 42)
+	}
+	if !segPayload.RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
+	}
+	if segPayload.DurationMS != 33 {
+		t.Fatalf("DurationMS = %d, want %d", segPayload.DurationMS, 33)
+	}
+	if !segPayload.Discontinuity {
+		t.Fatal("Discontinuity = false, want true")
+	}
+}
+
+func Test_toProtoPayload_mediaInitRoundTrip(t *testing.T) {
+	// given
+	original := domain.MediaInitPayload{
+		StreamID: "stream-rt",
+		InitID:   "init-rt",
+		Codec:    "h264-avc",
+		MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+		Segment:  []byte("round-trip-init"),
+	}
+
+	// when
+	protoPayload := toProtoPayload(original)
+	env := &GameWebSocketEnvelope{SessionId: "s1", MessageId: "m1", Payload: protoPayload}
+	roundTripped := toDomainPayload(env)
+
+	// then
+	result, ok := roundTripped.(domain.MediaInitPayload)
+	if !ok {
+		t.Fatalf("round-trip returned %T, want MediaInitPayload", roundTripped)
+	}
+	if result.StreamID != original.StreamID {
+		t.Fatalf("StreamID = %q, want %q", result.StreamID, original.StreamID)
+	}
+	if result.InitID != original.InitID {
+		t.Fatalf("InitID = %q, want %q", result.InitID, original.InitID)
+	}
+	if result.Codec != original.Codec {
+		t.Fatalf("Codec = %q, want %q", result.Codec, original.Codec)
+	}
+	if result.MimeType != original.MimeType {
+		t.Fatalf("MimeType = %q, want %q", result.MimeType, original.MimeType)
+	}
+	if string(result.Segment) != string(original.Segment) {
+		t.Fatalf("Segment = %q, want %q", string(result.Segment), string(original.Segment))
+	}
+}
+
+func Test_toProtoPayload_mediaSegmentRoundTrip(t *testing.T) {
+	// given
+	original := domain.MediaSegmentPayload{
+		StreamID:      "stream-rt",
+		InitID:        "init-rt",
+		Sequence:      99,
+		Segment:       []byte("round-trip-seg"),
+		RandomAccess:  true,
+		DurationMS:    100,
+		Discontinuity: false,
+	}
+
+	// when
+	protoPayload := toProtoPayload(original)
+	env := &GameWebSocketEnvelope{SessionId: "s1", MessageId: "m1", Payload: protoPayload}
+	roundTripped := toDomainPayload(env)
+
+	// then
+	result, ok := roundTripped.(domain.MediaSegmentPayload)
+	if !ok {
+		t.Fatalf("round-trip returned %T, want MediaSegmentPayload", roundTripped)
+	}
+	if result.StreamID != original.StreamID {
+		t.Fatalf("StreamID = %q, want %q", result.StreamID, original.StreamID)
+	}
+	if result.InitID != original.InitID {
+		t.Fatalf("InitID = %q, want %q", result.InitID, original.InitID)
+	}
+	if result.Sequence != original.Sequence {
+		t.Fatalf("Sequence = %d, want %d", result.Sequence, original.Sequence)
+	}
+	if result.RandomAccess != original.RandomAccess {
+		t.Fatalf("RandomAccess = %v, want %v", result.RandomAccess, original.RandomAccess)
+	}
+	if result.DurationMS != original.DurationMS {
+		t.Fatalf("DurationMS = %d, want %d", result.DurationMS, original.DurationMS)
+	}
+	if result.Discontinuity != original.Discontinuity {
+		t.Fatalf("Discontinuity = %v, want %v", result.Discontinuity, original.Discontinuity)
 	}
 }

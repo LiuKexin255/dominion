@@ -205,24 +205,40 @@ message GameHello {
 
 // GameMediaInit carries the latest fMP4 initialization segment.
 message GameMediaInit {
-  string mime_type = 1 [(google.api.field_behavior) = REQUIRED];
+  string stream_id = 1 [(google.api.field_behavior) = REQUIRED];
 
-  // fMP4 init segment bytes. Maximum 1 MiB (see domain.MaxSegmentSize).
-  bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
+  // SHA-256 hex of segment.
+  string init_id = 2 [(google.api.field_behavior) = REQUIRED];
+
+  string mime_type = 3 [(google.api.field_behavior) = REQUIRED];
+
+  // The first v2 implementation only supports "h264-avc".
+  string codec = 4 [(google.api.field_behavior) = REQUIRED];
+
+  // Complete fMP4 init segment: ftyp + moov.
+  bytes segment = 5 [(google.api.field_behavior) = REQUIRED];
 }
 
-// GameMediaSegment carries one fMP4 media segment. key_frame marks the segment
-// that starts from a replayable key frame boundary for late-joining web
-// clients.
+// GameMediaSegment carries one fMP4 media segment.
 message GameMediaSegment {
-  string segment_id = 1 [(google.api.field_behavior) = REQUIRED];
+  string stream_id = 1 [(google.api.field_behavior) = REQUIRED];
 
-  // fMP4 media segment bytes. Maximum 1 MiB (see domain.MaxSegmentSize).
-  bytes segment = 2 [(google.api.field_behavior) = REQUIRED];
+  string init_id = 2 [(google.api.field_behavior) = REQUIRED];
 
-  bool key_frame = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  uint64 sequence = 3 [(google.api.field_behavior) = REQUIRED];
 
-  google.protobuf.Timestamp media_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // Complete fMP4 media fragment: moof + mdat.
+  bytes segment = 4 [(google.api.field_behavior) = REQUIRED];
+
+  // True iff this segment starts at an independently decodable random access
+  // point for the referenced init_id.
+  optional bool random_access = 5 [(google.api.field_behavior) = REQUIRED];
+
+  google.protobuf.Timestamp media_time = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int32 duration_ms = 7 [(google.api.field_behavior) = OPTIONAL];
+
+  bool discontinuity = 8 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // GameControlRequest requests one complete mouse action from web to agent.

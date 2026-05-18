@@ -8,6 +8,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//projects/game/gateway/domain",
+        "@com_github_eyevinn_mp4ff//avc",
+        "@com_github_eyevinn_mp4ff//mp4",
     ],
 )
 
@@ -15,4 +17,5 @@ go_unittest(
     name = "media_test",
     srcs = ["parser_test.go"],
     embed = [":media"],
+    deps = ["@com_github_eyevinn_mp4ff//mp4"],
 )

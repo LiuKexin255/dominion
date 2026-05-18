@@ -28,6 +28,7 @@ const (
 type GatewayService struct {
 	sessions      *sessionmanager.Manager
 	mediaCaches   map[string]domain.MediaCache
+	lastSequences map[string]uint64
 	mediaMu       sync.Mutex
 	control       *ControlExecutor
 	asyncCh       chan *domain.RoutedMessage
@@ -45,6 +46,7 @@ func NewGatewayService(
 	svc := &GatewayService{
 		sessions:      sessions,
 		mediaCaches:   map[string]domain.MediaCache{},
+		lastSequences: map[string]uint64{},
 		control:       control,
 		asyncCh:       asyncCh,
 		gatewayID:     gatewayID,
@@ -128,7 +130,7 @@ func (s *GatewayService) ConnectSession(ctx context.Context, pathSessionID, toke
 // ProcessHello handles the hello message after WebSocket upgrade. For agent
 // connections, it registers the agent on the session runtime. For web
 // connections, it adds the web connection and returns catch-up messages
-// (cached media_init and segments from the last key frame).
+// (cached media_init and segments from the last random-access segment).
 func (s *GatewayService) ProcessHello(rt *domain.SessionRuntime, _ *token.Claims, role domain.ClientRole, connID string) ([]*domain.RoutedMessage, error) {
 	switch role {
 	case domain.ClientRoleWindowsAgent:
@@ -149,8 +151,8 @@ func (s *GatewayService) ProcessHello(rt *domain.SessionRuntime, _ *token.Claims
 }
 
 // buildCatchUpMessages returns cached media_init and segments from the last
-// key frame for a late-joining web client. All messages use TargetConnID=""
-// (broadcast to all web connections).
+// random access point for a late-joining web client. All messages use
+// TargetConnID="" (broadcast to all web connections).
 func (s *GatewayService) buildCatchUpMessages(sessionID string) []*domain.RoutedMessage {
 	cache := s.getOrCreateMediaCache(sessionID)
 	var msgs []*domain.RoutedMessage
@@ -161,22 +163,29 @@ func (s *GatewayService) buildCatchUpMessages(sessionID string) []*domain.Routed
 			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaInitPayload{
+					StreamID: init.StreamID,
+					InitID:   init.InitID,
 					MimeType: init.MimeType,
+					Codec:    init.Codec,
 					Segment:  init.Data,
 				},
 			},
 		})
 	}
 
-	for _, seg := range cache.GetSegmentsFromLastKeyframe() {
+	for _, seg := range cache.GetSegmentsFromLastRandomAccess() {
 		msgs = append(msgs, &domain.RoutedMessage{
 			TargetKind: domain.RouteTargetWebBroadcast,
 			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaSegmentPayload{
-					SegmentID: seg.SegmentID,
-					Segment:   seg.Data,
-					KeyFrame:  seg.KeyFrame,
+					StreamID:      seg.StreamID,
+					InitID:        seg.InitID,
+					Sequence:      seg.Sequence,
+					Segment:       seg.Data,
+					RandomAccess:  seg.RandomAccess,
+					DurationMS:    seg.DurationMS,
+					Discontinuity: seg.Discontinuity,
 				},
 			},
 		})
@@ -207,10 +216,19 @@ func (s *GatewayService) HandleAgentMessage(_ context.Context, sessionID string,
 // it to all web connections.
 func (s *GatewayService) handleMediaInit(sessionID string, init domain.MediaInitPayload) ([]*domain.RoutedMessage, error) {
 	cache := s.getOrCreateMediaCache(sessionID)
-	if err := cache.StoreInitSegment(init.MimeType, init.Segment); err != nil {
+	ref := &domain.InitSegmentRef{
+		StreamID: init.StreamID,
+		InitID:   init.InitID,
+		MimeType: init.MimeType,
+		Codec:    init.Codec,
+		Data:     init.Segment,
+	}
+	if err := cache.StoreInitSegment(ref); err != nil {
 		return nil, err
 	}
-
+	s.mediaMu.Lock()
+	s.lastSequences[sessionID] = 0
+	s.mediaMu.Unlock()
 	return []*domain.RoutedMessage{
 		{
 			TargetKind: domain.RouteTargetWebBroadcast,
@@ -226,15 +244,34 @@ func (s *GatewayService) handleMediaInit(sessionID string, init domain.MediaInit
 // to all web connections.
 func (s *GatewayService) handleMediaSegment(sessionID string, seg domain.MediaSegmentPayload) ([]*domain.RoutedMessage, error) {
 	cache := s.getOrCreateMediaCache(sessionID)
-	if err := cache.AddSegment(&domain.SegmentRef{
-		SegmentID: seg.SegmentID,
-		Data:      seg.Segment,
-		KeyFrame:  seg.KeyFrame,
-		MediaTime: time.Now(),
-	}); err != nil {
+	activeInitID := cache.GetActiveInitID()
+	if activeInitID == "" {
+		return nil, fmt.Errorf("%w: no init segment received", domain.ErrUnknownInitID)
+	}
+	if seg.InitID != activeInitID {
+		return nil, fmt.Errorf("%w: segment init_id %s != active %s", domain.ErrUnknownInitID, seg.InitID, activeInitID)
+	}
+	s.mediaMu.Lock()
+	lastSeq := s.lastSequences[sessionID]
+	if seg.Sequence <= lastSeq {
+		s.mediaMu.Unlock()
+		return nil, fmt.Errorf("%w: got %d, last was %d", domain.ErrSequenceNotIncreasing, seg.Sequence, lastSeq)
+	}
+	s.lastSequences[sessionID] = seg.Sequence
+	s.mediaMu.Unlock()
+	ref := &domain.SegmentRef{
+		StreamID:      seg.StreamID,
+		InitID:        seg.InitID,
+		Sequence:      seg.Sequence,
+		Data:          seg.Segment,
+		RandomAccess:  seg.RandomAccess,
+		DurationMS:    seg.DurationMS,
+		Discontinuity: seg.Discontinuity,
+		MediaTime:     time.Now(),
+	}
+	if err := cache.AddSegment(ref); err != nil {
 		return nil, err
 	}
-
 	return []*domain.RoutedMessage{
 		{
 			TargetKind: domain.RouteTargetWebBroadcast,
@@ -357,7 +394,7 @@ func (s *GatewayService) handlePing(sessionID, connID string, ping domain.PingPa
 }
 
 // GetSnapshot returns the latest snapshot for a session. If the cached snapshot
-// is stale, it refreshes from the latest key frame segment.
+// is stale, it refreshes from the latest random-access segment.
 func (s *GatewayService) GetSnapshot(_ context.Context, sessionID string) (*domain.SnapshotRef, error) {
 	rt := s.sessions.GetRuntime(sessionID)
 	if rt == nil {

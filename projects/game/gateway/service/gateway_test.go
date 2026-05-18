@@ -21,16 +21,18 @@ func (v *stubVerifier) Verify(_ string) (*token.Claims, error) {
 }
 
 type stubMediaCache struct {
-	initSeg     *domain.InitSegmentRef
-	initOK      bool
-	segments    []*domain.SegmentRef
-	snapshot    *domain.SnapshotRef
-	snapshotOK  bool
-	snapshotErr error
+	initSeg      *domain.InitSegmentRef
+	initOK       bool
+	activeInitID string
+	segments     []*domain.SegmentRef
+	snapshot     *domain.SnapshotRef
+	snapshotOK   bool
+	snapshotErr  error
 }
 
-func (c *stubMediaCache) StoreInitSegment(mimeType string, data []byte) error {
-	c.initSeg = &domain.InitSegmentRef{MimeType: mimeType, Data: data}
+func (c *stubMediaCache) StoreInitSegment(ref *domain.InitSegmentRef) error {
+	c.initSeg = ref
+	c.activeInitID = ref.InitID
 	return nil
 }
 
@@ -46,7 +48,11 @@ func (c *stubMediaCache) GetInitSegment() (*domain.InitSegmentRef, bool) {
 	return c.initSeg, c.initOK
 }
 
-func (c *stubMediaCache) GetSegmentsFromLastKeyframe() []*domain.SegmentRef {
+func (c *stubMediaCache) GetActiveInitID() string {
+	return c.activeInitID
+}
+
+func (c *stubMediaCache) GetSegmentsFromLastRandomAccess() []*domain.SegmentRef {
 	return c.segments
 }
 
@@ -204,15 +210,19 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
-	// given: media cache has init segment and one keyframe segment
+	// given: media cache has init segment and one random access segment
 	cache := &stubMediaCache{
 		initSeg: &domain.InitSegmentRef{
+			StreamID: "stream-1",
+			InitID:   "init-1",
 			MimeType: "video/mp4",
+			Codec:    "avc1",
 			Data:     []byte("init-data"),
 		},
-		initOK: true,
+		activeInitID: "init-1",
+		initOK:       true,
 		segments: []*domain.SegmentRef{
-			{SegmentID: "seg-1", Data: []byte("seg-data"), KeyFrame: true},
+			{StreamID: "stream-1", InitID: "init-1", Sequence: 1, Data: []byte("seg-data"), RandomAccess: true},
 		},
 	}
 	svc.mediaCaches["session-1"] = cache
@@ -251,8 +261,14 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 	if !ok {
 		t.Fatal("second message payload is not media_segment")
 	}
-	if segPayload.SegmentID != "seg-1" {
-		t.Fatalf("SegmentID = %q, want %q", segPayload.SegmentID, "seg-1")
+	if segPayload.Sequence != 1 {
+		t.Fatalf("Sequence = %d, want %d", segPayload.Sequence, 1)
+	}
+	if string(segPayload.Segment) != "seg-data" {
+		t.Fatalf("Segment = %q, want %q", string(segPayload.Segment), "seg-data")
+	}
+	if !segPayload.RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
 	}
 
 	// web connection registered
@@ -285,13 +301,16 @@ func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
 func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
-	cache := new(stubMediaCache)
+	cache := &stubMediaCache{}
 	svc.mediaCaches["session-1"] = cache
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.MediaInitPayload{
+			StreamID: "stream-1",
+			InitID:   "init-1",
 			MimeType: "video/mp4",
+			Codec:    "avc1",
 			Segment:  []byte("init-bytes"),
 		},
 	}
@@ -313,26 +332,39 @@ func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
 	if cache.initSeg == nil {
 		t.Fatal("init segment not stored in cache")
 	}
+	if cache.initSeg.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", cache.initSeg.InitID, "init-1")
+	}
 	if cache.initSeg.MimeType != "video/mp4" {
 		t.Fatalf("MimeType = %q, want %q", cache.initSeg.MimeType, "video/mp4")
 	}
 	if string(cache.initSeg.Data) != "init-bytes" {
 		t.Fatalf("Data = %q, want %q", string(cache.initSeg.Data), "init-bytes")
 	}
+	// sequence tracking reset
+	svc.mediaMu.Lock()
+	lastSeq := svc.lastSequences["session-1"]
+	svc.mediaMu.Unlock()
+	if lastSeq != 0 {
+		t.Fatalf("lastSequences = %d, want 0 after init", lastSeq)
+	}
 }
 
 func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
-	cache := new(stubMediaCache)
+	cache := &stubMediaCache{activeInitID: "init-1"}
 	svc.mediaCaches["session-1"] = cache
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.MediaSegmentPayload{
-			SegmentID: "seg-42",
-			Segment:   []byte("fMP4-chunk"),
-			KeyFrame:  true,
+			StreamID:     "stream-1",
+			InitID:       "init-1",
+			Sequence:     42,
+			Segment:      []byte("fMP4-chunk"),
+			RandomAccess: true,
+			DurationMS:   33,
 		},
 	}
 
@@ -353,11 +385,11 @@ func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
 	if len(cache.segments) != 1 {
 		t.Fatalf("len(cache.segments) = %d, want 1", len(cache.segments))
 	}
-	if cache.segments[0].SegmentID != "seg-42" {
-		t.Fatalf("SegmentID = %q, want %q", cache.segments[0].SegmentID, "seg-42")
+	if cache.segments[0].Sequence != 42 {
+		t.Fatalf("Sequence = %d, want %d", cache.segments[0].Sequence, 42)
 	}
-	if !cache.segments[0].KeyFrame {
-		t.Fatal("KeyFrame = false, want true")
+	if !cache.segments[0].RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
 	}
 }
 

@@ -1,7 +1,12 @@
 package gateway
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
+
+	"dominion/projects/game/gateway/domain"
 )
 
 func TestValidateWebSocketEnvelope(t *testing.T) {
@@ -225,7 +230,7 @@ func TestValidateRolePayload(t *testing.T) {
 				SessionId: "session-1",
 				MessageId: "msg-1",
 				Payload: &GameWebSocketEnvelope_MediaSegment{
-					MediaSegment: &GameMediaSegment{SegmentId: "seg-1"},
+					MediaSegment: &GameMediaSegment{StreamId: "stream-1", InitId: "init-1", Sequence: 1, Segment: []byte("seg")},
 				},
 			},
 			wantErr: true,
@@ -511,8 +516,290 @@ func TestValidateControlRequest(t *testing.T) {
 			if tt.wantErr && err == nil {
 				t.Fatal("ValidateControlRequest() expected error, got nil")
 			}
+		})
+	}
+}
+
+var validTestSegment = []byte("ftypisommoov-test-data-for-init")
+
+func validTestInitID() string {
+	hash := sha256.Sum256(validTestSegment)
+	return hex.EncodeToString(hash[:])
+}
+
+func TestValidateMediaInit(t *testing.T) {
+	validInitID := validTestInitID()
+
+	// given
+	tests := []struct {
+		name    string
+		msg     *GameMediaInit
+		wantErr bool
+	}{
+		{
+			name: "valid init passes",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty stream_id rejected",
+			msg: &GameMediaInit{
+				StreamId: "",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty init_id rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsupported codec rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "vp9",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid mime_type missing video/mp4 rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/webm; codecs=\"avc1\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid mime_type missing avc1 rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"vp9\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty segment rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  []byte{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "oversized segment rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  make([]byte, domain.MaxSegmentSize+1),
+			},
+			wantErr: true,
+		},
+		{
+			name: "init_id hash mismatch rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "wrong-hash-value",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaInit(tt.msg)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateMediaInit() expected error, got nil")
+			}
 			if !tt.wantErr && err != nil {
-				t.Fatalf("ValidateControlRequest() unexpected error: %v", err)
+				t.Fatalf("ValidateMediaInit() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMediaSegment(t *testing.T) {
+	// given
+	ra := true
+
+	tests := []struct {
+		name    string
+		msg     *GameMediaSegment
+		wantErr bool
+	}{
+		{
+			name: "valid segment passes",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty stream_id rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty init_id rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "sequence zero rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     0,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty segment rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte{},
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "oversized segment rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      make([]byte, domain.MaxSegmentSize+1),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "random_access nil rejected",
+			msg: &GameMediaSegment{
+				StreamId: "stream-1",
+				InitId:   "init-1",
+				Sequence: 1,
+				Segment:  []byte("moof-mdat-data"),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaSegment(tt.msg)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateMediaSegment() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateMediaSegment() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMediaInit_ErrorMessages(t *testing.T) {
+	validInitID := validTestInitID()
+
+	// given
+	tests := []struct {
+		name       string
+		msg        *GameMediaInit
+		wantSubstr string
+	}{
+		{
+			name: "unsupported codec mentions codec",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1\"",
+				Codec:    "vp9",
+				Segment:  validTestSegment,
+			},
+			wantSubstr: "unsupported codec",
+		},
+		{
+			name: "init_id mismatch mentions mismatch",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "bad-hash",
+				MimeType: "video/mp4; codecs=\"avc1\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantSubstr: "mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaInit(tt.msg)
+
+			// then
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.wantSubstr)
 			}
 		})
 	}

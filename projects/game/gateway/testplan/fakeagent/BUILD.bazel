@@ -13,6 +13,7 @@ go_library(
         "//projects/game/gateway",
         "//projects/game/gateway/domain",
         "@com_github_coder_websocket//:websocket",
+        "@com_github_eyevinn_mp4ff//avc",
         "@com_github_eyevinn_mp4ff//mp4",
         "@com_github_minio_minio_go_v7//:minio-go",
         "@org_golang_google_protobuf//encoding/protojson",

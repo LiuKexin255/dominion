@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"sync/atomic"
+	"time"
 
 	"dominion/projects/game/windows_agent/internal/log"
 	"dominion/projects/game/windows_agent/internal/media"
@@ -27,6 +30,10 @@ func (r *Runtime) startMediaFlow() error {
 		return fmt.Errorf("media parser is not configured")
 	}
 
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%d", session.ID, time.Now().UnixNano())))
+	r.streamID = hex.EncodeToString(hash[:])
+	r.sequence = 0
+
 	done := make(chan error, 1)
 	r.mu.Lock()
 	r.mediaDone = done
@@ -35,19 +42,20 @@ func (r *Runtime) startMediaFlow() error {
 
 	go func(reader io.Reader, sessionID string) {
 		err := r.parseMedia(reader,
-			func(initData []byte) error {
-				log.Printf("media-flow", "sending init segment: session=%s size=%d", sessionID, len(initData))
-				if err := r.transport.SendMediaInit(ctx, sessionID, transport.MimeTypeMP4, initData); err != nil {
+			func(initSeg *media.InitSegment) error {
+				r.initID = initSeg.InitID
+				log.Printf("media-flow", "sending init: session=%s stream=%s init=%s size=%d", sessionID, r.streamID, r.initID, len(initSeg.Data))
+				if err := r.transport.SendMediaInit(ctx, sessionID, r.streamID, r.initID, transport.MimeTypeMP4, transport.CodecH264AVC, initSeg.Data); err != nil {
 					log.Errorf("media-flow", "send init failed: session=%s error=%v", sessionID, err)
 					return err
 				}
 				return nil
 			},
 			func(seg *media.MediaSegment) error {
-				segmentID := fmt.Sprintf("seg-%d", seg.SeqNum)
-				log.Printf("media-flow", "sending segment: session=%s seg=%s size=%d keyframe=%v", sessionID, segmentID, len(seg.Data), seg.KeyFrame)
-				if err := r.transport.SendMediaSegment(ctx, sessionID, segmentID, seg.Data, seg.KeyFrame); err != nil {
-					log.Errorf("media-flow", "send segment failed: session=%s seg=%s error=%v", sessionID, segmentID, err)
+				r.sequence++
+				ra := seg.RandomAccess
+				if err := r.transport.SendMediaSegment(ctx, sessionID, r.streamID, r.initID, r.sequence, seg.Data, &ra, seg.DurationMS, seg.Discontinuity); err != nil {
+					log.Errorf("media-flow", "send segment failed: session=%s seq=%d error=%v", sessionID, r.sequence, err)
 					return err
 				}
 				atomic.AddInt64(&r.segCount, 1)
@@ -55,7 +63,7 @@ func (r *Runtime) startMediaFlow() error {
 			},
 		)
 		if err != nil {
-			log.Errorf("media-flow", "media flow ended with error: session=%s error=%v", sessionID, err)
+			log.Errorf("media-flow", "media flow ended with error: session=%s segments=%d error=%v", sessionID, r.segCount, err)
 		} else {
 			log.Printf("media-flow", "media flow ended: session=%s segments=%d", sessionID, r.segCount)
 		}

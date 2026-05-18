@@ -11,13 +11,17 @@ const (
 
 // EncoderConfig configures ffmpeg gdigrab capture and H.264 fragmented MP4 output.
 type EncoderConfig struct {
-	HWND      uintptr // target window handle
-	FrameRate int     // fps, default 30
-	MaxWidth  int     // max width, default 1280
-	MaxHeight int     // max height, default 720
-	Bitrate   string  // bitrate string, default "1M"
-	Preset    string  // x264 preset, default "ultrafast"
-	Tune      string  // x264 tune, default "zerolatency"
+	HWND           uintptr // target window handle (fallback when CaptureWidth is zero)
+	FrameRate      int     // fps, default 30
+	MaxWidth       int     // max output width, default 1280
+	MaxHeight      int     // max output height, default 720
+	Bitrate        string  // bitrate string, default "1M"
+	Preset         string  // x264 preset, default "ultrafast"
+	Tune           string  // x264 tune, default "zerolatency"
+	CaptureOffsetX int     // desktop capture X offset (screen coordinates)
+	CaptureOffsetY int     // desktop capture Y offset (screen coordinates)
+	CaptureWidth   int     // desktop capture region width
+	CaptureHeight  int     // desktop capture region height
 }
 
 // DefaultConfig returns the default encoder configuration for low-latency streaming.

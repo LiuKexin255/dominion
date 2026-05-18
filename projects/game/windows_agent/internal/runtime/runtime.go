@@ -79,8 +79,8 @@ type TransportClient interface {
 	Connect(ctx context.Context, connectURL string) error
 	Close() error
 	SendHello(ctx context.Context, sessionID string) error
-	SendMediaInit(ctx context.Context, sessionID, mimeType string, segment []byte) error
-	SendMediaSegment(ctx context.Context, sessionID, segmentID string, segment []byte, keyframe bool) error
+	SendMediaInit(ctx context.Context, sessionID, streamID, initID, mimeType, codec string, segment []byte) error
+	SendMediaSegment(ctx context.Context, sessionID, streamID, initID string, sequence uint64, segment []byte, randomAccess *bool, durationMS int32, discontinuity bool) error
 	SendControlAck(ctx context.Context, sessionID, operationID string) error
 	SendControlResult(ctx context.Context, sessionID, operationID string, status gw.GameControlResultStatus) error
 	SendPong(ctx context.Context, sessionID, nonce string) error
@@ -111,7 +111,7 @@ type MediaEncoder interface {
 
 // MediaParser reads an fMP4 stream and delivers init and media segments via
 // callbacks as they are parsed, without waiting for EOF.
-type MediaParser func(r io.Reader, onInit func([]byte) error, onMedia func(*media.MediaSegment) error) error
+type MediaParser func(r io.Reader, onInit func(*media.InitSegment) error, onMedia func(*media.MediaSegment) error) error
 
 // Runtime coordinates transport, window binding, capture, encoding, media, and input.
 type Runtime struct {
@@ -129,6 +129,10 @@ type Runtime struct {
 
 	boundWindow *window.WindowInfo
 	mediaDone   chan error
+
+	streamID string // generated at StartCapture, reset on StopCapture
+	initID   string // from latest ParseMediaInit
+	sequence uint64 // per-stream sequence counter (starts at 1)
 
 	mu     sync.RWMutex
 	ctx    context.Context
