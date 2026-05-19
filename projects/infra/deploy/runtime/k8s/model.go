@@ -25,6 +25,7 @@ type DeploymentWorkload struct {
 	Image           string
 	Replicas        int32
 	Ports           []*DeploymentPort
+	EnvType         domain.EnvironmentType
 	Env             map[string]string
 }
 
@@ -97,6 +98,7 @@ type StatefulWorkload struct {
 	Replicas        int32
 	Ports           []*DeploymentPort
 	Hostnames       []string
+	EnvType         domain.EnvironmentType
 	Env             map[string]string
 }
 

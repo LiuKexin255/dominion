@@ -10,7 +10,7 @@ _FFMPEG_BUILD_FILE = """exports_files([
 ])
 """
 
-def _ffmpeg_windows_amd64_impl():
+def _ffmpeg_windows_amd64_impl(ctx):
     http_archive(
         name = "ffmpeg_windows_amd64",
         urls = ["https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-essentials_build.zip"],

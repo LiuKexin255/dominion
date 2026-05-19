@@ -47,6 +47,9 @@ const (
 	// envTLSDomain 为 TLS 服务名环境变量名。
 	envTLSDomain = "TLS_SERVER_NAME"
 
+	// envLogLevel 为默认日志级别环境变量名。
+	envLogLevel = "LOG_LEVEL"
+
 	// envS3AccessKey 为 S3 Access Key 环境变量名。
 	envS3AccessKey = "S3_ACCESS_KEY"
 	// envS3SecretKey 为 S3 Secret Key 环境变量名。
@@ -125,6 +128,9 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 
 	replicas := workload.Replicas
 	containerEnv := buildSortedUserEnv(workload.Env)
+	if _, ok := workload.Env[envLogLevel]; !ok {
+		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
+	}
 	containerEnv = append(containerEnv,
 		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
@@ -252,6 +258,9 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 
 	replicas := workload.Replicas
 	containerEnv := buildSortedUserEnv(workload.Env)
+	if _, ok := workload.Env[envLogLevel]; !ok {
+		containerEnv = append(containerEnv, corev1.EnvVar{Name: envLogLevel, Value: defaultLogLevel(workload.EnvType)})
+	}
 	containerEnv = append(containerEnv,
 		corev1.EnvVar{Name: reservedEnvNameServiceApp, Value: workload.App},
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
@@ -963,6 +972,20 @@ func buildSortedUserEnv(env map[string]string) []corev1.EnvVar {
 	}
 
 	return result
+}
+
+// defaultLogLevel 根据环境类型返回默认日志级别。
+func defaultLogLevel(envType domain.EnvironmentType) string {
+	switch envType {
+	case domain.EnvironmentTypeProd:
+		return "info"
+	case domain.EnvironmentTypeTest:
+		return "debug"
+	case domain.EnvironmentTypeDev:
+		return "debug"
+	default:
+		return "info"
+	}
 }
 
 func buildContainerPorts(ports []*DeploymentPort) ([]corev1.ContainerPort, error) {

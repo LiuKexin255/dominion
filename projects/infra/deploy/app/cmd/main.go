@@ -75,7 +75,7 @@ func main() {
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
 	bs.Register(bootstrap.MongoClient("mongo", client))
-	bs.Register(otel.Component())
+	bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/infra/deploy")))
 	bs.Register(server)
 	bs.Register(daemon)
 	if err := bs.Run(context.Background()); err != nil {

@@ -55,7 +55,7 @@ func main() {
 	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
-	if err := bs.Register(otel.Component()); err != nil {
+	if err := bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/game/gateway"))); err != nil {
 		log.Fatalf("register otel: %v", err)
 	}
 	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {

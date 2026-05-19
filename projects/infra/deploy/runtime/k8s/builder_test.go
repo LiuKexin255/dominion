@@ -61,6 +61,7 @@ func testDeploymentWorkload() *DeploymentWorkload {
 		App:             "myapp",
 		Image:           "repo/myapp:v1",
 		Replicas:        2,
+		EnvType:         domain.EnvironmentTypeProd,
 		Ports: []*DeploymentPort{
 			{Name: "http", Port: 8080},
 			{Name: "grpc", Port: 9090},
@@ -75,6 +76,7 @@ func testStatefulWorkload() *StatefulWorkload {
 		App:             "myapp",
 		Image:           "repo/myapp:v1",
 		Replicas:        3,
+		EnvType:         domain.EnvironmentTypeProd,
 		Ports: []*DeploymentPort{
 			{Name: "http", Port: 8080},
 			{Name: "grpc", Port: 9090},
@@ -330,11 +332,12 @@ func TestBuildDeployment_UserEnvSortedBeforeReserved(t *testing.T) {
 	envs := container.Env
 
 	// User env sorted: A_VAR, B_VAR, M_VAR, Z_VAR.
+	// Default LOG_LEVEL injected: LOG_LEVEL.
 	// Reserved: SERVICE_APP, DOMINION_ENVIRONMENT, POD_NAMESPACE.
 	// Client TLS (always injected): TLS_CA_FILE, TLS_SERVER_NAME.
-	// Total: 9 env vars.
-	if len(envs) != 9 {
-		t.Fatalf("Env count = %d, want 9", len(envs))
+	// Total: 10 env vars.
+	if len(envs) != 10 {
+		t.Fatalf("Env count = %d, want 10", len(envs))
 	}
 
 	wantOrder := []struct{ name, value string }{
@@ -342,6 +345,7 @@ func TestBuildDeployment_UserEnvSortedBeforeReserved(t *testing.T) {
 		{"B_VAR", "b"},
 		{"M_VAR", "m"},
 		{"Z_VAR", "z"},
+		{envLogLevel, "info"},
 		{reservedEnvNameServiceApp, w.App},
 		{reservedEnvNameDominionEnvironment, w.EnvironmentName},
 		{reservedEnvNamePodNamespace, cfg.Namespace},
@@ -372,7 +376,7 @@ func TestBuildDeployment_UserEnvWithTLS_ReservedAfterUserBeforeTLS(t *testing.T)
 	container := deploy.Spec.Template.Spec.Containers[0]
 	envs := container.Env
 
-	// APP_DEBUG, LOG_LEVEL, SERVICE_APP, DOMINION_ENVIRONMENT, POD_NAMESPACE, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CA_FILE, TLS_SERVER_NAME.
+	// APP_DEBUG, LOG_LEVEL (user), SERVICE_APP, DOMINION_ENVIRONMENT, POD_NAMESPACE, TLS_CERT_FILE, TLS_KEY_FILE, TLS_CA_FILE, TLS_SERVER_NAME.
 	if len(envs) != 9 {
 		t.Fatalf("Env count = %d, want 9", len(envs))
 	}
@@ -408,18 +412,21 @@ func TestBuildDeployment_NilEnv_BackwardCompatible(t *testing.T) {
 
 	container := deploy.Spec.Template.Spec.Containers[0]
 
-	// Reserved env + client TLS env (TLS_CA_FILE, TLS_SERVER_NAME always injected).
-	if len(container.Env) != 5 {
-		t.Fatalf("Env count = %d, want 5", len(container.Env))
+	// Default LOG_LEVEL + reserved env + client TLS env (TLS_CA_FILE, TLS_SERVER_NAME always injected).
+	if len(container.Env) != 6 {
+		t.Fatalf("Env count = %d, want 6", len(container.Env))
 	}
-	if container.Env[0].Name != reservedEnvNameServiceApp {
-		t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, reservedEnvNameServiceApp)
+	if container.Env[0].Name != envLogLevel {
+		t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, envLogLevel)
 	}
-	if container.Env[3].Name != envTLSCAFile {
-		t.Fatalf("Env[3] Name = %q, want %q", container.Env[3].Name, envTLSCAFile)
+	if container.Env[1].Name != reservedEnvNameServiceApp {
+		t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, reservedEnvNameServiceApp)
 	}
-	if container.Env[4].Name != envTLSDomain {
-		t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, envTLSDomain)
+	if container.Env[4].Name != envTLSCAFile {
+		t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, envTLSCAFile)
+	}
+	if container.Env[5].Name != envTLSDomain {
+		t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, envTLSDomain)
 	}
 }
 
@@ -464,18 +471,18 @@ func TestBuildDeployment_WithOSS(t *testing.T) {
 	container := deploy.Spec.Template.Spec.Containers[0]
 	envs := container.Env
 
-	// 3 reserved + 2 client TLS + 2 OSS = 7.
-	if len(envs) != 7 {
-		t.Fatalf("Env count = %d, want 7", len(envs))
+	// LOG_LEVEL + 3 reserved + 2 client TLS + 2 OSS = 8.
+	if len(envs) != 8 {
+		t.Fatalf("Env count = %d, want 8", len(envs))
 	}
 
 	// Verify S3_ACCESS_KEY SecretKeyRef.
-	accessKeyEnv := envs[5]
+	accessKeyEnv := envs[6]
 	if accessKeyEnv.Name != envS3AccessKey {
-		t.Fatalf("Env[5] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+		t.Fatalf("Env[6] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
 	}
 	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
-		t.Fatalf("Env[5] should use SecretKeyRef")
+		t.Fatalf("Env[6] should use SecretKeyRef")
 	}
 	if accessKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
 		t.Fatalf("SecretKeyRef Name = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
@@ -485,12 +492,12 @@ func TestBuildDeployment_WithOSS(t *testing.T) {
 	}
 
 	// Verify S3_SECRET_KEY SecretKeyRef.
-	secretKeyEnv := envs[6]
+	secretKeyEnv := envs[7]
 	if secretKeyEnv.Name != envS3SecretKey {
-		t.Fatalf("Env[6] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+		t.Fatalf("Env[7] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
 	}
 	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
-		t.Fatalf("Env[6] should use SecretKeyRef")
+		t.Fatalf("Env[7] should use SecretKeyRef")
 	}
 	if secretKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
 		t.Fatalf("SecretKeyRef Name = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
@@ -514,17 +521,17 @@ func TestBuildDeployment_WithTLSAndOSS(t *testing.T) {
 	container := deploy.Spec.Template.Spec.Containers[0]
 	envs := container.Env
 
-	// 3 reserved + 4 TLS + 2 OSS = 9.
-	if len(envs) != 9 {
-		t.Fatalf("Env count = %d, want 9", len(envs))
+	// LOG_LEVEL + 3 reserved + 4 TLS + 2 OSS = 10.
+	if len(envs) != 10 {
+		t.Fatalf("Env count = %d, want 10", len(envs))
 	}
 
 	// Verify OSS env comes after TLS env.
-	if envs[7].Name != envS3AccessKey {
-		t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, envS3AccessKey)
+	if envs[8].Name != envS3AccessKey {
+		t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envS3AccessKey)
 	}
-	if envs[8].Name != envS3SecretKey {
-		t.Fatalf("Env[8] Name = %q, want %q", envs[8].Name, envS3SecretKey)
+	if envs[9].Name != envS3SecretKey {
+		t.Fatalf("Env[9] Name = %q, want %q", envs[9].Name, envS3SecretKey)
 	}
 }
 
@@ -546,7 +553,7 @@ func TestBuildDeployment_UserEnvWithOSS_ReservedAfterUserAfterTLS(t *testing.T) 
 	container := deploy.Spec.Template.Spec.Containers[0]
 	envs := container.Env
 
-	// 2 user + 3 reserved + 4 TLS + 2 OSS = 11.
+	// 2 user (including user LOG_LEVEL) + 3 reserved + 4 TLS + 2 OSS = 11.
 	if len(envs) != 11 {
 		t.Fatalf("Env count = %d, want 11", len(envs))
 	}
@@ -564,6 +571,58 @@ func TestBuildDeployment_UserEnvWithOSS_ReservedAfterUserAfterTLS(t *testing.T) 
 	}
 }
 
+func TestBuildDeployment_DefaultLogLevelByEnvType(t *testing.T) {
+	tests := []struct {
+		name    string
+		envType domain.EnvironmentType
+		want    string
+	}{
+		{name: "prod", envType: domain.EnvironmentTypeProd, want: "info"},
+		{name: "test", envType: domain.EnvironmentTypeTest, want: "debug"},
+		{name: "dev", envType: domain.EnvironmentTypeDev, want: "debug"},
+		{name: "unspecified", envType: domain.EnvironmentTypeUnspecified, want: "info"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testK8sConfig()
+			w := testDeploymentWorkload()
+			w.EnvType = tt.envType
+
+			deploy, err := BuildDeployment(w, cfg)
+			if err != nil {
+				t.Fatalf("BuildDeployment() error: %v", err)
+			}
+
+			container := deploy.Spec.Template.Spec.Containers[0]
+			envMap := envVarsToMap(container.Env)
+			if envMap[envLogLevel] != tt.want {
+				t.Fatalf("Env[%q] = %q, want %q", envLogLevel, envMap[envLogLevel], tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildDeployment_UserLogLevelOverridesDefault(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.EnvType = domain.EnvironmentTypeProd
+	w.Env = map[string]string{
+		"LOG_LEVEL": "debug",
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+	if envMap[envLogLevel] != "debug" {
+		t.Fatalf("Env[%q] = %q, want %q (user value preserved)", envLogLevel, envMap[envLogLevel], "debug")
+	}
+}
+
 func TestBuildStatefulSet_WithOSS(t *testing.T) {
 	cfg := testK8sConfig()
 	w := testStatefulWorkload()
@@ -577,17 +636,17 @@ func TestBuildStatefulSet_WithOSS(t *testing.T) {
 	container := sts.Spec.Template.Spec.Containers[0]
 	envs := container.Env
 
-	// 3 reserved + 2 client TLS + 2 OSS = 7.
-	if len(envs) != 7 {
-		t.Fatalf("Env count = %d, want 7", len(envs))
+	// LOG_LEVEL + 3 reserved + 2 client TLS + 2 OSS = 8.
+	if len(envs) != 8 {
+		t.Fatalf("Env count = %d, want 8", len(envs))
 	}
 
-	accessKeyEnv := envs[5]
+	accessKeyEnv := envs[6]
 	if accessKeyEnv.Name != envS3AccessKey {
-		t.Fatalf("Env[5] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
+		t.Fatalf("Env[6] Name = %q, want %q", accessKeyEnv.Name, envS3AccessKey)
 	}
 	if accessKeyEnv.ValueFrom == nil || accessKeyEnv.ValueFrom.SecretKeyRef == nil {
-		t.Fatalf("Env[5] should use SecretKeyRef")
+		t.Fatalf("Env[6] should use SecretKeyRef")
 	}
 	if accessKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
 		t.Fatalf("SecretKeyRef Name = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
@@ -596,12 +655,12 @@ func TestBuildStatefulSet_WithOSS(t *testing.T) {
 		t.Fatalf("SecretKeyRef Key = %q, want %q", accessKeyEnv.ValueFrom.SecretKeyRef.Key, cfg.OSS.AccessKey)
 	}
 
-	secretKeyEnv := envs[6]
+	secretKeyEnv := envs[7]
 	if secretKeyEnv.Name != envS3SecretKey {
-		t.Fatalf("Env[6] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
+		t.Fatalf("Env[7] Name = %q, want %q", secretKeyEnv.Name, envS3SecretKey)
 	}
 	if secretKeyEnv.ValueFrom == nil || secretKeyEnv.ValueFrom.SecretKeyRef == nil {
-		t.Fatalf("Env[6] should use SecretKeyRef")
+		t.Fatalf("Env[7] should use SecretKeyRef")
 	}
 	if secretKeyEnv.ValueFrom.SecretKeyRef.Name != cfg.OSS.Secret {
 		t.Fatalf("SecretKeyRef Name = %q, want %q", secretKeyEnv.ValueFrom.SecretKeyRef.Name, cfg.OSS.Secret)
@@ -612,6 +671,58 @@ func TestBuildStatefulSet_WithOSS(t *testing.T) {
 }
 
 // --- BuildStatefulSet ---
+
+func TestBuildStatefulSet_DefaultLogLevelByEnvType(t *testing.T) {
+	tests := []struct {
+		name    string
+		envType domain.EnvironmentType
+		want    string
+	}{
+		{name: "prod", envType: domain.EnvironmentTypeProd, want: "info"},
+		{name: "test", envType: domain.EnvironmentTypeTest, want: "debug"},
+		{name: "dev", envType: domain.EnvironmentTypeDev, want: "debug"},
+		{name: "unspecified", envType: domain.EnvironmentTypeUnspecified, want: "info"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testK8sConfig()
+			w := testStatefulWorkload()
+			w.EnvType = tt.envType
+
+			sts, err := BuildStatefulSet(w, cfg)
+			if err != nil {
+				t.Fatalf("BuildStatefulSet() error: %v", err)
+			}
+
+			container := sts.Spec.Template.Spec.Containers[0]
+			envMap := envVarsToMap(container.Env)
+			if envMap[envLogLevel] != tt.want {
+				t.Fatalf("Env[%q] = %q, want %q", envLogLevel, envMap[envLogLevel], tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildStatefulSet_UserLogLevelOverridesDefault(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.EnvType = domain.EnvironmentTypeProd
+	w.Env = map[string]string{
+		"LOG_LEVEL": "debug",
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+	envMap := envVarsToMap(container.Env)
+	if envMap[envLogLevel] != "debug" {
+		t.Fatalf("Env[%q] = %q, want %q (user value preserved)", envLogLevel, envMap[envLogLevel], "debug")
+	}
+}
 
 func TestBuildStatefulSet(t *testing.T) {
 	tests := []struct {
@@ -783,9 +894,9 @@ func TestBuildStatefulSet(t *testing.T) {
 
 				container := sts.Spec.Template.Spec.Containers[0]
 				envs := container.Env
-				// 2 user + 3 reserved + 2 client TLS = 7.
-				if len(envs) != 7 {
-					t.Fatalf("Env count = %d, want 7", len(envs))
+				// 2 user + LOG_LEVEL + 3 reserved + 2 client TLS = 8.
+				if len(envs) != 8 {
+					t.Fatalf("Env count = %d, want 8", len(envs))
 				}
 
 				if envs[0].Name != "A_VAR" || envs[0].Value != "a" {
@@ -795,21 +906,25 @@ func TestBuildStatefulSet(t *testing.T) {
 					t.Fatalf("Env[1] = {Name: %q, Value: %q}, want Z_VAR/z", envs[1].Name, envs[1].Value)
 				}
 
-				if envs[2].Name != reservedEnvNameServiceApp {
-					t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, reservedEnvNameServiceApp)
-				}
-				if envs[3].Name != reservedEnvNameDominionEnvironment {
-					t.Fatalf("Env[3] Name = %q, want %q", envs[3].Name, reservedEnvNameDominionEnvironment)
-				}
-				if envs[4].Name != reservedEnvNamePodNamespace {
-					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, reservedEnvNamePodNamespace)
+				if envs[2].Name != envLogLevel {
+					t.Fatalf("Env[2] Name = %q, want %q", envs[2].Name, envLogLevel)
 				}
 
-				if envs[5].Name != envTLSCAFile {
-					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, envTLSCAFile)
+				if envs[3].Name != reservedEnvNameServiceApp {
+					t.Fatalf("Env[3] Name = %q, want %q", envs[3].Name, reservedEnvNameServiceApp)
 				}
-				if envs[6].Name != envTLSDomain {
-					t.Fatalf("Env[6] Name = %q, want %q", envs[6].Name, envTLSDomain)
+				if envs[4].Name != reservedEnvNameDominionEnvironment {
+					t.Fatalf("Env[4] Name = %q, want %q", envs[4].Name, reservedEnvNameDominionEnvironment)
+				}
+				if envs[5].Name != reservedEnvNamePodNamespace {
+					t.Fatalf("Env[5] Name = %q, want %q", envs[5].Name, reservedEnvNamePodNamespace)
+				}
+
+				if envs[6].Name != envTLSCAFile {
+					t.Fatalf("Env[6] Name = %q, want %q", envs[6].Name, envTLSCAFile)
+				}
+				if envs[7].Name != envTLSDomain {
+					t.Fatalf("Env[7] Name = %q, want %q", envs[7].Name, envTLSDomain)
 				}
 			},
 		},
@@ -828,6 +943,7 @@ func TestBuildStatefulSet(t *testing.T) {
 
 				container := sts.Spec.Template.Spec.Containers[0]
 				envs := container.Env
+				// 1 user (LOG_LEVEL) + 3 reserved + 4 TLS = 8.
 				if len(envs) != 8 {
 					t.Fatalf("Env count = %d, want 8", len(envs))
 				}
@@ -862,18 +978,21 @@ func TestBuildStatefulSet(t *testing.T) {
 				t.Helper()
 
 				container := sts.Spec.Template.Spec.Containers[0]
-				// 3 reserved + 2 client TLS (always injected).
-				if len(container.Env) != 5 {
-					t.Fatalf("Env count = %d, want 5", len(container.Env))
+				// Default LOG_LEVEL + 3 reserved + 2 client TLS (always injected).
+				if len(container.Env) != 6 {
+					t.Fatalf("Env count = %d, want 6", len(container.Env))
 				}
-				if container.Env[0].Name != reservedEnvNameServiceApp {
-					t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, reservedEnvNameServiceApp)
+				if container.Env[0].Name != envLogLevel {
+					t.Fatalf("Env[0] Name = %q, want %q", container.Env[0].Name, envLogLevel)
 				}
-				if container.Env[3].Name != envTLSCAFile {
-					t.Fatalf("Env[3] Name = %q, want %q", container.Env[3].Name, envTLSCAFile)
+				if container.Env[1].Name != reservedEnvNameServiceApp {
+					t.Fatalf("Env[1] Name = %q, want %q", container.Env[1].Name, reservedEnvNameServiceApp)
 				}
-				if container.Env[4].Name != envTLSDomain {
-					t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, envTLSDomain)
+				if container.Env[4].Name != envTLSCAFile {
+					t.Fatalf("Env[4] Name = %q, want %q", container.Env[4].Name, envTLSCAFile)
+				}
+				if container.Env[5].Name != envTLSDomain {
+					t.Fatalf("Env[5] Name = %q, want %q", container.Env[5].Name, envTLSDomain)
 				}
 			},
 		},
