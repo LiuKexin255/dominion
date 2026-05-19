@@ -1491,3 +1491,169 @@ func TestCompile_OssEnabled(t *testing.T) {
 func intPtr(v int) *int {
 	return &v
 }
+
+func Test_mapExposureMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		exposure string
+		want     deploy.ExposureMode
+	}{
+		{
+			name:     "aggregate maps to AGGREGATE",
+			exposure: "aggregate",
+			want:     deploy.ExposureMode_EXPOSURE_MODE_AGGREGATE,
+		},
+		{
+			name:     "per-instance maps to PER_INSTANCE",
+			exposure: "per-instance",
+			want:     deploy.ExposureMode_EXPOSURE_MODE_PER_INSTANCE,
+		},
+		{
+			name:     "empty maps to UNSPECIFIED",
+			exposure: "",
+			want:     deploy.ExposureMode_EXPOSURE_MODE_UNSPECIFIED,
+		},
+		{
+			name:     "unknown value maps to UNSPECIFIED",
+			exposure: "unknown",
+			want:     deploy.ExposureMode_EXPOSURE_MODE_UNSPECIFIED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mapExposureMode(tt.exposure)
+			if got != tt.want {
+				t.Fatalf("mapExposureMode(%q) = %v, want %v", tt.exposure, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompile_StatefulExposure(t *testing.T) {
+	tests := []struct {
+		name           string
+		serviceConfigs map[string]*config.ServiceConfig
+		wantExposure   deploy.ExposureMode
+	}{
+		{
+			name: "stateful with aggregate exposure",
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name:     "service-stateful",
+					App:      "stateful-app",
+					Kind:     config.WorkloadKindStateful,
+					Exposure: "aggregate",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			wantExposure: deploy.ExposureMode_EXPOSURE_MODE_AGGREGATE,
+		},
+		{
+			name: "stateful with per-instance exposure",
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name:     "service-stateful",
+					App:      "stateful-app",
+					Kind:     config.WorkloadKindStateful,
+					Exposure: "per-instance",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			wantExposure: deploy.ExposureMode_EXPOSURE_MODE_PER_INSTANCE,
+		},
+		{
+			name: "stateful with empty exposure maps to UNSPECIFIED",
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceStatefulPath: {
+					Name:     "service-stateful",
+					App:      "stateful-app",
+					Kind:     config.WorkloadKindStateful,
+					Exposure: "",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-stateful",
+						Target: "//apps/service-stateful:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			wantExposure: deploy.ExposureMode_EXPOSURE_MODE_UNSPECIFIED,
+		},
+		{
+			name: "stateless with empty exposure maps to UNSPECIFIED",
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name:     "service-a",
+					App:      "alpha",
+					Kind:     config.WorkloadKindStateless,
+					Exposure: "",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			wantExposure: deploy.ExposureMode_EXPOSURE_MODE_UNSPECIFIED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svcPath := testServiceStatefulPath
+			artifactName := "service-stateful"
+			for k, svc := range tt.serviceConfigs {
+				svcPath = k
+				if len(svc.Artifacts) > 0 {
+					artifactName = svc.Artifacts[0].Name
+				}
+			}
+			deployConfig := &config.DeployConfig{
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{Path: svcPath, Name: artifactName},
+				}},
+			}
+
+			imageResults := map[string]*imagepush.Result{}
+			for _, svc := range tt.serviceConfigs {
+				for _, art := range svc.Artifacts {
+					imageResults[art.Target] = &imagepush.Result{
+						URL:  "registry.example.com/service",
+						Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					}
+				}
+			}
+
+			got, err := Compile(deployConfig, tt.serviceConfigs, imageResults)
+			if err != nil {
+				t.Fatalf("Compile() unexpected error: %v", err)
+			}
+			if len(got.Artifacts) != 1 {
+				t.Fatalf("Compile() returned %d artifacts, want 1", len(got.Artifacts))
+			}
+			if got.Artifacts[0].Exposure != tt.wantExposure {
+				t.Fatalf("Compile() Exposure = %v, want %v", got.Artifacts[0].Exposure, tt.wantExposure)
+			}
+		})
+	}
+}

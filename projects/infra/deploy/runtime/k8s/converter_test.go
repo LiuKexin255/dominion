@@ -446,6 +446,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:        "game:v1",
 					Replicas:     3,
 					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModePerInstance,
 					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 					HTTP: &domain.ArtifactHTTPSpec{
 						Hostnames: []string{"gateway.example.com"},
@@ -456,7 +457,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					},
 				}},
 			}),
-			want: wantDeployObjectsWithStatefulArtifact(
+			want: wantDeployObjectsWithStatefulPerInstanceArtifact(
 				domain.EnvironmentTypeProd,
 				3,
 				[]string{"gateway.example.com"},
@@ -472,6 +473,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:        "game:v1",
 					Replicas:     2,
 					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModePerInstance,
 					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 					HTTP: &domain.ArtifactHTTPSpec{
 						Hostnames: []string{"gateway.example.com", "gateway.internal.example.com"},
@@ -482,7 +484,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					},
 				}},
 			}),
-			want: wantDeployObjectsWithStatefulArtifact(
+			want: wantDeployObjectsWithStatefulPerInstanceArtifact(
 				domain.EnvironmentTypeProd,
 				2,
 				[]string{"gateway.example.com", "gateway.internal.example.com"},
@@ -509,6 +511,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:           "worker:v1",
 					Replicas:        2,
 					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModeAggregate,
 					Ports: []*DeploymentPort{{
 						Name: "grpc",
 						Port: 50051,
@@ -525,6 +528,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:        "game:v1",
 					Replicas:     1,
 					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModePerInstance,
 					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 					HTTP: &domain.ArtifactHTTPSpec{
 						Hostnames: []string{"gateway.example.com"},
@@ -535,7 +539,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					},
 				}},
 			}),
-			want: wantDeployObjectsWithStatefulArtifact(
+			want: wantDeployObjectsWithStatefulPerInstanceArtifact(
 				domain.EnvironmentTypeProd,
 				1,
 				[]string{"gateway.example.com"},
@@ -569,6 +573,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 						Image:        "game:v1",
 						Replicas:     2,
 						WorkloadKind: domain.WorkloadKindStateful,
+						Exposure:     domain.ExposureModePerInstance,
 						Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 						HTTP: &domain.ArtifactHTTPSpec{
 							Hostnames: []string{"gateway.example.com"},
@@ -616,6 +621,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:           "game:v1",
 					Replicas:        2,
 					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModePerInstance,
 					Ports: []*DeploymentPort{{
 						Name: "http",
 						Port: 8080,
@@ -634,6 +640,7 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					Image:        "game:v1",
 					Replicas:     2,
 					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModePerInstance,
 					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
 					HTTP: &domain.ArtifactHTTPSpec{
 						Hostnames: []string{"gateway.example.com"},
@@ -644,12 +651,199 @@ func TestConvertToWorkloads_StatefulArtifacts(t *testing.T) {
 					},
 				}},
 			}),
-			want: wantDeployObjectsWithStatefulArtifact(
+			want: wantDeployObjectsWithStatefulPerInstanceArtifact(
 				domain.EnvironmentTypeTest,
 				2,
 				[]string{"gateway.example.com"},
 				[]*HTTPRoutePathMatch{{Type: HTTPPathMatchTypePathPrefix, Value: "/", BackendName: "http", BackendPort: 8080}},
 			),
+		},
+		{
+			name: "aggregate stateful with HTTP creates aggregate route",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     3,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModeAggregate,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: &DeployObjects{
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "game-gateway",
+					EnvironmentName: "tstscope.dev",
+					App:             "game",
+					Image:           "game:v1",
+					Replicas:        3,
+					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModeAggregate,
+					Ports: []*DeploymentPort{{
+						Name: "http",
+						Port: 8080,
+					}},
+					Hostnames: []string{"gateway.example.com"},
+				}},
+				HTTPRoutes: []*HTTPRouteWorkload{{
+					ServiceName:      "game-gateway",
+					EnvironmentName:  "tstscope.dev",
+					App:              "game",
+					Hostnames:        []string{"gateway.example.com"},
+					BackendService:   newObjectName(WorkloadKindAggregateService, "tstscope.dev", "game-gateway"),
+					GatewayName:      "test-gateway",
+					GatewayNamespace: "test-gw-ns",
+					EnvType:          domain.EnvironmentTypeProd,
+					Matches: []*HTTPRoutePathMatch{{
+						Type:        HTTPPathMatchTypePathPrefix,
+						Value:       "/",
+						BackendName: "http",
+						BackendPort: 8080,
+					}},
+				}},
+			},
+		},
+		{
+			name: "aggregate stateful without HTTP creates stateful workload only",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "worker",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModeAggregate,
+					Ports:        []domain.ArtifactPortSpec{{Name: "grpc", Port: 50051}},
+				}},
+			}),
+			want: &DeployObjects{
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "worker",
+					EnvironmentName: "tstscope.dev",
+					App:             "game",
+					Image:           "game:v1",
+					Replicas:        2,
+					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModeAggregate,
+					Ports: []*DeploymentPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
+			name: "aggregate stateful with multiple hostnames creates single route",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Exposure:     domain.ExposureModeAggregate,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com", "gateway.internal.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: &DeployObjects{
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "game-gateway",
+					EnvironmentName: "tstscope.dev",
+					App:             "game",
+					Image:           "game:v1",
+					Replicas:        2,
+					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModeAggregate,
+					Ports: []*DeploymentPort{{
+						Name: "http",
+						Port: 8080,
+					}},
+					Hostnames: []string{"gateway.example.com", "gateway.internal.example.com"},
+				}},
+				HTTPRoutes: []*HTTPRouteWorkload{{
+					ServiceName:      "game-gateway",
+					EnvironmentName:  "tstscope.dev",
+					App:              "game",
+					Hostnames:        []string{"gateway.example.com", "gateway.internal.example.com"},
+					BackendService:   newObjectName(WorkloadKindAggregateService, "tstscope.dev", "game-gateway"),
+					GatewayName:      "test-gateway",
+					GatewayNamespace: "test-gw-ns",
+					EnvType:          domain.EnvironmentTypeProd,
+					Matches: []*HTTPRoutePathMatch{{
+						Type:        HTTPPathMatchTypePathPrefix,
+						Value:       "/",
+						BackendName: "http",
+						BackendPort: 8080,
+					}},
+				}},
+			},
+		},
+		{
+			name: "unspecified stateful exposure defaults to aggregate route",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "game-gateway",
+					App:          "game",
+					Image:        "game:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+					HTTP: &domain.ArtifactHTTPSpec{
+						Hostnames: []string{"gateway.example.com"},
+						Matches: []domain.HTTPRouteRule{{
+							Backend: "http",
+							Path:    domain.HTTPPathRule{Type: domain.HTTPPathRuleTypePathPrefix, Value: "/"},
+						}},
+					},
+				}},
+			}),
+			want: &DeployObjects{
+				StatefulWorkloads: []*StatefulWorkload{{
+					ServiceName:     "game-gateway",
+					EnvironmentName: "tstscope.dev",
+					App:             "game",
+					Image:           "game:v1",
+					Replicas:        2,
+					EnvType:         domain.EnvironmentTypeProd,
+					Exposure:        domain.ExposureModeAggregate,
+					Ports: []*DeploymentPort{{
+						Name: "http",
+						Port: 8080,
+					}},
+					Hostnames: []string{"gateway.example.com"},
+				}},
+				HTTPRoutes: []*HTTPRouteWorkload{{
+					ServiceName:      "game-gateway",
+					EnvironmentName:  "tstscope.dev",
+					App:              "game",
+					Hostnames:        []string{"gateway.example.com"},
+					BackendService:   newObjectName(WorkloadKindAggregateService, "tstscope.dev", "game-gateway"),
+					GatewayName:      "test-gateway",
+					GatewayNamespace: "test-gw-ns",
+					EnvType:          domain.EnvironmentTypeProd,
+					Matches: []*HTTPRoutePathMatch{{
+						Type:        HTTPPathMatchTypePathPrefix,
+						Value:       "/",
+						BackendName: "http",
+						BackendPort: 8080,
+					}},
+				}},
+			},
 		},
 	}
 
@@ -679,6 +873,7 @@ func TestConvertToWorkloads_StatefulArtifactUsesMatchedBackendPort(t *testing.T)
 			Image:        "game:v1",
 			Replicas:     2,
 			WorkloadKind: domain.WorkloadKindStateful,
+			Exposure:     domain.ExposureModePerInstance,
 			Ports:        []domain.ArtifactPortSpec{{Name: "metrics", Port: 9090}, {Name: "grpc", Port: 50051}},
 			HTTP: &domain.ArtifactHTTPSpec{
 				Hostnames: []string{"gateway.example.com"},
@@ -1011,7 +1206,7 @@ func wantDeployObjectsWithoutPorts() *DeployObjects {
 	}
 }
 
-func wantDeployObjectsWithStatefulArtifact(envType domain.EnvironmentType, replicas int32, hostnames []string, matches []*HTTPRoutePathMatch) *DeployObjects {
+func wantDeployObjectsWithStatefulPerInstanceArtifact(envType domain.EnvironmentType, replicas int32, hostnames []string, matches []*HTTPRoutePathMatch) *DeployObjects {
 	return &DeployObjects{
 		StatefulWorkloads: []*StatefulWorkload{{
 			ServiceName:     "game-gateway",
@@ -1020,6 +1215,7 @@ func wantDeployObjectsWithStatefulArtifact(envType domain.EnvironmentType, repli
 			Image:           "game:v1",
 			Replicas:        replicas,
 			EnvType:         envType,
+			Exposure:        domain.ExposureModePerInstance,
 			Ports: []*DeploymentPort{{
 				Name: "http",
 				Port: 8080,

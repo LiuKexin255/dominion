@@ -440,6 +440,47 @@ func BuildPerInstanceService(workload *StatefulWorkload, cfg *K8sConfig, instanc
 	}, nil
 }
 
+// BuildStatefulAggregateService 将 stateful workload 构造成 aggregate ClusterIP Service 对象。
+func BuildStatefulAggregateService(workload *StatefulWorkload, cfg *K8sConfig) (*corev1.Service, error) {
+	if workload == nil {
+		return nil, fmt.Errorf("stateful workload 为空")
+	}
+	if err := workload.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, fmt.Errorf("k8s config 为空")
+	}
+
+	objectLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+		withManagedBy(cfg.ManagedBy),
+	)
+	selectorLabels := buildLabels(
+		withApp(workload.App),
+		withService(workload.ServiceName),
+		withDominionEnvironment(workload.EnvironmentName),
+	)
+	ports, err := buildServicePorts(workload.Ports)
+	if err != nil {
+		return nil, fmt.Errorf("构建 aggregate service ports 失败: %w", err)
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      workload.AggregateServiceName(),
+			Namespace: cfg.Namespace,
+			Labels:    map[string]string(objectLabels),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string(selectorLabels),
+			Ports:    ports,
+		},
+	}, nil
+}
+
 // BuildPerInstanceHTTPRoute 将 stateful workload 实例构造成单实例 HTTPRoute 对象。
 func BuildPerInstanceHTTPRoute(workload *HTTPRouteWorkload, cfg *K8sConfig, instanceIndex int) (*unstructured.Unstructured, error) {
 	if workload == nil {
@@ -466,26 +507,40 @@ func BuildPerInstanceHTTPRoute(workload *HTTPRouteWorkload, cfg *K8sConfig, inst
 		hostnames = append(hostnames, gatewayv1.Hostname(hostname))
 	}
 
-	pathType := gatewayv1.PathMatchPathPrefix
-	pathValue := "/"
+	gatewayNamespace := gatewayv1.Namespace(workload.GatewayNamespace)
 	backendName := gatewayv1.ObjectName(workload.BackendService)
-	backendPort := gatewayv1.PortNumber(workload.Matches[0].BackendPort)
-	httpMatch := gatewayv1.HTTPRouteMatch{
-		Path: &gatewayv1.HTTPPathMatch{
-			Type:  &pathType,
-			Value: &pathValue,
-		},
-	}
-	if workload.EnvType == domain.EnvironmentTypeTest || workload.EnvType == domain.EnvironmentTypeDev {
-		headerMatchType := gatewayv1.HeaderMatchExact
-		httpMatch.Headers = []gatewayv1.HTTPHeaderMatch{{
-			Name:  EnvHeaderMatchName,
-			Type:  &headerMatchType,
-			Value: workload.EnvironmentName,
-		}}
+	var rules []gatewayv1.HTTPRouteRule
+	for _, match := range workload.Matches {
+		pathType := gatewayv1.PathMatchType(match.Type)
+		pathValue := match.Value
+		backendPort := gatewayv1.PortNumber(match.BackendPort)
+		httpMatch := gatewayv1.HTTPRouteMatch{
+			Path: &gatewayv1.HTTPPathMatch{
+				Type:  &pathType,
+				Value: &pathValue,
+			},
+		}
+		if workload.EnvType == domain.EnvironmentTypeTest || workload.EnvType == domain.EnvironmentTypeDev {
+			headerMatchType := gatewayv1.HeaderMatchExact
+			httpMatch.Headers = []gatewayv1.HTTPHeaderMatch{{
+				Name:  EnvHeaderMatchName,
+				Type:  &headerMatchType,
+				Value: workload.EnvironmentName,
+			}}
+		}
+		rules = append(rules, gatewayv1.HTTPRouteRule{
+			Matches: []gatewayv1.HTTPRouteMatch{httpMatch},
+			BackendRefs: []gatewayv1.HTTPBackendRef{{
+				BackendRef: gatewayv1.BackendRef{
+					BackendObjectReference: gatewayv1.BackendObjectReference{
+						Name: backendName,
+						Port: &backendPort,
+					},
+				},
+			}},
+		})
 	}
 
-	gatewayNamespace := gatewayv1.Namespace(workload.GatewayNamespace)
 	typedRoute := &gatewayv1.HTTPRoute{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: gatewayv1.GroupVersion.String(),
@@ -504,17 +559,7 @@ func BuildPerInstanceHTTPRoute(workload *HTTPRouteWorkload, cfg *K8sConfig, inst
 					Namespace: &gatewayNamespace,
 				}},
 			},
-			Rules: []gatewayv1.HTTPRouteRule{{
-				Matches: []gatewayv1.HTTPRouteMatch{httpMatch},
-				BackendRefs: []gatewayv1.HTTPBackendRef{{
-					BackendRef: gatewayv1.BackendRef{
-						BackendObjectReference: gatewayv1.BackendObjectReference{
-							Name: backendName,
-							Port: &backendPort,
-						},
-					},
-				}},
-			}},
+			Rules: rules,
 		},
 	}
 

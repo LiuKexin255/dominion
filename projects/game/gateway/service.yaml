@@ -3,6 +3,7 @@ name: gateway
 app: game
 desc: game gateway service
 kind: stateful
+exposure: per-instance
 artifacts:
   - name: cmd
     target: app/cmd:cmd_image

@@ -100,6 +100,7 @@ type StatefulWorkload struct {
 	Hostnames       []string
 	EnvType         domain.EnvironmentType
 	Env             map[string]string
+	Exposure        domain.ExposureMode
 }
 
 // WorkloadName 返回 statefulset 对应的资源名。
@@ -118,6 +119,14 @@ func (w *StatefulWorkload) ServiceResourceName() string {
 	}
 
 	return newObjectName(WorkloadKindService, w.EnvironmentName, w.ServiceName)
+}
+
+// AggregateServiceName 返回 aggregate Service 的资源名。
+func (w *StatefulWorkload) AggregateServiceName() string {
+	if w == nil {
+		return ""
+	}
+	return newObjectName(WorkloadKindAggregateService, w.EnvironmentName, w.ServiceName)
 }
 
 // Validate 校验 stateful workload 字段是否合法。

@@ -33,6 +33,7 @@ const (
 	resourceKindPVC         = "PersistentVolumeClaim"
 	resourceKindSecret      = "Secret"
 	resourceKindStatefulSet = "StatefulSet"
+	resourceKindPod         = "Pod"
 
 	spanApply  = "deploy.runtime.apply"
 	spanDelete = "deploy.runtime.delete"
@@ -89,7 +90,12 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 	statefulsetCount := len(objects.StatefulWorkloads)
 	serviceCount := len(objects.Deployments) + len(objects.StatefulWorkloads) + len(objects.MongoDBWorkloads)
 	for _, sw := range objects.StatefulWorkloads {
-		serviceCount += int(sw.Replicas)
+		switch sw.Exposure {
+		case domain.ExposureModePerInstance:
+			serviceCount += int(sw.Replicas)
+		default:
+			serviceCount++
+		}
 	}
 
 	span.SetAttributes(
@@ -130,13 +136,23 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 			return err
 		}
 	}
+	// Apply exposure-mode specific services
 	for _, workload := range objects.StatefulWorkloads {
-		for i := 0; i < int(workload.Replicas); i++ {
-			if err := r.applyPerInstanceService(ctx, workload, i); err != nil {
+		switch workload.Exposure {
+		case domain.ExposureModePerInstance:
+			for i := 0; i < int(workload.Replicas); i++ {
+				if err := r.applyPerInstanceService(ctx, workload, i); err != nil {
+					return err
+				}
+			}
+		default:
+			// Aggregate (or unspecified → normalized to aggregate by domain)
+			if err := r.applyAggregateService(ctx, workload); err != nil {
 				return err
 			}
 		}
 	}
+	// Apply per-instance HTTPRoutes (only populated for per-instance mode by converter)
 	instanceRouteIdx := map[string]int{}
 	for _, workload := range objects.InstanceRoutes {
 		if workload == nil {
@@ -245,8 +261,13 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.statefulSets[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		for i := 0; i < int(workload.Replicas); i++ {
-			resources.services[newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, i)] = struct{}{}
+		switch workload.Exposure {
+		case domain.ExposureModePerInstance:
+			for i := 0; i < int(workload.Replicas); i++ {
+				resources.services[newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, i)] = struct{}{}
+			}
+		default:
+			resources.services[workload.AggregateServiceName()] = struct{}{}
 		}
 	}
 	instanceRouteIdx := map[string]int{}
@@ -369,7 +390,6 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 	}
 
 	var governingSvc *corev1.Service
-	var perInstanceSvcs []*corev1.Service
 	for i := range services.Items {
 		svc := &services.Items[i]
 		if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.ClusterIP == "" {
@@ -377,9 +397,7 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 				return nil, fmt.Errorf("expected exactly one governing Service, found multiple matching labels %s", selector)
 			}
 			governingSvc = svc
-			continue
 		}
-		perInstanceSvcs = append(perInstanceSvcs, svc)
 	}
 	if governingSvc == nil {
 		return nil, fmt.Errorf("expected exactly one governing Service, found none matching labels %s", selector)
@@ -407,28 +425,42 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 		Endpoints:  expandServiceEndpoints(endpointSlices.Items, ports),
 		IsStateful: true,
 	}
-	for _, svc := range perInstanceSvcs {
-		podName, ok := svc.Spec.Selector[statefulSetPodNameLabelKey]
-		if !ok {
-			continue
+	// Build StatefulInstances from headless EndpointSlices.
+	// Group endpoints by ordinal extracted from pod name (TargetRef.Name) or Hostname.
+	instanceEndpoints := make(map[int][]string)
+	for i := range endpointSlices.Items {
+		slice := &endpointSlices.Items[i]
+		for j := range slice.Endpoints {
+			ep := &slice.Endpoints[j]
+			podName := endpointPodName(ep)
+			if podName == "" {
+				continue
+			}
+			idx, err := parseStatefulInstanceIndex(podName)
+			if err != nil {
+				continue
+			}
+			if includeEndpoint(ep) {
+				for _, ip := range ep.Addresses {
+					for _, port := range ports {
+						instanceEndpoints[idx] = append(instanceEndpoints[idx], net.JoinHostPort(ip, strconv.Itoa(int(port))))
+					}
+				}
+			} else {
+				// Ensure the ordinal entry exists even if not ready.
+				if _, ok := instanceEndpoints[idx]; !ok {
+					instanceEndpoints[idx] = nil
+				}
+			}
 		}
-		instanceIndex, err := parseStatefulInstanceIndex(podName)
-		if err != nil {
-			return nil, fmt.Errorf("parse stateful instance index from service %s selector %q: %w", svc.Name, podName, err)
-		}
+	}
 
-		// TODO: batch EndpointSlice reads if stateful service queries become latency-sensitive.
-		instanceSlices, err := r.listServiceEndpointSlices(ctx, namespace, svc.Name)
-		if err != nil {
-			return nil, err
-		}
-
-		instanceEndpoints := expandServiceEndpoints(instanceSlices.Items, ports)
-
+	// Populate StatefulInstances from the grouped endpoints map.
+	for idx, eps := range instanceEndpoints {
 		result.StatefulInstances = append(result.StatefulInstances, &domain.StatefulInstance{
-			Index:     instanceIndex,
-			Hostname:  podName,
-			Endpoints: instanceEndpoints,
+			Index:     idx,
+			Hostname:  "",
+			Endpoints: eps,
 		})
 	}
 
@@ -482,6 +514,19 @@ func parseStatefulInstanceIndex(podName string) (int, error) {
 	return index, nil
 }
 
+func endpointPodName(ep *discoveryv1.Endpoint) string {
+	if ep == nil {
+		return ""
+	}
+	if ep.TargetRef != nil && ep.TargetRef.Kind == resourceKindPod && ep.TargetRef.Name != "" {
+		return ep.TargetRef.Name
+	}
+	if ep.Hostname != nil {
+		return *ep.Hostname
+	}
+	return ""
+}
+
 func expandServiceEndpoints(endpointSlices []discoveryv1.EndpointSlice, ports map[string]int32) []string {
 	if len(endpointSlices) == 0 {
 		return nil
@@ -490,7 +535,7 @@ func expandServiceEndpoints(endpointSlices []discoveryv1.EndpointSlice, ports ma
 	addresses := make(map[string]struct{})
 	for _, slice := range endpointSlices {
 		for _, endpoint := range slice.Endpoints {
-			if !includeEndpoint(endpoint) {
+			if !includeEndpoint(&endpoint) {
 				continue
 			}
 			for _, ip := range endpoint.Addresses {
@@ -514,7 +559,7 @@ func expandServiceEndpoints(endpointSlices []discoveryv1.EndpointSlice, ports ma
 	return result
 }
 
-func includeEndpoint(endpoint discoveryv1.Endpoint) bool {
+func includeEndpoint(endpoint *discoveryv1.Endpoint) bool {
 	if endpoint.Conditions.Ready != nil && !*endpoint.Conditions.Ready {
 		return false
 	}
@@ -591,6 +636,20 @@ func (r *K8sRuntime) applyGoverningService(ctx context.Context, workload *Statef
 	desired, err := BuildGoverningService(workload, r.client.K8sConfig)
 	if err != nil {
 		return fmt.Errorf("构建 governing %s %s 失败: %w", resourceKindService, workload.ServiceResourceName(), err)
+	}
+
+	return applyTypedService(ctx, desired.Name,
+		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
+}
+
+func (r *K8sRuntime) applyAggregateService(ctx context.Context, workload *StatefulWorkload) error {
+	if workload == nil {
+		return fmt.Errorf("failed to build %s <nil>: stateful workload 为空", resourceKindService)
+	}
+
+	desired, err := BuildStatefulAggregateService(workload, r.client.K8sConfig)
+	if err != nil {
+		return fmt.Errorf("构建 aggregate %s %s 失败: %w", resourceKindService, workload.AggregateServiceName(), err)
 	}
 
 	return applyTypedService(ctx, desired.Name,

@@ -679,6 +679,93 @@ func withWorkingDir(t *testing.T, dir string) {
 	})
 }
 
+func TestParseServiceConfig_RejectsStatelessWithExposure(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	servicePath := filepath.Join(root, "testdata", "service.stateless-exposure.yaml")
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+kind: stateless
+exposure: aggregate
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	_, err := ParseServiceConfig(servicePath)
+	if err == nil {
+		t.Fatal("ParseServiceConfig() succeeded unexpectedly for stateless with exposure")
+	}
+}
+
+func TestParseServiceConfig_StatefulWithExposure(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	servicePath := filepath.Join(root, "testdata", "service.stateful-exposure.yaml")
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world stateful service
+kind: stateful
+exposure: aggregate
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	got, err := ParseServiceConfig(servicePath)
+	if err != nil {
+		t.Fatalf("ParseServiceConfig() failed: %v", err)
+	}
+	wantExposure := "aggregate"
+	if got.Exposure != wantExposure {
+		t.Fatalf("ParseServiceConfig() Exposure = %q, want %q", got.Exposure, wantExposure)
+	}
+	if got.Kind != WorkloadKindStateful {
+		t.Fatalf("ParseServiceConfig() Kind = %q, want %q", got.Kind, WorkloadKindStateful)
+	}
+}
+
+func TestParseServiceConfig_StatefulWithEmptyExposure(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	servicePath := filepath.Join(root, "testdata", "service.stateful-no-exposure.yaml")
+	serviceRaw := []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world stateful service
+kind: stateful
+artifacts:
+  - name: service
+    target: :service_image
+    ports:
+      - name: grpc
+        port: 50051
+`)
+	if err := os.WriteFile(servicePath, serviceRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	got, err := ParseServiceConfig(servicePath)
+	if err != nil {
+		t.Fatalf("ParseServiceConfig() failed: %v", err)
+	}
+	if got.Exposure != "" {
+		t.Fatalf("ParseServiceConfig() Exposure = %q, want empty string", got.Exposure)
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }

@@ -1119,7 +1119,7 @@ func TestBuildPerInstanceHTTPRoute(t *testing.T) {
 		then          func(*testing.T, *gatewayv1.HTTPRoute, *HTTPRouteWorkload)
 	}{
 		{
-			name:          "builds catch-all route for prod instance",
+			name:          "builds route with single match from workload definition",
 			instanceIndex: 1,
 			given: func() (*HTTPRouteWorkload, *K8sConfig) {
 				workload := testHTTPRouteWorkload(domain.EnvironmentTypeProd, "tstscope.prod")
@@ -1136,11 +1136,14 @@ func TestBuildPerInstanceHTTPRoute(t *testing.T) {
 					t.Fatalf("Hostnames = %v, want %v", route.Spec.Hostnames, workload.Hostnames)
 				}
 				if len(route.Spec.Rules) != 1 || len(route.Spec.Rules[0].Matches) != 1 {
-					t.Fatalf("Rules or matches count mismatch")
+					t.Fatalf("Rules count = %d, want 1; matches count = %d, want 1", len(route.Spec.Rules), len(route.Spec.Rules[0].Matches))
 				}
 				match := route.Spec.Rules[0].Matches[0]
-				if match.Path == nil || match.Path.Type == nil || *match.Path.Type != gatewayv1.PathMatchPathPrefix || match.Path.Value == nil || *match.Path.Value != "/" {
-					t.Fatalf("Path match = %#v, want catch-all prefix '/'", match.Path)
+				if match.Path == nil || match.Path.Type == nil || *match.Path.Type != gatewayv1.PathMatchPathPrefix {
+					t.Fatalf("Path type = %v, want PathPrefix", match.Path)
+				}
+				if match.Path.Value == nil || *match.Path.Value != "/v1" {
+					t.Fatalf("Path value = %v, want /v1", match.Path)
 				}
 				if len(match.Headers) != 0 {
 					t.Fatalf("Headers count = %d, want 0", len(match.Headers))
@@ -1149,8 +1152,8 @@ func TestBuildPerInstanceHTTPRoute(t *testing.T) {
 				if string(backendRef.Name) != workload.BackendService {
 					t.Fatalf("Backend name = %q, want %q", backendRef.Name, workload.BackendService)
 				}
-				if backendRef.Port == nil || int(*backendRef.Port) != workload.Matches[0].BackendPort {
-					t.Fatalf("Backend port = %v, want %d", backendRef.Port, workload.Matches[0].BackendPort)
+				if backendRef.Port == nil || int(*backendRef.Port) != 8080 {
+					t.Fatalf("Backend port = %v, want 8080", backendRef.Port)
 				}
 			},
 		},
@@ -1164,10 +1167,127 @@ func TestBuildPerInstanceHTTPRoute(t *testing.T) {
 			},
 			then: func(t *testing.T, route *gatewayv1.HTTPRoute, workload *HTTPRouteWorkload) {
 				t.Helper()
-				assertHTTPRouteEnvHeader(t, route, workload.EnvironmentName)
+
+				if len(route.Spec.Rules) != 1 {
+					t.Fatalf("Rules count = %d, want 1", len(route.Spec.Rules))
+				}
+				headers := route.Spec.Rules[0].Matches[0].Headers
+				if len(headers) != 1 {
+					t.Fatalf("Headers count = %d, want 1", len(headers))
+				}
+				if headers[0].Type == nil || *headers[0].Type != gatewayv1.HeaderMatchExact {
+					t.Fatalf("Header type = %v, want %q", headers[0].Type, gatewayv1.HeaderMatchExact)
+				}
+				if headers[0].Name != EnvHeaderMatchName {
+					t.Fatalf("Header name = %v, want %q", headers[0].Name, EnvHeaderMatchName)
+				}
+				if headers[0].Value != workload.EnvironmentName {
+					t.Fatalf("Header value = %q, want %q", headers[0].Value, workload.EnvironmentName)
+				}
 				match := route.Spec.Rules[0].Matches[0]
-				if match.Path == nil || match.Path.Value == nil || *match.Path.Value != "/" {
-					t.Fatalf("Path value = %v, want /", match.Path)
+				if match.Path == nil || match.Path.Value == nil || *match.Path.Value != "/v1" {
+					t.Fatalf("Path value = %v, want /v1", match.Path)
+				}
+			},
+		},
+		{
+			name:          "builds multiple rules from multiple matches",
+			instanceIndex: 2,
+			given: func() (*HTTPRouteWorkload, *K8sConfig) {
+				workload := testHTTPRouteWorkload(domain.EnvironmentTypeProd, "tstscope.prod")
+				workload.BackendService = newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, 2)
+				workload.Matches = []*HTTPRoutePathMatch{
+					{Type: HTTPPathMatchTypePathPrefix, Value: "/v1", BackendPort: 8080},
+					{Type: HTTPPathMatchTypeExact, Value: "/health", BackendPort: 9090},
+					{Type: HTTPPathMatchTypePathPrefix, Value: "/v2/api", BackendPort: 8080},
+				}
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, route *gatewayv1.HTTPRoute, workload *HTTPRouteWorkload) {
+				t.Helper()
+
+				if len(route.Spec.Rules) != 3 {
+					t.Fatalf("Rules count = %d, want 3", len(route.Spec.Rules))
+				}
+
+				// Rule 0: PathPrefix /v1 -> port 8080
+				rule0 := route.Spec.Rules[0]
+				if len(rule0.Matches) != 1 {
+					t.Fatalf("Rule[0] matches count = %d, want 1", len(rule0.Matches))
+				}
+				if rule0.Matches[0].Path == nil || *rule0.Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix || *rule0.Matches[0].Path.Value != "/v1" {
+					t.Fatalf("Rule[0] path mismatch: %v", rule0.Matches[0].Path)
+				}
+				if rule0.BackendRefs[0].Port == nil || int(*rule0.BackendRefs[0].Port) != 8080 {
+					t.Fatalf("Rule[0] port = %v, want 8080", rule0.BackendRefs[0].Port)
+				}
+				if string(rule0.BackendRefs[0].Name) != workload.BackendService {
+					t.Fatalf("Rule[0] backend = %q, want %q", rule0.BackendRefs[0].Name, workload.BackendService)
+				}
+
+				// Rule 1: Exact /health -> port 9090
+				rule1 := route.Spec.Rules[1]
+				if *rule1.Matches[0].Path.Type != gatewayv1.PathMatchExact || *rule1.Matches[0].Path.Value != "/health" {
+					t.Fatalf("Rule[1] path mismatch: %v", rule1.Matches[0].Path)
+				}
+				if rule1.BackendRefs[0].Port == nil || int(*rule1.BackendRefs[0].Port) != 9090 {
+					t.Fatalf("Rule[1] port = %v, want 9090", rule1.BackendRefs[0].Port)
+				}
+
+				// Rule 2: PathPrefix /v2/api -> port 8080
+				rule2 := route.Spec.Rules[2]
+				if *rule2.Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix || *rule2.Matches[0].Path.Value != "/v2/api" {
+					t.Fatalf("Rule[2] path mismatch: %v", rule2.Matches[0].Path)
+				}
+				if rule2.BackendRefs[0].Port == nil || int(*rule2.BackendRefs[0].Port) != 8080 {
+					t.Fatalf("Rule[2] port = %v, want 8080", rule2.BackendRefs[0].Port)
+				}
+
+				// All rules use the same per-instance backend service.
+				for i, rule := range route.Spec.Rules {
+					if string(rule.BackendRefs[0].Name) != workload.BackendService {
+						t.Fatalf("Rule[%d] backend = %q, want %q", i, rule.BackendRefs[0].Name, workload.BackendService)
+					}
+				}
+			},
+		},
+		{
+			name:          "multiple matches with env header in test environment",
+			instanceIndex: 0,
+			given: func() (*HTTPRouteWorkload, *K8sConfig) {
+				workload := testHTTPRouteWorkload(domain.EnvironmentTypeTest, "tstscope.test")
+				workload.BackendService = newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, 0)
+				workload.Matches = []*HTTPRoutePathMatch{
+					{Type: HTTPPathMatchTypePathPrefix, Value: "/api", BackendPort: 8080},
+					{Type: HTTPPathMatchTypeExact, Value: "/ready", BackendPort: 9090},
+				}
+				return workload, testK8sConfig()
+			},
+			then: func(t *testing.T, route *gatewayv1.HTTPRoute, workload *HTTPRouteWorkload) {
+				t.Helper()
+
+				if len(route.Spec.Rules) != 2 {
+					t.Fatalf("Rules count = %d, want 2", len(route.Spec.Rules))
+				}
+
+				// Both rules should have env header match.
+				for i, rule := range route.Spec.Rules {
+					headers := rule.Matches[0].Headers
+					if len(headers) != 1 {
+						t.Fatalf("Rule[%d] headers count = %d, want 1", i, len(headers))
+					}
+					if headers[0].Name != EnvHeaderMatchName || headers[0].Value != workload.EnvironmentName {
+						t.Fatalf("Rule[%d] header mismatch: name=%q value=%q", i, headers[0].Name, headers[0].Value)
+					}
+				}
+
+				// Rule 0: PathPrefix /api
+				if *route.Spec.Rules[0].Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix || *route.Spec.Rules[0].Matches[0].Path.Value != "/api" {
+					t.Fatalf("Rule[0] path mismatch")
+				}
+				// Rule 1: Exact /ready
+				if *route.Spec.Rules[1].Matches[0].Path.Type != gatewayv1.PathMatchExact || *route.Spec.Rules[1].Matches[0].Path.Value != "/ready" {
+					t.Fatalf("Rule[1] path mismatch")
 				}
 			},
 		},
@@ -1187,6 +1307,102 @@ func TestBuildPerInstanceHTTPRoute(t *testing.T) {
 			// then
 			tt.then(t, decodeHTTPRoute(t, route), workload)
 		})
+	}
+}
+
+// --- BuildStatefulAggregateService ---
+
+func TestBuildStatefulAggregateService(t *testing.T) {
+	tests := []struct {
+		name string
+		give func() (*StatefulWorkload, *K8sConfig)
+		then func(*testing.T, *corev1.Service, *StatefulWorkload)
+	}{
+		{
+			name: "builds regular ClusterIP (not headless) service for all statefulset pods",
+			give: func() (*StatefulWorkload, *K8sConfig) {
+				return testStatefulWorkload(), testK8sConfig()
+			},
+			then: func(t *testing.T, svc *corev1.Service, workload *StatefulWorkload) {
+				t.Helper()
+
+				// 验证名称格式。
+				if !strings.HasPrefix(svc.Name, "agsvc-") {
+					t.Fatalf("Name = %q, want prefix 'agsvc-'", svc.Name)
+				}
+				if svc.Name != workload.AggregateServiceName() {
+					t.Fatalf("Name = %q, want %q", svc.Name, workload.AggregateServiceName())
+				}
+
+				// 验证 ClusterIP 不为 None（常规 ClusterIP）。
+				if svc.Spec.ClusterIP == corev1.ClusterIPNone {
+					t.Fatalf("ClusterIP should not be None (aggregate service is NOT headless)")
+				}
+
+				// 验证 selector labels。
+				wantSelector := buildLabels(
+					withApp(workload.App),
+					withService(workload.ServiceName),
+					withDominionEnvironment(workload.EnvironmentName),
+				)
+				for key, want := range wantSelector {
+					if got := svc.Spec.Selector[key]; got != want {
+						t.Fatalf("Selector[%q] = %q, want %q", key, got, want)
+					}
+				}
+
+				// 验证端口。
+				if len(svc.Spec.Ports) != 2 {
+					t.Fatalf("Ports count = %d, want 2", len(svc.Spec.Ports))
+				}
+				if svc.Spec.Ports[0].Name != "http" || svc.Spec.Ports[0].Port != 8080 {
+					t.Fatalf("Port[0] = {Name: %q, Port: %d}, want {Name: \"http\", Port: 8080}", svc.Spec.Ports[0].Name, svc.Spec.Ports[0].Port)
+				}
+				if svc.Spec.Ports[1].Name != "grpc" || svc.Spec.Ports[1].Port != 9090 {
+					t.Fatalf("Port[1] = {Name: %q, Port: %d}, want {Name: \"grpc\", Port: 9090}", svc.Spec.Ports[1].Name, svc.Spec.Ports[1].Port)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			workload, cfg := tt.give()
+
+			// when
+			svc, err := BuildStatefulAggregateService(workload, cfg)
+			if err != nil {
+				t.Fatalf("BuildStatefulAggregateService() error: %v", err)
+			}
+
+			// then
+			tt.then(t, svc, workload)
+		})
+	}
+}
+
+func TestBuildStatefulAggregateService_NilWorkload(t *testing.T) {
+	_, err := BuildStatefulAggregateService(nil, testK8sConfig())
+	if err == nil {
+		t.Fatal("BuildStatefulAggregateService() expected error for nil workload")
+	}
+}
+
+func TestBuildStatefulAggregateService_NilConfig(t *testing.T) {
+	_, err := BuildStatefulAggregateService(testStatefulWorkload(), nil)
+	if err == nil {
+		t.Fatal("BuildStatefulAggregateService() expected error for nil config")
+	}
+}
+
+func TestBuildStatefulAggregateService_InvalidWorkload(t *testing.T) {
+	w := &StatefulWorkload{
+		ServiceName: "", // 缺少 service name。
+	}
+	_, err := BuildStatefulAggregateService(w, testK8sConfig())
+	if err == nil {
+		t.Fatal("BuildStatefulAggregateService() expected error for invalid workload")
 	}
 }
 

@@ -235,33 +235,31 @@ func TestK8sRuntime_QueryStatefulServiceEndpoints(t *testing.T) {
 					"app.kubernetes.io/component": "api",
 					"dominion.io/environment":     "dev",
 				}
-				for _, svc := range []*corev1.Service{
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-2", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: "10.96.1.12", Selector: map[string]string{statefulSetPodNameLabelKey: "demo-api-2"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-0", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: "10.96.1.10", Selector: map[string]string{statefulSetPodNameLabelKey: "demo-api-0"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-1", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: "10.96.1.11", Selector: map[string]string{statefulSetPodNameLabelKey: "demo-api-1"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-				} {
-					if err := fakeClient.Tracker().Add(svc); err != nil {
-						t.Fatalf("seed service %s: %v", svc.Name, err)
-					}
+				svc := &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "demo-api", Namespace: "test-ns", Labels: labels},
+					Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}},
+				}
+				if err := fakeClient.Tracker().Add(svc); err != nil {
+					t.Fatalf("seed service %s: %v", svc.Name, err)
 				}
 
-				for _, slice := range []*discoveryv1.EndpointSlice{
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-agg", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}, {Addresses: []string{"10.0.0.11"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}, {Addresses: []string{"10.0.0.12"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-0-slice", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api-0"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-1-slice", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api-1"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.11"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-2-slice", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api-2"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.12"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-				} {
-					if err := fakeClient.Tracker().Add(slice); err != nil {
-						t.Fatalf("seed endpointslice %s: %v", slice.Name, err)
-					}
+				eps := &discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{Name: "demo-api-agg", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api"}},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}, TargetRef: &corev1.ObjectReference{Kind: resourceKindPod, Name: "demo-api-0"}},
+						{Addresses: []string{"10.0.0.11"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}, TargetRef: &corev1.ObjectReference{Kind: resourceKindPod, Name: "demo-api-1"}},
+						{Addresses: []string{"10.0.0.12"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}, TargetRef: &corev1.ObjectReference{Kind: resourceKindPod, Name: "demo-api-2"}},
+					},
+				}
+				if err := fakeClient.Tracker().Add(eps); err != nil {
+					t.Fatalf("seed endpointslice %s: %v", eps.Name, err)
 				}
 			},
 			want: &domain.ServiceQueryResult{
 				Ports:             map[string]int32{"grpc": 50051},
 				Endpoints:         []string{"10.0.0.10:50051", "10.0.0.11:50051", "10.0.0.12:50051"},
 				IsStateful:        true,
-				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "demo-api-1", Endpoints: []string{"10.0.0.11:50051"}}, {Index: 2, Hostname: "demo-api-2", Endpoints: []string{"10.0.0.12:50051"}}},
+				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "", Endpoints: []string{"10.0.0.11:50051"}}, {Index: 2, Hostname: "", Endpoints: []string{"10.0.0.12:50051"}}},
 			},
 		},
 		{
@@ -277,31 +275,30 @@ func TestK8sRuntime_QueryStatefulServiceEndpoints(t *testing.T) {
 					"app.kubernetes.io/component": "api",
 					"dominion.io/environment":     "dev",
 				}
-				for _, svc := range []*corev1.Service{
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-0", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: "10.96.2.10", Selector: map[string]string{statefulSetPodNameLabelKey: "demo-api-0"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-1", Namespace: "test-ns", Labels: labels}, Spec: corev1.ServiceSpec{ClusterIP: "10.96.2.11", Selector: map[string]string{statefulSetPodNameLabelKey: "demo-api-1"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}}},
-				} {
-					if err := fakeClient.Tracker().Add(svc); err != nil {
-						t.Fatalf("seed service %s: %v", svc.Name, err)
-					}
+				svc := &corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "demo-api", Namespace: "test-ns", Labels: labels},
+					Spec:       corev1.ServiceSpec{ClusterIP: corev1.ClusterIPNone, Ports: []corev1.ServicePort{{Name: "grpc", Port: 50051}}},
+				}
+				if err := fakeClient.Tracker().Add(svc); err != nil {
+					t.Fatalf("seed service %s: %v", svc.Name, err)
 				}
 
-				for _, slice := range []*discoveryv1.EndpointSlice{
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-agg", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-0-slice", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api-0"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}}}},
-					{ObjectMeta: metav1.ObjectMeta{Name: "demo-api-1-slice", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api-1"}}, Endpoints: []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.11"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyFalse}}}},
-				} {
-					if err := fakeClient.Tracker().Add(slice); err != nil {
-						t.Fatalf("seed endpointslice %s: %v", slice.Name, err)
-					}
+				eps := &discoveryv1.EndpointSlice{
+					ObjectMeta: metav1.ObjectMeta{Name: "demo-api-agg", Namespace: "test-ns", Labels: map[string]string{"kubernetes.io/service-name": "demo-api"}},
+					Endpoints: []discoveryv1.Endpoint{
+						{Addresses: []string{"10.0.0.10"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyTrue}, TargetRef: &corev1.ObjectReference{Kind: resourceKindPod, Name: "demo-api-0"}},
+						{Addresses: []string{"10.0.0.11"}, Conditions: discoveryv1.EndpointConditions{Ready: &readyFalse}, TargetRef: &corev1.ObjectReference{Kind: resourceKindPod, Name: "demo-api-1"}},
+					},
+				}
+				if err := fakeClient.Tracker().Add(eps); err != nil {
+					t.Fatalf("seed endpointslice %s: %v", eps.Name, err)
 				}
 			},
 			want: &domain.ServiceQueryResult{
 				Ports:             map[string]int32{"grpc": 50051},
 				Endpoints:         []string{"10.0.0.10:50051"},
 				IsStateful:        true,
-				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "demo-api-0", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "demo-api-1", Endpoints: nil}},
+				StatefulInstances: []*domain.StatefulInstance{{Index: 0, Hostname: "", Endpoints: []string{"10.0.0.10:50051"}}, {Index: 1, Hostname: "", Endpoints: nil}},
 			},
 		},
 		{
