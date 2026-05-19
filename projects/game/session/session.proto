@@ -49,6 +49,13 @@ service SessionService {
     option (google.api.method_signature) = "name";
   }
 
+  // ListSessions returns sessions that are not in ENDED status.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/sessions"
+    };
+  }
+
   // ReconnectSession reallocates a healthy game gateway for an existing
   // Session, increments reconnect_generation, and returns a new complete agent
   // connection URL.
@@ -90,6 +97,8 @@ message Session {
   int64 reconnect_generation = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   string last_error = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string agent_connect_url = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 enum SessionType {
@@ -125,8 +134,6 @@ message CreateSessionRequest {
 
 message CreateSessionResponse {
   Session session = 1 [(google.api.field_behavior) = REQUIRED];
-
-  string agent_connect_url = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
 message DeleteSessionRequest {
@@ -136,6 +143,12 @@ message DeleteSessionRequest {
       type: "game.liukexin.com/session/Session"
     }
   ];
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
 }
 
 message ReconnectSessionRequest {
@@ -149,6 +162,4 @@ message ReconnectSessionRequest {
 
 message ReconnectSessionResponse {
   Session session = 1 [(google.api.field_behavior) = REQUIRED];
-
-  string agent_connect_url = 2 [(google.api.field_behavior) = REQUIRED];
 }

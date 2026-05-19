@@ -788,6 +788,85 @@ func Test_normalizeArtifactTarget(t *testing.T) {
 	}
 }
 
+func Test_validateDeployInfraPersistence(t *testing.T) {
+	tests := []struct {
+		name    string
+		p       DeployInfraPersistence
+		wantErr bool
+	}{
+		{
+			name: "capacity 20Gi 合法",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "20Gi",
+			},
+		},
+		{
+			name: "capacity 1Ti 合法",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "1Ti",
+			},
+		},
+		{
+			name: "capacity 1025Gi 超上限",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "1025Gi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "capacity 2Ti 超上限",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "2Ti",
+			},
+			wantErr: true,
+		},
+		{
+			name: "capacity bad-size 无效格式",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "bad-size",
+			},
+			wantErr: true,
+		},
+		{
+			name: "未启用时配置 capacity 报错",
+			p: DeployInfraPersistence{
+				Enabled:  false,
+				Capacity: "20Gi",
+			},
+			wantErr: true,
+		},
+		{
+			name: "无 capacity 字段旧配置合法",
+			p: DeployInfraPersistence{
+				Enabled: true,
+			},
+		},
+		{
+			name: "capacity 空字符串合法",
+			p: DeployInfraPersistence{
+				Enabled:  true,
+				Capacity: "",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDeployInfraPersistence(tt.p)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateDeployInfraPersistence() succeeded unexpectedly")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateDeployInfraPersistence() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func Test_normalizeArtifactPath(t *testing.T) {
 	tests := []struct {
 		name string // description of this test case

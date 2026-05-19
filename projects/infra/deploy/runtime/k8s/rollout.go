@@ -3,7 +3,10 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+
+	"dominion/projects/infra/deploy/domain"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -250,4 +253,85 @@ func deploymentFailureMessage(condition appsv1.DeploymentCondition, fallback str
 	}
 
 	return fallback
+}
+
+// CheckRollout queries Kubernetes for the rollout status of all workloads in the environment.
+//
+// It returns a tri-state result: Ready (all workloads rolled out), Waiting (still in progress),
+// or Failed (a deployment has an explicit failure condition). StatefulSets can only be Ready or
+// Waiting because they lack reliable failure signals.
+func (r *K8sRuntime) CheckRollout(ctx context.Context, env *domain.Environment) (*domain.RolloutStatus, error) {
+	objects, err := ConvertToWorkloads(env, r.client.K8sConfig)
+	if err != nil {
+		return nil, fmt.Errorf("转换 environment 为 workloads 失败: %w", err)
+	}
+
+	var deploymentNames []string
+	for _, workload := range objects.Deployments {
+		if workload == nil {
+			continue
+		}
+		deploymentNames = append(deploymentNames, workload.WorkloadName())
+	}
+	for _, workload := range objects.MongoDBWorkloads {
+		if workload == nil {
+			continue
+		}
+		deploymentNames = append(deploymentNames, workload.ResourceName())
+	}
+
+	var statefulSetNames []string
+	for _, workload := range objects.StatefulWorkloads {
+		if workload == nil {
+			continue
+		}
+		statefulSetNames = append(statefulSetNames, workload.WorkloadName())
+	}
+
+	if len(deploymentNames) == 0 && len(statefulSetNames) == 0 {
+		return &domain.RolloutStatus{State: domain.RolloutReady}, nil
+	}
+
+	namespace := r.client.K8sConfig.Namespace
+
+	var waitingMessages []string
+
+	for _, name := range deploymentNames {
+		dep, err := r.client.TypedClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("获取 Deployment %s/%s 失败: %w", namespace, name, err)
+		}
+
+		if failed, reason := isDeploymentFailed(dep); failed {
+			return &domain.RolloutStatus{State: domain.RolloutFailed, Message: reason}, nil
+		}
+
+		if isDeploymentReady(dep) {
+			continue
+		}
+
+		waitingMessages = append(waitingMessages, deploymentNotReadyMessage(dep))
+	}
+
+	for _, name := range statefulSetNames {
+		sts, err := r.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("获取 StatefulSet %s/%s 失败: %w", namespace, name, err)
+		}
+
+		if isStatefulSetReady(sts) {
+			continue
+		}
+
+		waitingMessages = append(waitingMessages, statefulSetNotReadyMessage(sts))
+	}
+
+	if len(waitingMessages) == 0 {
+		return &domain.RolloutStatus{State: domain.RolloutReady}, nil
+	}
+
+	return &domain.RolloutStatus{
+		State:   domain.RolloutWaiting,
+		Message: strings.Join(waitingMessages, "; "),
+	}, nil
 }

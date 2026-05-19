@@ -60,6 +60,7 @@ func (m *Manager) Start(helperPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cmd := exec.CommandContext(ctx, helperPath)
+	setCmdHideWindow(cmd)
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

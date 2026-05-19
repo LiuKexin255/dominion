@@ -14,8 +14,9 @@ body {
   margin: 0;
 }
 
-#app {
-  min-height: 100vh;
+html, body, #app {
+  height: 100vh;
+  overflow: hidden;
 }
 
 body {

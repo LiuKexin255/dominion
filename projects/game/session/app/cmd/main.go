@@ -4,28 +4,34 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/grpc"
+	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/mongo"
+	"dominion/common/gopkg/otel"
 	"dominion/common/gopkg/solver"
 	"dominion/projects/game/pkg/token"
-	"dominion/projects/game/session/app"
+	"dominion/projects/game/session"
 	"dominion/projects/game/session/runtime/gateway"
 	"dominion/projects/game/session/runtime/storage"
+	"dominion/projects/game/session/service"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 )
 
 const (
 	envHTTPPort           = "HTTP_PORT"
 	envSessionTokenSecret = "SESSION_TOKEN_SECRET"
 	envSessionTokenTTL    = "SESSION_TOKEN_TTL"
-	envSessionMongoTarget = "SESSION_MONGO_TARGET"
 
 	defaultHTTPListenAddr   = ":8081"
 	defaultMongoTarget      = "game/mongo"
+	defaultMongoDatabase    = "game"
 	defaultSessionTokenTTL  = "1h"
 	defaultShutdownDeadline = 5 * time.Second
 	publicHostPattern       = "gateway-%d-game.liukexin.com"
@@ -46,27 +52,16 @@ func main() {
 		log.Fatalf("parse %s: %v", envSessionTokenTTL, err)
 	}
 
-	mongoTarget := envOrDefault(envSessionMongoTarget, defaultMongoTarget)
 	httpAddr := normalizeListenAddr(*httpPort)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	client, err := mongo.NewClient(mongoTarget)
+	// Create Mongo client and repo.
+	client, err := mongo.NewClient(defaultMongoTarget)
 	if err != nil {
 		log.Fatalf("create mongo client: %v", err)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultShutdownDeadline)
-		defer cancel()
-		if err := client.Disconnect(shutdownCtx); err != nil {
-			log.Printf("disconnect mongo client: %v", err)
-		}
-	}()
 
-	coll := storage.NewMongoCollection(client.Database(storage.DatabaseName).Collection(storage.CollectionName))
-
-	repo, err := storage.NewMongoRepository(ctx, coll)
+	ctx := context.Background()
+	repo, err := storage.NewMongoRepository(ctx, client.Database(defaultMongoDatabase))
 	if err != nil {
 		log.Fatalf("create session repository: %v", err)
 	}
@@ -81,10 +76,22 @@ func main() {
 	}
 	gatewayReg := gateway.NewDeployRegistry(resolver, target, publicHostPattern)
 	tokenIssuer := token.NewHMACSigner(tokenSecret, tokenTTL)
-	bootstrap := app.NewBootstrap(repo, tokenIssuer, gatewayReg)
 
-	if err := app.Serve(ctx, bootstrap.Handler, httpAddr); err != nil {
-		log.Fatalf("serve session service: %v", err)
+	// Create handler.
+	svc := service.NewSessionService(repo, tokenIssuer, gatewayReg)
+	handler := session.NewHandler(svc)
+
+	// Server component.
+	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
+	session.RegisterSessionServiceHandlerServer(context.Background(), httpMux, handler)
+	httpServer := &http.Server{Addr: httpAddr, Handler: phttp.Handler(httpMux, "session-http")}
+
+	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
+	bs.Register(otel.Component())
+	bs.Register(bootstrap.MongoClient("mongo", client))
+	bs.Register(bootstrap.HTTPServer("session-http", httpServer))
+	if err := bs.Run(context.Background()); err != nil {
+		log.Fatalf("run session: %v", err)
 	}
 }
 

@@ -28,13 +28,13 @@ metadata:
     dominion.io/environment: infra.deploy
     app.kubernetes.io/managed-by: dominion.io
 spec:
-  storageClassName: nfs-csi
+  storageClassName: truenas-iscsi-v2
   volumeMode: Filesystem
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteOncePod
   resources:
     requests:
-      storage: 16Gi
+      storage: 4Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -48,6 +48,8 @@ metadata:
     app.kubernetes.io/managed-by: dominion.io
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: deploy
@@ -61,9 +63,6 @@ spec:
         dominion.io/environment: infra.deploy
         app.kubernetes.io/managed-by: dominion.io
     spec:
-      securityContext:
-        runAsUser: 1000
-        runAsGroup: 3000
       volumes:
         - name: mongo-data
           persistentVolumeClaim:
@@ -213,7 +212,7 @@ spec:
                       path: ca.crt
       containers:
         - name: dp-deploy-manager-847070f8
-          image: registry.liukexin.com/projects/infra/deploy@sha256:6fd6cb613547f5c0608e12d92a424c681b12497e8ec39fbb7864782b2ebfe52c
+          image: registry.liukexin.com/projects/infra/deploy@sha256:e678ea85e513984b03a06cb7997d5a8177bca59899678b3b5a235fd894cad387
           ports:
             - name: http
               containerPort: 8081

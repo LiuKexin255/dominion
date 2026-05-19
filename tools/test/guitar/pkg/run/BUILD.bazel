@@ -7,6 +7,7 @@ go_library(
     importpath = "dominion/tools/test/guitar/pkg/run",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
         "//tools/release/deploy/pkg/config",
         "//tools/release/deploy/pkg/workspace",
         "//tools/test/guitar/pkg/config",

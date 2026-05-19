@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "gateway",
+    srcs = ["otel.go"],
+    importpath = "dominion/common/gopkg/grpc/gateway",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_trace//:trace",
+        "@org_golang_google_grpc//metadata",
+    ],
+)
+
+go_unittest(
+    name = "gateway_test",
+    srcs = ["otel_test.go"],
+    embed = [":gateway"],
+    deps = [
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
+)

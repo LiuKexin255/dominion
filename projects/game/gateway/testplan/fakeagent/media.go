@@ -3,6 +3,7 @@ package fakeagent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"dominion/common/gopkg/s3"
 
+	"github.com/Eyevinn/mp4ff/avc"
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/minio/minio-go/v7"
 )
@@ -24,9 +26,10 @@ const (
 
 // mediaData holds parsed video segments ready for streaming.
 type mediaData struct {
-	initSegment  []byte
-	mediaSegs    [][]byte
-	keyFrameMask []bool
+	initSegment      []byte
+	mediaSegs        [][]byte
+	randomAccessMask []bool
+	initID           string // sha256 hex of initSegment
 }
 
 // prepareMediaData selects the media source by priority:
@@ -145,6 +148,11 @@ func parseFragmented(file *mp4.File) *mediaData {
 		result.initSegment = append(result.initSegment, buf.Bytes()...)
 	}
 
+	var trex *mp4.TrexBox
+	if file.Moov != nil && file.Moov.Mvex != nil {
+		trex = file.Moov.Mvex.Trex
+	}
+
 	for _, seg := range file.Segments {
 		for _, frag := range seg.Fragments {
 			var segBuf []byte
@@ -165,10 +173,9 @@ func parseFragmented(file *mp4.File) *mediaData {
 			}
 
 			if len(segBuf) > 0 {
+				isRandomAccess := detectRandomAccess(trex, frag)
 				result.mediaSegs = append(result.mediaSegs, segBuf)
-				// fMP4 encoded with frag_keyframe starts every fragment at a
-				// keyframe boundary, so all fragments are keyframes.
-				result.keyFrameMask = append(result.keyFrameMask, true)
+				result.randomAccessMask = append(result.randomAccessMask, isRandomAccess)
 			}
 		}
 	}
@@ -177,18 +184,53 @@ func parseFragmented(file *mp4.File) *mediaData {
 		log.Fatalf("no media segments found in fragmented video data")
 	}
 
+	result.initID = fmt.Sprintf("%x", sha256.Sum256(result.initSegment))
+
 	return result
 }
 
+// detectRandomAccess determines whether the first sample in a fragment is a sync
+// sample (random access point) by inspecting the sample flags from the fMP4 trun box.
+// The sample is random-access only when mp4ff resolves it as a sync sample
+// after applying trun/tfhd/trex default sample flags.
+func detectRandomAccess(trex *mp4.TrexBox, frag *mp4.Fragment) bool {
+	if trex == nil {
+		return false
+	}
+	samples, err := frag.GetFullSamples(trex)
+	if err != nil || len(samples) == 0 {
+		return false
+	}
+	if !samples[0].IsSync() {
+		return false
+	}
+	nalus, err := avc.GetNalusFromSample(samples[0].Data)
+	if err != nil {
+		return false
+	}
+	return containsIDRNALU(nalus)
+}
+
+func containsIDRNALU(nalus [][]byte) bool {
+	for _, nalu := range nalus {
+		if len(nalu) > 0 && avc.GetNaluType(nalu[0]) == avc.NALU_IDR {
+			return true
+		}
+	}
+	return false
+}
+
 func generateFakeMedia() *mediaData {
+	initSeg := generateFakeInitSegment()
 	return &mediaData{
-		initSegment: generateFakeInitSegment(),
+		initSegment: initSeg,
 		mediaSegs: [][]byte{
 			generateFakeMediaSegment(0),
 			generateFakeMediaSegment(1),
 			generateFakeMediaSegment(2),
 		},
-		keyFrameMask: []bool{true, false, false},
+		randomAccessMask: []bool{true, false, false},
+		initID:           fmt.Sprintf("%x", sha256.Sum256(initSeg)),
 	}
 }
 

@@ -2,4 +2,4 @@ package mediacache
 
 import "errors"
 
-var errNoKeyFrame = errors.New("no key frame segment available")
+var errNoRandomAccess = errors.New("no random access segment available")

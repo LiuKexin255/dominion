@@ -1,14 +1,17 @@
 package solver
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
+	"dominion/common/gopkg/logs"
 	"dominion/projects/infra/deploy"
 )
 
@@ -187,6 +190,60 @@ func Test_convertStatefulInstances(t *testing.T) {
 			got := convertStatefulInstances(tt.in)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("convertStatefulInstances() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeployHTTPClient_GetServiceEndpoints_WarnOnBadStatus(t *testing.T) {
+	tests := []struct {
+		name           string
+		responseStatus int
+		responseBody   string
+		wantLogMsg     string
+		wantLogFields  []string
+	}{
+		{
+			name:           "non-200 status logs warning",
+			responseStatus: http.StatusBadGateway,
+			responseBody:   `gateway failed`,
+			wantLogMsg:     "deploy http non-200 response",
+			wantLogFields:  []string{"status=", "error="},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			ctx := logs.WithLogger(context.Background(), logger)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.responseStatus)
+				_, _ = w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			client := &DeployHTTPClient{
+				baseURL:    server.URL,
+				httpClient: server.Client(),
+			}
+
+			// when
+			_, err := client.GetServiceEndpoints(ctx, "deploy/scopes/dev/environments/alpha/apps/app-a/services/service-b/endpoints")
+
+			// then
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			output := buf.String()
+			if !strings.Contains(output, tt.wantLogMsg) {
+				t.Fatalf("log output = %q, want message %q", output, tt.wantLogMsg)
+			}
+			for _, field := range tt.wantLogFields {
+				if !strings.Contains(output, field) {
+					t.Fatalf("log output = %q, want field %q", output, field)
+				}
 			}
 		})
 	}

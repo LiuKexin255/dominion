@@ -7,9 +7,13 @@ go_library(
     importpath = "dominion/projects/game/session/service",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/otel",
         "//projects/game/pkg/token",
         "//projects/game/session/domain",
         "//projects/game/session/runtime/gateway",
+        "@io_opentelemetry_go_otel//attribute",
     ],
 )
 

@@ -9,7 +9,13 @@ go_library(
     ],
     importpath = "dominion/projects/game/session/runtime/gateway",
     visibility = ["//visibility:public"],
-    deps = ["//common/gopkg/solver"],
+    deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/otel",
+        "//common/gopkg/solver",
+        "@io_opentelemetry_go_otel//attribute",
+    ],
 )
 
 go_unittest(

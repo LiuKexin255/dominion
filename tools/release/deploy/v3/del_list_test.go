@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -97,7 +98,7 @@ func TestDelCommand(t *testing.T) {
 			}
 
 			gotOutput, err := captureDelListOutput(t, func() error {
-				return delCommand(&options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
+				return delCommand(context.Background(), &options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
 			})
 
 			if tt.wantErrIs != nil || tt.wantErrSubstr != "" {
@@ -175,7 +176,7 @@ func TestListCommand(t *testing.T) {
 				}
 
 				gotOutput := captureListStdout(t, func() error {
-					return listCommand(&options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
+					return listCommand(context.Background(), &options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
 				})
 				if strings.TrimSpace(gotOutput) != tt.wantOutput {
 					t.Fatalf("listCommand() output = %q, want %q", strings.TrimSpace(gotOutput), tt.wantOutput)
@@ -191,7 +192,7 @@ func TestListCommand(t *testing.T) {
 				}
 			}
 
-			err := listCommand(&options{endpoint: "http://127.0.0.1:1", timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://127.0.0.1:1")})
+			err := listCommand(context.Background(), &options{endpoint: "http://127.0.0.1:1", timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://127.0.0.1:1")})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
 				t.Fatalf("listCommand() error = %v, want substring %q", err, tt.wantErrSubstr)
 			}

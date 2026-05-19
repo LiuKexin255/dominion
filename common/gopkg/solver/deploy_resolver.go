@@ -7,6 +7,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // ServiceEndpointsInfo holds endpoint data resolved from the deploy service.
@@ -65,9 +68,17 @@ func (r *DeployResolver) Resolve(ctx context.Context, target *Target) ([]string,
 		return nil, fmt.Errorf("deploy GetServiceEndpoints(%q): %w", name, err)
 	}
 	if info == nil {
+		logs.Warn(ctx, "deploy resolver returned no endpoints", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service), event.Int("endpoint_count", 0))
 		return nil, nil
 	}
-	return filterEndpoints(info.Endpoints, info.Ports, target.PortSelector)
+	endpoints, filterErr := filterEndpoints(info.Endpoints, info.Ports, target.PortSelector)
+	if filterErr != nil {
+		return nil, filterErr
+	}
+	if len(endpoints) == 0 {
+		logs.Warn(ctx, "deploy resolver returned no endpoints", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service), event.Int("endpoint_count", 0))
+	}
+	return endpoints, nil
 }
 
 // buildResourceName constructs the deploy resource name for a target.

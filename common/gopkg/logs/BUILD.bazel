@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "logs",
+    srcs = ["logs.go"],
+    importpath = "dominion/common/gopkg/logs",
+    visibility = ["//visibility:public"],
+    deps = ["//common/gopkg/logs/event"],
+)
+
+go_unittest(
+    name = "logs_test",
+    srcs = ["logs_test.go"],
+    embed = [":logs"],
+    deps = ["//common/gopkg/logs/event"],
+)

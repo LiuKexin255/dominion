@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
 
@@ -27,6 +29,7 @@ type gatewayService interface {
 	HandleWebMessage(ctx context.Context, sessionID string, connID string, msg *domain.Message) ([]*domain.RoutedMessage, error)
 	DisconnectAgent(sessionID string)
 	DisconnectWeb(sessionID, connID string)
+	AsyncMessages() <-chan *domain.RoutedMessage
 }
 
 // Handler implements GameGatewayServiceServer.
@@ -53,9 +56,15 @@ func (h *Handler) GetGameSnapshot(ctx context.Context, req *GetGameSnapshotReque
 
 	snap, err := h.svc.GetSnapshot(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrSessionNotFound) {
+			logs.Warn(ctx, "get game snapshot: session not found", event.String(logFieldSessionID, sessionID))
+		} else {
+			logs.Error(ctx, "get game snapshot failed", event.String(logFieldSessionID, sessionID), event.Err(err))
+		}
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "get game snapshot succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoSnapshot(sessionID, snap), nil
 }
 
@@ -69,9 +78,15 @@ func (h *Handler) GetGameRuntime(ctx context.Context, req *GetGameRuntimeRequest
 
 	rt, err := h.svc.GetRuntime(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrSessionNotFound) {
+			logs.Warn(ctx, "get game runtime: session not found", event.String(logFieldSessionID, sessionID))
+		} else {
+			logs.Error(ctx, "get game runtime failed", event.String(logFieldSessionID, sessionID), event.Err(err))
+		}
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "get game runtime succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoRuntime(rt), nil
 }
 
@@ -102,16 +117,19 @@ func parseResourceName(name, suffix string) (string, error) {
 
 // toProtoSnapshot converts a domain SnapshotRef to a proto GameSnapshot.
 func toProtoSnapshot(sessionID string, ref *domain.SnapshotRef) *GameSnapshot {
+	name := "sessions/" + sessionID + "/game/snapshot"
+	session := "sessions/" + sessionID
 	if ref == nil {
 		return &GameSnapshot{
-			Name:    "sessions/" + sessionID + "/game/snapshot",
-			Session: "sessions/" + sessionID,
+			Name:    name,
+			Session: session,
 		}
 	}
 
 	return &GameSnapshot{
-		Name:        "sessions/" + sessionID + "/game/snapshot",
-		Session:     "sessions/" + sessionID,
+		Name:        name,
+		Session:     session,
+		SnapshotId:  fmt.Sprintf("%s-%d", sessionID, ref.CaptureTime.UnixMilli()),
 		MimeType:    ref.MimeType,
 		Image:       ref.Data,
 		Cached:      ref.Cached,
@@ -158,28 +176,9 @@ func toProtoOperation(op *domain.InflightOperation) *GameOperation {
 
 	return &GameOperation{
 		OperationId:   op.OperationID,
-		Kind:          toProtoOperationKind(op.Kind),
+		Kind:          ProtoOperationKind(op.Kind),
 		FlashSnapshot: op.FlashSnapshot,
 		CreateTime:    timestamppb.New(op.CreateTime),
-	}
-}
-
-// toProtoOperationKind converts a domain OperationKind to a proto
-// GameControlOperationKind.
-func toProtoOperationKind(k domain.OperationKind) GameControlOperationKind {
-	switch k {
-	case domain.OperationKindMouseClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK
-	case domain.OperationKindMouseDoubleClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK
-	case domain.OperationKindMouseDrag:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG
-	case domain.OperationKindMouseHover:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER
-	case domain.OperationKindMouseHold:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD
-	default:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED
 	}
 }
 

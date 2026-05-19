@@ -251,6 +251,38 @@ func (e *Environment) SetReconcilingMessage(msg string) error {
 	return nil
 }
 
+// MarkWaitingRollout transitions the environment to waiting for rollout.
+func (e *Environment) MarkWaitingRollout(processedGeneration int64) error {
+	if err := e.transitionTo(StateWaitingRollout); err != nil {
+		return err
+	}
+
+	e.status.ObservedGeneration = processedGeneration
+	return nil
+}
+
+// SetWaitingRolloutMessage records a status message while the environment remains waiting for rollout.
+func (e *Environment) SetWaitingRolloutMessage(msg string) error {
+	if e.status.State != StateWaitingRollout {
+		return ErrInvalidState
+	}
+
+	e.status.Message = msg
+	return nil
+}
+
+// MarkReadyFromRollout transitions the environment from waiting for rollout to ready.
+func (e *Environment) MarkReadyFromRollout(processedGeneration int64) error {
+	if err := e.transitionTo(StateReady); err != nil {
+		return err
+	}
+
+	e.status.Message = ""
+	e.status.ObservedGeneration = processedGeneration
+	e.status.LastSuccessTime = time.Now().UTC()
+	return nil
+}
+
 // Validate checks the desired state and cross-object references.
 func (e *Environment) Validate() error {
 	var errs []error

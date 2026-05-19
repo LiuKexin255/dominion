@@ -9,3 +9,6 @@ const AgentRole = gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT
 
 // MimeTypeMP4 is the MIME type for fMP4 video segments with H.264 codec.
 const MimeTypeMP4 = "video/mp4; codecs=\"avc1.64001f\""
+
+// CodecH264AVC is the codec identifier for H.264 AVC video.
+const CodecH264AVC = "h264-avc"

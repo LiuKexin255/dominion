@@ -6,10 +6,15 @@ go_library(
     srcs = [
         "control.go",
         "gateway.go",
+        "worker.go",
     ],
     importpath = "dominion/projects/game/gateway/service",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/otel",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",
         "//projects/game/gateway/domain/sessionmanager",

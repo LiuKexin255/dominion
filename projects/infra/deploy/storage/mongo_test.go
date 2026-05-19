@@ -21,8 +21,8 @@ func TestRepositoryContract_MongoRepository(t *testing.T) {
 	repo, _ := newMongoRepositoryForTest()
 
 	created := newMongoSaveTestEnv(t, "dev", "alpha", "created environment", "image:v1", "etag-create")
-	if err := repo.Save(ctx, created); err != nil {
-		t.Fatalf("Save() create unexpected error: %v", err)
+	if err := repo.Create(ctx, created); err != nil {
+		t.Fatalf("Create() create unexpected error: %v", err)
 	}
 
 	got, err := repo.Get(ctx, created.Name())
@@ -41,15 +41,11 @@ func TestRepositoryContract_MongoRepository(t *testing.T) {
 	}
 
 	updated := newMongoSaveTestEnv(t, "dev", "alpha", "updated environment", "image:v2", "etag-update")
-	if err := repo.Save(ctx, updated); err != nil {
-		t.Fatalf("Save() overwrite unexpected error: %v", err)
+	if err := repo.Create(ctx, updated); !errors.Is(err, domain.ErrAlreadyExists) {
+		t.Fatalf("Create() duplicate = %v, want ErrAlreadyExists", err)
 	}
 
-	got, err = repo.Get(ctx, updated.Name())
-	if err != nil {
-		t.Fatalf("Get() after overwrite unexpected error: %v", err)
-	}
-	assertEnvironmentEqual(t, got, updated)
+	assertEnvironmentEqual(t, got, created)
 
 	missingName, err := domain.NewEnvironmentName("dev", "ghost")
 	if err != nil {
@@ -58,14 +54,14 @@ func TestRepositoryContract_MongoRepository(t *testing.T) {
 	_, err = repo.Get(ctx, missingName)
 	assertNotFoundError(t, err, "Get() missing")
 
-	if err := repo.Delete(ctx, updated.Name()); err != nil {
+	if err := repo.Delete(ctx, created.Name()); err != nil {
 		t.Fatalf("Delete() unexpected error: %v", err)
 	}
 
-	_, err = repo.Get(ctx, updated.Name())
+	_, err = repo.Get(ctx, created.Name())
 	assertNotFoundError(t, err, "Get() after delete")
 
-	err = repo.Delete(ctx, updated.Name())
+	err = repo.Delete(ctx, created.Name())
 	assertNotFoundError(t, err, "Delete() missing")
 }
 
@@ -103,8 +99,8 @@ func TestRepositoryContract_MongoRepository_Pagination(t *testing.T) {
 			newMongoSaveTestEnv(t, "prod", "zz", "env zz", "image:v9", "etag-zz"),
 		}
 		for _, env := range envs {
-			if err := repo.Save(ctx, env); err != nil {
-				t.Fatalf("Save() unexpected error: %v", err)
+			if err := repo.Create(ctx, env); err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
 			}
 		}
 
@@ -147,8 +143,8 @@ func TestRepositoryContract_MongoRepository_Pagination(t *testing.T) {
 	t.Run("uses default page size when zero", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
-		if err := repo.Save(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -168,8 +164,8 @@ func TestRepositoryContract_MongoRepository_Pagination(t *testing.T) {
 	t.Run("returns nil page when token is out of range", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
-		if err := repo.Save(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -202,8 +198,8 @@ func TestRepositoryContract_MongoRepository_Ordering(t *testing.T) {
 		newMongoSaveTestEnv(t, "prod", "aardvark", "env aardvark", "image:v9", "etag-prod"),
 	}
 	for _, env := range envs {
-		if err := repo.Save(ctx, env); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 	}
 
@@ -470,109 +466,155 @@ func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
 	}
 }
 
-func TestMongoRepository_Save(t *testing.T) {
+func TestMongoRepository_Create(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("create new environment", func(t *testing.T) {
 		// given
-		repo, collection := newMongoRepositoryForTest()
+		repo, _ := newMongoRepositoryForTest()
 		env := newMongoSaveTestEnv(t, "dev", "env1", "created environment", "image:v1", "etag-create")
 
 		// when
-		err := repo.Save(ctx, env)
+		err := repo.Create(ctx, env)
 
 		// then
 		if err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
-		if collection.lastUpdateFilter == nil {
-			t.Fatal("Save() did not call UpdateOne")
-		}
-		wantFilter := bson.M{"name": env.Name().String(), "generation": bson.M{"$lte": env.Generation()}}
-		if !reflect.DeepEqual(collection.lastUpdateFilter, wantFilter) {
-			t.Fatalf("UpdateOne() filter = %#v, want %#v", collection.lastUpdateFilter, wantFilter)
-		}
-		if collection.lastUpdateUpsert == nil || !*collection.lastUpdateUpsert {
-			t.Fatalf("UpdateOne() upsert = %v, want true", collection.lastUpdateUpsert)
-		}
-		assertSaveUpdateDocument(t, collection.lastUpdateUpdate, env)
 
 		got, err := repo.Get(ctx, env.Name())
 		if err != nil {
-			t.Fatalf("Get() after Save() unexpected error: %v", err)
+			t.Fatalf("Get() after Create() unexpected error: %v", err)
 		}
 		assertEnvironmentEqual(t, got, env)
 	})
 
-	t.Run("overwrite existing environment", func(t *testing.T) {
-		// given
-		repo, collection := newMongoRepositoryForTest()
-		original := newMongoSaveTestEnv(t, "dev", "env1", "original environment", "image:v1", "etag-original")
-		if err := repo.Save(ctx, original); err != nil {
-			t.Fatalf("Save() original unexpected error: %v", err)
-		}
-		updated := newMongoSaveTestEnv(t, "dev", "env1", "updated environment", "image:v2", "etag-updated")
-
-		// when
-		err := repo.Save(ctx, updated)
-
-		// then
-		if err != nil {
-			t.Fatalf("Save() overwrite unexpected error: %v", err)
-		}
-		wantFilter := bson.M{"name": updated.Name().String(), "generation": bson.M{"$lte": updated.Generation()}}
-		if !reflect.DeepEqual(collection.lastUpdateFilter, wantFilter) {
-			t.Fatalf("UpdateOne() filter = %#v, want %#v", collection.lastUpdateFilter, wantFilter)
-		}
-		assertSaveUpdateDocument(t, collection.lastUpdateUpdate, updated)
-		got, err := repo.Get(ctx, updated.Name())
-		if err != nil {
-			t.Fatalf("Get() after overwrite unexpected error: %v", err)
-		}
-		assertEnvironmentEqual(t, got, updated)
-	})
-
-	t.Run("duplicate key generation conflict is ignored", func(t *testing.T) {
-		// given
-		repo := &MongoRepository{
-			collection: &fakeCollectionOps{
-				updateErr: mongodriver.WriteException{
-					WriteErrors: []mongodriver.WriteError{{Code: 11000, Message: "duplicate key"}},
-				},
-			},
-		}
-		env := newMongoSaveTestEnv(t, "dev", "env1", "duplicate environment", "image:v1", "etag-duplicate")
-
-		// when
-		err := repo.Save(ctx, env)
-
-		// then
-		if err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
-		}
-	})
-
-	t.Run("stale generation update is ignored", func(t *testing.T) {
+	t.Run("duplicate name returns ErrAlreadyExists", func(t *testing.T) {
 		// given
 		repo, _ := newMongoRepositoryForTest()
-		current := newMongoSaveTestEnv(t, "dev", "env1", "current environment", "image:v2", "etag-current")
-		if err := repo.Save(ctx, current); err != nil {
-			t.Fatalf("Save() current unexpected error: %v", err)
+		env := newMongoSaveTestEnv(t, "dev", "env1", "original environment", "image:v1", "etag-original")
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() original unexpected error: %v", err)
 		}
-		stale := cloneEnvironmentWithGeneration(t, current, current.Generation()-1)
+		duplicate := newMongoSaveTestEnv(t, "dev", "env1", "duplicate environment", "image:v2", "etag-duplicate")
 
 		// when
-		err := repo.Save(ctx, stale)
+		err := repo.Create(ctx, duplicate)
 
 		// then
-		if err != nil {
-			t.Fatalf("Save() stale unexpected error: %v", err)
+		if !errors.Is(err, domain.ErrAlreadyExists) {
+			t.Fatalf("Create() duplicate error = %v, want ErrAlreadyExists", err)
 		}
-		got, getErr := repo.Get(ctx, current.Name())
+		got, getErr := repo.Get(ctx, env.Name())
 		if getErr != nil {
 			t.Fatalf("Get() error = %v", getErr)
 		}
-		assertEnvironmentEqual(t, got, current)
+		assertEnvironmentEqual(t, got, env)
+	})
+
+	t.Run("duplicate key error maps to ErrAlreadyExists", func(t *testing.T) {
+		// given
+		repo := &MongoRepository{
+			collection: &fakeCollectionOps{
+				docs: make(map[string]*mongoEnvironment),
+			},
+		}
+		env := newMongoSaveTestEnv(t, "dev", "env1", "first environment", "image:v1", "etag-first")
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() first unexpected error: %v", err)
+		}
+
+		// when
+		duplicate := newMongoSaveTestEnv(t, "dev", "env1", "duplicate environment", "image:v2", "etag-duplicate")
+		err := repo.Create(ctx, duplicate)
+
+		// then
+		if !errors.Is(err, domain.ErrAlreadyExists) {
+			t.Fatalf("Create() duplicate error = %v, want ErrAlreadyExists", err)
+		}
+	})
+}
+
+func TestMongoRepository_UpdateDesired(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("updates desired state with correct generation", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newMongoSaveTestEnv(t, "dev", "env1", "test environment", "image:v1", "etag-1")
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		newDesiredState := &domain.DesiredState{
+			Artifacts: []*domain.ArtifactSpec{{Name: "svc1", App: "app1", Image: "image:v2", Replicas: 3}},
+		}
+
+		// when
+		err := repo.UpdateDesired(ctx, env.Name(), env.Generation(), newDesiredState, domain.DesiredPresent)
+
+		// then
+		if err != nil {
+			t.Fatalf("UpdateDesired() unexpected error: %v", err)
+		}
+		got, getErr := repo.Get(ctx, env.Name())
+		if getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
+		if got.Generation() != env.Generation()+1 {
+			t.Fatalf("Generation() = %d, want %d", got.Generation(), env.Generation()+1)
+		}
+		if got.DesiredState().Artifacts[0].Image != "image:v2" {
+			t.Fatalf("DesiredState().Artifacts[0].Image = %q, want %q", got.DesiredState().Artifacts[0].Image, "image:v2")
+		}
+	})
+
+	t.Run("returns ErrStaleGeneration on stale generation", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newMongoSaveTestEnv(t, "dev", "env1", "test environment", "image:v1", "etag-1")
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		newDesiredState := &domain.DesiredState{
+			Artifacts: []*domain.ArtifactSpec{{Name: "svc1", App: "app1", Image: "image:v2", Replicas: 3}},
+		}
+
+		// when
+		err := repo.UpdateDesired(ctx, env.Name(), env.Generation()+99, newDesiredState, domain.DesiredPresent)
+
+		// then
+		if !errors.Is(err, domain.ErrStaleGeneration) {
+			t.Fatalf("UpdateDesired() error = %v, want ErrStaleGeneration", err)
+		}
+	})
+
+	t.Run("sets desired absent for delete", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newMongoSaveTestEnv(t, "dev", "env1", "test environment", "image:v1", "etag-1")
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		// when
+		err := repo.UpdateDesired(ctx, env.Name(), env.Generation(), nil, domain.DesiredAbsent)
+
+		// then
+		if err != nil {
+			t.Fatalf("UpdateDesired() unexpected error: %v", err)
+		}
+		got, getErr := repo.Get(ctx, env.Name())
+		if getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
+		if got.Status().Desired != domain.DesiredAbsent {
+			t.Fatalf("Desired = %v, want DesiredAbsent", got.Status().Desired)
+		}
+		if got.Generation() != env.Generation()+1 {
+			t.Fatalf("Generation() = %d, want %d", got.Generation(), env.Generation()+1)
+		}
 	})
 }
 
@@ -583,8 +625,8 @@ func TestMongoRepository_Delete(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
 		env := newMongoSaveTestEnv(t, "dev", "env1", "delete environment", "image:v1", "etag-delete")
-		if err := repo.Save(ctx, env); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -628,8 +670,8 @@ func TestMongoRepository_Get(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
 		env := newMongoSaveTestEnv(t, "dev", "env1", "existing environment", "image:v1", "etag-get")
-		if err := repo.Save(ctx, env); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -681,8 +723,8 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 			newMongoSaveTestEnv(t, "prod", "zz", "env zz", "image:v9", "etag-zz"),
 		}
 		for _, env := range envs {
-			if err := repo.Save(ctx, env); err != nil {
-				t.Fatalf("Save() unexpected error: %v", err)
+			if err := repo.Create(ctx, env); err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
 			}
 		}
 
@@ -725,8 +767,8 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 	t.Run("empty scope returns nil", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
-		if err := repo.Save(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -750,8 +792,8 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 	t.Run("default page size when zero", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
-		if err := repo.Save(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -771,8 +813,8 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 	t.Run("out of range token returns nil page", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
-		if err := repo.Save(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
-			t.Fatalf("Save() unexpected error: %v", err)
+		if err := repo.Create(ctx, newMongoSaveTestEnv(t, "dev", "env1", "env1", "image:v1", "etag-1")); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
 		}
 
 		// when
@@ -823,8 +865,8 @@ func TestMongoRepository_ListByStates(t *testing.T) {
 			newMongoStateTestEnv(t, "prod", "delta", "env delta", domain.StateReady, "etag-delta"),
 		}
 		for _, env := range envs {
-			if err := repo.Save(ctx, env); err != nil {
-				t.Fatalf("Save() unexpected error: %v", err)
+			if err := repo.Create(ctx, env); err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
 			}
 		}
 
@@ -864,13 +906,13 @@ func TestMongoRepository_ListNeedingReconcile(t *testing.T) {
 			wantNames:          []string{"alpha"},
 		},
 		{
-			name:               "returns env with desired=Present and state=Failed and observed_generation == generation",
+			name:               "excludes env with desired=Present and state=Failed and observed_generation == generation",
 			envName:            "bravo",
 			desired:            domain.DesiredPresent,
 			state:              domain.StateFailed,
 			observedGeneration: 1,
 			generation:         1,
-			wantNames:          []string{"bravo"},
+			wantNames:          nil,
 		},
 		{
 			name:               "returns env with desired=Absent",
@@ -891,13 +933,40 @@ func TestMongoRepository_ListNeedingReconcile(t *testing.T) {
 			wantNames:          nil,
 		},
 		{
-			name:               "returns env with desired=Present and state=Failed and observed_generation < generation (condition 1 covers it)",
+			name:               "returns env with desired=Present and state=Failed and observed_generation < generation",
 			envName:            "echo",
 			desired:            domain.DesiredPresent,
 			state:              domain.StateFailed,
 			observedGeneration: 1,
 			generation:         3,
 			wantNames:          []string{"echo"},
+		},
+		{
+			name:               "returns env with desired=Present and state=WaitingRollout",
+			envName:            "foxtrot",
+			desired:            domain.DesiredPresent,
+			state:              domain.StateWaitingRollout,
+			observedGeneration: 2,
+			generation:         2,
+			wantNames:          []string{"foxtrot"},
+		},
+		{
+			name:               "returns env with desired=Present and state=Pending",
+			envName:            "golf",
+			desired:            domain.DesiredPresent,
+			state:              domain.StatePending,
+			observedGeneration: 2,
+			generation:         2,
+			wantNames:          []string{"golf"},
+		},
+		{
+			name:               "returns env with desired=Present and state=Reconciling",
+			envName:            "hotel",
+			desired:            domain.DesiredPresent,
+			state:              domain.StateReconciling,
+			observedGeneration: 2,
+			generation:         2,
+			wantNames:          []string{"hotel"},
 		},
 	}
 
@@ -906,8 +975,8 @@ func TestMongoRepository_ListNeedingReconcile(t *testing.T) {
 			// given
 			repo, _ := newMongoRepositoryForTest()
 			env := newReconcileTestEnv(t, tt.envName, tt.desired, tt.state, tt.observedGeneration, tt.generation, baseTime)
-			if err := repo.Save(ctx, env); err != nil {
-				t.Fatalf("Save() unexpected error: %v", err)
+			if err := repo.Create(ctx, env); err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
 			}
 
 			// when
@@ -920,6 +989,122 @@ func TestMongoRepository_ListNeedingReconcile(t *testing.T) {
 			assertEnvironmentNames(t, got, tt.wantNames)
 		})
 	}
+}
+
+func TestMongoRepository_TransitionStatus(t *testing.T) {
+	ctx := context.Background()
+	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	t.Run("succeeds when all preconditions match", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newReconcileTestEnv(t, "env1", domain.DesiredPresent, domain.StateReconciling, 2, 2, baseTime)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		// when
+		err := repo.TransitionStatus(ctx, env.Name(), 2, domain.StateReconciling, &domain.EnvironmentStatus{
+			State: domain.StateWaitingRollout, Desired: domain.DesiredPresent,
+			ObservedGeneration: 2, Message: "waiting rollout",
+		})
+
+		// then
+		if err != nil {
+			t.Fatalf("TransitionStatus() unexpected error: %v", err)
+		}
+		got, getErr := repo.Get(ctx, env.Name())
+		if getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
+		if got.Status().State != domain.StateWaitingRollout {
+			t.Fatalf("State() = %v, want %v", got.Status().State, domain.StateWaitingRollout)
+		}
+		if got.Status().Desired != domain.DesiredPresent {
+			t.Fatalf("Desired() = %v, want %v", got.Status().Desired, domain.DesiredPresent)
+		}
+		if got.Status().ObservedGeneration != 2 {
+			t.Fatalf("ObservedGeneration() = %d, want 2", got.Status().ObservedGeneration)
+		}
+		if got.Status().Message != "waiting rollout" {
+			t.Fatalf("Message() = %q, want %q", got.Status().Message, "waiting rollout")
+		}
+	})
+
+	t.Run("returns ErrStaleGeneration when generation changed", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newReconcileTestEnv(t, "env1", domain.DesiredPresent, domain.StateReconciling, 2, 2, baseTime)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		// when
+		err := repo.TransitionStatus(ctx, env.Name(), 99, domain.StateReconciling, &domain.EnvironmentStatus{State: domain.StateWaitingRollout, ObservedGeneration: 2})
+
+		// then
+		if !errors.Is(err, domain.ErrStaleGeneration) {
+			t.Fatalf("TransitionStatus() error = %v, want %v", err, domain.ErrStaleGeneration)
+		}
+	})
+
+	t.Run("returns ErrStaleState when state changed", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newReconcileTestEnv(t, "env1", domain.DesiredPresent, domain.StateReady, 2, 2, baseTime)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		// when
+		err := repo.TransitionStatus(ctx, env.Name(), 2, domain.StateReconciling, &domain.EnvironmentStatus{State: domain.StateWaitingRollout, ObservedGeneration: 2})
+
+		// then
+		if !errors.Is(err, domain.ErrStaleState) {
+			t.Fatalf("TransitionStatus() error = %v, want %v", err, domain.ErrStaleState)
+		}
+	})
+
+	t.Run("succeeds even when desired differs (generation guard is sufficient)", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		env := newReconcileTestEnv(t, "env1", domain.DesiredAbsent, domain.StateReconciling, 2, 2, baseTime)
+		if err := repo.Create(ctx, env); err != nil {
+			t.Fatalf("Create() unexpected error: %v", err)
+		}
+
+		// when — Desired differs from what's stored, but generation+state match
+		err := repo.TransitionStatus(ctx, env.Name(), 2, domain.StateReconciling, &domain.EnvironmentStatus{State: domain.StateWaitingRollout, ObservedGeneration: 2})
+
+		// then — succeeds because Desired is no longer a precondition
+		if err != nil {
+			t.Fatalf("TransitionStatus() unexpected error: %v", err)
+		}
+		got, getErr := repo.Get(ctx, env.Name())
+		if getErr != nil {
+			t.Fatalf("Get() error = %v", getErr)
+		}
+		if got.Status().State != domain.StateWaitingRollout {
+			t.Fatalf("State() = %v, want %v", got.Status().State, domain.StateWaitingRollout)
+		}
+	})
+
+	t.Run("returns ErrNotFound when document does not exist", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		name, err := domain.NewEnvironmentName("dev", "ghost")
+		if err != nil {
+			t.Fatalf("NewEnvironmentName() error = %v", err)
+		}
+
+		// when
+		err = repo.TransitionStatus(ctx, name, 1, domain.StateReconciling, &domain.EnvironmentStatus{State: domain.StateReady, ObservedGeneration: 1})
+
+		// then
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("TransitionStatus() error = %v, want %v", err, domain.ErrNotFound)
+		}
+	})
 }
 
 func newReconcileTestEnv(t *testing.T, envName string, desired domain.EnvironmentDesired, state domain.EnvironmentState, observedGeneration, generation int64, baseTime time.Time) *domain.Environment {
@@ -966,10 +1151,8 @@ func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	})
 
 	fakeCollection := &fakeCollectionOps{}
-	var gotDB string
 	var gotCollection string
-	newCollection = func(_ *mongodriver.Client, db string, coll string) collectionOps {
-		gotDB = db
+	newCollection = func(_ *mongodriver.Database, coll string) collectionOps {
 		gotCollection = coll
 		return fakeCollection
 	}
@@ -981,11 +1164,8 @@ func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	if repo == nil {
 		t.Fatal("NewMongoRepository() returned nil repository")
 	}
-	if gotDB != DatabaseName {
-		t.Fatalf("database = %q, want %q", gotDB, DatabaseName)
-	}
-	if gotCollection != CollectionName {
-		t.Fatalf("collection = %q, want %q", gotCollection, CollectionName)
+	if gotCollection != collectionName {
+		t.Fatalf("collection = %q, want %q", gotCollection, collectionName)
 	}
 	if len(fakeCollection.indexes.models) != 2 {
 		t.Fatalf("index count = %d, want 2", len(fakeCollection.indexes.models))
@@ -1001,7 +1181,7 @@ func TestMongoRepository_NewMongoRepository_ReturnsIndexError(t *testing.T) {
 		newCollection = originalNewCollection
 	})
 
-	newCollection = func(_ *mongodriver.Client, _, _ string) collectionOps {
+	newCollection = func(_ *mongodriver.Database, _ string) collectionOps {
 		return &fakeCollectionOps{
 			indexes: fakeIndexViewOps{err: errors.New("boom")},
 		}
@@ -1159,6 +1339,25 @@ func (f *fakeCollectionOps) Find(_ context.Context, filter any, opts ...*options
 	return fakeCursor{docs: docs[skip:end]}, nil
 }
 
+func (f *fakeCollectionOps) InsertOne(_ context.Context, document any, _ ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
+	doc, ok := document.(*mongoEnvironment)
+	if !ok {
+		return nil, errors.New("InsertOne only supports *mongoEnvironment")
+	}
+	if f.docs == nil {
+		f.docs = make(map[string]*mongoEnvironment)
+	}
+	if _, exists := f.docs[doc.Name]; exists {
+		return nil, mongodriver.WriteException{
+			WriteErrors: []mongodriver.WriteError{{Code: 11000, Message: "duplicate key"}},
+		}
+	}
+	copy := *doc
+	copy.ID = primitive.NewObjectID()
+	f.docs[doc.Name] = &copy
+	return &mongodriver.InsertOneResult{InsertedID: copy.ID}, nil
+}
+
 func matchesFilter(doc *mongoEnvironment, filter bson.M) bool {
 	for key, value := range filter {
 		switch key {
@@ -1230,7 +1429,16 @@ func matchesCondition(doc *mongoEnvironment, cond bson.M) bool {
 				return false
 			}
 		case "status.state":
-			if doc.Status == nil || doc.Status.State != toInt(value) {
+			if doc.Status == nil {
+				return false
+			}
+			if stateMap, ok := value.(bson.M); ok {
+				if inVals, ok := stateMap["$in"]; ok {
+					if !matchesStateInFilter(doc.Status.State, inVals) {
+						return false
+					}
+				}
+			} else if doc.Status.State != toInt(value) {
 				return false
 			}
 		case "$expr":
@@ -1242,6 +1450,19 @@ func matchesCondition(doc *mongoEnvironment, cond bson.M) bool {
 		}
 	}
 	return true
+}
+
+func matchesStateInFilter(docState int, inVals any) bool {
+	rv := reflect.ValueOf(inVals)
+	if !rv.IsValid() || rv.Kind() != reflect.Slice {
+		return false
+	}
+	for i := 0; i < rv.Len(); i++ {
+		if toInt(rv.Index(i).Interface()) == docState {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesExpr(doc *mongoEnvironment, expr any) bool {
@@ -1338,6 +1559,17 @@ func toString(v any) string {
 	}
 }
 
+func toTime(v any) time.Time {
+	switch val := v.(type) {
+	case time.Time:
+		return val
+	case primitive.DateTime:
+		return val.Time()
+	default:
+		return time.Time{}
+	}
+}
+
 func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any, opts ...*options.UpdateOptions) (*mongodriver.UpdateResult, error) {
 	f.lastUpdateFilter = filter
 	f.lastUpdateUpdate = update
@@ -1353,16 +1585,39 @@ func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any,
 		return nil, err
 	}
 	key, _ := filterDoc["name"].(string)
-	if generationFilter, ok := filterDoc[mongoFieldGeneration]; ok {
-		allowed, allowedOK := extractMaxGeneration(generationFilter)
-		if allowedOK {
+
+	// Check if the filter uses exact-match preconditions (TransitionStatus pattern).
+	// When generation is an exact value (not $lte), check all precondition fields.
+	if genVal, ok := filterDoc[mongoFieldGeneration]; ok {
+		if allowed, allowedOK := extractMaxGeneration(genVal); allowedOK {
 			if existing, exists := f.docs[key]; exists && existing.Generation > allowed {
 				return nil, mongodriver.WriteException{
 					WriteErrors: []mongodriver.WriteError{{Code: 11000, Message: "duplicate key"}},
 				}
 			}
+		} else {
+			// Exact match mode: all filter fields must match exactly.
+			if existing, exists := f.docs[key]; !exists {
+				return &mongodriver.UpdateResult{}, nil
+			} else {
+				genInt := toInt64(genVal)
+				if existing.Generation != genInt {
+					return &mongodriver.UpdateResult{}, nil
+				}
+				if desiredVal, ok := filterDoc[mongoFieldStatusDesired]; ok {
+					if existing.Status == nil || existing.Status.Desired != toInt(desiredVal) {
+						return &mongodriver.UpdateResult{}, nil
+					}
+				}
+				if stateVal, ok := filterDoc[mongoFieldStatusState]; ok {
+					if existing.Status == nil || existing.Status.State != toInt(stateVal) {
+						return &mongodriver.UpdateResult{}, nil
+					}
+				}
+			}
 		}
 	}
+
 	updateDoc, err := anyToBSONMap(update)
 	if err != nil {
 		return nil, err
@@ -1387,6 +1642,43 @@ func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any,
 	}
 	if err := decodeBSONDocument(setDoc, stored); err != nil {
 		return nil, err
+	}
+	// Apply $inc operations (e.g., generation increment by UpdateDesired).
+	if incDoc, ok := updateDoc["$inc"]; ok {
+		incMap, err := anyToBSONMap(incDoc)
+		if err != nil {
+			return nil, err
+		}
+		if genInc, ok := incMap[mongoFieldGeneration]; ok {
+			stored.Generation += toInt64(genInc)
+		}
+	}
+	// TransitionStatus sets individual status fields via dotted keys (e.g. "status.state")
+	// which bson.Unmarshal treats as a literal top-level key rather than a nested path.
+	// Apply these fields manually on the existing Status object.
+	if stored.Status == nil {
+		stored.Status = new(mongoStatus)
+	}
+	if v, ok := setDoc[mongoFieldStatusState]; ok {
+		stored.Status.State = toInt(v)
+	}
+	if v, ok := setDoc[mongoFieldStatusDesired]; ok {
+		stored.Status.Desired = toInt(v)
+	}
+	if v, ok := setDoc[mongoFieldStatusObservedGen]; ok {
+		stored.Status.ObservedGeneration = toInt64(v)
+	}
+	if v, ok := setDoc[mongoFieldStatusMessage]; ok {
+		stored.Status.Message, _ = v.(string)
+	}
+	if v, ok := setDoc[mongoFieldStatusLastReconcile]; ok {
+		stored.Status.LastReconcileTime = toTime(v)
+	}
+	if v, ok := setDoc[mongoFieldStatusLastSuccess]; ok {
+		stored.Status.LastSuccessTime = toTime(v)
+	}
+	if v, ok := setDoc[mongoFieldUpdateTime]; ok {
+		stored.UpdateTime = toTime(v)
 	}
 	if f.docs == nil {
 		f.docs = make(map[string]*mongoEnvironment)
@@ -1803,5 +2095,110 @@ func assertSaveUpdateDocument(t *testing.T, got any, env *domain.Environment) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UpdateOne() update = %#v, want %#v", got, want)
+	}
+}
+
+func TestInfraSpecs_CapacityPersistence(t *testing.T) {
+	tests := []struct {
+		name           string
+		source         *domain.InfraSpec
+		mongo          *mongoInfraSpec
+		wantCapacity   string
+		checkRoundTrip bool
+	}{
+		{
+			name: "enabled with capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  true,
+					Capacity: "20Gi",
+				},
+			},
+			wantCapacity:   "20Gi",
+			checkRoundTrip: true,
+		},
+		{
+			name: "enabled with empty capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  true,
+					Capacity: "",
+				},
+			},
+			wantCapacity:   "",
+			checkRoundTrip: true,
+		},
+		{
+			name: "disabled with empty capacity round trip",
+			source: &domain.InfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: domain.InfraPersistenceSpec{
+					Enabled:  false,
+					Capacity: "",
+				},
+			},
+			wantCapacity:   "",
+			checkRoundTrip: true,
+		},
+		{
+			name: "old mongo document without capacity defaults to empty",
+			mongo: &mongoInfraSpec{
+				Resource: "redis",
+				Profile:  "cache",
+				Name:     "redis-main",
+				App:      "gateway",
+				Persistence: mongoInfraPersistenceSpec{
+					Enabled: true,
+				},
+			},
+			wantCapacity: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoInfraSpec
+			if tt.source != nil {
+				// when: domain → mongo
+				mongoSpecs = infraSpecsToMongo([]*domain.InfraSpec{tt.source})
+
+				// then: mongo Capacity matches
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("infraSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+				if mongoSpecs[0].Persistence.Capacity != tt.wantCapacity {
+					t.Fatalf("infraSpecsToMongo() capacity = %q, want %q", mongoSpecs[0].Persistence.Capacity, tt.wantCapacity)
+				}
+			} else {
+				// given: use pre-built mongo struct
+				mongoSpecs = []mongoInfraSpec{*tt.mongo}
+			}
+
+			// when: mongo → domain
+			got := infraSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("infraSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if got[0].Persistence.Capacity != tt.wantCapacity {
+				t.Fatalf("infraSpecsFromMongo() capacity = %q, want %q", got[0].Persistence.Capacity, tt.wantCapacity)
+			}
+			if tt.checkRoundTrip && got[0].Persistence.Capacity != tt.source.Persistence.Capacity {
+				t.Fatalf("round trip capacity = %q, want %q", got[0].Persistence.Capacity, tt.source.Persistence.Capacity)
+			}
+		})
 	}
 }

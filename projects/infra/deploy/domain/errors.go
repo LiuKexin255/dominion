@@ -27,4 +27,10 @@ var (
 
 	// ErrWorkerFatal indicates that the worker must not swallow the error.
 	ErrWorkerFatal = errors.New("worker fatal error")
+
+	// ErrStaleState indicates that the environment state has changed since observation.
+	ErrStaleState = errors.New("state has changed since observation")
+
+	// ErrStaleGeneration indicates that the environment generation has changed since observation.
+	ErrStaleGeneration = errors.New("generation has changed since observation")
 )

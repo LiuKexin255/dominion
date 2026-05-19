@@ -47,6 +47,10 @@ func (s *stubGatewayService) DisconnectAgent(_ string) {}
 
 func (s *stubGatewayService) DisconnectWeb(_, _ string) {}
 
+func (s *stubGatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
+	return nil
+}
+
 func TestHandler_GetGameSnapshot(t *testing.T) {
 	ctx := context.Background()
 	captureTime := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
@@ -78,6 +82,9 @@ func TestHandler_GetGameSnapshot(t *testing.T) {
 				wantSession := "sessions/session-1"
 				if got.GetSession() != wantSession {
 					t.Fatalf("Session = %q, want %q", got.GetSession(), wantSession)
+				}
+				if got.GetSnapshotId() == "" {
+					t.Fatalf("SnapshotId is empty, want non-empty")
 				}
 				if got.GetMimeType() != "image/jpeg" {
 					t.Fatalf("MimeType = %q, want %q", got.GetMimeType(), "image/jpeg")

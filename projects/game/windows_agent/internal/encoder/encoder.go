@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"dominion/projects/game/windows_agent/internal/log"
 )
 
 const stopTimeout = 3 * time.Second
@@ -31,6 +33,7 @@ type ffmpegEncoder struct {
 	path    string
 	done    chan struct{}
 	waitErr error
+	stopped bool
 }
 
 // NewEncoder creates an ffmpeg-backed encoder using the provided resolved ffmpeg path.
@@ -49,8 +52,12 @@ func (encoder *ffmpegEncoder) Start(ctx context.Context, config EncoderConfig) e
 	if err := validateConfig(config); err != nil {
 		return err
 	}
+	if encoder.path == "" {
+		return fmt.Errorf("ffmpeg path is empty")
+	}
 	args := BuildFFmpegArgs(config, encoder.path)
 	cmd := exec.CommandContext(ctx, encoder.path, args[1:]...)
+	setCmdHideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("create ffmpeg stdout pipe: %w", err)
@@ -69,12 +76,29 @@ func (encoder *ffmpegEncoder) Start(ctx context.Context, config EncoderConfig) e
 	encoder.stderr = stderr
 	encoder.done = done
 	encoder.waitErr = nil
+	encoder.stopped = false
+
+	// Drain stderr to prevent pipe blocking.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			_, readErr := stderr.Read(buf)
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+
 	go func() {
 		err := cmd.Wait()
 		encoder.mu.Lock()
+		wasStopped := encoder.stopped
 		encoder.waitErr = err
 		close(done)
 		encoder.mu.Unlock()
+		if err != nil && !wasStopped {
+			log.Errorf("encoder", "ffmpeg exited with error: %v", err)
+		}
 	}()
 	return nil
 }
@@ -104,23 +128,21 @@ func (encoder *ffmpegEncoder) Stop() error {
 	}
 	encoder.mu.Unlock()
 
-	// Windows may not support os.Interrupt for child processes; keep the graceful
-	// path for platforms that do, then fall back to Kill after the timeout.
 	_ = cmd.Process.Signal(os.Interrupt)
 
 	select {
 	case <-done:
-		encoder.mu.Lock()
-		defer encoder.mu.Unlock()
-		return encoder.waitErr
+		return nil
 	case <-time.After(stopTimeout):
+		log.Warnf("encoder", "ffmpeg did not exit within %s, killing (pid=%d)", stopTimeout, cmd.Process.Pid)
+		encoder.mu.Lock()
+		encoder.stopped = true
+		encoder.mu.Unlock()
 		if err := cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("kill ffmpeg: %w", err)
 		}
 		<-done
-		encoder.mu.Lock()
-		defer encoder.mu.Unlock()
-		return encoder.waitErr
+		return nil
 	}
 }
 

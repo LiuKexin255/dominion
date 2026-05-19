@@ -38,6 +38,18 @@ func TestErrRetryClassifications(t *testing.T) {
 			match:   nil,
 			unmatch: []error{ErrRetryCounted, ErrWorkerFatal},
 		},
+		{
+			name:    "stale state wraps and matches",
+			err:     fmt.Errorf("%w: generation moved on", ErrStaleState),
+			match:   ErrStaleState,
+			unmatch: []error{ErrStaleGeneration, ErrRetryCounted, ErrWorkerFatal},
+		},
+		{
+			name:    "stale generation wraps and matches",
+			err:     fmt.Errorf("%w: expected gen 3 got 4", ErrStaleGeneration),
+			match:   ErrStaleGeneration,
+			unmatch: []error{ErrStaleState, ErrRetryCounted, ErrWorkerFatal},
+		},
 	}
 
 	for _, tt := range tests {

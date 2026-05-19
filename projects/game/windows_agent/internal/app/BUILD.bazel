@@ -8,12 +8,17 @@ go_library(
         "bindings.go",
         "doc.go",
         "events.go",
+        "session.go",
         "status.go",
     ],
     importpath = "dominion/projects/game/windows_agent/internal/app",
     visibility = ["//projects/game/windows_agent:__subpackages__"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//projects/game/session",
+        "//projects/game/windows_agent/internal/log",
         "//projects/game/windows_agent/internal/runtime",
+        "//projects/game/windows_agent/internal/sessionclient",
         "//projects/game/windows_agent/internal/window",
         "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
     ],
@@ -23,4 +28,5 @@ go_unittest(
     name = "app_test",
     srcs = ["app_test.go"],
     embed = [":app"],
+    deps = ["//projects/game/windows_agent/internal/sessionclient"],
 )

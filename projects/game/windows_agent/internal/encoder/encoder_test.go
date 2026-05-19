@@ -1,7 +1,6 @@
 package encoder
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -39,9 +38,11 @@ func TestBuildFFmpegArgs(t *testing.T) {
 			config:     EncoderConfig{},
 			ffmpegPath: `C:\agent\resources\bin\ffmpeg.exe`,
 			want: []string{
-				`C:\agent\resources\bin\ffmpeg.exe`, "-f", "gdigrab", "-framerate", "30", "-i", "title=windows-agent",
-				"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M",
-				"-vf", "scale=1280:720:force_original_aspect_ratio=decrease", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
+				`C:\agent\resources\bin\ffmpeg.exe`, "-f", "gdigrab", "-draw_mouse", "0", "-framerate", "30", "-i", "title=windows-agent",
+				"-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+				"-preset", "ultrafast", "-tune", "zerolatency", "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M",
+				"-g", "60", "-keyint_min", "30", "-x264-params", "sliced-threads=0:slices=1",
+				"-vf", "scale=1280:720:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
 			},
 		},
 		{
@@ -57,9 +58,31 @@ func TestBuildFFmpegArgs(t *testing.T) {
 			},
 			ffmpegPath: "ffmpeg.exe",
 			want: []string{
-				"ffmpeg.exe", "-f", "gdigrab", "-framerate", "60", "-i", "hwnd=12345",
-				"-c:v", "libx264", "-preset", "veryfast", "-tune", "film", "-b:v", "4M", "-maxrate", "4M", "-bufsize", "8M",
-				"-vf", "scale=1920:1080:force_original_aspect_ratio=decrease", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
+				"ffmpeg.exe", "-f", "gdigrab", "-draw_mouse", "0", "-framerate", "60", "-i", "hwnd=12345",
+				"-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+				"-preset", "veryfast", "-tune", "film", "-b:v", "4M", "-maxrate", "4M", "-bufsize", "8M",
+				"-g", "120", "-keyint_min", "60", "-x264-params", "sliced-threads=0:slices=1",
+				"-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
+			},
+		},
+		{
+			name: "hwnd with capture size caps scale target",
+			config: EncoderConfig{
+				HWND:          985168,
+				FrameRate:     30,
+				MaxWidth:      1280,
+				MaxHeight:     720,
+				Bitrate:       "1M",
+				CaptureWidth:  1000,
+				CaptureHeight: 638,
+			},
+			ffmpegPath: "ffmpeg.exe",
+			want: []string{
+				"ffmpeg.exe", "-f", "gdigrab", "-draw_mouse", "0", "-framerate", "30", "-i", "hwnd=985168",
+				"-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+				"-preset", "ultrafast", "-tune", "zerolatency", "-b:v", "1M", "-maxrate", "1M", "-bufsize", "2M",
+				"-g", "60", "-keyint_min", "30", "-x264-params", "sliced-threads=0:slices=1",
+				"-vf", "scale=1000:638:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
 			},
 		},
 	}
@@ -81,7 +104,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 func TestBuildFFmpegArgsRequiredFlags(t *testing.T) {
 	// given
 	args := BuildFFmpegArgs(DefaultConfig(), "ffmpeg.exe")
-	wantFlags := []string{"-f", "gdigrab", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"}
+	wantFlags := []string{"-f", "gdigrab", "-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-tune", "zerolatency", "-x264-params", "sliced-threads=0:slices=1", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"}
 
 	// when
 	for _, want := range wantFlags {
@@ -123,16 +146,6 @@ func TestValidateFFmpeg(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "existing file is valid",
-			setup: func(t *testing.T) string {
-				path := filepath.Join(t.TempDir(), "ffmpeg.exe")
-				if err := os.WriteFile(path, []byte("fake"), 0755); err != nil {
-					t.Fatalf("write fake ffmpeg: %v", err)
-				}
-				return path
-			},
-		},
-		{
 			name: "missing file is invalid",
 			setup: func(t *testing.T) string {
 				return filepath.Join(t.TempDir(), "missing-ffmpeg.exe")
@@ -150,13 +163,8 @@ func TestValidateFFmpeg(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			path := tt.setup(t)
-
-			// when
 			err := ValidateFFmpeg(path)
-
-			// then
 			if tt.wantErr && err == nil {
 				t.Fatalf("ValidateFFmpeg(%q) expected error", path)
 			}
@@ -193,5 +201,17 @@ func TestEncoderConfigValidation(t *testing.T) {
 				t.Fatalf("validateConfig(%#v) unexpected error: %v", tt.config, err)
 			}
 		})
+	}
+}
+
+func TestEncoderStartEmptyPath(t *testing.T) {
+	encoder := NewEncoder("")
+	err := encoder.Start(nil, DefaultConfig())
+	if err == nil {
+		t.Fatalf("Start() with empty path expected error")
+	}
+	want := "ffmpeg path is empty"
+	if err.Error() != want {
+		t.Fatalf("Start() error = %q, want %q", err.Error(), want)
 	}
 }

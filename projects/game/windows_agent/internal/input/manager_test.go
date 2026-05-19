@@ -5,23 +5,22 @@ import (
 	"testing"
 	"time"
 
-	gw "dominion/projects/game/gateway/domain"
+	gw "dominion/projects/game/gateway"
 )
 
-func TestConvertControlRequest(t *testing.T) {
+func TestCommandFromMouseClick(t *testing.T) {
 	hwnd := uintptr(12345)
 
 	tests := []struct {
 		name    string
-		payload *gw.ControlRequestPayload
+		click   *gw.GameMouseClick
 		want    Command
 		wantErr bool
 	}{
 		{
-			name: "mouse click",
-			payload: &gw.ControlRequestPayload{
-				Kind:   gw.OperationKindMouseClick,
-				Button: "left",
+			name: "left click",
+			click: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      100,
 				Y:      200,
 			},
@@ -34,10 +33,87 @@ func TestConvertControlRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "mouse double click",
-			payload: &gw.ControlRequestPayload{
-				Kind:   gw.OperationKindMouseDoubleClick,
-				Button: "left",
+			name: "right click",
+			click: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+				X:      50,
+				Y:      75,
+			},
+			want: Command{
+				Action: ActionMouseClick,
+				Button: ButtonRight,
+				X:      50,
+				Y:      75,
+				HWND:   hwnd,
+			},
+		},
+		{
+			name:    "nil click",
+			click:   nil,
+			wantErr: true,
+		},
+		{
+			name: "unsupported button",
+			click: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+				X:      10,
+				Y:      20,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative x",
+			click: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				X:      -1,
+				Y:      20,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative y",
+			click: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				X:      10,
+				Y:      -1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			// when
+			got, err := CommandFromMouseClick(tt.click, hwnd)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatalf("CommandFromMouseClick() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CommandFromMouseClick() unexpected error: %v", err)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("CommandFromMouseClick() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandFromMouseDoubleClick(t *testing.T) {
+	hwnd := uintptr(12345)
+
+	tests := []struct {
+		name    string
+		dc      *gw.GameMouseDoubleClick
+		want    Command
+		wantErr bool
+	}{
+		{
+			name: "left double click",
+			dc: &gw.GameMouseDoubleClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      150,
 				Y:      250,
 			},
@@ -50,46 +126,207 @@ func TestConvertControlRequest(t *testing.T) {
 			},
 		},
 		{
-			name: "mouse drag",
-			payload: &gw.ControlRequestPayload{
-				Kind:   gw.OperationKindMouseDrag,
-				Button: "right",
+			name:    "nil double click",
+			dc:      nil,
+			wantErr: true,
+		},
+		{
+			name: "unsupported button",
+			dc: &gw.GameMouseDoubleClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+				X:      10,
+				Y:      20,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			// when
+			got, err := CommandFromMouseDoubleClick(tt.dc, hwnd)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatalf("CommandFromMouseDoubleClick() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CommandFromMouseDoubleClick() unexpected error: %v", err)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("CommandFromMouseDoubleClick() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandFromMouseDrag(t *testing.T) {
+	hwnd := uintptr(12345)
+
+	tests := []struct {
+		name    string
+		drag    *gw.GameMouseDrag
+		want    Command
+		wantErr bool
+	}{
+		{
+			name: "right drag",
+			drag: &gw.GameMouseDrag{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
 				FromX:  10,
 				FromY:  20,
-				ToX:    30,
-				ToY:    40,
+				ToX:    300,
+				ToY:    400,
 			},
 			want: Command{
 				Action: ActionMouseDrag,
 				Button: ButtonRight,
 				FromX:  10,
 				FromY:  20,
-				ToX:    30,
-				ToY:    40,
+				ToX:    300,
+				ToY:    400,
 				HWND:   hwnd,
 			},
 		},
 		{
-			name: "mouse hover",
-			payload: &gw.ControlRequestPayload{
-				Kind:   gw.OperationKindMouseHover,
-				Button: "left",
-				X:      500,
-				Y:      600,
+			name:    "nil drag",
+			drag:    nil,
+			wantErr: true,
+		},
+		{
+			name: "unsupported button",
+			drag: &gw.GameMouseDrag{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+				FromX:  10,
+				FromY:  20,
+				ToX:    30,
+				ToY:    40,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative from_x",
+			drag: &gw.GameMouseDrag{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				FromX:  -1,
+				FromY:  20,
+				ToX:    30,
+				ToY:    40,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative to_y",
+			drag: &gw.GameMouseDrag{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				FromX:  10,
+				FromY:  20,
+				ToX:    30,
+				ToY:    -1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			// when
+			got, err := CommandFromMouseDrag(tt.drag, hwnd)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatalf("CommandFromMouseDrag() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CommandFromMouseDrag() unexpected error: %v", err)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("CommandFromMouseDrag() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandFromMouseHover(t *testing.T) {
+	hwnd := uintptr(12345)
+
+	tests := []struct {
+		name    string
+		hover   *gw.GameMouseHover
+		want    Command
+		wantErr bool
+	}{
+		{
+			name: "valid hover",
+			hover: &gw.GameMouseHover{
+				X: 500,
+				Y: 600,
 			},
 			want: Command{
 				Action: ActionMouseHover,
-				Button: ButtonLeft,
 				X:      500,
 				Y:      600,
 				HWND:   hwnd,
 			},
 		},
 		{
-			name: "mouse hold",
-			payload: &gw.ControlRequestPayload{
-				Kind:       gw.OperationKindMouseHold,
-				Button:     "middle",
+			name:    "nil hover",
+			hover:   nil,
+			wantErr: true,
+		},
+		{
+			name: "negative x",
+			hover: &gw.GameMouseHover{
+				X: -1,
+				Y: 600,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative y",
+			hover: &gw.GameMouseHover{
+				X: 500,
+				Y: -1,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			// when
+			got, err := CommandFromMouseHover(tt.hover, hwnd)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatalf("CommandFromMouseHover() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CommandFromMouseHover() unexpected error: %v", err)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("CommandFromMouseHover() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandFromMouseHold(t *testing.T) {
+	hwnd := uintptr(12345)
+
+	tests := []struct {
+		name    string
+		hold    *gw.GameMouseHold
+		want    Command
+		wantErr bool
+	}{
+		{
+			name: "valid hold",
+			hold: &gw.GameMouseHold{
+				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE,
 				X:          400,
 				Y:          300,
 				DurationMs: 5000,
@@ -104,31 +341,24 @@ func TestConvertControlRequest(t *testing.T) {
 			},
 		},
 		{
-			name:    "nil payload",
-			payload: nil,
-			wantErr: true,
-		},
-		{
-			name: "unsupported operation kind",
-			payload: &gw.ControlRequestPayload{
-				Kind:   "unknown",
-				Button: "left",
-			},
+			name:    "nil hold",
+			hold:    nil,
 			wantErr: true,
 		},
 		{
 			name: "unsupported button",
-			payload: &gw.ControlRequestPayload{
-				Kind:   gw.OperationKindMouseClick,
-				Button: "unknown",
+			hold: &gw.GameMouseHold{
+				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+				X:          100,
+				Y:          200,
+				DurationMs: 5000,
 			},
 			wantErr: true,
 		},
 		{
-			name: "hold duration zero",
-			payload: &gw.ControlRequestPayload{
-				Kind:       gw.OperationKindMouseHold,
-				Button:     "left",
+			name: "duration zero",
+			hold: &gw.GameMouseHold{
+				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:          100,
 				Y:          200,
 				DurationMs: 0,
@@ -136,13 +366,22 @@ func TestConvertControlRequest(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "hold duration exceeds max",
-			payload: &gw.ControlRequestPayload{
-				Kind:       gw.OperationKindMouseHold,
-				Button:     "left",
+			name: "duration exceeds max",
+			hold: &gw.GameMouseHold{
+				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:          100,
 				Y:          200,
 				DurationMs: 60000,
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative x",
+			hold: &gw.GameMouseHold{
+				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				X:          -1,
+				Y:          200,
+				DurationMs: 1000,
 			},
 			wantErr: true,
 		},
@@ -152,63 +391,19 @@ func TestConvertControlRequest(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			// when
-			got, err := ConvertControlRequest(tt.payload, hwnd)
+			got, err := CommandFromMouseHold(tt.hold, hwnd)
 
 			// then
 			if tt.wantErr && err == nil {
-				t.Fatalf("ConvertControlRequest() expected error, got nil")
+				t.Fatalf("CommandFromMouseHold() expected error, got nil")
 			}
 			if !tt.wantErr && err != nil {
-				t.Fatalf("ConvertControlRequest() unexpected error: %v", err)
+				t.Fatalf("CommandFromMouseHold() unexpected error: %v", err)
 			}
 			if !tt.wantErr && got != tt.want {
-				t.Fatalf("ConvertControlRequest() = %+v, want %+v", got, tt.want)
+				t.Fatalf("CommandFromMouseHold() = %+v, want %+v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestConvertControlRequest_DragFields(t *testing.T) {
-	payload := &gw.ControlRequestPayload{
-		Kind:   gw.OperationKindMouseDrag,
-		Button: "left",
-		FromX:  10,
-		FromY:  20,
-		ToX:    300,
-		ToY:    400,
-	}
-
-	got, err := ConvertControlRequest(payload, 0)
-	if err != nil {
-		t.Fatalf("ConvertControlRequest() unexpected error: %v", err)
-	}
-
-	if got.FromX != 10 || got.FromY != 20 || got.ToX != 300 || got.ToY != 400 {
-		t.Fatalf("drag fields: from_x=%d, from_y=%d, to_x=%d, to_y=%d; want 10,20,300,400",
-			got.FromX, got.FromY, got.ToX, got.ToY)
-	}
-	// Drag should not set X/Y.
-	if got.X != 0 || got.Y != 0 {
-		t.Fatalf("drag should not set x/y: x=%d, y=%d", got.X, got.Y)
-	}
-}
-
-func TestConvertControlRequest_HoldDurationMS(t *testing.T) {
-	payload := &gw.ControlRequestPayload{
-		Kind:       gw.OperationKindMouseHold,
-		Button:     "left",
-		X:          100,
-		Y:          200,
-		DurationMs: 10000,
-	}
-
-	got, err := ConvertControlRequest(payload, 0)
-	if err != nil {
-		t.Fatalf("ConvertControlRequest() unexpected error: %v", err)
-	}
-
-	if got.DurationMS != 10000 {
-		t.Fatalf("duration_ms = %d, want 10000", got.DurationMS)
 	}
 }
 

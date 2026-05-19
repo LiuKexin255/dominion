@@ -7,13 +7,21 @@ export {}; // make this a module
 declare global {
   interface Window {
     go: {
-      main: {
+      app: {
         App: {
-          Connect: (url: string) => Promise<void>;
-          Disconnect: () => Promise<void>;
+          ListSessions: () => Promise<Session[]>;
+          CreateSession: (sessionType: string) => Promise<Session>;
+          ConnectSession: (session: Session) => Promise<void>;
+          DeleteSession: (name: string) => Promise<void>;
+          ClearWindow: () => Promise<void>;
+          StartCapture: () => Promise<void>;
+          StopCapture: () => Promise<void>;
+          TakeScreenshot: () => Promise<ScreenshotResult>;
+          GetStatus: () => Promise<AgentStatus>;
+          FlushInitErrors: () => Promise<void>;
           EnumerateWindows: () => Promise<WindowInfo[]>;
           BindWindow: (hwnd: number) => Promise<void>;
-          GetStatus: () => Promise<AgentStatus>;
+          Disconnect: () => Promise<void>;
         };
       };
     };
@@ -38,13 +46,55 @@ interface WindowRef {
   title: string;
 }
 
+interface WindowDetail extends WindowRef {
+  className: string;
+  processId: number;
+  rect: { left: number; top: number; right: number; bottom: number };
+}
+
+interface Session {
+  name: string;
+  type: string;
+  status: string;
+  gatewayId: string;
+  agentConnectUrl: string;
+  createTime: string;
+  updateTime: string;
+  reconnectGeneration: string;
+  lastError: string;
+}
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  module: string;
+  message: string;
+  fields: Record<string, string>;
+}
+
+interface ScreenshotResult {
+  imageURL: string;
+  mimeType: string;
+  snapshotID: string;
+  captureTime: string;
+  sessionName: string;
+  gatewayID: string;
+  error: string;
+}
+
 interface AgentStatus {
   state: string;
   sessionId: string;
-  boundWindow: WindowRef | null;
+  boundWindow: WindowDetail | null;
   mediaSegCount: number;
   lastError: string;
   ffmpegRunning: boolean;
   helperRunning: boolean;
   connectedAt: string;
+  sessionName: string;
+  sessionType: string;
+  gatewayId: string;
+  streamingStartedAt: string;
+  sessionServiceState: string;
+  sessionServiceError: string;
 }

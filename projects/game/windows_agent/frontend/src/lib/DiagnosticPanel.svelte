@@ -52,8 +52,8 @@
   async function pollStatus(): Promise<void> {
     try {
       const go = window.go;
-      if (go?.main?.App?.GetStatus) {
-        const s: AgentStatus = await go.main.App.GetStatus();
+      if (go?.app?.App?.GetStatus) {
+        const s: AgentStatus = await go.app.App.GetStatus();
         if (s) {
           status = s;
         }

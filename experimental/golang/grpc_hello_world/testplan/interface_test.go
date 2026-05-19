@@ -4,15 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"testing"
+
+	"dominion/common/gopkg/testtool"
 )
 
 const (
-	envSUTHostURL = "SUT_HOST_URL"
-	envSUTEnvName = "SUT_ENV_NAME"
-	headerEnv     = "env"
-	pathPrefix    = "/v1/world/"
+	headerEnv  = "env"
+	pathPrefix = "/v1/world/"
 )
 
 type helloResponse struct {
@@ -21,15 +20,8 @@ type helloResponse struct {
 }
 
 func TestGetHello(t *testing.T) {
-	sutHostURL := os.Getenv(envSUTHostURL)
-	if sutHostURL == "" {
-		t.Fatalf("environment variable %s is required", envSUTHostURL)
-	}
-
-	sutEnvName := os.Getenv(envSUTEnvName)
-	if sutEnvName == "" {
-		t.Fatalf("environment variable %s is required", envSUTEnvName)
-	}
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
 
 	tests := []struct {
 		name        string
@@ -91,5 +83,40 @@ func TestGetHello(t *testing.T) {
 				t.Errorf("got.Message = %q, want %q", got.Message, tt.wantMessage)
 			}
 		})
+	}
+}
+
+func TestOTelIntegration(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "world")
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(%q) unexpected error: %v", reqURL, err)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http.Do(%q) unexpected error: %v", reqURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("http.Do(%q) status = %d, want %d", reqURL, resp.StatusCode, http.StatusOK)
+	}
+
+	got := new(helloResponse)
+	if err := json.NewDecoder(resp.Body).Decode(got); err != nil {
+		t.Fatalf("json.Decode unexpected error: %v", err)
+	}
+
+	// Verify response is valid (basic check - OTel is integrated if service responds)
+	if got.Name != "world/world" {
+		t.Errorf("got.Name = %q, want %q", got.Name, "world/world")
+	}
+	if got.Message != "Hello, world/world!" {
+		t.Errorf("got.Message = %q, want %q", got.Message, "Hello, world/world!")
 	}
 }

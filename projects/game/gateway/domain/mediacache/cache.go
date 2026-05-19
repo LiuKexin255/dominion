@@ -3,6 +3,8 @@
 package mediacache
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,13 +19,15 @@ const SnapshotFreshThreshold = 1 * time.Second
 // than this from the newest segment are evicted.
 const SegmentWindow = 3 * time.Second
 
+var errNoActiveInit = errors.New("no active init segment stored")
+
 // Cache implements domain.MediaCache using an in-memory ring buffer for
 // segments and an optional cached JPEG snapshot.
 type Cache struct {
-	mu          sync.RWMutex
-	initSegment *domain.InitSegmentRef
-	segments    []*domain.SegmentRef
-	snapshot    *domain.SnapshotRef
+	mu         sync.RWMutex
+	activeInit *domain.InitSegmentRef // currently active init
+	segments   []*domain.SegmentRef   // segments matching active stream+init
+	snapshot   *domain.SnapshotRef
 }
 
 // NewCache creates a new Cache ready for use.
@@ -31,24 +35,47 @@ func NewCache() *Cache {
 	return new(Cache)
 }
 
-// StoreInitSegment stores the fMP4 initialization segment, replacing any
-// previously stored init segment.
-func (c *Cache) StoreInitSegment(mimeType string, data []byte) error {
+// StoreInitSegment stores the fMP4 initialization segment. If the stream_id
+// changes, all old segments, snapshot, and random-access index are cleared.
+// If only the init_id changes (same stream), old segments and snapshot are
+// cleared. Replaces the active init segment.
+func (c *Cache) StoreInitSegment(ref *domain.InitSegmentRef) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.initSegment = &domain.InitSegmentRef{
-		MimeType: mimeType,
-		Data:     data,
+	if c.activeInit != nil {
+		if ref.StreamID != c.activeInit.StreamID {
+			// New stream: clear everything.
+			c.segments = nil
+			c.snapshot = nil
+		} else if ref.InitID != c.activeInit.InitID {
+			// Same stream, new init: clear segments and snapshot.
+			c.segments = nil
+			c.snapshot = nil
+		}
 	}
+
+	c.activeInit = ref
 	return nil
 }
 
-// AddSegment appends a media segment to the ring buffer and evicts segments
-// whose MediaTime is more than SegmentWindow older than the newest segment.
+// AddSegment appends a media segment to the ring buffer after validating
+// that the segment's stream_id and init_id match the active init segment.
+// Segments whose MediaTime is more than SegmentWindow older than the newest
+// segment are evicted.
 func (c *Cache) AddSegment(seg *domain.SegmentRef) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.activeInit == nil {
+		return errNoActiveInit
+	}
+	if seg.StreamID != c.activeInit.StreamID {
+		return fmt.Errorf("segment stream_id %q does not match active stream %q: %w", seg.StreamID, c.activeInit.StreamID, domain.ErrStreamMismatch)
+	}
+	if seg.InitID != c.activeInit.InitID {
+		return fmt.Errorf("segment init_id %q does not match active init %q: %w", seg.InitID, c.activeInit.InitID, domain.ErrUnknownInitID)
+	}
 
 	c.segments = append(c.segments, seg)
 	c.evict()
@@ -60,16 +87,28 @@ func (c *Cache) GetInitSegment() (*domain.InitSegmentRef, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if c.initSegment == nil {
+	if c.activeInit == nil {
 		return nil, false
 	}
-	return c.initSegment, true
+	return c.activeInit, true
 }
 
-// GetSegmentsFromLastKeyframe returns all segments starting from the most
-// recent key frame boundary. If no key frame is found, it returns all
-// segments.
-func (c *Cache) GetSegmentsFromLastKeyframe() []*domain.SegmentRef {
+// GetActiveInitID returns the init segment ID of the currently active stream.
+// Returns empty string if no init segment has been stored.
+func (c *Cache) GetActiveInitID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.activeInit == nil {
+		return ""
+	}
+	return c.activeInit.InitID
+}
+
+// GetSegmentsFromLastRandomAccess returns all segments starting from the most
+// recent random access point. If no random access point is found, it returns
+// nil (empty). This ensures late joiners only receive decodable sequences.
+func (c *Cache) GetSegmentsFromLastRandomAccess() []*domain.SegmentRef {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -79,14 +118,14 @@ func (c *Cache) GetSegmentsFromLastKeyframe() []*domain.SegmentRef {
 
 	idx := -1
 	for i := len(c.segments) - 1; i >= 0; i-- {
-		if c.segments[i].KeyFrame {
+		if c.segments[i].RandomAccess {
 			idx = i
 			break
 		}
 	}
 
 	if idx < 0 {
-		return c.segments
+		return nil
 	}
 
 	return c.segments[idx:]
@@ -115,7 +154,7 @@ func (c *Cache) GetLatestSnapshot() (*domain.SnapshotRef, bool) {
 	}, true
 }
 
-// RefreshSnapshot extracts a new JPEG snapshot from the latest key frame
+// RefreshSnapshot extracts a new JPEG snapshot from the latest random access
 // segment, caches it, and returns it with Cached=false.
 func (c *Cache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 	c.mu.Lock()
@@ -123,19 +162,19 @@ func (c *Cache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 
 	var seg *domain.SegmentRef
 	for i := len(c.segments) - 1; i >= 0; i-- {
-		if c.segments[i].KeyFrame {
+		if c.segments[i].RandomAccess {
 			seg = c.segments[i]
 			break
 		}
 	}
 
 	if seg == nil {
-		return nil, errNoKeyFrame
+		return nil, errNoRandomAccess
 	}
 
 	jpeg, err := ExtractJPEGFromSegment(c.initSegmentBytes(), seg)
 	if err != nil {
-		jpeg = ExtractJPEGFallback()
+		return nil, fmt.Errorf("extract JPEG from segment: %w", err)
 	}
 
 	snap := &domain.SnapshotRef{
@@ -174,8 +213,8 @@ func (c *Cache) evict() {
 }
 
 func (c *Cache) initSegmentBytes() []byte {
-	if c.initSegment == nil {
+	if c.activeInit == nil {
 		return nil
 	}
-	return c.initSegment.Data
+	return c.activeInit.Data
 }

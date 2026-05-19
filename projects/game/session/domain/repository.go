@@ -13,4 +13,7 @@ type Repository interface {
 
 	// Delete removes a session by name.
 	Delete(ctx context.Context, name string) error
+
+	// List retrieves all sessions that have not ended.
+	List(ctx context.Context) ([]*Session, error)
 }

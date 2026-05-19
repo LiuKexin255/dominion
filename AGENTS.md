@@ -31,7 +31,7 @@
 2. 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 命令生成/更新 `BUILD.bazel` 文件（因为设置了 `-lazy` 参数，所以最好在需要更新的目录下执行 `gazelle`，或者指定目录 `bazel run //:gazelle some/subdir`）。
 3. `BUILD.bazel` 文件通常应**只由** `gazelle` 命令生成/更新，如需添加 `target`（如 `oci_image`）应在 `gazelle` 生成后添加。不要更改 `gazelle` 生成的内容，除非生成的 `BUILD.bazel` 文件无法编译。
 4. 使用 `bazel mod tidy` 命令更新 `bazel` 依赖。
-5. 【**重要**】使用 `bazel test` 作为单测验证标准。
+5. 【**重要**】使用 `bazel test` 作为单测验证标准。并且完成开发任务后应确保整个仓库 `build` 与 `test` 正确，不会引入新问题。
 
 #### Golang
 
@@ -86,6 +86,7 @@ Golang 代码格式化与依赖更新步骤如下：
 * 单元测试使用 `bazel test` 执行，且随 `bazel build` 一起作为编译验证的一部分。
 * 服务代码需要进行大型测试。先编写测试计划并放到 `testplan` 目录，然后按计划部署服务、执行测试用例。
 * 更多大型测试信息参阅 `style` 目录。
+* 遇到测试失败或需要排查问题，可以使用 `signoz` skill 查询日志以及 `traces`。
 
 > FOR `Prometheus`: 
 > * 使用 `testplan` SKILL 执行测试计划。

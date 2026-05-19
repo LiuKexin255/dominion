@@ -1,13 +1,17 @@
 package tls
 
 import (
+	"bytes"
 	"context"
 	stdtls "crypto/tls"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"dominion/common/gopkg/logs"
 )
 
 func TestClientTransportCredentials(t *testing.T) {
@@ -450,6 +454,250 @@ func TestHandshake_RejectsMismatchedServerName(t *testing.T) {
 	}
 
 	<-serverHandshakeResult
+}
+
+func TestNewClientTransportCredentials_Logging(t *testing.T) {
+	t.Run("success logs info without sensitive data", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		got, err := NewClientTransportCredentials(&ClientConfig{
+			CAFile:     testdataPath(t, "server_valid.crt"),
+			ServerName: "grpc-internal-service.test",
+		})
+		if err != nil {
+			t.Fatalf("NewClientTransportCredentials() unexpected error: %v", err)
+		}
+		if got == nil {
+			t.Fatal("NewClientTransportCredentials() = nil, want credentials")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "client TLS credentials created") {
+			t.Fatal("expected Info log: 'client TLS credentials created'")
+		}
+
+		// CRITICAL: Verify no CA certificate content in logs
+		certContent := string(mustReadFile(t, testdataPath(t, "server_valid.crt")))
+		if strings.Contains(logOutput, certContent) {
+			t.Fatal("log must not contain CA certificate content")
+		}
+	})
+
+	t.Run("error logs error", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		_, err := NewClientTransportCredentials(nil)
+		if err == nil {
+			t.Fatal("NewClientTransportCredentials(nil) expected error")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "client TLS config build failed") {
+			t.Fatal("expected Error log: 'client TLS config build failed'")
+		}
+
+		// Error log must not contain certificate material
+		certContent := string(mustReadFile(t, testdataPath(t, "server_valid.crt")))
+		if strings.Contains(logOutput, certContent) {
+			t.Fatal("error log must not contain CA certificate content")
+		}
+	})
+}
+
+func TestNewServerTransportCredentials_Logging(t *testing.T) {
+	validCertFile := testdataPath(t, "server_valid.crt")
+	validKeyFile := testdataPath(t, "server_valid.key")
+
+	t.Run("success logs info without sensitive data", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		got, err := NewServerTransportCredentials(&ServerConfig{
+			CertFile: validCertFile,
+			KeyFile:  validKeyFile,
+		})
+		if err != nil {
+			t.Fatalf("NewServerTransportCredentials() unexpected error: %v", err)
+		}
+		if got == nil {
+			t.Fatal("NewServerTransportCredentials() = nil, want credentials")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "server TLS credentials created") {
+			t.Fatal("expected Info log: 'server TLS credentials created'")
+		}
+
+		// CRITICAL: Verify no certificate or key content in logs
+		certContent := string(mustReadFile(t, validCertFile))
+		if strings.Contains(logOutput, certContent) {
+			t.Fatal("log must not contain certificate content")
+		}
+		keyContent := string(mustReadFile(t, validKeyFile))
+		if strings.Contains(logOutput, keyContent) {
+			t.Fatal("log must not contain private key content")
+		}
+	})
+
+	t.Run("error logs error", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		_, err := NewServerTransportCredentials(nil)
+		if err == nil {
+			t.Fatal("NewServerTransportCredentials(nil) expected error")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "server TLS config build failed") {
+			t.Fatal("expected Error log: 'server TLS config build failed'")
+		}
+
+		// Error log must not contain certificate material
+		certContent := string(mustReadFile(t, validCertFile))
+		if strings.Contains(logOutput, certContent) {
+			t.Fatal("error log must not contain certificate content")
+		}
+	})
+}
+
+func TestClientTransportCredentials_Logging(t *testing.T) {
+	validCAFile := testdataPath(t, "server_valid.crt")
+
+	t.Run("not configured logs info", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+		})
+		lookupEnv = func(_ string) (string, bool) {
+			return "", false
+		}
+
+		got := ClientTransportCredentials()
+		if got != nil {
+			t.Fatal("ClientTransportCredentials() = non-nil, want nil")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "TLS not configured for client, using plain connection") {
+			t.Fatal("expected Info log: 'TLS not configured for client, using plain connection'")
+		}
+	})
+
+	t.Run("configured logs info", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+		})
+		lookupEnv = func(name string) (string, bool) {
+			switch name {
+			case envTLSCAFile:
+				return validCAFile, true
+			case envTLSServerName:
+				return "grpc-internal-service.test", true
+			default:
+				return "", false
+			}
+		}
+
+		got := ClientTransportCredentials()
+		if got == nil {
+			t.Fatal("ClientTransportCredentials() = nil, want credentials")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "client TLS configured from environment") {
+			t.Fatal("expected Info log: 'client TLS configured from environment'")
+		}
+	})
+}
+
+func TestServerTransportCredentials_Logging(t *testing.T) {
+	validCertFile := testdataPath(t, "server_valid.crt")
+	validKeyFile := testdataPath(t, "server_valid.key")
+
+	t.Run("not configured logs info", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+		})
+		lookupEnv = func(_ string) (string, bool) {
+			return "", false
+		}
+
+		got := ServerTransportCredentials()
+		if got != nil {
+			t.Fatal("ServerTransportCredentials() = non-nil, want nil")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "TLS not configured for server, using plain connection") {
+			t.Fatal("expected Info log: 'TLS not configured for server, using plain connection'")
+		}
+	})
+
+	t.Run("configured logs info", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+		})
+		lookupEnv = func(name string) (string, bool) {
+			switch name {
+			case envTLSCertFile:
+				return validCertFile, true
+			case envTLSKeyFile:
+				return validKeyFile, true
+			case envTLSCAFile:
+				return validCertFile, true
+			case envTLSServerName:
+				return "grpc-internal-service.test", true
+			default:
+				return "", false
+			}
+		}
+
+		got := ServerTransportCredentials()
+		if got == nil {
+			t.Fatal("ServerTransportCredentials() = nil, want credentials")
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "server TLS configured from environment") {
+			t.Fatal("expected Info log: 'server TLS configured from environment'")
+		}
+
+		// Verify no sensitive data in logs
+		certContent := string(mustReadFile(t, validCertFile))
+		if strings.Contains(logOutput, certContent) {
+			t.Fatal("log must not contain certificate content")
+		}
+		keyContent := string(mustReadFile(t, validKeyFile))
+		if strings.Contains(logOutput, keyContent) {
+			t.Fatal("log must not contain private key content")
+		}
+	})
 }
 
 func testdataPath(t *testing.T, name string) string {

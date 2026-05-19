@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "service",
+    srcs = [
+        "command.go",
+        "reconcile.go",
+    ],
+    importpath = "dominion/projects/infra/deploy/service",
+    visibility = ["//visibility:public"],
+    deps = ["//projects/infra/deploy/domain"],
+)
+
+go_unittest(
+    name = "service_test",
+    srcs = [
+        "command_test.go",
+        "reconcile_test.go",
+    ],
+    embed = [":service"],
+    deps = ["//projects/infra/deploy/domain"],
+)

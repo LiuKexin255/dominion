@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestNewSession(t *testing.T) {
@@ -384,6 +385,7 @@ func TestSnapshotRehydrateRoundTrip(t *testing.T) {
 	if err := original.MarkActive(); err != nil {
 		t.Fatalf("MarkActive() error = %v", err)
 	}
+	original.SetAgentConnectURL("wss://example.com/connect?token=tok")
 
 	// when
 	snap := original.Snapshot()
@@ -409,12 +411,103 @@ func TestSnapshotRehydrateRoundTrip(t *testing.T) {
 	if roundSnap.ReconnectGeneration != 1 {
 		t.Fatalf("ReconnectGeneration = %d, want 1", roundSnap.ReconnectGeneration)
 	}
+	if roundSnap.AgentConnectURL != "wss://example.com/connect?token=tok" {
+		t.Fatalf("AgentConnectURL = %q, want %q", roundSnap.AgentConnectURL, "wss://example.com/connect?token=tok")
+	}
+}
+
+func Test_SetAgentConnectURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "sets agent connect URL on snapshot",
+			url:  "wss://example.com/v1/sessions/test/game/connect?token=abc",
+		},
+		{
+			name: "sets empty agent connect URL",
+			url:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			session, err := NewSession(TypeSaolei, "test-id")
+			if err != nil {
+				t.Fatalf("NewSession() error = %v", err)
+			}
+			beforeUpdatedAt := session.Snapshot().UpdatedAt
+
+			// when
+			session.SetAgentConnectURL(tt.url)
+
+			// then
+			if session.Snapshot().AgentConnectURL != tt.url {
+				t.Fatalf("AgentConnectURL = %q, want %q", session.Snapshot().AgentConnectURL, tt.url)
+			}
+			if !session.Snapshot().UpdatedAt.Equal(beforeUpdatedAt) {
+				t.Fatalf("UpdatedAt changed from %v to %v", beforeUpdatedAt, session.Snapshot().UpdatedAt)
+			}
+		})
+	}
+}
+
+func Test_Rehydrate(t *testing.T) {
+	// given
+	now := time.Now().UTC()
+	snapshot := SessionSnapshot{
+		ID:                  "test-id",
+		Type:                TypeSaolei,
+		Status:              StatusActive,
+		GatewayID:           "gw-1",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		EndedAt:             nil,
+		ReconnectGeneration: 2,
+		LastError:           "previous error",
+		AgentConnectURL:     "wss://example.com/connect?token=tok",
+	}
+
+	// when
+	session, err := Rehydrate(snapshot)
+	if err != nil {
+		t.Fatalf("Rehydrate() error = %v", err)
+	}
+
+	// then
+	got := session.Snapshot()
+	if got.ID != snapshot.ID {
+		t.Fatalf("ID = %q, want %q", got.ID, snapshot.ID)
+	}
+	if got.Type != snapshot.Type {
+		t.Fatalf("Type = %v, want %v", got.Type, snapshot.Type)
+	}
+	if got.Status != snapshot.Status {
+		t.Fatalf("Status = %v, want %v", got.Status, snapshot.Status)
+	}
+	if got.GatewayID != snapshot.GatewayID {
+		t.Fatalf("GatewayID = %q, want %q", got.GatewayID, snapshot.GatewayID)
+	}
+	if got.ReconnectGeneration != snapshot.ReconnectGeneration {
+		t.Fatalf("ReconnectGeneration = %d, want %d", got.ReconnectGeneration, snapshot.ReconnectGeneration)
+	}
+	if got.LastError != snapshot.LastError {
+		t.Fatalf("LastError = %q, want %q", got.LastError, snapshot.LastError)
+	}
+	if got.AgentConnectURL != snapshot.AgentConnectURL {
+		t.Fatalf("AgentConnectURL = %q, want %q", got.AgentConnectURL, snapshot.AgentConnectURL)
+	}
+	if got.EndedAt != nil {
+		t.Fatalf("EndedAt = %v, want nil", got.EndedAt)
+	}
 }
 
 func TestUUIDv4Uniqueness(t *testing.T) {
 	ids := make(map[string]struct{}, 100)
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		session, err := NewSession(TypeSaolei, "")
 		if err != nil {
 			t.Fatalf("NewSession() iteration %d error = %v", i, err)

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"dominion/projects/infra/deploy/domain"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // DeploymentPort 定义 deployment 暴露端口。
@@ -244,7 +246,8 @@ func (w *HTTPRouteWorkload) Validate() error {
 
 // PersistenceConfig 表示基础设施部署的持久化配置。
 type PersistenceConfig struct {
-	Enabled bool
+	Enabled  bool
+	Capacity resource.Quantity
 }
 
 // MongoDBWorkload 描述 MongoDB workload 生成所需字段。

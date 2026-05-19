@@ -168,7 +168,7 @@ func TestClient_SendMediaInit(t *testing.T) {
 	segment := []byte{0x00, 0x01, 0x02, 0x03}
 
 	// when
-	if err := client.SendMediaInit(ctx, "session-1", MimeTypeMP4, segment); err != nil {
+	if err := client.SendMediaInit(ctx, "session-1", "stream-1", "init-1", MimeTypeMP4, CodecH264AVC, segment); err != nil {
 		t.Fatalf("SendMediaInit unexpected error: %v", err)
 	}
 
@@ -184,6 +184,15 @@ func TestClient_SendMediaInit(t *testing.T) {
 	mi := env.GetMediaInit()
 	if mi == nil {
 		t.Fatalf("expected media_init payload, got %T", env.Payload)
+	}
+	if mi.StreamId != "stream-1" {
+		t.Fatalf("StreamId: got %q, want %q", mi.StreamId, "stream-1")
+	}
+	if mi.InitId != "init-1" {
+		t.Fatalf("InitId: got %q, want %q", mi.InitId, "init-1")
+	}
+	if mi.Codec != CodecH264AVC {
+		t.Fatalf("Codec: got %q, want %q", mi.Codec, CodecH264AVC)
 	}
 	if mi.MimeType != MimeTypeMP4 {
 		t.Fatalf("MimeType: got %q, want %q", mi.MimeType, MimeTypeMP4)
@@ -210,7 +219,7 @@ func TestClient_SendMediaInitOversized(t *testing.T) {
 	oversized := make([]byte, domain.MaxSegmentSize+1)
 
 	// when
-	err := client.SendMediaInit(ctx, "session-1", MimeTypeMP4, oversized)
+	err := client.SendMediaInit(ctx, "session-1", "stream-1", "init-1", MimeTypeMP4, CodecH264AVC, oversized)
 
 	// then
 	if err == nil {
@@ -238,7 +247,7 @@ func TestClient_SendMediaSegmentOversized(t *testing.T) {
 	oversized := make([]byte, domain.MaxSegmentSize+1)
 
 	// when
-	err := client.SendMediaSegment(ctx, "session-1", "seg-1", oversized, true)
+	err := client.SendMediaSegment(ctx, "session-1", "stream-1", "init-1", 1, oversized, nil, 0, false)
 
 	// then
 	if err == nil {
@@ -411,7 +420,13 @@ func TestClient_ReadLoopDispatchesControlRequest(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-789",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
+				},
 			},
 		},
 	}

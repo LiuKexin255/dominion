@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"dominion/projects/infra/deploy/domain"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // newTestEnv 创建一个用于测试的 Environment。
@@ -141,7 +143,61 @@ func TestConvertToWorkloads(t *testing.T) {
 			want: wantDeployObjectsWithMongoDBWithoutPersistence(),
 		},
 		{
-			name: "unknown infra resource returns error",
+			name: "mongodb infra with capacity",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "svc1",
+						App:      "app1",
+						Image:    "app1:v1",
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+					},
+				},
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "mongodb",
+						Profile:  "dev-single",
+						Name:     "mongo2",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled:  true,
+							Capacity: "20Gi",
+						},
+					},
+				},
+			}),
+			cfg:  newTestConfig(),
+			want: wantDeployObjectsWithMongoDBInfraAndCapacity(),
+		},
+		{
+			name: "mongodb infra with invalid capacity",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "svc1",
+						App:      "app1",
+						Image:    "app1:v1",
+						Ports:    []domain.ArtifactPortSpec{{Name: "http", Port: 8080}},
+						Replicas: 1,
+					},
+				},
+				Infras: []*domain.InfraSpec{
+					{
+						Resource: "mongodb",
+						Name:     "mongo3",
+						App:      "myapp",
+						Persistence: domain.InfraPersistenceSpec{
+							Enabled:  true,
+							Capacity: "2Ti",
+						},
+					},
+				},
+			}),
+			cfg:            newTestConfig(),
+			wantErrMessage: "infra mongo3 persistence: capacity 超过上限 1Ti: 2Ti",
+		},
+		{
 			env: newTestEnv(t, &domain.DesiredState{
 				Artifacts: []*domain.ArtifactSpec{
 					{
@@ -660,6 +716,35 @@ func TestConvertToWorkloads_StatefulArtifactUsesMatchedBackendPort(t *testing.T)
 	}
 }
 
+func Test_validateAndParseCapacity(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		raw     string
+		wantErr bool
+	}{
+		{name: "20Gi valid", enabled: true, raw: "20Gi"},
+		{name: "1Ti valid", enabled: true, raw: "1Ti"},
+		{name: "empty valid", enabled: true, raw: ""},
+		{name: "empty disabled valid", enabled: false, raw: ""},
+		{name: "1025Gi exceeds limit", enabled: true, raw: "1025Gi", wantErr: true},
+		{name: "2Ti exceeds limit", enabled: true, raw: "2Ti", wantErr: true},
+		{name: "bad-size invalid", enabled: true, raw: "bad-size", wantErr: true},
+		{name: "disabled with capacity", enabled: false, raw: "20Gi", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateAndParseCapacity(tt.enabled, tt.raw)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateAndParseCapacity() succeeded unexpectedly")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateAndParseCapacity() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func assertDeployObjectsEqual(t *testing.T, got *DeployObjects, want *DeployObjects) {
 	t.Helper()
 
@@ -720,6 +805,29 @@ func wantDeployObjectsWithMongoDBInfra() *DeployObjects {
 			App:             "myapp",
 			ProfileName:     "dev-single",
 			Persistence:     PersistenceConfig{Enabled: true},
+		}},
+	}
+}
+
+func wantDeployObjectsWithMongoDBInfraAndCapacity() *DeployObjects {
+	return &DeployObjects{
+		Deployments: []*DeploymentWorkload{{
+			ServiceName:     "svc1",
+			EnvironmentName: "tstscope.dev",
+			App:             "app1",
+			Image:           "app1:v1",
+			Replicas:        1,
+			Ports: []*DeploymentPort{{
+				Name: "http",
+				Port: 8080,
+			}},
+		}},
+		MongoDBWorkloads: []*MongoDBWorkload{{
+			ServiceName:     "mongo2",
+			EnvironmentName: "tstscope.dev",
+			App:             "myapp",
+			ProfileName:     "dev-single",
+			Persistence:     PersistenceConfig{Enabled: true, Capacity: resource.MustParse("20Gi")},
 		}},
 	}
 }

@@ -10,16 +10,19 @@ description: |
     2. AgentConnect_Success — fake-agent connects via WebSocket
     3. PathSessionMismatch_Rejected — path session != token session rejected
     4. DuplicateAgent_Rejected — second agent connection rejected
-    5. MediaDelivery — media_init + media_segment forwarded to web
-    6. CatchupFromKeyframe — new web connection receives cached media
-    7. Snapshot_Cached — fresh cached snapshot returned
-    8. Snapshot_Refresh — stale snapshot triggers refresh
-    9. Runtime_Fields — GET /runtime returns state fields
-    10. ControlRoundtrip — control_request → ack → result
-    11. FlashSnapshot — flash_snapshot refreshes cache
-    12. ConcurrentOperations — multiple web ops are serialized
-    13. TimeoutSemantics — click/drag timeouts work correctly
-    14. AgentDisconnect_Cleanup — agent disconnect clears inflight
+    5. MediaDelivery — v2 media_init (stream_id, init_id, codec) + media_segment (stream_id, init_id, sequence, random_access) forwarded to web
+    6. CatchupFromRandomAccess — new web connection receives cached media from random-access point
+    7. V1MediaRejected — old v1 JSON with segment_id/key_frame fields rejected
+    8. Snapshot_Cached — fresh cached snapshot returned
+    9. Snapshot_Refresh — stale snapshot triggers refresh
+    10. Snapshot_ImageNotBlack — snapshot contains real video JPEG data
+    11. Snapshot_UnavailableWithoutRandomAccess — no random-access segment → snapshot unavailable
+    12. Runtime_Fields — GET /runtime returns state fields
+    13. ControlRoundtrip — control_request → ack → result
+    14. FlashSnapshot — flash_snapshot refreshes cache
+    15. ConcurrentOperations — multiple web ops are serialized
+    16. TimeoutSemantics — click/drag timeouts work correctly
+    17. AgentDisconnect_Cleanup — agent disconnect clears inflight
 
 suites:
   - name: default

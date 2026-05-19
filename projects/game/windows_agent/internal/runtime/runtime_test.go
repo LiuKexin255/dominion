@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"reflect"
@@ -27,22 +28,22 @@ func TestStateTransitions(t *testing.T) {
 	if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect?token=t"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
-	if r.State() != StateConnected {
-		t.Fatalf("State() = %d, want %d", r.State(), StateConnected)
+	if r.ConnectionState() != ConnConnected {
+		t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
 	}
 	if err := r.BindWindow(100); err != nil {
 		t.Fatalf("BindWindow() unexpected error: %v", err)
 	}
-	if r.State() != StateBound {
-		t.Fatalf("State() = %d, want %d", r.State(), StateBound)
+	if r.StreamingState() != StreamIdle {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamIdle)
 	}
 	if err := r.StartCapture(context.Background()); err != nil {
 		t.Fatalf("StartCapture() unexpected error: %v", err)
 	}
 
 	// then
-	if r.State() != StateStreaming {
-		t.Fatalf("State() = %d, want %d", r.State(), StateStreaming)
+	if r.StreamingState() != StreamStreaming {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamStreaming)
 	}
 }
 
@@ -66,8 +67,11 @@ func TestStreamingToDisconnected(t *testing.T) {
 	}
 
 	// then
-	if r.State() != StateDisconnected {
-		t.Fatalf("State() = %d, want %d", r.State(), StateDisconnected)
+	if r.ConnectionState() != ConnDisconnected {
+		t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnDisconnected)
+	}
+	if r.StreamingState() != StreamIdle {
+		t.Fatalf("StreamingState() = %d, want %d", r.StreamingState(), StreamIdle)
 	}
 }
 
@@ -136,7 +140,8 @@ func TestCleanupOrder(t *testing.T) {
 	r.encoder = &fakeEncoder{order: order}
 	r.inputMgr = &fakeInput{order: order}
 	r.transport = &fakeTransport{order: order}
-	r.state = StateStreaming
+	r.connState = ConnConnected
+	r.streamState = StreamStreaming
 
 	// when
 	if err := r.Disconnect(); err != nil {
@@ -171,10 +176,28 @@ func TestMediaFlow(t *testing.T) {
 		t.Fatalf("media flow did not complete")
 	}
 
-	// then
-	want := []string{"media_init", "media_segment:seg-0"}
+	// then: transport received expected event sequence
+	want := []string{"media_init", "media_segment:1"}
 	if got := ft.events; !reflect.DeepEqual(got, want) {
 		t.Fatalf("transport events = %v, want %v", got, want)
+	}
+
+	// then: v2 fields populated correctly
+	streamID, initID, codec, seq, ra := ft.snapshot()
+	if streamID == "" {
+		t.Fatalf("streamID is empty, expected non-empty v2 stream ID")
+	}
+	if initID == "" {
+		t.Fatalf("initID is empty, expected non-empty v2 init ID")
+	}
+	if codec != "h264-avc" {
+		t.Fatalf("codec = %q, want %q", codec, "h264-avc")
+	}
+	if seq != 1 {
+		t.Fatalf("lastSequence = %d, want 1", seq)
+	}
+	if ra == nil {
+		t.Fatalf("randomAccess is nil, expected non-nil *bool")
 	}
 }
 
@@ -189,11 +212,12 @@ func TestControlFlow(t *testing.T) {
 	r.boundWindow = &window.WindowInfo{HWND: 100}
 	req := &gw.GameControlRequest{
 		OperationId: "op-1",
-		Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-		Mouse: &gw.GameMouseAction{
-			Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-			X:      10,
-			Y:      20,
+		Action: &gw.GameControlRequest_MouseClick{
+			MouseClick: &gw.GameMouseClick{
+				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				X:      10,
+				Y:      20,
+			},
 		},
 	}
 
@@ -212,12 +236,204 @@ func TestControlFlow(t *testing.T) {
 	}
 }
 
+func TestReadLoopRouting(t *testing.T) {
+	tests := []struct {
+		name       string
+		msg        transport.InboundMessage
+		setup      func(*Runtime)
+		wantEvents []string
+		wantConn   ConnectionState
+	}{
+		{
+			name: "control request sends ack and result",
+			msg: transport.InboundMessage{ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-1",
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
+				},
+			}},
+			setup: func(r *Runtime) {
+				r.session = &Session{ID: "session-1"}
+				r.boundWindow = &window.WindowInfo{HWND: 100}
+			},
+			wantEvents: []string{"control_ack:op-1", "control_result:op-1:GAME_CONTROL_RESULT_STATUS_SUCCEEDED"},
+			wantConn:   ConnDisconnected,
+		},
+		{
+			name:       "ping sends pong",
+			msg:        transport.InboundMessage{Ping: &gw.GamePing{Nonce: "nonce-1"}},
+			setup:      func(r *Runtime) { r.session = &Session{ID: "session-1"} },
+			wantEvents: []string{"pong:nonce-1"},
+			wantConn:   ConnDisconnected,
+		},
+		{
+			name:     "gateway error sets runtime error state",
+			msg:      transport.InboundMessage{Error: &gw.GameError{Code: "gateway_error", Message: "boom"}},
+			wantConn: ConnDisconnected,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			ft := &fakeTransport{readLoopMsgs: []transport.InboundMessage{tt.msg}}
+			r.transport = ft
+			if tt.setup != nil {
+				tt.setup(r)
+			}
+
+			// when
+			r.startReadLoopConsumer()
+
+			// then
+			waitForReadLoop(t, r, ft, tt.wantEvents, tt.wantConn)
+		})
+	}
+}
+
+func TestClearWindow(t *testing.T) {
+	tests := []struct {
+		name             string
+		streaming        bool
+		wantEncoderStops int
+	}{
+		{name: "bound window clears to connected"},
+		{name: "streaming window stops capture before clearing", streaming: true, wantEncoderStops: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			fe := &fakeEncoder{stdout: bytes.NewReader(fmp4Stream())}
+			r.encoder = fe
+			if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect"); err != nil {
+				t.Fatalf("Connect() unexpected error: %v", err)
+			}
+			if err := r.BindWindow(100); err != nil {
+				t.Fatalf("BindWindow() unexpected error: %v", err)
+			}
+			if tt.streaming {
+				if err := r.StartCapture(context.Background()); err != nil {
+					t.Fatalf("StartCapture() unexpected error: %v", err)
+				}
+			}
+
+			// when
+			err := r.ClearWindow()
+
+			// then
+			if err != nil {
+				t.Fatalf("ClearWindow() unexpected error: %v", err)
+			}
+			if r.ConnectionState() != ConnConnected {
+				t.Fatalf("ConnectionState() = %d, want %d", r.ConnectionState(), ConnConnected)
+			}
+			if r.boundWindow != nil {
+				t.Fatalf("boundWindow = %+v, want nil", r.boundWindow)
+			}
+			if fe.stopCount != tt.wantEncoderStops {
+				t.Fatalf("encoder stop count = %d, want %d", fe.stopCount, tt.wantEncoderStops)
+			}
+		})
+	}
+}
+
+func TestNewRuntimeInitialization(t *testing.T) {
+	// given
+	ffmpegPath := "resources/bin/ffmpeg.exe"
+	helperPath := "resources/bin/input-helper.exe"
+
+	// when
+	r := NewRuntime(ffmpegPath, helperPath)
+
+	// then
+	if r.encoder == nil {
+		t.Fatalf("encoder is nil")
+	}
+	if r.inputMgr == nil {
+		t.Fatalf("inputMgr is nil")
+	}
+	if r.ffmpegPath != ffmpegPath || r.helperPath != helperPath {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", r.ffmpegPath, r.helperPath, ffmpegPath, helperPath)
+	}
+}
+
+func TestInputHelperLifecycle(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Runtime) error
+	}{
+		{name: "stop capture stops helper", run: func(r *Runtime) error { return r.StopCapture() }},
+		{name: "disconnect stops helper", run: func(r *Runtime) error { return r.Disconnect() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			r := newTestRuntime()
+			r.helperPath = "resources/bin/input-helper.exe"
+			fi := &fakeInput{}
+			r.inputMgr = fi
+			r.encoder = &fakeEncoder{stdout: bytes.NewReader(fmp4Stream())}
+			if err := r.Connect(context.Background(), "wss://example.test/v1/sessions/session-1/game/connect"); err != nil {
+				t.Fatalf("Connect() unexpected error: %v", err)
+			}
+			if err := r.BindWindow(100); err != nil {
+				t.Fatalf("BindWindow() unexpected error: %v", err)
+			}
+			if err := r.StartCapture(context.Background()); err != nil {
+				t.Fatalf("StartCapture() unexpected error: %v", err)
+			}
+
+			// when
+			err := tt.run(r)
+
+			// then
+			if err != nil {
+				t.Fatalf("lifecycle action unexpected error: %v", err)
+			}
+			if fi.startCount != 1 {
+				t.Fatalf("input start count = %d, want 1", fi.startCount)
+			}
+			if fi.stopCount != 1 {
+				t.Fatalf("input stop count = %d, want 1", fi.stopCount)
+			}
+			if fi.lastStartPath != r.helperPath {
+				t.Fatalf("input start path = %q, want %q", fi.lastStartPath, r.helperPath)
+			}
+		})
+	}
+}
+
 func newTestRuntime() *Runtime {
-	r := NewRuntime()
+	r := NewRuntime("", "")
 	r.transport = &fakeTransport{}
 	r.windowMgr = &fakeWindowManager{windows: []window.WindowInfo{{HWND: 100, Title: "game", Rect: window.Rect{Right: 800, Bottom: 600}}}}
 	r.inputMgr = &fakeInput{}
 	return r
+}
+
+func waitForReadLoop(t *testing.T, r *Runtime, ft *fakeTransport, wantEvents []string, wantConn ConnectionState) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("read loop events = %v connState = %d, want events %v connState %d", ft.eventSnapshot(), r.ConnectionState(), wantEvents, wantConn)
+		case <-tick.C:
+			if reflect.DeepEqual(ft.eventSnapshot(), wantEvents) && r.ConnectionState() == wantConn {
+				return
+			}
+		}
+	}
 }
 
 type orderRecorder struct {
@@ -242,8 +458,16 @@ func (r *orderRecorder) events() []string {
 }
 
 type fakeTransport struct {
-	order  *orderRecorder
-	events []string
+	order        *orderRecorder
+	events       []string
+	readLoopMsgs []transport.InboundMessage
+	mu           sync.Mutex
+
+	lastStreamID     string
+	lastInitID       string
+	lastCodec        string
+	lastSequence     uint64
+	lastRandomAccess *bool
 }
 
 func (f *fakeTransport) Connect(context.Context, string) error { return nil }
@@ -254,27 +478,62 @@ func (f *fakeTransport) Close() error {
 	return nil
 }
 func (f *fakeTransport) SendHello(context.Context, string) error { return nil }
-func (f *fakeTransport) SendMediaInit(context.Context, string, string, []byte) error {
-	f.events = append(f.events, "media_init")
+func (f *fakeTransport) SendMediaInit(_ context.Context, _ string, streamID string, initID string, _ string, codec string, _ []byte) error {
+	f.mu.Lock()
+	f.lastStreamID = streamID
+	f.lastInitID = initID
+	f.lastCodec = codec
+	f.mu.Unlock()
+	f.addEvent("media_init")
 	return nil
 }
-func (f *fakeTransport) SendMediaSegment(_ context.Context, _ string, segmentID string, _ []byte, _ bool) error {
-	f.events = append(f.events, "media_segment:"+segmentID)
+func (f *fakeTransport) SendMediaSegment(_ context.Context, _ string, _ string, _ string, sequence uint64, _ []byte, randomAccess *bool, _ int32, _ bool) error {
+	f.mu.Lock()
+	f.lastSequence = sequence
+	f.lastRandomAccess = randomAccess
+	f.mu.Unlock()
+	f.addEvent(fmt.Sprintf("media_segment:%d", sequence))
 	return nil
 }
 func (f *fakeTransport) SendControlAck(_ context.Context, _ string, operationID string) error {
-	f.events = append(f.events, "control_ack:"+operationID)
+	f.addEvent("control_ack:" + operationID)
 	return nil
 }
 func (f *fakeTransport) SendControlResult(_ context.Context, _ string, operationID string, status gw.GameControlResultStatus) error {
-	f.events = append(f.events, fmt.Sprintf("control_result:%s:%s", operationID, status.String()))
+	f.addEvent(fmt.Sprintf("control_result:%s:%s", operationID, status.String()))
 	return nil
 }
-func (f *fakeTransport) SendPong(context.Context, string, string) error { return nil }
+func (f *fakeTransport) SendPong(_ context.Context, _ string, nonce string) error {
+	f.addEvent("pong:" + nonce)
+	return nil
+}
 func (f *fakeTransport) ReadLoop(context.Context) (<-chan transport.InboundMessage, error) {
 	ch := make(chan transport.InboundMessage)
-	close(ch)
+	go func() {
+		defer close(ch)
+		for _, msg := range f.readLoopMsgs {
+			ch <- msg
+		}
+	}()
 	return ch, nil
+}
+
+func (f *fakeTransport) addEvent(event string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, event)
+}
+
+func (f *fakeTransport) eventSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
+}
+
+func (f *fakeTransport) snapshot() (streamID, initID, codec string, seq uint64, ra *bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastStreamID, f.lastInitID, f.lastCodec, f.lastSequence, f.lastRandomAccess
 }
 
 type fakeWindowManager struct {
@@ -295,12 +554,20 @@ func (f *fakeWindowManager) IsWindowValid(hwnd uintptr) bool {
 }
 
 type fakeInput struct {
-	order       *orderRecorder
-	lastCommand input.Command
+	order         *orderRecorder
+	lastCommand   input.Command
+	lastStartPath string
+	startCount    int
+	stopCount     int
 }
 
-func (f *fakeInput) Start(string) error { return nil }
+func (f *fakeInput) Start(helperPath string) error {
+	f.lastStartPath = helperPath
+	f.startCount++
+	return nil
+}
 func (f *fakeInput) Stop() error {
+	f.stopCount++
 	if f.order != nil {
 		f.order.add("input.stop")
 	}
@@ -318,13 +585,15 @@ func (f *fakeInput) ReleaseAll() error {
 }
 
 type fakeEncoder struct {
-	order  *orderRecorder
-	stdout io.Reader
+	order     *orderRecorder
+	stdout    io.Reader
+	stopCount int
 }
 
 func (f *fakeEncoder) Start(context.Context, encoder.EncoderConfig) error { return nil }
 func (f *fakeEncoder) StdoutPipe() io.Reader                              { return f.stdout }
 func (f *fakeEncoder) Stop() error {
+	f.stopCount++
 	if f.order != nil {
 		f.order.add("encoder.stop")
 	}
@@ -334,11 +603,56 @@ func (f *fakeEncoder) Wait() error { return nil }
 
 func fmp4Stream() []byte {
 	var data []byte
-	data = append(data, mp4Box("ftyp", []byte("init"))...)
-	data = append(data, mp4Box("moov", []byte("movie"))...)
-	data = append(data, mp4Box("moof", []byte("frag"))...)
-	data = append(data, mp4Box("mdat", []byte("media"))...)
+	ftypBody := make([]byte, 12)
+	copy(ftypBody[0:4], "isom")
+	binary.BigEndian.PutUint32(ftypBody[4:8], 0x200)
+	copy(ftypBody[8:12], "isom")
+	data = append(data, mp4Box("ftyp", ftypBody)...)
+
+	moovBody := append(mp4Box("mvhd", make([]byte, 92)), testMvexBox()...)
+	data = append(data, mp4Box("moov", moovBody)...)
+
+	mdatPayload := []byte("media")
+	moof := testMoofForMdat(0, uint32(len(mdatPayload)))
+	data = append(data, moof...)
+	data = append(data, mp4Box("mdat", mdatPayload)...)
 	return data
+}
+
+func testMvexBox() []byte {
+	trexBody := make([]byte, 24)
+	binary.BigEndian.PutUint32(trexBody[0:4], 0)
+	binary.BigEndian.PutUint32(trexBody[4:8], 1)
+	binary.BigEndian.PutUint32(trexBody[8:12], 1)
+	binary.BigEndian.PutUint32(trexBody[12:16], 1000)
+	binary.BigEndian.PutUint32(trexBody[16:20], 10)
+	binary.BigEndian.PutUint32(trexBody[20:24], 0)
+	return mp4Box("mvex", mp4Box("trex", trexBody))
+}
+
+func testMoofForMdat(seqNum int, sampleSize uint32) []byte {
+	mfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(mfhdBody[4:8], uint32(seqNum))
+	mfhd := mp4Box("mfhd", mfhdBody)
+
+	tfhdBody := make([]byte, 8)
+	binary.BigEndian.PutUint32(tfhdBody[0:4], 0x00020000)
+	binary.BigEndian.PutUint32(tfhdBody[4:8], 1)
+	tfhd := mp4Box("tfhd", tfhdBody)
+
+	tfdtBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(tfdtBody[0:4], 0x01000000)
+	binary.BigEndian.PutUint64(tfdtBody[4:12], 0)
+	tfdt := mp4Box("tfdt", tfdtBody)
+
+	trunBody := make([]byte, 12)
+	binary.BigEndian.PutUint32(trunBody[0:4], 0x00000004)
+	binary.BigEndian.PutUint32(trunBody[4:8], 1)
+	binary.BigEndian.PutUint32(trunBody[8:12], 0)
+	trun := mp4Box("trun", trunBody)
+
+	traf := mp4Box("traf", append(append(tfhd, tfdt...), trun...))
+	return mp4Box("moof", append(mfhd, traf...))
 }
 
 func mp4Box(kind string, body []byte) []byte {
@@ -350,4 +664,4 @@ var _ TransportClient = (*fakeTransport)(nil)
 var _ WindowEnumerator = (*fakeWindowManager)(nil)
 var _ InputExecutor = (*fakeInput)(nil)
 var _ MediaEncoder = (*fakeEncoder)(nil)
-var _ MediaParser = media.Parse
+var _ MediaParser = media.ParseStreaming

@@ -172,6 +172,7 @@ enum EnvironmentState {
   ENVIRONMENT_STATE_READY = 3;
   ENVIRONMENT_STATE_FAILED = 4;
   ENVIRONMENT_STATE_DELETING = 5;
+  ENVIRONMENT_STATE_WAITING_ROLLOUT = 6;
 }
 
 enum EnvironmentType {
@@ -235,6 +236,8 @@ message InfraSpec {
 
 message InfraPersistenceSpec {
   bool enabled = 1;
+
+  string capacity = 2;
 }
 
 message ArtifactHTTPSpec {

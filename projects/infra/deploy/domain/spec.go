@@ -58,7 +58,8 @@ type ArtifactSpec struct {
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
 type InfraPersistenceSpec struct {
-	Enabled bool
+	Enabled  bool
+	Capacity string
 }
 
 // InfraSpec describes the desired state of an infrastructure resource.

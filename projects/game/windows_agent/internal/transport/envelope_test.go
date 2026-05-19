@@ -107,33 +107,67 @@ func TestDecodeEnvelope(t *testing.T) {
 }
 
 func TestEncodeDecodeRoundtrip(t *testing.T) {
-	// given
-	original := &gw.GameWebSocketEnvelope{
-		SessionId: "session-rt",
-		MessageId: "msg-rt",
-		Payload: &gw.GameWebSocketEnvelope_MediaInit{
-			MediaInit: &gw.GameMediaInit{
-				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
-				Segment:  []byte{0x00, 0x01, 0x02},
+	tests := []struct {
+		name string
+		env  *gw.GameWebSocketEnvelope
+	}{
+		{
+			name: "media_init v2 roundtrip",
+			env: &gw.GameWebSocketEnvelope{
+				SessionId: "session-rt",
+				MessageId: "msg-rt-init",
+				Payload: &gw.GameWebSocketEnvelope_MediaInit{
+					MediaInit: &gw.GameMediaInit{
+						StreamId: "stream-1",
+						InitId:   "init-abc123",
+						MimeType: MimeTypeMP4,
+						Codec:    CodecH264AVC,
+						Segment:  []byte{0x00, 0x01, 0x02},
+					},
+				},
+			},
+		},
+		{
+			name: "media_segment v2 roundtrip",
+			env: &gw.GameWebSocketEnvelope{
+				SessionId: "session-rt",
+				MessageId: "msg-rt-seg",
+				Payload: &gw.GameWebSocketEnvelope_MediaSegment{
+					MediaSegment: &gw.GameMediaSegment{
+						StreamId:      "stream-1",
+						InitId:        "init-abc123",
+						Sequence:      42,
+						Segment:       []byte{0xAA, 0xBB, 0xCC},
+						RandomAccess:  boolPtr(true),
+						DurationMs:    33,
+						Discontinuity: false,
+					},
+				},
 			},
 		},
 	}
 
-	// when
-	data, err := EncodeEnvelope(original)
-	if err != nil {
-		t.Fatalf("EncodeEnvelope unexpected error: %v", err)
-	}
-	decoded, err := DecodeEnvelope(data)
-	if err != nil {
-		t.Fatalf("DecodeEnvelope unexpected error: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			data, err := EncodeEnvelope(tt.env)
+			if err != nil {
+				t.Fatalf("EncodeEnvelope unexpected error: %v", err)
+			}
+			decoded, err := DecodeEnvelope(data)
+			if err != nil {
+				t.Fatalf("DecodeEnvelope unexpected error: %v", err)
+			}
 
-	// then
-	if !proto.Equal(original, decoded) {
-		t.Fatalf("roundtrip mismatch:\noriginal: %v\ndecoded: %v", original, decoded)
+			// then
+			if !proto.Equal(tt.env, decoded) {
+				t.Fatalf("roundtrip mismatch:\noriginal: %v\ndecoded: %v", tt.env, decoded)
+			}
+		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func TestMessageID(t *testing.T) {
 	// given

@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "tracecontext",
+    srcs = ["tracecontext.go"],
+    importpath = "dominion/common/gopkg/otel/tracecontext",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@io_opentelemetry_go_otel//propagation",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
+)
+
+go_unittest(
+    name = "tracecontext_test",
+    srcs = ["tracecontext_test.go"],
+    embed = [":tracecontext"],
+    deps = [
+        "@io_opentelemetry_go_otel//propagation",
+        "@io_opentelemetry_go_otel_trace//:trace",
+    ],
+)

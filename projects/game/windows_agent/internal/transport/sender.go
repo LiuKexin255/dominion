@@ -26,7 +26,7 @@ func (c *Client) SendHello(ctx context.Context, sessionID string) error {
 }
 
 // SendMediaInit sends the fMP4 initialisation segment to the gateway.
-func (c *Client) SendMediaInit(ctx context.Context, sessionID, mimeType string, segment []byte) error {
+func (c *Client) SendMediaInit(ctx context.Context, sessionID, streamID, initID, mimeType, codec string, segment []byte) error {
 	if len(segment) > domain.MaxSegmentSize {
 		return fmt.Errorf("media_init segment %d bytes exceeds %d limit", len(segment), domain.MaxSegmentSize)
 	}
@@ -36,7 +36,10 @@ func (c *Client) SendMediaInit(ctx context.Context, sessionID, mimeType string, 
 		MessageId: MessageID("media-init"),
 		Payload: &gw.GameWebSocketEnvelope_MediaInit{
 			MediaInit: &gw.GameMediaInit{
+				StreamId: streamID,
+				InitId:   initID,
 				MimeType: mimeType,
+				Codec:    codec,
 				Segment:  segment,
 			},
 		},
@@ -44,7 +47,7 @@ func (c *Client) SendMediaInit(ctx context.Context, sessionID, mimeType string, 
 }
 
 // SendMediaSegment sends one fMP4 media segment to the gateway.
-func (c *Client) SendMediaSegment(ctx context.Context, sessionID, segmentID string, segment []byte, keyFrame bool) error {
+func (c *Client) SendMediaSegment(ctx context.Context, sessionID, streamID, initID string, sequence uint64, segment []byte, randomAccess *bool, durationMS int32, discontinuity bool) error {
 	if len(segment) > domain.MaxSegmentSize {
 		return fmt.Errorf("media_segment %d bytes exceeds %d limit", len(segment), domain.MaxSegmentSize)
 	}
@@ -54,9 +57,13 @@ func (c *Client) SendMediaSegment(ctx context.Context, sessionID, segmentID stri
 		MessageId: MessageID("media-seg"),
 		Payload: &gw.GameWebSocketEnvelope_MediaSegment{
 			MediaSegment: &gw.GameMediaSegment{
-				SegmentId: segmentID,
-				Segment:   segment,
-				KeyFrame:  keyFrame,
+				StreamId:      streamID,
+				InitId:        initID,
+				Sequence:      sequence,
+				Segment:       segment,
+				RandomAccess:  randomAccess,
+				DurationMs:    durationMS,
+				Discontinuity: discontinuity,
 			},
 		},
 	})

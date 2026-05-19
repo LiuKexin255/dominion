@@ -34,7 +34,8 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 			}
 			if deployService.Infra.Persistence.Enabled {
 				infraSpec.Persistence = &deploy.InfraPersistenceSpec{
-					Enabled: true,
+					Enabled:  true,
+					Capacity: deployService.Infra.Persistence.Capacity,
 				}
 			}
 			desiredState.Infras = append(desiredState.Infras, infraSpec)

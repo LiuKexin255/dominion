@@ -104,6 +104,22 @@ func decodeReconnectSessionResponse(t *testing.T, resp *http.Response) *session.
 	return got
 }
 
+func decodeListSessionsResponse(t *testing.T, resp *http.Response) *session.ListSessionsResponse {
+	t.Helper()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("io.ReadAll() unexpected error: %v", err)
+	}
+
+	got := new(session.ListSessionsResponse)
+	if err := jsonUnmarshaler.Unmarshal(body, got); err != nil {
+		t.Fatalf("protojson.Unmarshal(ListSessionsResponse) unexpected error: %v, body=%s", err, string(body))
+	}
+
+	return got
+}
+
 func createSession(t *testing.T, sutHostURL string) *session.CreateSessionResponse {
 	t.Helper()
 
@@ -190,7 +206,7 @@ func TestInterface_CreateSession(t *testing.T) {
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
 
 	requireValidSession(t, created.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, created.GetAgentConnectUrl())
+	requireAgentConnectURL(t, created.GetSession().GetAgentConnectUrl())
 	if created.GetSession().GetReconnectGeneration() != 0 {
 		t.Fatalf("session.ReconnectGeneration = %d, want 0", created.GetSession().GetReconnectGeneration())
 	}
@@ -243,7 +259,7 @@ func TestInterface_ReconnectSession(t *testing.T) {
 
 	got := decodeReconnectSessionResponse(t, resp)
 	requireValidSession(t, got.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, got.GetAgentConnectUrl())
+	requireAgentConnectURL(t, got.GetSession().GetAgentConnectUrl())
 	if got.GetSession().GetReconnectGeneration() < created.GetSession().GetReconnectGeneration() {
 		t.Fatalf("session.ReconnectGeneration = %d, want >= %d", got.GetSession().GetReconnectGeneration(), created.GetSession().GetReconnectGeneration())
 	}
@@ -299,5 +315,70 @@ func TestInterface_CreateSession_InvalidType(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("CreateSession invalid type status = %d, want %d, body=%s", resp.StatusCode, http.StatusBadRequest, string(body))
+	}
+}
+
+func TestInterface_ListSessions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+
+	created1 := createSession(t, sutHostURL)
+	defer deleteSessionForCleanup(t, sutHostURL, created1.GetSession().GetName())
+
+	created2 := createSession(t, sutHostURL)
+	defer deleteSessionForCleanup(t, sutHostURL, created2.GetSession().GetName())
+
+	resp := doRequest(t, http.MethodGet, sutHostURL+sessionPath, nil)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("ListSessions status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	listResp := decodeListSessionsResponse(t, resp)
+	if len(listResp.GetSessions()) < 2 {
+		t.Fatalf("ListSessions returned %d sessions, want at least 2", len(listResp.GetSessions()))
+	}
+
+	for _, s := range listResp.GetSessions() {
+		if s.GetAgentConnectUrl() == "" {
+			t.Fatalf("session %q has empty AgentConnectUrl, want non-empty", s.GetName())
+		}
+	}
+
+	name1 := created1.GetSession().GetName()
+	name2 := created2.GetSession().GetName()
+	hasName := func(list []*session.Session, name string) bool {
+		for _, s := range list {
+			if s.GetName() == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasName(listResp.GetSessions(), name1) {
+		t.Fatalf("ListSessions missing session %q", name1)
+	}
+	if !hasName(listResp.GetSessions(), name2) {
+		t.Fatalf("ListSessions missing session %q", name2)
+	}
+
+	deleteSessionForCleanup(t, sutHostURL, name1)
+
+	resp2 := doRequest(t, http.MethodGet, sutHostURL+sessionPath, nil)
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("ListSessions after delete status = %d, want %d, body=%s", resp2.StatusCode, http.StatusOK, string(body))
+	}
+
+	listResp2 := decodeListSessionsResponse(t, resp2)
+	if hasName(listResp2.GetSessions(), name1) {
+		t.Fatalf("ListSessions after delete still contains deleted session %q", name1)
+	}
+	if !hasName(listResp2.GetSessions(), name2) {
+		t.Fatalf("ListSessions after delete missing remaining session %q", name2)
 	}
 }

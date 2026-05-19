@@ -1,13 +1,19 @@
 package k8s
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"dominion/projects/infra/deploy/domain"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-const infraResourceMongoDB = "mongodb"
+const (
+	infraResourceMongoDB        = "mongodb"
+	maxInfraPersistenceCapacity = "1Ti"
+)
 
 // DeployObjects 表示一次部署所需的 Kubernetes 工作负载对象集合。
 type DeployObjects struct {
@@ -102,12 +108,16 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) 
 func convertInfraToMongoWorkload(infra *domain.InfraSpec, envName string) (*MongoDBWorkload, error) {
 	switch infra.Resource {
 	case infraResourceMongoDB:
+		cap, err := validateAndParseCapacity(infra.Persistence.Enabled, infra.Persistence.Capacity)
+		if err != nil {
+			return nil, fmt.Errorf("infra %s persistence: %w", infra.Name, err)
+		}
 		return &MongoDBWorkload{
 			ServiceName:     infra.Name,
 			EnvironmentName: envName,
 			App:             infra.App,
 			ProfileName:     infra.Profile,
-			Persistence:     PersistenceConfig{Enabled: infra.Persistence.Enabled},
+			Persistence:     PersistenceConfig{Enabled: infra.Persistence.Enabled, Capacity: cap},
 		}, nil
 	default:
 		return nil, fmt.Errorf("不支持的 infra resource 类型: %s", infra.Resource)
@@ -235,4 +245,25 @@ func convertPathType(t domain.HTTPPathRuleType) HTTPPathMatchType {
 	default:
 		return HTTPPathMatchTypeUnspecified
 	}
+}
+
+// validateAndParseCapacity validates and parses a capacity string from domain.
+// Returns error if: capacity set but persistence disabled, invalid format, exceeds 1Ti.
+// Returns zero Quantity if capacity is empty (meaning "use profile default").
+func validateAndParseCapacity(enabled bool, raw string) (resource.Quantity, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return resource.Quantity{}, nil
+	}
+	if !enabled {
+		return resource.Quantity{}, errors.New("persistence 未启用时不能配置 capacity")
+	}
+	q, err := resource.ParseQuantity(trimmed)
+	if err != nil {
+		return resource.Quantity{}, fmt.Errorf("capacity 解析失败: %w", err)
+	}
+	if q.Cmp(resource.MustParse(maxInfraPersistenceCapacity)) > 0 {
+		return resource.Quantity{}, fmt.Errorf("capacity 超过上限 1Ti: %s", trimmed)
+	}
+	return q, nil
 }

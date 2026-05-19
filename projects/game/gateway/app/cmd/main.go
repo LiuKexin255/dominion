@@ -3,12 +3,22 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+	"time"
 
+	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/grpc"
+	phttp "dominion/common/gopkg/http"
+	"dominion/common/gopkg/otel"
+	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
+	"dominion/projects/game/gateway/domain/sessionmanager"
+	"dominion/projects/game/gateway/service"
+	"dominion/projects/game/pkg/token"
+
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 )
 
 const (
@@ -29,12 +39,36 @@ func main() {
 		gatewayID = "game-gateway-0"
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	verifier := token.NewHMACSigner(tokenSecret, 0)
+	sessions := sessionmanager.NewManager(gatewayID)
+	control := service.NewControlExecutor()
+	svc, completionWorker := service.NewGatewayService(sessions, control, gatewayID, verifier)
+	wsHandler, routingWorker := gateway.NewWebSocketHandler(svc)
+	handler := gateway.NewHandler(svc)
 
-	bootstrap := app.NewBootstrap(tokenSecret, gatewayID)
-	if err := app.Serve(ctx, bootstrap.Handler, bootstrap.WSHandler, normalizeListenAddr(httpPort)); err != nil {
-		log.Fatalf("serve gateway: %v", err)
+	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
+	_ = gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), httpMux, handler)
+	router := &app.Router{
+		WSHandler: phttp.Handler(wsHandler, "GET /v1/sessions/{id}/game/connect"),
+		GRPCMux:   phttp.Handler(httpMux, "gateway-http"),
+	}
+	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
+
+	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
+	if err := bs.Register(otel.Component()); err != nil {
+		log.Fatalf("register otel: %v", err)
+	}
+	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {
+		log.Fatalf("register gateway server: %v", err)
+	}
+	if err := bs.Register(bootstrap.Daemon("gateway-completion", completionWorker)); err != nil {
+		log.Fatalf("register completion worker: %v", err)
+	}
+	if err := bs.Register(bootstrap.Daemon("gateway-routing", routingWorker)); err != nil {
+		log.Fatalf("register routing worker: %v", err)
+	}
+	if err := bs.Run(context.Background()); err != nil {
+		log.Fatalf("run gateway: %v", err)
 	}
 }
 

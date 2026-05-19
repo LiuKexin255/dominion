@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "bootstrap",
+    srcs = [
+        "bootstrap.go",
+        "component.go",
+        "daemon.go",
+        "grpc.go",
+        "http.go",
+        "mongo.go",
+        "option.go",
+        "stage.go",
+    ],
+    importpath = "dominion/common/gopkg/bootstrap",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//mongo",
+    ],
+)
+
+go_unittest(
+    name = "bootstrap_test",
+    srcs = [
+        "bootstrap_test.go",
+        "daemon_test.go",
+        "grpc_test.go",
+        "http_test.go",
+        "mongo_test.go",
+    ],
+    embed = [":bootstrap"],
+    deps = [
+        "//common/gopkg/logs",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)

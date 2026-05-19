@@ -1,11 +1,15 @@
 package solver
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
+
+	"dominion/common/gopkg/logs"
 )
 
 func TestDeployStatefulResolver_Resolve(t *testing.T) {
@@ -108,6 +112,55 @@ func TestDeployStatefulResolver_Resolve(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeployStatefulResolver_Resolve_WarnOnNoInstances(t *testing.T) {
+	tests := []struct {
+		name          string
+		response      *ServiceEndpointsInfo
+		target        *Target
+		wantLogMsg    string
+		wantLogFields []string
+	}{
+		{
+			name: "stateful with nil instances logs instance not found",
+			response: &ServiceEndpointsInfo{
+				IsStateful:        true,
+				StatefulInstances: nil,
+			},
+			target:        &Target{App: "app-a", Service: "svc-b", PortSelector: NumericPort(50051)},
+			wantLogMsg:    "stateful instance not found",
+			wantLogFields: []string{"app=app-a", "service=svc-b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			ctx := logs.WithLogger(context.Background(), logger)
+
+			client := &fakeDeployClient{response: tt.response}
+			resolver := &DeployStatefulResolver{client: client, scope: "dev", envName: "alpha"}
+
+			// when
+			_, err := resolver.Resolve(ctx, tt.target)
+
+			// then
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			output := buf.String()
+			if !strings.Contains(output, tt.wantLogMsg) {
+				t.Fatalf("log output = %q, want message %q", output, tt.wantLogMsg)
+			}
+			for _, field := range tt.wantLogFields {
+				if !strings.Contains(output, field) {
+					t.Fatalf("log output = %q, want field %q", output, field)
+				}
 			}
 		})
 	}

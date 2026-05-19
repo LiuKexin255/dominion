@@ -4,8 +4,8 @@ sh_binary(
     name = "pnpm",
     srcs = ["pnpm.sh"],
     data = [
-        "@pnpm//:pnpm",
         "@bazel_tools//tools/bash/runfiles",
+        "@pnpm",
     ],
     visibility = ["//visibility:public"],
 )

@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,12 +38,13 @@ func newTestGatewayServiceWS(verifier *testVerifierWS) *service.GatewayService {
 			},
 		}
 	}
-	return service.NewGatewayService(
+	svc, _ := service.NewGatewayService(
 		sessionmanager.NewManager("gw-test"),
 		service.NewControlExecutor(),
 		"gw-test",
 		verifier,
 	)
+	return svc
 }
 
 func makeWSURL(server *httptest.Server, sessionID, tokenStr string) string {
@@ -89,31 +92,137 @@ func connectAndHello(ctx context.Context, url, sessionID string, role GameClient
 	return conn, nil
 }
 
-func Test_toDomainPayload_controlRequestMouseDragRoundTrip(t *testing.T) {
+func Test_toDomainPayload_controlRequest_allActions(t *testing.T) {
 	tests := []struct {
-		name string
-		env  *GameWebSocketEnvelope
+		name      string
+		env       *GameWebSocketEnvelope
+		wantKind  domain.OperationKind
+		wantFlash bool
 	}{
 		{
-			name: "mouse drag keeps button coordinates and duration",
+			name: "mouse click action",
 			env: &GameWebSocketEnvelope{
 				SessionId: "test-session",
 				MessageId: "control-1",
 				Payload: &GameWebSocketEnvelope_ControlRequest{
 					ControlRequest: &GameControlRequest{
-						OperationId: "op-drag",
-						Kind:        GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG,
-						Mouse: &GameMouseAction{
-							Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-							FromX:      10,
-							FromY:      20,
-							ToX:        100,
-							ToY:        200,
-							DurationMs: 500,
+						OperationId: "op-click",
+						Action: &GameControlRequest_MouseClick{
+							MouseClick: &GameMouseClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      100,
+								Y:      200,
+							},
 						},
 					},
 				},
 			},
+			wantKind:  domain.OperationKindMouseClick,
+			wantFlash: false,
+		},
+		{
+			name: "mouse double click action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-2",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-dblclick",
+						Action: &GameControlRequest_MouseDoubleClick{
+							MouseDoubleClick: &GameMouseDoubleClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      50,
+								Y:      75,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseDoubleClick,
+		},
+		{
+			name: "mouse drag action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-3",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-drag",
+						Action: &GameControlRequest_MouseDrag{
+							MouseDrag: &GameMouseDrag{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								FromX:  10,
+								FromY:  20,
+								ToX:    100,
+								ToY:    200,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseDrag,
+		},
+		{
+			name: "mouse hover action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-4",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-hover",
+						Action: &GameControlRequest_MouseHover{
+							MouseHover: &GameMouseHover{
+								X: 300,
+								Y: 400,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseHover,
+		},
+		{
+			name: "mouse hold action",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-5",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId: "op-hold",
+						Action: &GameControlRequest_MouseHold{
+							MouseHold: &GameMouseHold{
+								Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:          500,
+								Y:          600,
+								DurationMs: 3000,
+							},
+						},
+					},
+				},
+			},
+			wantKind: domain.OperationKindMouseHold,
+		},
+		{
+			name: "control request with flash_snapshot",
+			env: &GameWebSocketEnvelope{
+				SessionId: "test-session",
+				MessageId: "control-flash",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{
+						OperationId:   "op-flash",
+						FlashSnapshot: true,
+						Action: &GameControlRequest_MouseClick{
+							MouseClick: &GameMouseClick{
+								Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+								X:      0,
+								Y:      0,
+							},
+						},
+					},
+				},
+			},
+			wantKind:  domain.OperationKindMouseClick,
+			wantFlash: true,
 		},
 	}
 
@@ -121,35 +230,107 @@ func Test_toDomainPayload_controlRequestMouseDragRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			domainPayload, ok := toDomainPayload(tt.env).(domain.ControlRequestPayload)
 			if !ok {
-				t.Fatal("toDomainPayload() is not control_request")
+				t.Fatal("toDomainPayload() is not ControlRequestPayload")
 			}
-			if domainPayload.Kind != domain.OperationKindMouseDrag {
-				t.Fatalf("Kind = %q, want %q", domainPayload.Kind, domain.OperationKindMouseDrag)
+			if domainPayload.ActionKind != tt.wantKind {
+				t.Fatalf("ActionKind = %q, want %q", domainPayload.ActionKind, tt.wantKind)
 			}
-			if domainPayload.Button != "left" {
-				t.Fatalf("Button = %q, want %q", domainPayload.Button, "left")
-			}
-			if domainPayload.FromX != 10 || domainPayload.FromY != 20 || domainPayload.ToX != 100 || domainPayload.ToY != 200 {
-				t.Fatalf("domain drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
-					domainPayload.FromX, domainPayload.FromY, domainPayload.ToX, domainPayload.ToY)
-			}
-
-			protoPayload, ok := toProtoPayload(domainPayload).(*GameWebSocketEnvelope_ControlRequest)
-			if !ok {
-				t.Fatal("toProtoPayload() is not control_request")
-			}
-			mouse := protoPayload.ControlRequest.GetMouse()
-			if mouse.GetButton() != GameMouseButton_GAME_MOUSE_BUTTON_LEFT {
-				t.Fatalf("Button = %v, want %v", mouse.GetButton(), GameMouseButton_GAME_MOUSE_BUTTON_LEFT)
-			}
-			if mouse.GetFromX() != 10 || mouse.GetFromY() != 20 || mouse.GetToX() != 100 || mouse.GetToY() != 200 {
-				t.Fatalf("proto drag coordinates = (%d,%d)->(%d,%d), want (10,20)->(100,200)",
-					mouse.GetFromX(), mouse.GetFromY(), mouse.GetToX(), mouse.GetToY())
-			}
-			if mouse.GetDurationMs() != 500 {
-				t.Fatalf("DurationMs = %d, want %d", mouse.GetDurationMs(), 500)
+			if domainPayload.FlashSnapshot != tt.wantFlash {
+				t.Fatalf("FlashSnapshot = %v, want %v", domainPayload.FlashSnapshot, tt.wantFlash)
 			}
 		})
+	}
+}
+
+func Test_toDomainPayload_controlRequest_allButtons(t *testing.T) {
+	buttons := []struct {
+		name   string
+		button GameMouseButton
+	}{
+		{name: "left", button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT},
+		{name: "right", button: GameMouseButton_GAME_MOUSE_BUTTON_RIGHT},
+		{name: "middle", button: GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE},
+	}
+
+	actions := []struct {
+		name    string
+		build   func(b GameMouseButton) isGameControlRequest_Action
+		wantErr bool
+	}{
+		{
+			name: "click",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseClick{MouseClick: &GameMouseClick{Button: b, X: 1, Y: 1}}
+			},
+		},
+		{
+			name: "double_click",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseDoubleClick{MouseDoubleClick: &GameMouseDoubleClick{Button: b, X: 1, Y: 1}}
+			},
+		},
+		{
+			name: "drag",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseDrag{MouseDrag: &GameMouseDrag{Button: b, FromX: 0, FromY: 0, ToX: 1, ToY: 1}}
+			},
+		},
+		{
+			name: "hold",
+			build: func(b GameMouseButton) isGameControlRequest_Action {
+				return &GameControlRequest_MouseHold{MouseHold: &GameMouseHold{Button: b, X: 1, Y: 1, DurationMs: 1000}}
+			},
+		},
+	}
+
+	for _, action := range actions {
+		for _, btn := range buttons {
+			t.Run(action.name+"_"+btn.name, func(t *testing.T) {
+				env := &GameWebSocketEnvelope{
+					SessionId: "test-session",
+					MessageId: "btn-test",
+					Payload: &GameWebSocketEnvelope_ControlRequest{
+						ControlRequest: &GameControlRequest{
+							OperationId: "op-btn",
+							Action:      action.build(btn.button),
+						},
+					},
+				}
+
+				domainPayload, ok := toDomainPayload(env).(domain.ControlRequestPayload)
+				if !ok {
+					t.Fatal("toDomainPayload() is not ControlRequestPayload")
+				}
+				if domainPayload.OperationID != "op-btn" {
+					t.Fatalf("OperationID = %q, want %q", domainPayload.OperationID, "op-btn")
+				}
+			})
+		}
+	}
+}
+
+func Test_toDomainPayload_controlRequest_noAction(t *testing.T) {
+	// given: control request with no action set
+	env := &GameWebSocketEnvelope{
+		SessionId: "test-session",
+		MessageId: "control-no-action",
+		Payload: &GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &GameControlRequest{
+				OperationId: "op-no-action",
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then: should return ErrorPayload since action is missing
+	errPayload, ok := payload.(domain.ErrorPayload)
+	if !ok {
+		t.Fatalf("expected ErrorPayload for missing action, got %T", payload)
+	}
+	if errPayload.Code != "protocol_error" {
+		t.Fatalf("Code = %q, want %q", errPayload.Code, "protocol_error")
 	}
 }
 
@@ -213,7 +394,7 @@ func Test_pathParsing(t *testing.T) {
 
 func TestWebSocket_InvalidToken(t *testing.T) {
 	svc := newTestGatewayServiceWS(&testVerifierWS{err: token.ErrTokenInvalid})
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -237,7 +418,7 @@ func TestWebSocket_InvalidToken(t *testing.T) {
 
 func TestWebSocket_MissingToken(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -259,7 +440,7 @@ func TestWebSocket_MissingToken(t *testing.T) {
 
 func TestWebSocket_ConnectAndHello(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -302,7 +483,7 @@ func TestWebSocket_ConnectAndHello(t *testing.T) {
 
 func TestWebSocket_DuplicateAgent(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -351,7 +532,7 @@ func TestWebSocket_DuplicateAgent(t *testing.T) {
 
 func TestWebSocket_MessageRouting(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -372,13 +553,19 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 	defer webConn.Close(websocket.StatusNormalClosure, "")
 
 	// when: agent sends media_init
+	segment := []byte("fake-init-segment")
+	initHash := sha256.Sum256(segment)
+	initID := hex.EncodeToString(initHash[:])
 	mediaEnv := &GameWebSocketEnvelope{
 		SessionId: "test-session",
 		MessageId: "media-1",
 		Payload: &GameWebSocketEnvelope_MediaInit{
 			MediaInit: &GameMediaInit{
-				MimeType: "video/mp4",
-				Segment:  []byte("fake-init-segment"),
+				StreamId: "stream-1",
+				InitId:   initID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  segment,
 			},
 		},
 	}
@@ -398,8 +585,8 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 	if initPayload == nil {
 		t.Fatal("expected media_init message on web connection")
 	}
-	if initPayload.GetMimeType() != "video/mp4" {
-		t.Fatalf("MimeType = %q, want %q", initPayload.GetMimeType(), "video/mp4")
+	if initPayload.GetMimeType() != "video/mp4; codecs=\"avc1.64001f\"" {
+		t.Fatalf("MimeType = %q, want %q", initPayload.GetMimeType(), "video/mp4; codecs=\"avc1.64001f\"")
 	}
 	if string(initPayload.GetSegment()) != "fake-init-segment" {
 		t.Fatalf("Segment = %q, want %q", string(initPayload.GetSegment()), "fake-init-segment")
@@ -408,7 +595,7 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 
 func TestWebSocket_PingPong(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := NewWebSocketHandler(svc)
+	handler, _ := NewWebSocketHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -447,5 +634,172 @@ func TestWebSocket_PingPong(t *testing.T) {
 	}
 	if pong.GetPong().GetNonce() != "nonce-123" {
 		t.Fatalf("Nonce = %q, want %q", pong.GetPong().GetNonce(), "nonce-123")
+	}
+}
+
+func Test_toDomainPayload_mediaInit(t *testing.T) {
+	// given
+	env := &GameWebSocketEnvelope{
+		SessionId: "session-1",
+		MessageId: "media-init-1",
+		Payload: &GameWebSocketEnvelope_MediaInit{
+			MediaInit: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "init-1",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  []byte("init-segment-bytes"),
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then
+	initPayload, ok := payload.(domain.MediaInitPayload)
+	if !ok {
+		t.Fatalf("toDomainPayload() returned %T, want MediaInitPayload", payload)
+	}
+	if initPayload.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", initPayload.StreamID, "stream-1")
+	}
+	if initPayload.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", initPayload.InitID, "init-1")
+	}
+	if initPayload.Codec != "h264-avc" {
+		t.Fatalf("Codec = %q, want %q", initPayload.Codec, "h264-avc")
+	}
+	if initPayload.MimeType != "video/mp4; codecs=\"avc1.64001f\"" {
+		t.Fatalf("MimeType = %q, want %q", initPayload.MimeType, "video/mp4; codecs=\"avc1.64001f\"")
+	}
+	if string(initPayload.Segment) != "init-segment-bytes" {
+		t.Fatalf("Segment = %q, want %q", string(initPayload.Segment), "init-segment-bytes")
+	}
+}
+
+func Test_toDomainPayload_mediaSegment(t *testing.T) {
+	// given
+	ra := true
+	env := &GameWebSocketEnvelope{
+		SessionId: "session-1",
+		MessageId: "media-seg-1",
+		Payload: &GameWebSocketEnvelope_MediaSegment{
+			MediaSegment: &GameMediaSegment{
+				StreamId:      "stream-1",
+				InitId:        "init-1",
+				Sequence:      42,
+				Segment:       []byte("fMP4-chunk"),
+				RandomAccess:  &ra,
+				DurationMs:    33,
+				Discontinuity: true,
+			},
+		},
+	}
+
+	// when
+	payload := toDomainPayload(env)
+
+	// then
+	segPayload, ok := payload.(domain.MediaSegmentPayload)
+	if !ok {
+		t.Fatalf("toDomainPayload() returned %T, want MediaSegmentPayload", payload)
+	}
+	if segPayload.StreamID != "stream-1" {
+		t.Fatalf("StreamID = %q, want %q", segPayload.StreamID, "stream-1")
+	}
+	if segPayload.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", segPayload.InitID, "init-1")
+	}
+	if segPayload.Sequence != 42 {
+		t.Fatalf("Sequence = %d, want %d", segPayload.Sequence, 42)
+	}
+	if !segPayload.RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
+	}
+	if segPayload.DurationMS != 33 {
+		t.Fatalf("DurationMS = %d, want %d", segPayload.DurationMS, 33)
+	}
+	if !segPayload.Discontinuity {
+		t.Fatal("Discontinuity = false, want true")
+	}
+}
+
+func Test_toProtoPayload_mediaInitRoundTrip(t *testing.T) {
+	// given
+	original := domain.MediaInitPayload{
+		StreamID: "stream-rt",
+		InitID:   "init-rt",
+		Codec:    "h264-avc",
+		MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+		Segment:  []byte("round-trip-init"),
+	}
+
+	// when
+	protoPayload := toProtoPayload(original)
+	env := &GameWebSocketEnvelope{SessionId: "s1", MessageId: "m1", Payload: protoPayload}
+	roundTripped := toDomainPayload(env)
+
+	// then
+	result, ok := roundTripped.(domain.MediaInitPayload)
+	if !ok {
+		t.Fatalf("round-trip returned %T, want MediaInitPayload", roundTripped)
+	}
+	if result.StreamID != original.StreamID {
+		t.Fatalf("StreamID = %q, want %q", result.StreamID, original.StreamID)
+	}
+	if result.InitID != original.InitID {
+		t.Fatalf("InitID = %q, want %q", result.InitID, original.InitID)
+	}
+	if result.Codec != original.Codec {
+		t.Fatalf("Codec = %q, want %q", result.Codec, original.Codec)
+	}
+	if result.MimeType != original.MimeType {
+		t.Fatalf("MimeType = %q, want %q", result.MimeType, original.MimeType)
+	}
+	if string(result.Segment) != string(original.Segment) {
+		t.Fatalf("Segment = %q, want %q", string(result.Segment), string(original.Segment))
+	}
+}
+
+func Test_toProtoPayload_mediaSegmentRoundTrip(t *testing.T) {
+	// given
+	original := domain.MediaSegmentPayload{
+		StreamID:      "stream-rt",
+		InitID:        "init-rt",
+		Sequence:      99,
+		Segment:       []byte("round-trip-seg"),
+		RandomAccess:  true,
+		DurationMS:    100,
+		Discontinuity: false,
+	}
+
+	// when
+	protoPayload := toProtoPayload(original)
+	env := &GameWebSocketEnvelope{SessionId: "s1", MessageId: "m1", Payload: protoPayload}
+	roundTripped := toDomainPayload(env)
+
+	// then
+	result, ok := roundTripped.(domain.MediaSegmentPayload)
+	if !ok {
+		t.Fatalf("round-trip returned %T, want MediaSegmentPayload", roundTripped)
+	}
+	if result.StreamID != original.StreamID {
+		t.Fatalf("StreamID = %q, want %q", result.StreamID, original.StreamID)
+	}
+	if result.InitID != original.InitID {
+		t.Fatalf("InitID = %q, want %q", result.InitID, original.InitID)
+	}
+	if result.Sequence != original.Sequence {
+		t.Fatalf("Sequence = %d, want %d", result.Sequence, original.Sequence)
+	}
+	if result.RandomAccess != original.RandomAccess {
+		t.Fatalf("RandomAccess = %v, want %v", result.RandomAccess, original.RandomAccess)
+	}
+	if result.DurationMS != original.DurationMS {
+		t.Fatalf("DurationMS = %d, want %d", result.DurationMS, original.DurationMS)
+	}
+	if result.Discontinuity != original.Discontinuity {
+		t.Fatalf("Discontinuity = %v, want %v", result.Discontinuity, original.Discontinuity)
 	}
 }

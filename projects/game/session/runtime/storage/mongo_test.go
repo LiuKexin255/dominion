@@ -246,6 +246,7 @@ type fakeCollectionOps struct {
 	indexes           fakeIndexViewOps
 	docs              map[string]*mongoSession
 	updateErr         error
+	findErr           error
 	lastFindOneFilter any
 	lastUpdateFilter  any
 	lastUpdateUpdate  any
@@ -358,6 +359,40 @@ func (f *fakeCollectionOps) Indexes() indexViewOps {
 	return &f.indexes
 }
 
+func (f *fakeCollectionOps) Find(_ context.Context, filter any, _ ...*options.FindOptions) (CursorOps, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+
+	var neStatus *int32
+	if filterD, ok := filter.(bson.D); ok {
+		for _, elem := range filterD {
+			if elem.Key == mongoFieldStatus {
+				if innerD, ok := elem.Value.(bson.D); ok {
+					for _, inner := range innerD {
+						if inner.Key == "$ne" {
+							if v, ok := inner.Value.(int32); ok {
+								neStatus = &v
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var docs []*mongoSession
+	for _, doc := range f.docs {
+		if neStatus != nil && doc.Status == *neStatus {
+			continue
+		}
+		copy := *doc
+		docs = append(docs, &copy)
+	}
+
+	return &fakeCursorOps{docs: docs}, nil
+}
+
 type fakeIndexViewOps struct {
 	models []mongodriver.IndexModel
 	err    error
@@ -372,6 +407,33 @@ func (f *fakeIndexViewOps) CreateMany(_ context.Context, models []mongodriver.In
 	return []string{"idx1"}, nil
 }
 
+type fakeCursorOps struct {
+	docs  []*mongoSession
+	index int
+	err   error
+}
+
+func (c *fakeCursorOps) Next(_ context.Context) bool {
+	if c.err != nil {
+		return false
+	}
+	c.index++
+
+	return c.index <= len(c.docs)
+}
+
+func (c *fakeCursorOps) Decode(v any) error {
+	if c.err != nil {
+		return c.err
+	}
+
+	return decodeBSONDocument(c.docs[c.index-1], v)
+}
+
+func (c *fakeCursorOps) Close(_ context.Context) error {
+	return nil
+}
+
 type fakeSingleResult struct {
 	doc any
 	err error
@@ -383,6 +445,229 @@ func (r fakeSingleResult) Decode(v any) error {
 	}
 
 	return decodeBSONDocument(r.doc, v)
+}
+
+func Test_MongoRepository_List(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns non-ended sessions", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		activeSession := newTestSession(t, "list-active")
+		if err := repo.Save(ctx, activeSession); err != nil {
+			t.Fatalf("Save() active unexpected error: %v", err)
+		}
+		pendingSession := newTestSession(t, "list-pending")
+		if err := repo.Save(ctx, pendingSession); err != nil {
+			t.Fatalf("Save() pending unexpected error: %v", err)
+		}
+		endedSession := newTestSession(t, "list-ended")
+		if err := endedSession.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() unexpected error: %v", err)
+		}
+		if err := endedSession.MarkEnded(); err != nil {
+			t.Fatalf("MarkEnded() unexpected error: %v", err)
+		}
+		if err := repo.Save(ctx, endedSession); err != nil {
+			t.Fatalf("Save() ended unexpected error: %v", err)
+		}
+
+		// when
+		got, err := repo.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("List() returned %d sessions, want 2", len(got))
+		}
+		ids := map[string]bool{}
+		for _, s := range got {
+			ids[s.Snapshot().ID] = true
+		}
+		if !ids["list-active"] {
+			t.Fatal("List() missing list-active session")
+		}
+		if !ids["list-pending"] {
+			t.Fatal("List() missing list-pending session")
+		}
+	})
+
+	t.Run("returns nil for empty result", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+
+		// when
+		got, err := repo.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("List() = %v, want nil", got)
+		}
+	})
+
+	t.Run("returns nil when all ended", func(t *testing.T) {
+		// given
+		repo, _ := newMongoRepositoryForTest()
+		endedSession := newTestSession(t, "all-ended-id")
+		if err := endedSession.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() unexpected error: %v", err)
+		}
+		if err := endedSession.MarkEnded(); err != nil {
+			t.Fatalf("MarkEnded() unexpected error: %v", err)
+		}
+		if err := repo.Save(ctx, endedSession); err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
+		}
+
+		// when
+		got, err := repo.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("List() = %v, want nil", got)
+		}
+	})
+
+	t.Run("returns error when find fails", func(t *testing.T) {
+		// given
+		repo := &MongoRepository{
+			collection: &fakeCollectionOps{
+				docs:    make(map[string]*mongoSession),
+				findErr: errors.New("connection lost"),
+			},
+		}
+
+		// when
+		_, err := repo.List(ctx)
+
+		// then
+		if err == nil {
+			t.Fatal("List() expected error, got nil")
+		}
+	})
+}
+
+func Test_FakeStore_List(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns non-ended sessions", func(t *testing.T) {
+		// given
+		store := NewFakeStore()
+		activeSession := newFakeTestSession(t, "flist-active")
+		if err := store.Save(ctx, activeSession); err != nil {
+			t.Fatalf("Save() active unexpected error: %v", err)
+		}
+		pendingSession := newFakeTestSession(t, "flist-pending")
+		if err := store.Save(ctx, pendingSession); err != nil {
+			t.Fatalf("Save() pending unexpected error: %v", err)
+		}
+		endedSession := newFakeTestSession(t, "flist-ended")
+		if err := endedSession.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() unexpected error: %v", err)
+		}
+		if err := endedSession.MarkEnded(); err != nil {
+			t.Fatalf("MarkEnded() unexpected error: %v", err)
+		}
+		if err := store.Save(ctx, endedSession); err != nil {
+			t.Fatalf("Save() ended unexpected error: %v", err)
+		}
+
+		// when
+		got, err := store.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("List() returned %d sessions, want 2", len(got))
+		}
+		ids := map[string]bool{}
+		for _, s := range got {
+			ids[s.Snapshot().ID] = true
+		}
+		if !ids["flist-active"] {
+			t.Fatal("List() missing flist-active session")
+		}
+		if !ids["flist-pending"] {
+			t.Fatal("List() missing flist-pending session")
+		}
+	})
+
+	t.Run("returns nil for empty result", func(t *testing.T) {
+		// given
+		store := NewFakeStore()
+
+		// when
+		got, err := store.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("List() = %v, want nil", got)
+		}
+	})
+
+	t.Run("returns nil when all ended", func(t *testing.T) {
+		// given
+		store := NewFakeStore()
+		endedSession := newFakeTestSession(t, "fall-ended-id")
+		if err := endedSession.MarkActive(); err != nil {
+			t.Fatalf("MarkActive() unexpected error: %v", err)
+		}
+		if err := endedSession.MarkEnded(); err != nil {
+			t.Fatalf("MarkEnded() unexpected error: %v", err)
+		}
+		if err := store.Save(ctx, endedSession); err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
+		}
+
+		// when
+		got, err := store.List(ctx)
+
+		// then
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Fatalf("List() = %v, want nil", got)
+		}
+	})
+
+	t.Run("returns defensive copies", func(t *testing.T) {
+		// given
+		store := NewFakeStore()
+		session := newFakeTestSession(t, "fcopy-id")
+		if err := store.Save(ctx, session); err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
+		}
+
+		// when
+		list, err := store.List(ctx)
+		if err != nil {
+			t.Fatalf("List() unexpected error: %v", err)
+		}
+		_ = list[0].MarkActive()
+
+		// then
+		again, err := store.List(ctx)
+		if err != nil {
+			t.Fatalf("List() second unexpected error: %v", err)
+		}
+		if again[0].Snapshot().Status != domain.StatusPending {
+			t.Fatalf("original mutated: Status = %v, want %v", again[0].Snapshot().Status, domain.StatusPending)
+		}
+	})
 }
 
 func newMongoRepositoryForTest() (*MongoRepository, *fakeCollectionOps) {

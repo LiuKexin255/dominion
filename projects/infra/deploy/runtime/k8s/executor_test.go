@@ -24,7 +24,7 @@ func TestK8sRuntimeApplyCreatesResources(t *testing.T) {
 	runtime := newTestK8sRuntime(t)
 	env := newExecutorTestEnvironment(t)
 
-	if err := runtime.Apply(ctx, env, nil); err != nil {
+	if err := runtime.ApplyResources(ctx, env); err != nil {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestK8sRuntimeApplyUsesCreateOrUpdate(t *testing.T) {
 		return false, nil, nil
 	})
 
-	if err := runtime.Apply(ctx, env, nil); err != nil {
+	if err := runtime.ApplyResources(ctx, env); err != nil {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
@@ -293,12 +293,12 @@ func TestK8sRuntimeApplyPrunesOrphanResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runtime := newTestK8sRuntime(t)
 			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
-			if err := runtime.Apply(ctx, seedEnv, nil); err != nil {
+			if err := runtime.ApplyResources(ctx, seedEnv); err != nil {
 				t.Fatalf("seed Apply() failed: %v", err)
 			}
 
 			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
-			if err := runtime.Apply(ctx, desiredEnv, nil); err != nil {
+			if err := runtime.ApplyResources(ctx, desiredEnv); err != nil {
 				t.Fatalf("Apply() failed: %v", err)
 			}
 
@@ -444,7 +444,7 @@ func TestK8sRuntimeApplyCreatesStatefulResources(t *testing.T) {
 		}},
 	})
 
-	if err := runtime.Apply(ctx, env, nil); err != nil {
+	if err := runtime.ApplyResources(ctx, env); err != nil {
 		t.Fatalf("Apply() failed: %v", err)
 	}
 
@@ -665,12 +665,12 @@ func TestK8sRuntimeApplyPrunesStatefulResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runtime := newTestK8sRuntime(t)
 			seedEnv := newExecutorTestEnvironmentWithState(t, tt.seedState)
-			if err := runtime.Apply(ctx, seedEnv, nil); err != nil {
+			if err := runtime.ApplyResources(ctx, seedEnv); err != nil {
 				t.Fatalf("seed Apply() failed: %v", err)
 			}
 
 			desiredEnv := newExecutorTestEnvironmentWithState(t, tt.desiredState)
-			if err := runtime.Apply(ctx, desiredEnv, nil); err != nil {
+			if err := runtime.ApplyResources(ctx, desiredEnv); err != nil {
 				t.Fatalf("Apply() failed: %v", err)
 			}
 
@@ -885,14 +885,10 @@ func newExecutorTestConfig() *K8sConfig {
 				Version:       "7.0",
 				Port:          27017,
 				AdminUsername: "admin",
-				Security: MongoSecurityConfig{
-					RunAsUser:  1000,
-					RunAsGroup: 3000,
-				},
 				Storage: MongoStorageConfig{
 					StorageClassName: "local-path",
 					Capacity:         "1Gi",
-					AccessModes:      []string{"ReadWriteOnce"},
+					AccessModes:      []string{"ReadWriteOncePod"},
 					VolumeMode:       "Filesystem",
 				},
 			},

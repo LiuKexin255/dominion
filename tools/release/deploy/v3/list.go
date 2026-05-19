@@ -8,7 +8,7 @@ import (
 	"dominion/tools/release/deploy/pkg/workspace"
 )
 
-func listCommand(opts *options) error {
+func listCommand(ctx context.Context, opts *options) error {
 	root := workspace.MustRoot()
 	cfg, err := loadConfig(root)
 	if err != nil {
@@ -26,7 +26,7 @@ func listCommand(opts *options) error {
 		return err
 	}
 
-	environments, err := opts.apiClient.ListEnvironments(context.Background(), scopeResourceName(scope))
+	environments, err := opts.apiClient.ListEnvironments(ctx, scopeResourceName(scope))
 	if err != nil {
 		return err
 	}

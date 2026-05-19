@@ -21,16 +21,18 @@ func (v *stubVerifier) Verify(_ string) (*token.Claims, error) {
 }
 
 type stubMediaCache struct {
-	initSeg     *domain.InitSegmentRef
-	initOK      bool
-	segments    []*domain.SegmentRef
-	snapshot    *domain.SnapshotRef
-	snapshotOK  bool
-	snapshotErr error
+	initSeg      *domain.InitSegmentRef
+	initOK       bool
+	activeInitID string
+	segments     []*domain.SegmentRef
+	snapshot     *domain.SnapshotRef
+	snapshotOK   bool
+	snapshotErr  error
 }
 
-func (c *stubMediaCache) StoreInitSegment(mimeType string, data []byte) error {
-	c.initSeg = &domain.InitSegmentRef{MimeType: mimeType, Data: data}
+func (c *stubMediaCache) StoreInitSegment(ref *domain.InitSegmentRef) error {
+	c.initSeg = ref
+	c.activeInitID = ref.InitID
 	return nil
 }
 
@@ -46,7 +48,11 @@ func (c *stubMediaCache) GetInitSegment() (*domain.InitSegmentRef, bool) {
 	return c.initSeg, c.initOK
 }
 
-func (c *stubMediaCache) GetSegmentsFromLastKeyframe() []*domain.SegmentRef {
+func (c *stubMediaCache) GetActiveInitID() string {
+	return c.activeInitID
+}
+
+func (c *stubMediaCache) GetSegmentsFromLastRandomAccess() []*domain.SegmentRef {
 	return c.segments
 }
 
@@ -61,8 +67,10 @@ func (c *stubMediaCache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 	return c.snapshot, c.snapshotErr
 }
 
-func newTestService(gatewayID string, verifier token.Verifier) *GatewayService {
-	return NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), gatewayID, verifier)
+func newTestService(t *testing.T, gatewayID string, verifier token.Verifier) *GatewayService {
+	t.Helper()
+	svc, _ := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), gatewayID, verifier)
+	return svc
 }
 
 func TestGatewayService_ConnectSession(t *testing.T) {
@@ -125,7 +133,7 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService(tt.gatewayID, &stubVerifier{claims: tt.claims, err: tt.verifyErr})
+			svc := newTestService(t, tt.gatewayID, &stubVerifier{claims: tt.claims, err: tt.verifyErr})
 
 			// when
 			rt, claims, err := svc.ConnectSession(context.Background(), tt.pathSessionID, "some-token")
@@ -158,7 +166,7 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_Agent(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -182,7 +190,7 @@ func TestGatewayService_ProcessHello_Agent(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -198,19 +206,23 @@ func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_Web(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
-	// given: media cache has init segment and one keyframe segment
+	// given: media cache has init segment and one random access segment
 	cache := &stubMediaCache{
 		initSeg: &domain.InitSegmentRef{
+			StreamID: "stream-1",
+			InitID:   "init-1",
 			MimeType: "video/mp4",
+			Codec:    "avc1",
 			Data:     []byte("init-data"),
 		},
-		initOK: true,
+		activeInitID: "init-1",
+		initOK:       true,
 		segments: []*domain.SegmentRef{
-			{SegmentID: "seg-1", Data: []byte("seg-data"), KeyFrame: true},
+			{StreamID: "stream-1", InitID: "init-1", Sequence: 1, Data: []byte("seg-data"), RandomAccess: true},
 		},
 	}
 	svc.mediaCaches["session-1"] = cache
@@ -249,8 +261,14 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 	if !ok {
 		t.Fatal("second message payload is not media_segment")
 	}
-	if segPayload.SegmentID != "seg-1" {
-		t.Fatalf("SegmentID = %q, want %q", segPayload.SegmentID, "seg-1")
+	if segPayload.Sequence != 1 {
+		t.Fatalf("Sequence = %d, want %d", segPayload.Sequence, 1)
+	}
+	if string(segPayload.Segment) != "seg-data" {
+		t.Fatalf("Segment = %q, want %q", string(segPayload.Segment), "seg-data")
+	}
+	if !segPayload.RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
 	}
 
 	// web connection registered
@@ -264,7 +282,7 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 }
 
 func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
 	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
 
@@ -281,15 +299,18 @@ func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
-	cache := new(stubMediaCache)
+	cache := &stubMediaCache{}
 	svc.mediaCaches["session-1"] = cache
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.MediaInitPayload{
+			StreamID: "stream-1",
+			InitID:   "init-1",
 			MimeType: "video/mp4",
+			Codec:    "avc1",
 			Segment:  []byte("init-bytes"),
 		},
 	}
@@ -311,26 +332,39 @@ func TestGatewayService_HandleAgentMessage_MediaInit(t *testing.T) {
 	if cache.initSeg == nil {
 		t.Fatal("init segment not stored in cache")
 	}
+	if cache.initSeg.InitID != "init-1" {
+		t.Fatalf("InitID = %q, want %q", cache.initSeg.InitID, "init-1")
+	}
 	if cache.initSeg.MimeType != "video/mp4" {
 		t.Fatalf("MimeType = %q, want %q", cache.initSeg.MimeType, "video/mp4")
 	}
 	if string(cache.initSeg.Data) != "init-bytes" {
 		t.Fatalf("Data = %q, want %q", string(cache.initSeg.Data), "init-bytes")
 	}
+	// sequence tracking reset
+	svc.mediaMu.Lock()
+	lastSeq := svc.lastSequences["session-1"]
+	svc.mediaMu.Unlock()
+	if lastSeq != 0 {
+		t.Fatalf("lastSequences = %d, want 0 after init", lastSeq)
+	}
 }
 
 func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
-	cache := new(stubMediaCache)
+	cache := &stubMediaCache{activeInitID: "init-1"}
 	svc.mediaCaches["session-1"] = cache
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.MediaSegmentPayload{
-			SegmentID: "seg-42",
-			Segment:   []byte("fMP4-chunk"),
-			KeyFrame:  true,
+			StreamID:     "stream-1",
+			InitID:       "init-1",
+			Sequence:     42,
+			Segment:      []byte("fMP4-chunk"),
+			RandomAccess: true,
+			DurationMS:   33,
 		},
 	}
 
@@ -351,24 +385,22 @@ func TestGatewayService_HandleAgentMessage_MediaSegment(t *testing.T) {
 	if len(cache.segments) != 1 {
 		t.Fatalf("len(cache.segments) = %d, want 1", len(cache.segments))
 	}
-	if cache.segments[0].SegmentID != "seg-42" {
-		t.Fatalf("SegmentID = %q, want %q", cache.segments[0].SegmentID, "seg-42")
+	if cache.segments[0].Sequence != 42 {
+		t.Fatalf("Sequence = %d, want %d", cache.segments[0].Sequence, 42)
 	}
-	if !cache.segments[0].KeyFrame {
-		t.Fatal("KeyFrame = false, want true")
+	if !cache.segments[0].RandomAccess {
+		t.Fatal("RandomAccess = false, want true")
 	}
 }
 
 func TestGatewayService_HandleAgentMessage_ControlAck(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	// given: inflight operation from web-1
 	req := domain.ControlRequestPayload{
-		RequestID: "op-ack",
-		Kind:      domain.OperationKindMouseClick,
-		X:         100,
-		Y:         200,
+		OperationID: "op-ack",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-1")
 
@@ -407,22 +439,20 @@ func TestGatewayService_HandleAgentMessage_ControlAck(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
-		RequestID: "op-result",
-		Kind:      domain.OperationKindMouseClick,
-		X:         50,
-		Y:         75,
+		OperationID: "op-result",
+		ActionKind:  domain.OperationKindMouseClick,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-2")
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-result",
-			Success:   true,
+			OperationID: "op-result",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -443,11 +473,11 @@ func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
 	if !ok {
 		t.Fatal("payload is not control_result")
 	}
-	if resultPayload.RequestID != "op-result" {
-		t.Fatalf("RequestID = %q, want %q", resultPayload.RequestID, "op-result")
+	if resultPayload.OperationID != "op-result" {
+		t.Fatalf("OperationID = %q, want %q", resultPayload.OperationID, "op-result")
 	}
-	if !resultPayload.Success {
-		t.Fatal("Success = false, want true")
+	if resultPayload.Status != domain.ControlResultStatusSucceeded {
+		t.Fatalf("Status = %d, want %d (Succeeded)", resultPayload.Status, domain.ControlResultStatusSucceeded)
 	}
 
 	// inflight cleared
@@ -457,15 +487,13 @@ func TestGatewayService_HandleAgentMessage_ControlResult(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	req := domain.ControlRequestPayload{
-		RequestID:     "op-flash",
-		Kind:          domain.OperationKindMouseClick,
+		OperationID:   "op-flash",
+		ActionKind:    domain.OperationKindMouseClick,
 		FlashSnapshot: true,
-		X:             0,
-		Y:             0,
 	}
 	svc.control.SubmitOperation("session-1", req, "web-3")
 
@@ -483,8 +511,8 @@ func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-flash",
-			Success:   true,
+			OperationID: "op-flash",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -513,7 +541,7 @@ func TestGatewayService_HandleAgentMessage_ControlResultFlashSnapshot(t *testing
 }
 
 func TestGatewayService_HandleAgentMessage_ControlAckNoInflight(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -533,14 +561,14 @@ func TestGatewayService_HandleAgentMessage_ControlAckNoInflight(t *testing.T) {
 }
 
 func TestGatewayService_HandleAgentMessage_ControlResultNoInflight(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlResultPayload{
-			RequestID: "op-missing",
-			Success:   true,
+			OperationID: "op-missing",
+			Status:      domain.ControlResultStatusSucceeded,
 		},
 	}
 
@@ -554,7 +582,7 @@ func TestGatewayService_HandleAgentMessage_ControlResultNoInflight(t *testing.T)
 }
 
 func TestGatewayService_HandleAgentMessage_UnknownPayload(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -575,16 +603,14 @@ func TestGatewayService_HandleAgentMessage_UnknownPayload(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlRequestPayload{
-			RequestID: "op-req",
-			Kind:      domain.OperationKindMouseClick,
-			X:         10,
-			Y:         20,
+			OperationID: "op-req",
+			ActionKind:  domain.OperationKindMouseClick,
 		},
 	}
 
@@ -598,16 +624,15 @@ func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
 	}
-	// forwarded to agent (TargetConnID="" = agent is single)
-	if msgs[0].TargetConnID != "" {
-		t.Fatalf("TargetConnID = %q, want empty (forward to agent)", msgs[0].TargetConnID)
+	if msgs[0].TargetKind != domain.RouteTargetAgent {
+		t.Fatalf("TargetKind = %d, want %d (Agent)", msgs[0].TargetKind, domain.RouteTargetAgent)
 	}
 	reqPayload, ok := msgs[0].Message.Payload.(domain.ControlRequestPayload)
 	if !ok {
 		t.Fatal("payload is not control_request")
 	}
-	if reqPayload.RequestID != "op-req" {
-		t.Fatalf("RequestID = %q, want %q", reqPayload.RequestID, "op-req")
+	if reqPayload.OperationID != "op-req" {
+		t.Fatalf("OperationID = %q, want %q", reqPayload.OperationID, "op-req")
 	}
 
 	// inflight registered with correct requester
@@ -624,14 +649,14 @@ func TestGatewayService_HandleWebMessage_ControlRequest(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_ControlRequestInvalid(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
 		SessionID: "session-1",
 		Payload: domain.ControlRequestPayload{
-			RequestID: "op-bad",
-			Kind:      domain.OperationKind(""),
+			OperationID: "op-bad",
+			ActionKind:  domain.OperationKind(""),
 		},
 	}
 
@@ -645,7 +670,7 @@ func TestGatewayService_HandleWebMessage_ControlRequestInvalid(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_Ping(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -678,7 +703,7 @@ func TestGatewayService_HandleWebMessage_Ping(t *testing.T) {
 }
 
 func TestGatewayService_HandleWebMessage_UnknownPayload(t *testing.T) {
-	svc := newTestService("gw-0", &stubVerifier{})
+	svc := newTestService(t, "gw-0", &stubVerifier{})
 	svc.sessions.GetOrCreateRuntime("session-1")
 
 	msg := &domain.Message{
@@ -769,7 +794,7 @@ func TestGatewayService_GetSnapshot(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService("gw-0", &stubVerifier{})
+			svc := newTestService(t, "gw-0", &stubVerifier{})
 			tt.setupCache(svc)
 
 			// when
@@ -816,7 +841,7 @@ func TestGatewayService_GetRuntime(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := newTestService("gw-0", &stubVerifier{})
+			svc := newTestService(t, "gw-0", &stubVerifier{})
 			svc.sessions.GetOrCreateRuntime("session-1")
 
 			// when
@@ -846,25 +871,25 @@ func TestRoutedMessage(t *testing.T) {
 		name       string
 		routed     domain.RoutedMessage
 		wantTarget string
-		wantNil    bool
+		wantEmpty  bool
 	}{
 		{
 			name:       "broadcast has empty target",
-			routed:     domain.RoutedMessage{TargetConnID: "", Message: &domain.Message{SessionID: "s1"}},
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetWebBroadcast, Message: domain.Message{SessionID: "s1"}},
 			wantTarget: "",
-			wantNil:    false,
+			wantEmpty:  false,
 		},
 		{
 			name:       "unicast has specific target",
-			routed:     domain.RoutedMessage{TargetConnID: "web-1", Message: &domain.Message{SessionID: "s1"}},
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetConn, TargetConnID: "web-1", Message: domain.Message{SessionID: "s1"}},
 			wantTarget: "web-1",
-			wantNil:    false,
+			wantEmpty:  false,
 		},
 		{
-			name:       "nil message is allowed",
-			routed:     domain.RoutedMessage{TargetConnID: ""},
+			name:       "agent route",
+			routed:     domain.RoutedMessage{TargetKind: domain.RouteTargetAgent},
 			wantTarget: "",
-			wantNil:    true,
+			wantEmpty:  true,
 		},
 	}
 
@@ -872,14 +897,14 @@ func TestRoutedMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
 			gotTarget := tt.routed.TargetConnID
-			gotNil := tt.routed.Message == nil
+			gotEmpty := tt.routed.Message.SessionID == ""
 
 			// then
 			if gotTarget != tt.wantTarget {
 				t.Fatalf("TargetConnID = %q, want %q", gotTarget, tt.wantTarget)
 			}
-			if gotNil != tt.wantNil {
-				t.Fatalf("Message == nil = %v, want %v", gotNil, tt.wantNil)
+			if gotEmpty != tt.wantEmpty {
+				t.Fatalf("Message.SessionID empty = %v, want %v", gotEmpty, tt.wantEmpty)
 			}
 		})
 	}

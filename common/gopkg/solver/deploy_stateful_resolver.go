@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 )
 
 // DeployStatefulResolver resolves stateful service instances via the deploy service API.
@@ -51,6 +54,7 @@ func (r *DeployStatefulResolver) Resolve(ctx context.Context, target *Target) ([
 
 	instances := info.StatefulInstances
 	if len(instances) == 0 {
+		logs.Warn(ctx, "stateful instance not found", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service))
 		return nil, nil
 	}
 
@@ -65,6 +69,10 @@ func (r *DeployStatefulResolver) Resolve(ctx context.Context, target *Target) ([
 			Endpoints: filteredEndpoints,
 			Hostname:  instance.Hostname,
 		})
+	}
+
+	if len(filtered) == 0 {
+		logs.Warn(ctx, "stateful instance has no ready endpoints", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service))
 	}
 
 	return filtered, nil

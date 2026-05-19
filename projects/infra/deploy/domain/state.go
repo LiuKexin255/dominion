@@ -45,6 +45,8 @@ const (
 	StateFailed EnvironmentState = 4
 	// StateDeleting indicates that the environment is being deleted.
 	StateDeleting EnvironmentState = 5
+	// StateWaitingRollout indicates that resources have been applied and the rollout is being awaited.
+	StateWaitingRollout EnvironmentState = 6
 )
 
 // String returns the symbolic name of the observed environment state.
@@ -62,6 +64,8 @@ func (s EnvironmentState) String() string {
 		return "StateFailed"
 	case StateDeleting:
 		return "StateDeleting"
+	case StateWaitingRollout:
+		return "StateWaitingRollout"
 	default:
 		return "EnvironmentState(" + strconv.Itoa(int(s)) + ")"
 	}
@@ -72,7 +76,9 @@ func CanTransition(from, to EnvironmentState) bool {
 	switch {
 	case from == StatePending && to == StateReconciling:
 		return true
-	case from == StateReconciling && (to == StateReconciling || to == StateReady || to == StateFailed):
+	case from == StateReconciling && (to == StateReconciling || to == StateReady || to == StateFailed || to == StateWaitingRollout):
+		return true
+	case from == StateWaitingRollout && (to == StateReady || to == StateFailed):
 		return true
 	case (from == StateReady || from == StateFailed) && to == StateReconciling:
 		return true
@@ -85,7 +91,7 @@ func CanTransition(from, to EnvironmentState) bool {
 
 func isActiveState(state EnvironmentState) bool {
 	switch state {
-	case StatePending, StateReconciling, StateReady, StateFailed:
+	case StatePending, StateReconciling, StateReady, StateFailed, StateWaitingRollout:
 		return true
 	default:
 		return false

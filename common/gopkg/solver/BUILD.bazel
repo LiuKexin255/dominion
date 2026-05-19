@@ -15,6 +15,8 @@ go_library(
     importpath = "dominion/common/gopkg/solver",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//projects/infra/deploy",
         "@io_k8s_api//discovery/v1:discovery",
         "@io_k8s_apimachinery//pkg/api/errors",
@@ -38,6 +40,7 @@ go_unittest(
     ],
     embed = [":solver"],
     deps = [
+        "//common/gopkg/logs",
         "//projects/infra/deploy",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_api//discovery/v1:discovery",
@@ -47,5 +50,6 @@ go_unittest(
         "@io_k8s_client_go//kubernetes",
         "@io_k8s_client_go//kubernetes/fake",
         "@io_k8s_client_go//rest",
+        "@io_k8s_client_go//testing",
     ],
 )

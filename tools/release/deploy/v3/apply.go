@@ -16,7 +16,7 @@ import (
 	"dominion/tools/release/deploy/v2/compiler"
 )
 
-const applyPollInterval = 100 * time.Millisecond
+const applyPollInterval = 5 * time.Second
 
 var (
 	newV3ImageRunner = func() (imagepush.V3Runner, error) {
@@ -25,7 +25,7 @@ var (
 	pollUntilReady = client.PollUntilReady
 )
 
-func applyCommand(opts *options) error {
+func applyCommand(ctx context.Context, opts *options) error {
 	deployConfig, err := config.ParseV3DeployConfig(workspace.ResolvePath(opts.target))
 	if err != nil {
 		return err
@@ -53,7 +53,7 @@ func applyCommand(opts *options) error {
 		return err
 	}
 
-	imageResults, err := resolveV3Images(context.Background(), artifactTargets, deployConfig, serviceConfigs)
+	imageResults, err := resolveV3Images(ctx, artifactTargets, deployConfig, serviceConfigs)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func applyCommand(opts *options) error {
 	parentName := scopeResourceName(scope)
 	environmentName := environmentResourceName(scope, envName)
 
-	if _, err := opts.apiClient.GetEnvironment(context.Background(), environmentName); err != nil {
+	if _, err := opts.apiClient.GetEnvironment(ctx, environmentName); err != nil {
 		if !errors.Is(err, client.ErrNotFound) {
 			return err
 		}
@@ -84,7 +84,7 @@ func applyCommand(opts *options) error {
 			DesiredState: desiredState,
 			Type:         environmentTypeFromEnum(deployConfig.Type),
 		}
-		if _, err := opts.apiClient.CreateEnvironment(context.Background(), parentName, envName, createRequest); err != nil {
+		if _, err := opts.apiClient.CreateEnvironment(ctx, parentName, envName, createRequest); err != nil {
 			return err
 		}
 	} else {
@@ -92,14 +92,14 @@ func applyCommand(opts *options) error {
 			Name:         environmentName,
 			DesiredState: desiredState,
 		}
-		if _, err := opts.apiClient.UpdateEnvironment(context.Background(), updateRequest); err != nil {
+		if _, err := opts.apiClient.UpdateEnvironment(ctx, updateRequest); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintf(stdout, "环境 %s 已提交，等待启动...\n", fullEnvName)
 
-	readyEnv, err := pollUntilReady(context.Background(), opts.apiClient, environmentName, applyPollInterval, opts.timeout)
+	readyEnv, err := pollUntilReady(ctx, opts.apiClient, environmentName, applyPollInterval, opts.timeout)
 	if err != nil {
 		return err
 	}

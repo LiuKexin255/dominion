@@ -1,5 +1,4 @@
 load("@gazelle//:def.bzl", "gazelle")
-
 load("@npm//:defs.bzl", "npm_link_all_packages")
 
 # gazelle:prefix dominion
@@ -49,6 +48,5 @@ alias(
     name = "pnpm",
     actual = "//tools/dev/js:pnpm",
 )
-
 
 exports_files(["pnpm-workspace.yaml"])

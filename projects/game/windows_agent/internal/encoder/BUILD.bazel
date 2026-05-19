@@ -5,6 +5,8 @@ go_library(
     name = "encoder",
     srcs = [
         "args.go",
+        "cmd_other.go",
+        "cmd_windows.go",
         "config.go",
         "doc.go",
         "encoder.go",
@@ -12,6 +14,7 @@ go_library(
     ],
     importpath = "dominion/projects/game/windows_agent/internal/encoder",
     visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = ["//projects/game/windows_agent/internal/log"],
 )
 
 go_unittest(

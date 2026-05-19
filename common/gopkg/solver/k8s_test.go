@@ -1,12 +1,16 @@
 package solver
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+
+	"dominion/common/gopkg/logs"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -16,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 var (
@@ -363,4 +368,168 @@ func boolValuePtr(value bool) *bool {
 	}
 
 	return &sharedFalse
+}
+
+func TestK8sResolver_Resolve_WarnOnServiceListError(t *testing.T) {
+	originalLookupEnv := lookupEnv
+	t.Cleanup(func() { lookupEnv = originalLookupEnv })
+	lookupEnv = func(key string) (string, bool) {
+		switch key {
+		case serviceAppEnvKey:
+			return "billing", true
+		case dominionEnvironmentEnvKey:
+			return "dev", true
+		case podNamespaceEnvKey:
+			return "default", true
+		default:
+			return "", false
+		}
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := logs.WithLogger(context.Background(), logger)
+
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependReactor("list", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("k8s api unavailable")
+	})
+
+	client := &K8sResolver{clientset: clientset}
+	target := &Target{App: "billing", Service: "api", PortSelector: NumericPort(50051)}
+
+	// when
+	_, err := client.Resolve(ctx, target)
+
+	// then
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	output := buf.String()
+	if !strings.Contains(output, "k8s service list failed") {
+		t.Fatalf("log output = %q, want warning about service list failure", output)
+	}
+	if !strings.Contains(output, "namespace=default") {
+		t.Fatalf("log output = %q, want namespace=default", output)
+	}
+	if !strings.Contains(output, "error=") {
+		t.Fatalf("log output = %q, want error field", output)
+	}
+}
+
+func TestK8sResolver_Resolve_WarnOnEndpointSliceListError(t *testing.T) {
+	originalLookupEnv := lookupEnv
+	t.Cleanup(func() { lookupEnv = originalLookupEnv })
+	lookupEnv = func(key string) (string, bool) {
+		switch key {
+		case serviceAppEnvKey:
+			return "billing", true
+		case dominionEnvironmentEnvKey:
+			return "dev", true
+		case podNamespaceEnvKey:
+			return "default", true
+		default:
+			return "", false
+		}
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := logs.WithLogger(context.Background(), logger)
+
+	clientset := fake.NewSimpleClientset()
+	// Add the service so it resolves
+	if err := clientset.Tracker().Add(serviceObject("service-a", map[string]string{
+		ServiceAppLabelKey:                 "billing",
+		ServiceComponentLabelKey:           "api",
+		ServiceDominionEnvironmentLabelKey: "dev",
+	})); err != nil {
+		t.Fatalf("Tracker().Add() error = %v", err)
+	}
+	// EndpointSlice list returns error
+	clientset.PrependReactor("list", "endpointslices", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("endpointslice api unavailable")
+	})
+
+	client := &K8sResolver{clientset: clientset}
+	target := &Target{App: "billing", Service: "api", PortSelector: NumericPort(50051)}
+
+	// when
+	_, err := client.Resolve(ctx, target)
+
+	// then
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	output := buf.String()
+	if !strings.Contains(output, "k8s EndpointSlice list failed") {
+		t.Fatalf("log output = %q, want warning about EndpointSlice list failure", output)
+	}
+	if !strings.Contains(output, "namespace=default") {
+		t.Fatalf("log output = %q, want namespace=default", output)
+	}
+	if !strings.Contains(output, "error=") {
+		t.Fatalf("log output = %q, want error field", output)
+	}
+}
+
+func TestK8sResolver_Resolve_WarnOnNoReadyEndpoints(t *testing.T) {
+	originalLookupEnv := lookupEnv
+	t.Cleanup(func() { lookupEnv = originalLookupEnv })
+	lookupEnv = func(key string) (string, bool) {
+		switch key {
+		case serviceAppEnvKey:
+			return "billing", true
+		case dominionEnvironmentEnvKey:
+			return "dev", true
+		case podNamespaceEnvKey:
+			return "default", true
+		default:
+			return "", false
+		}
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := logs.WithLogger(context.Background(), logger)
+
+	clientset := fake.NewSimpleClientset()
+	// Add the service so it resolves
+	if err := clientset.Tracker().Add(serviceObject("service-a", map[string]string{
+		ServiceAppLabelKey:                 "billing",
+		ServiceComponentLabelKey:           "api",
+		ServiceDominionEnvironmentLabelKey: "dev",
+	})); err != nil {
+		t.Fatalf("Tracker().Add() error = %v", err)
+	}
+	// Add EndpointSlice with no ready endpoints
+	if err := clientset.Tracker().Add(endpointSliceObject("service-a", []int32{50051}, []discoveryv1.Endpoint{
+		{
+			Addresses:  []string{"10.0.0.1"},
+			Conditions: discoveryv1.EndpointConditions{Ready: boolValuePtr(false)},
+		},
+	})); err != nil {
+		t.Fatalf("Tracker().Add() error = %v", err)
+	}
+
+	client := &K8sResolver{clientset: clientset}
+	target := &Target{App: "billing", Service: "api", PortSelector: NumericPort(50051)}
+
+	// when
+	got, err := client.Resolve(ctx, target)
+
+	// then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil result, got %v", got)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "k8s endpoint slice returned no ready endpoints") {
+		t.Fatalf("log output = %q, want warning about no ready endpoints", output)
+	}
+	if !strings.Contains(output, "namespace=default") {
+		t.Fatalf("log output = %q, want namespace=default", output)
+	}
 }

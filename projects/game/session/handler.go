@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/service"
 
@@ -17,7 +19,14 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const sessionResourcePrefix = "sessions/"
+const (
+	sessionResourcePrefix = "sessions/"
+
+	logFieldSessionID   = "session_id"
+	logFieldSessionType = "session_type"
+	logFieldCount       = "count"
+	logFieldError       = "error"
+)
 
 // parseSessionName validates that name has format "sessions/{id}" and returns the ID.
 func parseSessionName(name string) (string, error) {
@@ -49,15 +58,18 @@ func NewHandler(svc *service.SessionService) *Handler {
 
 // GetSession returns the latest persisted Session resource.
 func (h *Handler) GetSession(ctx context.Context, req *GetSessionRequest) (*Session, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
 	session, err := h.svc.GetSession(ctx, req.GetName())
 	if err != nil {
+		logs.Error(ctx, "get session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "get session succeeded", event.String(logFieldSessionID, sessionID))
 	return toProtoSession(session), nil
 }
 
@@ -68,45 +80,68 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 		return nil, err
 	}
 
-	session, connectURL, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
+	session, err := h.svc.CreateSession(ctx, sessionType, req.GetSessionId())
 	if err != nil {
+		logs.Error(ctx, "create session failed", event.String(logFieldSessionType, req.GetType().String()), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "create session succeeded", event.String(logFieldSessionID, session.Snapshot().ID), event.String(logFieldSessionType, req.GetType().String()))
 	return &CreateSessionResponse{
-		Session:         toProtoSession(session),
-		AgentConnectUrl: connectURL,
+		Session: toProtoSession(session),
 	}, nil
 }
 
 // DeleteSession ends a Session and removes it from the control plane.
 func (h *Handler) DeleteSession(ctx context.Context, req *DeleteSessionRequest) (*emptypb.Empty, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
 	if err := h.svc.DeleteSession(ctx, req.GetName()); err != nil {
+		logs.Error(ctx, "delete session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "delete session succeeded", event.String(logFieldSessionID, sessionID))
 	return new(emptypb.Empty), nil
 }
 
 // ReconnectSession reallocates a gateway for an existing Session.
 func (h *Handler) ReconnectSession(ctx context.Context, req *ReconnectSessionRequest) (*ReconnectSessionResponse, error) {
-	if _, err := parseSessionName(req.GetName()); err != nil {
+	sessionID, err := parseSessionName(req.GetName())
+	if err != nil {
 		return nil, err
 	}
 
-	session, connectURL, err := h.svc.ReconnectSession(ctx, req.GetName())
+	session, err := h.svc.ReconnectSession(ctx, req.GetName())
 	if err != nil {
+		logs.Error(ctx, "reconnect session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		return nil, toStatusError(err)
 	}
 
+	logs.Info(ctx, "reconnect session succeeded", event.String(logFieldSessionID, sessionID))
 	return &ReconnectSessionResponse{
-		Session:         toProtoSession(session),
-		AgentConnectUrl: connectURL,
+		Session: toProtoSession(session),
 	}, nil
+}
+
+// ListSessions returns all non-ended sessions.
+func (h *Handler) ListSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
+	sessions, err := h.svc.ListSessions(ctx)
+	if err != nil {
+		logs.Error(ctx, "list sessions failed", event.Err(err))
+		return nil, toStatusError(err)
+	}
+
+	logs.Info(ctx, "list sessions succeeded", event.Int(logFieldCount, len(sessions)))
+	protos := make([]*Session, 0, len(sessions))
+	for _, s := range sessions {
+		protos = append(protos, toProtoSession(s))
+	}
+
+	return &ListSessionsResponse{Sessions: protos}, nil
 }
 
 // toProtoSession converts a domain Session to a proto Session.
@@ -126,6 +161,7 @@ func toProtoSession(session *domain.Session) *Session {
 		EndTime:             toProtoTimestampPtr(snapshot.EndedAt),
 		ReconnectGeneration: snapshot.ReconnectGeneration,
 		LastError:           snapshot.LastError,
+		AgentConnectUrl:     snapshot.AgentConnectURL,
 	}
 }
 

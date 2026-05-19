@@ -7,64 +7,73 @@ import (
 	"sync"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/pkg/token"
 )
 
-// AsyncMessageSink receives routed messages outside the synchronous handler
-// flow. GatewayService calls it when control operations complete asynchronously
-// (timeout or agent disconnect).
-type AsyncMessageSink interface {
-	RouteRoutedMessage(ctx context.Context, msg *domain.RoutedMessage)
-}
-
 var (
-	// errGatewayMismatch indicates the token's gateway ID does not match this
-	// gateway instance.
 	errGatewayMismatch = errors.New("gateway ID mismatch")
-	// errSessionMismatch indicates the token's session ID does not match the
-	// path parameter.
 	errSessionMismatch = errors.New("session ID mismatch")
 )
 
-// GatewayService orchestrates the game gateway business logic, coordinating
-// session management, media caching, control operations, and token verification
-// for a single gateway instance.
+const (
+	logFieldRequesterConnID = "requester_conn_id"
+)
+
 type GatewayService struct {
 	sessions      *sessionmanager.Manager
 	mediaCaches   map[string]domain.MediaCache
+	lastSequences map[string]uint64
 	mediaMu       sync.Mutex
 	control       *ControlExecutor
-	asyncSink     AsyncMessageSink
+	asyncCh       chan *domain.RoutedMessage
 	gatewayID     string
 	tokenVerifier token.Verifier
 }
 
-// NewGatewayService creates a GatewayService with the given dependencies.
 func NewGatewayService(
 	sessions *sessionmanager.Manager,
 	control *ControlExecutor,
 	gatewayID string,
 	verifier token.Verifier,
-) *GatewayService {
+) (*GatewayService, bootstrap.WorkerBuilder) {
+	asyncCh := make(chan *domain.RoutedMessage, 64)
 	svc := &GatewayService{
 		sessions:      sessions,
 		mediaCaches:   map[string]domain.MediaCache{},
+		lastSequences: map[string]uint64{},
 		control:       control,
+		asyncCh:       asyncCh,
 		gatewayID:     gatewayID,
 		tokenVerifier: verifier,
 	}
-	control.SetOnCompletion(svc.handleAsyncCompletion)
-	return svc
+	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewCompletionWorker(control.Completions(), func(ctx context.Context, comp domain.ControlCompletion) {
+			svc.HandleCompletion(ctx, comp)
+		}), nil
+	})
+	return svc, builder
 }
 
-func (s *GatewayService) SetAsyncSink(sink AsyncMessageSink) {
-	s.asyncSink = sink
+func (s *GatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
+	return s.asyncCh
 }
 
-func (s *GatewayService) handleAsyncCompletion(comp domain.ControlCompletion) {
+// HandleCompletion processes a control completion: refreshes the snapshot cache
+// if requested, constructs the routed message, and delivers it to the async
+// output channel. Returns true if the message was sent, false if the context
+// was cancelled.
+func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.ControlCompletion) bool {
+	logs.Info(ctx, "gateway: handling control completion",
+		event.String(logFieldSessionID, comp.SessionID),
+		event.String(logFieldRequesterConnID, comp.RequesterConnID),
+	)
+
 	if comp.FlashSnapshot {
 		cache := s.getOrCreateMediaCache(comp.SessionID)
 		if snap, err := cache.RefreshSnapshot(); err == nil && snap != nil {
@@ -75,14 +84,19 @@ func (s *GatewayService) handleAsyncCompletion(comp domain.ControlCompletion) {
 		}
 	}
 
-	if s.asyncSink != nil {
-		s.asyncSink.RouteRoutedMessage(context.Background(), &domain.RoutedMessage{
-			TargetConnID: comp.RequesterConnID,
-			Message: &domain.Message{
-				SessionID: comp.SessionID,
-				Payload:   comp.Result,
-			},
-		})
+	msg := &domain.RoutedMessage{
+		Message: domain.Message{
+			SessionID: comp.SessionID,
+			Payload:   comp.Result,
+		},
+		TargetKind:   domain.RouteTargetConn,
+		TargetConnID: comp.RequesterConnID,
+	}
+	select {
+	case s.asyncCh <- msg:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -90,7 +104,7 @@ func (s *GatewayService) handleAsyncCompletion(comp domain.ControlCompletion) {
 // and embedded claims. It verifies the token signature and expiry, confirms the
 // gateway ID matches this instance, and ensures the session ID in the token
 // matches the path parameter.
-func (s *GatewayService) ConnectSession(_ context.Context, pathSessionID, tokenStr string) (*domain.SessionRuntime, *token.Claims, error) {
+func (s *GatewayService) ConnectSession(ctx context.Context, pathSessionID, tokenStr string) (*domain.SessionRuntime, *token.Claims, error) {
 	claims, err := s.tokenVerifier.Verify(tokenStr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("verify token: %w", err)
@@ -105,13 +119,18 @@ func (s *GatewayService) ConnectSession(_ context.Context, pathSessionID, tokenS
 	}
 
 	rt := s.sessions.GetOrCreateRuntime(pathSessionID)
+
+	logs.Info(ctx, "gateway: session connected",
+		event.String(logFieldSessionID, pathSessionID),
+	)
+
 	return rt, claims, nil
 }
 
 // ProcessHello handles the hello message after WebSocket upgrade. For agent
 // connections, it registers the agent on the session runtime. For web
 // connections, it adds the web connection and returns catch-up messages
-// (cached media_init and segments from the last key frame).
+// (cached media_init and segments from the last random-access segment).
 func (s *GatewayService) ProcessHello(rt *domain.SessionRuntime, _ *token.Claims, role domain.ClientRole, connID string) ([]*domain.RoutedMessage, error) {
 	switch role {
 	case domain.ClientRoleWindowsAgent:
@@ -132,34 +151,41 @@ func (s *GatewayService) ProcessHello(rt *domain.SessionRuntime, _ *token.Claims
 }
 
 // buildCatchUpMessages returns cached media_init and segments from the last
-// key frame for a late-joining web client. All messages use TargetConnID=""
-// (broadcast to all web connections).
+// random access point for a late-joining web client. All messages use
+// TargetConnID="" (broadcast to all web connections).
 func (s *GatewayService) buildCatchUpMessages(sessionID string) []*domain.RoutedMessage {
 	cache := s.getOrCreateMediaCache(sessionID)
 	var msgs []*domain.RoutedMessage
 
 	if init, ok := cache.GetInitSegment(); ok {
 		msgs = append(msgs, &domain.RoutedMessage{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaInitPayload{
+					StreamID: init.StreamID,
+					InitID:   init.InitID,
 					MimeType: init.MimeType,
+					Codec:    init.Codec,
 					Segment:  init.Data,
 				},
 			},
 		})
 	}
 
-	for _, seg := range cache.GetSegmentsFromLastKeyframe() {
+	for _, seg := range cache.GetSegmentsFromLastRandomAccess() {
 		msgs = append(msgs, &domain.RoutedMessage{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.MediaSegmentPayload{
-					SegmentID: seg.SegmentID,
-					Segment:   seg.Data,
-					KeyFrame:  seg.KeyFrame,
+					StreamID:      seg.StreamID,
+					InitID:        seg.InitID,
+					Sequence:      seg.Sequence,
+					Segment:       seg.Data,
+					RandomAccess:  seg.RandomAccess,
+					DurationMS:    seg.DurationMS,
+					Discontinuity: seg.Discontinuity,
 				},
 			},
 		})
@@ -190,14 +216,23 @@ func (s *GatewayService) HandleAgentMessage(_ context.Context, sessionID string,
 // it to all web connections.
 func (s *GatewayService) handleMediaInit(sessionID string, init domain.MediaInitPayload) ([]*domain.RoutedMessage, error) {
 	cache := s.getOrCreateMediaCache(sessionID)
-	if err := cache.StoreInitSegment(init.MimeType, init.Segment); err != nil {
+	ref := &domain.InitSegmentRef{
+		StreamID: init.StreamID,
+		InitID:   init.InitID,
+		MimeType: init.MimeType,
+		Codec:    init.Codec,
+		Data:     init.Segment,
+	}
+	if err := cache.StoreInitSegment(ref); err != nil {
 		return nil, err
 	}
-
+	s.mediaMu.Lock()
+	s.lastSequences[sessionID] = 0
+	s.mediaMu.Unlock()
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   init,
 			},
@@ -209,19 +244,38 @@ func (s *GatewayService) handleMediaInit(sessionID string, init domain.MediaInit
 // to all web connections.
 func (s *GatewayService) handleMediaSegment(sessionID string, seg domain.MediaSegmentPayload) ([]*domain.RoutedMessage, error) {
 	cache := s.getOrCreateMediaCache(sessionID)
-	if err := cache.AddSegment(&domain.SegmentRef{
-		SegmentID: seg.SegmentID,
-		Data:      seg.Segment,
-		KeyFrame:  seg.KeyFrame,
-		MediaTime: time.Now(),
-	}); err != nil {
+	activeInitID := cache.GetActiveInitID()
+	if activeInitID == "" {
+		return nil, fmt.Errorf("%w: no init segment received", domain.ErrUnknownInitID)
+	}
+	if seg.InitID != activeInitID {
+		return nil, fmt.Errorf("%w: segment init_id %s != active %s", domain.ErrUnknownInitID, seg.InitID, activeInitID)
+	}
+	s.mediaMu.Lock()
+	lastSeq := s.lastSequences[sessionID]
+	if seg.Sequence <= lastSeq {
+		s.mediaMu.Unlock()
+		return nil, fmt.Errorf("%w: got %d, last was %d", domain.ErrSequenceNotIncreasing, seg.Sequence, lastSeq)
+	}
+	s.lastSequences[sessionID] = seg.Sequence
+	s.mediaMu.Unlock()
+	ref := &domain.SegmentRef{
+		StreamID:      seg.StreamID,
+		InitID:        seg.InitID,
+		Sequence:      seg.Sequence,
+		Data:          seg.Segment,
+		RandomAccess:  seg.RandomAccess,
+		DurationMS:    seg.DurationMS,
+		Discontinuity: seg.Discontinuity,
+		MediaTime:     time.Now(),
+	}
+	if err := cache.AddSegment(ref); err != nil {
 		return nil, err
 	}
-
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetWebBroadcast,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   seg,
 			},
@@ -239,8 +293,9 @@ func (s *GatewayService) handleControlAck(sessionID string, ack domain.ControlAc
 
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetWebBroadcast,
 			TargetConnID: requesterConnID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   ack,
 			},
@@ -269,8 +324,9 @@ func (s *GatewayService) handleControlResult(sessionID string, result domain.Con
 
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetWebBroadcast,
 			TargetConnID: requesterConnID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   result,
 			},
@@ -287,6 +343,16 @@ func (s *GatewayService) HandleWebMessage(_ context.Context, sessionID string, c
 		return s.handleControlRequest(sessionID, connID, p)
 	case domain.PingPayload:
 		return s.handlePing(sessionID, connID, p)
+	case domain.ErrorPayload:
+		// Validation/protocol errors (e.g., old kind/mouse format rejected).
+		return []*domain.RoutedMessage{{
+			TargetKind:   domain.RouteTargetConn,
+			TargetConnID: connID,
+			Message: domain.Message{
+				SessionID: sessionID,
+				Payload:   p,
+			},
+		}}, nil
 	default:
 		return nil, nil
 	}
@@ -302,8 +368,8 @@ func (s *GatewayService) handleControlRequest(sessionID, connID string, req doma
 
 	return []*domain.RoutedMessage{
 		{
-			TargetConnID: "",
-			Message: &domain.Message{
+			TargetKind: domain.RouteTargetAgent,
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload:   req,
 			},
@@ -315,8 +381,9 @@ func (s *GatewayService) handleControlRequest(sessionID, connID string, req doma
 func (s *GatewayService) handlePing(sessionID, connID string, ping domain.PingPayload) ([]*domain.RoutedMessage, error) {
 	return []*domain.RoutedMessage{
 		{
+			TargetKind:   domain.RouteTargetConn,
 			TargetConnID: connID,
-			Message: &domain.Message{
+			Message: domain.Message{
 				SessionID: sessionID,
 				Payload: domain.PongPayload{
 					Nonce: ping.Nonce,
@@ -327,7 +394,7 @@ func (s *GatewayService) handlePing(sessionID, connID string, ping domain.PingPa
 }
 
 // GetSnapshot returns the latest snapshot for a session. If the cached snapshot
-// is stale, it refreshes from the latest key frame segment.
+// is stale, it refreshes from the latest random-access segment.
 func (s *GatewayService) GetSnapshot(_ context.Context, sessionID string) (*domain.SnapshotRef, error) {
 	rt := s.sessions.GetRuntime(sessionID)
 	if rt == nil {

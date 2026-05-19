@@ -130,38 +130,45 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
+
+	// TLS 注入分为两部分：
+	// - 服务端证书（Secret 投影 + TLS_CERT_FILE/TLS_KEY_FILE）仅当 TLSEnabled 时注入。
+	// - 客户端 CA 证书和域名（ConfigMap 投影 + TLS_CA_FILE/TLS_SERVER_NAME）始终注入。
+	var projectedSources []corev1.VolumeProjection
 	if workload.TLSEnabled {
-		volumes = []corev1.Volume{{
-			Name: tlsVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					Sources: []corev1.VolumeProjection{
-						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
-						{ConfigMap: &corev1.ConfigMapProjection{
-							LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
-							Items: []corev1.KeyToPath{{
-								Key:  cfg.TLS.CAConfigMap.Key,
-								Path: tlsCAFileName,
-							}},
-						}},
-					},
-				},
-			},
-		}}
-		volumeMounts = []corev1.VolumeMount{{
-			Name:      tlsVolumeName,
-			MountPath: tlsMountPath,
-			ReadOnly:  true,
-		}}
+		projectedSources = append(projectedSources,
+			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
+		)
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
 			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
-			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 		)
 	}
+	projectedSources = append(projectedSources,
+		corev1.VolumeProjection{ConfigMap: &corev1.ConfigMapProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
+			Items: []corev1.KeyToPath{{
+				Key:  cfg.TLS.CAConfigMap.Key,
+				Path: tlsCAFileName,
+			}},
+		}},
+	)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+	)
+	volumes := []corev1.Volume{{
+		Name: tlsVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: projectedSources},
+		},
+	}}
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      tlsVolumeName,
+		MountPath: tlsMountPath,
+		ReadOnly:  true,
+	}}
+
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
@@ -250,38 +257,43 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 		corev1.EnvVar{Name: reservedEnvNameDominionEnvironment, Value: workload.EnvironmentName},
 		corev1.EnvVar{Name: reservedEnvNamePodNamespace, Value: cfg.Namespace},
 	)
-	var volumes []corev1.Volume
-	var volumeMounts []corev1.VolumeMount
+
+	// 服务端证书仅当 TLSEnabled 时注入；客户端 CA 证书和域名始终注入。
+	var projectedSources []corev1.VolumeProjection
 	if workload.TLSEnabled {
-		volumes = []corev1.Volume{{
-			Name: tlsVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Projected: &corev1.ProjectedVolumeSource{
-					Sources: []corev1.VolumeProjection{
-						{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
-						{ConfigMap: &corev1.ConfigMapProjection{
-							LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
-							Items: []corev1.KeyToPath{{
-								Key:  cfg.TLS.CAConfigMap.Key,
-								Path: tlsCAFileName,
-							}},
-						}},
-					},
-				},
-			},
-		}}
-		volumeMounts = []corev1.VolumeMount{{
-			Name:      tlsVolumeName,
-			MountPath: tlsMountPath,
-			ReadOnly:  true,
-		}}
+		projectedSources = append(projectedSources,
+			corev1.VolumeProjection{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.Secret}}},
+		)
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{Name: envTLSCertFile, Value: filepath.Join(tlsMountPath, tlsCertFileName)},
 			corev1.EnvVar{Name: envTLSKeyFile, Value: filepath.Join(tlsMountPath, tlsKeyFileName)},
-			corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
-			corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
 		)
 	}
+	projectedSources = append(projectedSources,
+		corev1.VolumeProjection{ConfigMap: &corev1.ConfigMapProjection{
+			LocalObjectReference: corev1.LocalObjectReference{Name: cfg.TLS.CAConfigMap.Name},
+			Items: []corev1.KeyToPath{{
+				Key:  cfg.TLS.CAConfigMap.Key,
+				Path: tlsCAFileName,
+			}},
+		}},
+	)
+	containerEnv = append(containerEnv,
+		corev1.EnvVar{Name: envTLSCAFile, Value: filepath.Join(tlsMountPath, tlsCAFileName)},
+		corev1.EnvVar{Name: envTLSDomain, Value: cfg.TLS.Domain},
+	)
+	volumes := []corev1.Volume{{
+		Name: tlsVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{Sources: projectedSources},
+		},
+	}}
+	volumeMounts := []corev1.VolumeMount{{
+		Name:      tlsVolumeName,
+		MountPath: tlsMountPath,
+		ReadOnly:  true,
+	}}
+
 	if workload.OSSEnabled {
 		containerEnv = append(containerEnv,
 			corev1.EnvVar{
@@ -655,8 +667,6 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 	)
 	containerImage := strings.TrimSpace(profile.Image) + mongoImageTagJoiner + strings.TrimSpace(profile.Version)
 	containerEnv := buildMongoDBContainerEnv(workload, workload.SecretResourceName())
-	runAsUser := profile.Security.RunAsUser
-	runAsGroup := profile.Security.RunAsGroup
 	volumes := []corev1.Volume{{
 		Name:         mongoDataVolumeName,
 		VolumeSource: buildMongoDBDataVolumeSource(workload),
@@ -665,10 +675,6 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		Name:      mongoDataVolumeName,
 		MountPath: mongoDataMountPath,
 	}}
-	podSecurityContext := &corev1.PodSecurityContext{
-		RunAsUser:  &runAsUser,
-		RunAsGroup: &runAsGroup,
-	}
 	probe := &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(mongoPortName)},
@@ -684,6 +690,9 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RecreateDeploymentStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string(selectorLabels),
 			},
@@ -692,8 +701,7 @@ func BuildMongoDBDeployment(workload *MongoDBWorkload, cfg *K8sConfig) (*appsv1.
 					Labels: map[string]string(objectLabels),
 				},
 				Spec: corev1.PodSpec{
-					SecurityContext: podSecurityContext,
-					Volumes:         volumes,
+					Volumes: volumes,
 					InitContainers: []corev1.Container{{
 						Name:         mongoInitContainerName,
 						Image:        containerImage,
@@ -763,6 +771,13 @@ func BuildMongoDBService(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Ser
 	}, nil
 }
 
+func resolveMongoDBCapacity(workload *MongoDBWorkload, profile *MongoProfileConfig) (resource.Quantity, error) {
+	if !workload.Persistence.Capacity.IsZero() {
+		return workload.Persistence.Capacity, nil
+	}
+	return resource.MustParse(strings.TrimSpace(profile.Storage.Capacity)), nil
+}
+
 // BuildMongoDBPVC 将 MongoDB PVC workload 构造成可直接下发的 PersistentVolumeClaim 对象。
 func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.PersistentVolumeClaim, error) {
 	if workload == nil {
@@ -789,7 +804,10 @@ func BuildMongoDBPVC(workload *MongoDBWorkload, cfg *K8sConfig) (*corev1.Persist
 	)
 	storageClassName := strings.TrimSpace(profile.Storage.StorageClassName)
 	volumeMode := corev1.PersistentVolumeMode(strings.TrimSpace(profile.Storage.VolumeMode))
-	storageQuantity := resource.MustParse(strings.TrimSpace(profile.Storage.Capacity))
+	storageQuantity, err := resolveMongoDBCapacity(workload, profile)
+	if err != nil {
+		return nil, fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
+	}
 
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -880,7 +898,10 @@ func CheckPVCCompatibility(existing *corev1.PersistentVolumeClaim, desired *Mong
 		return fmt.Errorf("pvc %s volumeMode 不兼容: existing=%q desired=%q", existing.Name, pvcVolumeModeValue(existing.Spec.VolumeMode), desiredVolumeMode)
 	}
 
-	desiredCapacity := resource.MustParse(strings.TrimSpace(profile.Storage.Capacity))
+	desiredCapacity, err := resolveMongoDBCapacity(desired, profile)
+	if err != nil {
+		return fmt.Errorf("解析 mongo pvc 容量失败: %w", err)
+	}
 	existingCapacity, ok := existing.Spec.Resources.Requests[corev1.ResourceStorage]
 	if !ok {
 		return fmt.Errorf("pvc %s storage capacity 不兼容: existing=missing desired=%s", existing.Name, desiredCapacity.String())

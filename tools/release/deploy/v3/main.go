@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	"dominion/tools/release/deploy/v2/client"
 
 	"github.com/spf13/pflag"
@@ -22,6 +24,7 @@ const (
 	flagTimeout  = "timeout"
 	flagScope    = "scope"
 	flagRun      = "run"
+	flagVerbose  = "verbose"
 
 	defaultEndpoint = "http://infra.liukexin.com"
 	defaultTimeout  = 5 * time.Minute
@@ -34,10 +37,11 @@ type options struct {
 	timeout   time.Duration
 	scope     string
 	run       string
+	verbose   bool
 	apiClient *client.Client
 }
 
-type commandExecFunc func(opts *options) error
+type commandExecFunc func(ctx context.Context, opts *options) error
 type commandValidatorFunc func(opts *options) error
 
 type flagSpec struct {
@@ -94,13 +98,21 @@ var flagSpecs = map[string]flagSpec{
 			fs.StringVar(&opts.run, spec.name, spec.defaultValue.(string), spec.usage)
 		},
 	},
+	flagVerbose: {
+		name:         flagVerbose,
+		defaultValue: false,
+		usage:        "show hidden information such as trace ID",
+		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
+			fs.BoolVarP(&opts.verbose, spec.name, "v", spec.defaultValue.(bool), spec.usage)
+		},
+	},
 }
 
 var commandFlagTable = map[string][]string{
-	commandApply: {flagEndpoint, flagTimeout, flagScope, flagRun},
-	commandDel:   {flagEndpoint, flagTimeout, flagScope},
-	commandList:  {flagEndpoint, flagTimeout, flagScope},
-	commandScope: {flagEndpoint, flagTimeout, flagScope},
+	commandApply: {flagEndpoint, flagTimeout, flagScope, flagRun, flagVerbose},
+	commandDel:   {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandList:  {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandScope: {flagEndpoint, flagTimeout, flagScope, flagVerbose},
 }
 
 var stdout io.Writer = os.Stdout
@@ -128,8 +140,13 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command: %s", opts.command)
 	}
 
-	opts.apiClient = client.NewClient(opts.endpoint)
-	return exec(opts)
+	ctx := tracecontext.FromEnv(context.Background())
+	if opts.verbose {
+		fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
+	}
+
+	opts.apiClient = client.NewClient(opts.endpoint, client.WithHTTPTransport(tracecontext.NewHTTPTransport(nil)))
+	return exec(ctx, opts)
 }
 
 func parseOptions(args []string) (*options, error) {
@@ -251,9 +268,12 @@ func usageText() string {
 		"Usage: deploy_v3 <command> [args]",
 		"",
 		"Commands:",
-		"  apply [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",
-		"  del [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
-		"  list [--endpoint=url] [--timeout=5m] [--scope=name]",
-		"  scope [scope-name]",
+		"  apply [-v] [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",
+		"  del [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
+		"  list [-v] [--endpoint=url] [--timeout=5m] [--scope=name]",
+		"  scope [-v] [--scope=name] [scope-name]",
+		"",
+		"Flags:",
+		"  -v, --verbose   show hidden information such as trace ID",
 	}, "\n") + "\n"
 }

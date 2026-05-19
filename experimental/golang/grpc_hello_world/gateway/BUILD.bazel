@@ -7,8 +7,11 @@ go_library(
     importpath = "dominion/experimental/golang/grpc_hello_world/gateway",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
+        "//common/gopkg/http",
+        "//common/gopkg/otel",
         "//experimental/golang/grpc_hello_world",
         "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",

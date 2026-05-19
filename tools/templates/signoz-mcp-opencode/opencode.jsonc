@@ -1,0 +1,43 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "obs": {
+      "type": "local",
+      "command": ["/absolute/path/to/signoz-mcp-server"],
+      "enabled": true,
+      "timeout": 10000,
+      "environment": {
+        "SIGNOZ_URL": "<your-signoz-url>",
+        "SIGNOZ_API_KEY": "<your-signoz-service-account-key>",
+        "LOG_LEVEL": "info"
+      }
+    }
+  },
+  "tools": {
+    "obs_*": false,
+
+    // Optional read-only field discovery tools. Enable only when debugging
+    // field mappings such as env -> deployment.environment.name.
+    // "obs_signoz_get_field_keys": true,
+    // "obs_signoz_get_field_values": true,
+
+    "obs_signoz_search_logs": true,
+    "obs_signoz_aggregate_logs": true,
+    "obs_signoz_search_traces": true,
+    "obs_signoz_aggregate_traces": true,
+    "obs_signoz_get_trace_details": true
+  },
+  "permission": {
+    "obs_*": "deny",
+
+    // If field discovery tools are enabled above, also allow them here.
+    // "obs_signoz_get_field_keys": "allow",
+    // "obs_signoz_get_field_values": "allow",
+
+    "obs_signoz_search_logs": "allow",
+    "obs_signoz_aggregate_logs": "allow",
+    "obs_signoz_search_traces": "allow",
+    "obs_signoz_aggregate_traces": "allow",
+    "obs_signoz_get_trace_details": "allow"
+  }
+}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,10 +10,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"dominion/common/gopkg/bootstrap"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
+	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/pkg/token"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -31,6 +37,13 @@ const (
 	wsPathPrefix = "/v1/sessions/"
 	wsPathSuffix = "/game/connect"
 	helloTimeout = 10 * time.Second
+
+	spanConnect = "gateway.ws.connect"
+	spanHello   = "gateway.ws.hello"
+
+	logFieldSessionID  = "session_id"
+	logFieldConnID     = "conn_id"
+	logFieldClientRole = "client_role"
 )
 
 // WebSocketHandler handles WebSocket upgrade and message routing for the game
@@ -45,13 +58,17 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a WebSocketHandler backed by svc.
-func NewWebSocketHandler(svc gatewayService) *WebSocketHandler {
-	return &WebSocketHandler{
+func NewWebSocketHandler(svc gatewayService) (*WebSocketHandler, bootstrap.WorkerBuilder) {
+	h := &WebSocketHandler{
 		svc:         svc,
 		conns:       make(map[string]*wsConn),
 		webConns:    make(map[string]map[string]struct{}),
 		agentConnID: make(map[string]string),
 	}
+	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewRoutingWorker(svc.AsyncMessages(), h.RouteRoutedMessage), nil
+	})
+	return h, builder
 }
 
 type wsConn struct {
@@ -91,14 +108,22 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, connectSpan := otel.Tracer().Start(r.Context(), spanConnect)
+	defer connectSpan.End()
+	connectSpan.SetAttributes(attribute.String(logFieldSessionID, sessionID))
+
+	logs.Info(ctx, "gateway: ws connect started", event.String(logFieldSessionID, sessionID))
+
 	tokenStr := r.URL.Query().Get("token")
 	if tokenStr == "" {
+		logs.Warn(ctx, "gateway: ws token missing", event.String(logFieldSessionID, sessionID))
 		http.Error(w, "missing token", http.StatusUnauthorized)
 		return
 	}
 
-	rt, claims, err := h.svc.ConnectSession(r.Context(), sessionID, tokenStr)
+	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
 	if err != nil {
+		logs.Warn(ctx, "gateway: ws token validation failed", event.String(logFieldSessionID, sessionID), event.Err(err))
 		http.Error(w, fmt.Sprintf("connect session: %v", err), http.StatusUnauthorized)
 		return
 	}
@@ -111,43 +136,68 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(int64(domain.MaxSegmentSize)*2 + 4096)
 
 	connID := nextConnID()
+	connectSpan.SetAttributes(attribute.String(logFieldConnID, connID))
+
+	logs.Info(ctx, "gateway: ws connected", event.String(logFieldSessionID, sessionID), event.String(logFieldConnID, connID))
+
 	wc := &wsConn{conn: conn, connID: connID}
 
 	h.registerConn(wc)
 	defer h.unregisterConn(connID)
 
-	h.serveConn(r.Context(), wc, sessionID, rt, claims)
+	h.serveConn(ctx, wc, sessionID, rt, claims)
 }
 
 func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID string, rt *domain.SessionRuntime, claims *token.Claims) {
 	helloCtx, helloCancel := context.WithTimeout(ctx, helloTimeout)
 	defer helloCancel()
 
+	_, helloSpan := otel.Tracer().Start(helloCtx, spanHello)
+	helloSpan.SetAttributes(
+		attribute.String(logFieldSessionID, sessionID),
+		attribute.String(logFieldConnID, wc.connID),
+	)
+
 	env, err := readEnvelope(helloCtx, wc.conn)
 	if err != nil {
+		helloSpan.End()
 		wc.conn.Close(websocket.StatusPolicyViolation, "hello timeout or read error")
 		return
 	}
 
-	hello := env.GetHello()
-	if hello == nil {
-		wc.conn.Close(websocket.StatusPolicyViolation, "expected hello message")
+	if err := ValidateHello(env); err != nil {
+		helloSpan.End()
+		sendErrorAndClose(wc, ctx, ErrCodeProtocolError, err.Error())
 		return
 	}
-	wc.role = toDomainClientRole(hello.Role)
+	wc.role = toDomainClientRole(env.GetHello().GetRole())
 
 	initMsgs, svcErr := h.svc.ProcessHello(rt, claims, wc.role, wc.connID)
 	if svcErr != nil {
-		sendErrorAndClose(wc, ctx, svcErr.Error())
+		helloSpan.End()
+		sendErrorAndClose(wc, ctx, "gateway_error", svcErr.Error())
 		return
 	}
+
+	helloSpan.SetAttributes(attribute.String(logFieldClientRole, clientRoleString(wc.role)))
+	helloSpan.End()
+
+	logs.Info(ctx, "gateway: ws hello completed",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldConnID, wc.connID),
+		event.String(logFieldClientRole, clientRoleString(wc.role)),
+	)
 
 	h.trackConn(sessionID, wc)
 	defer h.cleanupDisconnect(sessionID, wc)
 	defer wc.conn.Close(websocket.StatusNormalClosure, "")
+	defer logs.Info(ctx, "gateway: ws disconnect",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldConnID, wc.connID),
+	)
 
 	for _, r := range initMsgs {
-		if writeErr := wc.write(ctx, toProtoMessage(r.Message)); writeErr != nil {
+		if writeErr := wc.write(ctx, toProtoMessage(&r.Message)); writeErr != nil {
 			return
 		}
 	}
@@ -155,6 +205,24 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 	for {
 		msgEnv, readErr := readEnvelope(ctx, wc.conn)
 		if readErr != nil {
+			return
+		}
+
+		if err := ValidateWebSocketEnvelope(msgEnv); err != nil {
+			sendErrorAndClose(wc, ctx, ErrCodeProtocolError, err.Error())
+			return
+		}
+		if msgEnv.GetSessionId() != sessionID {
+			sendErrorAndClose(wc, ctx, ErrCodeSessionMismatch, "session_id mismatch")
+			return
+		}
+		if err := ValidateRolePayload(toProtoClientRole(wc.role), msgEnv); err != nil {
+			sendErrorAndClose(wc, ctx, ErrCodeProtocolError, err.Error())
+			return
+		}
+
+		if err := validateMediaPayload(msgEnv); err != nil {
+			sendErrorAndClose(wc, ctx, ErrCodeProtocolError, err.Error())
 			return
 		}
 
@@ -167,12 +235,49 @@ func (h *WebSocketHandler) serveConn(ctx context.Context, wc *wsConn, sessionID 
 			routed, svcErr = h.svc.HandleWebMessage(ctx, sessionID, wc.connID, msg)
 		}
 		if svcErr != nil {
-			sendErrorAndClose(wc, ctx, svcErr.Error())
-			return
+			if isFatalAgentError(svcErr) {
+				logs.Warn(ctx, "gateway: ws fatal protocol error",
+					event.String(logFieldSessionID, sessionID),
+					event.String(logFieldConnID, wc.connID),
+					event.Err(svcErr),
+				)
+				sendErrorAndClose(wc, ctx, ErrCodeProtocolError, svcErr.Error())
+				return
+			}
+			logs.Warn(ctx, "gateway: ws discarding segment",
+				event.String(logFieldSessionID, sessionID),
+				event.String(logFieldConnID, wc.connID),
+				event.Err(svcErr),
+			)
+			continue
 		}
 
 		h.routeMessages(ctx, sessionID, wc, routed)
 	}
+}
+
+// validateMediaPayload validates media-specific proto fields before domain
+// conversion. Returns nil for non-media payloads.
+func validateMediaPayload(env *GameWebSocketEnvelope) error {
+	switch p := env.Payload.(type) {
+	case *GameWebSocketEnvelope_MediaInit:
+		return ValidateMediaInit(p.MediaInit)
+	case *GameWebSocketEnvelope_MediaSegment:
+		return ValidateMediaSegment(p.MediaSegment)
+	default:
+		return nil
+	}
+}
+
+// isFatalAgentError returns true for sentinel errors that indicate a protocol
+// violation requiring disconnection (unknown init, stream mismatch, init hash
+// mismatch, unsupported codec). Non-fatal errors (sequence not increasing,
+// random access missing) are logged and the segment is discarded.
+func isFatalAgentError(err error) bool {
+	return errors.Is(err, domain.ErrUnknownInitID) ||
+		errors.Is(err, domain.ErrStreamMismatch) ||
+		errors.Is(err, domain.ErrInitHashMismatch) ||
+		errors.Is(err, domain.ErrUnsupportedCodec)
 }
 
 func (h *WebSocketHandler) registerConn(wc *wsConn) {
@@ -230,16 +335,15 @@ func (h *WebSocketHandler) cleanupDisconnect(sessionID string, wc *wsConn) {
 	}
 }
 
-func (h *WebSocketHandler) routeMessages(ctx context.Context, sessionID string, sender *wsConn, msgs []*domain.RoutedMessage) {
+func (h *WebSocketHandler) routeMessages(ctx context.Context, sessionID string, _ *wsConn, msgs []*domain.RoutedMessage) {
 	for _, msg := range msgs {
-		protoMsg := toProtoMessage(msg.Message)
-		if msg.TargetConnID == "" {
-			if sender.role == domain.ClientRoleWindowsAgent {
-				h.broadcastToWebConns(ctx, sessionID, protoMsg)
-			} else {
-				h.sendToAgentConn(ctx, sessionID, protoMsg)
-			}
-		} else {
+		protoMsg := toProtoMessage(&msg.Message)
+		switch msg.TargetKind {
+		case domain.RouteTargetAgent:
+			h.sendToAgentConn(ctx, sessionID, protoMsg)
+		case domain.RouteTargetWebBroadcast:
+			h.broadcastToWebConns(ctx, sessionID, protoMsg)
+		case domain.RouteTargetConn:
 			h.sendToConn(ctx, msg.TargetConnID, protoMsg)
 		}
 	}
@@ -282,11 +386,16 @@ func (h *WebSocketHandler) sendToConn(ctx context.Context, connID string, env *G
 // RouteRoutedMessage converts a domain RoutedMessage to proto and delivers it
 // to the target connection.
 func (h *WebSocketHandler) RouteRoutedMessage(ctx context.Context, msg *domain.RoutedMessage) {
-	if msg == nil || msg.Message == nil {
+	if msg == nil {
 		return
 	}
-	protoMsg := toProtoMessage(msg.Message)
-	if msg.TargetConnID != "" {
+	protoMsg := toProtoMessage(&msg.Message)
+	switch msg.TargetKind {
+	case domain.RouteTargetAgent:
+		h.sendToAgentConn(ctx, msg.Message.SessionID, protoMsg)
+	case domain.RouteTargetWebBroadcast:
+		h.broadcastToWebConns(ctx, msg.Message.SessionID, protoMsg)
+	case domain.RouteTargetConn:
 		h.sendToConn(ctx, msg.TargetConnID, protoMsg)
 	}
 }
@@ -304,11 +413,11 @@ func readEnvelope(ctx context.Context, conn *websocket.Conn) (*GameWebSocketEnve
 	return env, nil
 }
 
-func sendErrorAndClose(wc *wsConn, ctx context.Context, message string) {
+func sendErrorAndClose(wc *wsConn, ctx context.Context, code, message string) {
 	env := &GameWebSocketEnvelope{
 		Payload: &GameWebSocketEnvelope_Error{
 			Error: &GameError{
-				Code:    "gateway_error",
+				Code:    code,
 				Message: message,
 			},
 		},
@@ -339,63 +448,16 @@ func toProtoClientRole(role domain.ClientRole) GameClientRole {
 	}
 }
 
-func toDomainOperationKind(kind GameControlOperationKind) domain.OperationKind {
-	switch kind {
-	case GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK:
-		return domain.OperationKindMouseClick
-	case GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK:
-		return domain.OperationKindMouseDoubleClick
-	case GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG:
-		return domain.OperationKindMouseDrag
-	case GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER:
-		return domain.OperationKindMouseHover
-	case GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD:
-		return domain.OperationKindMouseHold
+func toDomainControlResultStatus(status GameControlResultStatus) domain.ControlResultStatus {
+	switch status {
+	case GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED:
+		return domain.ControlResultStatusSucceeded
+	case GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED:
+		return domain.ControlResultStatusFailed
+	case GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_TIMED_OUT:
+		return domain.ControlResultStatusTimedOut
 	default:
-		return domain.OperationKindMouseClick
-	}
-}
-
-func toProtoOperationKindWS(kind domain.OperationKind) GameControlOperationKind {
-	switch kind {
-	case domain.OperationKindMouseClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK
-	case domain.OperationKindMouseDoubleClick:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK
-	case domain.OperationKindMouseDrag:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG
-	case domain.OperationKindMouseHover:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER
-	case domain.OperationKindMouseHold:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD
-	default:
-		return GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED
-	}
-}
-
-func mouseButtonToString(btn GameMouseButton) string {
-	switch btn {
-	case GameMouseButton_GAME_MOUSE_BUTTON_LEFT:
-		return "left"
-	case GameMouseButton_GAME_MOUSE_BUTTON_RIGHT:
-		return "right"
-	case GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE:
-		return "middle"
-	default:
-		return ""
-	}
-}
-
-func stringToMouseButton(s string) GameMouseButton {
-	switch strings.ToLower(s) {
-	case "left":
-		return GameMouseButton_GAME_MOUSE_BUTTON_LEFT
-	case "right":
-		return GameMouseButton_GAME_MOUSE_BUTTON_RIGHT
-	case "middle":
-		return GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE
-	default:
-		return GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED
+		return domain.ControlResultStatusFailed
 	}
 }
 
@@ -419,31 +481,36 @@ func toDomainPayload(env *GameWebSocketEnvelope) domain.MessagePayload {
 	case *GameWebSocketEnvelope_Pong:
 		return domain.PongPayload{Nonce: p.Pong.GetNonce()}
 	case *GameWebSocketEnvelope_MediaInit:
+		init := p.MediaInit
 		return domain.MediaInitPayload{
-			MimeType: p.MediaInit.GetMimeType(),
-			Segment:  p.MediaInit.GetSegment(),
+			StreamID: init.GetStreamId(),
+			InitID:   init.GetInitId(),
+			MimeType: init.GetMimeType(),
+			Codec:    init.GetCodec(),
+			Segment:  init.GetSegment(),
 		}
 	case *GameWebSocketEnvelope_MediaSegment:
+		seg := p.MediaSegment
 		return domain.MediaSegmentPayload{
-			SegmentID: p.MediaSegment.GetSegmentId(),
-			Segment:   p.MediaSegment.GetSegment(),
-			KeyFrame:  p.MediaSegment.GetKeyFrame(),
+			StreamID:      seg.GetStreamId(),
+			InitID:        seg.GetInitId(),
+			Sequence:      seg.GetSequence(),
+			Segment:       seg.GetSegment(),
+			RandomAccess:  seg.GetRandomAccess(),
+			DurationMS:    seg.GetDurationMs(),
+			Discontinuity: seg.GetDiscontinuity(),
 		}
 	case *GameWebSocketEnvelope_ControlRequest:
 		req := p.ControlRequest
-		mouse := req.GetMouse()
+		kind, err := ActionKindFromProto(req)
+		if err != nil {
+			return domain.ErrorPayload{Code: "protocol_error", Message: err.Error()}
+		}
 		return domain.ControlRequestPayload{
-			RequestID:     req.GetOperationId(),
-			Kind:          toDomainOperationKind(req.GetKind()),
-			Button:        mouseButtonToString(mouse.GetButton()),
-			X:             mouse.GetX(),
-			Y:             mouse.GetY(),
-			FromX:         mouse.GetFromX(),
-			FromY:         mouse.GetFromY(),
-			ToX:           mouse.GetToX(),
-			ToY:           mouse.GetToY(),
-			DurationMs:    mouse.GetDurationMs(),
+			OperationID:   req.GetOperationId(),
+			ActionKind:    kind,
 			FlashSnapshot: req.GetFlashSnapshot(),
+			RawRequest:    req, // preserve full proto for forwarding
 		}
 	case *GameWebSocketEnvelope_ControlAck:
 		return domain.ControlAckPayload{
@@ -451,11 +518,10 @@ func toDomainPayload(env *GameWebSocketEnvelope) domain.MessagePayload {
 		}
 	case *GameWebSocketEnvelope_ControlResult:
 		result := p.ControlResult
-		success := result.GetStatus() == GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED
 		return domain.ControlResultPayload{
-			RequestID: result.GetOperationId(),
-			Success:   success,
-			Error:     result.GetErrorMessage(),
+			OperationID:  result.GetOperationId(),
+			Status:       toDomainControlResultStatus(result.GetStatus()),
+			ErrorMessage: result.GetErrorMessage(),
 		}
 	case *GameWebSocketEnvelope_Error:
 		return domain.ErrorPayload{
@@ -495,34 +561,35 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 	case domain.MediaInitPayload:
 		return &GameWebSocketEnvelope_MediaInit{
 			MediaInit: &GameMediaInit{
+				StreamId: p.StreamID,
+				InitId:   p.InitID,
 				MimeType: p.MimeType,
+				Codec:    p.Codec,
 				Segment:  p.Segment,
 			},
 		}
 	case domain.MediaSegmentPayload:
 		return &GameWebSocketEnvelope_MediaSegment{
 			MediaSegment: &GameMediaSegment{
-				SegmentId: p.SegmentID,
-				Segment:   p.Segment,
-				KeyFrame:  p.KeyFrame,
+				StreamId:      p.StreamID,
+				InitId:        p.InitID,
+				Sequence:      p.Sequence,
+				Segment:       p.Segment,
+				RandomAccess:  &p.RandomAccess,
+				DurationMs:    p.DurationMS,
+				Discontinuity: p.Discontinuity,
 			},
 		}
 	case domain.ControlRequestPayload:
+		if p.RawRequest != nil {
+			if raw, ok := p.RawRequest.(*GameControlRequest); ok {
+				return &GameWebSocketEnvelope_ControlRequest{ControlRequest: raw}
+			}
+		}
 		return &GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &GameControlRequest{
-				OperationId:   p.RequestID,
-				Kind:          toProtoOperationKindWS(p.Kind),
+				OperationId:   p.OperationID,
 				FlashSnapshot: p.FlashSnapshot,
-				Mouse: &GameMouseAction{
-					Button:     stringToMouseButton(p.Button),
-					X:          p.X,
-					Y:          p.Y,
-					FromX:      p.FromX,
-					FromY:      p.FromY,
-					ToX:        p.ToX,
-					ToY:        p.ToY,
-					DurationMs: p.DurationMs,
-				},
 			},
 		}
 	case domain.ControlAckPayload:
@@ -532,17 +599,22 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 			},
 		}
 	case domain.ControlResultPayload:
-		status := GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED
-		if p.Success {
+		var status GameControlResultStatus
+		switch p.Status {
+		case domain.ControlResultStatusSucceeded:
 			status = GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED
-		} else if p.TimedOut {
+		case domain.ControlResultStatusFailed:
+			status = GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED
+		case domain.ControlResultStatusTimedOut:
 			status = GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_TIMED_OUT
+		default:
+			status = GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_UNSPECIFIED
 		}
 		return &GameWebSocketEnvelope_ControlResult{
 			ControlResult: &GameControlResult{
-				OperationId:  p.RequestID,
+				OperationId:  p.OperationID,
 				Status:       status,
-				ErrorMessage: p.Error,
+				ErrorMessage: p.ErrorMessage,
 			},
 		}
 	case domain.ErrorPayload:
@@ -559,5 +631,16 @@ func toProtoPayload(payload domain.MessagePayload) isGameWebSocketEnvelope_Paylo
 				Message: "unrecognized payload type",
 			},
 		}
+	}
+}
+
+func clientRoleString(r domain.ClientRole) string {
+	switch r {
+	case domain.ClientRoleWindowsAgent:
+		return "agent"
+	case domain.ClientRoleWeb:
+		return "web"
+	default:
+		return "unspecified"
 	}
 }

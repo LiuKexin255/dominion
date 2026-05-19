@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/solver"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -21,6 +23,12 @@ var (
 	newMongoClient = func(uri string) (*mongodriver.Client, error) {
 		return mongodriver.Connect(context.Background(), options.Client().ApplyURI(uri))
 	}
+
+	logFieldApp          = "app"
+	logFieldService      = "service"
+	logFieldTarget       = "target"
+	logFieldAddress      = "address"
+	logFieldAddressCount = "address_count"
 )
 
 const (
@@ -58,6 +66,7 @@ func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, err
 	if err != nil {
 		return nil, fmt.Errorf("invalid target %q: want app/name", rawTarget)
 	}
+	logs.Info(context.Background(), "mongo client initializing", event.String(logFieldApp, target.App), event.String(logFieldService, target.Service))
 
 	resolver, err := options.resolverBuilder()
 	if err != nil {
@@ -71,11 +80,14 @@ func NewClient(rawTarget string, opts ...ClientOption) (*mongodriver.Client, err
 	if len(addresses) == 0 {
 		return nil, fmt.Errorf("resolve mongo endpoint for target %q/%q: no ready endpoints found", target.App, target.Service)
 	}
+	logs.Info(context.Background(), "mongo endpoints resolved", event.Int(logFieldAddressCount, len(addresses)))
 	address := addresses[0]
+	logs.Info(context.Background(), "mongo endpoint selected", event.String(logFieldAddress, address))
 
 	uri := buildMongoURI(target, address)
 	client, err := newMongoClient(uri)
 	if err != nil {
+		logs.Error(context.Background(), "mongo client failed", event.String(logFieldTarget, rawTarget), event.Err(err))
 		return nil, fmt.Errorf("create mongo client for %q: %w", rawTarget, err)
 	}
 

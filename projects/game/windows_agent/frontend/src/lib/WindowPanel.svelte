@@ -3,42 +3,50 @@
 
   let windows: WindowInfo[] = [];
   let loading = false;
-  let boundWindow: WindowRef | null = null;
+  let status: AgentStatus = {
+    state: 'Disconnected',
+    sessionId: '',
+    boundWindow: null,
+    mediaSegCount: 0,
+    lastError: '',
+    ffmpegRunning: false,
+    helperRunning: false,
+    connectedAt: '',
+    sessionName: '',
+    sessionType: '',
+    gatewayId: '',
+    streamingStartedAt: ''
+  };
+  let actionLoading = false;
 
-  async function refresh() {
-    loading = true;
-    try {
-      const result = await window.go.main.App.EnumerateWindows();
-      windows = result ?? [];
-    } catch (e: any) {
-      console.error('EnumerateWindows failed:', e);
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function bind(hwnd: number) {
-    try {
-      await window.go.main.App.BindWindow(hwnd);
-    } catch (e: any) {
-      console.error('BindWindow failed:', e);
-    }
-  }
-
-  function onWindowList(list: WindowInfo[]) {
-    windows = list ?? [];
-  }
-
-  function onStatusChanged(s: AgentStatus) {
-    boundWindow = s.boundWindow ?? null;
-  }
+  const connectedStates = new Set(['Connected', 'Bound', 'Streaming']);
+  $: isConnected = connectedStates.has(status.state);
+  $: canStart =
+    (status.state === 'Connected' || status.state === 'Bound') &&
+    status.boundWindow !== null &&
+    status.streamingState !== 'Streaming';
+  $: canStop = status.streamingState === 'Streaming';
+  $: transportLabel =
+    status.state === 'Streaming'
+      ? '传输中'
+      : status.boundWindow
+        ? isConnected
+          ? '已连接未传输'
+          : '已选择'
+        : isConnected
+          ? '已连接未选择'
+          : '未选择';
 
   onMount(async () => {
-    window.runtime.EventsOn('window:list', onWindowList);
-    window.runtime.EventsOn('status:changed', onStatusChanged);
+    window.runtime.EventsOn('window:list', (list: WindowInfo[]) => {
+      windows = list ?? [];
+    });
+    window.runtime.EventsOn('status:changed', (s: AgentStatus) => {
+      status = s;
+    });
     try {
-      const s = await window.go.main.App.GetStatus();
-      if (s?.boundWindow) boundWindow = s.boundWindow;
+      const s = await window.go.app.App.GetStatus();
+      if (s) status = s;
     } catch {
       // GetStatus may fail before Wails is fully initialized
     }
@@ -49,57 +57,152 @@
     window.runtime.EventsOff('window:list');
     window.runtime.EventsOff('status:changed');
   });
+
+  async function refresh() {
+    loading = true;
+    try {
+      const result = await window.go.app.App.EnumerateWindows();
+      windows = result ?? [];
+    } catch (e: any) {
+      console.error('EnumerateWindows failed:', e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function bind(hwnd: number) {
+    try {
+      await window.go.app.App.BindWindow(hwnd);
+    } catch (e: any) {
+      console.error('BindWindow failed:', e);
+    }
+  }
+
+  async function clearWindow() {
+    try {
+      await window.go.app.App.ClearWindow();
+    } catch (e: any) {
+      console.error('ClearWindow failed:', e);
+    }
+  }
+
+  async function startCapture() {
+    actionLoading = true;
+    try {
+      await window.go.app.App.StartCapture();
+    } catch (e: any) {
+      console.error('StartCapture failed:', e);
+    } finally {
+      actionLoading = false;
+    }
+  }
+
+  async function stopCapture() {
+    actionLoading = true;
+    try {
+      await window.go.app.App.StopCapture();
+    } catch (e: any) {
+      console.error('StopCapture failed:', e);
+    } finally {
+      actionLoading = false;
+    }
+  }
 </script>
 
 <div class="panel window-panel">
-  <div class="panel-header">
-    <h2>Windows</h2>
-    <button class="btn-refresh" on:click={refresh} disabled={loading}>
-      {loading ? 'Loading…' : 'Refresh'}
-    </button>
+  <h2>窗口捕获</h2>
+
+  <!-- Transport Status -->
+  <div class="status-bar">
+    <span class="status-label">传输状态</span>
+    <span
+      class="status-value"
+      class:streaming={status.state === 'Streaming'}
+      class:error={status.state === 'Error'}
+    >
+      {transportLabel}
+    </span>
   </div>
 
-  {#if boundWindow}
-    <div class="bound-info">
-      <span class="bound-label">Bound:</span>
-      <span class="bound-title">{boundWindow.title || '(untitled)'}</span>
-      <span class="bound-hwnd">0x{boundWindow.hwnd.toString(16).toUpperCase()}</span>
+  <!-- Bound Window Card -->
+  {#if status.boundWindow}
+    <div class="window-card">
+      <div class="card-row">
+        <span class="label">标题</span>
+        <span>{status.boundWindow.title || '(untitled)'}</span>
+      </div>
+      <div class="card-row">
+        <span class="label">HWND</span>
+        <span class="mono">0x{status.boundWindow.hwnd.toString(16).toUpperCase()}</span>
+      </div>
+      {#if status.boundWindow.className}
+        <div class="card-row">
+          <span class="label">类名</span>
+          <span class="mono">{status.boundWindow.className}</span>
+        </div>
+      {/if}
+      {#if status.boundWindow.processId}
+        <div class="card-row">
+          <span class="label">PID</span>
+          <span class="mono">{status.boundWindow.processId}</span>
+        </div>
+      {/if}
+      {#if status.boundWindow.rect}
+        <div class="card-row">
+          <span class="label">区域</span>
+          <span class="mono"
+            >{status.boundWindow.rect.left},{status.boundWindow.rect.top}
+            {status.boundWindow.rect.right - status.boundWindow.rect.left}x{status.boundWindow.rect.bottom -
+              status.boundWindow.rect.top}</span
+          >
+        </div>
+      {/if}
     </div>
   {/if}
 
+  <!-- Action Buttons -->
+  <div class="actions">
+    <button on:click={refresh} disabled={loading}>刷新窗口列表</button>
+    {#if status.boundWindow}
+      <button on:click={clearWindow} class="warning" disabled={actionLoading}>清除捕获窗口</button>
+    {/if}
+    <button on:click={startCapture} disabled={!canStart || actionLoading}>开始传输</button>
+    <button on:click={stopCapture} disabled={!canStop || actionLoading}>停止传输</button>
+  </div>
+
+  <!-- Window List Table -->
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th class="col-hwnd">HWND</th>
-          <th class="col-title">Title</th>
-          <th class="col-class">Class</th>
-          <th class="col-action"></th>
+          <th>HWND</th>
+          <th>Title</th>
+          <th>Class</th>
+          <th>PID</th>
+          <th>操作</th>
         </tr>
       </thead>
       <tbody>
-        {#if windows.length === 0}
+        {#each windows as win (win.HWND)}
           <tr>
-            <td colspan="4" class="empty">No windows found</td>
+            <td class="mono">0x{win.HWND.toString(16).toUpperCase()}</td>
+            <td title={win.Title}>{win.Title || '(untitled)'}</td>
+            <td class="mono" title={win.ClassName}>{win.ClassName}</td>
+            <td class="mono">{win.ProcessID}</td>
+            <td>
+              <button
+                on:click={() => bind(win.HWND)}
+                disabled={!isConnected || (!!status.boundWindow && status.boundWindow.hwnd === win.HWND)}
+              >
+                选择
+              </button>
+            </td>
           </tr>
         {:else}
-          {#each windows as w}
-            <tr>
-              <td class="mono">0x{w.HWND.toString(16).toUpperCase()}</td>
-              <td title={w.Title}>{w.Title || '(untitled)'}</td>
-              <td class="mono" title={w.ClassName}>{w.ClassName}</td>
-              <td>
-                <button
-                  class="btn-bind"
-                  on:click={() => bind(w.HWND)}
-                  disabled={boundWindow?.hwnd === w.HWND}
-                >
-                  {boundWindow?.hwnd === w.HWND ? 'Bound' : 'Bind'}
-                </button>
-              </td>
-            </tr>
-          {/each}
-        {/if}
+          <tr>
+            <td colspan="5" class="empty">暂无可用窗口</td>
+          </tr>
+        {/each}
       </tbody>
     </table>
   </div>
@@ -112,60 +215,101 @@
     gap: 0.75rem;
   }
 
-  .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  h2 {
+    margin: 0 0 0.75rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #e2e8f0;
   }
 
-  .btn-refresh {
-    padding: 0.3rem 0.75rem;
-    background: #334155;
-    color: #e2e8f0;
-    border: none;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    cursor: pointer;
+  .status-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.82rem;
+  }
+
+  .status-label {
+    color: #94a3b8;
+  }
+
+  .status-value {
+    color: #94a3b8;
+  }
+
+  .status-value.streaming {
+    color: #38bdf8;
     font-weight: 600;
   }
 
-  .btn-refresh:hover:not(:disabled) {
+  .status-value.error {
+    color: #ef4444;
+  }
+
+  .window-card {
+    padding: 0.5rem;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    margin-bottom: 0.75rem;
+    background: rgba(56, 189, 248, 0.05);
+    font-size: 0.78rem;
+  }
+
+  .card-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .card-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .card-row .label {
+    color: #94a3b8;
+    min-width: 3rem;
+  }
+
+  .mono {
+    font-family: 'Courier New', monospace;
+    font-size: 0.76rem;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 0.78rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 4px;
+    border: 1px solid #475569;
+    background: #334155;
+    color: #e2e8f0;
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled) {
     background: #475569;
   }
 
-  .btn-refresh:disabled {
+  button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .bound-info {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: rgba(34, 197, 94, 0.1);
-    border: 1px solid rgba(34, 197, 94, 0.3);
-    border-radius: 4px;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.8rem;
+  button.warning {
+    border-color: #78350f;
+    background: #451a03;
+    color: #fbbf24;
   }
 
-  .bound-label {
-    color: #22c55e;
-    font-weight: 600;
-  }
-
-  .bound-title {
-    color: #e2e8f0;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .bound-hwnd {
-    color: #94a3b8;
-    font-family: monospace;
-    font-size: 0.75rem;
+  button.warning:hover:not(:disabled) {
+    background: #78350f;
   }
 
   .table-wrap {
@@ -175,65 +319,35 @@
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
   }
 
-  thead th {
+  th {
     text-align: left;
-    color: #94a3b8;
-    font-weight: 600;
     padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid #1e293b;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: #94a3b8;
+    border-bottom: 1px solid #334155;
+    font-weight: 600;
   }
 
-  tbody td {
+  td {
     padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid #1e293b;
     color: #cbd5e1;
+    border-bottom: 1px solid #1e293b;
     max-width: 12rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .col-hwnd { width: 7rem; }
-  .col-class { width: 8rem; }
-  .col-action { width: 4.5rem; }
-
-  .mono {
-    font-family: monospace;
-    font-size: 0.75rem;
+  td button {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
   }
 
   .empty {
     text-align: center;
     color: #64748b;
-    padding: 1rem !important;
-  }
-
-  .btn-bind {
-    padding: 0.2rem 0.6rem;
-    background: #1e3a5f;
-    color: #93c5fd;
-    border: 1px solid #2563eb;
-    border-radius: 3px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .btn-bind:hover:not(:disabled) {
-    background: #1e40af;
-    color: #dbeafe;
-  }
-
-  .btn-bind:disabled {
-    background: #14532d;
-    color: #86efac;
-    border-color: #22c55e;
-    cursor: default;
+    padding: 1rem;
   }
 </style>

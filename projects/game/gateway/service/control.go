@@ -1,10 +1,18 @@
 package service
 
 import (
+	"context"
 	"sync"
 	"time"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
+)
+
+const (
+	logFieldOperationID   = "operation_id"
+	logFieldOperationKind = "operation_kind"
 )
 
 type inflight struct {
@@ -15,19 +23,20 @@ type inflight struct {
 type ControlExecutor struct {
 	mu           sync.Mutex
 	inflight     map[string]*inflight
-	onCompletion func(domain.ControlCompletion)
+	completionCh chan domain.ControlCompletion
 }
 
 func NewControlExecutor() *ControlExecutor {
 	return &ControlExecutor{
-		inflight: make(map[string]*inflight),
+		inflight:     make(map[string]*inflight),
+		completionCh: make(chan domain.ControlCompletion, 64),
 	}
 }
 
-func (e *ControlExecutor) SetOnCompletion(fn func(domain.ControlCompletion)) {
-	e.mu.Lock()
-	e.onCompletion = fn
-	e.mu.Unlock()
+// Completions returns a read-only channel that receives completion events when
+// control operations finish asynchronously (timeout or agent disconnect).
+func (e *ControlExecutor) Completions() <-chan domain.ControlCompletion {
+	return e.completionCh
 }
 
 func (e *ControlExecutor) SubmitOperation(
@@ -48,8 +57,8 @@ func (e *ControlExecutor) SubmitOperation(
 
 	op := &inflight{
 		op: &domain.InflightOperation{
-			OperationID:     req.RequestID,
-			Kind:            req.Kind,
+			OperationID:     req.OperationID,
+			Kind:            req.ActionKind,
 			FlashSnapshot:   req.FlashSnapshot,
 			CreateTime:      time.Now(),
 			RequesterConnID: requesterConnID,
@@ -57,10 +66,16 @@ func (e *ControlExecutor) SubmitOperation(
 	}
 
 	op.timer = time.AfterFunc(timeout, func() {
-		e.sendTimeout(sessionID, req.RequestID)
+		e.sendTimeout(sessionID, req.OperationID)
 	})
 
 	e.inflight[sessionID] = op
+
+	logs.Info(context.Background(), "control: operation submitted",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldOperationID, req.OperationID),
+		event.String(logFieldOperationKind, string(req.ActionKind)),
+	)
 
 	return op.op, nil
 }
@@ -73,6 +88,10 @@ func (e *ControlExecutor) HandleAgentAck(sessionID string) (string, error) {
 	if !exists {
 		return "", domain.ErrSessionNotFound
 	}
+
+	logs.Info(context.Background(), "control: agent ack",
+		event.String(logFieldSessionID, sessionID),
+	)
 
 	return op.op.RequesterConnID, nil
 }
@@ -90,6 +109,10 @@ func (e *ControlExecutor) HandleAgentResult(sessionID string) (string, bool, err
 	flashSnapshot := op.op.FlashSnapshot
 	e.mu.Unlock()
 
+	logs.Info(context.Background(), "control: agent result",
+		event.String(logFieldSessionID, sessionID),
+	)
+
 	return requesterConnID, flashSnapshot, nil
 }
 
@@ -106,17 +129,22 @@ func (e *ControlExecutor) HandleAgentDisconnect(sessionID string) {
 		SessionID:       sessionID,
 		RequesterConnID: op.op.RequesterConnID,
 		Result: domain.ControlResultPayload{
-			RequestID: op.op.OperationID,
-			Success:   false,
-			Error:     "agent disconnected",
+			OperationID:  op.op.OperationID,
+			Status:       domain.ControlResultStatusFailed,
+			ErrorMessage: "agent disconnected",
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
-	onCompletion := e.onCompletion
+	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	if onCompletion != nil {
-		onCompletion(completion)
+	logs.Info(context.Background(), "control: agent disconnected",
+		event.String(logFieldSessionID, sessionID),
+	)
+
+	select {
+	case onCompletion <- completion:
+	default:
 	}
 }
 
@@ -132,23 +160,28 @@ func (e *ControlExecutor) sendTimeout(sessionID, operationID string) {
 		SessionID:       sessionID,
 		RequesterConnID: op.op.RequesterConnID,
 		Result: domain.ControlResultPayload{
-			RequestID: operationID,
-			Success:   false,
-			Error:     "timed out",
-			TimedOut:  true,
+			OperationID:  operationID,
+			Status:       domain.ControlResultStatusTimedOut,
+			ErrorMessage: "timed out",
 		},
 		FlashSnapshot: op.op.FlashSnapshot,
 	}
-	onCompletion := e.onCompletion
+	onCompletion := e.completionCh
 	e.mu.Unlock()
 
-	if onCompletion != nil {
-		onCompletion(completion)
+	logs.Error(context.Background(), "control: operation timed out",
+		event.String(logFieldSessionID, sessionID),
+		event.String(logFieldOperationID, operationID),
+	)
+
+	select {
+	case onCompletion <- completion:
+	default:
 	}
 }
 
 func validateRequest(req domain.ControlRequestPayload) (time.Duration, error) {
-	switch req.Kind {
+	switch req.ActionKind {
 	case domain.OperationKindMouseClick,
 		domain.OperationKindMouseDoubleClick,
 		domain.OperationKindMouseHover:
@@ -158,15 +191,7 @@ func validateRequest(req domain.ControlRequestPayload) (time.Duration, error) {
 		return domain.TimeoutDrag, nil
 
 	case domain.OperationKindMouseHold:
-		durationMs := req.DurationMs
-		if durationMs <= 0 {
-			return 0, domain.ErrInvalidMouseAction
-		}
-		duration := time.Duration(durationMs) * time.Millisecond
-		if duration > domain.MaxHoldDuration {
-			return 0, domain.ErrHoldDurationExceeded
-		}
-		return duration, nil
+		return domain.MaxHoldDuration, nil
 
 	default:
 		return 0, domain.ErrInvalidMouseAction

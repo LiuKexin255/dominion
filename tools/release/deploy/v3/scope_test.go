@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -100,7 +101,7 @@ func TestScopeCommand_DisplayDefaultScope(t *testing.T) {
 			}
 
 			gotOutput := captureScopeStdout(t, func() error {
-				return scopeCommand(&options{})
+				return scopeCommand(context.Background(), &options{})
 			})
 
 			if strings.TrimSpace(gotOutput) != tt.wantOutput {
@@ -125,7 +126,7 @@ func TestScopeCommand_SetDefaultScope(t *testing.T) {
 			withWorkingDir(t, cwd)
 
 			gotOutput := captureScopeStdout(t, func() error {
-				return scopeCommand(&options{target: tt.target})
+				return scopeCommand(context.Background(), &options{target: tt.target})
 			})
 
 			if strings.TrimSpace(gotOutput) != tt.wantOutput {
@@ -156,7 +157,7 @@ func TestScopeCommand_RejectsInvalidScope(t *testing.T) {
 			root, cwd := newScopeRepo(t)
 			withWorkingDir(t, cwd)
 
-			err := scopeCommand(&options{target: tt.target})
+			err := scopeCommand(context.Background(), &options{target: tt.target})
 			if err == nil {
 				t.Fatal("scopeCommand() succeeded unexpectedly")
 			}

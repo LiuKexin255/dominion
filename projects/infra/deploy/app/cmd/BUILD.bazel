@@ -2,7 +2,6 @@ load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 load("@tar.bzl", "mutate", "tar")
-load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "cmd_lib",
@@ -10,12 +9,18 @@ go_library(
     importpath = "dominion/projects/infra/deploy/app/cmd",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/http",
         "//common/gopkg/mongo",
+        "//common/gopkg/otel",
+        "//projects/infra/deploy",
         "//projects/infra/deploy/app",
         "//projects/infra/deploy/domain",
         "//projects/infra/deploy/runtime/k8s",
+        "//projects/infra/deploy/service",
         "//projects/infra/deploy/storage",
-        "@org_mongodb_go_mongo_driver//mongo",
+        "@grpc_ecosystem_grpc_gateway//runtime",
     ],
 )
 
@@ -23,17 +28,6 @@ go_binary(
     name = "cmd",
     embed = [":cmd_lib"],
     visibility = ["//visibility:public"],
-)
-
-go_unittest(
-    name = "cmd_test",
-    srcs = ["main_test.go"],
-    embed = [":cmd_lib"],
-    deps = [
-        "//common/gopkg/mongo",
-        "//projects/infra/deploy/domain",
-        "@org_mongodb_go_mongo_driver//mongo",
-    ],
 )
 
 tar(

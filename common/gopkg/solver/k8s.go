@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
+
 	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +34,17 @@ type Resolver interface {
 }
 
 // inClusterConfig loads the runtime pod service-account configuration.
-var inClusterConfig = rest.InClusterConfig
+var (
+	inClusterConfig = rest.InClusterConfig
+)
+
+var (
+	logFieldNamespace = "namespace"
+	logFieldSelector  = "selector"
+	logFieldApp       = "app"
+	logFieldService   = "service"
+	logFieldStatus    = "status"
+)
 
 // newClientsetForConfig constructs a kubernetes client from the runtime config.
 var newClientsetForConfig = func(config *rest.Config) (kubernetes.Interface, error) {
@@ -77,6 +90,7 @@ func (c *K8sResolver) Resolve(ctx context.Context, target *Target) ([]string, er
 	selector := buildServiceSelector(target, env)
 	services, err := c.clientset.CoreV1().Services(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
+		logs.Warn(ctx, "k8s service list failed", event.String(logFieldNamespace, env.Namespace), event.String(logFieldSelector, selector), event.Err(err))
 		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
 			return nil, fmt.Errorf("list services in namespace %q with selector %q: permission denied: %w", env.Namespace, selector, err)
 		}
@@ -107,13 +121,18 @@ func (c *K8sResolver) Resolve(ctx context.Context, target *Target) ([]string, er
 	epsSelector := labels.SelectorFromSet(labels.Set{discoveryv1.LabelServiceName: serviceName}).String()
 	endpointSlices, err := c.clientset.DiscoveryV1().EndpointSlices(env.Namespace).List(ctx, metav1.ListOptions{LabelSelector: epsSelector})
 	if err != nil {
+		logs.Warn(ctx, "k8s EndpointSlice list failed", event.String(logFieldNamespace, env.Namespace), event.String(logFieldSelector, epsSelector), event.Err(err))
 		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
 			return nil, fmt.Errorf("list EndpointSlices in namespace %q with selector %q: permission denied: %w", env.Namespace, epsSelector, err)
 		}
 		return nil, fmt.Errorf("list EndpointSlices in namespace %q with selector %q: %w", env.Namespace, epsSelector, err)
 	}
 
-	return expandEndpointSliceAddresses(endpointSlices.Items, target.PortSelector), nil
+	result := expandEndpointSliceAddresses(endpointSlices.Items, target.PortSelector)
+	if len(result) == 0 {
+		logs.Warn(ctx, "k8s endpoint slice returned no ready endpoints", event.String(logFieldNamespace, env.Namespace), event.String(logFieldSelector, epsSelector))
+	}
+	return result, nil
 }
 
 func expandEndpointSliceAddresses(endpointSlices []discoveryv1.EndpointSlice, portSelector PortSelector) []string {

@@ -1,8 +1,10 @@
 package testplan
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
 	"dominion/common/gopkg/solver"
 	"dominion/common/gopkg/testtool"
 	gw "dominion/projects/game/gateway"
@@ -44,11 +47,28 @@ var (
 	jsonMarshaler   = protojson.MarshalOptions{}
 	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-	httpClient = &http.Client{Timeout: httpClientTimeout}
+	httpClient = &http.Client{
+		Timeout:   httpClientTimeout,
+		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
+	}
+
+	// wsHTTPClient is used for WebSocket dial without HTTP timeout,
+	// but with trace propagation via HTTPTransport.
+	wsHTTPClient = &http.Client{
+		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
+	}
 )
 
 func uniqueSessionID() string {
 	return fmt.Sprintf("test-session-%d", time.Now().UnixNano())
+}
+
+// tracedCtx creates a context with a new trace span and logs the trace ID.
+func tracedCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx := tracecontext.Ensure(context.Background())
+	t.Logf("trace_id=%s", tracecontext.ID(ctx))
+	return ctx
 }
 
 func mustSigner(t *testing.T) *token.HMACSigner {
@@ -139,6 +159,7 @@ func startAgent(ctx context.Context, t *testing.T, hostURL, sessionID, gatewayID
 		EnvHeader:  testtool.MustEnv(),
 		Scenario:   scenario,
 		VideoURL:   testVideoURL,
+		HTTPClient: wsHTTPClient,
 	})
 	errCh := make(chan error, 1)
 	go func() {
@@ -223,13 +244,13 @@ func mustReadControlResult(ctx context.Context, t *testing.T, conn *websocket.Co
 	}
 }
 
-func doHTTPGet(t *testing.T, url string) *http.Response {
+func doHTTPGet(ctx context.Context, t *testing.T, url string) *http.Response {
 	t.Helper()
 	sutEnvName := testtool.MustEnv()
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		t.Fatalf("http.NewRequest GET %s: %v", url, err)
+		t.Fatalf("http.NewRequestWithContext GET %s: %v", url, err)
 	}
 	req.Header.Set(headerEnv, sutEnvName)
 
@@ -268,15 +289,60 @@ func decodeGameRuntime(t *testing.T, resp *http.Response) *gw.GameRuntime {
 	return rt
 }
 
+// assertNotBlackFrame decodes JPEG data and verifies the image contains
+// real video content rather than a uniform black or fallback frame.
+func assertNotBlackFrame(t *testing.T, data []byte) {
+	t.Helper()
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode snapshot JPEG: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() <= 1 || bounds.Dy() <= 1 {
+		t.Fatalf("snapshot image %dx%d, expected real video frame > 1x1", bounds.Dx(), bounds.Dy())
+	}
+
+	stepX := 1
+	if w := bounds.Dx(); w > 32 {
+		stepX = w / 32
+	}
+	stepY := 1
+	if h := bounds.Dy(); h > 32 {
+		stepY = h / 32
+	}
+
+	sampled, nonBlack := 0, 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += stepY {
+		for x := bounds.Min.X; x < bounds.Max.X; x += stepX {
+			r, g, b, _ := img.At(x, y).RGBA()
+			sampled++
+			if r > 2560 || g > 2560 || b > 2560 {
+				nonBlack++
+			}
+		}
+	}
+
+	if sampled == 0 {
+		t.Fatal("no pixels sampled from snapshot image")
+	}
+	ratio := float64(nonBlack) / float64(sampled)
+	if ratio < 0.01 {
+		t.Fatalf("snapshot appears to be a black frame: only %.2f%% non-black pixels (%d/%d sampled)",
+			ratio*100, nonBlack, sampled)
+	}
+}
+
 func messageID(prefix string) string {
 	return fmt.Sprintf("test-%s-%d", prefix, time.Now().UnixNano())
 }
 
 func wsDialOptions() *websocket.DialOptions {
+	headers := http.Header{
+		headerEnv: {testtool.MustEnv()},
+	}
 	return &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			headerEnv: {testtool.MustEnv()},
-		},
+		HTTPClient: wsHTTPClient,
+		HTTPHeader: headers,
 	}
 }
 
@@ -291,7 +357,7 @@ func TestInterface_WebConnect_Success(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	conn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
@@ -303,7 +369,7 @@ func TestInterface_AgentConnect_Success(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -318,7 +384,7 @@ func TestInterface_PathSessionMismatch_Rejected(t *testing.T) {
 	tok := issueToken(t, sessionID, gatewayID)
 	url := wsURL(hostURL, "different-session-id", tok)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	_, _, err := websocket.Dial(ctx, url, wsDialOptions())
@@ -332,7 +398,7 @@ func TestInterface_DuplicateAgent_Rejected(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -375,7 +441,7 @@ func TestInterface_MediaDelivery(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -385,22 +451,43 @@ func TestInterface_MediaDelivery(t *testing.T) {
 	defer closeConn(webConn)
 
 	mi := mustReadMediaInit(ctx, t, webConn)
+	if mi.GetStreamId() == "" {
+		t.Fatal("media_init stream_id is empty")
+	}
+	if mi.GetInitId() == "" {
+		t.Fatal("media_init init_id is empty")
+	}
 	if mi.GetMimeType() != mimeTypeMP4 {
 		t.Fatalf("media_init mime_type = %q, want %q", mi.GetMimeType(), mimeTypeMP4)
 	}
+	if mi.GetCodec() == "" {
+		t.Fatal("media_init codec is empty")
+	}
+	if len(mi.GetSegment()) == 0 {
+		t.Fatal("media_init segment is empty")
+	}
 
 	ms := mustReadMediaSegment(ctx, t, webConn)
-	if ms.GetSegmentId() == "" {
-		t.Fatal("media_segment segment_id is empty")
+	if ms.GetStreamId() == "" {
+		t.Fatal("media_segment stream_id is empty")
+	}
+	if ms.GetInitId() == "" {
+		t.Fatal("media_segment init_id is empty")
+	}
+	if ms.GetSequence() == 0 {
+		t.Fatal("media_segment sequence is 0")
+	}
+	if len(ms.GetSegment()) == 0 {
+		t.Fatal("media_segment segment data is empty")
 	}
 }
 
-func TestInterface_CatchupFromKeyframe(t *testing.T) {
+func TestInterface_CatchupFromRandomAccess(t *testing.T) {
 	hostURL := testtool.MustEndpoint("http", "public")
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -414,8 +501,48 @@ func TestInterface_CatchupFromKeyframe(t *testing.T) {
 	mustReadMediaInit(ctx, t, webConn)
 
 	ms := mustReadMediaSegment(ctx, t, webConn)
-	if !ms.GetKeyFrame() {
-		t.Fatal("expected catch-up segment to be a keyframe")
+	if !ms.GetRandomAccess() {
+		t.Fatal("expected catch-up segment to have random_access=true")
+	}
+
+	prevSeq := ms.GetSequence()
+	for i := 0; i < 2; i++ {
+		next := mustReadMediaSegment(ctx, t, webConn)
+		if next.GetSequence() <= prevSeq {
+			t.Fatalf("expected sequence %d > prev %d", next.GetSequence(), prevSeq)
+		}
+		prevSeq = next.GetSequence()
+	}
+}
+
+func TestInterface_V1MediaRejected(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	v1JSON := fmt.Sprintf(`{"sessionId":%q,"messageId":"v1-media-001","mediaSegment":{"segmentId":"seg-001","keyFrame":true,"segment":"dGVzdA==","streamId":"stream-1","initId":"init-1","sequence":1}}`, sessionID)
+	if err := webConn.Write(ctx, websocket.MessageText, []byte(v1JSON)); err != nil {
+		t.Fatalf("web write v1 media JSON: %v", err)
+	}
+
+	for {
+		env, err := readEnvelope(ctx, webConn)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		if errPayload := env.GetError(); errPayload != nil {
+			return
+		}
+		if env.GetMediaInit() != nil || env.GetMediaSegment() != nil || env.GetControlAck() != nil || env.GetPing() != nil {
+			continue
+		}
+		t.Fatalf("expected error for v1 media with segment_id/key_frame fields, got payload: %v", env.Payload)
 	}
 }
 
@@ -424,7 +551,7 @@ func TestInterface_Snapshot_Cached(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -433,7 +560,7 @@ func TestInterface_Snapshot_Cached(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
-	resp := doHTTPGet(t, snapshotURL)
+	resp := doHTTPGet(ctx, t, snapshotURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -453,7 +580,7 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -462,7 +589,7 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
-	resp := doHTTPGet(t, snapshotURL)
+	resp := doHTTPGet(ctx, t, snapshotURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -477,19 +604,77 @@ func TestInterface_Snapshot_Refresh(t *testing.T) {
 	}
 }
 
+func TestInterface_Snapshot_ImageNotBlack(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
+	resp := doHTTPGet(ctx, t, snapshotURL)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GetGameSnapshot status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	snap := decodeGameSnapshot(t, resp)
+
+	image := snap.GetImage()
+	if len(image) == 0 {
+		t.Fatal("snapshot image is empty, want non-empty JPEG data")
+	}
+
+	assertNotBlackFrame(t, image)
+}
+
+func TestInterface_Snapshot_UnavailableWithoutRandomAccess(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.SnapshotFail)
+	defer agent.Close()
+
+	time.Sleep(300 * time.Millisecond)
+
+	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID)
+	resp := doHTTPGet(ctx, t, snapshotURL)
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		snap := decodeGameSnapshot(t, resp)
+		image := snap.GetImage()
+		if len(image) > 0 {
+			t.Fatalf("expected snapshot to be unavailable without random-access segments, got %d bytes of image data", len(image))
+		}
+	}
+}
+
 func TestInterface_Runtime_Fields(t *testing.T) {
 	hostURL := testtool.MustEndpoint("http", "public")
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
 	defer agent.Close()
 
 	runtimeURL := hostURL + fmt.Sprintf(runtimePathFormat, sessionID)
-	resp := doHTTPGet(t, runtimeURL)
+	resp := doHTTPGet(ctx, t, runtimeURL)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -515,7 +700,7 @@ func TestInterface_ControlRoundtrip(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -530,11 +715,12 @@ func TestInterface_ControlRoundtrip(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-click-001",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      100,
-					Y:      200,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      100,
+						Y:      200,
+					},
 				},
 			},
 		},
@@ -567,7 +753,7 @@ func TestInterface_FlashSnapshot(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
@@ -582,12 +768,13 @@ func TestInterface_FlashSnapshot(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId:   "op-flash-001",
-				Kind:          gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
 				FlashSnapshot: true,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      50,
-					Y:      50,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      50,
+						Y:      50,
+					},
 				},
 			},
 		},
@@ -610,7 +797,7 @@ func TestInterface_ConcurrentOperations(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
@@ -625,11 +812,12 @@ func TestInterface_ConcurrentOperations(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-concurrent-001",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      10,
-					Y:      20,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
 				},
 			},
 		},
@@ -644,11 +832,12 @@ func TestInterface_ConcurrentOperations(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-concurrent-002",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      30,
-					Y:      40,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      30,
+						Y:      40,
+					},
 				},
 			},
 		},
@@ -670,7 +859,7 @@ func TestInterface_TimeoutSemantics(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), 5*time.Second)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
@@ -685,20 +874,22 @@ func TestInterface_TimeoutSemantics(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-timeout-001",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      10,
-					Y:      20,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
 				},
 			},
 		},
 	}
+
 	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
 		t.Fatalf("web write control_request: %v", err)
 	}
 
-	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), readTimeout)
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, readTimeout)
 	defer timeoutCancel()
 
 	for {
@@ -720,7 +911,7 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 	sessionID := uniqueSessionID()
 	gatewayID := mustGatewayID(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
 	defer cancel()
 
 	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Disconnect)
@@ -735,11 +926,12 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
 			ControlRequest: &gw.GameControlRequest{
 				OperationId: "op-disconnect-001",
-				Kind:        gw.GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
-				Mouse: &gw.GameMouseAction{
-					Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-					X:      10,
-					Y:      20,
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      10,
+						Y:      20,
+					},
 				},
 			},
 		},
@@ -748,7 +940,7 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 		t.Fatalf("web write control_request: %v", err)
 	}
 
-	disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), readTimeout)
+	disconnectCtx, disconnectCancel := context.WithTimeout(ctx, readTimeout)
 	defer disconnectCancel()
 
 	for {
@@ -762,5 +954,258 @@ func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestInterface_ControlRoundtrip_MouseDrag(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	ctrlReq := &gw.GameWebSocketEnvelope{
+		SessionId: sessionID,
+		MessageId: messageID("ctrl-drag"),
+		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-drag-001",
+				Action: &gw.GameControlRequest_MouseDrag{
+					MouseDrag: &gw.GameMouseDrag{
+						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						FromX:      10,
+						FromY:      20,
+						ToX:        100,
+						ToY:        200,
+						DurationMs: 300,
+					},
+				},
+			},
+		},
+	}
+	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
+		t.Fatalf("web write control_request: %v", err)
+	}
+
+	for {
+		env := mustReadEnvelope(ctx, t, webConn)
+		if ack := env.GetControlAck(); ack != nil {
+			if ack.GetOperationId() != "op-drag-001" {
+				t.Fatalf("control_ack operation_id = %q, want op-drag-001", ack.GetOperationId())
+			}
+			break
+		}
+	}
+
+	cr := mustReadControlResult(ctx, t, webConn)
+	if cr.GetOperationId() != "op-drag-001" {
+		t.Fatalf("control_result operation_id = %q, want op-drag-001", cr.GetOperationId())
+	}
+	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
+		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
+	}
+}
+
+func TestInterface_ControlRoundtrip_MouseHold(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	ctrlReq := &gw.GameWebSocketEnvelope{
+		SessionId: sessionID,
+		MessageId: messageID("ctrl-hold"),
+		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-hold-001",
+				Action: &gw.GameControlRequest_MouseHold{
+					MouseHold: &gw.GameMouseHold{
+						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:          50,
+						Y:          60,
+						DurationMs: 500,
+					},
+				},
+			},
+		},
+	}
+	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
+		t.Fatalf("web write control_request: %v", err)
+	}
+
+	for {
+		env := mustReadEnvelope(ctx, t, webConn)
+		if ack := env.GetControlAck(); ack != nil {
+			if ack.GetOperationId() != "op-hold-001" {
+				t.Fatalf("control_ack operation_id = %q, want op-hold-001", ack.GetOperationId())
+			}
+			break
+		}
+	}
+
+	cr := mustReadControlResult(ctx, t, webConn)
+	if cr.GetOperationId() != "op-hold-001" {
+		t.Fatalf("control_result operation_id = %q, want op-hold-001", cr.GetOperationId())
+	}
+	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
+		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
+	}
+}
+
+func TestInterface_ControlRoundtrip_RightClick(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	ctrlReq := &gw.GameWebSocketEnvelope{
+		SessionId: sessionID,
+		MessageId: messageID("ctrl-right-click"),
+		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-right-click-001",
+				Action: &gw.GameControlRequest_MouseClick{
+					MouseClick: &gw.GameMouseClick{
+						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+						X:      200,
+						Y:      300,
+					},
+				},
+			},
+		},
+	}
+	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
+		t.Fatalf("web write control_request: %v", err)
+	}
+
+	for {
+		env := mustReadEnvelope(ctx, t, webConn)
+		if ack := env.GetControlAck(); ack != nil {
+			if ack.GetOperationId() != "op-right-click-001" {
+				t.Fatalf("control_ack operation_id = %q, want op-right-click-001", ack.GetOperationId())
+			}
+			break
+		}
+	}
+
+	cr := mustReadControlResult(ctx, t, webConn)
+	if cr.GetOperationId() != "op-right-click-001" {
+		t.Fatalf("control_result operation_id = %q, want op-right-click-001", cr.GetOperationId())
+	}
+	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
+		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
+	}
+}
+
+func TestInterface_ControlRoundtrip_RightDrag(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	ctrlReq := &gw.GameWebSocketEnvelope{
+		SessionId: sessionID,
+		MessageId: messageID("ctrl-right-drag"),
+		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &gw.GameControlRequest{
+				OperationId: "op-right-drag-001",
+				Action: &gw.GameControlRequest_MouseDrag{
+					MouseDrag: &gw.GameMouseDrag{
+						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+						FromX:      10,
+						FromY:      20,
+						ToX:        100,
+						ToY:        200,
+						DurationMs: 400,
+					},
+				},
+			},
+		},
+	}
+	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
+		t.Fatalf("web write control_request: %v", err)
+	}
+
+	for {
+		env := mustReadEnvelope(ctx, t, webConn)
+		if ack := env.GetControlAck(); ack != nil {
+			if ack.GetOperationId() != "op-right-drag-001" {
+				t.Fatalf("control_ack operation_id = %q, want op-right-drag-001", ack.GetOperationId())
+			}
+			break
+		}
+	}
+
+	cr := mustReadControlResult(ctx, t, webConn)
+	if cr.GetOperationId() != "op-right-drag-001" {
+		t.Fatalf("control_result operation_id = %q, want op-right-drag-001", cr.GetOperationId())
+	}
+	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
+		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
+	}
+}
+
+func TestInterface_OldKindMouseJSON_Rejected(t *testing.T) {
+	hostURL := testtool.MustEndpoint("http", "public")
+	sessionID := uniqueSessionID()
+	gatewayID := mustGatewayID(t)
+
+	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+	defer cancel()
+
+	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	defer agent.Close()
+
+	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
+	defer closeConn(webConn)
+
+	oldJSON := fmt.Sprintf(`{"sessionId":%q,"messageId":"old-format-001","controlRequest":{"operationId":"op-old-001","kind":"MOUSE_CLICK","mouse":{"button":"LEFT","x":10,"y":20}}}`, sessionID)
+	if err := webConn.Write(ctx, websocket.MessageText, []byte(oldJSON)); err != nil {
+		t.Fatalf("web write old-format JSON: %v", err)
+	}
+
+	for {
+		env, err := readEnvelope(ctx, webConn)
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		if errPayload := env.GetError(); errPayload != nil {
+			return
+		}
+		if env.GetMediaInit() != nil || env.GetMediaSegment() != nil || env.GetControlAck() != nil || env.GetPing() != nil {
+			continue
+		}
+		t.Fatalf("expected error for old kind/mouse JSON, got payload: %v", env.Payload)
 	}
 }

@@ -1,9 +1,13 @@
 package s3
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"dominion/common/gopkg/logs"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -250,4 +254,109 @@ func TestClientOption_multiple(t *testing.T) {
 	if cfg.secretKey != "s1" {
 		t.Fatalf("secretKey = %q, want %q", cfg.secretKey, "s1")
 	}
+}
+
+func TestNewS3Client_Logging(t *testing.T) {
+	secrets := map[string]string{
+		S3AccessKeyEnv: "test-access-key",
+		S3SecretKeyEnv: "test-secret-key",
+	}
+
+	t.Run("success info log contains endpoint and region", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		originalNewMinioClient := newMinioClient
+		lookupEnv = func(key string) (string, bool) {
+			value, ok := secrets[key]
+			return value, ok
+		}
+		newMinioClient = func(_ string, _ *minio.Options) (*minio.Client, error) {
+			return new(minio.Client), nil
+		}
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+			newMinioClient = originalNewMinioClient
+		})
+
+		_, err := NewS3Client()
+		if err != nil {
+			t.Fatalf("NewS3Client() unexpected error: %v", err)
+		}
+
+		logOutput := buf.String()
+
+		// Verify info log message
+		if !strings.Contains(logOutput, "s3 client initializing") {
+			t.Fatalf("log output missing info message, got: %q", logOutput)
+		}
+		// Verify endpoint and region are logged
+		if !strings.Contains(logOutput, Endpoint) {
+			t.Fatalf("log output missing endpoint %q, got: %q", Endpoint, logOutput)
+		}
+		if !strings.Contains(logOutput, DefaultRegion) {
+			t.Fatalf("log output missing region %q, got: %q", DefaultRegion, logOutput)
+		}
+		// CRITICAL: Verify access key and secret key are NOT in log output
+		if strings.Contains(logOutput, "test-access-key") {
+			t.Fatalf("log output MUST NOT contain access key, got: %q", logOutput)
+		}
+		if strings.Contains(logOutput, "test-secret-key") {
+			t.Fatalf("log output MUST NOT contain secret key, got: %q", logOutput)
+		}
+	})
+
+	t.Run("error log on client creation failure", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		logs.SetDefault(logger)
+
+		originalLookupEnv := lookupEnv
+		originalNewMinioClient := newMinioClient
+		lookupEnv = func(key string) (string, bool) {
+			value, ok := secrets[key]
+			return value, ok
+		}
+		expectedErr := errors.New("connection refused")
+		newMinioClient = func(_ string, _ *minio.Options) (*minio.Client, error) {
+			return nil, expectedErr
+		}
+		t.Cleanup(func() {
+			lookupEnv = originalLookupEnv
+			newMinioClient = originalNewMinioClient
+		})
+
+		_, err := NewS3Client()
+		if err == nil {
+			t.Fatal("NewS3Client() expected error, got nil")
+		}
+
+		logOutput := buf.String()
+
+		// Info log should still appear before client creation
+		if !strings.Contains(logOutput, "s3 client initializing") {
+			t.Fatalf("log output missing info message, got: %q", logOutput)
+		}
+		// Error log should appear on failure
+		if !strings.Contains(logOutput, "s3 client creation failed") {
+			t.Fatalf("log output missing error message, got: %q", logOutput)
+		}
+		// Verify error detail is logged
+		if !strings.Contains(logOutput, "connection refused") {
+			t.Fatalf("log output missing error detail, got: %q", logOutput)
+		}
+		// Verify endpoint is in log output
+		if !strings.Contains(logOutput, Endpoint) {
+			t.Fatalf("log output missing endpoint %q, got: %q", Endpoint, logOutput)
+		}
+		// CRITICAL: Verify access key and secret key are NOT in log output
+		if strings.Contains(logOutput, "test-access-key") {
+			t.Fatalf("log output MUST NOT contain access key, got: %q", logOutput)
+		}
+		if strings.Contains(logOutput, "test-secret-key") {
+			t.Fatalf("log output MUST NOT contain secret key, got: %q", logOutput)
+		}
+	})
 }

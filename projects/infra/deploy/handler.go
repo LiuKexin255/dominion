@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/projects/infra/deploy/domain"
+	"dominion/projects/infra/deploy/service"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -24,28 +27,28 @@ const (
 	invalidViewReason               = "INVALID_VIEW"
 	serviceEndpointsNotFoundReason  = "SERVICE_ENDPOINTS_NOT_FOUND"
 	servicePortMapUnavailableReason = "SERVICE_PORT_MAP_UNAVAILABLE"
-)
 
-// Enqueuer enqueues environment reconciliation requests.
-type Enqueuer interface {
-	Enqueue(ctx context.Context, envName domain.EnvironmentName) error
-}
+	logFieldEnvName      = "env_name"
+	logFieldGeneration   = "generation"
+	logFieldDesiredState = "desired_state"
+	logFieldError        = "error"
+)
 
 // Handler implements DeployServiceServer.
 type Handler struct {
 	UnimplementedDeployServiceServer
 
-	repo    domain.Repository
-	queue   Enqueuer
-	runtime domain.EnvironmentRuntime
+	repo           domain.Repository
+	runtime        domain.EnvironmentRuntime
+	commandService *service.EnvironmentCommandService
 }
 
 // NewHandler creates a deploy gRPC handler.
-func NewHandler(repo domain.Repository, queue Enqueuer, runtime domain.EnvironmentRuntime) *Handler {
+func NewHandler(repo domain.Repository, runtime domain.EnvironmentRuntime, commandService *service.EnvironmentCommandService) *Handler {
 	return &Handler{
-		repo:    repo,
-		queue:   queue,
-		runtime: runtime,
+		repo:           repo,
+		runtime:        runtime,
+		commandService: commandService,
 	}
 }
 
@@ -93,16 +96,38 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 	result, err := queryEndpoints(ctx, name.EnvLabel(), name.App(), name.Service())
 	if err == nil {
+		logs.Info(ctx, "service endpoints resolved (same env)",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+			event.Int("endpoint_count", len(result.Endpoints)+len(result.StatefulInstances)),
+		)
 		return newServiceEndpointsResponse(name, result, env.Name(), ResolutionMode_RESOLUTION_MODE_SAME_ENV, view), nil
 	}
 	if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+		logs.Warn(ctx, "service endpoints port map unavailable",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+		)
 		return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
 	}
 
 	switch {
 	case !errors.Is(err, domain.ErrServiceNotFound):
+		logs.Error(ctx, "failed to query service endpoints",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+			event.Err(err),
+		)
 		return nil, toStatusError(err)
 	case env.Type() != domain.EnvironmentTypeProd:
+		logs.Warn(ctx, "service endpoints not found in non-prod environment",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+		)
 		return nil, newServiceEndpointsNotFoundError(name)
 	}
 
@@ -113,6 +138,11 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 	prodCandidates := filterProdCandidates(fallbackEnvs, env.Name())
 	if len(prodCandidates) == 0 {
+		logs.Warn(ctx, "no prod candidates for service endpoints fallback",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+		)
 		return nil, newServiceEndpointsNotFoundError(name)
 	}
 
@@ -128,17 +158,39 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 
 		result, err = candidateQuery(ctx, candidate.Name().Label(), name.App(), name.Service())
 		if err == nil {
+			logs.Info(ctx, "service endpoints resolved (prod fallback)",
+				event.String(logFieldEnvName, env.Name().String()),
+				event.String("app", name.App()),
+				event.String("service", name.Service()),
+				event.Int("endpoint_count", len(result.Endpoints)+len(result.StatefulInstances)),
+			)
 			return newServiceEndpointsResponse(name, result, candidate.Name(), ResolutionMode_RESOLUTION_MODE_PROD_FALLBACK, view), nil
 		}
 		if errors.Is(err, domain.ErrServicePortMapUnavailable) {
+			logs.Warn(ctx, "fallback service endpoints port map unavailable",
+				event.String(logFieldEnvName, env.Name().String()),
+				event.String("app", name.App()),
+				event.String("service", name.Service()),
+			)
 			return nil, newStatusErrorWithReason(codes.FailedPrecondition, servicePortMapUnavailableReason, err.Error(), nil)
 		}
 		if errors.Is(err, domain.ErrServiceNotFound) {
 			continue
 		}
+		logs.Error(ctx, "failed to query fallback service endpoints",
+			event.String(logFieldEnvName, env.Name().String()),
+			event.String("app", name.App()),
+			event.String("service", name.Service()),
+			event.Err(err),
+		)
 		return nil, toStatusError(err)
 	}
 
+	logs.Warn(ctx, "service endpoints not found in any environment",
+		event.String(logFieldEnvName, env.Name().String()),
+		event.String("app", name.App()),
+		event.String("service", name.Service()),
+	)
 	return nil, newServiceEndpointsNotFoundError(name)
 }
 
@@ -182,37 +234,22 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	if _, err := h.repo.Get(ctx, envName); err == nil {
-		return nil, toStatusError(domain.ErrAlreadyExists)
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return nil, toStatusError(err)
-	}
-
-	env, err := fromProtoEnvironment(&Environment{
-		Name:         envName.String(),
-		Description:  req.GetEnvironment().GetDescription(),
-		DesiredState: req.GetEnvironment().GetDesiredState(),
-		Type:         req.GetEnvironment().GetType(),
-	})
+	envType := fromProtoEnvironmentType(req.GetEnvironment().GetType())
+	description := req.GetEnvironment().GetDescription()
+	desiredState, err := fromProtoDesiredState(req.GetEnvironment().GetDesiredState())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	env, err := h.commandService.Create(ctx, envName, envType, description, desiredState)
 	if err != nil {
-		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
-	}
-	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := h.repo.Save(ctx, env); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		return nil, toStatusError(err)
-	}
+	logs.Info(ctx, "environment created",
+		event.String(logFieldEnvName, envName.String()),
+		event.String(logFieldDesiredState, env.Status().Desired.String()),
+	)
 
 	return toProtoEnvironment(env), nil
 }
@@ -232,38 +269,21 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	env, err := h.repo.Get(ctx, envName)
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-	if env.Status() != nil && env.Status().State == domain.StateDeleting {
-		return nil, toStatusError(domain.ErrInvalidState)
-	}
-
 	desiredState, err := fromProtoDesiredState(req.GetEnvironment().GetDesiredState())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := env.SetDesiredPresent(desiredState); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	reservedEnvVars, err := h.runtime.ReservedEnvironmentVariableNames(ctx)
+	env, err := h.commandService.Update(ctx, envName, desiredState)
 	if err != nil {
-		return nil, toStatusError(fmt.Errorf("获取保留环境变量失败: %w", err))
-	}
-	if err := env.ValidateEnvConflict(reservedEnvVars); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := h.repo.Save(ctx, env); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		return nil, toStatusError(err)
-	}
+	logs.Info(ctx, "environment updated",
+		event.String(logFieldEnvName, envName.String()),
+		event.Int64(logFieldGeneration, env.Generation()),
+		event.String(logFieldDesiredState, env.Status().Desired.String()),
+	)
 
 	return toProtoEnvironment(env), nil
 }
@@ -275,22 +295,13 @@ func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentR
 		return nil, toStatusError(err)
 	}
 
-	env, err := h.repo.Get(ctx, envName)
-	if err != nil {
+	if err := h.commandService.Delete(ctx, envName); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	if err := env.SetDesiredAbsent(); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.repo.Save(ctx, env); err != nil {
-		return nil, toStatusError(err)
-	}
-
-	if err := h.queue.Enqueue(ctx, envName); err != nil {
-		return nil, toStatusError(err)
-	}
+	logs.Info(ctx, "environment marked for deletion",
+		event.String(logFieldEnvName, envName.String()),
+	)
 
 	return new(emptypb.Empty), nil
 }
@@ -342,6 +353,8 @@ func toProtoState(state domain.EnvironmentState) EnvironmentState {
 		return EnvironmentState_ENVIRONMENT_STATE_FAILED
 	case domain.StateDeleting:
 		return EnvironmentState_ENVIRONMENT_STATE_DELETING
+	case domain.StateWaitingRollout:
+		return EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT
 	default:
 		return EnvironmentState_ENVIRONMENT_STATE_UNSPECIFIED
 	}
@@ -563,7 +576,8 @@ func toProtoInfras(infras []*domain.InfraSpec) []*InfraSpec {
 			Name:     infra.Name,
 			App:      infra.App,
 			Persistence: &InfraPersistenceSpec{
-				Enabled: infra.Persistence.Enabled,
+				Enabled:  infra.Persistence.Enabled,
+				Capacity: infra.Persistence.Capacity,
 			},
 		})
 	}
@@ -587,7 +601,8 @@ func fromProtoInfras(infras []*InfraSpec) ([]*domain.InfraSpec, error) {
 			Name:     infra.GetName(),
 			App:      infra.GetApp(),
 			Persistence: domain.InfraPersistenceSpec{
-				Enabled: infra.GetPersistence().GetEnabled(),
+				Enabled:  infra.GetPersistence().GetEnabled(),
+				Capacity: infra.GetPersistence().GetCapacity(),
 			},
 		})
 	}

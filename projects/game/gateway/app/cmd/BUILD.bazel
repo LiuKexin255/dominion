@@ -7,7 +7,16 @@ go_library(
     importpath = "dominion/projects/game/gateway/app/cmd",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/http",
+        "//common/gopkg/otel",
+        "//projects/game/gateway",
         "//projects/game/gateway/app",
+        "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/gateway/service",
+        "//projects/game/pkg/token",
+        "@grpc_ecosystem_grpc_gateway//runtime",
     ],
 )
 

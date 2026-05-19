@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "sessionclient",
+    srcs = [
+        "client.go",
+        "doc.go",
+    ],
+    importpath = "dominion/projects/game/windows_agent/internal/sessionclient",
+    visibility = ["//projects/game/windows_agent:__subpackages__"],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//projects/game/gateway",
+        "//projects/game/session",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_unittest(
+    name = "sessionclient_test",
+    srcs = ["client_test.go"],
+    embed = [":sessionclient"],
+    deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//projects/game/session",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

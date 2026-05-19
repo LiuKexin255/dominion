@@ -42,6 +42,16 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// Option configures a Client.
+type Option func(*Client)
+
+// WithHTTPTransport wraps the underlying HTTP client's transport with the given RoundTripper.
+func WithHTTPTransport(transport http.RoundTripper) Option {
+	return func(c *Client) {
+		c.httpClient.Transport = transport
+	}
+}
+
 // APIError captures an HTTP status with a parsed error message.
 type APIError struct {
 	StatusCode int
@@ -69,11 +79,15 @@ func (e *APIError) Unwrap() error {
 }
 
 // NewClient creates a deploy service client.
-func NewClient(endpoint string) *Client {
-	return &Client{
+func NewClient(endpoint string, opts ...Option) *Client {
+	c := &Client{
 		endpoint:   strings.TrimRight(endpoint, "/"),
 		httpClient: &http.Client{},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // GetEnvironment fetches an environment by resource name.
