@@ -64,7 +64,7 @@ game.liukexin.com
   GET /v1/sessions/{session}/game/connect?token=...
   ```
 
-* 校验 token，读取 `owner_runtime_id`。
+* 从 token 中解析 `owner_runtime_id`，用于查找 owner runtime。
 * 将 WebSocket、runtime read API 请求转发到 owner runtime。
 * 不持有 `gateway.proto`，不定义业务 proto，避免聚合层与后端服务契约不一致。
 * 不持有 game runtime 内存状态、media cache、control executor。
@@ -214,6 +214,86 @@ gateway 不新建业务 proto。
 
 ## Token 与 owner 模型
 
+### token 包归属
+
+token 不属于 gateway 或 runtime 的私有 domain 包，应迁回 game 公共包，例如：
+
+```text
+projects/game/pkg/token
+```
+
+原因：
+
+* session 需要签发 runtime 连接 token。
+* gateway 需要解析 token 中的 `owner_runtime_id`，用于定位 owner runtime。
+* runtime 需要完整验证 token，决定是否允许连接、读取或刷新 runtime。
+
+公共 token 包需要同时提供：
+
+* `Issuer`：供 runtime lifecycle 流程签发 token。
+* `Verifier`：供 runtime 做完整签名、过期、session、owner、epoch 校验。
+* `OwnerExtractor` 或等价轻量接口：供 gateway 从 token payload 中读取 `owner_runtime_id` 作为路由提示。
+
+gateway 只能使用 owner 提取能力，不使用完整验证结果做业务放行判断。gateway 解析得到的 `owner_runtime_id` 是未受信任的 routing hint，不代表身份认证、授权、session 合法或 owner 合法。
+
+接口命名应显式区分解析与验证，例如：
+
+* `ParseRoutingClaims`：只解析路由所需字段，供 gateway 使用。
+* `ValidateRuntimeToken`：完整验证 token，供 runtime 使用。
+
+### token 签发
+
+token 由 runtime 签发。runtime 在 `CreateGameRuntime` 和 `RefreshGameRuntime` 中使用公共 token 包的 `Issuer` 生成 token，并将 token 返回给 session。
+
+gateway 不签发 token，也不刷新 token。
+
+## 公共常量与服务 target
+
+各服务依赖的 deploy/solver target 不应散落在 `app/cmd`、runtime client、owner resolver 或测试代码中，应集中到 game 公共常量包统一管理。
+
+建议目录：
+
+```text
+projects/game/pkg/const
+```
+
+注意：`const` 是 Go 关键字，目录可以叫 `const`，但 Go package 名不能叫 `const`。包名建议使用：
+
+```go
+package gameconst
+```
+
+该包只保存跨服务共享的稳定常量，不承载配置解析、resolver 创建或业务逻辑。
+
+建议常量：
+
+```go
+const (
+    AppGame = "game"
+
+    ServiceGateway = "gateway"
+    ServiceRuntime = "runtime"
+    ServiceSession = "session"
+    ServiceMongo = "mongo"
+
+    TargetRuntimeHTTP = "game/runtime:http"
+    TargetRuntimeGRPC = "game/runtime:grpc"
+    TargetSessionGRPC = "game/session:grpc"
+    TargetMongo = "game/mongo"
+)
+```
+
+使用约束：
+
+* gateway owner resolver 使用 `TargetRuntimeHTTP`，不在代码中手写 `game/runtime:http`。
+* gateway grpc-gateway 聚合连接 session 时使用 `TargetSessionGRPC`。
+* gateway grpc-gateway 聚合连接 runtime read API 时使用 `TargetRuntimeGRPC`。
+* session 调用 runtime lifecycle RPC 时使用 `TargetRuntimeGRPC`。
+* session 创建 Mongo client 时使用 `TargetMongo`。
+* 测试代码如需解析服务 target，也优先引用该公共常量，避免测试与服务实现目标不一致。
+
+如果后续 port name 调整，只修改该公共常量包和对应 `service.yaml`，不要在多个服务内分别搜索替换字符串。
+
 ### Claims
 
 token claims 中 owner 字段统一改为：
@@ -241,8 +321,8 @@ token claims 中 owner 字段统一改为：
 owner authority 只属于 runtime。
 
 * session 负责请求 runtime 创建或刷新 runtime，并持久化返回的 `owner_runtime_id` 与 token。
-* gateway 只根据 token 中的 `owner_runtime_id` 做转发，不创建 runtime，不修正 owner。
-* runtime 收到本地请求后再次校验 token 与本实例 `HOSTNAME` 一致，防止错误转发或伪造请求。
+* gateway 只从 token 中提取未受信任的 `owner_runtime_id` routing hint 做转发，不创建 runtime，不修正 owner，也不基于 token 解析结果放行业务请求。
+* runtime 收到本地请求后负责完整校验 token，防止错误转发或伪造请求。
 
 这样避免 gateway 与 runtime 同时成为 owner 决策源。
 
@@ -284,17 +364,31 @@ GET /v1/sessions/{session}/game/connect?token=...
 gateway 的 owner proxy 流程：
 
 1. 从 query 中读取 token。
-2. 验证 token 签名、过期时间与 owner epoch。
-3. 读取 `owner_runtime_id`。
-4. 使用 deploy stateful resolver 查询 `game/runtime:http` 的实例。
+2. 执行输入安全检查：token 存在、长度未超过限制、格式可解析。
+3. 使用公共 token 包解析 token payload，提取未受信任的 `owner_runtime_id` routing hint。
+4. 使用 deploy stateful resolver 查询 `TargetRuntimeHTTP` 对应的实例。
 5. 如果 `owner_runtime_id` 对应本次请求应转发到某个 runtime 实例，则 reverse proxy 到该实例内部 endpoint。
 6. WebSocket upgrade 请求必须保持 upgrade header 与连接双向转发语义。
 
-runtime 再执行本地校验：
+gateway 不负责：
+
+* 校验 token 签名。
+* 校验 token 过期时间。
+* 校验 audience。
+* 校验 owner epoch。
+* 校验 token session 与 path session 是否一致。
+* 执行权限、scope、revocation、用户身份或 game 授权判断。
+
+runtime 负责完整校验：
 
 * token session 等于 path session。
 * token `owner_runtime_id` 等于 runtime 进程 `HOSTNAME`。
+* token 签名合法。
+* token 未过期，或 refresh 场景处于允许 grace window 内。
+* token audience 合法。
 * token owner epoch 合法。
+* token 权限、scope、revocation、用户身份或 game 授权合法。
+* 经完整验证后的 owner/runtime 映射等于接收请求的 runtime；如果 gateway 按伪造 routing hint 转发到错误 runtime，runtime 必须拒绝。
 
 ## 代码分层
 
@@ -321,7 +415,8 @@ gateway 可以引用：
 
 * `projects/game/session`
 * `projects/game/runtime`
-* token 包
+* `projects/game/pkg/token` 的 owner 提取接口
+* `projects/game/pkg/const` 的服务 target 常量
 * solver/deploy resolver
 
 gateway 不引用 runtime 的 domain/service 内部包。
@@ -354,7 +449,8 @@ projects/game/runtime/
 * `ws_action.go`
 * `ws_validate.go`
 * `worker.go`
-* token 相关包，或抽到 game 公共包
+
+token 相关包不迁入 runtime 私有目录，应迁到 `projects/game/pkg/token`，由 session、gateway、runtime 共同引用。
 
 不迁移到 runtime 的内容：
 
@@ -379,10 +475,10 @@ projects/game/session/
 session 的 runtime client 调用：
 
 ```text
-game/runtime:grpc
+TargetRuntimeGRPC
 ```
 
-不再调用旧 `game/gateway:internal-grpc`。
+实际代码应引用 `projects/game/pkg/const.TargetRuntimeGRPC`，不再调用旧 `game/gateway:internal-grpc`。
 
 ## 大型测试模型
 
@@ -410,11 +506,13 @@ projects/game/gateway/testplan/
 5. media init/segment 从 agent 转发到 web。
 6. `GetGameRuntime` 通过统一域名返回 runtime 状态。
 7. `GetGameSnapshot` 通过统一域名返回 snapshot。
-8. reconnect 后新 token 可用，旧 token 按 owner epoch/reconnect generation 规则失效。
-9. path session 与 token session 不一致时被拒绝。
+8. reconnect 后新 token 可用，旧 token 按 runtime 的 owner epoch/reconnect generation 规则失效。
+9. path session 与 token session 不一致时，经 gateway 转发后由 runtime 拒绝。
 10. 请求落到非 owner runtime 时，gateway 能转发到 owner runtime。
 11. runtime owner pod 不可用时返回明确 503/Unavailable。
 12. 不依赖 per-instance public host。
+13. gateway 对缺失、超长、格式不可解析或缺少 `owner_runtime_id` 的 token 返回明确错误。
+14. gateway 解析出的伪造 `owner_runtime_id` 只影响转发目标，不能形成授权成功路径；最终由 runtime 拒绝伪造或不匹配 token。
 
 ### runtime 服务级 testplan
 
@@ -432,6 +530,9 @@ projects/game/runtime/testplan/
 * control timeout
 * snapshot refresh
 * idle cleanup
+* forged/mismatched/expired token rejected
+* token session 与 path session 不一致时拒绝
+* 经验证后的 `owner_runtime_id` 与当前 runtime 不一致时拒绝
 
 ### session testplan
 
@@ -445,8 +546,9 @@ projects/game/runtime/testplan/
 
 1. 新建 `projects/game/runtime/runtime.proto`。
 2. 将旧 gateway proto 中 runtime 相关资源复制并重命名 owner 字段。
-3. 使用 gazelle 更新 BUILD 文件。
-4. 确认生成的 Go proto importpath 为 `dominion/projects/game/runtime`。
+3. 新建 `projects/game/pkg/const`，集中定义 game 服务 target 常量。
+4. 使用 gazelle 更新 BUILD 文件。
+5. 确认生成的 Go proto importpath 为 `dominion/projects/game/runtime`。
 
 验收：
 
@@ -480,9 +582,9 @@ projects/game/runtime/testplan/
 
 1. gateway 删除运行态 domain/service/ws 实现。
 2. gateway 注册 session proto grpc-gateway handler。
-3. gateway 注册 runtime `GameGatewayService` grpc-gateway handler，或对 runtime read path 做 token-aware owner proxy。
+3. gateway 注册 runtime `GameGatewayService` grpc-gateway handler，或对 runtime read path 做 owner-token-extract proxy。
 4. gateway 实现 WS owner proxy。
-5. gateway owner resolver target 改为 `game/runtime:http`。
+5. gateway owner resolver target 改为 `TargetRuntimeHTTP`。
 
 验收：
 
@@ -515,7 +617,12 @@ projects/game/runtime/testplan/
 | session RPC | 只提供 gRPC 服务 |
 | gateway proto | 不新建业务 proto，只引用 session/runtime proto |
 | gateway 类型 | grpc-gateway 聚合 + WS owner proxy |
+| token 包归属 | `projects/game/pkg/token` 公共包 |
+| token 签发 | runtime 签发，gateway 不签发 |
+| gateway token 职责 | 仅解析未受信任的 owner routing hint，不做完整验证 |
+| runtime token 职责 | 完整验证 token 并做授权判断 |
 | token audience | 暂不拆分 |
+| 服务 target 常量 | 集中到 `projects/game/pkg/const`，Go package 名建议 `gameconst` |
 | 系统级大型测试归属 | `projects/game/gateway/testplan` |
 | 迁移策略 | 不双跑，直接迁移到目标架构 |
 
@@ -533,9 +640,11 @@ WebSocket 是最高风险部分。gateway 必须正确保留：
 
 大型测试必须真实通过公网 gateway WebSocket 入口验证，而不是只测 runtime 本地 handler。
 
-### owner split-brain
+### owner split-brain 与 routing hint
 
-gateway 不能成为 owner 决策源。gateway 只能读取 token 并转发，runtime 才是 owner runtime 状态权威。
+gateway 不能成为 owner 决策源或 token 验证放行点。gateway 只能读取 token 中未受信任的 owner routing hint 并转发，runtime 才是 owner runtime 状态与 token 验证权威。
+
+攻击者可以伪造 token payload 中的 `owner_runtime_id` 造成错误转发或探测，因此 gateway 的解析结果只能用于路由，不能用于授权。runtime 必须对每个请求独立验证 token，并在验证后的 owner/runtime 映射与当前 runtime 不一致时拒绝请求。
 
 ### 不兼容迁移
 
