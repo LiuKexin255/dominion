@@ -6,7 +6,6 @@ go_library(
     srcs = [
         "control.go",
         "gateway.go",
-        "owner_config.go",
         "worker.go",
     ],
     importpath = "dominion/projects/game/gateway/service",
@@ -16,6 +15,7 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",
         "//projects/game/gateway/domain/sessionmanager",
@@ -28,10 +28,10 @@ go_unittest(
     srcs = [
         "control_test.go",
         "gateway_test.go",
-        "owner_config_test.go",
     ],
     embed = [":service"],
     deps = [
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/sessionmanager",
         "//projects/game/gateway/token",

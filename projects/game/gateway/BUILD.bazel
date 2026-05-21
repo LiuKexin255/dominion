@@ -53,7 +53,6 @@ go_library(
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game/gateway/domain",
-        "//projects/game/gateway/owner",
         "//projects/game/gateway/token",
         "@com_github_coder_websocket//:websocket",
         "@io_opentelemetry_go_otel//attribute",
@@ -75,9 +74,9 @@ go_unittest(
     ],
     embed = [":gateway"],
     deps = [
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/sessionmanager",
-        "//projects/game/gateway/owner",
         "//projects/game/gateway/service",
         "//projects/game/gateway/token",
         "@com_github_coder_websocket//:websocket",

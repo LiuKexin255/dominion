@@ -96,7 +96,9 @@ message Session {
 
   string last_error = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
 
-  string agent_connect_url = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string agent_connect_url = 11 [deprecated = true, (google.api.field_behavior) = OUTPUT_ONLY];
+
+  string token = 12 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 enum SessionType {

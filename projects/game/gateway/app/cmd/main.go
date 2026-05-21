@@ -15,6 +15,7 @@ import (
 	"dominion/common/gopkg/otel"
 	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/gateway/owner"
 	"dominion/projects/game/gateway/service"
@@ -33,27 +34,24 @@ const (
 func main() {
 	httpPort := envOrDefault(envHTTPPort, defaultHTTPListenAddr)
 
-	config, err := service.NewOwnerConfig()
-	if err != nil {
-		log.Fatalf("create owner config: %v", err)
-	}
+	cfg := loadOwnerConfig()
 
-	signer := token.NewHMACSigner(config.TokenSecret, config.TokenTTL)
-	sessions := sessionmanager.NewManager(config.GatewayID, sessionmanager.WithIdleTTL(config.IdleTTL))
+	signer := token.NewHMACSigner(cfg.TokenSecret, cfg.TokenTTL)
+	sessions := sessionmanager.NewManager(cfg.GatewayID, sessionmanager.WithIdleTTL(cfg.IdleTTL))
 	control := service.NewControlExecutor()
-	svc := service.NewGatewayService(sessions, control, config, signer, signer)
+	svc := service.NewGatewayService(sessions, control, cfg, signer, signer)
 	handler := gateway.NewHandler(svc, signer)
 	runtimeHandler := gateway.NewGameRuntimeHandler(svc)
 
 	publicMux := runtime.NewServeMux(grpcpkg.GatewayDefault()...)
 	gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), publicMux, handler)
 
-	ownerRouter, err := owner.NewRouter(config.GatewayID, phttp.Handler(publicMux, "gateway-http"))
+	ownerRouter, err := owner.NewRouter(cfg.GatewayID)
 	if err != nil {
 		log.Fatalf("create owner router: %v", err)
 	}
 
-	wsHandler := gateway.NewWebSocketHandler(svc, ownerRouter, signer)
+	wsHandler := gateway.NewWebSocketHandler(svc)
 
 	router := &app.Router{
 		WSHandler:     phttp.Handler(wsHandler, "GET /v1/sessions/{id}/game/connect"),
@@ -66,7 +64,7 @@ func main() {
 	internalGRPCServer := grpc.NewServer(grpcpkg.ServiceDefault()...)
 	gateway.RegisterGameRuntimeServiceServer(internalGRPCServer, runtimeHandler)
 
-	internalListener, err := net.Listen("tcp", normalizeListenAddr(config.InternalGRPCPort))
+	internalListener, err := net.Listen("tcp", normalizeListenAddr(cfg.InternalGRPCPort))
 	if err != nil {
 		log.Fatalf("create internal gRPC listener: %v", err)
 	}
@@ -113,4 +111,39 @@ func normalizeListenAddr(value string) string {
 	}
 
 	return ":" + value
+}
+
+func loadOwnerConfig() *config.OwnerConfig {
+	gatewayID := strings.TrimSpace(os.Getenv("HOSTNAME"))
+	if gatewayID == "" {
+		log.Fatal("missing required environment variable HOSTNAME")
+	}
+
+	tokenSecret := strings.TrimSpace(os.Getenv("SESSION_TOKEN_SECRET"))
+	if tokenSecret == "" {
+		log.Fatal("missing required environment variable SESSION_TOKEN_SECRET")
+	}
+
+	cfg := config.NewOwnerConfig(gatewayID, tokenSecret)
+
+	if v := os.Getenv("SESSION_TOKEN_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.TokenTTL = d
+		}
+	}
+	if v := os.Getenv("SESSION_TOKEN_REFRESH_GRACE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.TokenRefreshGrace = d
+		}
+	}
+	if v := os.Getenv("SESSION_IDLE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.IdleTTL = d
+		}
+	}
+	if v := os.Getenv("INTERNAL_GRPC_PORT"); v != "" {
+		cfg.InternalGRPCPort = v
+	}
+
+	return cfg
 }

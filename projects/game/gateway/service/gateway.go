@@ -10,6 +10,7 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
@@ -32,7 +33,7 @@ type GatewayService struct {
 	mediaMu       sync.Mutex
 	control       *ControlExecutor
 	asyncCh       chan *domain.RoutedMessage
-	config        *OwnerConfig
+	config        *config.OwnerConfig
 	tokenIssuer   token.Issuer
 	tokenVerifier token.Verifier
 }
@@ -40,7 +41,7 @@ type GatewayService struct {
 func NewGatewayService(
 	sessions *sessionmanager.Manager,
 	control *ControlExecutor,
-	config *OwnerConfig,
+	cfg *config.OwnerConfig,
 	issuer token.Issuer,
 	verifier token.Verifier,
 ) *GatewayService {
@@ -50,7 +51,7 @@ func NewGatewayService(
 		lastSequences: map[string]uint64{},
 		control:       control,
 		asyncCh:       make(chan *domain.RoutedMessage, 64),
-		config:        config,
+		config:        cfg,
 		tokenIssuer:   issuer,
 		tokenVerifier: verifier,
 	}

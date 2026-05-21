@@ -7,26 +7,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"sync"
 	"testing"
 	"time"
 
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
-	"dominion/projects/game/gateway/owner"
 	"dominion/projects/game/gateway/service"
 	"dominion/projects/game/gateway/token"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
 )
-
-var setTestEnvOnce sync.Once
-
-func initTestEnv() {
-	os.Setenv("DOMINION_ENVIRONMENT", "dev.alpha")
-}
 
 type testVerifierWS struct {
 	claims *token.Claims
@@ -53,7 +45,7 @@ func newTestGatewayServiceWS(verifier *testVerifierWS) *service.GatewayService {
 		}
 	}
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &service.OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: "gw-test",
 	}
 	svc := service.NewGatewayService(
@@ -66,37 +58,8 @@ func newTestGatewayServiceWS(verifier *testVerifierWS) *service.GatewayService {
 	return svc
 }
 
-type stubWSOwnerResolver struct {
-	endpoint string
-	err      error
-}
-
-func (r *stubWSOwnerResolver) Resolve(_ context.Context, _ string) (string, error) {
-	if r.err != nil {
-		return "", r.err
-	}
-	return r.endpoint, nil
-}
-
-func defaultTestVerifier() token.Verifier {
-	return &testVerifierWS{
-		claims: &token.Claims{
-			SessionID:      "test-session",
-			OwnerGatewayID: "gw-test",
-			OwnerEpoch:     1,
-			ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
-		},
-	}
-}
-
-func newTestWSHandler(svc *service.GatewayService, verifier token.Verifier) *WebSocketHandler {
-	setTestEnvOnce.Do(initTestEnv)
-	ownerRouter, err := owner.NewRouter("gw-test", nil)
-	if err != nil {
-		panic(fmt.Sprintf("owner.NewRouter: %v", err))
-	}
-	ownerRouter.Resolver = &stubWSOwnerResolver{}
-	return NewWebSocketHandler(svc, ownerRouter, verifier)
+func newTestWSHandler(svc *service.GatewayService) *WebSocketHandler {
+	return NewWebSocketHandler(svc)
 }
 
 func makeWSURL(server *httptest.Server, sessionID, tokenStr string) string {
@@ -447,7 +410,7 @@ func Test_pathParsing(t *testing.T) {
 func TestWebSocket_InvalidToken(t *testing.T) {
 	verifier := &testVerifierWS{err: token.ErrTokenInvalid}
 	svc := newTestGatewayServiceWS(verifier)
-	handler := newTestWSHandler(svc, verifier)
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -471,7 +434,7 @@ func TestWebSocket_InvalidToken(t *testing.T) {
 
 func TestWebSocket_MissingToken(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -493,7 +456,7 @@ func TestWebSocket_MissingToken(t *testing.T) {
 
 func TestWebSocket_ConnectAndHello(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -536,7 +499,7 @@ func TestWebSocket_ConnectAndHello(t *testing.T) {
 
 func TestWebSocket_DuplicateAgent(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -585,7 +548,7 @@ func TestWebSocket_DuplicateAgent(t *testing.T) {
 
 func TestWebSocket_MessageRouting(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -648,7 +611,7 @@ func TestWebSocket_MessageRouting(t *testing.T) {
 
 func TestWebSocket_PingPong(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -856,90 +819,9 @@ func Test_toProtoPayload_mediaSegmentRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWebSocket_OwnerMismatch_ProxiesToOwner(t *testing.T) {
-	var proxied bool
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxied = true
-		if r.Header.Get("Upgrade") != "websocket" {
-			t.Errorf("Upgrade header = %q, want %q", r.Header.Get("Upgrade"), "websocket")
-		}
-		if r.URL.Query().Get("token") == "" {
-			t.Error("token query param missing from proxied request")
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	t.Setenv("DOMINION_ENVIRONMENT", "dev.alpha")
-	resolver := &stubWSOwnerResolver{endpoint: backend.URL}
-	ownerRouter, err := owner.NewRouter("gw-local", nil)
-	if err != nil {
-		t.Fatalf("owner.NewRouter: %v", err)
-	}
-	ownerRouter.Resolver = resolver
-
-	verifier := &testVerifierWS{
-		claims: &token.Claims{
-			SessionID:      "test-session",
-			OwnerGatewayID: "gw-other",
-			OwnerEpoch:     1,
-			ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
-		},
-	}
-
-	svc := newTestGatewayServiceWS(verifier)
-	handler := NewWebSocketHandler(svc, ownerRouter, verifier)
-	server := httptest.NewServer(handler)
-	defer server.Close()
-
-	ctx := context.Background()
-	wsURL := makeWSURL(server, "test-session", "token-for-other")
-
-	_, _, _ = websocket.Dial(ctx, wsURL, nil)
-
-	if !proxied {
-		t.Fatal("expected request to be proxied to owner backend")
-	}
-}
-
-func TestWebSocket_OwnerMismatch_Unreachable(t *testing.T) {
-	t.Setenv("DOMINION_ENVIRONMENT", "dev.alpha")
-	resolver := &stubWSOwnerResolver{err: fmt.Errorf("unreachable")}
-	ownerRouter, err := owner.NewRouter("gw-local", nil)
-	if err != nil {
-		t.Fatalf("owner.NewRouter: %v", err)
-	}
-	ownerRouter.Resolver = resolver
-
-	verifier := &testVerifierWS{
-		claims: &token.Claims{
-			SessionID:      "test-session",
-			OwnerGatewayID: "gw-other",
-			OwnerEpoch:     1,
-			ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
-		},
-	}
-
-	svc := newTestGatewayServiceWS(verifier)
-	handler := NewWebSocketHandler(svc, ownerRouter, verifier)
-	server := httptest.NewServer(handler)
-	defer server.Close()
-
-	resp, err := http.Get("http://" + server.Listener.Addr().String() +
-		"/v1/sessions/test-session/game/connect?token=token-for-other")
-	if err != nil {
-		t.Fatalf("GET request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
-	}
-}
-
 func TestWebSocket_OwnerSelf_ProceedsNormally(t *testing.T) {
 	svc := newTestGatewayServiceWS(nil)
-	handler := newTestWSHandler(svc, defaultTestVerifier())
+	handler := newTestWSHandler(svc)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

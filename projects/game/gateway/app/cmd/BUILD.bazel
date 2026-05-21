@@ -13,6 +13,7 @@ go_library(
         "//common/gopkg/otel",
         "//projects/game/gateway",
         "//projects/game/gateway/app",
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain/sessionmanager",
         "//projects/game/gateway/owner",
         "//projects/game/gateway/service",

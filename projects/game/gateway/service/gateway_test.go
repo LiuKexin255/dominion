@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/gateway/token"
@@ -74,7 +75,7 @@ func (c *stubMediaCache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 func newTestService(t *testing.T, gatewayID string, verifier token.Verifier) *GatewayService {
 	t.Helper()
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: gatewayID,
 	}
 	svc := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), config, signer, verifier)
@@ -178,7 +179,7 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 
 func TestCreateGameRuntime(t *testing.T) {
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: "gw-0",
 	}
 	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
@@ -229,7 +230,7 @@ func TestCreateGameRuntime(t *testing.T) {
 
 func TestCreateGameRuntime_SamePodExisting(t *testing.T) {
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: "gw-0",
 	}
 	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
@@ -269,7 +270,7 @@ func TestCreateGameRuntime_SamePodExisting(t *testing.T) {
 
 func TestCreateGameRuntime_SamePodHigherGeneration(t *testing.T) {
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: "gw-0",
 	}
 	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
@@ -292,7 +293,7 @@ func TestCreateGameRuntime_SamePodHigherGeneration(t *testing.T) {
 
 func TestCreateGameRuntime_SamePodLowerGenerationIgnored(t *testing.T) {
 	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID: "gw-0",
 	}
 	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
@@ -1061,7 +1062,7 @@ func TestRoutedMessage(t *testing.T) {
 func newRefreshTestService(t *testing.T, gatewayID string) (*GatewayService, *token.HMACSigner) {
 	t.Helper()
 	signer := token.NewHMACSigner("test-refresh-secret", 15*time.Minute)
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID:         gatewayID,
 		TokenRefreshGrace: 60 * time.Minute,
 	}
@@ -1266,7 +1267,7 @@ func TestRefreshGameRuntime_GraceWindow(t *testing.T) {
 	signer := token.NewHMACSigner("test-refresh-secret", 15*time.Minute)
 	signer.SetNow(func() time.Time { return frozenNow })
 
-	config := &OwnerConfig{
+	config := &config.OwnerConfig{
 		GatewayID:         "gw-0",
 		TokenRefreshGrace: 60 * time.Minute,
 	}

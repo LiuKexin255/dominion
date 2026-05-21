@@ -133,6 +133,7 @@ func TestHandler_GetSession(t *testing.T) {
 		wantNamePrefix string
 		wantType       SessionType
 		wantGatewayID  string
+		wantToken      string
 	}{
 		{
 			name:           "given a created session, when GetSession called, returns proto Session with matching fields",
@@ -141,6 +142,7 @@ func TestHandler_GetSession(t *testing.T) {
 			wantNamePrefix: "sessions/",
 			wantType:       SessionType_SESSION_TYPE_SAOLEI,
 			wantGatewayID:  "gw-0",
+			wantToken:      "seed-token",
 		},
 		{
 			name:     "given no session, when GetSession called, returns NotFound gRPC error",
@@ -187,6 +189,9 @@ func TestHandler_GetSession(t *testing.T) {
 			if got.GetGatewayId() != tt.wantGatewayID {
 				t.Fatalf("GetSession() gateway_id = %q, want %q", got.GetGatewayId(), tt.wantGatewayID)
 			}
+			if tt.wantToken != "" && got.GetToken() != tt.wantToken {
+				t.Fatalf("GetSession() token = %q, want %q", got.GetToken(), tt.wantToken)
+			}
 			if got.GetCreateTime() == nil {
 				t.Fatal("GetSession() create_time is nil, want non-nil")
 			}
@@ -209,6 +214,7 @@ func TestHandler_CreateSession(t *testing.T) {
 		wantGatewayID  string
 		wantSessionID  string
 		wantIDNonEmpty bool
+		wantToken      string
 	}{
 		{
 			name: "given valid type SAOLEI, when CreateSession called, returns session",
@@ -232,6 +238,7 @@ func TestHandler_CreateSession(t *testing.T) {
 			wantType:      SessionType_SESSION_TYPE_SAOLEI,
 			wantGatewayID: "gw-1",
 			wantSessionID: "my-custom-id",
+			wantToken:     "test-token-for-my-custom-id",
 		},
 		{
 			name: "given UNSPECIFIED type, when CreateSession called, returns InvalidArgument",
@@ -289,6 +296,9 @@ func TestHandler_CreateSession(t *testing.T) {
 				if !strings.HasPrefix(session.GetName(), "sessions/") {
 					t.Fatalf("CreateSession() name = %q, want 'sessions/' prefix", session.GetName())
 				}
+			}
+			if tt.wantToken != "" && session.GetToken() != tt.wantToken {
+				t.Fatalf("CreateSession() token = %q, want %q", session.GetToken(), tt.wantToken)
 			}
 		})
 	}
@@ -424,6 +434,9 @@ func TestHandler_ReconnectSession(t *testing.T) {
 			}
 			if session.GetGatewayId() != tt.wantGatewayID {
 				t.Fatalf("ReconnectSession() gateway_id = %q, want %q", session.GetGatewayId(), tt.wantGatewayID)
+			}
+			if session.GetToken() != "refresh-token-for-session-1" {
+				t.Fatalf("ReconnectSession() token = %q, want %q", session.GetToken(), "refresh-token-for-session-1")
 			}
 			if session.GetStatus() != SessionStatus_SESSION_STATUS_ACTIVE {
 				t.Fatalf("ReconnectSession() status = %v, want ACTIVE", session.GetStatus())

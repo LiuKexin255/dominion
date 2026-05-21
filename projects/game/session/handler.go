@@ -152,14 +152,15 @@ func toProtoSession(session *domain.Session) *Session {
 
 	return &Session{
 		Name:                sessionResourcePrefix + session.ID(),
-		Type:                toProtoSessionType(session.Snapshot().Type),
+		Type:                toProtoSessionType(session.Type()),
 		Status:              toProtoSessionStatus(session.Status()),
 		GatewayId:           session.GatewayID(),
-		CreateTime:          timestamppb.New(session.Snapshot().CreatedAt),
-		UpdateTime:          timestamppb.New(session.Snapshot().UpdatedAt),
-		EndTime:             toProtoTimestampPtr(session.Snapshot().EndedAt),
+		CreateTime:          timestamppb.New(session.CreatedAt()),
+		UpdateTime:          timestamppb.New(session.UpdatedAt()),
+		EndTime:             toProtoTimestampPtr(session.EndedAt()),
 		ReconnectGeneration: session.ReconnectGeneration(),
-		LastError:           session.Snapshot().LastError,
+		LastError:           session.LastError(),
+		Token:               session.Token(),
 	}
 }
 

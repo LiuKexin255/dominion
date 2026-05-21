@@ -10,10 +10,7 @@ go_library(
     ],
     importpath = "dominion/projects/game/gateway/owner",
     visibility = ["//visibility:public"],
-    deps = [
-        "//common/gopkg/solver",
-        "//projects/game/gateway/token",
-    ],
+    deps = ["//common/gopkg/solver"],
 )
 
 go_unittest(
@@ -23,8 +20,5 @@ go_unittest(
         "router_test.go",
     ],
     embed = [":owner"],
-    deps = [
-        "//common/gopkg/solver",
-        "//projects/game/gateway/token",
-    ],
+    deps = ["//common/gopkg/solver"],
 )

@@ -15,7 +15,6 @@ import (
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/gateway/owner"
 	"dominion/projects/game/gateway/token"
 
 	"github.com/coder/websocket"
@@ -50,9 +49,7 @@ const (
 // WebSocketHandler handles WebSocket upgrade and message routing for the game
 // gateway. It implements http.Handler.
 type WebSocketHandler struct {
-	svc         gatewayService
-	ownerRouter *owner.Router
-	verifier    token.Verifier
+	svc gatewayService
 
 	mu          sync.RWMutex
 	conns       map[string]*wsConn
@@ -60,14 +57,9 @@ type WebSocketHandler struct {
 	agentConnID map[string]string
 }
 
-// NewWebSocketHandler creates a WebSocketHandler backed by svc with owner
-// routing support. When a connect request arrives with a token pointing to a
-// different owner gateway, the request is proxied via ownerRouter.
-func NewWebSocketHandler(svc gatewayService, ownerRouter *owner.Router, verifier token.Verifier) *WebSocketHandler {
+func NewWebSocketHandler(svc gatewayService) *WebSocketHandler {
 	return &WebSocketHandler{
 		svc:         svc,
-		ownerRouter: ownerRouter,
-		verifier:    verifier,
 		conns:       make(map[string]*wsConn),
 		webConns:    make(map[string]map[string]struct{}),
 		agentConnID: make(map[string]string),
@@ -132,21 +124,6 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify token first (pre-flight) to check owner gateway before ConnectSession.
-	claims, err := h.verifier.Verify(tokenStr)
-	if err != nil {
-		logs.Warn(ctx, "gateway: ws token verification failed", event.String(logFieldSessionID, sessionID), event.Err(err))
-		http.Error(w, "invalid token", http.StatusUnauthorized)
-		return
-	}
-
-	// If the token points to a different owner gateway, proxy the request.
-	if h.ownerRouter.Decide(claims.OwnerGatewayID) == owner.TargetRemote {
-		h.ownerRouter.ProxyRequest(w, r, claims.OwnerGatewayID)
-		return
-	}
-
-	// Local session: fully validate and connect.
 	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
 	if err != nil {
 		logs.Warn(ctx, "gateway: ws connect session failed", event.String(logFieldSessionID, sessionID), event.Err(err))

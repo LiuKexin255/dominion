@@ -394,6 +394,38 @@ func TestSessionGetters(t *testing.T) {
 	}
 }
 
+func TestNewGetters(t *testing.T) {
+	now := time.Now().UTC()
+	endedAt := now.Add(-time.Hour)
+	session := &Session{
+		id:          "getter-test",
+		sessionType: TypeSaolei,
+		status:      StatusActive,
+		gatewayID:   "gw-1",
+		token:       "tok-1",
+		createdAt:   now,
+		updatedAt:   now,
+		endedAt:     &endedAt,
+		lastError:   "something went wrong",
+	}
+
+	if session.Type() != TypeSaolei {
+		t.Fatalf("Type() = %v, want %v", session.Type(), TypeSaolei)
+	}
+	if !session.CreatedAt().Equal(now) {
+		t.Fatalf("CreatedAt() = %v, want %v", session.CreatedAt(), now)
+	}
+	if !session.UpdatedAt().Equal(now) {
+		t.Fatalf("UpdatedAt() = %v, want %v", session.UpdatedAt(), now)
+	}
+	if session.EndedAt() == nil || !session.EndedAt().Equal(endedAt) {
+		t.Fatalf("EndedAt() = %v, want %v", session.EndedAt(), &endedAt)
+	}
+	if session.LastError() != "something went wrong" {
+		t.Fatalf("LastError() = %q, want %q", session.LastError(), "something went wrong")
+	}
+}
+
 func TestSnapshotRehydrateRoundTrip(t *testing.T) {
 	original, err := NewSession(TypeSaolei, "round-trip-id")
 	if err != nil {

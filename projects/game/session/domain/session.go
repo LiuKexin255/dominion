@@ -142,6 +142,21 @@ func (s *Session) Status() SessionStatus { return s.status }
 // ReconnectGeneration returns the current reconnect generation.
 func (s *Session) ReconnectGeneration() int64 { return s.reconnectGeneration }
 
+// Type returns the session type.
+func (s *Session) Type() SessionType { return s.sessionType }
+
+// CreatedAt returns the creation timestamp.
+func (s *Session) CreatedAt() time.Time { return s.createdAt }
+
+// UpdatedAt returns the last update timestamp.
+func (s *Session) UpdatedAt() time.Time { return s.updatedAt }
+
+// EndedAt returns the end timestamp, or nil if the session is still active.
+func (s *Session) EndedAt() *time.Time { return s.endedAt }
+
+// LastError returns the last error message associated with the session.
+func (s *Session) LastError() string { return s.lastError }
+
 // SetToken sets the gateway-issued connection token.
 func (s *Session) SetToken(token string) {
 	s.token = token

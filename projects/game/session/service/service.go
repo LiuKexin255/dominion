@@ -52,16 +52,16 @@ func (s *SessionService) CreateSession(ctx context.Context, sessionType domain.S
 		return nil, err
 	}
 
-	result, err := s.gatewayClient.InitGameRuntime(ctx, session.ID(), 0)
+	token, gwID, err := s.initRuntime(ctx, session.ID(), 0)
 	if err != nil {
-		return nil, normalizeGatewayError(err)
+		return nil, err
 	}
 
-	session.SetToken(result.Token)
-	session.SetGatewayID(result.OwnerGatewayID)
-	logs.Info(ctx, "gateway assigned", event.String(logFieldSessionID, session.ID()), event.String(logFieldGatewayID, result.OwnerGatewayID))
+	session.SetToken(token)
+	session.SetGatewayID(gwID)
+	logs.Info(ctx, "gateway assigned", event.String(logFieldSessionID, session.ID()), event.String(logFieldGatewayID, gwID))
 	span.SetAttributes(attribute.String(logFieldSessionID, session.ID()))
-	span.SetAttributes(attribute.String(logFieldGatewayID, result.OwnerGatewayID))
+	span.SetAttributes(attribute.String(logFieldGatewayID, gwID))
 
 	if err := s.repo.Save(ctx, session); err != nil {
 		return nil, err
@@ -120,28 +120,28 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	oldToken := session.Token()
 	gen := session.ReconnectGeneration()
 
-	result, err := s.gatewayClient.RefreshGameRuntime(ctx, session.ID(), oldToken)
+	token, gwID, err := s.refreshRuntime(ctx, session.ID(), oldToken)
 	if err != nil {
 		logs.Warn(ctx, "refresh game runtime failed, falling back to init", event.String(logFieldSessionID, session.ID()), event.Err(err))
 
 		newGen := gen + 1
-		initResult, initErr := s.gatewayClient.InitGameRuntime(ctx, session.ID(), newGen)
-		if initErr != nil {
-			return nil, normalizeGatewayError(initErr)
+		token, gwID, err = s.rebuildRuntime(ctx, session.ID(), gen)
+		if err != nil {
+			return nil, err
 		}
 
-		session.SetToken(initResult.Token)
-		session.SetGatewayID(initResult.OwnerGatewayID)
+		session.SetToken(token)
+		session.SetGatewayID(gwID)
 		session.SetReconnectGeneration(newGen)
-		logs.Info(ctx, "gateway re-initialized", event.String(logFieldSessionID, session.ID()), event.String(logFieldNewGatewayID, initResult.OwnerGatewayID))
+		logs.Info(ctx, "gateway re-initialized", event.String(logFieldSessionID, session.ID()), event.String(logFieldNewGatewayID, gwID))
 		span.SetAttributes(attribute.String(logFieldSessionID, session.ID()))
-		span.SetAttributes(attribute.String(logFieldNewGatewayID, initResult.OwnerGatewayID))
+		span.SetAttributes(attribute.String(logFieldNewGatewayID, gwID))
 	} else {
-		session.SetToken(result.Token)
-		session.SetGatewayID(result.OwnerGatewayID)
-		logs.Info(ctx, "gateway refreshed", event.String(logFieldSessionID, session.ID()), event.String(logFieldNewGatewayID, result.OwnerGatewayID))
+		session.SetToken(token)
+		session.SetGatewayID(gwID)
+		logs.Info(ctx, "gateway refreshed", event.String(logFieldSessionID, session.ID()), event.String(logFieldNewGatewayID, gwID))
 		span.SetAttributes(attribute.String(logFieldSessionID, session.ID()))
-		span.SetAttributes(attribute.String(logFieldNewGatewayID, result.OwnerGatewayID))
+		span.SetAttributes(attribute.String(logFieldNewGatewayID, gwID))
 	}
 
 	if err := session.MarkActive(); err != nil {
@@ -154,6 +154,33 @@ func (s *SessionService) ReconnectSession(ctx context.Context, name string) (*do
 	logs.Info(ctx, "session saved", event.String(logFieldSessionID, session.ID()))
 
 	return session, nil
+}
+
+// initRuntime creates a game runtime on a gateway and returns the token and gateway ID.
+func (s *SessionService) initRuntime(ctx context.Context, sessionID string, reconnectGeneration int64) (string, string, error) {
+	result, err := s.gatewayClient.InitGameRuntime(ctx, sessionID, reconnectGeneration)
+	if err != nil {
+		return "", "", normalizeGatewayError(err)
+	}
+	return result.Token, result.OwnerGatewayID, nil
+}
+
+// refreshRuntime refreshes a game runtime on a gateway and returns the new token and gateway ID.
+func (s *SessionService) refreshRuntime(ctx context.Context, sessionID string, oldToken string) (string, string, error) {
+	result, err := s.gatewayClient.RefreshGameRuntime(ctx, sessionID, oldToken)
+	if err != nil {
+		return "", "", normalizeGatewayError(err)
+	}
+	return result.Token, result.OwnerGatewayID, nil
+}
+
+// rebuildRuntime creates a new game runtime with an incremented generation and returns the token and gateway ID.
+func (s *SessionService) rebuildRuntime(ctx context.Context, sessionID string, oldGeneration int64) (string, string, error) {
+	result, err := s.gatewayClient.InitGameRuntime(ctx, sessionID, oldGeneration+1)
+	if err != nil {
+		return "", "", normalizeGatewayError(err)
+	}
+	return result.Token, result.OwnerGatewayID, nil
 }
 
 func normalizeGatewayError(err error) error {
