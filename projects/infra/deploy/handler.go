@@ -445,6 +445,7 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 			TlsEnabled:   artifact.TLSEnabled,
 			OssEnabled:   artifact.OSSEnabled,
 			WorkloadKind: workloadKindToProto(artifact.WorkloadKind),
+			Exposure:     exposureModeToProto(artifact.Exposure),
 			Http:         toProtoArtifactHTTP(artifact.HTTP),
 			Env:          artifact.Env,
 		})
@@ -472,6 +473,7 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			TLSEnabled:   artifact.GetTlsEnabled(),
 			OSSEnabled:   artifact.GetOssEnabled(),
 			WorkloadKind: workloadKindFromProto(artifact.GetWorkloadKind()),
+			Exposure:     exposureModeFromProto(artifact.GetExposure()),
 			HTTP:         fromProtoArtifactHTTP(artifact.GetHttp()),
 			Env:          normalizeEnv(artifact.GetEnv()),
 		})
@@ -503,6 +505,28 @@ func workloadKindFromProto(kind WorkloadKind) domain.WorkloadKind {
 		return domain.WorkloadKindStateful
 	default:
 		return domain.WorkloadKindStateless
+	}
+}
+
+func exposureModeToProto(mode domain.ExposureMode) ExposureMode {
+	switch mode {
+	case domain.ExposureModeAggregate:
+		return ExposureMode_EXPOSURE_MODE_AGGREGATE
+	case domain.ExposureModePerInstance:
+		return ExposureMode_EXPOSURE_MODE_PER_INSTANCE
+	default:
+		return ExposureMode_EXPOSURE_MODE_UNSPECIFIED
+	}
+}
+
+func exposureModeFromProto(mode ExposureMode) domain.ExposureMode {
+	switch mode {
+	case ExposureMode_EXPOSURE_MODE_AGGREGATE:
+		return domain.ExposureModeAggregate
+	case ExposureMode_EXPOSURE_MODE_PER_INSTANCE:
+		return domain.ExposureModePerInstance
+	default:
+		return domain.ExposureModeUnspecified
 	}
 }
 

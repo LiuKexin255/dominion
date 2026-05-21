@@ -15,7 +15,7 @@ import (
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel/attribute"
@@ -57,18 +57,22 @@ type WebSocketHandler struct {
 	agentConnID map[string]string
 }
 
-// NewWebSocketHandler creates a WebSocketHandler backed by svc.
-func NewWebSocketHandler(svc gatewayService) (*WebSocketHandler, bootstrap.WorkerBuilder) {
-	h := &WebSocketHandler{
+func NewWebSocketHandler(svc gatewayService) *WebSocketHandler {
+	return &WebSocketHandler{
 		svc:         svc,
 		conns:       make(map[string]*wsConn),
 		webConns:    make(map[string]map[string]struct{}),
 		agentConnID: make(map[string]string),
 	}
-	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
-		return NewRoutingWorker(svc.AsyncMessages(), h.RouteRoutedMessage), nil
+}
+
+// StartRoutingWorker returns a WorkerBuilder that creates a routing worker
+// consuming the async message channel and delivering messages to WebSocket
+// connections.
+func (h *WebSocketHandler) StartRoutingWorker() bootstrap.WorkerBuilder {
+	return bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewRoutingWorker(h.svc.AsyncMessages(), h.RouteRoutedMessage), nil
 	})
-	return h, builder
 }
 
 type wsConn struct {
@@ -100,7 +104,6 @@ func ParseSessionID(path string) (string, error) {
 	return id, nil
 }
 
-// ServeHTTP implements http.Handler.
 func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := ParseSessionID(r.URL.Path)
 	if err != nil {
@@ -123,10 +126,12 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
 	if err != nil {
-		logs.Warn(ctx, "gateway: ws token validation failed", event.String(logFieldSessionID, sessionID), event.Err(err))
-		http.Error(w, fmt.Sprintf("connect session: %v", err), http.StatusUnauthorized)
+		logs.Warn(ctx, "gateway: ws connect session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
+		http.Error(w, fmt.Sprintf("invalid token: %v", err), http.StatusUnauthorized)
 		return
 	}
+
+	_ = h.svc.TouchSession(sessionID)
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {

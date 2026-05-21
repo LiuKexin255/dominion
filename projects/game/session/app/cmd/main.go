@@ -14,8 +14,6 @@ import (
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/mongo"
 	"dominion/common/gopkg/otel"
-	"dominion/common/gopkg/solver"
-	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session"
 	"dominion/projects/game/session/runtime/gateway"
 	"dominion/projects/game/session/runtime/storage"
@@ -25,32 +23,19 @@ import (
 )
 
 const (
-	envHTTPPort           = "HTTP_PORT"
-	envSessionTokenSecret = "SESSION_TOKEN_SECRET"
-	envSessionTokenTTL    = "SESSION_TOKEN_TTL"
+	envHTTPPort = "HTTP_PORT"
 
 	defaultHTTPListenAddr   = ":8081"
 	defaultMongoTarget      = "game/mongo"
 	defaultMongoDatabase    = "game"
-	defaultSessionTokenTTL  = "1h"
 	defaultShutdownDeadline = 5 * time.Second
-	publicHostPattern       = "gateway-%d-game.liukexin.com"
+	defaultGatewayTarget    = "game/gateway:internal-grpc"
 )
 
 var httpPort = flag.String("http-port", envOrDefault(envHTTPPort, defaultHTTPListenAddr), "HTTP listen address")
 
 func main() {
 	flag.Parse()
-
-	tokenSecret := strings.TrimSpace(os.Getenv(envSessionTokenSecret))
-	if tokenSecret == "" {
-		log.Fatalf("missing required environment variable %s", envSessionTokenSecret)
-	}
-
-	tokenTTL, err := time.ParseDuration(envOrDefault(envSessionTokenTTL, defaultSessionTokenTTL))
-	if err != nil {
-		log.Fatalf("parse %s: %v", envSessionTokenTTL, err)
-	}
 
 	httpAddr := normalizeListenAddr(*httpPort)
 
@@ -66,19 +51,14 @@ func main() {
 		log.Fatalf("create session repository: %v", err)
 	}
 
-	resolver, err := solver.NewDeployStatefulResolver()
+	// Create gRPC gateway client.
+	gatewayClient, err := gateway.NewGRPCGatewayClient(ctx, defaultGatewayTarget)
 	if err != nil {
-		log.Fatalf("create deploy stateful resolver: %v", err)
+		log.Fatalf("create grpc gateway client: %v", err)
 	}
-	target, err := solver.ParseTarget("game/gateway:http")
-	if err != nil {
-		log.Fatalf("parse gateway target: %v", err)
-	}
-	gatewayReg := gateway.NewDeployRegistry(resolver, target, publicHostPattern)
-	tokenIssuer := token.NewHMACSigner(tokenSecret, tokenTTL)
 
 	// Create handler.
-	svc := service.NewSessionService(repo, tokenIssuer, gatewayReg)
+	svc := service.NewSessionService(repo, gatewayClient)
 	handler := session.NewHandler(svc)
 
 	// Server component.
@@ -87,8 +67,9 @@ func main() {
 	httpServer := &http.Server{Addr: httpAddr, Handler: phttp.Handler(httpMux, "session-http")}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
-	bs.Register(otel.Component())
+	bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/game/session")))
 	bs.Register(bootstrap.MongoClient("mongo", client))
+	bs.Register(bootstrap.GRPCConn("gateway-client", gatewayClient.Conn()))
 	bs.Register(bootstrap.HTTPServer("session-http", httpServer))
 	if err := bs.Run(context.Background()); err != nil {
 		log.Fatalf("run session: %v", err)

@@ -15,10 +15,11 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",
         "//projects/game/gateway/domain/sessionmanager",
-        "//projects/game/pkg/token",
+        "//projects/game/gateway/domain/token",
     ],
 )
 
@@ -30,8 +31,9 @@ go_unittest(
     ],
     embed = [":service"],
     deps = [
+        "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/sessionmanager",
-        "//projects/game/pkg/token",
+        "//projects/game/gateway/domain/token",
     ],
 )

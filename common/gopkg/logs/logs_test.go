@@ -371,3 +371,123 @@ func TestSetDefault(t *testing.T) {
 		t.Errorf("expected output 'bypass' after SetDefault, got: %s", output)
 	}
 }
+
+func Test_logLevelFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want slog.Level
+	}{
+		{name: "debug lowercase", env: "debug", want: slog.LevelDebug},
+		{name: "debug uppercase", env: "DEBUG", want: slog.LevelDebug},
+		{name: "debug with spaces", env: " debug ", want: slog.LevelDebug},
+		{name: "info lowercase", env: "info", want: slog.LevelInfo},
+		{name: "info uppercase", env: "INFO", want: slog.LevelInfo},
+		{name: "empty string", env: "", want: slog.LevelInfo},
+		{name: "warn falls back", env: "warn", want: slog.LevelInfo},
+		{name: "unset falls back", env: "", want: slog.LevelInfo},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.env != "" {
+				t.Setenv("LOG_LEVEL", tt.env)
+			}
+			got := logLevelFromEnv()
+			if got != tt.want {
+				t.Errorf("logLevelFromEnv() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewOTelReporter(t *testing.T) {
+	logger := NewOTelReporter("test-scope")
+	if logger == nil {
+		t.Fatal("NewOTelReporter returned nil")
+	}
+}
+
+func Test_levelHandler_Enabled(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	lh := &levelHandler{inner: inner, level: slog.LevelInfo}
+	ctx := context.Background()
+
+	if lh.Enabled(ctx, slog.LevelDebug) {
+		t.Error("levelHandler with LevelInfo should not enable LevelDebug")
+	}
+	if !lh.Enabled(ctx, slog.LevelInfo) {
+		t.Error("levelHandler with LevelInfo should enable LevelInfo")
+	}
+	if !lh.Enabled(ctx, slog.LevelWarn) {
+		t.Error("levelHandler with LevelInfo should enable LevelWarn")
+	}
+}
+
+func Test_levelHandler_WithAttrs(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	lh := &levelHandler{inner: inner, level: slog.LevelInfo}
+
+	newH := lh.WithAttrs([]slog.Attr{slog.String("key", "val")})
+	newLH, ok := newH.(*levelHandler)
+	if !ok {
+		t.Fatalf("WithAttrs should return *levelHandler, got %T", newH)
+	}
+
+	ctx := context.Background()
+	if newLH.Enabled(ctx, slog.LevelDebug) {
+		t.Error("WithAttrs handler should still filter LevelDebug when level is LevelInfo")
+	}
+	if !newLH.Enabled(ctx, slog.LevelInfo) {
+		t.Error("WithAttrs handler should still enable LevelInfo when level is LevelInfo")
+	}
+}
+
+func Test_levelHandler_WithGroup(t *testing.T) {
+	inner := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})
+	lh := &levelHandler{inner: inner, level: slog.LevelInfo}
+
+	newH := lh.WithGroup("group")
+	newLH, ok := newH.(*levelHandler)
+	if !ok {
+		t.Fatalf("WithGroup should return *levelHandler, got %T", newH)
+	}
+
+	ctx := context.Background()
+	if newLH.Enabled(ctx, slog.LevelDebug) {
+		t.Error("WithGroup handler should still filter LevelDebug when level is LevelInfo")
+	}
+	if !newLH.Enabled(ctx, slog.LevelInfo) {
+		t.Error("WithGroup handler should still enable LevelInfo when level is LevelInfo")
+	}
+}
+
+func TestDebug_WithDebugLevelEnv(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	Debug(context.Background(), "debug-message", event.String("key", "value"))
+
+	output := stop()
+	if !strings.Contains(output, "debug-message") {
+		t.Errorf("expected debug message to appear with LOG_LEVEL=debug, got: %s", output)
+	}
+}
+
+func TestDebug_WithInfoLevelEnv(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "info")
+	resetInit()
+
+	stop := captureStdout(t)
+	defer stop()
+
+	Debug(context.Background(), "debug-message", event.String("key", "value"))
+
+	output := stop()
+	if strings.Contains(output, "debug-message") {
+		t.Errorf("expected debug message to be suppressed with LOG_LEVEL=info, got: %s", output)
+	}
+}

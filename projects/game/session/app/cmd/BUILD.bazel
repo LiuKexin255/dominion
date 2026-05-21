@@ -12,8 +12,6 @@ go_library(
         "//common/gopkg/http",
         "//common/gopkg/mongo",
         "//common/gopkg/otel",
-        "//common/gopkg/solver",
-        "//projects/game/pkg/token",
         "//projects/game/session",
         "//projects/game/session/runtime/gateway",
         "//projects/game/session/runtime/storage",

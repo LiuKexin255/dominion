@@ -1478,6 +1478,171 @@ func TestCloneArtifacts_NilEnv(t *testing.T) {
 	}
 }
 
+func Test_normalizeArtifactSpec(t *testing.T) {
+	tests := []struct {
+		name         string
+		spec         ArtifactSpec
+		wantExposure ExposureMode
+		wantReplicas int32
+	}{
+		{
+			name:         "stateful with unspecified exposure defaults to aggregate",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModeUnspecified, Replicas: 3},
+			wantExposure: ExposureModeAggregate,
+			wantReplicas: 3,
+		},
+		{
+			name:         "stateful with explicit exposure unchanged",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModePerInstance, Replicas: 2},
+			wantExposure: ExposureModePerInstance,
+			wantReplicas: 2,
+		},
+		{
+			name:         "stateless exposure unchanged",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Exposure: ExposureModeUnspecified, Replicas: 1},
+			wantExposure: ExposureModeUnspecified,
+			wantReplicas: 1,
+		},
+		{
+			name:         "zero replicas defaults to 1",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Replicas: 0},
+			wantExposure: ExposureModeUnspecified,
+			wantReplicas: 1,
+		},
+		{
+			name:         "stateful with zero replicas normalizes both",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModeUnspecified, Replicas: 0},
+			wantExposure: ExposureModeAggregate,
+			wantReplicas: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			spec := tt.spec
+
+			// when
+			normalizeArtifactSpec(&spec)
+
+			// then
+			if spec.Exposure != tt.wantExposure {
+				t.Fatalf("Exposure = %v, want %v", spec.Exposure, tt.wantExposure)
+			}
+			if spec.Replicas != tt.wantReplicas {
+				t.Fatalf("Replicas = %d, want %d", spec.Replicas, tt.wantReplicas)
+			}
+		})
+	}
+}
+
+func TestNewEnvironment_NormalizesArtifactSpec(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	// given
+	desiredState := &DesiredState{
+		Artifacts: []*ArtifactSpec{{
+			Name:         "api",
+			App:          "demo",
+			Image:        "repo/demo:v1",
+			WorkloadKind: WorkloadKindStateful,
+			Replicas:     0,
+		}},
+	}
+
+	// when
+	env, err := NewEnvironment(name, EnvironmentTypeProd, "demo environment", desiredState)
+	if err != nil {
+		t.Fatalf("NewEnvironment() unexpected error: %v", err)
+	}
+
+	// then
+	artifact := env.DesiredState().Artifacts[0]
+	if artifact.Exposure != ExposureModeAggregate {
+		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
+	}
+	if artifact.Replicas != 1 {
+		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
+	}
+}
+
+func TestSetDesiredPresent_NormalizesArtifactSpec(t *testing.T) {
+	// given
+	env := mustNewEnvironment(t)
+	if err := env.MarkReconciling(); err != nil {
+		t.Fatalf("MarkReconciling() unexpected error: %v", err)
+	}
+	if err := env.MarkReady(env.Generation()); err != nil {
+		t.Fatalf("MarkReady() unexpected error: %v", err)
+	}
+
+	newDesiredState := &DesiredState{
+		Artifacts: []*ArtifactSpec{{
+			Name:         "api",
+			App:          "demo",
+			Image:        "repo/demo:v2",
+			WorkloadKind: WorkloadKindStateful,
+			Replicas:     0,
+		}},
+	}
+
+	// when
+	err := env.SetDesiredPresent(newDesiredState)
+	if err != nil {
+		t.Fatalf("SetDesiredPresent() unexpected error: %v", err)
+	}
+
+	// then
+	artifact := env.DesiredState().Artifacts[0]
+	if artifact.Exposure != ExposureModeAggregate {
+		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
+	}
+	if artifact.Replicas != 1 {
+		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
+	}
+}
+
+func TestRehydrateEnvironment_NormalizesArtifactSpec(t *testing.T) {
+	name, err := NewEnvironmentName("scope1", "dev")
+	if err != nil {
+		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
+	}
+
+	// given - old data with stateful workload and unspecified exposure
+	snapshot := EnvironmentSnapshot{
+		Name:    name,
+		EnvType: EnvironmentTypeProd,
+		DesiredState: &DesiredState{
+			Artifacts: []*ArtifactSpec{{
+				Name:         "api",
+				App:          "demo",
+				Image:        "repo/demo:v1",
+				WorkloadKind: WorkloadKindStateful,
+				Replicas:     0,
+			}},
+		},
+		Status: &EnvironmentStatus{Desired: DesiredPresent, State: StateReady},
+	}
+
+	// when
+	env, err := RehydrateEnvironment(snapshot)
+	if err != nil {
+		t.Fatalf("RehydrateEnvironment() unexpected error: %v", err)
+	}
+
+	// then
+	artifact := env.DesiredState().Artifacts[0]
+	if artifact.Exposure != ExposureModeAggregate {
+		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
+	}
+	if artifact.Replicas != 1 {
+		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
+	}
+}
+
 func mustNewEnvironment(t *testing.T) *Environment {
 	t.Helper()
 

@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/domain/token"
 )
 
 type stubVerifier struct {
@@ -17,6 +18,10 @@ type stubVerifier struct {
 }
 
 func (v *stubVerifier) Verify(_ string) (*token.Claims, error) {
+	return v.claims, v.err
+}
+
+func (v *stubVerifier) VerifyWithGrace(_ string, _ time.Duration) (*token.Claims, error) {
 	return v.claims, v.err
 }
 
@@ -69,7 +74,11 @@ func (c *stubMediaCache) RefreshSnapshot() (*domain.SnapshotRef, error) {
 
 func newTestService(t *testing.T, gatewayID string, verifier token.Verifier) *GatewayService {
 	t.Helper()
-	svc, _ := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), gatewayID, verifier)
+	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
+	config := &config.OwnerConfig{
+		GatewayID: gatewayID,
+	}
+	svc := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), config, signer, verifier)
 	return svc
 }
 
@@ -86,9 +95,10 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 			name:          "valid token with matching gateway and session",
 			pathSessionID: "session-1",
 			claims: &token.Claims{
-				SessionID: "session-1",
-				GatewayID: "gw-0",
-				ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+				SessionID:      "session-1",
+				OwnerGatewayID: "gw-0",
+				OwnerEpoch:     1,
+				ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
 			},
 			gatewayID: "gw-0",
 			wantErr:   false,
@@ -111,9 +121,10 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 			name:          "wrong gateway ID rejected",
 			pathSessionID: "session-1",
 			claims: &token.Claims{
-				SessionID: "session-1",
-				GatewayID: "gw-other",
-				ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+				SessionID:      "session-1",
+				OwnerGatewayID: "gw-other",
+				OwnerEpoch:     1,
+				ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
 			},
 			gatewayID: "gw-0",
 			wantErr:   true,
@@ -122,9 +133,10 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 			name:          "wrong session ID rejected",
 			pathSessionID: "session-1",
 			claims: &token.Claims{
-				SessionID: "session-other",
-				GatewayID: "gw-0",
-				ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+				SessionID:      "session-other",
+				OwnerGatewayID: "gw-0",
+				OwnerEpoch:     1,
+				ExpiresAt:      time.Now().Add(5 * time.Minute).Unix(),
 			},
 			gatewayID: "gw-0",
 			wantErr:   true,
@@ -158,17 +170,154 @@ func TestGatewayService_ConnectSession(t *testing.T) {
 			if claims.SessionID != tt.pathSessionID {
 				t.Fatalf("claims.SessionID = %q, want %q", claims.SessionID, tt.pathSessionID)
 			}
-			if claims.GatewayID != tt.gatewayID {
-				t.Fatalf("claims.GatewayID = %q, want %q", claims.GatewayID, tt.gatewayID)
+			if claims.OwnerGatewayID != tt.gatewayID {
+				t.Fatalf("claims.OwnerGatewayID = %q, want %q", claims.OwnerGatewayID, tt.gatewayID)
 			}
 		})
+	}
+}
+
+func TestCreateGameRuntime(t *testing.T) {
+	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
+	config := &config.OwnerConfig{
+		GatewayID: "gw-0",
+	}
+	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
+
+	rt, tokenStr, err := svc.CreateGameRuntime(context.Background(), "sess-1", 0)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime() error = %v", err)
+	}
+	if rt == nil {
+		t.Fatal("CreateGameRuntime() returned nil runtime")
+	}
+	if rt.OwnerGatewayID != "gw-0" {
+		t.Fatalf("rt.OwnerGatewayID = %q, want %q", rt.OwnerGatewayID, "gw-0")
+	}
+	if rt.OwnerEpoch != 1 {
+		t.Fatalf("rt.OwnerEpoch = %d, want %d (per-session starts at 1)", rt.OwnerEpoch, 1)
+	}
+	if rt.ReconnectGeneration != 0 {
+		t.Fatalf("rt.ReconnectGeneration = %d, want %d", rt.ReconnectGeneration, 0)
+	}
+	if tokenStr == "" {
+		t.Fatal("CreateGameRuntime() returned empty token")
+	}
+
+	claims, err := signer.Verify(tokenStr)
+	if err != nil {
+		t.Fatalf("Verify token: %v", err)
+	}
+	if claims.SessionID != "sess-1" {
+		t.Fatalf("claims.SessionID = %q, want %q", claims.SessionID, "sess-1")
+	}
+	if claims.OwnerGatewayID != "gw-0" {
+		t.Fatalf("claims.OwnerGatewayID = %q, want %q", claims.OwnerGatewayID, "gw-0")
+	}
+	if claims.OwnerEpoch != 1 {
+		t.Fatalf("claims.OwnerEpoch = %d, want %d", claims.OwnerEpoch, 1)
+	}
+	if claims.Audience != token.TokenAudienceInternal {
+		t.Fatalf("claims.Audience = %q, want %q", claims.Audience, token.TokenAudienceInternal)
+	}
+	if claims.ReconnectGeneration != 0 {
+		t.Fatalf("claims.ReconnectGeneration = %d, want %d", claims.ReconnectGeneration, 0)
+	}
+	if rt.LastTrafficTime.IsZero() {
+		t.Fatal("rt.LastTrafficTime is zero, expected TouchSession to set it")
+	}
+}
+
+func TestCreateGameRuntime_SamePodExisting(t *testing.T) {
+	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
+	config := &config.OwnerConfig{
+		GatewayID: "gw-0",
+	}
+	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
+
+	// First call creates the runtime
+	rt1, _, err := svc.CreateGameRuntime(context.Background(), "sess-1", 5)
+	if err != nil {
+		t.Fatalf("first CreateGameRuntime() error = %v", err)
+	}
+	if rt1.OwnerEpoch != 1 {
+		t.Fatalf("first OwnerEpoch = %d, want 1", rt1.OwnerEpoch)
+	}
+	if rt1.ReconnectGeneration != 5 {
+		t.Fatalf("first ReconnectGeneration = %d, want 5", rt1.ReconnectGeneration)
+	}
+
+	// Second call: runtime already exists on same pod, epoch increments
+	rt2, tokenStr, err := svc.CreateGameRuntime(context.Background(), "sess-1", 5)
+	if err != nil {
+		t.Fatalf("second CreateGameRuntime() error = %v", err)
+	}
+	if rt2.OwnerEpoch != 2 {
+		t.Fatalf("second OwnerEpoch = %d, want 2 (incremented)", rt2.OwnerEpoch)
+	}
+	if rt2.ReconnectGeneration != 5 {
+		t.Fatalf("second ReconnectGeneration = %d, want 5 (unchanged when not higher)", rt2.ReconnectGeneration)
+	}
+
+	claims, err := signer.Verify(tokenStr)
+	if err != nil {
+		t.Fatalf("Verify token: %v", err)
+	}
+	if claims.OwnerEpoch != 2 {
+		t.Fatalf("token OwnerEpoch = %d, want 2", claims.OwnerEpoch)
+	}
+}
+
+func TestCreateGameRuntime_SamePodHigherGeneration(t *testing.T) {
+	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
+	config := &config.OwnerConfig{
+		GatewayID: "gw-0",
+	}
+	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
+
+	// First call with gen=3
+	_, _, _ = svc.CreateGameRuntime(context.Background(), "sess-1", 3)
+
+	// Second call with higher gen=7
+	rt, _, err := svc.CreateGameRuntime(context.Background(), "sess-1", 7)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime() error = %v", err)
+	}
+	if rt.ReconnectGeneration != 7 {
+		t.Fatalf("ReconnectGeneration = %d, want 7 (updated to higher)", rt.ReconnectGeneration)
+	}
+	if rt.OwnerEpoch != 2 {
+		t.Fatalf("OwnerEpoch = %d, want 2 (incremented)", rt.OwnerEpoch)
+	}
+}
+
+func TestCreateGameRuntime_SamePodLowerGenerationIgnored(t *testing.T) {
+	signer := token.NewHMACSigner("test-secret", 1*time.Hour)
+	config := &config.OwnerConfig{
+		GatewayID: "gw-0",
+	}
+	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
+
+	// First call with gen=10
+	_, _, _ = svc.CreateGameRuntime(context.Background(), "sess-1", 10)
+
+	// Second call with lower gen=3
+	rt, _, err := svc.CreateGameRuntime(context.Background(), "sess-1", 3)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime() error = %v", err)
+	}
+	if rt.ReconnectGeneration != 10 {
+		t.Fatalf("ReconnectGeneration = %d, want 10 (unchanged, lower gen ignored)", rt.ReconnectGeneration)
+	}
+	if rt.OwnerEpoch != 2 {
+		t.Fatalf("OwnerEpoch = %d, want 2 (still incremented)", rt.OwnerEpoch)
 	}
 }
 
 func TestGatewayService_ProcessHello_Agent(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
-	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
+	claims := &token.Claims{SessionID: "session-1", OwnerGatewayID: "gw-0"}
 
 	// when
 	msgs, err := svc.ProcessHello(rt, claims, domain.ClientRoleWindowsAgent, "agent-1")
@@ -192,7 +341,7 @@ func TestGatewayService_ProcessHello_Agent(t *testing.T) {
 func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
-	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
+	claims := &token.Claims{SessionID: "session-1", OwnerGatewayID: "gw-0"}
 
 	svc.sessions.RegisterAgent("session-1", &domain.AgentConnection{ConnID: "agent-first"})
 
@@ -208,7 +357,7 @@ func TestGatewayService_ProcessHello_AgentAlreadyConnected(t *testing.T) {
 func TestGatewayService_ProcessHello_Web(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
-	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
+	claims := &token.Claims{SessionID: "session-1", OwnerGatewayID: "gw-0"}
 
 	// given: media cache has init segment and one random access segment
 	cache := &stubMediaCache{
@@ -284,7 +433,7 @@ func TestGatewayService_ProcessHello_Web(t *testing.T) {
 func TestGatewayService_ProcessHello_WebNoCache(t *testing.T) {
 	svc := newTestService(t, "gw-0", &stubVerifier{})
 	rt := svc.sessions.GetOrCreateRuntime("session-1")
-	claims := &token.Claims{SessionID: "session-1", GatewayID: "gw-0"}
+	claims := &token.Claims{SessionID: "session-1", OwnerGatewayID: "gw-0"}
 
 	// when: no media cache data
 	msgs, err := svc.ProcessHello(rt, claims, domain.ClientRoleWeb, "web-1")
@@ -907,5 +1056,258 @@ func TestRoutedMessage(t *testing.T) {
 				t.Fatalf("Message.SessionID empty = %v, want %v", gotEmpty, tt.wantEmpty)
 			}
 		})
+	}
+}
+
+func newRefreshTestService(t *testing.T, gatewayID string) (*GatewayService, *token.HMACSigner) {
+	t.Helper()
+	signer := token.NewHMACSigner("test-refresh-secret", 15*time.Minute)
+	config := &config.OwnerConfig{
+		GatewayID:         gatewayID,
+		TokenRefreshGrace: 60 * time.Minute,
+	}
+	svc := NewGatewayService(sessionmanager.NewManager(gatewayID), NewControlExecutor(), config, signer, signer)
+	return svc, signer
+}
+
+func TestRefreshGameRuntime_SameOwner(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	// Runtime is created and owned by gw-0
+	rt, _, err := svc.CreateGameRuntime(context.Background(), "session-1", 3)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime: %v", err)
+	}
+	if rt.OwnerEpoch != 1 {
+		t.Fatalf("initial OwnerEpoch = %d, want 1", rt.OwnerEpoch)
+	}
+
+	oldToken, err := signer.Issue("session-1", "gw-0", 1, token.TokenAudienceInternal, 3)
+	if err != nil {
+		t.Fatalf("issue old token: %v", err)
+	}
+
+	gotRT, newToken, err := svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err != nil {
+		t.Fatalf("RefreshGameRuntime() error = %v", err)
+	}
+	if gotRT.ReconnectGeneration != 3 {
+		t.Fatalf("ReconnectGeneration = %d, want 3 (unchanged)", gotRT.ReconnectGeneration)
+	}
+	if gotRT.OwnerGatewayID != "gw-0" {
+		t.Fatalf("OwnerGatewayID = %q, want %q", gotRT.OwnerGatewayID, "gw-0")
+	}
+	if gotRT.OwnerEpoch != 2 {
+		t.Fatalf("OwnerEpoch = %d, want 2 (per-session incremented)", gotRT.OwnerEpoch)
+	}
+
+	claims, err := signer.Verify(newToken)
+	if err != nil {
+		t.Fatalf("verify new token: %v", err)
+	}
+	if claims.ReconnectGeneration != 3 {
+		t.Fatalf("new token ReconnectGeneration = %d, want 3", claims.ReconnectGeneration)
+	}
+	if claims.OwnerGatewayID != "gw-0" {
+		t.Fatalf("new token OwnerGatewayID = %q, want %q", claims.OwnerGatewayID, "gw-0")
+	}
+	if claims.OwnerEpoch != 2 {
+		t.Fatalf("new token OwnerEpoch = %d, want 2", claims.OwnerEpoch)
+	}
+}
+
+func TestRefreshGameRuntime_TakeoverRejected(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	// Token from a different gateway should be rejected since refresh
+	// does not support takeover.
+	oldToken, err := signer.Issue("session-1", "gw-1", 5, token.TokenAudienceInternal, 2)
+	if err != nil {
+		t.Fatalf("issue old token: %v", err)
+	}
+
+	_, _, err = svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for non-owner token, got nil")
+	}
+}
+
+func TestRefreshGameRuntime_RuntimeNotFound(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	oldToken, err := signer.Issue("session-1", "gw-0", 1, token.TokenAudienceInternal, 5)
+	if err != nil {
+		t.Fatalf("issue old token: %v", err)
+	}
+
+	_, _, err = svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for missing runtime, got nil")
+	}
+}
+
+func TestRefreshGameRuntime_InvalidToken(t *testing.T) {
+	svc, _ := newRefreshTestService(t, "gw-0")
+
+	_, _, err := svc.RefreshGameRuntime(context.Background(), "session-1", "not-a-valid-token")
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for invalid token, got nil")
+	}
+}
+
+func TestRefreshGameRuntime_WrongSession(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	oldToken, err := signer.Issue("session-other", "gw-0", 1, token.TokenAudienceInternal, 1)
+	if err != nil {
+		t.Fatalf("issue old token: %v", err)
+	}
+
+	_, _, err = svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for session mismatch, got nil")
+	}
+	if !errors.Is(err, errSessionMismatch) {
+		t.Fatalf("error = %v, want errSessionMismatch", err)
+	}
+}
+
+func TestRefreshGameRuntime_OldTokenWithLowerEpochAllowed(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	// Runtime created with epoch=3 (simulating that CreateGameRuntime was called 3 times)
+	rt, _, err := svc.CreateGameRuntime(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime #1: %v", err)
+	}
+	// Call again to increment epoch
+	rt, _, err = svc.CreateGameRuntime(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime #2: %v", err)
+	}
+	// Call again to increment epoch
+	rt, _, err = svc.CreateGameRuntime(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime #3: %v", err)
+	}
+	if rt.OwnerEpoch != 3 {
+		t.Fatalf("OwnerEpoch = %d, want 3 after 3 CreateGameRuntime calls", rt.OwnerEpoch)
+	}
+
+	// Refresh with an old token at epoch=1 (lower than current=3)
+	oldToken, err := signer.Issue("session-1", "gw-0", 1, token.TokenAudienceInternal, 2)
+	if err != nil {
+		t.Fatalf("issue old token at epoch 1: %v", err)
+	}
+
+	gotRT, newToken, err := svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err != nil {
+		t.Fatalf("RefreshGameRuntime() error = %v", err)
+	}
+	if gotRT.OwnerEpoch != 4 {
+		t.Fatalf("OwnerEpoch = %d, want 4 (incremented from 3)", gotRT.OwnerEpoch)
+	}
+
+	claims, err := signer.Verify(newToken)
+	if err != nil {
+		t.Fatalf("verify new token: %v", err)
+	}
+	if claims.OwnerEpoch != 4 {
+		t.Fatalf("new token OwnerEpoch = %d, want 4", claims.OwnerEpoch)
+	}
+}
+
+func TestRefreshGameRuntime_NewerTokenEpochRejected(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	// Runtime at epoch=1
+	rt, _, err := svc.CreateGameRuntime(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime: %v", err)
+	}
+	if rt.OwnerEpoch != 1 {
+		t.Fatalf("OwnerEpoch = %d, want 1", rt.OwnerEpoch)
+	}
+
+	// Try to refresh with token at epoch=5 (> current=1) — should fail
+	oldToken, err := signer.Issue("session-1", "gw-0", 5, token.TokenAudienceInternal, 2)
+	if err != nil {
+		t.Fatalf("issue token at epoch 5: %v", err)
+	}
+
+	_, _, err = svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for newer epoch token, got nil")
+	}
+}
+
+func TestRefreshGameRuntime_GenerationMismatchRejected(t *testing.T) {
+	svc, signer := newRefreshTestService(t, "gw-0")
+
+	// Runtime at gen=2
+	_, _, err := svc.CreateGameRuntime(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("CreateGameRuntime: %v", err)
+	}
+
+	// Token at gen=3 (mismatch)
+	oldToken, err := signer.Issue("session-1", "gw-0", 1, token.TokenAudienceInternal, 3)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	_, _, err = svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err == nil {
+		t.Fatal("RefreshGameRuntime() expected error for generation mismatch, got nil")
+	}
+}
+
+func TestRefreshGameRuntime_GraceWindow(t *testing.T) {
+	frozenNow := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	signer := token.NewHMACSigner("test-refresh-secret", 15*time.Minute)
+	signer.SetNow(func() time.Time { return frozenNow })
+
+	config := &config.OwnerConfig{
+		GatewayID:         "gw-0",
+		TokenRefreshGrace: 60 * time.Minute,
+	}
+	svc := NewGatewayService(sessionmanager.NewManager("gw-0"), NewControlExecutor(), config, signer, signer)
+
+	rt := svc.sessions.GetOrCreateRuntime("session-1")
+	rt.OwnerGatewayID = "gw-0"
+	rt.OwnerEpoch = 1
+	rt.ReconnectGeneration = 2
+
+	pastSigner := token.NewHMACSigner("test-refresh-secret", 15*time.Minute)
+	pastSigner.SetNow(func() time.Time { return frozenNow.Add(-20 * time.Minute) })
+
+	oldToken, err := pastSigner.Issue("session-1", "gw-0", 1, token.TokenAudienceInternal, 2)
+	if err != nil {
+		t.Fatalf("issue expired token: %v", err)
+	}
+
+	gotRT, _, err := svc.RefreshGameRuntime(context.Background(), "session-1", oldToken)
+	if err != nil {
+		t.Fatalf("RefreshGameRuntime() error = %v, want success within grace window", err)
+	}
+	if gotRT.ReconnectGeneration != 2 {
+		t.Fatalf("ReconnectGeneration = %d, want 2 (same owner, unchanged)", gotRT.ReconnectGeneration)
+	}
+}
+
+func TestStartCompletionWorker(t *testing.T) {
+	svc := newTestService(t, "gw-0", &stubVerifier{})
+
+	builder := svc.StartCompletionWorker()
+	if builder == nil {
+		t.Fatal("StartCompletionWorker() returned nil WorkerBuilder")
+	}
+
+	worker, err := builder.Build(context.Background())
+	if err != nil {
+		t.Fatalf("Build(): %v", err)
+	}
+	if worker == nil {
+		t.Fatal("Build() returned nil worker")
 	}
 }

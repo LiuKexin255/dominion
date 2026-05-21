@@ -5,4 +5,8 @@ go_library(
     srcs = ["router.go"],
     importpath = "dominion/projects/game/gateway/app",
     visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/gateway/domain/token",
+        "//projects/game/gateway/runtime/owner",
+    ],
 )

@@ -214,6 +214,8 @@ message ArtifactSpec {
   map<string, string> env = 9;
 
   bool oss_enabled = 10;
+
+  ExposureMode exposure = 11;
 }
 
 message ArtifactPortSpec {
@@ -267,6 +269,12 @@ enum WorkloadKind {
   WORKLOAD_KIND_UNSPECIFIED = 0;
   WORKLOAD_KIND_STATELESS = 1;
   WORKLOAD_KIND_STATEFUL = 2;
+}
+
+enum ExposureMode {
+  EXPOSURE_MODE_UNSPECIFIED = 0;
+  EXPOSURE_MODE_AGGREGATE = 1;
+  EXPOSURE_MODE_PER_INSTANCE = 2;
 }
 
 message GetEnvironmentRequest {

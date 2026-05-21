@@ -15,7 +15,6 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/otel/tracecontext",
-        "@io_opentelemetry_go_contrib_bridges_otelslog//:otelslog",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//propagation",
         "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",

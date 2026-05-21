@@ -158,6 +158,68 @@ func TestArtifactSpec_Validate(t *testing.T) {
 			spec:    ArtifactSpec{Name: "api", App: "app", Image: "repo/app:v1", Env: map[string]string{"FOO.BAR": "baz"}},
 			wantErr: true,
 		},
+		{
+			name: "stateless with unspecified exposure valid",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateless,
+				Exposure:     ExposureModeUnspecified,
+			},
+		},
+		{
+			name: "stateless with aggregate exposure rejected",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateless,
+				Exposure:     ExposureModeAggregate,
+			},
+			wantErr: true,
+		},
+		{
+			name: "stateless with per instance exposure rejected",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateless,
+				Exposure:     ExposureModePerInstance,
+			},
+			wantErr: true,
+		},
+		{
+			name: "stateful with aggregate exposure valid",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				Exposure:     ExposureModeAggregate,
+			},
+		},
+		{
+			name: "stateful with per instance exposure valid",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				Exposure:     ExposureModePerInstance,
+			},
+		},
+		{
+			name: "stateful with unspecified exposure valid",
+			spec: ArtifactSpec{
+				Name:         "api",
+				App:          "app",
+				Image:        "repo/app:v1",
+				WorkloadKind: WorkloadKindStateful,
+				Exposure:     ExposureModeUnspecified,
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -3,6 +3,7 @@ name: gateway
 app: game
 desc: game gateway service
 kind: stateful
+exposure: aggregate
 artifacts:
   - name: cmd
     target: app/cmd:cmd_image
@@ -10,3 +11,5 @@ artifacts:
     ports:
       - name: http
         port: 8080
+      - name: internal-grpc
+        port: 8082

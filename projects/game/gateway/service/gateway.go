@@ -10,10 +10,11 @@ import (
 	"dominion/common/gopkg/bootstrap"
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
+	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/mediacache"
 	"dominion/projects/game/gateway/domain/sessionmanager"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/domain/token"
 )
 
 var (
@@ -32,32 +33,28 @@ type GatewayService struct {
 	mediaMu       sync.Mutex
 	control       *ControlExecutor
 	asyncCh       chan *domain.RoutedMessage
-	gatewayID     string
+	config        *config.OwnerConfig
+	tokenIssuer   token.Issuer
 	tokenVerifier token.Verifier
 }
 
 func NewGatewayService(
 	sessions *sessionmanager.Manager,
 	control *ControlExecutor,
-	gatewayID string,
+	cfg *config.OwnerConfig,
+	issuer token.Issuer,
 	verifier token.Verifier,
-) (*GatewayService, bootstrap.WorkerBuilder) {
-	asyncCh := make(chan *domain.RoutedMessage, 64)
-	svc := &GatewayService{
+) *GatewayService {
+	return &GatewayService{
 		sessions:      sessions,
 		mediaCaches:   map[string]domain.MediaCache{},
 		lastSequences: map[string]uint64{},
 		control:       control,
-		asyncCh:       asyncCh,
-		gatewayID:     gatewayID,
+		asyncCh:       make(chan *domain.RoutedMessage, 64),
+		config:        cfg,
+		tokenIssuer:   issuer,
 		tokenVerifier: verifier,
 	}
-	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
-		return NewCompletionWorker(control.Completions(), func(ctx context.Context, comp domain.ControlCompletion) {
-			svc.HandleCompletion(ctx, comp)
-		}), nil
-	})
-	return svc, builder
 }
 
 func (s *GatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
@@ -100,6 +97,16 @@ func (s *GatewayService) HandleCompletion(ctx context.Context, comp domain.Contr
 	}
 }
 
+// StartCompletionWorker returns a WorkerBuilder that creates a completion
+// worker consuming the control executor's completion channel.
+func (s *GatewayService) StartCompletionWorker() bootstrap.WorkerBuilder {
+	return bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewCompletionWorker(s.control.Completions(), func(ctx context.Context, comp domain.ControlCompletion) {
+			s.HandleCompletion(ctx, comp)
+		}), nil
+	})
+}
+
 // ConnectSession validates the connection token and returns the session runtime
 // and embedded claims. It verifies the token signature and expiry, confirms the
 // gateway ID matches this instance, and ensures the session ID in the token
@@ -110,7 +117,11 @@ func (s *GatewayService) ConnectSession(ctx context.Context, pathSessionID, toke
 		return nil, nil, fmt.Errorf("verify token: %w", err)
 	}
 
-	if claims.GatewayID != s.gatewayID {
+	if err := claims.ValidateOwnerEpoch(); err != nil {
+		return nil, nil, fmt.Errorf("validate owner epoch: %w", err)
+	}
+
+	if claims.OwnerGatewayID != s.config.GatewayID {
 		return nil, nil, errGatewayMismatch
 	}
 
@@ -430,6 +441,12 @@ func (s *GatewayService) DisconnectWeb(sessionID, connID string) {
 	s.sessions.RemoveWebConn(sessionID, connID)
 }
 
+// TouchSession refreshes the idle TTL for a session by updating its
+// LastTrafficTime.
+func (s *GatewayService) TouchSession(sessionID string) error {
+	return s.sessions.TouchSession(sessionID)
+}
+
 // GetRuntime returns the current session runtime state.
 func (s *GatewayService) GetRuntime(_ context.Context, sessionID string) (*domain.SessionRuntime, error) {
 	rt := s.sessions.GetRuntime(sessionID)
@@ -438,6 +455,84 @@ func (s *GatewayService) GetRuntime(_ context.Context, sessionID string) (*domai
 	}
 
 	return rt, nil
+}
+
+// CreateGameRuntime creates an in-memory game runtime for the session, stamps
+// ownership fields with per-session epoch, initializes the idle timer, and
+// issues a routing token.
+func (s *GatewayService) CreateGameRuntime(_ context.Context, sessionID string, reconnectGeneration int64) (*domain.SessionRuntime, string, error) {
+	rt := s.sessions.GetOrCreateRuntime(sessionID)
+
+	if rt.OwnerGatewayID == s.config.GatewayID && rt.ReconnectGeneration > 0 {
+		// Runtime already exists on this pod (reconnect to same pod).
+		if reconnectGeneration > rt.ReconnectGeneration {
+			rt.ReconnectGeneration = reconnectGeneration
+		}
+		rt.OwnerEpoch++
+	} else {
+		// New runtime or takeover from another pod.
+		rt.OwnerGatewayID = s.config.GatewayID
+		rt.OwnerEpoch = 1
+		rt.ReconnectGeneration = reconnectGeneration
+	}
+
+	s.sessions.TouchSession(sessionID)
+
+	tokenStr, err := s.tokenIssuer.Issue(sessionID, s.config.GatewayID, rt.OwnerEpoch, token.TokenAudienceInternal, rt.ReconnectGeneration)
+	if err != nil {
+		return nil, "", fmt.Errorf("issue token: %w", err)
+	}
+
+	return rt, tokenStr, nil
+}
+
+// RefreshGameRuntime refreshes the token for an existing runtime on this
+// gateway. Takeover is NOT supported — the old token must belong to this
+// gateway. Old tokens with the same generation and a lower or equal epoch
+// are accepted (allows concurrent re-issuers to converge).
+func (s *GatewayService) RefreshGameRuntime(_ context.Context, sessionID, oldToken string) (*domain.SessionRuntime, string, error) {
+	claims, err := s.tokenVerifier.VerifyWithGrace(oldToken, s.config.TokenRefreshGrace)
+	if err != nil {
+		return nil, "", fmt.Errorf("verify old token: %w", err)
+	}
+
+	if err := claims.ValidateOwnerEpoch(); err != nil {
+		return nil, "", fmt.Errorf("validate owner epoch: %w", err)
+	}
+
+	if err := claims.ValidateAudience(token.TokenAudienceInternal); err != nil {
+		return nil, "", fmt.Errorf("validate audience: %w", err)
+	}
+
+	if claims.SessionID != sessionID {
+		return nil, "", errSessionMismatch
+	}
+
+	if claims.OwnerGatewayID != s.config.GatewayID {
+		return nil, "", fmt.Errorf("token owned by %q, this gateway is %q — takeover not supported via refresh", claims.OwnerGatewayID, s.config.GatewayID)
+	}
+
+	rt := s.sessions.GetRuntime(sessionID)
+	if rt == nil {
+		return nil, "", fmt.Errorf("runtime not found: %w", domain.ErrSessionNotFound)
+	}
+
+	if claims.ReconnectGeneration != rt.ReconnectGeneration {
+		return nil, "", fmt.Errorf("generation mismatch: token=%d runtime=%d", claims.ReconnectGeneration, rt.ReconnectGeneration)
+	}
+	if claims.OwnerEpoch > rt.OwnerEpoch {
+		return nil, "", fmt.Errorf("token epoch %d > current epoch %d", claims.OwnerEpoch, rt.OwnerEpoch)
+	}
+
+	rt.OwnerEpoch++
+	s.sessions.TouchSession(sessionID)
+
+	tokenStr, err := s.tokenIssuer.Issue(sessionID, s.config.GatewayID, rt.OwnerEpoch, token.TokenAudienceInternal, rt.ReconnectGeneration)
+	if err != nil {
+		return nil, "", fmt.Errorf("issue token: %w", err)
+	}
+
+	return rt, tokenStr, nil
 }
 
 // getOrCreateMediaCache returns the media cache for the given session, creating

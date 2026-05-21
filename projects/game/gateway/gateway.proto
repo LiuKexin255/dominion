@@ -10,8 +10,8 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "dominion/projects/game/gateway";
 
-// GameGatewayService exposes the read-side HTTP API for a session-bound game
-// gateway.
+// GameGatewayService exposes the read-side HTTP+gRPC API for a session-bound
+// game gateway.
 //
 // Prefix Path: /v1
 //
@@ -39,6 +39,21 @@ service GameGatewayService {
 
     option (google.api.method_signature) = "name";
   }
+
+}
+
+// GameRuntimeService manages game runtime lifecycle on the gateway instance.
+// This is a gRPC-only service (no HTTP annotations) used for internal
+// gateway-to-gateway communication.
+service GameRuntimeService {
+  // CreateGameRuntime creates an in-memory game runtime on the receiving
+  // gateway instance for the session and returns an ownership token bound to
+  // the reconnect generation.
+  rpc CreateGameRuntime(CreateGameRuntimeRequest) returns (CreateGameRuntimeResponse);
+
+  // RefreshGameRuntime refreshes an existing runtime token before expiry and
+  // returns a new token with an updated expiry window.
+  rpc RefreshGameRuntime(RefreshGameRuntimeRequest) returns (RefreshGameRuntimeResponse);
 }
 
 // GameSnapshot is the read-side singleton snapshot resource for a session game
@@ -107,6 +122,10 @@ message GameRuntime {
   string last_error = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   int64 reconnect_generation = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string owner_gateway_id = 12 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 owner_epoch = 13 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message GetGameSnapshotRequest {
@@ -125,6 +144,50 @@ message GetGameRuntimeRequest {
       type: "game.liukexin.com/gateway/GameRuntime"
     }
   ];
+}
+
+message CreateGameRuntimeRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/session/Session"
+    }
+  ];
+
+  int64 reconnect_generation = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message CreateGameRuntimeResponse {
+  string owner_gateway_id = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 owner_epoch = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string token = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp expires_at = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+message RefreshGameRuntimeRequest {
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/gateway/GameRuntime"
+    }
+  ];
+
+  string old_token = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message RefreshGameRuntimeResponse {
+  string owner_gateway_id = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 owner_epoch = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  int64 reconnect_generation = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  string token = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  google.protobuf.Timestamp expires_at = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 enum GameStreamStatus {

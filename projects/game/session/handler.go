@@ -86,7 +86,7 @@ func (h *Handler) CreateSession(ctx context.Context, req *CreateSessionRequest) 
 		return nil, toStatusError(err)
 	}
 
-	logs.Info(ctx, "create session succeeded", event.String(logFieldSessionID, session.Snapshot().ID), event.String(logFieldSessionType, req.GetType().String()))
+	logs.Info(ctx, "create session succeeded", event.String(logFieldSessionID, session.ID()), event.String(logFieldSessionType, req.GetType().String()))
 	return &CreateSessionResponse{
 		Session: toProtoSession(session),
 	}, nil
@@ -150,18 +150,17 @@ func toProtoSession(session *domain.Session) *Session {
 		return nil
 	}
 
-	snapshot := session.Snapshot()
 	return &Session{
-		Name:                sessionResourcePrefix + snapshot.ID,
-		Type:                toProtoSessionType(snapshot.Type),
-		Status:              toProtoSessionStatus(snapshot.Status),
-		GatewayId:           snapshot.GatewayID,
-		CreateTime:          timestamppb.New(snapshot.CreatedAt),
-		UpdateTime:          timestamppb.New(snapshot.UpdatedAt),
-		EndTime:             toProtoTimestampPtr(snapshot.EndedAt),
-		ReconnectGeneration: snapshot.ReconnectGeneration,
-		LastError:           snapshot.LastError,
-		AgentConnectUrl:     snapshot.AgentConnectURL,
+		Name:                sessionResourcePrefix + session.ID(),
+		Type:                toProtoSessionType(session.Type()),
+		Status:              toProtoSessionStatus(session.Status()),
+		GatewayId:           session.GatewayID(),
+		CreateTime:          timestamppb.New(session.CreatedAt()),
+		UpdateTime:          timestamppb.New(session.UpdatedAt()),
+		EndTime:             toProtoTimestampPtr(session.EndedAt()),
+		ReconnectGeneration: session.ReconnectGeneration(),
+		LastError:           session.LastError(),
+		Token:               session.Token(),
 	}
 }
 

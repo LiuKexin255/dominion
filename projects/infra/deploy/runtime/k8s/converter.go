@@ -38,16 +38,38 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 	for _, artifact := range desiredState.Artifacts {
 		switch artifact.WorkloadKind {
 		case domain.WorkloadKindStateful:
-			statefulWorkload := convertArtifactToStatefulWorkload(artifact, envName)
+			statefulWorkload := convertArtifactToStatefulWorkload(artifact, envName, envType)
 			objects.StatefulWorkloads = append(objects.StatefulWorkloads, statefulWorkload)
 
-			instanceRoutes, err := convertArtifactHTTPToInstanceRoutes(artifact, envName, cfg, envType)
-			if err != nil {
-				return nil, err
+			if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
+				switch artifact.Exposure {
+				case domain.ExposureModePerInstance:
+					instanceRoutes, err := convertArtifactHTTPToInstanceRoutes(artifact, envName, cfg, envType)
+					if err != nil {
+						return nil, err
+					}
+					objects.InstanceRoutes = append(objects.InstanceRoutes, instanceRoutes...)
+				default:
+					// Aggregate: 单条路由，hostname 不展开，backend 指向 agsvc 服务
+					matches, err := convertHTTPRouteMatches(artifact.Ports, artifact.HTTP.Matches)
+					if err != nil {
+						return nil, err
+					}
+					objects.HTTPRoutes = append(objects.HTTPRoutes, &HTTPRouteWorkload{
+						ServiceName:      artifact.Name,
+						EnvironmentName:  envName,
+						App:              artifact.App,
+						Hostnames:        artifact.HTTP.Hostnames,
+						Matches:          matches,
+						BackendService:   statefulWorkload.AggregateServiceName(),
+						GatewayName:      cfg.Gateway.Name,
+						GatewayNamespace: cfg.Gateway.Namespace,
+						EnvType:          envType,
+					})
+				}
 			}
-			objects.InstanceRoutes = append(objects.InstanceRoutes, instanceRoutes...)
 		default:
-			deployment := convertArtifactToDeployment(artifact, envName)
+			deployment := convertArtifactToDeployment(artifact, envName, envType)
 			objects.Deployments = append(objects.Deployments, deployment)
 
 			if artifact.HTTP != nil && len(artifact.HTTP.Matches) > 0 {
@@ -71,7 +93,7 @@ func ConvertToWorkloads(env *domain.Environment, cfg *K8sConfig) (*DeployObjects
 	return objects, nil
 }
 
-func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName string) *StatefulWorkload {
+func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName string, envType domain.EnvironmentType) *StatefulWorkload {
 	var hostnames []string
 	if artifact.HTTP != nil {
 		hostnames = artifact.HTTP.Hostnames
@@ -87,11 +109,13 @@ func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName st
 		OSSEnabled:      artifact.OSSEnabled,
 		Ports:           convertPorts(artifact.Ports),
 		Hostnames:       hostnames,
+		EnvType:         envType,
 		Env:             artifact.Env,
+		Exposure:        artifact.Exposure,
 	}
 }
 
-func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) *DeploymentWorkload {
+func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string, envType domain.EnvironmentType) *DeploymentWorkload {
 	return &DeploymentWorkload{
 		ServiceName:     artifact.Name,
 		EnvironmentName: envName,
@@ -101,6 +125,7 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string) 
 		TLSEnabled:      artifact.TLSEnabled,
 		OSSEnabled:      artifact.OSSEnabled,
 		Ports:           convertPorts(artifact.Ports),
+		EnvType:         envType,
 		Env:             artifact.Env,
 	}
 }

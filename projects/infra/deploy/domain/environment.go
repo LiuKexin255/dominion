@@ -74,6 +74,8 @@ func NewEnvironment(name EnvironmentName, envType EnvironmentType, description s
 		generation: 1,
 	}
 
+	normalizeDesiredState(env.desiredState)
+
 	if err := env.Validate(); err != nil {
 		return nil, err
 	}
@@ -107,6 +109,8 @@ func RehydrateEnvironment(snapshot EnvironmentSnapshot) (*Environment, error) {
 		updateTime:   snapshot.UpdateTime,
 		etag:         snapshot.ETag,
 	}
+
+	normalizeDesiredState(env.desiredState)
 
 	if err := env.Validate(); err != nil {
 		return nil, err
@@ -169,6 +173,7 @@ func (e *Environment) SetDesiredPresent(newDesiredState *DesiredState) error {
 	previous := e.desiredState
 	if newDesiredState != nil {
 		e.desiredState = cloneDesiredState(newDesiredState)
+		normalizeDesiredState(e.desiredState)
 		if err := e.Validate(); err != nil {
 			e.desiredState = previous
 			return err
@@ -412,6 +417,27 @@ func cloneInfras(infras []*InfraSpec) []*InfraSpec {
 		cloned[i] = &cp
 	}
 	return cloned
+}
+
+// normalizeArtifactSpec applies domain defaults to an artifact spec.
+// Stateful workloads with unspecified exposure default to aggregate;
+// zero replicas default to 1.
+func normalizeArtifactSpec(spec *ArtifactSpec) {
+	if spec.WorkloadKind == WorkloadKindStateful && spec.Exposure == ExposureModeUnspecified {
+		spec.Exposure = ExposureModeAggregate
+	}
+	if spec.Replicas == 0 {
+		spec.Replicas = 1
+	}
+}
+
+func normalizeDesiredState(state *DesiredState) {
+	if state == nil {
+		return
+	}
+	for _, artifact := range state.Artifacts {
+		normalizeArtifactSpec(artifact)
+	}
 }
 
 // ValidateEnvConflict checks that no artifact env key conflicts with a reserved variable name.

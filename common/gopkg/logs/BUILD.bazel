@@ -6,7 +6,10 @@ go_library(
     srcs = ["logs.go"],
     importpath = "dominion/common/gopkg/logs",
     visibility = ["//visibility:public"],
-    deps = ["//common/gopkg/logs/event"],
+    deps = [
+        "//common/gopkg/logs/event",
+        "@io_opentelemetry_go_contrib_bridges_otelslog//:otelslog",
+    ],
 )
 
 go_unittest(

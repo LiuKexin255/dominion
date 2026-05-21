@@ -5,18 +5,41 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	"dominion/common/gopkg/logs/event"
+
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 )
 
 var (
 	// newConsoleHandler creates the handler for the console path.
 	// Overridable for tests.
 	newConsoleHandler = func() slog.Handler {
-		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+		return slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevelFromEnv()})
 	}
 )
+
+const (
+	// envLogLevel is the environment variable used to control the log level.
+	envLogLevel = "LOG_LEVEL"
+
+	debugLogLevel = "debug"
+)
+
+// logLevelFromEnv reads LOG_LEVEL from the environment and returns the
+// corresponding slog.Level. It recognises "debug" (case-insensitive) as
+// slog.LevelDebug; all other values, including an empty or unset variable,
+// fall back to slog.LevelInfo.
+func logLevelFromEnv() slog.Level {
+	raw := os.Getenv(envLogLevel)
+	val := strings.TrimSpace(raw)
+	if strings.EqualFold(val, debugLogLevel) {
+		return slog.LevelDebug
+	}
+	return slog.LevelInfo
+}
 
 var (
 	defaultLogger *slog.Logger
@@ -27,6 +50,39 @@ var (
 	reporterMu     sync.Mutex
 	activeReporter *slog.Logger
 )
+
+// levelHandler wraps a slog.Handler and enforces a minimum log level.
+// The WithAttrs and WithGroup methods return new levelHandler instances
+// so that the level filter is preserved when attributes are added.
+type levelHandler struct {
+	inner slog.Handler
+	level slog.Leveler
+}
+
+func (h *levelHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level.Level() && h.inner.Enabled(ctx, level)
+}
+
+func (h *levelHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *levelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &levelHandler{inner: h.inner.WithAttrs(attrs), level: h.level}
+}
+
+func (h *levelHandler) WithGroup(name string) slog.Handler {
+	return &levelHandler{inner: h.inner.WithGroup(name), level: h.level}
+}
+
+// NewOTelReporter creates a new slog.Logger that bridges to OpenTelemetry
+// using the given instrumentation scope name. The returned logger respects
+// the LOG_LEVEL environment variable for filtering.
+func NewOTelReporter(name string) *slog.Logger {
+	handler := otelslog.NewHandler(name)
+	wrapped := &levelHandler{inner: handler, level: logLevelFromEnv()}
+	return slog.New(wrapped)
+}
 
 type loggerKey struct{}
 

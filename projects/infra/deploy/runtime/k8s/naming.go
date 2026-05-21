@@ -39,6 +39,8 @@ const (
 	WorkloadKindInstanceService WorkloadKind = "sisvc"
 	// WorkloadKindInstanceRoute 表示 StatefulSet 实例 HTTPRoute 类型前缀。
 	WorkloadKindInstanceRoute WorkloadKind = "sirt"
+	// WorkloadKindAggregateService 表示 aggregate Service 类型前缀。
+	WorkloadKindAggregateService WorkloadKind = "agsvc"
 
 	maxK8sResourceNameSize = 63
 )

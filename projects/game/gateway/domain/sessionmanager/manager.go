@@ -6,10 +6,16 @@
 package sessionmanager
 
 import (
+	"context"
 	"sync"
+	"time"
 
+	"dominion/common/gopkg/bootstrap"
 	"dominion/projects/game/gateway/domain"
 )
+
+// ManagerOption is a functional option for configuring Manager.
+type ManagerOption func(*Manager)
 
 // Manager manages the runtime state of active game sessions on a gateway
 // instance. All methods are safe for concurrent use.
@@ -17,14 +23,27 @@ type Manager struct {
 	mu        sync.RWMutex
 	gatewayID string
 	sessions  map[string]*domain.SessionRuntime
+	idleTTL   time.Duration
+}
+
+// WithIdleTTL sets the idle TTL for sessions managed by this Manager.
+func WithIdleTTL(ttl time.Duration) ManagerOption {
+	return func(m *Manager) {
+		m.idleTTL = ttl
+	}
 }
 
 // NewManager creates a Manager with an empty session map for the given gateway.
-func NewManager(gatewayID string) *Manager {
-	return &Manager{
+// Optional ManagerOption arguments configure additional behaviour.
+func NewManager(gatewayID string, opts ...ManagerOption) *Manager {
+	m := &Manager{
 		gatewayID: gatewayID,
 		sessions:  map[string]*domain.SessionRuntime{},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // GetOrCreateRuntime returns the existing SessionRuntime for sessionID, or
@@ -38,11 +57,27 @@ func (m *Manager) GetOrCreateRuntime(sessionID string) *domain.SessionRuntime {
 	}
 
 	rt := &domain.SessionRuntime{
-		SessionID: sessionID,
-		GatewayID: m.gatewayID,
+		SessionID:       sessionID,
+		GatewayID:       m.gatewayID,
+		LastTrafficTime: time.Now(),
 	}
 	m.sessions[sessionID] = rt
 	return rt
+}
+
+// TouchSession updates the LastTrafficTime for the given session to the
+// current time. Returns ErrSessionNotFound if the session does not exist.
+func (m *Manager) TouchSession(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rt, ok := m.sessions[sessionID]
+	if !ok {
+		return domain.ErrSessionNotFound
+	}
+
+	rt.LastTrafficTime = time.Now()
+	return nil
 }
 
 // GetRuntime returns the SessionRuntime for sessionID, or nil if not found.
@@ -123,6 +158,85 @@ func (m *Manager) RemoveWebConn(sessionID string, connID string) {
 			conns = conns[:len(conns)-1]
 			rt.WebConns = conns
 			return
+		}
+	}
+}
+
+// RemoveRuntime removes the session with the given sessionID from the manager.
+// It is safe for concurrent use and is a no-op if the session does not exist.
+func (m *Manager) RemoveRuntime(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, sessionID)
+}
+
+// Len returns the number of active sessions.
+func (m *Manager) Len() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.sessions)
+}
+
+// StartCleanup returns a bootstrap.WorkerBuilder that creates a worker to
+// periodically remove sessions idle beyond the configured idleTTL. If idleTTL
+// is 0, the worker is a no-op.
+func (m *Manager) StartCleanup() bootstrap.WorkerBuilder {
+	return bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return &cleanupWorker{
+			manager: m,
+			idleTTL: m.idleTTL,
+		}, nil
+	})
+}
+
+// cleanupWorker implements bootstrap.Worker for periodic idle session cleanup.
+type cleanupWorker struct {
+	manager *Manager
+	idleTTL time.Duration
+	cancel  context.CancelFunc
+}
+
+// Start begins the periodic cleanup loop. It blocks until the context is
+// cancelled. If idleTTL is 0, it returns immediately (no-op).
+func (w *cleanupWorker) Start(ctx context.Context) error {
+	if w.idleTTL <= 0 {
+		return nil
+	}
+
+	ctx, w.cancel = context.WithCancel(ctx)
+	defer w.cancel()
+
+	interval := w.idleTTL / 2
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			w.manager.removeIdleSessions(w.idleTTL)
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// Stop requests the cleanup worker to exit. Safe to call multiple times.
+func (w *cleanupWorker) Stop(_ context.Context) error {
+	if w.cancel != nil {
+		w.cancel()
+	}
+	return nil
+}
+
+// removeIdleSessions removes all sessions that have been idle longer than ttl.
+func (m *Manager) removeIdleSessions(ttl time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for id, rt := range m.sessions {
+		if now.Sub(rt.LastTrafficTime) > ttl {
+			delete(m.sessions, id)
 		}
 	}
 }

@@ -41,12 +41,12 @@ type SessionSnapshot struct {
 	Type                SessionType
 	Status              SessionStatus
 	GatewayID           string
+	Token               string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	EndedAt             *time.Time
 	ReconnectGeneration int64
 	LastError           string
-	AgentConnectURL     string // computed in service layer, not persisted
 }
 
 // Session is the aggregate root for a game session.
@@ -55,12 +55,12 @@ type Session struct {
 	sessionType         SessionType
 	status              SessionStatus
 	gatewayID           string
+	token               string
 	createdAt           time.Time
 	updatedAt           time.Time
 	endedAt             *time.Time
 	reconnectGeneration int64
 	lastError           string
-	agentConnectURL     string
 }
 
 // NewSession constructs a session in the pending state.
@@ -102,12 +102,12 @@ func Rehydrate(snapshot SessionSnapshot) (*Session, error) {
 		sessionType:         snapshot.Type,
 		status:              snapshot.Status,
 		gatewayID:           snapshot.GatewayID,
+		token:               snapshot.Token,
 		createdAt:           snapshot.CreatedAt,
 		updatedAt:           snapshot.UpdatedAt,
 		endedAt:             cloneTimePtr(snapshot.EndedAt),
 		reconnectGeneration: snapshot.ReconnectGeneration,
 		lastError:           snapshot.LastError,
-		agentConnectURL:     snapshot.AgentConnectURL,
 	}, nil
 }
 
@@ -118,13 +118,49 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Type:                s.sessionType,
 		Status:              s.status,
 		GatewayID:           s.gatewayID,
+		Token:               s.token,
 		CreatedAt:           s.createdAt,
 		UpdatedAt:           s.updatedAt,
 		EndedAt:             cloneTimePtr(s.endedAt),
 		ReconnectGeneration: s.reconnectGeneration,
 		LastError:           s.lastError,
-		AgentConnectURL:     s.agentConnectURL,
 	}
+}
+
+// ID returns the session identifier.
+func (s *Session) ID() string { return s.id }
+
+// Token returns the gateway-issued connection token.
+func (s *Session) Token() string { return s.token }
+
+// GatewayID returns the assigned gateway identifier.
+func (s *Session) GatewayID() string { return s.gatewayID }
+
+// Status returns the current session lifecycle status.
+func (s *Session) Status() SessionStatus { return s.status }
+
+// ReconnectGeneration returns the current reconnect generation.
+func (s *Session) ReconnectGeneration() int64 { return s.reconnectGeneration }
+
+// Type returns the session type.
+func (s *Session) Type() SessionType { return s.sessionType }
+
+// CreatedAt returns the creation timestamp.
+func (s *Session) CreatedAt() time.Time { return s.createdAt }
+
+// UpdatedAt returns the last update timestamp.
+func (s *Session) UpdatedAt() time.Time { return s.updatedAt }
+
+// EndedAt returns the end timestamp, or nil if the session is still active.
+func (s *Session) EndedAt() *time.Time { return s.endedAt }
+
+// LastError returns the last error message associated with the session.
+func (s *Session) LastError() string { return s.lastError }
+
+// SetToken sets the gateway-issued connection token.
+func (s *Session) SetToken(token string) {
+	s.token = token
+	s.updatedAt = time.Now().UTC()
 }
 
 // SetGatewayID sets the assigned gateway for the session.
@@ -133,18 +169,17 @@ func (s *Session) SetGatewayID(id string) {
 	s.updatedAt = time.Now().UTC()
 }
 
-// SetAgentConnectURL enriches the session with the connect URL (non-state-changing).
-func (s *Session) SetAgentConnectURL(url string) {
-	s.agentConnectURL = url
+// SetReconnectGeneration sets the reconnect generation (controlled by gateway).
+func (s *Session) SetReconnectGeneration(gen int64) {
+	s.reconnectGeneration = gen
+	s.updatedAt = time.Now().UTC()
 }
 
 // MarkActive transitions the session to active.
+// The reconnect generation is no longer auto-incremented here; the gateway
+// controls the generation value.
 func (s *Session) MarkActive() error {
-	switch s.status {
-	case StatusPending:
-	case StatusDisconnected:
-		s.reconnectGeneration++
-	default:
+	if s.status != StatusPending && s.status != StatusDisconnected {
 		return ErrInvalidState
 	}
 

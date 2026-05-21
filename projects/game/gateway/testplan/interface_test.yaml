@@ -1,6 +1,6 @@
 name: game-gateway-interface-test
 description: |
-  game-gateway HTTP REST + WebSocket 接口测试
+  game-gateway HTTP REST + WebSocket 接口测试 (aggregate exposure, 3 replicas)
 
   Service: game-gateway
   Interface: grpc-gateway exposed HTTP REST API + WebSocket
@@ -23,12 +23,23 @@ description: |
     15. ConcurrentOperations — multiple web ops are serialized
     16. TimeoutSemantics — click/drag timeouts work correctly
     17. AgentDisconnect_Cleanup — agent disconnect clears inflight
+    18. AgentConnect_WithAggregateHost — agent connects via aggregate host WebSocket
+    19. WebConnect_WithAggregateHost — web connects via aggregate host WebSocket
+    20. HTTPRead_WithToken — GET /runtime or /snapshot with valid token → 200
+    21. CrossPodRouting — verify request forwarding across gateway replicas
+    22. ExpiredToken_Rejected — expired token on WebSocket connect → 401
+    23. IdleTTL_SessionCleaned — owner pod ready but session idle > TTL → GetGameRuntime returns NotFound
+    24. OwnerPodRestart_OldTokenInvalid — owner pod restart → old token rejected (epoch mismatch)
+    25. NoPerInstanceHost — verify deployment no longer depends on per-instance host
+    26. CreateSession_ReturnsAggregateHost — create session via session service → verify connect URL uses aggregate host (stub)
+    27. WSHoldBeyondTokenTTL — WebSocket stays connected beyond 2x token TTL (stub)
+    28. SessionRefresh_NewTokenWorks — refresh session → new token can connect (stub)
 
 suites:
   - name: default
     deploy: //projects/game/gateway/testplan/test_deploy.yaml
     endpoint:
       http:
-        public: https://gateway-0-game.liukexin.com
+        public: https://game.liukexin.com
     cases:
       - //projects/game/gateway/testplan:testplan_test

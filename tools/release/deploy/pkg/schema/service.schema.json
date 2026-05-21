@@ -23,6 +23,14 @@
       ],
       "description": "工作负载类型，默认 stateless"
     },
+    "exposure": {
+      "type": "string",
+      "enum": [
+        "aggregate",
+        "per-instance"
+      ],
+      "description": "Stateful 服务的暴露模式，仅 kind: stateful 时有效"
+    },
     "name": {
       "type": "string",
       "minLength": 1,

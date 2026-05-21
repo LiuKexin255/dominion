@@ -26,6 +26,18 @@ const (
 	WorkloadKindStateful WorkloadKind = 1
 )
 
+// ExposureMode defines how a stateful workload is exposed to traffic.
+type ExposureMode int
+
+const (
+	// ExposureModeUnspecified indicates no exposure mode has been set.
+	ExposureModeUnspecified ExposureMode = 0
+	// ExposureModeAggregate exposes a single endpoint backed by all replicas.
+	ExposureModeAggregate ExposureMode = 1
+	// ExposureModePerInstance exposes each replica individually.
+	ExposureModePerInstance ExposureMode = 2
+)
+
 // ArtifactPortSpec describes a single port exposed by an artifact.
 type ArtifactPortSpec struct {
 	Name string
@@ -52,6 +64,7 @@ type ArtifactSpec struct {
 	TLSEnabled   bool
 	OSSEnabled   bool
 	WorkloadKind WorkloadKind
+	Exposure     ExposureMode
 	HTTP         *ArtifactHTTPSpec
 	Env          map[string]string
 }
@@ -105,6 +118,9 @@ func (s *ArtifactSpec) Validate() error {
 	}
 	if s.Replicas < 0 {
 		errs = append(errs, errors.New("replicas must be non-negative"))
+	}
+	if s.WorkloadKind == WorkloadKindStateless && s.Exposure != ExposureModeUnspecified {
+		errs = append(errs, errors.New("exposure mode is only valid for stateful workloads"))
 	}
 	for key := range s.Env {
 		if key == "" {

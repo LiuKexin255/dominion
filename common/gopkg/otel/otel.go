@@ -4,7 +4,6 @@ package otel
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -13,7 +12,6 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/otel/tracecontext"
 
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -214,7 +212,7 @@ func initDeploy(ctx context.Context, cfg *config) (Shutdown, error) {
 
 	// Install the logs reporter so that package-level logs.Info/Error/etc.
 	// route through the OTel LoggerProvider.
-	uninstallLogs = logs.InstallReporter(slog.New(otelslog.NewHandler("dominion/common/gopkg/logs")))
+	uninstallLogs = logs.InstallReporter(logs.NewOTelReporter(cfg.loggerName))
 
 	// Set global propagator.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(

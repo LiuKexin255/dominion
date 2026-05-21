@@ -408,15 +408,27 @@ func TestInit_PartialFailure(t *testing.T) {
 
 func TestOptions(t *testing.T) {
 	tests := []struct {
-		name         string
-		opts         []Option
-		wantEndpoint string
+		name           string
+		opts           []Option
+		wantEndpoint   string
+		wantLoggerName string
 	}{
-		{name: "defaults", wantEndpoint: defaultCollectorEndpoint},
 		{
-			name:         "custom endpoint",
-			opts:         []Option{WithCollectorEndpoint("custom:4317")},
-			wantEndpoint: "custom:4317",
+			name:           "defaults",
+			wantEndpoint:   defaultCollectorEndpoint,
+			wantLoggerName: "dominion/common/gopkg/otel",
+		},
+		{
+			name:           "custom endpoint",
+			opts:           []Option{WithCollectorEndpoint("custom:4317")},
+			wantEndpoint:   "custom:4317",
+			wantLoggerName: "dominion/common/gopkg/otel",
+		},
+		{
+			name:           "custom logger name",
+			opts:           []Option{WithLoggerName("my-service")},
+			wantEndpoint:   defaultCollectorEndpoint,
+			wantLoggerName: "my-service",
 		},
 	}
 
@@ -429,6 +441,9 @@ func TestOptions(t *testing.T) {
 
 			if cfg.collectorEndpoint != tt.wantEndpoint {
 				t.Fatalf("config.collectorEndpoint = %q, want %q", cfg.collectorEndpoint, tt.wantEndpoint)
+			}
+			if cfg.loggerName != tt.wantLoggerName {
+				t.Fatalf("config.loggerName = %q, want %q", cfg.loggerName, tt.wantLoggerName)
 			}
 		})
 	}
