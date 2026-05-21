@@ -2,13 +2,15 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/token"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -17,6 +19,30 @@ type stubGatewayService struct {
 	snapshotErr error
 	runtime     *domain.SessionRuntime
 	runtimeErr  error
+
+	createGameRuntimeFn  func(ctx context.Context, sessionID string, reconnectGeneration int64) (*domain.SessionRuntime, string, error)
+	refreshGameRuntimeFn func(ctx context.Context, sessionID string, oldToken string) (*domain.SessionRuntime, string, error)
+}
+
+type stubHandlerVerifier struct {
+	claims *token.Claims
+	err    error
+}
+
+func (v *stubHandlerVerifier) Verify(_ string) (*token.Claims, error) {
+	return v.claims, v.err
+}
+
+func (v *stubHandlerVerifier) VerifyWithGrace(_ string, _ time.Duration) (*token.Claims, error) {
+	return v.claims, v.err
+}
+
+func newTestHandler(svc *stubGatewayService) *Handler {
+	return NewHandler(svc, &stubHandlerVerifier{})
+}
+
+func newTestGameRuntimeHandler(svc *stubGatewayService) *GameRuntimeHandler {
+	return NewGameRuntimeHandler(svc)
 }
 
 func (s *stubGatewayService) GetSnapshot(_ context.Context, _ string) (*domain.SnapshotRef, error) {
@@ -47,12 +73,81 @@ func (s *stubGatewayService) DisconnectAgent(_ string) {}
 
 func (s *stubGatewayService) DisconnectWeb(_, _ string) {}
 
+func (s *stubGatewayService) TouchSession(_ string) error { return nil }
+
 func (s *stubGatewayService) AsyncMessages() <-chan *domain.RoutedMessage {
 	return nil
 }
 
+// dynamicVerifier is a token.Verifier stub that derives the returned claims
+// from the token string. Tokens must follow the format "session:{sessionID}".
+type dynamicVerifier struct{}
+
+func (d *dynamicVerifier) Verify(tokenStr string) (*token.Claims, error) {
+	sessionID := strings.TrimPrefix(tokenStr, "session:")
+	return &token.Claims{
+		SessionID:      sessionID,
+		OwnerGatewayID: "gateway-test",
+		OwnerEpoch:     1,
+		Audience:       token.TokenAudienceInternal,
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+	}, nil
+}
+
+func (d *dynamicVerifier) VerifyWithGrace(tokenStr string, _ time.Duration) (*token.Claims, error) {
+	return d.Verify(tokenStr)
+}
+
+// errVerifier is a token.Verifier stub that always returns the configured
+// error.
+type errVerifier struct {
+	err error
+}
+
+func (e *errVerifier) Verify(_ string) (*token.Claims, error) {
+	return nil, e.err
+}
+
+func (e *errVerifier) VerifyWithGrace(_ string, _ time.Duration) (*token.Claims, error) {
+	return nil, e.err
+}
+
+// authCtxFromName extracts the session ID from a resource name and returns a
+// context containing a valid token in gRPC metadata.
+func authCtxFromName(name string) context.Context {
+	sessionID := sessionIDFromName(name)
+	if sessionID == "" {
+		return context.Background()
+	}
+	return metadata.NewIncomingContext(context.Background(), metadata.Pairs("token", "session:"+sessionID))
+}
+
+// sessionIDFromName extracts the session ID from a resource name of the form
+// "sessions/{id}/...".
+func sessionIDFromName(name string) string {
+	parts := strings.SplitN(strings.TrimPrefix(name, "sessions/"), "/", 2)
+	if len(parts) < 1 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func (s *stubGatewayService) CreateGameRuntime(ctx context.Context, sessionID string, reconnectGeneration int64) (*domain.SessionRuntime, string, error) {
+	if s.createGameRuntimeFn != nil {
+		return s.createGameRuntimeFn(ctx, sessionID, reconnectGeneration)
+	}
+	return nil, "", nil
+}
+
+func (s *stubGatewayService) RefreshGameRuntime(ctx context.Context, sessionID string, oldToken string) (*domain.SessionRuntime, string, error) {
+	if s.refreshGameRuntimeFn != nil {
+		return s.refreshGameRuntimeFn(ctx, sessionID, oldToken)
+	}
+	return nil, "", nil
+}
+
 func TestHandler_GetGameSnapshot(t *testing.T) {
-	ctx := context.Background()
 	captureTime := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -135,7 +230,8 @@ func TestHandler_GetGameSnapshot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewHandler(tt.svc)
+			ctx := authCtxFromName(tt.request.GetName())
+			handler := NewHandler(tt.svc, &dynamicVerifier{})
 
 			// when
 			got, err := handler.GetGameSnapshot(ctx, tt.request)
@@ -155,12 +251,11 @@ func TestHandler_GetGameSnapshot(t *testing.T) {
 }
 
 func TestHandler_GetGameSnapshot_NoSnapshot(t *testing.T) {
-	ctx := context.Background()
-
 	// given: session exists but service returns nil snapshot (no snapshot data available yet)
-	handler := NewHandler(&stubGatewayService{snapshot: nil})
+	handler := NewHandler(&stubGatewayService{snapshot: nil}, &dynamicVerifier{})
 
 	// when
+	ctx := authCtxFromName("sessions/session-1/game/snapshot")
 	got, err := handler.GetGameSnapshot(ctx, &GetGameSnapshotRequest{
 		Name: "sessions/session-1/game/snapshot",
 	})
@@ -180,7 +275,6 @@ func TestHandler_GetGameSnapshot_NoSnapshot(t *testing.T) {
 }
 
 func TestHandler_GetGameRuntime(t *testing.T) {
-	ctx := context.Background()
 	mediaTime := time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC)
 	snapshotTime := time.Date(2026, 4, 22, 10, 0, 1, 0, time.UTC)
 	opCreateTime := time.Date(2026, 4, 22, 10, 0, 2, 0, time.UTC)
@@ -326,7 +420,8 @@ func TestHandler_GetGameRuntime(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewHandler(tt.svc)
+			ctx := authCtxFromName(tt.request.GetName())
+			handler := NewHandler(tt.svc, &dynamicVerifier{})
 
 			// when
 			got, err := handler.GetGameRuntime(ctx, tt.request)
@@ -414,6 +509,52 @@ func Test_parseResourceName(t *testing.T) {
 	}
 }
 
+func TestHandler_GetGameSnapshot_NoToken(t *testing.T) {
+	handler := NewHandler(&stubGatewayService{}, &dynamicVerifier{})
+
+	// No metadata in context → token extraction fails
+	_, err := handler.GetGameSnapshot(context.Background(), &GetGameSnapshotRequest{Name: "sessions/session-1/game/snapshot"})
+	assertStatusCode(t, err, codes.Unauthenticated)
+}
+
+func TestHandler_GetGameSnapshot_InvalidToken(t *testing.T) {
+	// Context has token but verifier rejects it
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("token", "bad-token"))
+	handler := NewHandler(&stubGatewayService{}, &errVerifier{err: token.ErrTokenInvalid})
+
+	_, err := handler.GetGameSnapshot(ctx, &GetGameSnapshotRequest{Name: "sessions/session-1/game/snapshot"})
+	assertStatusCode(t, err, codes.Unauthenticated)
+}
+
+func TestHandler_GetGameSnapshot_WrongSession(t *testing.T) {
+	// Token claims contain a different session ID than the request path
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("token", "session:session-2"))
+	handler := NewHandler(&stubGatewayService{}, &dynamicVerifier{})
+
+	_, err := handler.GetGameSnapshot(ctx, &GetGameSnapshotRequest{Name: "sessions/session-1/game/snapshot"})
+	assertStatusCode(t, err, codes.PermissionDenied)
+}
+
+func TestHandler_GetGameRuntime_NoToken(t *testing.T) {
+	handler := NewHandler(&stubGatewayService{}, &dynamicVerifier{})
+
+	_, err := handler.GetGameRuntime(context.Background(), &GetGameRuntimeRequest{Name: "sessions/session-1/game/runtime"})
+	assertStatusCode(t, err, codes.Unauthenticated)
+}
+
+func TestHandler_GetGameRuntime_ValidToken(t *testing.T) {
+	ctx := authCtxFromName("sessions/session-1/game/runtime")
+	handler := NewHandler(&stubGatewayService{
+		runtime: &domain.SessionRuntime{SessionID: "session-1", GatewayID: "gw-test"},
+	}, &dynamicVerifier{})
+
+	got, err := handler.GetGameRuntime(ctx, &GetGameRuntimeRequest{Name: "sessions/session-1/game/runtime"})
+	assertStatusCode(t, err, codes.OK)
+	if got == nil {
+		t.Fatal("GetGameRuntime() returned nil, want non-nil")
+	}
+}
+
 func assertStatusCode(t *testing.T, err error, want codes.Code) {
 	t.Helper()
 
@@ -429,5 +570,170 @@ func assertStatusCode(t *testing.T, err error, want codes.Code) {
 	}
 	if status.Code(err) != want {
 		t.Fatalf("status.Code() = %v, want %v", status.Code(err), want)
+	}
+}
+
+func TestGameRuntimeHandler_CreateGameRuntime(t *testing.T) {
+	tests := []struct {
+		name     string
+		svc      *stubGatewayService
+		request  *CreateGameRuntimeRequest
+		wantCode codes.Code
+	}{
+		{
+			name: "given valid parent and service returns unimplemented, when CreateGameRuntime called, returns UNIMPLEMENTED",
+			svc: &stubGatewayService{
+				createGameRuntimeFn: func(_ context.Context, _ string, _ int64) (*domain.SessionRuntime, string, error) {
+					return nil, "", status.Error(codes.Unimplemented, "not implemented")
+				},
+			},
+			request:  &CreateGameRuntimeRequest{Parent: "sessions/session-1", ReconnectGeneration: 1},
+			wantCode: codes.Unimplemented,
+		},
+		{
+			name:     "given empty parent, when CreateGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &CreateGameRuntimeRequest{Parent: "", ReconnectGeneration: 1},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "given parent without sessions prefix, when CreateGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &CreateGameRuntimeRequest{Parent: "invalid-parent", ReconnectGeneration: 1},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "given parent with empty session ID, when CreateGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &CreateGameRuntimeRequest{Parent: "sessions/", ReconnectGeneration: 1},
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewGameRuntimeHandler(tt.svc)
+
+			got, err := handler.CreateGameRuntime(context.Background(), tt.request)
+
+			assertStatusCode(t, err, tt.wantCode)
+			if tt.wantCode != codes.OK {
+				return
+			}
+
+			if got == nil {
+				t.Fatal("CreateGameRuntime() returned nil, want non-nil")
+			}
+		})
+	}
+}
+
+func TestGameRuntimeHandler_RefreshGameRuntime(t *testing.T) {
+	tests := []struct {
+		name     string
+		svc      *stubGatewayService
+		request  *RefreshGameRuntimeRequest
+		wantCode codes.Code
+	}{
+		{
+			name: "given valid name and service returns unimplemented, when RefreshGameRuntime called, returns UNIMPLEMENTED",
+			svc: &stubGatewayService{
+				refreshGameRuntimeFn: func(_ context.Context, _ string, _ string) (*domain.SessionRuntime, string, error) {
+					return nil, "", status.Error(codes.Unimplemented, "not implemented")
+				},
+			},
+			request:  &RefreshGameRuntimeRequest{Name: "sessions/session-1/game/runtime", OldToken: "tok-1"},
+			wantCode: codes.Unimplemented,
+		},
+		{
+			name:     "given empty name, when RefreshGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &RefreshGameRuntimeRequest{Name: "", OldToken: "tok-1"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "given malformed name, when RefreshGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &RefreshGameRuntimeRequest{Name: "invalid-name", OldToken: "tok-1"},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "given name with empty session ID, when RefreshGameRuntime called, returns INVALID_ARGUMENT",
+			svc:      &stubGatewayService{},
+			request:  &RefreshGameRuntimeRequest{Name: "sessions//game/runtime", OldToken: "tok-1"},
+			wantCode: codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewGameRuntimeHandler(tt.svc)
+
+			got, err := handler.RefreshGameRuntime(context.Background(), tt.request)
+
+			assertStatusCode(t, err, tt.wantCode)
+			if tt.wantCode != codes.OK {
+				return
+			}
+
+			if got == nil {
+				t.Fatal("RefreshGameRuntime() returned nil, want non-nil")
+			}
+		})
+	}
+}
+
+func Test_parseSessionIDFromParent(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantID  string
+		wantErr bool
+	}{
+		{
+			name:   "valid parent",
+			input:  "sessions/session-1",
+			wantID: "session-1",
+		},
+		{
+			name:   "valid parent with complex ID",
+			input:  "sessions/abc-123-xyz",
+			wantID: "abc-123-xyz",
+		},
+		{
+			name:    "empty parent",
+			input:   "",
+			wantErr: true,
+		},
+		{
+			name:    "missing sessions prefix",
+			input:   "other/session-1",
+			wantErr: true,
+		},
+		{
+			name:    "empty session ID",
+			input:   "sessions/",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSessionIDFromParent(tt.input)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("parseSessionIDFromParent() expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseSessionIDFromParent() unexpected error: %v", err)
+			}
+			if got != tt.wantID {
+				t.Fatalf("parseSessionIDFromParent() = %q, want %q", got, tt.wantID)
+			}
+		})
 	}
 }

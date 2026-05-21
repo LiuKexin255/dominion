@@ -18,22 +18,19 @@ func TestMongoRepository_Get(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("found returns session", func(t *testing.T) {
-		// given
 		repo, collection := newMongoRepositoryForTest()
 		session := newTestSession(t, "test-id-1")
 		if err := repo.Save(ctx, session); err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		got, err := repo.Get(ctx, sessionName("test-id-1"))
 
-		// then
 		if err != nil {
 			t.Fatalf("Get() unexpected error: %v", err)
 		}
-		if got.Snapshot().ID != "test-id-1" {
-			t.Fatalf("ID = %q, want %q", got.Snapshot().ID, "test-id-1")
+		if got.ID() != "test-id-1" {
+			t.Fatalf("ID = %q, want %q", got.ID(), "test-id-1")
 		}
 		if !reflect.DeepEqual(collection.lastFindOneFilter, bson.M{mongoFieldName: sessionName("test-id-1")}) {
 			t.Fatalf("FindOne() filter = %#v, want %#v", collection.lastFindOneFilter, bson.M{mongoFieldName: sessionName("test-id-1")})
@@ -41,13 +38,10 @@ func TestMongoRepository_Get(t *testing.T) {
 	})
 
 	t.Run("not found returns ErrNotFound", func(t *testing.T) {
-		// given
 		repo, collection := newMongoRepositoryForTest()
 
-		// when
 		_, err := repo.Get(ctx, sessionName("missing-id"))
 
-		// then
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Get() error = %v, want %v", err, domain.ErrNotFound)
 		}
@@ -61,14 +55,11 @@ func TestMongoRepository_Save(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("creates new session", func(t *testing.T) {
-		// given
 		repo, collection := newMongoRepositoryForTest()
 		session := newTestSession(t, "new-session-id")
 
-		// when
 		err := repo.Save(ctx, session)
 
-		// then
 		if err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
@@ -86,13 +77,12 @@ func TestMongoRepository_Save(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() after Save() unexpected error: %v", err)
 		}
-		if got.Snapshot().ID != "new-session-id" {
-			t.Fatalf("ID = %q, want %q", got.Snapshot().ID, "new-session-id")
+		if got.ID() != "new-session-id" {
+			t.Fatalf("ID = %q, want %q", got.ID(), "new-session-id")
 		}
 	})
 
 	t.Run("updates existing session", func(t *testing.T) {
-		// given
 		repo, _ := newMongoRepositoryForTest()
 		session := newTestSession(t, "update-id")
 		if err := repo.Save(ctx, session); err != nil {
@@ -102,10 +92,8 @@ func TestMongoRepository_Save(t *testing.T) {
 			t.Fatalf("MarkActive() unexpected error: %v", err)
 		}
 
-		// when
 		err := repo.Save(ctx, session)
 
-		// then
 		if err != nil {
 			t.Fatalf("Save() update unexpected error: %v", err)
 		}
@@ -113,13 +101,12 @@ func TestMongoRepository_Save(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() after update unexpected error: %v", err)
 		}
-		if got.Snapshot().Status != domain.StatusActive {
-			t.Fatalf("Status = %v, want %v", got.Snapshot().Status, domain.StatusActive)
+		if got.Status() != domain.StatusActive {
+			t.Fatalf("Status = %v, want %v", got.Status(), domain.StatusActive)
 		}
 	})
 
 	t.Run("duplicate key maps to already exists", func(t *testing.T) {
-		// given
 		repo := &MongoRepository{
 			collection: &fakeCollectionOps{
 				docs: make(map[string]*mongoSession),
@@ -130,10 +117,8 @@ func TestMongoRepository_Save(t *testing.T) {
 		}
 		session := newTestSession(t, "dup-id")
 
-		// when
 		err := repo.Save(ctx, session)
 
-		// then
 		if !errors.Is(err, domain.ErrAlreadyExists) {
 			t.Fatalf("Save() error = %v, want %v", err, domain.ErrAlreadyExists)
 		}
@@ -144,17 +129,14 @@ func TestMongoRepository_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("deletes existing session", func(t *testing.T) {
-		// given
 		repo, collection := newMongoRepositoryForTest()
 		session := newTestSession(t, "delete-id")
 		if err := repo.Save(ctx, session); err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		err := repo.Delete(ctx, sessionName("delete-id"))
 
-		// then
 		if err != nil {
 			t.Fatalf("Delete() unexpected error: %v", err)
 		}
@@ -168,13 +150,10 @@ func TestMongoRepository_Delete(t *testing.T) {
 	})
 
 	t.Run("not found returns ErrNotFound", func(t *testing.T) {
-		// given
 		repo, _ := newMongoRepositoryForTest()
 
-		// when
 		err := repo.Delete(ctx, sessionName("ghost-id"))
 
-		// then
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Delete() error = %v, want %v", err, domain.ErrNotFound)
 		}
@@ -195,7 +174,6 @@ func TestMongoSession_ToDomain_RoundTrip(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			snap := domain.SessionSnapshot{
 				ID:     "round-trip-id",
 				Type:   domain.TypeSaolei,
@@ -206,36 +184,70 @@ func TestMongoSession_ToDomain_RoundTrip(t *testing.T) {
 				t.Fatalf("Rehydrate() error = %v", err)
 			}
 
-			// when
-			mongoDoc := toMongoSession(session.Snapshot())
+			mongoDoc := toMongoSession(session)
 			got, err := mongoDoc.toDomain()
 
-			// then
 			if err != nil {
 				t.Fatalf("toDomain() error = %v", err)
 			}
-			if got.Snapshot().ID != snap.ID {
-				t.Fatalf("ID = %q, want %q", got.Snapshot().ID, snap.ID)
+			if got.ID() != snap.ID {
+				t.Fatalf("ID = %q, want %q", got.ID(), snap.ID)
 			}
 			if got.Snapshot().Type != snap.Type {
 				t.Fatalf("Type = %v, want %v", got.Snapshot().Type, snap.Type)
 			}
-			if got.Snapshot().Status != snap.Status {
-				t.Fatalf("Status = %v, want %v", got.Snapshot().Status, snap.Status)
+			if got.Status() != snap.Status {
+				t.Fatalf("Status = %v, want %v", got.Status(), snap.Status)
 			}
 		})
 	}
 }
 
+func TestMongoSession_Token_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("token is preserved through save and load", func(t *testing.T) {
+		repo, _ := newMongoRepositoryForTest()
+		session := newTestSession(t, "token-rt-id")
+		session.SetToken("my-gateway-token")
+		session.SetGatewayID("gateway-1")
+
+		if err := repo.Save(ctx, session); err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
+		}
+		got, err := repo.Get(ctx, sessionName("token-rt-id"))
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		if got.Token() != "my-gateway-token" {
+			t.Fatalf("Token = %q, want %q", got.Token(), "my-gateway-token")
+		}
+	})
+
+	t.Run("token is empty when not set", func(t *testing.T) {
+		repo, _ := newMongoRepositoryForTest()
+		session := newTestSession(t, "token-zero-id")
+
+		if err := repo.Save(ctx, session); err != nil {
+			t.Fatalf("Save() unexpected error: %v", err)
+		}
+		got, err := repo.Get(ctx, sessionName("token-zero-id"))
+		if err != nil {
+			t.Fatalf("Get() unexpected error: %v", err)
+		}
+		if got.Token() != "" {
+			t.Fatalf("Token = %q, want empty", got.Token())
+		}
+	})
+}
+
 func Test_sessionName(t *testing.T) {
-	// given / when / then
 	if got := sessionName("abc-123"); got != "sessions/abc-123" {
 		t.Fatalf("sessionName() = %q, want %q", got, "sessions/abc-123")
 	}
 }
 
 func Test_sessionIDFromName(t *testing.T) {
-	// given / when / then
 	if got := sessionIDFromName("sessions/abc-123"); got != "abc-123" {
 		t.Fatalf("sessionIDFromName() = %q, want %q", got, "abc-123")
 	}
@@ -451,7 +463,6 @@ func Test_MongoRepository_List(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns non-ended sessions", func(t *testing.T) {
-		// given
 		repo, _ := newMongoRepositoryForTest()
 		activeSession := newTestSession(t, "list-active")
 		if err := repo.Save(ctx, activeSession); err != nil {
@@ -472,10 +483,8 @@ func Test_MongoRepository_List(t *testing.T) {
 			t.Fatalf("Save() ended unexpected error: %v", err)
 		}
 
-		// when
 		got, err := repo.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -484,7 +493,7 @@ func Test_MongoRepository_List(t *testing.T) {
 		}
 		ids := map[string]bool{}
 		for _, s := range got {
-			ids[s.Snapshot().ID] = true
+			ids[s.ID()] = true
 		}
 		if !ids["list-active"] {
 			t.Fatal("List() missing list-active session")
@@ -495,13 +504,10 @@ func Test_MongoRepository_List(t *testing.T) {
 	})
 
 	t.Run("returns nil for empty result", func(t *testing.T) {
-		// given
 		repo, _ := newMongoRepositoryForTest()
 
-		// when
 		got, err := repo.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -511,7 +517,6 @@ func Test_MongoRepository_List(t *testing.T) {
 	})
 
 	t.Run("returns nil when all ended", func(t *testing.T) {
-		// given
 		repo, _ := newMongoRepositoryForTest()
 		endedSession := newTestSession(t, "all-ended-id")
 		if err := endedSession.MarkActive(); err != nil {
@@ -524,10 +529,8 @@ func Test_MongoRepository_List(t *testing.T) {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		got, err := repo.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -537,7 +540,6 @@ func Test_MongoRepository_List(t *testing.T) {
 	})
 
 	t.Run("returns error when find fails", func(t *testing.T) {
-		// given
 		repo := &MongoRepository{
 			collection: &fakeCollectionOps{
 				docs:    make(map[string]*mongoSession),
@@ -545,10 +547,8 @@ func Test_MongoRepository_List(t *testing.T) {
 			},
 		}
 
-		// when
 		_, err := repo.List(ctx)
 
-		// then
 		if err == nil {
 			t.Fatal("List() expected error, got nil")
 		}
@@ -559,7 +559,6 @@ func Test_FakeStore_List(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns non-ended sessions", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		activeSession := newFakeTestSession(t, "flist-active")
 		if err := store.Save(ctx, activeSession); err != nil {
@@ -580,10 +579,8 @@ func Test_FakeStore_List(t *testing.T) {
 			t.Fatalf("Save() ended unexpected error: %v", err)
 		}
 
-		// when
 		got, err := store.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -592,7 +589,7 @@ func Test_FakeStore_List(t *testing.T) {
 		}
 		ids := map[string]bool{}
 		for _, s := range got {
-			ids[s.Snapshot().ID] = true
+			ids[s.ID()] = true
 		}
 		if !ids["flist-active"] {
 			t.Fatal("List() missing flist-active session")
@@ -603,13 +600,10 @@ func Test_FakeStore_List(t *testing.T) {
 	})
 
 	t.Run("returns nil for empty result", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 
-		// when
 		got, err := store.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -619,7 +613,6 @@ func Test_FakeStore_List(t *testing.T) {
 	})
 
 	t.Run("returns nil when all ended", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		endedSession := newFakeTestSession(t, "fall-ended-id")
 		if err := endedSession.MarkActive(); err != nil {
@@ -632,10 +625,8 @@ func Test_FakeStore_List(t *testing.T) {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		got, err := store.List(ctx)
 
-		// then
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
@@ -645,27 +636,24 @@ func Test_FakeStore_List(t *testing.T) {
 	})
 
 	t.Run("returns defensive copies", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "fcopy-id")
 		if err := store.Save(ctx, session); err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		list, err := store.List(ctx)
 		if err != nil {
 			t.Fatalf("List() unexpected error: %v", err)
 		}
 		_ = list[0].MarkActive()
 
-		// then
 		again, err := store.List(ctx)
 		if err != nil {
 			t.Fatalf("List() second unexpected error: %v", err)
 		}
-		if again[0].Snapshot().Status != domain.StatusPending {
-			t.Fatalf("original mutated: Status = %v, want %v", again[0].Snapshot().Status, domain.StatusPending)
+		if again[0].Status() != domain.StatusPending {
+			t.Fatalf("original mutated: Status = %v, want %v", again[0].Status(), domain.StatusPending)
 		}
 	})
 }
@@ -724,7 +712,6 @@ func TestFakeStore_Get(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns session when exists", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "fake-get-id")
 		name := "sessions/fake-get-id"
@@ -732,26 +719,21 @@ func TestFakeStore_Get(t *testing.T) {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		got, err := store.Get(ctx, name)
 
-		// then
 		if err != nil {
 			t.Fatalf("Get() unexpected error: %v", err)
 		}
-		if got.Snapshot().ID != "fake-get-id" {
-			t.Fatalf("ID = %q, want %q", got.Snapshot().ID, "fake-get-id")
+		if got.ID() != "fake-get-id" {
+			t.Fatalf("ID = %q, want %q", got.ID(), "fake-get-id")
 		}
 	})
 
 	t.Run("returns ErrNotFound when missing", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 
-		// when
 		_, err := store.Get(ctx, "sessions/missing")
 
-		// then
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Get() error = %v, want %v", err, domain.ErrNotFound)
 		}
@@ -762,14 +744,11 @@ func TestFakeStore_Save(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("creates new session", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "fake-new-id")
 
-		// when
 		err := store.Save(ctx, session)
 
-		// then
 		if err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
@@ -777,13 +756,12 @@ func TestFakeStore_Save(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() after Save() unexpected error: %v", err)
 		}
-		if got.Snapshot().ID != "fake-new-id" {
-			t.Fatalf("ID = %q, want %q", got.Snapshot().ID, "fake-new-id")
+		if got.ID() != "fake-new-id" {
+			t.Fatalf("ID = %q, want %q", got.ID(), "fake-new-id")
 		}
 	})
 
 	t.Run("updates existing session", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "fake-update-id")
 		if err := store.Save(ctx, session); err != nil {
@@ -793,10 +771,8 @@ func TestFakeStore_Save(t *testing.T) {
 			t.Fatalf("MarkActive() unexpected error: %v", err)
 		}
 
-		// when
 		err := store.Save(ctx, session)
 
-		// then
 		if err != nil {
 			t.Fatalf("Save() update unexpected error: %v", err)
 		}
@@ -804,33 +780,30 @@ func TestFakeStore_Save(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() after update unexpected error: %v", err)
 		}
-		if got.Snapshot().Status != domain.StatusActive {
-			t.Fatalf("Status = %v, want %v", got.Snapshot().Status, domain.StatusActive)
+		if got.Status() != domain.StatusActive {
+			t.Fatalf("Status = %v, want %v", got.Status(), domain.StatusActive)
 		}
 	})
 
 	t.Run("returns defensive copy", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "copy-id")
 		if err := store.Save(ctx, session); err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		got, err := store.Get(ctx, "sessions/copy-id")
 		if err != nil {
 			t.Fatalf("Get() unexpected error: %v", err)
 		}
 		_ = got.MarkActive()
 
-		// then
 		again, err := store.Get(ctx, "sessions/copy-id")
 		if err != nil {
 			t.Fatalf("Get() second unexpected error: %v", err)
 		}
-		if again.Snapshot().Status != domain.StatusPending {
-			t.Fatalf("original mutated: Status = %v, want %v", again.Snapshot().Status, domain.StatusPending)
+		if again.Status() != domain.StatusPending {
+			t.Fatalf("original mutated: Status = %v, want %v", again.Status(), domain.StatusPending)
 		}
 	})
 }
@@ -839,7 +812,6 @@ func TestFakeStore_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("deletes existing session", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 		session := newFakeTestSession(t, "fake-del-id")
 		name := "sessions/fake-del-id"
@@ -847,10 +819,8 @@ func TestFakeStore_Delete(t *testing.T) {
 			t.Fatalf("Save() unexpected error: %v", err)
 		}
 
-		// when
 		err := store.Delete(ctx, name)
 
-		// then
 		if err != nil {
 			t.Fatalf("Delete() unexpected error: %v", err)
 		}
@@ -861,13 +831,10 @@ func TestFakeStore_Delete(t *testing.T) {
 	})
 
 	t.Run("returns ErrNotFound when missing", func(t *testing.T) {
-		// given
 		store := NewFakeStore()
 
-		// when
 		err := store.Delete(ctx, "sessions/ghost")
 
-		// then
 		if !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Delete() error = %v, want %v", err, domain.ErrNotFound)
 		}

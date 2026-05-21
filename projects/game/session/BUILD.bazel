@@ -58,7 +58,6 @@ go_unittest(
     srcs = ["handler_test.go"],
     embed = [":session"],
     deps = [
-        "//projects/game/pkg/token",
         "//projects/game/session/domain",
         "//projects/game/session/runtime/gateway",
         "//projects/game/session/runtime/storage",

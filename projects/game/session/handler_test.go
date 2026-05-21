@@ -2,13 +2,9 @@ package session
 
 import (
 	"context"
-	"fmt"
-	"net/url"
 	"strings"
 	"testing"
-	"time"
 
-	"dominion/projects/game/pkg/token"
 	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/runtime/gateway"
 	"dominion/projects/game/session/runtime/storage"
@@ -16,11 +12,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-)
-
-const (
-	testSecret   = "test-secret-key-for-handler-tests"
-	testTokenTTL = 10 * time.Minute
 )
 
 // sessionName returns the resource name in "sessions/{id}" format.
@@ -36,22 +27,56 @@ func sessionNames(sessions []*Session) []string {
 	return names
 }
 
-// newTestHandler creates a handler with a FakeStore, real HMACSigner, and StaticRegistry
-// using the provided gateway IDs.
+// newTestHandler creates a handler with a FakeStore and stub GatewayClient.
 func newTestHandler(gatewayIDs ...string) (*Handler, *storage.FakeStore) {
 	repo := storage.NewFakeStore()
-	issuer := token.NewHMACSigner(testSecret, testTokenTTL)
-	assignments := make([]*gateway.Assignment, len(gatewayIDs))
-	for i, id := range gatewayIDs {
-		assignments[i] = &gateway.Assignment{
-			GatewayID:  id,
-			Index:      i,
-			PublicHost: fmt.Sprintf("gateway-%d-game.liukexin.com", i),
-		}
+
+	client := &stubHandlerGatewayClient{
+		gatewayIDs: gatewayIDs,
 	}
-	registry := gateway.NewStaticRegistry(assignments)
-	svc := service.NewSessionService(repo, issuer, registry)
+	svc := service.NewSessionService(repo, client)
 	return NewHandler(svc), repo
+}
+
+// stubHandlerGatewayClient returns gatewayIDs[0] for InitGameRuntime and
+// gatewayIDs[1] (or gatewayIDs[0] if only one) for RefreshGameRuntime.
+type stubHandlerGatewayClient struct {
+	gatewayIDs   []string
+	initIndex    int
+	refreshIndex int
+}
+
+func (s *stubHandlerGatewayClient) InitGameRuntime(_ context.Context, sessionID string, reconnectGeneration int64) (*gateway.InitResult, error) {
+	if len(s.gatewayIDs) == 0 {
+		return nil, gateway.ErrNoGatewayAvailable
+	}
+	idx := s.initIndex % len(s.gatewayIDs)
+	gwID := s.gatewayIDs[idx]
+	s.initIndex++
+	return &gateway.InitResult{
+		OwnerGatewayID: gwID,
+		OwnerEpoch:     1,
+		Token:          "test-token-for-" + sessionID,
+	}, nil
+}
+
+func (s *stubHandlerGatewayClient) RefreshGameRuntime(_ context.Context, sessionID string, oldToken string) (*gateway.RefreshResult, error) {
+	if len(s.gatewayIDs) == 0 {
+		return nil, gateway.ErrNoGatewayAvailable
+	}
+	refreshOffset := 1
+	if len(s.gatewayIDs) < 2 {
+		refreshOffset = 0
+	}
+	idx := (refreshOffset + s.refreshIndex) % len(s.gatewayIDs)
+	s.refreshIndex++
+	gwID := s.gatewayIDs[idx]
+	return &gateway.RefreshResult{
+		OwnerGatewayID:      gwID,
+		OwnerEpoch:          2,
+		ReconnectGeneration: 1,
+		Token:               "refresh-token-for-" + sessionID,
+	}, nil
 }
 
 // seedSession creates a domain session in Active state with a gateway assigned,
@@ -64,6 +89,7 @@ func seedSession(t *testing.T, repo domain.Repository, sessionID, gatewayID stri
 		t.Fatalf("NewSession() error = %v", err)
 	}
 	session.SetGatewayID(gatewayID)
+	session.SetToken("seed-token")
 	if err := session.MarkActive(); err != nil {
 		t.Fatalf("MarkActive() error = %v", err)
 	}
@@ -83,6 +109,7 @@ func seedDisconnectedSession(t *testing.T, repo domain.Repository, sessionID, ga
 		t.Fatalf("NewSession() error = %v", err)
 	}
 	session.SetGatewayID(gatewayID)
+	session.SetToken("seed-token")
 	if err := session.MarkActive(); err != nil {
 		t.Fatalf("MarkActive() error = %v", err)
 	}
@@ -139,16 +166,13 @@ func TestHandler_GetSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			handler, repo := newTestHandler("gw-0", "gw-1")
 			if tt.wantCode == codes.OK {
 				seedSession(t, repo, "session-1", "gw-0")
 			}
 
-			// when
 			got, err := handler.GetSession(ctx, tt.request)
 
-			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
 				return
@@ -187,7 +211,7 @@ func TestHandler_CreateSession(t *testing.T) {
 		wantIDNonEmpty bool
 	}{
 		{
-			name: "given valid type SAOLEI, when CreateSession called, returns session and agent_connect_url",
+			name: "given valid type SAOLEI, when CreateSession called, returns session",
 			request: &CreateSessionRequest{
 				Type: SessionType_SESSION_TYPE_SAOLEI,
 			},
@@ -229,17 +253,14 @@ func TestHandler_CreateSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			gwIDs := tt.gatewayIDs
 			if gwIDs == nil {
 				gwIDs = []string{}
 			}
 			handler, _ := newTestHandler(gwIDs...)
 
-			// when
 			got, err := handler.CreateSession(ctx, tt.request)
 
-			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
 				return
@@ -268,32 +289,6 @@ func TestHandler_CreateSession(t *testing.T) {
 				if !strings.HasPrefix(session.GetName(), "sessions/") {
 					t.Fatalf("CreateSession() name = %q, want 'sessions/' prefix", session.GetName())
 				}
-			}
-			connectURL := got.GetSession().GetAgentConnectUrl()
-			if connectURL == "" {
-				t.Fatal("CreateSession() agent_connect_url is empty")
-			}
-			parsedURL, err := url.Parse(connectURL)
-			if err != nil {
-				t.Fatalf("CreateSession() agent_connect_url parse error = %v", err)
-			}
-			if parsedURL.Scheme != "wss" {
-				t.Fatalf("CreateSession() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
-			}
-			if parsedURL.Host == "" {
-				t.Fatal("CreateSession() agent_connect_url host is empty")
-			}
-			if !strings.HasPrefix(parsedURL.Host, "gateway-") || !strings.HasSuffix(parsedURL.Host, "-game.liukexin.com") {
-				t.Fatalf("CreateSession() agent_connect_url host = %q, want pattern gateway-{index}-game.liukexin.com", parsedURL.Host)
-			}
-			sessionID := strings.TrimPrefix(session.GetName(), "sessions/")
-			wantPath := "/v1/sessions/" + sessionID + "/game/connect"
-			if parsedURL.Path != wantPath {
-				t.Fatalf("CreateSession() agent_connect_url path = %q, want %q", parsedURL.Path, wantPath)
-			}
-			token := parsedURL.Query().Get("token")
-			if token == "" {
-				t.Fatalf("CreateSession() agent_connect_url token is empty")
 			}
 		})
 	}
@@ -338,16 +333,13 @@ func TestHandler_DeleteSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			handler, repo := newTestHandler("gw-0")
 			if tt.seedName != "" {
 				seedSession(t, repo, "session-1", "gw-0")
 			}
 
-			// when
 			got, err := handler.DeleteSession(ctx, tt.request)
 
-			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
 				return
@@ -373,7 +365,7 @@ func TestHandler_ReconnectSession(t *testing.T) {
 		wantGatewayID  string
 	}{
 		{
-			name:           "given existing session, when ReconnectSession called, returns new URL and session",
+			name:           "given existing session, when ReconnectSession called, returns session with new gateway",
 			seedSessionID:  "session-1",
 			seedGatewayID:  "gw-0",
 			seedDisconnect: true,
@@ -410,7 +402,6 @@ func TestHandler_ReconnectSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			handler, repo := newTestHandler(tt.gatewayIDs...)
 			if tt.seedSessionID != "" {
 				if tt.seedDisconnect {
@@ -420,10 +411,8 @@ func TestHandler_ReconnectSession(t *testing.T) {
 				}
 			}
 
-			// when
 			got, err := handler.ReconnectSession(ctx, tt.request)
 
-			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
 				return
@@ -439,35 +428,6 @@ func TestHandler_ReconnectSession(t *testing.T) {
 			if session.GetStatus() != SessionStatus_SESSION_STATUS_ACTIVE {
 				t.Fatalf("ReconnectSession() status = %v, want ACTIVE", session.GetStatus())
 			}
-			if session.GetReconnectGeneration() != 1 {
-				t.Fatalf("ReconnectSession() reconnect_generation = %d, want 1", session.GetReconnectGeneration())
-			}
-			connectURL := got.GetSession().GetAgentConnectUrl()
-			if connectURL == "" {
-				t.Fatal("ReconnectSession() agent_connect_url is empty")
-			}
-			parsedURL, err := url.Parse(connectURL)
-			if err != nil {
-				t.Fatalf("ReconnectSession() agent_connect_url parse error = %v", err)
-			}
-			if parsedURL.Scheme != "wss" {
-				t.Fatalf("ReconnectSession() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
-			}
-			if parsedURL.Host == "" {
-				t.Fatal("ReconnectSession() agent_connect_url host is empty")
-			}
-			if !strings.HasPrefix(parsedURL.Host, "gateway-") || !strings.HasSuffix(parsedURL.Host, "-game.liukexin.com") {
-				t.Fatalf("ReconnectSession() agent_connect_url host = %q, want pattern gateway-{index}-game.liukexin.com", parsedURL.Host)
-			}
-			sessionID := strings.TrimPrefix(session.GetName(), "sessions/")
-			wantPath := "/v1/sessions/" + sessionID + "/game/connect"
-			if parsedURL.Path != wantPath {
-				t.Fatalf("ReconnectSession() agent_connect_url path = %q, want %q", parsedURL.Path, wantPath)
-			}
-			token := parsedURL.Query().Get("token")
-			if token == "" {
-				t.Fatalf("ReconnectSession() agent_connect_url token is empty")
-			}
 		})
 	}
 }
@@ -476,24 +436,22 @@ func TestHandler_ListSessions(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name            string
-		seedFunc        func(t *testing.T, repo domain.Repository)
-		wantCode        codes.Code
-		wantCount       int
-		wantNames       []string
-		wantConnectURLs bool
+		name      string
+		seedFunc  func(t *testing.T, repo domain.Repository)
+		wantCode  codes.Code
+		wantCount int
+		wantNames []string
 	}{
 		{
-			name: "given active sessions, when ListSessions called, returns sessions with agent connect URLs",
+			name: "given active sessions, when ListSessions called, returns sessions",
 			seedFunc: func(t *testing.T, repo domain.Repository) {
 				t.Helper()
 				seedSession(t, repo, "session-1", "gw-0")
 				seedSession(t, repo, "session-2", "gw-1")
 			},
-			wantCode:        codes.OK,
-			wantCount:       2,
-			wantNames:       []string{sessionName("session-1"), sessionName("session-2")},
-			wantConnectURLs: true,
+			wantCode:  codes.OK,
+			wantCount: 2,
+			wantNames: []string{sessionName("session-1"), sessionName("session-2")},
 		},
 		{
 			name: "given ended session, when ListSessions called, excludes ended sessions",
@@ -513,33 +471,28 @@ func TestHandler_ListSessions(t *testing.T) {
 					t.Fatalf("Save() error = %v", err)
 				}
 			},
-			wantCode:        codes.OK,
-			wantCount:       1,
-			wantNames:       []string{sessionName("session-active")},
-			wantConnectURLs: true,
+			wantCode:  codes.OK,
+			wantCount: 1,
+			wantNames: []string{sessionName("session-active")},
 		},
 		{
-			name:            "given no sessions, when ListSessions called, returns empty list",
-			seedFunc:        nil,
-			wantCode:        codes.OK,
-			wantCount:       0,
-			wantNames:       nil,
-			wantConnectURLs: false,
+			name:      "given no sessions, when ListSessions called, returns empty list",
+			seedFunc:  nil,
+			wantCode:  codes.OK,
+			wantCount: 0,
+			wantNames: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
 			handler, repo := newTestHandler("gw-0", "gw-1")
 			if tt.seedFunc != nil {
 				tt.seedFunc(t, repo)
 			}
 
-			// when
 			got, err := handler.ListSessions(ctx, &ListSessionsRequest{})
 
-			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
 				return
@@ -557,24 +510,6 @@ func TestHandler_ListSessions(t *testing.T) {
 				for _, wantName := range tt.wantNames {
 					if !gotNames[wantName] {
 						t.Fatalf("ListSessions() missing session %q, got %v", wantName, sessionNames(sessions))
-					}
-				}
-			}
-			if tt.wantConnectURLs {
-				for _, s := range sessions {
-					connectURL := s.GetAgentConnectUrl()
-					if connectURL == "" {
-						t.Fatalf("ListSessions() session %q agent_connect_url is empty", s.GetName())
-					}
-					parsedURL, err := url.Parse(connectURL)
-					if err != nil {
-						t.Fatalf("ListSessions() agent_connect_url parse error = %v", err)
-					}
-					if parsedURL.Scheme != "wss" {
-						t.Fatalf("ListSessions() agent_connect_url scheme = %q, want wss", parsedURL.Scheme)
-					}
-					if parsedURL.Host == "" {
-						t.Fatal("ListSessions() agent_connect_url host is empty")
 					}
 				}
 			}

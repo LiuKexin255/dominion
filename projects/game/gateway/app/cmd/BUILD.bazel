@@ -14,9 +14,11 @@ go_library(
         "//projects/game/gateway",
         "//projects/game/gateway/app",
         "//projects/game/gateway/domain/sessionmanager",
+        "//projects/game/gateway/owner",
         "//projects/game/gateway/service",
-        "//projects/game/pkg/token",
+        "//projects/game/gateway/token",
         "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
     ],
 )
 

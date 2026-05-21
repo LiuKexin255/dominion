@@ -1,9 +1,11 @@
 package sessionmanager
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"dominion/projects/game/gateway/domain"
 )
@@ -280,5 +282,142 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 	rt := m.GetRuntime("session-1")
 	if rt == nil {
 		t.Fatal("runtime should still exist after concurrent access")
+	}
+}
+
+func TestCleanup_RemovesIdleSessions(t *testing.T) {
+	m := NewManager("gw-0", WithIdleTTL(1*time.Millisecond))
+	m.GetOrCreateRuntime("session-1")
+	m.GetOrCreateRuntime("session-2")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	builder := m.StartCleanup()
+
+	worker, err := builder.Build(ctx)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = worker.Start(ctx)
+	}()
+
+	// Allow enough time for idleTTL (1ms) + at least one tick (0.5ms)
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	wg.Wait()
+
+	if m.Len() != 0 {
+		t.Fatalf("expected 0 sessions after cleanup, got %d", m.Len())
+	}
+}
+
+func TestCleanup_KeepsActiveSessions(t *testing.T) {
+	m := NewManager("gw-0", WithIdleTTL(100*time.Millisecond))
+	m.GetOrCreateRuntime("session-1")
+	_ = m.TouchSession("session-1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	builder := m.StartCleanup()
+
+	worker, err := builder.Build(ctx)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = worker.Start(ctx)
+	}()
+
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	wg.Wait()
+
+	if m.Len() != 1 {
+		t.Fatalf("expected 1 session after cleanup, got %d", m.Len())
+	}
+}
+
+func TestCleanup_NoopWhenNoIdleTTL(t *testing.T) {
+	m := NewManager("gw-0")
+	m.GetOrCreateRuntime("session-1")
+
+	builder := m.StartCleanup()
+	worker, err := builder.Build(context.Background())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	err = worker.Start(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected Start error: %v", err)
+	}
+
+	if m.Len() != 1 {
+		t.Fatalf("expected 1 session after no-op cleanup, got %d", m.Len())
+	}
+
+	err = worker.Stop(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected Stop error: %v", err)
+	}
+}
+
+func TestTouchSession_RefreshesTrafficTime(t *testing.T) {
+	m := NewManager("gw-0")
+	rt := m.GetOrCreateRuntime("session-1")
+
+	past := time.Now().Add(-1 * time.Hour)
+	rt.LastTrafficTime = past
+
+	err := m.TouchSession("session-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rt = m.GetRuntime("session-1")
+	if !rt.LastTrafficTime.After(past) {
+		t.Fatal("LastTrafficTime should be after the old value after TouchSession")
+	}
+	if time.Since(rt.LastTrafficTime) > time.Minute {
+		t.Fatal("LastTrafficTime should have been refreshed to near-current time")
+	}
+}
+
+func TestTouchSession_NotFound(t *testing.T) {
+	m := NewManager("gw-0")
+	err := m.TouchSession("nonexistent")
+	if !errors.Is(err, domain.ErrSessionNotFound) {
+		t.Fatalf("error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestRemoveRuntime(t *testing.T) {
+	m := NewManager("gw-0")
+	m.GetOrCreateRuntime("session-1")
+	m.GetOrCreateRuntime("session-2")
+
+	m.RemoveRuntime("session-1")
+
+	if m.GetRuntime("session-1") != nil {
+		t.Fatal("expected nil GetRuntime after RemoveRuntime")
+	}
+	if m.GetRuntime("session-2") == nil {
+		t.Fatal("expected session-2 to still exist after RemoveRuntime")
+	}
+
+	m.RemoveRuntime("nonexistent")
+
+	if m.Len() != 1 {
+		t.Fatalf("expected Len=1, got %d", m.Len())
 	}
 }

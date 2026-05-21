@@ -6,7 +6,10 @@ go_library(
     srcs = ["manager.go"],
     importpath = "dominion/projects/game/gateway/domain/sessionmanager",
     visibility = ["//visibility:public"],
-    deps = ["//projects/game/gateway/domain"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//projects/game/gateway/domain",
+    ],
 )
 
 go_unittest(

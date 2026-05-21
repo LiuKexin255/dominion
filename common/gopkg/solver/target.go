@@ -128,3 +128,14 @@ func ParseTarget(raw string) (*Target, error) {
 
 	return &Target{App: appPart, Service: servicePart, PortSelector: NamedPort(portPart)}, nil
 }
+
+// MustParseTarget is like ParseTarget but panics if the target string is invalid.
+// It is intended for use in package-level variable initializations and
+// startup-time wiring where an invalid target is a programmer error.
+func MustParseTarget(raw string) *Target {
+	t, err := ParseTarget(raw)
+	if err != nil {
+		panic(fmt.Sprintf("solver: MustParseTarget(%q): %v", raw, err))
+	}
+	return t
+}

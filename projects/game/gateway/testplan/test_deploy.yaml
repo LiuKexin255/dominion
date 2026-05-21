@@ -1,11 +1,12 @@
 version: "3.0"
 name: game.{{run}}
-desc: "game-gateway interface large test"
+desc: "game-gateway interface large test (3 replicas, aggregate exposure)"
 type: test
 services:
   - artifact:
       path: //projects/game/gateway/service.yaml
       name: cmd
+      replicas: 3
       env:
         SESSION_TOKEN_SECRET: "dev-session-token-secret"
     http:

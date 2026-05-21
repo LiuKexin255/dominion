@@ -50,6 +50,13 @@ type SessionRuntime struct {
 	LastSnapshotTime time.Time
 	// LastError holds a human-readable description of the most recent error.
 	LastError string
+	// OwnerGatewayID identifies the gateway that owns this session's token.
+	OwnerGatewayID string
+	// OwnerEpoch is the epoch of the owning gateway at token issue time.
+	OwnerEpoch int64
+	// LastTrafficTime records the last time any traffic was observed for this
+	// session (used for idle TTL tracking).
+	LastTrafficTime time.Time
 }
 
 // AgentConnection represents a single Windows agent connected via WebSocket.

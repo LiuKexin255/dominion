@@ -15,7 +15,8 @@ import (
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/owner"
+	"dominion/projects/game/gateway/token"
 
 	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel/attribute"
@@ -49,7 +50,9 @@ const (
 // WebSocketHandler handles WebSocket upgrade and message routing for the game
 // gateway. It implements http.Handler.
 type WebSocketHandler struct {
-	svc gatewayService
+	svc         gatewayService
+	ownerRouter *owner.Router
+	verifier    token.Verifier
 
 	mu          sync.RWMutex
 	conns       map[string]*wsConn
@@ -57,18 +60,27 @@ type WebSocketHandler struct {
 	agentConnID map[string]string
 }
 
-// NewWebSocketHandler creates a WebSocketHandler backed by svc.
-func NewWebSocketHandler(svc gatewayService) (*WebSocketHandler, bootstrap.WorkerBuilder) {
-	h := &WebSocketHandler{
+// NewWebSocketHandler creates a WebSocketHandler backed by svc with owner
+// routing support. When a connect request arrives with a token pointing to a
+// different owner gateway, the request is proxied via ownerRouter.
+func NewWebSocketHandler(svc gatewayService, ownerRouter *owner.Router, verifier token.Verifier) *WebSocketHandler {
+	return &WebSocketHandler{
 		svc:         svc,
+		ownerRouter: ownerRouter,
+		verifier:    verifier,
 		conns:       make(map[string]*wsConn),
 		webConns:    make(map[string]map[string]struct{}),
 		agentConnID: make(map[string]string),
 	}
-	builder := bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
-		return NewRoutingWorker(svc.AsyncMessages(), h.RouteRoutedMessage), nil
+}
+
+// StartRoutingWorker returns a WorkerBuilder that creates a routing worker
+// consuming the async message channel and delivering messages to WebSocket
+// connections.
+func (h *WebSocketHandler) StartRoutingWorker() bootstrap.WorkerBuilder {
+	return bootstrap.WorkerBuilderFunc(func(_ context.Context) (bootstrap.Worker, error) {
+		return NewRoutingWorker(h.svc.AsyncMessages(), h.RouteRoutedMessage), nil
 	})
-	return h, builder
 }
 
 type wsConn struct {
@@ -100,7 +112,6 @@ func ParseSessionID(path string) (string, error) {
 	return id, nil
 }
 
-// ServeHTTP implements http.Handler.
 func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := ParseSessionID(r.URL.Path)
 	if err != nil {
@@ -121,12 +132,29 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
+	// Verify token first (pre-flight) to check owner gateway before ConnectSession.
+	claims, err := h.verifier.Verify(tokenStr)
 	if err != nil {
-		logs.Warn(ctx, "gateway: ws token validation failed", event.String(logFieldSessionID, sessionID), event.Err(err))
-		http.Error(w, fmt.Sprintf("connect session: %v", err), http.StatusUnauthorized)
+		logs.Warn(ctx, "gateway: ws token verification failed", event.String(logFieldSessionID, sessionID), event.Err(err))
+		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
+
+	// If the token points to a different owner gateway, proxy the request.
+	if h.ownerRouter.Decide(claims.OwnerGatewayID) == owner.TargetRemote {
+		h.ownerRouter.ProxyRequest(w, r, claims.OwnerGatewayID)
+		return
+	}
+
+	// Local session: fully validate and connect.
+	rt, claims, err := h.svc.ConnectSession(ctx, sessionID, tokenStr)
+	if err != nil {
+		logs.Warn(ctx, "gateway: ws connect session failed", event.String(logFieldSessionID, sessionID), event.Err(err))
+		http.Error(w, fmt.Sprintf("invalid token: %v", err), http.StatusUnauthorized)
+		return
+	}
+
+	_ = h.svc.TouchSession(sessionID)
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {

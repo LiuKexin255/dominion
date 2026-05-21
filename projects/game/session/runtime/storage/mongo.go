@@ -27,6 +27,7 @@ const (
 	mongoFieldType                = "type"
 	mongoFieldStatus              = "status"
 	mongoFieldGatewayID           = "gateway_id"
+	mongoFieldToken               = "token"
 	mongoFieldCreatedAt           = "created_at"
 	mongoFieldUpdatedAt           = "updated_at"
 	mongoFieldEndedAt             = "ended_at"
@@ -101,6 +102,7 @@ type mongoSession struct {
 	Type                int32              `bson:"type"`
 	Status              int32              `bson:"status"`
 	GatewayID           string             `bson:"gateway_id"`
+	Token               string             `bson:"token,omitempty"`
 	CreatedAt           time.Time          `bson:"created_at"`
 	UpdatedAt           time.Time          `bson:"updated_at"`
 	EndedAt             *time.Time         `bson:"ended_at,omitempty"`
@@ -167,11 +169,10 @@ func (r *MongoRepository) Save(ctx context.Context, session *domain.Session) err
 	ctx, span := otel.Tracer().Start(ctx, spanSave)
 	defer span.End()
 
-	snapshot := session.Snapshot()
-	sessionID := snapshot.ID
+	sessionID := session.ID()
 	span.SetAttributes(attribute.String(logFieldSessionID, sessionID))
 
-	doc := toMongoSession(snapshot)
+	doc := toMongoSession(session)
 
 	_, err := r.collection.UpdateOne(
 		ctx,
@@ -259,6 +260,7 @@ func (m *mongoSession) toDomain() (*domain.Session, error) {
 		Type:                domain.SessionType(m.Type),
 		Status:              domain.SessionStatus(m.Status),
 		GatewayID:           m.GatewayID,
+		Token:               m.Token,
 		CreatedAt:           m.CreatedAt,
 		UpdatedAt:           m.UpdatedAt,
 		EndedAt:             cloneTimePtr(m.EndedAt),
@@ -267,12 +269,14 @@ func (m *mongoSession) toDomain() (*domain.Session, error) {
 	})
 }
 
-func toMongoSession(snapshot domain.SessionSnapshot) mongoSession {
+func toMongoSession(session *domain.Session) mongoSession {
+	snapshot := session.Snapshot()
 	return mongoSession{
 		Name:                sessionName(snapshot.ID),
 		Type:                int32(snapshot.Type),
 		Status:              int32(snapshot.Status),
 		GatewayID:           snapshot.GatewayID,
+		Token:               snapshot.Token,
 		CreatedAt:           snapshot.CreatedAt,
 		UpdatedAt:           snapshot.UpdatedAt,
 		EndedAt:             cloneTimePtr(snapshot.EndedAt),
@@ -285,6 +289,7 @@ func (m *mongoSession) updateDocument() bson.M {
 	return bson.M{
 		mongoFieldStatus:              m.Status,
 		mongoFieldGatewayID:           m.GatewayID,
+		mongoFieldToken:               m.Token,
 		mongoFieldUpdatedAt:           m.UpdatedAt,
 		mongoFieldEndedAt:             m.EndedAt,
 		mongoFieldReconnectGeneration: m.ReconnectGeneration,

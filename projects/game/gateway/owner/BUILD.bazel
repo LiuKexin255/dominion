@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "owner",
+    srcs = [
+        "deploy.go",
+        "owner.go",
+        "router.go",
+    ],
+    importpath = "dominion/projects/game/gateway/owner",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/solver",
+        "//projects/game/gateway/token",
+    ],
+)
+
+go_unittest(
+    name = "owner_test",
+    srcs = [
+        "owner_test.go",
+        "router_test.go",
+    ],
+    embed = [":owner"],
+    deps = [
+        "//common/gopkg/solver",
+        "//projects/game/gateway/token",
+    ],
+)

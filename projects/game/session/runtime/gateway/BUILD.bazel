@@ -4,17 +4,23 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "gateway",
     srcs = [
+        "client.go",
         "deploy.go",
+        "grpc_client.go",
         "registry.go",
     ],
     importpath = "dominion/projects/game/session/runtime/gateway",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//common/gopkg/solver",
+        "//projects/game/gateway",
         "@io_opentelemetry_go_otel//attribute",
+        "@org_golang_google_grpc//:grpc",
     ],
 )
 

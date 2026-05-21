@@ -15,7 +15,7 @@ import (
 	"dominion/common/gopkg/solver"
 	"dominion/common/gopkg/testtool"
 	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/pkg/token"
+	"dominion/projects/game/gateway/token"
 	session "dominion/projects/game/session"
 
 	"github.com/coder/websocket"
@@ -51,7 +51,7 @@ func sgMustSigner(t *testing.T) *token.HMACSigner {
 func sgIssueToken(t *testing.T, sessionID, gatewayID string) string {
 	t.Helper()
 	signer := sgMustSigner(t)
-	tok, err := signer.Issue(sessionID, gatewayID, 0)
+	tok, err := signer.Issue(sessionID, gatewayID, 1, "game-server", 0)
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
