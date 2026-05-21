@@ -18,7 +18,7 @@ import (
 	gw "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/testplan/fakeagent"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"

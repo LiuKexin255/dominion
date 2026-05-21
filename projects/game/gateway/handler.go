@@ -11,7 +11,7 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"

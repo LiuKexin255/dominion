@@ -6,7 +6,7 @@ go_library(
     importpath = "dominion/projects/game/gateway/app",
     visibility = ["//visibility:public"],
     deps = [
-        "//projects/game/gateway/owner",
-        "//projects/game/gateway/token",
+        "//projects/game/gateway/domain/token",
+        "//projects/game/gateway/runtime/owner",
     ],
 )

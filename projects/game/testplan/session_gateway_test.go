@@ -15,7 +15,7 @@ import (
 	"dominion/common/gopkg/solver"
 	"dominion/common/gopkg/testtool"
 	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 	session "dominion/projects/game/session"
 
 	"github.com/coder/websocket"

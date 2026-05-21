@@ -14,7 +14,7 @@ import (
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/gateway/service"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"

@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	"dominion/projects/game/gateway/owner"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/runtime/owner"
+	"dominion/projects/game/gateway/domain/token"
 )
 
 // Router routes requests based on owner claims.

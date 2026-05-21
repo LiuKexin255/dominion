@@ -9,7 +9,7 @@ import (
 	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain"
 	"dominion/projects/game/gateway/domain/sessionmanager"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 )
 
 type stubVerifier struct {

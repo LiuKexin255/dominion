@@ -19,7 +19,7 @@ go_library(
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/mediacache",
         "//projects/game/gateway/domain/sessionmanager",
-        "//projects/game/gateway/token",
+        "//projects/game/gateway/domain/token",
     ],
 )
 
@@ -34,6 +34,6 @@ go_unittest(
         "//projects/game/gateway/config",
         "//projects/game/gateway/domain",
         "//projects/game/gateway/domain/sessionmanager",
-        "//projects/game/gateway/token",
+        "//projects/game/gateway/domain/token",
     ],
 )

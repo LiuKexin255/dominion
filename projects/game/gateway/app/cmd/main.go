@@ -17,9 +17,9 @@ import (
 	"dominion/projects/game/gateway/app"
 	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/domain/sessionmanager"
-	"dominion/projects/game/gateway/owner"
+	"dominion/projects/game/gateway/runtime/owner"
 	"dominion/projects/game/gateway/service"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"

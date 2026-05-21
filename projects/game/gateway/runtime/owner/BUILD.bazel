@@ -8,7 +8,7 @@ go_library(
         "owner.go",
         "router.go",
     ],
-    importpath = "dominion/projects/game/gateway/owner",
+    importpath = "dominion/projects/game/gateway/runtime/owner",
     visibility = ["//visibility:public"],
     deps = ["//common/gopkg/solver"],
 )

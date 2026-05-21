@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/gateway/token"
+	"dominion/projects/game/gateway/domain/token"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
