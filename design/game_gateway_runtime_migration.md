@@ -208,7 +208,7 @@ gateway 不新建业务 proto。
 
 字段调整：
 
-* 保留 `gateway_id` 需要重新评估命名，建议迁移为 `runtime_id` 或 `owner_runtime_id`。
+* `gateway_id` 统一迁移为 `owner_runtime_id`。session 返回和持久化的 owner 字段与 token claims 保持同一命名，避免 session 使用 `runtime_id`、token 使用 `owner_runtime_id` 导致语义分裂。
 * `agent_connect_url` 已标记 deprecated，目标态不再依赖该字段表达固定实例域名。
 * `token` 继续作为 session 创建/reconnect 后返回的连接凭据。
 
@@ -294,6 +294,40 @@ const (
 
 如果后续 port name 调整，只修改该公共常量包和对应 `service.yaml`，不要在多个服务内分别搜索替换字符串。
 
+### 可观测字段常量
+
+跨 gateway、session、runtime 的日志与 trace 字段名也应放到 game 公共常量包，避免各服务分别定义字符串后出现拼写不一致。
+
+建议目录仍使用：
+
+```text
+projects/game/pkg/const
+```
+
+建议字段常量：
+
+```go
+const (
+    ObsFieldSessionID             = "session_id"
+    ObsFieldOwnerRuntimeID        = "owner_runtime_id"
+    ObsFieldOwnerGeneration       = "owner_generation"
+    ObsFieldReconnectGeneration   = "reconnect_generation"
+    ObsFieldGatewayInstance       = "gateway_instance"
+    ObsFieldRuntimeInstance       = "runtime_instance"
+    ObsFieldWSConnectionID        = "ws_connection_id"
+    ObsFieldRouteResolutionSource = "route_resolution_source"
+    ObsFieldRouteTarget           = "route_target"
+    ObsFieldTokenParseResult      = "token_parse_result"
+    ObsFieldErrorClass            = "error_class"
+)
+```
+
+使用约束：
+
+* 业务代码使用公共字段常量设置 slog 字段和 OpenTelemetry attributes。
+* trace context 从 gateway 的 HTTP/WebSocket 入口继续向 session/runtime gRPC 调用传播。
+* 字段常量只定义 key，不定义具体日志格式、采样策略或 exporter 行为。
+
 ### Claims
 
 token claims 中 owner 字段统一改为：
@@ -370,6 +404,20 @@ gateway 的 owner proxy 流程：
 5. 如果 `owner_runtime_id` 对应本次请求应转发到某个 runtime 实例，则 reverse proxy 到该实例内部 endpoint。
 6. WebSocket upgrade 请求必须保持 upgrade header 与连接双向转发语义。
 
+gateway owner proxy 只做路由与转发，不处理 runtime 返回的业务语义错误：
+
+* runtime 返回 owner mismatch、token invalid、permission denied、session not found 或 runtime unavailable 时，gateway 不基于错误内容重新 resolve。
+* gateway 不透明重试，不重放 WebSocket 或 runtime read 请求。
+* gateway 不把 runtime 的拒绝结果转换成授权成功或 fallback 到其他 runtime。
+* gateway 只保留必要的代理错误映射，不能在错误处理里引入 owner 决策逻辑。
+
+gateway 不缓存授权结果：
+
+* 不缓存 token 验证成功结果。
+* 不缓存 runtime 授权成功结果。
+* 不缓存 session 权限或业务放行结果。
+* 允许缓存的内容仅限路由所需的 runtime endpoint 发现结果，且该缓存不代表身份认证、授权或 owner 合法性。
+
 gateway 不负责：
 
 * 校验 token 签名。
@@ -389,6 +437,34 @@ runtime 负责完整校验：
 * token owner epoch 合法。
 * token 权限、scope、revocation、用户身份或 game 授权合法。
 * 经完整验证后的 owner/runtime 映射等于接收请求的 runtime；如果 gateway 按伪造 routing hint 转发到错误 runtime，runtime 必须拒绝。
+
+### owner resolver cache
+
+owner resolver 的本地 cache 不放在 gateway 业务代码中重复实现，而应沉淀到 resolver 公共库，提供一个可选的 cached resolver wrapper。
+
+建议能力：
+
+* 包装现有 deploy/stateful resolver 接口，保持调用方仍按 resolver 接口使用。
+* 以 target 和实例标识作为 cache key，缓存 resolved runtime endpoint。
+* 支持 TTL，到期后重新调用底层 resolver。
+* 可选支持 negative cache，避免不存在的 `owner_runtime_id` 被高频探测时反复打到底层 resolver。
+* 支持显式关闭或不使用 cache。
+
+使用约束：
+
+* gateway owner resolver 可以使用 cached resolver wrapper 减少每次 WebSocket/read 请求的 deploy discovery 压力。
+* session gRPC client 先保持默认 resolver 行为，不额外在 session 侧实现本地 cache。
+* 已经由框架处理解析、连接与负载均衡缓存的链路，不需要再叠加业务 cache。例如普通 gRPC client 继续依赖 gRPC resolver/client connection 自身行为。
+* cached resolver 只缓存 endpoint 发现结果，不缓存授权、token 验证或 owner 合法性判断。
+
+### gateway 后端 client 连接策略
+
+gateway 到 session/runtime 的后端连接遵循以下约束：
+
+* gateway 到 session 的 grpc-gateway 聚合调用使用普通 gRPC client，连接池与 resolver 行为先保持框架默认，不额外设计业务层连接池。
+* gateway 到 runtime owner 的 HTTP/WebSocket reverse proxy client 按 runtime target 缓存，避免每个请求或每个 WebSocket 连接都创建新的 transport/client。
+* runtime owner client cache 的 key 使用 resolved target/endpoint，不使用 token 或 session 授权结果。
+* runtime owner client cache 只负责连接复用，不负责重试、re-resolve、授权缓存或 owner 判断。
 
 ## 代码分层
 
@@ -420,6 +496,20 @@ gateway 可以引用：
 * solver/deploy resolver
 
 gateway 不引用 runtime 的 domain/service 内部包。
+
+gateway 注册 grpc-gateway handler 时必须通过 gRPC client 连接后端服务，而不是直接引用 session/runtime 的 handler、service 或 domain 实现代码。
+
+允许的注册方式包括：
+
+* 使用 `RegisterXXXHandlerFromEndpoint`，由 grpc-gateway 根据 endpoint 创建后端 gRPC client。
+* 使用 `grpc.NewClient` 或等价方式创建 `ClientConn` 后调用 `RegisterXXXHandler`。
+
+禁止的方式：
+
+* 在 gateway 进程内构造 session/runtime service 实现并调用 `RegisterXXXHandlerServer` 挂载。
+* gateway 引用 session/runtime 的内部 service/domain 包来绕过 gRPC 边界。
+
+这样可以保留后端 gRPC 的 resolver、deadline、interceptor、stats、trace 与错误映射行为，避免 edge gateway 与后端实现产生进程内耦合。
 
 ### runtime
 
@@ -479,6 +569,23 @@ TargetRuntimeGRPC
 ```
 
 实际代码应引用 `projects/game/pkg/const.TargetRuntimeGRPC`，不再调用旧 `game/gateway:internal-grpc`。
+
+### 测试辅助包
+
+大型测试迁移时，重复的 game 测试 helper 应抽到 game 公共包，目录放在：
+
+```text
+projects/game/pkg/testutil
+```
+
+该包用于承载 game 领域测试辅助能力，例如：
+
+* 通过公网 endpoint 创建、删除、reconnect session。
+* 构造唯一 session id。
+* WebSocket dial options 与连接关闭 helper。
+* 解析 session/runtime/gateway 测试响应。
+
+`common/gopkg/testtool` 继续只负责通用 testplan 环境变量和 endpoint 读取；`projects/game/pkg/testutil` 负责 game 领域 helper，避免把业务测试语义放入 common 包。
 
 ## 大型测试模型
 
@@ -623,6 +730,14 @@ projects/game/runtime/testplan/
 | runtime token 职责 | 完整验证 token 并做授权判断 |
 | token audience | 暂不拆分 |
 | 服务 target 常量 | 集中到 `projects/game/pkg/const`，Go package 名建议 `gameconst` |
+| 可观测字段常量 | 日志与 trace 字段名集中到 `projects/game/pkg/const` |
+| owner resolver cache | cache/TTL 能力放入 resolver 公共库，gateway 只按需使用 cached resolver wrapper |
+| runtime owner 错误处理 | gateway 只做路由和转发，不基于 runtime 错误 re-resolve 或自动重试 |
+| gateway 后端 client | session gRPC client 保持默认；runtime owner HTTP/WS client 按 target/endpoint 缓存 |
+| gateway grpc-gateway 注册方式 | 通过 gRPC client 注册后端 handler，不直接引用 session/runtime 实现代码 |
+| test helper 归属 | game 领域测试 helper 放到 `projects/game/pkg/testutil` |
+| session owner 字段 | session proto 使用 `owner_runtime_id`，不再保留 `gateway_id` 命名悬而未决 |
+| gateway 授权缓存 | gateway 不缓存 token、runtime 或 session 的授权/验证成功结果 |
 | 系统级大型测试归属 | `projects/game/gateway/testplan` |
 | 迁移策略 | 不双跑，直接迁移到目标架构 |
 
