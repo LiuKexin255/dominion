@@ -19,6 +19,6 @@ suites:
     deploy: //projects/game/session/testplan/test_deploy.yaml
     endpoint:
       http:
-        public: https://game.liukexin.com
+        public: https://apitest.liukexin.com/game/session
     cases:
       - //projects/game/session/testplan:testplan_test

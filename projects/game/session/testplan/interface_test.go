@@ -326,7 +326,7 @@ func TestInterface_ListSessions(t *testing.T) {
 		t.Fatalf("ListSessions returned %d sessions, want at least 2", len(listResp.GetSessions()))
 	}
 
-	for _, s := range listResp.GetSessions() {
+	for range listResp.GetSessions() {
 	}
 
 	name1 := created1.GetSession().GetName()

@@ -9,20 +9,26 @@ services:
       profile: dev-single
       name: mongo
   - artifact:
-      path: //projects/game/gateway/service.yaml
+      path: //projects/game/runtime/service.yaml
       name: cmd
       env:
         SESSION_TOKEN_SECRET: "dev-session-token-secret"
+        SESSION_TOKEN_TTL: "5m"
+        SESSION_IDLE_TTL: "30s"
+        GRPC_PORT: "8082"
   - artifact:
       path: //projects/game/session/service.yaml
       name: cmd
       env:
         SESSION_TOKEN_SECRET: "dev-session-token-secret"
+  - artifact:
+      path: //projects/game/session/testplan/apitest/service.yaml
+      name: cmd
     http:
       hostnames:
-        - game.liukexin.com
+        - apitest.liukexin.com
       matches:
         - backend: http
           path:
             type: PathPrefix
-            value: /v1
+            value: /game/session
