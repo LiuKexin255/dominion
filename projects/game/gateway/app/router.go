@@ -1,3 +1,13 @@
+// Package app provides the HTTP routing layer for the game gateway edge proxy.
+//
+// The gateway is a pure edge aggregation layer:
+//   - Non-WebSocket requests are passed through to the grpc-gateway mux, which
+//     forwards to session and runtime gRPC backends.
+//   - WebSocket upgrade requests (GET /v1/sessions/{id}/game/connect?token=...)
+//     are reverse-proxied to the owner runtime instance.
+//
+// The gateway does NOT verify tokens, issue tokens, hold session state,
+// or implement business logic.
 package app
 
 import (
@@ -8,48 +18,48 @@ import (
 	"strings"
 
 	"dominion/projects/game/gateway/runtime/owner"
-	"dominion/projects/game/gateway/domain/token"
+	"dominion/projects/game/pkg/token"
 )
 
-// Router routes requests based on owner claims.
-// Local requests dispatch to WSHandler or GRPCMux; remote requests are proxied.
+// Router routes HTTP requests for the gateway edge proxy.
 type Router struct {
-	WSHandler     http.Handler
-	GRPCMux       http.Handler
-	OwnerRouter   *owner.Router
-	TokenVerifier token.Verifier
+	GRPCMux        http.Handler
+	OwnerResolver  owner.OwnerResolver
+	OwnerExtractor token.OwnerExtractor
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if isWebSocketPath(req.URL.Path) {
+		r.proxyWebSocket(w, req)
+		return
+	}
+	r.GRPCMux.ServeHTTP(w, req)
+}
+
+// proxyWebSocket extracts the token from the query, parses routing claims,
+// resolves the owner runtime endpoint, and reverse-proxies the WebSocket
+// upgrade request to the owner runtime.
+func (r *Router) proxyWebSocket(w http.ResponseWriter, req *http.Request) {
 	tokenStr := req.URL.Query().Get("token")
 	if tokenStr == "" {
 		http.Error(w, "missing token", http.StatusUnauthorized)
 		return
 	}
-	claims, err := r.TokenVerifier.Verify(tokenStr)
+
+	claims, err := r.OwnerExtractor.ParseRoutingClaims(tokenStr)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid token: %v", err), http.StatusUnauthorized)
 		return
 	}
-	if r.OwnerRouter.Decide(claims.OwnerGatewayID) == owner.TargetLocal {
-		r.dispatchLocal(w, req)
+
+	if claims.OwnerRuntimeID == "" {
+		http.Error(w, "missing owner_runtime_id in token", http.StatusBadRequest)
 		return
 	}
-	r.proxyRequest(w, req, claims.OwnerGatewayID)
-}
 
-func (r *Router) dispatchLocal(w http.ResponseWriter, req *http.Request) {
-	if isWebSocketPath(req.URL.Path) {
-		r.WSHandler.ServeHTTP(w, req)
-	} else {
-		r.GRPCMux.ServeHTTP(w, req)
-	}
-}
-
-func (r *Router) proxyRequest(w http.ResponseWriter, req *http.Request, ownerGatewayID string) {
-	endpoint, err := r.OwnerRouter.Resolver.Resolve(req.Context(), ownerGatewayID)
+	endpoint, err := r.OwnerResolver.Resolve(req.Context(), claims.OwnerRuntimeID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("owner gateway %q unreachable: %v", ownerGatewayID, err), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("owner runtime %q unreachable: %v", claims.OwnerRuntimeID, err), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -69,6 +79,9 @@ func (r *Router) proxyRequest(w http.ResponseWriter, req *http.Request, ownerGat
 	proxy.ServeHTTP(w, req)
 }
 
+// makeDirector returns a ReverseProxy director that rewrites the request to
+// target the resolved runtime endpoint while preserving the original path
+// and query string.
 func makeDirector(target *url.URL, origPath, origQuery string) func(*http.Request) {
 	return func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
@@ -81,6 +94,8 @@ func makeDirector(target *url.URL, origPath, origQuery string) func(*http.Reques
 	}
 }
 
+// isWebSocketPath returns true if the path matches the WebSocket connect
+// pattern: /v1/sessions/{id}/game/connect
 func isWebSocketPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/game/connect")
 }

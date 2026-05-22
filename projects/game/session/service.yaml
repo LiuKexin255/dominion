@@ -8,5 +8,5 @@ artifacts:
     target: app/cmd:cmd_image
     tls: true
     ports:
-      - name: http
-        port: 8081
+      - name: grpc
+        port: 9081

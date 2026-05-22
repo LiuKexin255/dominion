@@ -16,7 +16,7 @@ go_library(
     importpath = "dominion/projects/game/windows_agent/internal/runtime",
     visibility = ["//projects/game/windows_agent:__subpackages__"],
     deps = [
-        "//projects/game/gateway",
+        "//projects/game/runtime",
         "//projects/game/windows_agent/internal/capture",
         "//projects/game/windows_agent/internal/encoder",
         "//projects/game/windows_agent/internal/input",
@@ -32,7 +32,7 @@ go_unittest(
     srcs = ["runtime_test.go"],
     embed = [":runtime"],
     deps = [
-        "//projects/game/gateway",
+        "//projects/game/runtime",
         "//projects/game/windows_agent/internal/encoder",
         "//projects/game/windows_agent/internal/input",
         "//projects/game/windows_agent/internal/media",

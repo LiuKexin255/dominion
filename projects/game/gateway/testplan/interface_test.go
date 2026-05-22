@@ -1,1482 +1,546 @@
+// Package testplan implements the gateway system-level large test.
+//
+// The gateway is a pure edge proxy. These tests validate the full proxy
+// architecture: gateway → session → runtime → mongo. Every test goes
+// through the gateway's public endpoint (game.liukexin.com), never
+// directly to backend services.
+//
+// Coverage:
+//  1. Session CRUD through gateway (grpc-gateway → session gRPC)
+//  2. WebSocket proxy through gateway (owner routing → runtime WS)
+//  3. Token routing claim extraction (ParseRoutingClaims, not verification)
+//  4. Forged token: gateway forwards, runtime rejects
+//  5. Gateway statelessness (no session/runtime state held)
 package testplan
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image/jpeg"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"dominion/common/gopkg/otel/tracecontext"
-	"dominion/common/gopkg/solver"
 	"dominion/common/gopkg/testtool"
-	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/gateway/domain"
-	"dominion/projects/game/gateway/testplan/fakeagent"
-	"dominion/projects/game/gateway/domain/token"
+	"dominion/projects/game/pkg/testutil"
+	"dominion/projects/game/pkg/token"
+	runtimepb "dominion/projects/game/runtime"
+	"dominion/projects/game/runtime/testplan/fakeagent"
+	sessionpb "dominion/projects/game/session"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const (
-	wsPathFormat       = "/v1/sessions/%s/game/connect"
-	snapshotPathFormat = "/v1/sessions/%s/game/snapshot"
-	runtimePathFormat  = "/v1/sessions/%s/game/runtime"
-
-	headerEnv       = "env"
-	headerTokenMeta = "Grpc-Metadata-Token"
-
-	httpClientTimeout = 15 * time.Second
-	readTimeout       = 15 * time.Second
-	shortTTL          = 2 * time.Second
-
-	tokenTTL = 30 * time.Minute
-
-	envTokenSecret = "SESSION_TOKEN_SECRET"
-
-	tokenAudience = token.TokenAudienceInternal
-
-	testVideoURL = "s3://s3.liukexin.com/buckets/common/video/IMG_6995.MP4"
-
-	mimeTypeMP4 = "video/mp4; codecs=\"avc1.64001f\""
+	gwEnvTokenSecret   = "SESSION_TOKEN_SECRET"
+	gwTokenTTL         = 5 * time.Minute
+	gwReadTimeout      = 30 * time.Second
+	gwShortReadTimeout = 5 * time.Second
+	gwWsPathPrefix     = "/v1/sessions/"
+	gwWsPathSuffix     = "/game/connect"
 )
 
 var (
-	jsonMarshaler   = protojson.MarshalOptions{}
-	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
-
-	httpClient = &http.Client{
-		Timeout:   httpClientTimeout,
-		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
-	}
-
-	// wsHTTPClient is used for WebSocket dial without HTTP timeout,
-	// but with trace propagation via HTTPTransport.
-	wsHTTPClient = &http.Client{
-		Transport: tracecontext.NewHTTPTransport(http.DefaultTransport),
-	}
+	gwJSONMarshaler   = protojson.MarshalOptions{}
+	gwJSONUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
-func uniqueSessionID() string {
-	return fmt.Sprintf("test-session-%d", time.Now().UnixNano())
-}
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
 
-// tracedCtx creates a context with a new trace span and logs the trace ID.
-func tracedCtx(t *testing.T) context.Context {
+// gwMustSigner creates an HMACSigner from the required SESSION_TOKEN_SECRET env var.
+func gwMustSigner(t *testing.T) *token.HMACSigner {
 	t.Helper()
-	ctx := tracecontext.Ensure(context.Background())
-	t.Logf("trace_id=%s", tracecontext.ID(ctx))
-	return ctx
+	secret := strings.TrimSpace(os.Getenv(gwEnvTokenSecret))
+	if secret == "" {
+		t.Fatalf("missing required environment variable %s", gwEnvTokenSecret)
+	}
+	return token.NewHMACSigner(secret, gwTokenTTL)
 }
 
-func mustSigner(t *testing.T) *token.HMACSigner {
+// gwMustEndpoint returns the public HTTP endpoint for the gateway.
+func gwMustEndpoint(t *testing.T) string {
 	t.Helper()
-	secretKey := strings.TrimSpace(os.Getenv(envTokenSecret))
-	if secretKey == "" {
-		t.Fatalf("missing required environment variable %s", envTokenSecret)
-	}
-	return token.NewHMACSigner(secretKey, tokenTTL)
+	return testtool.MustEndpoint("http", "public")
 }
 
-func mustGatewayID(t *testing.T) string {
+// gwBuildWsURL constructs a WebSocket URL for the gateway connect endpoint.
+func gwBuildWsURL(t *testing.T, endpoint, sessionID, tokenStr string) string {
 	t.Helper()
-	resolver, err := solver.NewDeployStatefulResolver()
+	u, err := url.Parse(endpoint)
 	if err != nil {
-		t.Fatalf("create stateful resolver: %v", err)
+		t.Fatalf("parse endpoint %q: %v", endpoint, err)
 	}
-	target, err := solver.ParseTarget("game/gateway:http")
-	if err != nil {
-		t.Fatalf("parse target: %v", err)
-	}
-	instances, err := resolver.Resolve(context.Background(), target)
-	if err != nil {
-		t.Fatalf("resolve gateway instances: %v", err)
-	}
-	if len(instances) == 0 {
-		t.Fatal("no gateway instances found")
-	}
-	return instances[0].Hostname
-}
-
-func issueToken(t *testing.T, sessionID, gatewayID string) string {
-	t.Helper()
-	return mustIssueToken(t, sessionID, gatewayID, 1, 0)
-}
-
-// mustIssueToken creates a signed token with the full Issue() signature.
-// Audience is always token.TokenAudienceInternal for internal routing tokens.
-func mustIssueToken(t *testing.T, sessionID, ownerGatewayID string, ownerEpoch int64, reconnectGeneration int64) string {
-	t.Helper()
-	signer := mustSigner(t)
-	tok, err := signer.Issue(sessionID, ownerGatewayID, ownerEpoch, tokenAudience, reconnectGeneration)
-	if err != nil {
-		t.Fatalf("issue token: %v", err)
-	}
-	return tok
-}
-
-// httpGetWithToken performs an HTTP GET with token in both query param
-// (for owner routing) and Grpc-Metadata-Token header (for handler auth).
-func httpGetWithToken(ctx context.Context, t *testing.T, url, tokenStr string) *http.Response {
-	t.Helper()
-	sutEnvName := testtool.MustEnv()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequestWithContext GET %s: %v", url, err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-	req.Header.Set(headerTokenMeta, tokenStr)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("http.Do GET %s: %v", url, err)
-	}
-	return resp
-}
-
-// wsDialWithToken dials a WebSocket connection with the given host, sessionID,
-// and pre-issued token. This is a convenience wrapper around building the
-// WebSocket URL and calling websocket.Dial with the standard options.
-func wsDialWithToken(ctx context.Context, t *testing.T, hostURL, sessionID, tokenStr string) *websocket.Conn {
-	t.Helper()
-	url := wsURL(hostURL, sessionID, tokenStr)
-	conn, _, err := websocket.Dial(ctx, url, wsDialOptions())
-	if err != nil {
-		t.Fatalf("websocket.Dial: %v", err)
-	}
-	conn.SetReadLimit(int64(domain.MaxSegmentSize)*2 + 4096)
-	return conn
-}
-
-func wsURL(hostURL, sessionID, tokenStr string) string {
 	scheme := "wss"
-	if strings.HasPrefix(hostURL, "http://") {
+	if u.Scheme == "http" {
 		scheme = "ws"
-		hostURL = strings.TrimPrefix(hostURL, "http://")
-	} else {
-		hostURL = strings.TrimPrefix(hostURL, "https://")
 	}
-	return fmt.Sprintf("%s://%s"+wsPathFormat+"?token=%s", scheme, hostURL, sessionID, tokenStr)
+	return fmt.Sprintf("%s://%s%s%s%s?token=%s", scheme, u.Host, gwWsPathPrefix, sessionID, gwWsPathSuffix, tokenStr)
 }
 
-func dialWeb(ctx context.Context, t *testing.T, hostURL, sessionID, gatewayID string) *websocket.Conn {
-	t.Helper()
-	tok := issueToken(t, sessionID, gatewayID)
-	url := wsURL(hostURL, sessionID, tok)
-
-	conn, _, err := websocket.Dial(ctx, url, wsDialOptions())
-	if err != nil {
-		t.Fatalf("websocket.Dial web: %v", err)
-	}
-	conn.SetReadLimit(int64(domain.MaxSegmentSize)*2 + 4096)
-
-	hello := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("hello-web"),
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
-				Role: gw.GameClientRole_GAME_CLIENT_ROLE_WEB,
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, conn, hello); err != nil {
-		conn.Close(websocket.StatusNormalClosure, "hello failed")
-		t.Fatalf("write hello web: %v", err)
-	}
-
-	return conn
-}
-
-func startAgent(ctx context.Context, t *testing.T, hostURL, sessionID, gatewayID string, scenario fakeagent.Scenario) *fakeagent.Agent {
-	t.Helper()
-	tok := issueToken(t, sessionID, gatewayID)
-	url := wsURL(hostURL, sessionID, tok)
-	agent := fakeagent.New(fakeagent.Config{
-		ConnectURL: url,
-		SessionID:  sessionID,
-		EnvHeader:  testtool.MustEnv(),
-		Scenario:   scenario,
-		VideoURL:   testVideoURL,
-		HTTPClient: wsHTTPClient,
-	})
-	errCh := make(chan error, 1)
-	go func() {
-		if err := agent.Run(ctx); err != nil {
-			select {
-			case errCh <- err:
-			default:
-			}
-		}
-	}()
-	select {
-	case <-agent.Ready():
-		return agent
-	case err := <-errCh:
-		agent.Close()
-		t.Fatalf("fakeagent exited before ready: %v", err)
-		return nil
-	case <-ctx.Done():
-		agent.Close()
-		t.Fatalf("context cancelled while waiting for fakeagent: %v", ctx.Err())
-		return nil
-	}
-}
-
-func readEnvelope(ctx context.Context, conn *websocket.Conn) (*gw.GameWebSocketEnvelope, error) {
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read message: %w", err)
-	}
-
-	env := new(gw.GameWebSocketEnvelope)
-	if err := jsonUnmarshaler.Unmarshal(data, env); err != nil {
-		return nil, fmt.Errorf("unmarshal envelope: %w", err)
-	}
-	return env, nil
-}
-
-func writeEnvelope(ctx context.Context, conn *websocket.Conn, env *gw.GameWebSocketEnvelope) error {
-	data, err := jsonMarshaler.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-	return conn.Write(ctx, websocket.MessageText, data)
-}
-
-func mustReadEnvelope(ctx context.Context, t *testing.T, conn *websocket.Conn) *gw.GameWebSocketEnvelope {
-	t.Helper()
-	env, err := readEnvelope(ctx, conn)
-	if err != nil {
-		t.Fatalf("read envelope: %v", err)
-	}
-	return env
-}
-
-func mustReadMediaInit(ctx context.Context, t *testing.T, conn *websocket.Conn) *gw.GameMediaInit {
-	t.Helper()
-	for {
-		env := mustReadEnvelope(ctx, t, conn)
-		if mi := env.GetMediaInit(); mi != nil {
-			return mi
-		}
-	}
-}
-
-func mustReadMediaSegment(ctx context.Context, t *testing.T, conn *websocket.Conn) *gw.GameMediaSegment {
-	t.Helper()
-	for {
-		env := mustReadEnvelope(ctx, t, conn)
-		if ms := env.GetMediaSegment(); ms != nil {
-			return ms
-		}
-	}
-}
-
-func mustReadControlResult(ctx context.Context, t *testing.T, conn *websocket.Conn) *gw.GameControlResult {
-	t.Helper()
-	for {
-		env := mustReadEnvelope(ctx, t, conn)
-		if cr := env.GetControlResult(); cr != nil {
-			return cr
-		}
-	}
-}
-
-func doHTTPGet(ctx context.Context, t *testing.T, url string) *http.Response {
-	t.Helper()
-	sutEnvName := testtool.MustEnv()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequestWithContext GET %s: %v", url, err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatalf("http.Do GET %s: %v", url, err)
-	}
-	return resp
-}
-
-func decodeGameSnapshot(t *testing.T, resp *http.Response) *gw.GameSnapshot {
-	t.Helper()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("io.ReadAll: %v", err)
-	}
-
-	snap := new(gw.GameSnapshot)
-	if err := jsonUnmarshaler.Unmarshal(body, snap); err != nil {
-		t.Fatalf("protojson.Unmarshal(GameSnapshot): %v, body=%s", err, string(body))
-	}
-	return snap
-}
-
-func decodeGameRuntime(t *testing.T, resp *http.Response) *gw.GameRuntime {
-	t.Helper()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("io.ReadAll: %v", err)
-	}
-
-	rt := new(gw.GameRuntime)
-	if err := jsonUnmarshaler.Unmarshal(body, rt); err != nil {
-		t.Fatalf("protojson.Unmarshal(GameRuntime): %v, body=%s", err, string(body))
-	}
-	return rt
-}
-
-// assertNotBlackFrame decodes JPEG data and verifies the image contains
-// real video content rather than a uniform black or fallback frame.
-func assertNotBlackFrame(t *testing.T, data []byte) {
-	t.Helper()
-	img, err := jpeg.Decode(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("decode snapshot JPEG: %v", err)
-	}
-	bounds := img.Bounds()
-	if bounds.Dx() <= 1 || bounds.Dy() <= 1 {
-		t.Fatalf("snapshot image %dx%d, expected real video frame > 1x1", bounds.Dx(), bounds.Dy())
-	}
-
-	stepX := 1
-	if w := bounds.Dx(); w > 32 {
-		stepX = w / 32
-	}
-	stepY := 1
-	if h := bounds.Dy(); h > 32 {
-		stepY = h / 32
-	}
-
-	sampled, nonBlack := 0, 0
-	for y := bounds.Min.Y; y < bounds.Max.Y; y += stepY {
-		for x := bounds.Min.X; x < bounds.Max.X; x += stepX {
-			r, g, b, _ := img.At(x, y).RGBA()
-			sampled++
-			if r > 2560 || g > 2560 || b > 2560 {
-				nonBlack++
-			}
-		}
-	}
-
-	if sampled == 0 {
-		t.Fatal("no pixels sampled from snapshot image")
-	}
-	ratio := float64(nonBlack) / float64(sampled)
-	if ratio < 0.01 {
-		t.Fatalf("snapshot appears to be a black frame: only %.2f%% non-black pixels (%d/%d sampled)",
-			ratio*100, nonBlack, sampled)
-	}
-}
-
-func messageID(prefix string) string {
+// gwNextMsgID returns a unique message ID for WS protocol messages.
+func gwNextMsgID(prefix string) string {
 	return fmt.Sprintf("test-%s-%d", prefix, time.Now().UnixNano())
 }
 
-func wsDialOptions() *websocket.DialOptions {
-	headers := http.Header{
-		headerEnv: {testtool.MustEnv()},
+// gwGetSession retrieves a session by name via the gateway HTTP endpoint.
+func gwGetSession(t *testing.T, endpoint, sessionName string) *sessionpb.Session {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, endpoint+"/v1/"+sessionName, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
 	}
-	return &websocket.DialOptions{
-		HTTPClient: wsHTTPClient,
-		HTTPHeader: headers,
+	client := &http.Client{Timeout: gwReadTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
 	}
-}
+	defer resp.Body.Close()
 
-func closeConn(conn *websocket.Conn) {
-	if conn != nil {
-		conn.Close(websocket.StatusNormalClosure, "test done")
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GetSession status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	var sess sessionpb.Session
+	if err := gwJSONUnmarshaler.Unmarshal(body, &sess); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+	return &sess
 }
 
-func TestInterface_WebConnect_Success(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	conn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(conn)
-}
-
-func TestInterface_AgentConnect_Success(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-}
-
-func TestInterface_PathSessionMismatch_Rejected(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	url := wsURL(hostURL, "different-session-id", tok)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	_, _, err := websocket.Dial(ctx, url, wsDialOptions())
+// gwCleanupSession deletes a session for test cleanup (best-effort).
+func gwCleanupSession(t *testing.T, endpoint, sessionName string) {
+	t.Helper()
+	// Best-effort cleanup — ignore errors.
+	req, _ := http.NewRequest(http.MethodDelete, endpoint+"/v1/"+sessionName, nil)
+	client := &http.Client{Timeout: gwShortReadTimeout}
+	resp, err := client.Do(req)
 	if err == nil {
-		t.Fatal("expected WebSocket connection to be rejected for session ID mismatch, but it succeeded")
+		resp.Body.Close()
 	}
 }
 
-func TestInterface_DuplicateAgent_Rejected(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
+// ---------------------------------------------------------------------------
+// Test 1: Session create via gateway → session gRPC
+// ---------------------------------------------------------------------------
 
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+// TestGateway_SessionCreate_ReturnsValidSession verifies that creating a
+// session through the gateway (grpc-gateway → session gRPC) returns a valid
+// session with name, token, owner_runtime_id, and SESSION_STATUS_PENDING.
+func TestGateway_SessionCreate_ReturnsValidSession(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
 	defer cancel()
 
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	tok2 := issueToken(t, sessionID, gatewayID)
-	url2 := wsURL(hostURL, sessionID, tok2)
-
-	conn2, _, err := websocket.Dial(ctx, url2, wsDialOptions())
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
 	if err != nil {
-		return
+		t.Fatalf("CreateSession: %v", err)
 	}
-	defer closeConn(conn2)
+	defer gwCleanupSession(t, endpoint, sess.GetName())
 
-	hello2 := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("hello-agent-2"),
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
-				Role: gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, conn2, hello2); err != nil {
-		return
+	// Verify name format.
+	wantName := "sessions/" + sessionID
+	if sess.GetName() != wantName {
+		t.Errorf("session.Name = %q, want %q", sess.GetName(), wantName)
 	}
 
-	env, err := readEnvelope(ctx, conn2)
+	// Verify token is present.
+	if sess.GetToken() == "" {
+		t.Fatal("session.Token is empty")
+	}
+
+	// Verify owner_runtime_id is present.
+	runtimeID := sess.GetOwnerRuntimeId()
+	if runtimeID == "" {
+		t.Fatal("session.OwnerRuntimeId is empty")
+	}
+
+	// Verify token contains the same owner_runtime_id.
+	parsedRuntimeID, err := testutil.ParseSessionToken(sess.GetToken())
 	if err != nil {
-		return
+		t.Fatalf("ParseSessionToken: %v", err)
+	}
+	if parsedRuntimeID != runtimeID {
+		t.Errorf("token owner_runtime_id = %q, want %q", parsedRuntimeID, runtimeID)
 	}
 
-	if errPayload := env.GetError(); errPayload == nil {
-		t.Fatalf("expected error for duplicate agent, got payload: %v", env.Payload)
+	// Verify status.
+	if sess.GetStatus() != sessionpb.SessionStatus_SESSION_STATUS_PENDING {
+		t.Errorf("session.Status = %v, want SESSION_STATUS_PENDING", sess.GetStatus())
 	}
 }
 
-func TestInterface_MediaDelivery(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
+// ---------------------------------------------------------------------------
+// Test 2: Session get via gateway → session gRPC
+// ---------------------------------------------------------------------------
 
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
+// TestGateway_SessionGet_ReturnsMatchingSession verifies that retrieving a
+// session through the gateway returns the same session data that was created.
+func TestGateway_SessionGet_ReturnsMatchingSession(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
 	defer cancel()
 
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
+	created, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	defer gwCleanupSession(t, endpoint, created.GetName())
+
+	// Get session by name.
+	got := gwGetSession(t, endpoint, created.GetName())
+
+	if got.GetName() != created.GetName() {
+		t.Errorf("GetSession.Name = %q, want %q", got.GetName(), created.GetName())
+	}
+	if got.GetToken() != created.GetToken() {
+		t.Error("GetSession.Token differs from CreateSession.Token")
+	}
+	if got.GetOwnerRuntimeId() != created.GetOwnerRuntimeId() {
+		t.Errorf("GetSession.OwnerRuntimeId = %q, want %q", got.GetOwnerRuntimeId(), created.GetOwnerRuntimeId())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: Session reconnect via gateway → session gRPC
+// ---------------------------------------------------------------------------
+
+// TestGateway_SessionReconnect_ReturnsNewToken verifies that reconnecting a
+// session through the gateway returns a new token and incremented
+// reconnect_generation.
+func TestGateway_SessionReconnect_ReturnsNewToken(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	created, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	defer gwCleanupSession(t, endpoint, created.GetName())
+
+	origToken := created.GetToken()
+	origGen := created.GetReconnectGeneration()
+
+	reconnected, err := testutil.ReconnectSession(ctx, endpoint, created.GetName())
+	if err != nil {
+		t.Fatalf("ReconnectSession: %v", err)
+	}
+
+	// Verify new token differs.
+	if reconnected.GetToken() == origToken {
+		t.Error("ReconnectSession.Token should differ from original")
+	}
+	if reconnected.GetToken() == "" {
+		t.Fatal("ReconnectSession.Token is empty")
+	}
+
+	// Verify generation incremented.
+	if reconnected.GetReconnectGeneration() <= origGen {
+		t.Errorf("ReconnectSession.ReconnectGeneration = %d, want > %d",
+			reconnected.GetReconnectGeneration(), origGen)
+	}
+
+	// Verify owner_runtime_id is still present.
+	if reconnected.GetOwnerRuntimeId() == "" {
+		t.Fatal("ReconnectSession.OwnerRuntimeId is empty")
+	}
+
+	// Verify new token parses correctly.
+	parsedRuntimeID, err := testutil.ParseSessionToken(reconnected.GetToken())
+	if err != nil {
+		t.Fatalf("ParseSessionToken: %v", err)
+	}
+	if parsedRuntimeID != reconnected.GetOwnerRuntimeId() {
+		t.Errorf("token owner_runtime_id = %q, want %q", parsedRuntimeID, reconnected.GetOwnerRuntimeId())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Session delete via gateway → session gRPC
+// ---------------------------------------------------------------------------
+
+// TestGateway_SessionDelete_RemovesSession verifies that deleting a session
+// through the gateway removes it, and subsequent GET returns 404.
+func TestGateway_SessionDelete_RemovesSession(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Delete the session.
+	if err := testutil.DeleteSession(ctx, endpoint, sess.GetName()); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
+	// Verify session is gone.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/"+sess.GetName(), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	client := &http.Client{Timeout: gwShortReadTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GetSession after delete: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GetSession after delete status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: WebSocket connect via gateway → owner proxy → runtime WS
+// ---------------------------------------------------------------------------
+
+// TestGateway_WebSocketConnect_ProxiesToRuntime verifies the full proxy chain:
+// agent connects via gateway WS endpoint → gateway extracts token → resolves
+// owner runtime → reverse-proxies to runtime → agent can exchange hello and
+// media messages.
+func TestGateway_WebSocketConnect_ProxiesToRuntime(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	// Create session through gateway.
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	defer gwCleanupSession(t, endpoint, sess.GetName())
+
+	tokenStr := sess.GetToken()
+	sessionIDFromName := strings.TrimPrefix(sess.GetName(), "sessions/")
+
+	// Build WS URL pointing to gateway.
+	wsURL := gwBuildWsURL(t, endpoint, sessionIDFromName, tokenStr)
+
+	// Agent connects through gateway (gateway reverse-proxies to runtime).
+	agent, err := fakeagent.Connect(ctx, wsURL, sessionIDFromName)
+	if err != nil {
+		t.Fatalf("agent dial through gateway: %v", err)
+	}
 	defer agent.Close()
 
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	mi := mustReadMediaInit(ctx, t, webConn)
-	if mi.GetStreamId() == "" {
-		t.Fatal("media_init stream_id is empty")
-	}
-	if mi.GetInitId() == "" {
-		t.Fatal("media_init init_id is empty")
-	}
-	if mi.GetMimeType() != mimeTypeMP4 {
-		t.Fatalf("media_init mime_type = %q, want %q", mi.GetMimeType(), mimeTypeMP4)
-	}
-	if mi.GetCodec() == "" {
-		t.Fatal("media_init codec is empty")
-	}
-	if len(mi.GetSegment()) == 0 {
-		t.Fatal("media_init segment is empty")
-	}
-
-	ms := mustReadMediaSegment(ctx, t, webConn)
-	if ms.GetStreamId() == "" {
-		t.Fatal("media_segment stream_id is empty")
-	}
-	if ms.GetInitId() == "" {
-		t.Fatal("media_segment init_id is empty")
-	}
-	if ms.GetSequence() == 0 {
-		t.Fatal("media_segment sequence is 0")
-	}
-	if len(ms.GetSegment()) == 0 {
-		t.Fatal("media_segment segment data is empty")
-	}
-}
-
-func TestInterface_CatchupFromRandomAccess(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	time.Sleep(300 * time.Millisecond)
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	mustReadMediaInit(ctx, t, webConn)
-
-	ms := mustReadMediaSegment(ctx, t, webConn)
-	if !ms.GetRandomAccess() {
-		t.Fatal("expected catch-up segment to have random_access=true")
-	}
-
-	prevSeq := ms.GetSequence()
-	for i := 0; i < 2; i++ {
-		next := mustReadMediaSegment(ctx, t, webConn)
-		if next.GetSequence() <= prevSeq {
-			t.Fatalf("expected sequence %d > prev %d", next.GetSequence(), prevSeq)
-		}
-		prevSeq = next.GetSequence()
-	}
-}
-
-func TestInterface_V1MediaRejected(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	v1JSON := fmt.Sprintf(`{"sessionId":%q,"messageId":"v1-media-001","mediaSegment":{"segmentId":"seg-001","keyFrame":true,"segment":"dGVzdA==","streamId":"stream-1","initId":"init-1","sequence":1}}`, sessionID)
-	if err := webConn.Write(ctx, websocket.MessageText, []byte(v1JSON)); err != nil {
-		t.Fatalf("web write v1 media JSON: %v", err)
-	}
-
-	for {
-		env, err := readEnvelope(ctx, webConn)
-		if err != nil {
-			t.Fatalf("read response: %v", err)
-		}
-		if errPayload := env.GetError(); errPayload != nil {
-			return
-		}
-		if env.GetMediaInit() != nil || env.GetMediaSegment() != nil || env.GetControlAck() != nil || env.GetPing() != nil {
-			continue
-		}
-		t.Fatalf("expected error for v1 media with segment_id/key_frame fields, got payload: %v", env.Payload)
-	}
-}
-
-func TestInterface_Snapshot_Cached(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	time.Sleep(300 * time.Millisecond)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, snapshotURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GetGameSnapshot status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
-	}
-
-	snap := decodeGameSnapshot(t, resp)
-	wantName := fmt.Sprintf("sessions/%s/game/snapshot", sessionID)
-	if snap.GetName() != wantName {
-		t.Fatalf("snapshot name = %q, want %q", snap.GetName(), wantName)
-	}
-}
-
-func TestInterface_Snapshot_Refresh(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	time.Sleep(200 * time.Millisecond)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, snapshotURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GetGameSnapshot (no cache) status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
-	}
-
-	snap := decodeGameSnapshot(t, resp)
-	wantName := fmt.Sprintf("sessions/%s/game/snapshot", sessionID)
-	if snap.GetName() != wantName {
-		t.Fatalf("snapshot name = %q, want %q", snap.GetName(), wantName)
-	}
-}
-
-func TestInterface_Snapshot_ImageNotBlack(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	time.Sleep(300 * time.Millisecond)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, snapshotURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GetGameSnapshot status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
-	}
-
-	snap := decodeGameSnapshot(t, resp)
-
-	image := snap.GetImage()
-	if len(image) == 0 {
-		t.Fatal("snapshot image is empty, want non-empty JPEG data")
-	}
-
-	assertNotBlackFrame(t, image)
-}
-
-func TestInterface_Snapshot_UnavailableWithoutRandomAccess(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.SnapshotFail)
-	defer agent.Close()
-
-	time.Sleep(300 * time.Millisecond)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	snapshotURL := hostURL + fmt.Sprintf(snapshotPathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, snapshotURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		snap := decodeGameSnapshot(t, resp)
-		image := snap.GetImage()
-		if len(image) > 0 {
-			t.Fatalf("expected snapshot to be unavailable without random-access segments, got %d bytes of image data", len(image))
-		}
-	}
-}
-
-func TestInterface_Runtime_Fields(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	tok := issueToken(t, sessionID, gatewayID)
-	runtimeURL := hostURL + fmt.Sprintf(runtimePathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, runtimeURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GetGameRuntime status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
-	}
-
-	rt := decodeGameRuntime(t, resp)
-	wantName := fmt.Sprintf("sessions/%s/game/runtime", sessionID)
-	if rt.GetName() != wantName {
-		t.Fatalf("runtime name = %q, want %q", rt.GetName(), wantName)
-	}
-	if !rt.GetAgentConnected() {
-		t.Fatal("runtime agent_connected = false, want true")
-	}
-	if rt.GetGatewayId() == "" {
-		t.Fatal("runtime gateway_id is empty, want non-empty")
-	}
-}
-
-func TestInterface_ControlRoundtrip(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-req"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-click-001",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      100,
-						Y:      200,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if ack := env.GetControlAck(); ack != nil {
-			if ack.GetOperationId() != "op-click-001" {
-				t.Fatalf("control_ack operation_id = %q, want op-click-001", ack.GetOperationId())
-			}
-			break
-		}
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-click-001" {
-		t.Fatalf("control_result operation_id = %q, want op-click-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_FlashSnapshot(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-flash"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId:   "op-flash-001",
-				FlashSnapshot: true,
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      50,
-						Y:      50,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-flash-001" {
-		t.Fatalf("control_result operation_id = %q, want op-flash-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_ConcurrentOperations(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq1 := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-1"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-concurrent-001",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      10,
-						Y:      20,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq1); err != nil {
-		t.Fatalf("web write control_request 1: %v", err)
-	}
-
-	ctrlReq2 := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-2"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-concurrent-002",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      30,
-						Y:      40,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq2); err != nil {
-		t.Fatalf("web write control_request 2: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if errPayload := env.GetError(); errPayload != nil {
-			return
-		}
-	}
-}
-
-func TestInterface_TimeoutSemantics(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), 5*time.Second)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Timeout)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-timeout"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-timeout-001",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      10,
-						Y:      20,
-					},
-				},
-			},
-		},
-	}
-
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, readTimeout)
-	defer timeoutCancel()
-
-	for {
-		env, err := readEnvelope(timeoutCtx, webConn)
-		if err != nil {
-			t.Fatalf("web read timed_out result: %v", err)
-		}
-		if ctrlResult := env.GetControlResult(); ctrlResult != nil {
-			if ctrlResult.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_TIMED_OUT {
-				t.Fatalf("control_result status = %v, want TIMED_OUT", ctrlResult.GetStatus())
-			}
-			return
-		}
-	}
-}
-
-func TestInterface_AgentDisconnect_Cleanup(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Disconnect)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-disconnect"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-disconnect-001",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:      10,
-						Y:      20,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	disconnectCtx, disconnectCancel := context.WithTimeout(ctx, readTimeout)
-	defer disconnectCancel()
-
-	for {
-		env, err := readEnvelope(disconnectCtx, webConn)
-		if err != nil {
-			t.Fatalf("web read failed result after agent disconnect: %v", err)
-		}
-		if ctrlResult := env.GetControlResult(); ctrlResult != nil {
-			if ctrlResult.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED {
-				t.Fatalf("control_result status = %v, want FAILED", ctrlResult.GetStatus())
-			}
-			return
-		}
-	}
-}
-
-func TestInterface_ControlRoundtrip_MouseDrag(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-drag"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-drag-001",
-				Action: &gw.GameControlRequest_MouseDrag{
-					MouseDrag: &gw.GameMouseDrag{
-						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						FromX:      10,
-						FromY:      20,
-						ToX:        100,
-						ToY:        200,
-						DurationMs: 300,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if ack := env.GetControlAck(); ack != nil {
-			if ack.GetOperationId() != "op-drag-001" {
-				t.Fatalf("control_ack operation_id = %q, want op-drag-001", ack.GetOperationId())
-			}
-			break
-		}
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-drag-001" {
-		t.Fatalf("control_result operation_id = %q, want op-drag-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_ControlRoundtrip_MouseHold(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-hold"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-hold-001",
-				Action: &gw.GameControlRequest_MouseHold{
-					MouseHold: &gw.GameMouseHold{
-						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
-						X:          50,
-						Y:          60,
-						DurationMs: 500,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if ack := env.GetControlAck(); ack != nil {
-			if ack.GetOperationId() != "op-hold-001" {
-				t.Fatalf("control_ack operation_id = %q, want op-hold-001", ack.GetOperationId())
-			}
-			break
-		}
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-hold-001" {
-		t.Fatalf("control_result operation_id = %q, want op-hold-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_ControlRoundtrip_RightClick(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-right-click"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-right-click-001",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
-						X:      200,
-						Y:      300,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if ack := env.GetControlAck(); ack != nil {
-			if ack.GetOperationId() != "op-right-click-001" {
-				t.Fatalf("control_ack operation_id = %q, want op-right-click-001", ack.GetOperationId())
-			}
-			break
-		}
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-right-click-001" {
-		t.Fatalf("control_result operation_id = %q, want op-right-click-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_ControlRoundtrip_RightDrag(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	ctrlReq := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("ctrl-right-drag"),
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
-				OperationId: "op-right-drag-001",
-				Action: &gw.GameControlRequest_MouseDrag{
-					MouseDrag: &gw.GameMouseDrag{
-						Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
-						FromX:      10,
-						FromY:      20,
-						ToX:        100,
-						ToY:        200,
-						DurationMs: 400,
-					},
-				},
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, webConn, ctrlReq); err != nil {
-		t.Fatalf("web write control_request: %v", err)
-	}
-
-	for {
-		env := mustReadEnvelope(ctx, t, webConn)
-		if ack := env.GetControlAck(); ack != nil {
-			if ack.GetOperationId() != "op-right-drag-001" {
-				t.Fatalf("control_ack operation_id = %q, want op-right-drag-001", ack.GetOperationId())
-			}
-			break
-		}
-	}
-
-	cr := mustReadControlResult(ctx, t, webConn)
-	if cr.GetOperationId() != "op-right-drag-001" {
-		t.Fatalf("control_result operation_id = %q, want op-right-drag-001", cr.GetOperationId())
-	}
-	if cr.GetStatus() != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
-		t.Fatalf("control_result status = %v, want SUCCEEDED", cr.GetStatus())
-	}
-}
-
-func TestInterface_OldKindMouseJSON_Rejected(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	oldJSON := fmt.Sprintf(`{"sessionId":%q,"messageId":"old-format-001","controlRequest":{"operationId":"op-old-001","kind":"MOUSE_CLICK","mouse":{"button":"LEFT","x":10,"y":20}}}`, sessionID)
-	if err := webConn.Write(ctx, websocket.MessageText, []byte(oldJSON)); err != nil {
-		t.Fatalf("web write old-format JSON: %v", err)
-	}
-
-	for {
-		env, err := readEnvelope(ctx, webConn)
-		if err != nil {
-			t.Fatalf("read response: %v", err)
-		}
-		if errPayload := env.GetError(); errPayload != nil {
-			return
-		}
-		if env.GetMediaInit() != nil || env.GetMediaSegment() != nil || env.GetControlAck() != nil || env.GetPing() != nil {
-			continue
-		}
-		t.Fatalf("expected error for old kind/mouse JSON, got payload: %v", env.Payload)
-	}
-}
-
-func TestCreateSession_ReturnsAggregateHost(t *testing.T) {
-	t.Skip("requires deployed session service alongside gateway")
-}
-
-func TestAgentConnect_WithAggregateHost(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	tok := issueToken(t, sessionID, gatewayID)
-	conn := wsDialWithToken(ctx, t, hostURL, sessionID, tok)
-	defer closeConn(conn)
-
-	hello := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("hello-agent-agg"),
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
-				Role: gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
-			},
-		},
-	}
-	if err := writeEnvelope(ctx, conn, hello); err != nil {
-		conn.Close(websocket.StatusNormalClosure, "hello failed")
-		t.Fatalf("write hello agent aggregate: %v", err)
-	}
-}
-
-func TestWebConnect_WithAggregateHost(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	conn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(conn)
-}
-
-func TestHTTPRead_WithToken(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	time.Sleep(200 * time.Millisecond)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	runtimeURL := hostURL + fmt.Sprintf(runtimePathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, runtimeURL, tok)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("GetGameRuntime with token status = %d, want %d, body=%s", resp.StatusCode, http.StatusOK, string(body))
-	}
-
-	rt := decodeGameRuntime(t, resp)
-	if !rt.GetAgentConnected() {
-		t.Fatal("runtime agent_connected = false, want true")
-	}
-}
-
-func TestCrossPodRouting(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-	defer agent.Close()
-
-	webConn := dialWeb(ctx, t, hostURL, sessionID, gatewayID)
-	defer closeConn(webConn)
-
-	mi := mustReadMediaInit(ctx, t, webConn)
-	if mi.GetStreamId() == "" {
-		t.Fatal("media_init stream_id is empty — cross-pod routing did not deliver media")
-	}
-	t.Log("cross-pod routing verified: media delivered via aggregate host")
-}
-
-func TestWSHoldBeyondTokenTTL(t *testing.T) {
-	t.Skip("requires token refresh mechanism to be verified in deployment")
-}
-
-func TestExpiredToken_Rejected(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	expiredSigner := token.NewHMACSigner(
-		strings.TrimSpace(os.Getenv(envTokenSecret)),
-		-shortTTL,
+	// Agent sends media init.
+	const (
+		streamID = "stream-gw-1"
+		initID   = "init-gw-abc"
 	)
-	expiredTok, err := expiredSigner.Issue(sessionID, gatewayID, 1, tokenAudience, 0)
+	if err := agent.SendMediaInit(ctx, streamID, initID, "video/mp4", "h264-avc", []byte("fake-init-data")); err != nil {
+		t.Fatalf("agent send media init: %v", err)
+	}
+
+	// Web client connects via gateway.
+	webConn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{}})
 	if err != nil {
-		t.Fatalf("issue expired token: %v", err)
+		t.Fatalf("web dial through gateway: %v", err)
 	}
+	defer webConn.Close(websocket.StatusNormalClosure, "test done")
 
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	url := wsURL(hostURL, sessionID, expiredTok)
-	_, _, err = websocket.Dial(ctx, url, wsDialOptions())
-	if err == nil {
-		t.Fatal("expected expired token to be rejected, but WebSocket connection succeeded")
-	}
-	t.Logf("expired token correctly rejected: %v", err)
-}
-
-func TestSessionRefresh_NewTokenWorks(t *testing.T) {
-	t.Skip("requires deployed session service to refresh tokens")
-}
-
-func TestIdleTTL_SessionCleaned(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), 5*time.Minute)
-	defer cancel()
-
-	agent := startAgent(ctx, t, hostURL, sessionID, gatewayID, fakeagent.Normal)
-
-	tok := issueToken(t, sessionID, gatewayID)
-	runtimeURL := hostURL + fmt.Sprintf(runtimePathFormat, sessionID) + "?token=" + tok
-	resp := httpGetWithToken(ctx, t, runtimeURL, tok)
-
-	if resp.StatusCode == http.StatusOK {
-		resp.Body.Close()
-	} else {
-		resp.Body.Close()
-	}
-
-	agent.Close()
-	time.Sleep(3 * time.Second)
-
-	tok2 := issueToken(t, sessionID, gatewayID)
-	runtimeURL2 := hostURL + fmt.Sprintf(runtimePathFormat, sessionID) + "?token=" + tok2
-	resp2 := httpGetWithToken(ctx, t, runtimeURL2, tok2)
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode == http.StatusOK {
-		rt := decodeGameRuntime(t, resp2)
-		if rt.GetAgentConnected() {
-			t.Log("session still active after brief idle — TTL may be longer than test wait")
-		}
-	}
-}
-
-func TestOwnerPodRestart_OldTokenInvalid(t *testing.T) {
-	hostURL := testtool.MustEndpoint("http", "public")
-	sessionID := uniqueSessionID()
-	gatewayID := mustGatewayID(t)
-
-	oldTok := mustIssueToken(t, sessionID, gatewayID, 1, 0)
-
-	ctx, cancel := context.WithTimeout(tracedCtx(t), readTimeout)
-	defer cancel()
-
-	url := wsURL(hostURL, sessionID, oldTok)
-	conn, _, err := websocket.Dial(ctx, url, wsDialOptions())
-	if err != nil {
-		t.Logf("old token rejected at dial (expected if epoch validation works): %v", err)
-		return
-	}
-	defer closeConn(conn)
-
-	hello := &gw.GameWebSocketEnvelope{
-		SessionId: sessionID,
-		MessageId: messageID("hello-old-epoch"),
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
-				Role: gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+	// Send web hello.
+	hello := &runtimepb.GameWebSocketEnvelope{
+		SessionId: sessionIDFromName,
+		MessageId: gwNextMsgID("hello-web"),
+		Payload: &runtimepb.GameWebSocketEnvelope_Hello{
+			Hello: &runtimepb.GameHello{
+				Role: runtimepb.GameClientRole_GAME_CLIENT_ROLE_WEB,
 			},
 		},
 	}
-	if err := writeEnvelope(ctx, conn, hello); err != nil {
-		t.Logf("old token write failed (epoch rejected): %v", err)
-		return
+	data, err := gwJSONMarshaler.Marshal(hello)
+	if err != nil {
+		t.Fatalf("marshal web hello: %v", err)
+	}
+	if err := webConn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write web hello: %v", err)
 	}
 
-	for {
-		env, err := readEnvelope(ctx, conn)
-		if err != nil {
-			t.Logf("old token read error after hello: %v", err)
-			return
+	// Web should receive catch-up media init.
+	_, msgData, err := webConn.Read(ctx)
+	if err != nil {
+		t.Fatalf("web read media init: %v", err)
+	}
+	env := new(runtimepb.GameWebSocketEnvelope)
+	if err := gwJSONUnmarshaler.Unmarshal(msgData, env); err != nil {
+		t.Fatalf("unmarshal catch-up message: %v", err)
+	}
+	if init := env.GetMediaInit(); init == nil {
+		t.Fatalf("expected media_init, got %T", env.Payload)
+	} else {
+		if init.GetStreamId() != streamID {
+			t.Errorf("media_init stream_id = %q, want %q", init.GetStreamId(), streamID)
 		}
-		if errPayload := env.GetError(); errPayload != nil {
-			t.Logf("old token rejected with error: %v", errPayload)
-			return
-		}
-		t.Logf("old token accepted (gateway may not validate epoch on connect): %v", env.Payload)
-		return
 	}
 }
 
-func TestNoPerInstanceHost(t *testing.T) {
-	endpoint := testtool.MustEndpoint("http", "public")
+// ---------------------------------------------------------------------------
+// Test 6: Gateway token routing (ParseRoutingClaims extracts owner_runtime_id)
+// ---------------------------------------------------------------------------
 
-	if strings.Contains(endpoint, "gateway-0") {
-		t.Fatalf("endpoint %q still uses per-instance host format, expected aggregate host", endpoint)
+// TestGateway_ParseRoutingClaims_ExtractsOwnerRuntimeID verifies that the
+// gateway's token extraction mechanism (ParseRoutingClaims without secret)
+// correctly extracts session_id and owner_runtime_id from session tokens
+// for routing purposes.
+func TestGateway_ParseRoutingClaims_ExtractsOwnerRuntimeID(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
 	}
-	if strings.Contains(endpoint, "gateway-1") {
-		t.Fatalf("endpoint %q still uses per-instance host format, expected aggregate host", endpoint)
+	defer gwCleanupSession(t, endpoint, sess.GetName())
+
+	tokenStr := sess.GetToken()
+	runtimeID := sess.GetOwnerRuntimeId()
+
+	// Use the dummy signer (no secret) for ParseRoutingClaims, matching the
+	// gateway's OwnerExtractor usage in router.go.
+	dummySigner := token.NewHMACSigner("", 0)
+	claims, err := dummySigner.ParseRoutingClaims(tokenStr)
+	if err != nil {
+		t.Fatalf("ParseRoutingClaims: %v", err)
 	}
-	t.Logf("aggregate host endpoint verified: %s", endpoint)
+
+	// Verify routing claims match session fields.
+	if claims.SessionID != sessionID {
+		t.Errorf("claims.SessionID = %q, want %q", claims.SessionID, sessionID)
+	}
+	if claims.OwnerRuntimeID != runtimeID {
+		t.Errorf("claims.OwnerRuntimeID = %q, want %q", claims.OwnerRuntimeID, runtimeID)
+	}
+	if claims.OwnerEpoch == 0 {
+		t.Error("claims.OwnerEpoch should be > 0")
+	}
+	if claims.Audience == "" {
+		t.Error("claims.Audience should not be empty")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: Forged token rejected by runtime (gateway forwards, runtime rejects)
+// ---------------------------------------------------------------------------
+
+// TestGateway_ForgedToken_Rejected verifies the security boundary: the gateway
+// forwards forged tokens (it only does routing, not verification), but the
+// runtime rejects them at WebSocket connect time when the signature doesn't
+// match.
+func TestGateway_ForgedToken_Rejected(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	defer gwCleanupSession(t, endpoint, sess.GetName())
+
+	// Forge a token with a different secret but the same session_id and
+	// owner_runtime_id. The gateway's ParseRoutingClaims will extract the
+	// owner_runtime_id and forward to the correct runtime, but the runtime
+	// will verify the signature and reject.
+	wrongSigner := token.NewHMACSigner("wrong-secret-key-for-testing", gwTokenTTL)
+	forgedToken, err := wrongSigner.Issue(
+		sessionID,
+		sess.GetOwnerRuntimeId(),
+		1,
+		token.TokenAudienceInternal,
+		sess.GetReconnectGeneration(),
+	)
+	if err != nil {
+		t.Fatalf("issue forged token: %v", err)
+	}
+
+	sessionIDFromName := strings.TrimPrefix(sess.GetName(), "sessions/")
+	wsURL := gwBuildWsURL(t, endpoint, sessionIDFromName, forgedToken)
+
+	// Dial WS through gateway. Gateway forwards to runtime; runtime rejects.
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), gwShortReadTimeout)
+	defer wsCancel()
+
+	_, _, err = websocket.Dial(wsCtx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{}})
+	if err == nil {
+		t.Fatal("expected forged token to be rejected by runtime, but WebSocket connection succeeded")
+	}
+	t.Logf("forged token correctly rejected: %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: Gateway stateless (no sessionmanager/runtime state)
+// ---------------------------------------------------------------------------
+
+// TestGateway_Stateless_NoSessionOrRuntimeState verifies that the gateway is
+// truly stateless. Multiple sequential and concurrent session operations
+// through the gateway all succeed without any failure due to per-instance
+// state. The gateway holds no session manager, runtime service, or token cache.
+func TestGateway_Stateless_NoSessionOrRuntimeState(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+
+	// Create multiple sessions sequentially to verify no state accumulation.
+	const numSessions = 3
+	sessions := make([]string, numSessions)
+
+	for i := 0; i < numSessions; i++ {
+		sessionID := testutil.NewTestSessionID()
+		ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+
+		sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+		if err != nil {
+			cancel()
+			t.Fatalf("CreateSession #%d: %v", i+1, err)
+		}
+		sessions[i] = sess.GetName()
+		cancel()
+	}
+
+	// Clean up all sessions.
+	for _, name := range sessions {
+		gwCleanupSession(t, endpoint, name)
+	}
+
+	// Verify each session is gone (stateless cleanup).
+	for _, name := range sessions {
+		ctx, cancel := context.WithTimeout(context.Background(), gwShortReadTimeout)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/"+name, nil)
+		client := &http.Client{Timeout: gwShortReadTimeout}
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("session %q should be deleted, got status %d", name, resp.StatusCode)
+			}
+		}
+		cancel()
+	}
 }

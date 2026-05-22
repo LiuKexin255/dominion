@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/gateway/domain"
+	runtimepb "dominion/projects/game/runtime"
+	"dominion/projects/game/runtime/domain"
 )
 
 // SendHello sends the hello message with the agent role after connecting.
@@ -14,11 +14,11 @@ func (c *Client) SendHello(ctx context.Context, sessionID string) error {
 	c.sessionID = sessionID
 	c.mu.Unlock()
 
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("hello"),
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
+		Payload: &runtimepb.GameWebSocketEnvelope_Hello{
+			Hello: &runtimepb.GameHello{
 				Role: AgentRole,
 			},
 		},
@@ -31,11 +31,11 @@ func (c *Client) SendMediaInit(ctx context.Context, sessionID, streamID, initID,
 		return fmt.Errorf("media_init segment %d bytes exceeds %d limit", len(segment), domain.MaxSegmentSize)
 	}
 
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("media-init"),
-		Payload: &gw.GameWebSocketEnvelope_MediaInit{
-			MediaInit: &gw.GameMediaInit{
+		Payload: &runtimepb.GameWebSocketEnvelope_MediaInit{
+			MediaInit: &runtimepb.GameMediaInit{
 				StreamId: streamID,
 				InitId:   initID,
 				MimeType: mimeType,
@@ -52,11 +52,11 @@ func (c *Client) SendMediaSegment(ctx context.Context, sessionID, streamID, init
 		return fmt.Errorf("media_segment %d bytes exceeds %d limit", len(segment), domain.MaxSegmentSize)
 	}
 
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("media-seg"),
-		Payload: &gw.GameWebSocketEnvelope_MediaSegment{
-			MediaSegment: &gw.GameMediaSegment{
+		Payload: &runtimepb.GameWebSocketEnvelope_MediaSegment{
+			MediaSegment: &runtimepb.GameMediaSegment{
 				StreamId:      streamID,
 				InitId:        initID,
 				Sequence:      sequence,
@@ -71,11 +71,11 @@ func (c *Client) SendMediaSegment(ctx context.Context, sessionID, streamID, init
 
 // SendControlAck acknowledges receipt of a control request.
 func (c *Client) SendControlAck(ctx context.Context, sessionID, operationID string) error {
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("ack"),
-		Payload: &gw.GameWebSocketEnvelope_ControlAck{
-			ControlAck: &gw.GameControlAck{
+		Payload: &runtimepb.GameWebSocketEnvelope_ControlAck{
+			ControlAck: &runtimepb.GameControlAck{
 				OperationId: operationID,
 			},
 		},
@@ -83,12 +83,12 @@ func (c *Client) SendControlAck(ctx context.Context, sessionID, operationID stri
 }
 
 // SendControlResult sends the outcome of a control operation.
-func (c *Client) SendControlResult(ctx context.Context, sessionID, operationID string, status gw.GameControlResultStatus) error {
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+func (c *Client) SendControlResult(ctx context.Context, sessionID, operationID string, status runtimepb.GameControlResultStatus) error {
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("result"),
-		Payload: &gw.GameWebSocketEnvelope_ControlResult{
-			ControlResult: &gw.GameControlResult{
+		Payload: &runtimepb.GameWebSocketEnvelope_ControlResult{
+			ControlResult: &runtimepb.GameControlResult{
 				OperationId: operationID,
 				Status:      status,
 			},
@@ -98,22 +98,22 @@ func (c *Client) SendControlResult(ctx context.Context, sessionID, operationID s
 
 // SendPong replies to a ping from the gateway.
 func (c *Client) SendPong(ctx context.Context, sessionID, nonce string) error {
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("pong"),
-		Payload: &gw.GameWebSocketEnvelope_Pong{
-			Pong: &gw.GamePong{Nonce: nonce},
+		Payload: &runtimepb.GameWebSocketEnvelope_Pong{
+			Pong: &runtimepb.GamePong{Nonce: nonce},
 		},
 	})
 }
 
 // SendError reports an error to the gateway.
 func (c *Client) SendError(ctx context.Context, sessionID, code, message string) error {
-	return c.writeEnvelope(ctx, &gw.GameWebSocketEnvelope{
+	return c.writeEnvelope(ctx, &runtimepb.GameWebSocketEnvelope{
 		SessionId: sessionID,
 		MessageId: MessageID("error"),
-		Payload: &gw.GameWebSocketEnvelope_Error{
-			Error: &gw.GameError{
+		Payload: &runtimepb.GameWebSocketEnvelope_Error{
+			Error: &runtimepb.GameError{
 				Code:    code,
 				Message: message,
 			},

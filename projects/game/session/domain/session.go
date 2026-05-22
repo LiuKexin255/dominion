@@ -40,7 +40,7 @@ type SessionSnapshot struct {
 	ID                  string
 	Type                SessionType
 	Status              SessionStatus
-	GatewayID           string
+	OwnerRuntimeID      string
 	Token               string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -54,7 +54,7 @@ type Session struct {
 	id                  string
 	sessionType         SessionType
 	status              SessionStatus
-	gatewayID           string
+	ownerRuntimeID      string
 	token               string
 	createdAt           time.Time
 	updatedAt           time.Time
@@ -101,7 +101,7 @@ func Rehydrate(snapshot SessionSnapshot) (*Session, error) {
 		id:                  snapshot.ID,
 		sessionType:         snapshot.Type,
 		status:              snapshot.Status,
-		gatewayID:           snapshot.GatewayID,
+		ownerRuntimeID:      snapshot.OwnerRuntimeID,
 		token:               snapshot.Token,
 		createdAt:           snapshot.CreatedAt,
 		updatedAt:           snapshot.UpdatedAt,
@@ -117,7 +117,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		ID:                  s.id,
 		Type:                s.sessionType,
 		Status:              s.status,
-		GatewayID:           s.gatewayID,
+		OwnerRuntimeID:      s.ownerRuntimeID,
 		Token:               s.token,
 		CreatedAt:           s.createdAt,
 		UpdatedAt:           s.updatedAt,
@@ -133,8 +133,8 @@ func (s *Session) ID() string { return s.id }
 // Token returns the gateway-issued connection token.
 func (s *Session) Token() string { return s.token }
 
-// GatewayID returns the assigned gateway identifier.
-func (s *Session) GatewayID() string { return s.gatewayID }
+// OwnerRuntimeID returns the assigned owner runtime identifier.
+func (s *Session) OwnerRuntimeID() string { return s.ownerRuntimeID }
 
 // Status returns the current session lifecycle status.
 func (s *Session) Status() SessionStatus { return s.status }
@@ -163,9 +163,9 @@ func (s *Session) SetToken(token string) {
 	s.updatedAt = time.Now().UTC()
 }
 
-// SetGatewayID sets the assigned gateway for the session.
-func (s *Session) SetGatewayID(id string) {
-	s.gatewayID = id
+// SetOwnerRuntimeID sets the assigned owner runtime for the session.
+func (s *Session) SetOwnerRuntimeID(id string) {
+	s.ownerRuntimeID = id
 	s.updatedAt = time.Now().UTC()
 }
 

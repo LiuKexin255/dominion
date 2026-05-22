@@ -210,7 +210,7 @@ func TestMongoSession_Token_RoundTrip(t *testing.T) {
 		repo, _ := newMongoRepositoryForTest()
 		session := newTestSession(t, "token-rt-id")
 		session.SetToken("my-gateway-token")
-		session.SetGatewayID("gateway-1")
+		session.SetOwnerRuntimeID("gateway-1")
 
 		if err := repo.Save(ctx, session); err != nil {
 			t.Fatalf("Save() unexpected error: %v", err)

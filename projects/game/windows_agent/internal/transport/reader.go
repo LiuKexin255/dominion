@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 
 	"dominion/projects/game/windows_agent/internal/log"
 )
@@ -12,10 +12,10 @@ import (
 // InboundMessage represents a decoded downstream WebSocket message.
 // Exactly one of the typed fields is non-nil, matching the envelope payload.
 type InboundMessage struct {
-	Envelope       *gw.GameWebSocketEnvelope
-	ControlRequest *gw.GameControlRequest
-	Ping           *gw.GamePing
-	Error          *gw.GameError
+	Envelope       *runtimepb.GameWebSocketEnvelope
+	ControlRequest *runtimepb.GameControlRequest
+	Ping           *runtimepb.GamePing
+	Error          *runtimepb.GameError
 }
 
 // ReadLoop starts a goroutine that reads WebSocket messages and dispatches
@@ -52,11 +52,11 @@ func (c *Client) ReadLoop(ctx context.Context) (<-chan InboundMessage, error) {
 
 			msg := InboundMessage{Envelope: env}
 			switch p := env.Payload.(type) {
-			case *gw.GameWebSocketEnvelope_ControlRequest:
+			case *runtimepb.GameWebSocketEnvelope_ControlRequest:
 				msg.ControlRequest = p.ControlRequest
-			case *gw.GameWebSocketEnvelope_Ping:
+			case *runtimepb.GameWebSocketEnvelope_Ping:
 				msg.Ping = p.Ping
-			case *gw.GameWebSocketEnvelope_Error:
+			case *runtimepb.GameWebSocketEnvelope_Error:
 				msg.Error = p.Error
 			default:
 				log.Warnf("transport", "ignoring message type %T", env.Payload)

@@ -16,7 +16,7 @@
     connectedAt: '',
     sessionName: '',
     sessionType: '',
-    gatewayId: '',
+    runtimeId: '',
     streamingStartedAt: '',
     sessionServiceState: 'unknown',
     sessionServiceError: '',
@@ -227,8 +227,8 @@
         <span class="value">{status.sessionType}</span>
       </div>
       <div class="info-row">
-        <span class="label">Gateway</span>
-        <span class="value mono">{status.gatewayId}</span>
+        <span class="label">Runtime</span>
+        <span class="value mono">{status.runtimeId}</span>
       </div>
     </div>
   {/if}
@@ -273,7 +273,7 @@
           <td class="mono">{session.name}</td>
           <td>{session.type}</td>
           <td>{session.status}</td>
-          <td class="mono">{session.gatewayId}</td>
+          <td class="mono">{session.runtimeId}</td>
           <td>{session.createTime?.slice(0, 10)}</td>
           <td class="actions-cell">
             <button on:click={() => handleConnect(session)} disabled={isConnected && status.sessionName === session.name}>连接</button>

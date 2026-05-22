@@ -59,7 +59,7 @@ go_unittest(
     embed = [":session"],
     deps = [
         "//projects/game/session/domain",
-        "//projects/game/session/runtime/gateway",
+        "//projects/game/session/runtime/runtimeclient",
         "//projects/game/session/runtime/storage",
         "//projects/game/session/service",
         "@org_golang_google_grpc//codes",

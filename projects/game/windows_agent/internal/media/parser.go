@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"dominion/projects/game/gateway/domain"
+	"dominion/projects/game/runtime/domain"
 
 	"github.com/Eyevinn/mp4ff/avc"
 	"github.com/Eyevinn/mp4ff/mp4"

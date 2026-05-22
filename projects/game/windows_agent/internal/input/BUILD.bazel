@@ -15,12 +15,12 @@ go_library(
     ],
     importpath = "dominion/projects/game/windows_agent/internal/input",
     visibility = ["//projects/game/windows_agent:__subpackages__"],
-    deps = ["//projects/game/gateway"],
+    deps = ["//projects/game/runtime"],
 )
 
 go_unittest(
     name = "input_test",
     srcs = ["manager_test.go"],
     embed = [":input"],
-    deps = ["//projects/game/gateway"],
+    deps = ["//projects/game/runtime"],
 )

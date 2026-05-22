@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/release:defs.bzl", "artifact_image")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/runtime/app/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/otel",
+        "//projects/game/pkg/token",
+        "//projects/game/runtime",
+        "//projects/game/runtime/config",
+        "//projects/game/runtime/domain/sessionmanager",
+        "//projects/game/runtime/service",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    binary = ":cmd",
+    service = "runtime",
+)

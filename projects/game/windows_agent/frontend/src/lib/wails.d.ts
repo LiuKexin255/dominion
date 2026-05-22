@@ -56,7 +56,7 @@ interface Session {
   name: string;
   type: string;
   status: string;
-  gatewayId: string;
+  runtimeId: string;
   agentConnectUrl: string;
   createTime: string;
   updateTime: string;
@@ -78,7 +78,7 @@ interface ScreenshotResult {
   snapshotID: string;
   captureTime: string;
   sessionName: string;
-  gatewayID: string;
+  runtimeID: string;
   error: string;
 }
 
@@ -93,7 +93,7 @@ interface AgentStatus {
   connectedAt: string;
   sessionName: string;
   sessionType: string;
-  gatewayId: string;
+  runtimeId: string;
   streamingStartedAt: string;
   sessionServiceState: string;
   sessionServiceError: string;

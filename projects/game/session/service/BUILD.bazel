@@ -11,7 +11,7 @@ go_library(
         "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game/session/domain",
-        "//projects/game/session/runtime/gateway",
+        "//projects/game/session/runtime/runtimeclient",
         "@io_opentelemetry_go_otel//attribute",
     ],
 )
@@ -22,6 +22,6 @@ go_unittest(
     embed = [":service"],
     deps = [
         "//projects/game/session/domain",
-        "//projects/game/session/runtime/gateway",
+        "//projects/game/session/runtime/runtimeclient",
     ],
 )

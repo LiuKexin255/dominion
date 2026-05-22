@@ -40,7 +40,7 @@ func (a *App) Connect(connectURL string) error {
 		s.SessionID = sessionID
 		s.SessionName = sessionNameFromID(sessionID)
 		s.SessionType = ""
-		s.GatewayID = gatewayHost(connectURL)
+		s.RuntimeID = runtimeHost(connectURL)
 		s.ConnectedAt = startTime
 		s.LastError = ""
 		s.StreamingLastError = ""
@@ -67,7 +67,7 @@ func (a *App) Disconnect() error {
 		s.SessionID = ""
 		s.SessionName = ""
 		s.SessionType = ""
-		s.GatewayID = ""
+		s.RuntimeID = ""
 		s.BoundWindow = nil
 		s.MediaSegCount = 0
 		s.LastError = ""
@@ -167,7 +167,7 @@ func (a *App) ConnectSession(session Session) error {
 		s.SessionID = sessionID
 		s.SessionName = activeSession.Name
 		s.SessionType = activeSession.Type
-		s.GatewayID = activeSession.GatewayID
+		s.RuntimeID = activeSession.RuntimeID
 		s.ConnectedAt = startTime
 		s.LastError = ""
 		s.StreamingLastError = ""
@@ -340,18 +340,18 @@ func (a *App) TakeScreenshot() (ScreenshotResult, error) {
 	parsed, err := url.Parse(session.AgentConnectURL)
 	if err != nil {
 		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "traceId": traceID})
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
+		return ScreenshotResult{SessionName: session.Name, RuntimeID: session.RuntimeID, Error: err.Error()}, err
 	}
 	snapshot, err := a.sc.GetSnapshot(ctx, parsed.Host, session.Name)
 	if err != nil {
 		a.log("error", "take screenshot failed", map[string]string{"error": err.Error(), "session": session.Name, "traceId": traceID})
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: err.Error()}, err
+		return ScreenshotResult{SessionName: session.Name, RuntimeID: session.RuntimeID, Error: err.Error()}, err
 	}
 
 	imageURL := dataURL(snapshot.GetMimeType(), snapshot.GetImage())
 	if imageURL == "" {
 		a.log("error", "take screenshot failed", map[string]string{"error": "snapshot image is empty", "session": session.Name, "traceId": traceID})
-		return ScreenshotResult{SessionName: session.Name, GatewayID: session.GatewayID, Error: "snapshot image is empty"}, fmt.Errorf("snapshot image is empty")
+		return ScreenshotResult{SessionName: session.Name, RuntimeID: session.RuntimeID, Error: "snapshot image is empty"}, fmt.Errorf("snapshot image is empty")
 	}
 
 	a.log("info", "snapshot received", map[string]string{
@@ -373,7 +373,7 @@ func (a *App) TakeScreenshot() (ScreenshotResult, error) {
 		SnapshotID:  snapshot.GetSnapshotId(),
 		CaptureTime: captureTime,
 		SessionName: session.Name,
-		GatewayID:   session.GatewayID,
+		RuntimeID:   session.RuntimeID,
 	}
 	a.log("info", "took screenshot", map[string]string{"name": session.Name, "gateway": sanitizeURL(session.AgentConnectURL), "snapshot": snapshot.GetSnapshotId(), "traceId": traceID})
 	return result, nil
@@ -434,8 +434,7 @@ func convertSession(pb *sessionpb.Session) Session {
 		Name:                pb.GetName(),
 		Type:                pb.GetType().String(),
 		Status:              pb.GetStatus().String(),
-		GatewayID:           pb.GetGatewayId(),
-		AgentConnectURL:     pb.GetAgentConnectUrl(),
+		RuntimeID:           pb.GetOwnerRuntimeId(),
 		ReconnectGeneration: fmt.Sprintf("%d", pb.GetReconnectGeneration()),
 		LastError:           pb.GetLastError(),
 	}
@@ -470,7 +469,7 @@ func sanitizeURL(rawURL string) string {
 	return parsed.Host
 }
 
-func gatewayHost(rawURL string) string {
+func runtimeHost(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return ""

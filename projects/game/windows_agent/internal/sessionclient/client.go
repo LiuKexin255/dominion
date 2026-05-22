@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"dominion/common/gopkg/otel/tracecontext"
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 	session "dominion/projects/game/session"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -98,13 +98,13 @@ func (c *Client) DeleteSession(ctx context.Context, name string) error {
 }
 
 // GetSnapshot fetches the latest game snapshot from the gateway.
-func (c *Client) GetSnapshot(ctx context.Context, gatewayHost, sessionName string) (*gw.GameSnapshot, error) {
+func (c *Client) GetSnapshot(ctx context.Context, gatewayHost, sessionName string) (*runtimepb.GameSnapshot, error) {
 	snapshotURL := fmt.Sprintf("https://%s/v1/%s/game/snapshot", gatewayHost, sessionName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, snapshotURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
-	result := new(gw.GameSnapshot)
+	result := new(runtimepb.GameSnapshot)
 	if err := c.do(req, result); err != nil {
 		return nil, err
 	}

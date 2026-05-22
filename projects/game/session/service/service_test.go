@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"dominion/projects/game/session/domain"
-	"dominion/projects/game/session/runtime/gateway"
+	"dominion/projects/game/session/runtime/runtimeclient"
 )
 
 const testAggregateHost = "game.liukexin.com"
@@ -19,40 +19,40 @@ func TestSessionServiceCreateSession(t *testing.T) {
 		name           string
 		sessionType    domain.SessionType
 		sessionID      string
-		initResult     *gateway.InitResult
+		initResult     *runtimeclient.InitResult
 		initErr        error
 		wantErr        error
 		wantSessionID  string
-		wantGatewayID  string
+		wantRuntimeID  string
 		wantIDNonEmpty bool
 	}{
 		{
 			name:          "happy path with provided session id",
 			sessionType:   domain.TypeSaolei,
 			sessionID:     "session-123",
-			initResult:    &gateway.InitResult{OwnerGatewayID: "gateway-a", OwnerEpoch: 1, Token: "token-abc", ExpiresAt: time.Now().Add(time.Hour)},
+			initResult:    &runtimeclient.InitResult{OwnerRuntimeID: "gateway-a", OwnerEpoch: 1, Token: "token-abc", ExpiresAt: time.Now().Add(time.Hour)},
 			wantSessionID: "session-123",
-			wantGatewayID: "gateway-a",
+			wantRuntimeID: "gateway-a",
 		},
 		{
 			name:           "generates session id when empty",
 			sessionType:    domain.TypeSaolei,
-			initResult:     &gateway.InitResult{OwnerGatewayID: "gateway-b", OwnerEpoch: 1, Token: "token-generated", ExpiresAt: time.Now().Add(time.Hour)},
-			wantGatewayID:  "gateway-b",
+			initResult:     &runtimeclient.InitResult{OwnerRuntimeID: "gateway-b", OwnerEpoch: 1, Token: "token-generated", ExpiresAt: time.Now().Add(time.Hour)},
+			wantRuntimeID:  "gateway-b",
 			wantIDNonEmpty: true,
 		},
 		{
 			name:        "no gateway available",
 			sessionType: domain.TypeSaolei,
-			initErr:     gateway.ErrNoGatewayAvailable,
-			wantErr:     domain.ErrNoGatewayAvailable,
+			initErr:     runtimeclient.ErrNoRuntimeAvailable,
+			wantErr:     domain.ErrNoRuntimeAvailable,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := newFakeRepository()
-			client := &stubGatewayClient{
+			client := &stubRuntimeClient{
 				initResult: tt.initResult,
 				initErr:    tt.initErr,
 			}
@@ -74,10 +74,10 @@ func TestSessionServiceCreateSession(t *testing.T) {
 			if tt.wantIDNonEmpty && session.ID() == "" {
 				t.Fatal("CreateSession() generated empty session ID")
 			}
-			if session.GatewayID() != tt.wantGatewayID {
-				t.Fatalf("CreateSession() gateway ID = %q, want %q", session.GatewayID(), tt.wantGatewayID)
+			if session.OwnerRuntimeID() != tt.wantRuntimeID {
+				t.Fatalf("CreateSession() runtime ID = %q, want %q", session.OwnerRuntimeID(), tt.wantRuntimeID)
 			}
-			if tt.wantGatewayID != "" && session.Token() != tt.initResult.Token {
+			if tt.wantRuntimeID != "" && session.Token() != tt.initResult.Token {
 				t.Fatalf("CreateSession() token = %q, want %q", session.Token(), tt.initResult.Token)
 			}
 
@@ -110,7 +110,7 @@ func TestSessionServiceGetSession(t *testing.T) {
 		}
 
 		repo := newFakeRepository(seed)
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		session, err := svc.GetSession(context.Background(), sessionName("session-1"))
 		if err != nil {
@@ -124,7 +124,7 @@ func TestSessionServiceGetSession(t *testing.T) {
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		_, err := svc.GetSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -139,10 +139,10 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		seed.SetGatewayID("gateway-a")
+		seed.SetOwnerRuntimeID("gateway-a")
 
 		repo := newFakeRepository(seed)
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		if err := svc.DeleteSession(context.Background(), sessionName("session-1")); err != nil {
 			t.Fatalf("DeleteSession() error = %v", err)
@@ -158,7 +158,7 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		err := svc.DeleteSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -170,44 +170,44 @@ func TestSessionServiceDeleteSession(t *testing.T) {
 func TestSessionServiceReconnectSession(t *testing.T) {
 	tests := []struct {
 		name          string
-		seedGatewayID string
+		seedRuntimeID string
 		seedToken     string
-		initResult    *gateway.InitResult
+		initResult    *runtimeclient.InitResult
 		initErr       error
-		refreshResult *gateway.RefreshResult
+		refreshResult *runtimeclient.RefreshResult
 		refreshErr    error
 		wantErr       error
-		wantGatewayID string
+		wantRuntimeID string
 		wantToken     string
 	}{
 		{
 			name:          "reassigns to different gateway",
-			seedGatewayID: "gateway-a",
+			seedRuntimeID: "gateway-a",
 			seedToken:     "old-token",
-			refreshResult: &gateway.RefreshResult{OwnerGatewayID: "gateway-b", OwnerEpoch: 2, ReconnectGeneration: 1, Token: "token-next", ExpiresAt: time.Now().Add(time.Hour)},
-			wantGatewayID: "gateway-b",
+			refreshResult: &runtimeclient.RefreshResult{OwnerRuntimeID: "gateway-b", OwnerEpoch: 2, ReconnectGeneration: 1, Token: "token-next", ExpiresAt: time.Now().Add(time.Hour)},
+			wantRuntimeID: "gateway-b",
 			wantToken:     "token-next",
 		},
 		{
 			name:          "falls back to same gateway when single gateway available",
-			seedGatewayID: "gateway-a",
+			seedRuntimeID: "gateway-a",
 			seedToken:     "old-token",
-			refreshResult: &gateway.RefreshResult{OwnerGatewayID: "gateway-a", OwnerEpoch: 2, ReconnectGeneration: 1, Token: "token-same", ExpiresAt: time.Now().Add(time.Hour)},
-			wantGatewayID: "gateway-a",
+			refreshResult: &runtimeclient.RefreshResult{OwnerRuntimeID: "gateway-a", OwnerEpoch: 2, ReconnectGeneration: 1, Token: "token-same", ExpiresAt: time.Now().Add(time.Hour)},
+			wantRuntimeID: "gateway-a",
 			wantToken:     "token-same",
 		},
 		{
-			name:       "no gateway available for refresh, but init succeeds",
-			refreshErr: errors.New("gateway unreachable"),
-			initResult: &gateway.InitResult{OwnerGatewayID: "gateway-b", Token: "rebuild-token"},
-			wantGatewayID: "gateway-b",
-			wantToken:  "rebuild-token",
+			name:          "no gateway available for refresh, but init succeeds",
+			refreshErr:    errors.New("gateway unreachable"),
+			initResult:    &runtimeclient.InitResult{OwnerRuntimeID: "gateway-b", Token: "rebuild-token"},
+			wantRuntimeID: "gateway-b",
+			wantToken:     "rebuild-token",
 		},
 		{
 			name:       "no gateway available for both refresh and init",
-			refreshErr: gateway.ErrNoGatewayAvailable,
-			initErr:    gateway.ErrNoGatewayAvailable,
-			wantErr:    domain.ErrNoGatewayAvailable,
+			refreshErr: runtimeclient.ErrNoRuntimeAvailable,
+			initErr:    runtimeclient.ErrNoRuntimeAvailable,
+			wantErr:    domain.ErrNoRuntimeAvailable,
 		},
 	}
 
@@ -217,7 +217,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewSession() error = %v", err)
 			}
-			seed.SetGatewayID(tt.seedGatewayID)
+			seed.SetOwnerRuntimeID(tt.seedRuntimeID)
 			seed.SetToken(tt.seedToken)
 			if err := seed.MarkActive(); err != nil {
 				t.Fatalf("MarkActive() error = %v", err)
@@ -227,7 +227,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 			}
 
 			repo := newFakeRepository(seed)
-			client := &stubGatewayClient{
+			client := &stubRuntimeClient{
 				initResult:    tt.initResult,
 				initErr:       tt.initErr,
 				refreshResult: tt.refreshResult,
@@ -247,8 +247,8 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 			if session.Status() != domain.StatusActive {
 				t.Fatalf("ReconnectSession() status = %v, want %v", session.Status(), domain.StatusActive)
 			}
-			if session.GatewayID() != tt.wantGatewayID {
-				t.Fatalf("ReconnectSession() gateway ID = %q, want %q", session.GatewayID(), tt.wantGatewayID)
+			if session.OwnerRuntimeID() != tt.wantRuntimeID {
+				t.Fatalf("ReconnectSession() runtime ID = %q, want %q", session.OwnerRuntimeID(), tt.wantRuntimeID)
 			}
 			if session.Token() != tt.wantToken {
 				t.Fatalf("ReconnectSession() token = %q, want %q", session.Token(), tt.wantToken)
@@ -264,7 +264,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		seed.SetGatewayID("gateway-a")
+		seed.SetOwnerRuntimeID("gateway-a")
 		seed.SetToken("old-token")
 		// Set a specific reconnect generation to verify it gets incremented in fallback
 		seed.SetReconnectGeneration(5)
@@ -276,9 +276,9 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		}
 
 		repo := newFakeRepository(seed)
-		client := &stubGatewayClient{
+		client := &stubRuntimeClient{
 			refreshErr: errors.New("gateway unreachable"),
-			initResult: &gateway.InitResult{OwnerGatewayID: "gateway-b", Token: "rebuild-token"},
+			initResult: &runtimeclient.InitResult{OwnerRuntimeID: "gateway-b", Token: "rebuild-token"},
 		}
 		svc := NewSessionService(repo, client)
 
@@ -302,8 +302,8 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		if session.Token() != "rebuild-token" {
 			t.Fatalf("ReconnectSession() token = %q, want %q", session.Token(), "rebuild-token")
 		}
-		if session.GatewayID() != "gateway-b" {
-			t.Fatalf("ReconnectSession() gateway ID = %q, want %q", session.GatewayID(), "gateway-b")
+		if session.OwnerRuntimeID() != "gateway-b" {
+			t.Fatalf("ReconnectSession() runtime ID = %q, want %q", session.OwnerRuntimeID(), "gateway-b")
 		}
 		if session.ReconnectGeneration() != 6 {
 			t.Fatalf("ReconnectSession() reconnectGen = %d, want 6", session.ReconnectGeneration())
@@ -315,7 +315,7 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		seed.SetGatewayID("gateway-a")
+		seed.SetOwnerRuntimeID("gateway-a")
 		seed.SetToken("old-token")
 		if err := seed.MarkActive(); err != nil {
 			t.Fatalf("MarkActive() error = %v", err)
@@ -325,21 +325,21 @@ func TestSessionServiceReconnectSession(t *testing.T) {
 		}
 
 		repo := newFakeRepository(seed)
-		client := &stubGatewayClient{
+		client := &stubRuntimeClient{
 			refreshErr: errors.New("gateway unreachable"),
-			initErr:    gateway.ErrNoGatewayAvailable,
+			initErr:    runtimeclient.ErrNoRuntimeAvailable,
 		}
 		svc := NewSessionService(repo, client)
 
 		_, err = svc.ReconnectSession(context.Background(), sessionName("session-1"))
-		if !errors.Is(err, domain.ErrNoGatewayAvailable) {
-			t.Fatalf("ReconnectSession() error = %v, want %v", err, domain.ErrNoGatewayAvailable)
+		if !errors.Is(err, domain.ErrNoRuntimeAvailable) {
+			t.Fatalf("ReconnectSession() error = %v, want %v", err, domain.ErrNoRuntimeAvailable)
 		}
 	})
 
 	t.Run("returns not found", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		_, err := svc.ReconnectSession(context.Background(), sessionName("missing"))
 		if !errors.Is(err, domain.ErrNotFound) {
@@ -354,7 +354,7 @@ func TestSessionService_ListSessions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		active.SetGatewayID("gateway-a")
+		active.SetOwnerRuntimeID("gateway-a")
 		if err := active.MarkActive(); err != nil {
 			t.Fatalf("MarkActive() error = %v", err)
 		}
@@ -363,7 +363,7 @@ func TestSessionService_ListSessions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		disconnected.SetGatewayID("gateway-b")
+		disconnected.SetOwnerRuntimeID("gateway-b")
 		if err := disconnected.MarkActive(); err != nil {
 			t.Fatalf("MarkActive() error = %v", err)
 		}
@@ -375,13 +375,13 @@ func TestSessionService_ListSessions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession() error = %v", err)
 		}
-		ended.SetGatewayID("gateway-c")
+		ended.SetOwnerRuntimeID("gateway-c")
 		if err := ended.MarkEnded(); err != nil {
 			t.Fatalf("MarkEnded() error = %v", err)
 		}
 
 		repo := newFakeRepository(active, disconnected, ended)
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		sessions, err := svc.ListSessions(context.Background())
 		if err != nil {
@@ -405,7 +405,7 @@ func TestSessionService_ListSessions(t *testing.T) {
 
 	t.Run("returns nil for empty store", func(t *testing.T) {
 		repo := newFakeRepository()
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		sessions, err := svc.ListSessions(context.Background())
 		if err != nil {
@@ -420,7 +420,7 @@ func TestSessionService_ListSessions(t *testing.T) {
 		listErr := errors.New("list failed")
 		repo := newFakeRepository()
 		repo.listErr = listErr
-		svc := NewSessionService(repo, &stubGatewayClient{})
+		svc := NewSessionService(repo, &stubRuntimeClient{})
 
 		_, err := svc.ListSessions(context.Background())
 		if !errors.Is(err, listErr) {
@@ -439,16 +439,16 @@ type refreshCall struct {
 	oldToken  string
 }
 
-type stubGatewayClient struct {
-	initResult    *gateway.InitResult
+type stubRuntimeClient struct {
+	initResult    *runtimeclient.InitResult
 	initErr       error
 	initCalls     []initCall
-	refreshResult *gateway.RefreshResult
+	refreshResult *runtimeclient.RefreshResult
 	refreshErr    error
 	refreshCalls  []refreshCall
 }
 
-func (s *stubGatewayClient) InitGameRuntime(_ context.Context, sessionID string, reconnectGeneration int64) (*gateway.InitResult, error) {
+func (s *stubRuntimeClient) InitGameRuntime(_ context.Context, sessionID string, reconnectGeneration int64) (*runtimeclient.InitResult, error) {
 	s.initCalls = append(s.initCalls, initCall{sessionID: sessionID, reconnectGeneration: reconnectGeneration})
 	if s.initErr != nil {
 		return nil, s.initErr
@@ -456,7 +456,7 @@ func (s *stubGatewayClient) InitGameRuntime(_ context.Context, sessionID string,
 	return s.initResult, nil
 }
 
-func (s *stubGatewayClient) RefreshGameRuntime(_ context.Context, sessionID string, oldToken string) (*gateway.RefreshResult, error) {
+func (s *stubRuntimeClient) RefreshGameRuntime(_ context.Context, sessionID string, oldToken string) (*runtimeclient.RefreshResult, error) {
 	s.refreshCalls = append(s.refreshCalls, refreshCall{sessionID: sessionID, oldToken: oldToken})
 	if s.refreshErr != nil {
 		return nil, s.refreshErr

@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 	"dominion/projects/game/windows_agent/internal/input"
 )
 
 // handleControlRequest validates, acknowledges, executes, and reports one
 // gateway control request.
-func (r *Runtime) handleControlRequest(req *gw.GameControlRequest) error {
+func (r *Runtime) handleControlRequest(req *runtimepb.GameControlRequest) error {
 	if req == nil {
 		return fmt.Errorf("control request is nil")
 	}
@@ -23,8 +23,8 @@ func (r *Runtime) handleControlRequest(req *gw.GameControlRequest) error {
 	}
 	operationID := req.GetOperationId()
 
-	if err := gw.ValidateControlRequest(req); err != nil {
-		_ = r.transport.SendControlResult(r.ctx, session.ID, operationID, gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED)
+	if err := runtimepb.ValidateControlRequest(req); err != nil {
+		_ = r.transport.SendControlResult(r.ctx, session.ID, operationID, runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED)
 		return err
 	}
 
@@ -36,16 +36,16 @@ func (r *Runtime) handleControlRequest(req *gw.GameControlRequest) error {
 	boundWindow := r.boundWindow
 	r.mu.RUnlock()
 	if boundWindow == nil {
-		return r.transport.SendControlResult(r.ctx, session.ID, operationID, gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED)
+		return r.transport.SendControlResult(r.ctx, session.ID, operationID, runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED)
 	}
 
 	cmd, err := commandFromAction(req, boundWindow.HWND)
 	if err == nil {
 		_, err = r.inputMgr.ExecuteCommand(context.Background(), cmd)
 	}
-	status := gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED
+	status := runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED
 	if err != nil {
-		status = gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED
+		status = runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_FAILED
 	}
 	if sendErr := r.transport.SendControlResult(r.ctx, session.ID, operationID, status); sendErr != nil {
 		return sendErr
@@ -53,17 +53,17 @@ func (r *Runtime) handleControlRequest(req *gw.GameControlRequest) error {
 	return err
 }
 
-func commandFromAction(req *gw.GameControlRequest, hwnd uintptr) (input.Command, error) {
+func commandFromAction(req *runtimepb.GameControlRequest, hwnd uintptr) (input.Command, error) {
 	switch action := req.Action.(type) {
-	case *gw.GameControlRequest_MouseClick:
+	case *runtimepb.GameControlRequest_MouseClick:
 		return input.CommandFromMouseClick(action.MouseClick, hwnd)
-	case *gw.GameControlRequest_MouseDoubleClick:
+	case *runtimepb.GameControlRequest_MouseDoubleClick:
 		return input.CommandFromMouseDoubleClick(action.MouseDoubleClick, hwnd)
-	case *gw.GameControlRequest_MouseDrag:
+	case *runtimepb.GameControlRequest_MouseDrag:
 		return input.CommandFromMouseDrag(action.MouseDrag, hwnd)
-	case *gw.GameControlRequest_MouseHover:
+	case *runtimepb.GameControlRequest_MouseHover:
 		return input.CommandFromMouseHover(action.MouseHover, hwnd)
-	case *gw.GameControlRequest_MouseHold:
+	case *runtimepb.GameControlRequest_MouseHold:
 		return input.CommandFromMouseHold(action.MouseHold, hwnd)
 	default:
 		return input.Command{}, fmt.Errorf("unsupported action type")

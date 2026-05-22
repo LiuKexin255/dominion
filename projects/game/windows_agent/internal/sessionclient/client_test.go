@@ -20,8 +20,7 @@ func TestClientMethods(t *testing.T) {
 		Name:                "sessions/abc123",
 		Type:                session.SessionType_SESSION_TYPE_SAOLEI,
 		Status:              session.SessionStatus_SESSION_STATUS_ACTIVE,
-		GatewayId:           "gateway-1",
-		AgentConnectUrl:     "wss://gateway.test/v1/sessions/abc123/game/connect",
+		OwnerRuntimeId:      "runtime-1",
 		ReconnectGeneration: 2,
 	}
 

@@ -5,7 +5,7 @@ package input
 import (
 	"fmt"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 )
 
 // IMPORTANT: These types MUST exactly match the helper's protocol defined in:
@@ -58,7 +58,7 @@ type Command struct {
 const MaxHoldDurationMS = 30000
 
 // CommandFromMouseClick converts a proto GameMouseClick to an input Command.
-func CommandFromMouseClick(click *gw.GameMouseClick, hwnd uintptr) (Command, error) {
+func CommandFromMouseClick(click *runtimepb.GameMouseClick, hwnd uintptr) (Command, error) {
 	if click == nil {
 		return Command{}, fmt.Errorf("mouse click is nil")
 	}
@@ -83,7 +83,7 @@ func CommandFromMouseClick(click *gw.GameMouseClick, hwnd uintptr) (Command, err
 }
 
 // CommandFromMouseDoubleClick converts a proto GameMouseDoubleClick to an input Command.
-func CommandFromMouseDoubleClick(dc *gw.GameMouseDoubleClick, hwnd uintptr) (Command, error) {
+func CommandFromMouseDoubleClick(dc *runtimepb.GameMouseDoubleClick, hwnd uintptr) (Command, error) {
 	if dc == nil {
 		return Command{}, fmt.Errorf("mouse double click is nil")
 	}
@@ -108,7 +108,7 @@ func CommandFromMouseDoubleClick(dc *gw.GameMouseDoubleClick, hwnd uintptr) (Com
 }
 
 // CommandFromMouseDrag converts a proto GameMouseDrag to an input Command.
-func CommandFromMouseDrag(drag *gw.GameMouseDrag, hwnd uintptr) (Command, error) {
+func CommandFromMouseDrag(drag *runtimepb.GameMouseDrag, hwnd uintptr) (Command, error) {
 	if drag == nil {
 		return Command{}, fmt.Errorf("mouse drag is nil")
 	}
@@ -142,7 +142,7 @@ func CommandFromMouseDrag(drag *gw.GameMouseDrag, hwnd uintptr) (Command, error)
 }
 
 // CommandFromMouseHover converts a proto GameMouseHover to an input Command.
-func CommandFromMouseHover(hover *gw.GameMouseHover, hwnd uintptr) (Command, error) {
+func CommandFromMouseHover(hover *runtimepb.GameMouseHover, hwnd uintptr) (Command, error) {
 	if hover == nil {
 		return Command{}, fmt.Errorf("mouse hover is nil")
 	}
@@ -162,7 +162,7 @@ func CommandFromMouseHover(hover *gw.GameMouseHover, hwnd uintptr) (Command, err
 }
 
 // CommandFromMouseHold converts a proto GameMouseHold to an input Command.
-func CommandFromMouseHold(hold *gw.GameMouseHold, hwnd uintptr) (Command, error) {
+func CommandFromMouseHold(hold *runtimepb.GameMouseHold, hwnd uintptr) (Command, error) {
 	if hold == nil {
 		return Command{}, fmt.Errorf("mouse hold is nil")
 	}
@@ -195,13 +195,13 @@ func CommandFromMouseHold(hold *gw.GameMouseHold, hwnd uintptr) (Command, error)
 }
 
 // protoMouseButton converts a proto GameMouseButton to an input Button.
-func protoMouseButton(button gw.GameMouseButton) (Button, error) {
+func protoMouseButton(button runtimepb.GameMouseButton) (Button, error) {
 	switch button {
-	case gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT:
+	case runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT:
 		return ButtonLeft, nil
-	case gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT:
+	case runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT:
 		return ButtonRight, nil
-	case gw.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE:
+	case runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE:
 		return ButtonMiddle, nil
 	default:
 		return "", fmt.Errorf("unsupported mouse button: %v", button)

@@ -6,7 +6,7 @@ type Session struct {
 	Name                string `json:"name"`
 	Type                string `json:"type"`
 	Status              string `json:"status"`
-	GatewayID           string `json:"gatewayId"`
+	RuntimeID           string `json:"runtimeId"`
 	AgentConnectURL     string `json:"agentConnectUrl"`
 	CreateTime          string `json:"createTime"`
 	UpdateTime          string `json:"updateTime"`
@@ -21,6 +21,6 @@ type ScreenshotResult struct {
 	SnapshotID  string `json:"snapshotID"`
 	CaptureTime string `json:"captureTime"`
 	SessionName string `json:"sessionName"`
-	GatewayID   string `json:"gatewayID"`
+	RuntimeID   string `json:"runtimeID"`
 	Error       string `json:"error"`
 }

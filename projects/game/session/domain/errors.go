@@ -19,6 +19,6 @@ var (
 	// ErrSessionEnded indicates that the session has already ended.
 	ErrSessionEnded = errors.New("session already ended")
 
-	// ErrNoGatewayAvailable indicates that no gateway can be allocated.
-	ErrNoGatewayAvailable = errors.New("no gateway available")
+	// ErrNoRuntimeAvailable indicates that no runtime can be allocated.
+	ErrNoRuntimeAvailable = errors.New("no runtime available")
 )

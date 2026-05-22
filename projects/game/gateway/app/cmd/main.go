@@ -1,9 +1,19 @@
+// Package main is the entry point for the game gateway edge proxy.
+//
+// The gateway is a pure edge aggregation layer that:
+//  1. Registers grpc-gateway handlers for session and runtime proto services,
+//     forwarding to their respective gRPC backends.
+//  2. Proxies WebSocket upgrade requests to the owner runtime instance based
+//     on the owner_runtime_id extracted from the session token.
+//
+// The gateway does NOT hold any runtime domain, service, or WebSocket handler
+// code. It does NOT verify tokens, issue tokens, cache auth results,
+// or make routing decisions based on business semantics.
 package main
 
 import (
 	"context"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -11,15 +21,16 @@ import (
 
 	"dominion/common/gopkg/bootstrap"
 	grpcpkg "dominion/common/gopkg/grpc"
+	solver "dominion/common/gopkg/grpc/solver"
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/otel"
-	gateway "dominion/projects/game/gateway"
 	"dominion/projects/game/gateway/app"
 	"dominion/projects/game/gateway/config"
-	"dominion/projects/game/gateway/domain/sessionmanager"
 	"dominion/projects/game/gateway/runtime/owner"
-	"dominion/projects/game/gateway/service"
-	"dominion/projects/game/gateway/domain/token"
+	gameconst "dominion/projects/game/pkg/const"
+	"dominion/projects/game/pkg/token"
+	runtimepb "dominion/projects/game/runtime"
+	sessionpb "dominion/projects/game/session"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -34,63 +45,62 @@ const (
 func main() {
 	httpPort := envOrDefault(envHTTPPort, defaultHTTPListenAddr)
 
-	cfg := loadOwnerConfig()
+	cfg := config.NewGatewayConfig()
+	cfg.HTTPPort = httpPort
 
-	signer := token.NewHMACSigner(cfg.TokenSecret, cfg.TokenTTL)
-	sessions := sessionmanager.NewManager(cfg.GatewayID, sessionmanager.WithIdleTTL(cfg.IdleTTL))
-	control := service.NewControlExecutor()
-	svc := service.NewGatewayService(sessions, control, cfg, signer, signer)
-	handler := gateway.NewHandler(svc, signer)
-	runtimeHandler := gateway.NewGameRuntimeHandler(svc)
-
-	publicMux := runtime.NewServeMux(grpcpkg.GatewayDefault()...)
-	gateway.RegisterGameGatewayServiceHandlerServer(context.Background(), publicMux, handler)
-
-	ownerRouter, err := owner.NewRouter(cfg.GatewayID)
+	// Create gRPC client connections to backend services.
+	sessionConn, err := grpc.NewClient(solver.URI(gameconst.TargetSessionGRPC), grpcpkg.ClientDefault()...)
 	if err != nil {
-		log.Fatalf("create owner router: %v", err)
+		log.Fatalf("create session gRPC client: %v", err)
 	}
 
-	wsHandler := gateway.NewWebSocketHandler(svc)
+	runtimeConn, err := grpc.NewClient(solver.URI(gameconst.TargetRuntimeGRPC), grpcpkg.ClientDefault()...)
+	if err != nil {
+		log.Fatalf("create runtime gRPC client: %v", err)
+	}
+
+	// Create grpc-gateway mux and register backend handlers.
+	// The mux translates HTTP+JSON requests to gRPC and forwards them
+	// to the session and runtime gRPC backends.
+	publicMux := runtime.NewServeMux(grpcpkg.GatewayDefault()...)
+	if err := sessionpb.RegisterSessionServiceHandler(context.Background(), publicMux, sessionConn); err != nil {
+		log.Fatalf("register session service handler: %v", err)
+	}
+	if err := runtimepb.RegisterGameGatewayServiceHandler(context.Background(), publicMux, runtimeConn); err != nil {
+		log.Fatalf("register game gateway service handler: %v", err)
+	}
+
+	// Create owner resolver for WebSocket proxy routing.
+	ownerResolver, err := owner.NewResolver()
+	if err != nil {
+		log.Fatalf("create owner resolver: %v", err)
+	}
+
+	// OwnerExtractor parses routing claims from tokens without verification.
+	// The HMACSigner's ParseRoutingClaims method does not use the secret,
+	// so a dummy value is safe. Only ParseRoutingClaims is called.
+	ownerExtractor := token.NewHMACSigner("", 0)
 
 	router := &app.Router{
-		WSHandler:     phttp.Handler(wsHandler, "GET /v1/sessions/{id}/game/connect"),
-		GRPCMux:       phttp.Handler(publicMux, "gateway-http"),
-		OwnerRouter:   ownerRouter,
-		TokenVerifier: signer,
-	}
-	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
-
-	internalGRPCServer := grpc.NewServer(grpcpkg.ServiceDefault()...)
-	gateway.RegisterGameRuntimeServiceServer(internalGRPCServer, runtimeHandler)
-
-	internalListener, err := net.Listen("tcp", normalizeListenAddr(cfg.InternalGRPCPort))
-	if err != nil {
-		log.Fatalf("create internal gRPC listener: %v", err)
+		GRPCMux:        phttp.Handler(publicMux, "gateway-http"),
+		OwnerResolver:  ownerResolver,
+		OwnerExtractor: ownerExtractor,
 	}
 
-	cleanupWorker := sessions.StartCleanup()
-	completionWorker := svc.StartCompletionWorker()
-	routingWorker := wsHandler.StartRoutingWorker()
+	httpServer := &http.Server{Addr: normalizeListenAddr(cfg.HTTPPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
 	if err := bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/game/gateway"))); err != nil {
 		log.Fatalf("register otel: %v", err)
 	}
 	if err := bs.Register(bootstrap.HTTPServer("gateway-http", httpServer)); err != nil {
-		log.Fatalf("register gateway server: %v", err)
+		log.Fatalf("register gateway http server: %v", err)
 	}
-	if err := bs.Register(bootstrap.GRPCServer("gateway-internal-grpc", internalGRPCServer, internalListener)); err != nil {
-		log.Fatalf("register internal gRPC server: %v", err)
+	if err := bs.Register(bootstrap.GRPCConn("session-grpc-client", sessionConn)); err != nil {
+		log.Fatalf("register session gRPC client: %v", err)
 	}
-	if err := bs.Register(bootstrap.Daemon("gateway-idle-cleanup", cleanupWorker)); err != nil {
-		log.Fatalf("register cleanup worker: %v", err)
-	}
-	if err := bs.Register(bootstrap.Daemon("gateway-completion", completionWorker)); err != nil {
-		log.Fatalf("register completion worker: %v", err)
-	}
-	if err := bs.Register(bootstrap.Daemon("gateway-routing", routingWorker)); err != nil {
-		log.Fatalf("register routing worker: %v", err)
+	if err := bs.Register(bootstrap.GRPCConn("runtime-grpc-client", runtimeConn)); err != nil {
+		log.Fatalf("register runtime gRPC client: %v", err)
 	}
 	if err := bs.Run(context.Background()); err != nil {
 		log.Fatalf("run gateway: %v", err)
@@ -111,39 +121,4 @@ func normalizeListenAddr(value string) string {
 	}
 
 	return ":" + value
-}
-
-func loadOwnerConfig() *config.OwnerConfig {
-	gatewayID := strings.TrimSpace(os.Getenv("HOSTNAME"))
-	if gatewayID == "" {
-		log.Fatal("missing required environment variable HOSTNAME")
-	}
-
-	tokenSecret := strings.TrimSpace(os.Getenv("SESSION_TOKEN_SECRET"))
-	if tokenSecret == "" {
-		log.Fatal("missing required environment variable SESSION_TOKEN_SECRET")
-	}
-
-	cfg := config.NewOwnerConfig(gatewayID, tokenSecret)
-
-	if v := os.Getenv("SESSION_TOKEN_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.TokenTTL = d
-		}
-	}
-	if v := os.Getenv("SESSION_TOKEN_REFRESH_GRACE"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.TokenRefreshGrace = d
-		}
-	}
-	if v := os.Getenv("SESSION_IDLE_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.IdleTTL = d
-		}
-	}
-	if v := os.Getenv("INTERNAL_GRPC_PORT"); v != "" {
-		cfg.InternalGRPCPort = v
-	}
-
-	return cfg
 }

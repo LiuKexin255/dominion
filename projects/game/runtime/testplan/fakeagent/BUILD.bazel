@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "fakeagent",
+    srcs = ["agent.go"],
+    importpath = "dominion/projects/game/runtime/testplan/fakeagent",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/runtime",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

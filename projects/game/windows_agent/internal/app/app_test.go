@@ -469,7 +469,7 @@ func TestConnectSession(t *testing.T) {
 				}
 				return tt.reconnectCode, tt.reconnectBody
 			})
-			session := Session{Name: "sessions/s-1", Type: "desktop", GatewayID: "gw-1", AgentConnectURL: "wss://gateway.test/v1/sessions/s-1/game/connect?token=old"}
+			session := Session{Name: "sessions/s-1", Type: "desktop", RuntimeID: "gw-1", AgentConnectURL: "wss://gateway.test/v1/sessions/s-1/game/connect?token=old"}
 
 			// when
 			err := a.ConnectSession(session)
@@ -672,9 +672,9 @@ func TestTakeScreenshot(t *testing.T) {
 		wantURL    string
 		wantErr    bool
 	}{
-		{name: "success", session: &Session{Name: "sessions/s-1", GatewayID: "gw-1"}, statusCode: http.StatusOK, body: `{"snapshotId":"snap-1","mimeType":"image/png","image":"aW1n","captureTime":"2026-01-01T00:00:00Z"}`, wantURL: "data:image/png;base64,aW1n"},
+		{name: "success", session: &Session{Name: "sessions/s-1", RuntimeID: "gw-1"}, statusCode: http.StatusOK, body: `{"snapshotId":"snap-1","mimeType":"image/png","image":"aW1n","captureTime":"2026-01-01T00:00:00Z"}`, wantURL: "data:image/png;base64,aW1n"},
 		{name: "no active session", wantErr: true},
-		{name: "gateway error", session: &Session{Name: "sessions/s-1", GatewayID: "gw-1"}, statusCode: http.StatusBadGateway, body: `bad gateway`, wantErr: true},
+		{name: "gateway error", session: &Session{Name: "sessions/s-1", RuntimeID: "gw-1"}, statusCode: http.StatusBadGateway, body: `bad gateway`, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -11,7 +11,7 @@ go_library(
     visibility = ["//projects/game/windows_agent:__subpackages__"],
     deps = [
         "//common/gopkg/otel/tracecontext",
-        "//projects/game/gateway",
+        "//projects/game/runtime",
         "//projects/game/session",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",

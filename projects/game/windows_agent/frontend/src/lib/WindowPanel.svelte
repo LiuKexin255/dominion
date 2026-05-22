@@ -14,7 +14,7 @@
     connectedAt: '',
     sessionName: '',
     sessionType: '',
-    gatewayId: '',
+    runtimeId: '',
     streamingStartedAt: ''
   };
   let actionLoading = false;

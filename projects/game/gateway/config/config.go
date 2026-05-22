@@ -1,28 +1,17 @@
+// Package config holds the minimal configuration for the game gateway edge proxy.
 package config
 
-import "time"
-
-// OwnerConfig holds the identity, token signing, and session lifecycle
-// configuration for a gateway instance.
-type OwnerConfig struct {
-	GatewayID         string
-	TokenSecret       string
-	TokenTTL          time.Duration
-	TokenRefreshGrace time.Duration
-	IdleTTL           time.Duration
-	InternalGRPCPort  string
+// GatewayConfig holds the HTTP server configuration for the gateway edge proxy.
+// The gateway is stateless and does NOT hold token secrets, session state,
+// or runtime ownership configuration.
+type GatewayConfig struct {
+	HTTPPort string
 }
 
-// NewOwnerConfig creates an OwnerConfig with the given required parameters
-// and sensible defaults for optional fields. This constructor does NOT read
-// environment variables — the caller is responsible for providing values.
-func NewOwnerConfig(gatewayID, tokenSecret string) *OwnerConfig {
-	return &OwnerConfig{
-		GatewayID:         gatewayID,
-		TokenSecret:       tokenSecret,
-		TokenTTL:          15 * time.Minute,
-		TokenRefreshGrace: 60 * time.Minute,
-		IdleTTL:           30 * time.Minute,
-		InternalGRPCPort:  ":8082",
+// NewGatewayConfig creates a GatewayConfig with sensible defaults.
+// The caller may override individual fields after construction.
+func NewGatewayConfig() *GatewayConfig {
+	return &GatewayConfig{
+		HTTPPort: ":8080",
 	}
 }

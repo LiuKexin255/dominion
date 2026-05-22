@@ -154,7 +154,7 @@ func toProtoSession(session *domain.Session) *Session {
 		Name:                sessionResourcePrefix + session.ID(),
 		Type:                toProtoSessionType(session.Type()),
 		Status:              toProtoSessionStatus(session.Status()),
-		GatewayId:           session.GatewayID(),
+		OwnerRuntimeId:      session.OwnerRuntimeID(),
 		CreateTime:          timestamppb.New(session.CreatedAt()),
 		UpdateTime:          timestamppb.New(session.UpdatedAt()),
 		EndTime:             toProtoTimestampPtr(session.EndedAt()),
@@ -222,7 +222,7 @@ func toStatusError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrInvalidType):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, domain.ErrNoGatewayAvailable):
+	case errors.Is(err, domain.ErrNoRuntimeAvailable):
 		return status.Error(codes.Internal, err.Error())
 	case errors.Is(err, domain.ErrSessionEnded):
 		return status.Error(codes.FailedPrecondition, err.Error())

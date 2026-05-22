@@ -26,7 +26,7 @@ const (
 	mongoFieldName                = "name"
 	mongoFieldType                = "type"
 	mongoFieldStatus              = "status"
-	mongoFieldGatewayID           = "gateway_id"
+	mongoFieldOwnerRuntimeID      = "owner_runtime_id"
 	mongoFieldToken               = "token"
 	mongoFieldCreatedAt           = "created_at"
 	mongoFieldUpdatedAt           = "updated_at"
@@ -101,7 +101,7 @@ type mongoSession struct {
 	Name                string             `bson:"name"`
 	Type                int32              `bson:"type"`
 	Status              int32              `bson:"status"`
-	GatewayID           string             `bson:"gateway_id"`
+	OwnerRuntimeID      string             `bson:"owner_runtime_id"`
 	Token               string             `bson:"token,omitempty"`
 	CreatedAt           time.Time          `bson:"created_at"`
 	UpdatedAt           time.Time          `bson:"updated_at"`
@@ -259,7 +259,7 @@ func (m *mongoSession) toDomain() (*domain.Session, error) {
 		ID:                  sessionIDFromName(m.Name),
 		Type:                domain.SessionType(m.Type),
 		Status:              domain.SessionStatus(m.Status),
-		GatewayID:           m.GatewayID,
+		OwnerRuntimeID:      m.OwnerRuntimeID,
 		Token:               m.Token,
 		CreatedAt:           m.CreatedAt,
 		UpdatedAt:           m.UpdatedAt,
@@ -275,7 +275,7 @@ func toMongoSession(session *domain.Session) mongoSession {
 		Name:                sessionName(snapshot.ID),
 		Type:                int32(snapshot.Type),
 		Status:              int32(snapshot.Status),
-		GatewayID:           snapshot.GatewayID,
+		OwnerRuntimeID:      snapshot.OwnerRuntimeID,
 		Token:               snapshot.Token,
 		CreatedAt:           snapshot.CreatedAt,
 		UpdatedAt:           snapshot.UpdatedAt,
@@ -288,7 +288,7 @@ func toMongoSession(session *domain.Session) mongoSession {
 func (m *mongoSession) updateDocument() bson.M {
 	return bson.M{
 		mongoFieldStatus:              m.Status,
-		mongoFieldGatewayID:           m.GatewayID,
+		mongoFieldOwnerRuntimeID:      m.OwnerRuntimeID,
 		mongoFieldToken:               m.Token,
 		mongoFieldUpdatedAt:           m.UpdatedAt,
 		mongoFieldEndedAt:             m.EndedAt,

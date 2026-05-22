@@ -36,7 +36,7 @@ type AgentStatus struct {
 	ConnectedAt        string        `json:"connectedAt"`
 	SessionName        string        `json:"sessionName"`
 	SessionType        string        `json:"sessionType"`
-	GatewayID          string        `json:"gatewayId"`
+	RuntimeID          string        `json:"runtimeId"`
 	StreamingStartedAt string        `json:"streamingStartedAt"`
 
 	// SessionServiceState reflects the reachability of the session service API.

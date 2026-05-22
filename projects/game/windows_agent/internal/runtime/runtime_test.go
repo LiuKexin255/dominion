@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 	"dominion/projects/game/windows_agent/internal/encoder"
 	"dominion/projects/game/windows_agent/internal/input"
 	"dominion/projects/game/windows_agent/internal/media"
@@ -210,11 +210,11 @@ func TestControlFlow(t *testing.T) {
 	r.inputMgr = fi
 	r.session = &Session{ID: "session-1"}
 	r.boundWindow = &window.WindowInfo{HWND: 100}
-	req := &gw.GameControlRequest{
+	req := &runtimepb.GameControlRequest{
 		OperationId: "op-1",
-		Action: &gw.GameControlRequest_MouseClick{
-			MouseClick: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+		Action: &runtimepb.GameControlRequest_MouseClick{
+			MouseClick: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      10,
 				Y:      20,
 			},
@@ -246,11 +246,11 @@ func TestReadLoopRouting(t *testing.T) {
 	}{
 		{
 			name: "control request sends ack and result",
-			msg: transport.InboundMessage{ControlRequest: &gw.GameControlRequest{
+			msg: transport.InboundMessage{ControlRequest: &runtimepb.GameControlRequest{
 				OperationId: "op-1",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				Action: &runtimepb.GameControlRequest_MouseClick{
+					MouseClick: &runtimepb.GameMouseClick{
+						Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 						X:      10,
 						Y:      20,
 					},
@@ -265,14 +265,14 @@ func TestReadLoopRouting(t *testing.T) {
 		},
 		{
 			name:       "ping sends pong",
-			msg:        transport.InboundMessage{Ping: &gw.GamePing{Nonce: "nonce-1"}},
+			msg:        transport.InboundMessage{Ping: &runtimepb.GamePing{Nonce: "nonce-1"}},
 			setup:      func(r *Runtime) { r.session = &Session{ID: "session-1"} },
 			wantEvents: []string{"pong:nonce-1"},
 			wantConn:   ConnDisconnected,
 		},
 		{
 			name:     "gateway error sets runtime error state",
-			msg:      transport.InboundMessage{Error: &gw.GameError{Code: "gateway_error", Message: "boom"}},
+			msg:      transport.InboundMessage{Error: &runtimepb.GameError{Code: "gateway_error", Message: "boom"}},
 			wantConn: ConnDisconnected,
 		},
 	}
@@ -499,7 +499,7 @@ func (f *fakeTransport) SendControlAck(_ context.Context, _ string, operationID 
 	f.addEvent("control_ack:" + operationID)
 	return nil
 }
-func (f *fakeTransport) SendControlResult(_ context.Context, _ string, operationID string, status gw.GameControlResultStatus) error {
+func (f *fakeTransport) SendControlResult(_ context.Context, _ string, operationID string, status runtimepb.GameControlResultStatus) error {
 	f.addEvent(fmt.Sprintf("control_result:%s:%s", operationID, status.String()))
 	return nil
 }

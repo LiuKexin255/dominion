@@ -7,7 +7,7 @@ go_library(
     importpath = "dominion/projects/game/windows_agent/internal/media",
     visibility = ["//visibility:public"],
     deps = [
-        "//projects/game/gateway/domain",
+        "//projects/game/runtime/domain",
         "@com_github_eyevinn_mp4ff//avc",
         "@com_github_eyevinn_mp4ff//mp4",
     ],

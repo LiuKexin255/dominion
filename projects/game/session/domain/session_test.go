@@ -373,7 +373,7 @@ func TestSessionGetters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	session.SetGatewayID("gw-1")
+	session.SetOwnerRuntimeID("gw-1")
 	session.SetToken("token-xyz")
 	session.SetReconnectGeneration(3)
 
@@ -383,8 +383,8 @@ func TestSessionGetters(t *testing.T) {
 	if session.Token() != "token-xyz" {
 		t.Fatalf("Token() = %q, want %q", session.Token(), "token-xyz")
 	}
-	if session.GatewayID() != "gw-1" {
-		t.Fatalf("GatewayID() = %q, want %q", session.GatewayID(), "gw-1")
+	if session.OwnerRuntimeID() != "gw-1" {
+		t.Fatalf("OwnerRuntimeID() = %q, want %q", session.OwnerRuntimeID(), "gw-1")
 	}
 	if session.Status() != StatusPending {
 		t.Fatalf("Status() = %v, want %v", session.Status(), StatusPending)
@@ -398,15 +398,15 @@ func TestNewGetters(t *testing.T) {
 	now := time.Now().UTC()
 	endedAt := now.Add(-time.Hour)
 	session := &Session{
-		id:          "getter-test",
-		sessionType: TypeSaolei,
-		status:      StatusActive,
-		gatewayID:   "gw-1",
-		token:       "tok-1",
-		createdAt:   now,
-		updatedAt:   now,
-		endedAt:     &endedAt,
-		lastError:   "something went wrong",
+		id:             "getter-test",
+		sessionType:    TypeSaolei,
+		status:         StatusActive,
+		ownerRuntimeID: "gw-1",
+		token:          "tok-1",
+		createdAt:      now,
+		updatedAt:      now,
+		endedAt:        &endedAt,
+		lastError:      "something went wrong",
 	}
 
 	if session.Type() != TypeSaolei {
@@ -431,7 +431,7 @@ func TestSnapshotRehydrateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
 	}
-	original.SetGatewayID("gw-1")
+	original.SetOwnerRuntimeID("gw-1")
 	original.SetToken("round-trip-token")
 	original.SetReconnectGeneration(2)
 	if err := original.MarkActive(); err != nil {
@@ -474,7 +474,7 @@ func Test_Rehydrate(t *testing.T) {
 		ID:                  "test-id",
 		Type:                TypeSaolei,
 		Status:              StatusActive,
-		GatewayID:           "gw-1",
+		OwnerRuntimeID:      "gw-1",
 		Token:               "rehydrate-token",
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -498,8 +498,8 @@ func Test_Rehydrate(t *testing.T) {
 	if got.Status != snapshot.Status {
 		t.Fatalf("Status = %v, want %v", got.Status, snapshot.Status)
 	}
-	if got.GatewayID != snapshot.GatewayID {
-		t.Fatalf("GatewayID = %q, want %q", got.GatewayID, snapshot.GatewayID)
+	if got.OwnerRuntimeID != snapshot.OwnerRuntimeID {
+		t.Fatalf("OwnerRuntimeID = %q, want %q", got.OwnerRuntimeID, snapshot.OwnerRuntimeID)
 	}
 	if got.Token != snapshot.Token {
 		t.Fatalf("Token = %q, want %q", got.Token, snapshot.Token)

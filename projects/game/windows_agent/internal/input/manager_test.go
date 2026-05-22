@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 )
 
 func TestCommandFromMouseClick(t *testing.T) {
@@ -13,14 +13,14 @@ func TestCommandFromMouseClick(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		click   *gw.GameMouseClick
+		click   *runtimepb.GameMouseClick
 		want    Command
 		wantErr bool
 	}{
 		{
 			name: "left click",
-			click: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			click: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      100,
 				Y:      200,
 			},
@@ -34,8 +34,8 @@ func TestCommandFromMouseClick(t *testing.T) {
 		},
 		{
 			name: "right click",
-			click: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+			click: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
 				X:      50,
 				Y:      75,
 			},
@@ -54,8 +54,8 @@ func TestCommandFromMouseClick(t *testing.T) {
 		},
 		{
 			name: "unsupported button",
-			click: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+			click: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
 				X:      10,
 				Y:      20,
 			},
@@ -63,8 +63,8 @@ func TestCommandFromMouseClick(t *testing.T) {
 		},
 		{
 			name: "negative x",
-			click: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			click: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      -1,
 				Y:      20,
 			},
@@ -72,8 +72,8 @@ func TestCommandFromMouseClick(t *testing.T) {
 		},
 		{
 			name: "negative y",
-			click: &gw.GameMouseClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			click: &runtimepb.GameMouseClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      10,
 				Y:      -1,
 			},
@@ -106,14 +106,14 @@ func TestCommandFromMouseDoubleClick(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		dc      *gw.GameMouseDoubleClick
+		dc      *runtimepb.GameMouseDoubleClick
 		want    Command
 		wantErr bool
 	}{
 		{
 			name: "left double click",
-			dc: &gw.GameMouseDoubleClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			dc: &runtimepb.GameMouseDoubleClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:      150,
 				Y:      250,
 			},
@@ -132,8 +132,8 @@ func TestCommandFromMouseDoubleClick(t *testing.T) {
 		},
 		{
 			name: "unsupported button",
-			dc: &gw.GameMouseDoubleClick{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+			dc: &runtimepb.GameMouseDoubleClick{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
 				X:      10,
 				Y:      20,
 			},
@@ -166,14 +166,14 @@ func TestCommandFromMouseDrag(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		drag    *gw.GameMouseDrag
+		drag    *runtimepb.GameMouseDrag
 		want    Command
 		wantErr bool
 	}{
 		{
 			name: "right drag",
-			drag: &gw.GameMouseDrag{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+			drag: &runtimepb.GameMouseDrag{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
 				FromX:  10,
 				FromY:  20,
 				ToX:    300,
@@ -196,8 +196,8 @@ func TestCommandFromMouseDrag(t *testing.T) {
 		},
 		{
 			name: "unsupported button",
-			drag: &gw.GameMouseDrag{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+			drag: &runtimepb.GameMouseDrag{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
 				FromX:  10,
 				FromY:  20,
 				ToX:    30,
@@ -207,8 +207,8 @@ func TestCommandFromMouseDrag(t *testing.T) {
 		},
 		{
 			name: "negative from_x",
-			drag: &gw.GameMouseDrag{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			drag: &runtimepb.GameMouseDrag{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				FromX:  -1,
 				FromY:  20,
 				ToX:    30,
@@ -218,8 +218,8 @@ func TestCommandFromMouseDrag(t *testing.T) {
 		},
 		{
 			name: "negative to_y",
-			drag: &gw.GameMouseDrag{
-				Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			drag: &runtimepb.GameMouseDrag{
+				Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				FromX:  10,
 				FromY:  20,
 				ToX:    30,
@@ -254,13 +254,13 @@ func TestCommandFromMouseHover(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		hover   *gw.GameMouseHover
+		hover   *runtimepb.GameMouseHover
 		want    Command
 		wantErr bool
 	}{
 		{
 			name: "valid hover",
-			hover: &gw.GameMouseHover{
+			hover: &runtimepb.GameMouseHover{
 				X: 500,
 				Y: 600,
 			},
@@ -278,7 +278,7 @@ func TestCommandFromMouseHover(t *testing.T) {
 		},
 		{
 			name: "negative x",
-			hover: &gw.GameMouseHover{
+			hover: &runtimepb.GameMouseHover{
 				X: -1,
 				Y: 600,
 			},
@@ -286,7 +286,7 @@ func TestCommandFromMouseHover(t *testing.T) {
 		},
 		{
 			name: "negative y",
-			hover: &gw.GameMouseHover{
+			hover: &runtimepb.GameMouseHover{
 				X: 500,
 				Y: -1,
 			},
@@ -319,14 +319,14 @@ func TestCommandFromMouseHold(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		hold    *gw.GameMouseHold
+		hold    *runtimepb.GameMouseHold
 		want    Command
 		wantErr bool
 	}{
 		{
 			name: "valid hold",
-			hold: &gw.GameMouseHold{
-				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE,
+			hold: &runtimepb.GameMouseHold{
+				Button:     runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE,
 				X:          400,
 				Y:          300,
 				DurationMs: 5000,
@@ -347,8 +347,8 @@ func TestCommandFromMouseHold(t *testing.T) {
 		},
 		{
 			name: "unsupported button",
-			hold: &gw.GameMouseHold{
-				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+			hold: &runtimepb.GameMouseHold{
+				Button:     runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
 				X:          100,
 				Y:          200,
 				DurationMs: 5000,
@@ -357,8 +357,8 @@ func TestCommandFromMouseHold(t *testing.T) {
 		},
 		{
 			name: "duration zero",
-			hold: &gw.GameMouseHold{
-				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			hold: &runtimepb.GameMouseHold{
+				Button:     runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:          100,
 				Y:          200,
 				DurationMs: 0,
@@ -367,8 +367,8 @@ func TestCommandFromMouseHold(t *testing.T) {
 		},
 		{
 			name: "duration exceeds max",
-			hold: &gw.GameMouseHold{
-				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			hold: &runtimepb.GameMouseHold{
+				Button:     runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:          100,
 				Y:          200,
 				DurationMs: 60000,
@@ -377,8 +377,8 @@ func TestCommandFromMouseHold(t *testing.T) {
 		},
 		{
 			name: "negative x",
-			hold: &gw.GameMouseHold{
-				Button:     gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+			hold: &runtimepb.GameMouseHold{
+				Button:     runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 				X:          -1,
 				Y:          200,
 				DurationMs: 1000,

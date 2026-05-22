@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -177,25 +176,14 @@ func requireValidSession(t *testing.T, got *session.Session, wantName string) {
 	if got.GetType() != testSessionType {
 		t.Fatalf("session.Type = %v, want %v", got.GetType(), testSessionType)
 	}
-	if got.GetGatewayId() == "" {
-		t.Fatal("session.GatewayId is empty, want non-empty")
+	if got.GetOwnerRuntimeId() == "" {
+		t.Fatal("session.OwnerRuntimeId is empty, want non-empty")
 	}
 	if got.GetCreateTime() == nil {
 		t.Fatal("session.CreateTime is empty, want non-empty")
 	}
 	if got.GetUpdateTime() == nil {
 		t.Fatal("session.UpdateTime is empty, want non-empty")
-	}
-}
-
-func requireAgentConnectURL(t *testing.T, got string) {
-	t.Helper()
-
-	if got == "" {
-		t.Fatal("agentConnectUrl is empty, want non-empty")
-	}
-	if !strings.Contains(got, "token=") {
-		t.Fatalf("agentConnectUrl = %q, want token query", got)
 	}
 }
 
@@ -206,7 +194,6 @@ func TestInterface_CreateSession(t *testing.T) {
 	defer deleteSessionForCleanup(t, sutHostURL, created.GetSession().GetName())
 
 	requireValidSession(t, created.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, created.GetSession().GetAgentConnectUrl())
 	if created.GetSession().GetReconnectGeneration() != 0 {
 		t.Fatalf("session.ReconnectGeneration = %d, want 0", created.GetSession().GetReconnectGeneration())
 	}
@@ -259,7 +246,6 @@ func TestInterface_ReconnectSession(t *testing.T) {
 
 	got := decodeReconnectSessionResponse(t, resp)
 	requireValidSession(t, got.GetSession(), created.GetSession().GetName())
-	requireAgentConnectURL(t, got.GetSession().GetAgentConnectUrl())
 	if got.GetSession().GetReconnectGeneration() < created.GetSession().GetReconnectGeneration() {
 		t.Fatalf("session.ReconnectGeneration = %d, want >= %d", got.GetSession().GetReconnectGeneration(), created.GetSession().GetReconnectGeneration())
 	}
@@ -341,9 +327,6 @@ func TestInterface_ListSessions(t *testing.T) {
 	}
 
 	for _, s := range listResp.GetSessions() {
-		if s.GetAgentConnectUrl() == "" {
-			t.Fatalf("session %q has empty AgentConnectUrl, want non-empty", s.GetName())
-		}
 	}
 
 	name1 := created1.GetSession().GetName()

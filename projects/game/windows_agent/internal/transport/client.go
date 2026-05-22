@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/gateway/domain"
+	runtimepb "dominion/projects/game/runtime"
+	"dominion/projects/game/runtime/domain"
 
 	"github.com/coder/websocket"
 )
@@ -65,7 +65,7 @@ func (c *Client) IsConnected() bool {
 }
 
 // writeEnvelope serialises the envelope to JSON and writes it as a text frame.
-func (c *Client) writeEnvelope(ctx context.Context, env *gw.GameWebSocketEnvelope) error {
+func (c *Client) writeEnvelope(ctx context.Context, env *runtimepb.GameWebSocketEnvelope) error {
 	data, err := EncodeEnvelope(env)
 	if err != nil {
 		return fmt.Errorf("encode envelope: %w", err)

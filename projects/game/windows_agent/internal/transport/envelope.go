@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -15,7 +15,7 @@ var (
 )
 
 // EncodeEnvelope marshals a GameWebSocketEnvelope to JSON bytes.
-func EncodeEnvelope(env *gw.GameWebSocketEnvelope) ([]byte, error) {
+func EncodeEnvelope(env *runtimepb.GameWebSocketEnvelope) ([]byte, error) {
 	data, err := protojsonMarshaler.Marshal(env)
 	if err != nil {
 		return nil, fmt.Errorf("marshal envelope: %w", err)
@@ -25,8 +25,8 @@ func EncodeEnvelope(env *gw.GameWebSocketEnvelope) ([]byte, error) {
 
 // DecodeEnvelope unmarshals JSON bytes to a GameWebSocketEnvelope.
 // Unknown fields are discarded to maintain forward compatibility.
-func DecodeEnvelope(data []byte) (*gw.GameWebSocketEnvelope, error) {
-	env := new(gw.GameWebSocketEnvelope)
+func DecodeEnvelope(data []byte) (*runtimepb.GameWebSocketEnvelope, error) {
+	env := new(runtimepb.GameWebSocketEnvelope)
 	if err := protojsonUnmarshaler.Unmarshal(data, env); err != nil {
 		return nil, fmt.Errorf("unmarshal envelope: %w", err)
 	}

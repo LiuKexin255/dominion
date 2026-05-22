@@ -4,19 +4,19 @@ import (
 	"strings"
 	"testing"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 
 	"google.golang.org/protobuf/proto"
 )
 
 func TestEncodeEnvelope(t *testing.T) {
 	// given
-	env := &gw.GameWebSocketEnvelope{
+	env := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-123",
 		MessageId: "msg-001",
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{
-				Role: gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+		Payload: &runtimepb.GameWebSocketEnvelope_Hello{
+			Hello: &runtimepb.GameHello{
+				Role: runtimepb.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
 			},
 		},
 	}
@@ -43,18 +43,18 @@ func TestDecodeEnvelope(t *testing.T) {
 	tests := []struct {
 		name    string
 		json    string
-		want    *gw.GameWebSocketEnvelope
+		want    *runtimepb.GameWebSocketEnvelope
 		wantErr bool
 	}{
 		{
 			name: "valid hello envelope",
 			json: `{"sessionId":"s-1","messageId":"m-1","hello":{"role":1}}`,
-			want: &gw.GameWebSocketEnvelope{
+			want: &runtimepb.GameWebSocketEnvelope{
 				SessionId: "s-1",
 				MessageId: "m-1",
-				Payload: &gw.GameWebSocketEnvelope_Hello{
-					Hello: &gw.GameHello{
-						Role: gw.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+				Payload: &runtimepb.GameWebSocketEnvelope_Hello{
+					Hello: &runtimepb.GameHello{
+						Role: runtimepb.GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
 					},
 				},
 			},
@@ -62,11 +62,11 @@ func TestDecodeEnvelope(t *testing.T) {
 		{
 			name: "valid ping envelope",
 			json: `{"sessionId":"s-2","messageId":"m-2","ping":{"nonce":"abc"}}`,
-			want: &gw.GameWebSocketEnvelope{
+			want: &runtimepb.GameWebSocketEnvelope{
 				SessionId: "s-2",
 				MessageId: "m-2",
-				Payload: &gw.GameWebSocketEnvelope_Ping{
-					Ping: &gw.GamePing{Nonce: "abc"},
+				Payload: &runtimepb.GameWebSocketEnvelope_Ping{
+					Ping: &runtimepb.GamePing{Nonce: "abc"},
 				},
 			},
 		},
@@ -109,15 +109,15 @@ func TestDecodeEnvelope(t *testing.T) {
 func TestEncodeDecodeRoundtrip(t *testing.T) {
 	tests := []struct {
 		name string
-		env  *gw.GameWebSocketEnvelope
+		env  *runtimepb.GameWebSocketEnvelope
 	}{
 		{
 			name: "media_init v2 roundtrip",
-			env: &gw.GameWebSocketEnvelope{
+			env: &runtimepb.GameWebSocketEnvelope{
 				SessionId: "session-rt",
 				MessageId: "msg-rt-init",
-				Payload: &gw.GameWebSocketEnvelope_MediaInit{
-					MediaInit: &gw.GameMediaInit{
+				Payload: &runtimepb.GameWebSocketEnvelope_MediaInit{
+					MediaInit: &runtimepb.GameMediaInit{
 						StreamId: "stream-1",
 						InitId:   "init-abc123",
 						MimeType: MimeTypeMP4,
@@ -129,11 +129,11 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 		},
 		{
 			name: "media_segment v2 roundtrip",
-			env: &gw.GameWebSocketEnvelope{
+			env: &runtimepb.GameWebSocketEnvelope{
 				SessionId: "session-rt",
 				MessageId: "msg-rt-seg",
-				Payload: &gw.GameWebSocketEnvelope_MediaSegment{
-					MediaSegment: &gw.GameMediaSegment{
+				Payload: &runtimepb.GameWebSocketEnvelope_MediaSegment{
+					MediaSegment: &runtimepb.GameMediaSegment{
 						StreamId:      "stream-1",
 						InitId:        "init-abc123",
 						Sequence:      42,

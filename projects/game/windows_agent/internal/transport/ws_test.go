@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	gw "dominion/projects/game/gateway"
-	"dominion/projects/game/gateway/domain"
+	runtimepb "dominion/projects/game/runtime"
+	"dominion/projects/game/runtime/domain"
 
 	"github.com/coder/websocket"
 )
@@ -41,7 +41,7 @@ func newEchoWS(t *testing.T) (url string, shutdown func()) {
 
 // newWriterWS starts an httptest server that accepts WebSocket upgrades,
 // writes the provided envelopes sequentially, then closes.
-func newWriterWS(t *testing.T, envelopes ...*gw.GameWebSocketEnvelope) (url string, shutdown func()) {
+func newWriterWS(t *testing.T, envelopes ...*runtimepb.GameWebSocketEnvelope) (url string, shutdown func()) {
 	t.Helper()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -310,7 +310,7 @@ func TestClient_SendControlResult(t *testing.T) {
 	defer client.Close()
 
 	// when
-	if err := client.SendControlResult(ctx, "session-1", "op-456", gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED); err != nil {
+	if err := client.SendControlResult(ctx, "session-1", "op-456", runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED); err != nil {
 		t.Fatalf("SendControlResult unexpected error: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestClient_SendControlResult(t *testing.T) {
 	if cr.OperationId != "op-456" {
 		t.Fatalf("OperationId: got %q, want %q", cr.OperationId, "op-456")
 	}
-	if cr.Status != gw.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
+	if cr.Status != runtimepb.GameControlResultStatus_GAME_CONTROL_RESULT_STATUS_SUCCEEDED {
 		t.Fatalf("Status: got %v, want SUCCEEDED", cr.Status)
 	}
 }
@@ -414,15 +414,15 @@ func TestClient_SendError(t *testing.T) {
 
 func TestClient_ReadLoopDispatchesControlRequest(t *testing.T) {
 	// given: server sends a control_request envelope
-	controlEnv := &gw.GameWebSocketEnvelope{
+	controlEnv := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-1",
 		MessageId: "msg-ctrl",
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
+		Payload: &runtimepb.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &runtimepb.GameControlRequest{
 				OperationId: "op-789",
-				Action: &gw.GameControlRequest_MouseClick{
-					MouseClick: &gw.GameMouseClick{
-						Button: gw.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				Action: &runtimepb.GameControlRequest_MouseClick{
+					MouseClick: &runtimepb.GameMouseClick{
+						Button: runtimepb.GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
 						X:      10,
 						Y:      20,
 					},
@@ -463,11 +463,11 @@ func TestClient_ReadLoopDispatchesControlRequest(t *testing.T) {
 
 func TestClient_ReadLoopDispatchesPing(t *testing.T) {
 	// given: server sends a ping envelope
-	pingEnv := &gw.GameWebSocketEnvelope{
+	pingEnv := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-1",
 		MessageId: "msg-ping",
-		Payload: &gw.GameWebSocketEnvelope_Ping{
-			Ping: &gw.GamePing{Nonce: "test-nonce"},
+		Payload: &runtimepb.GameWebSocketEnvelope_Ping{
+			Ping: &runtimepb.GamePing{Nonce: "test-nonce"},
 		},
 	}
 	wsURL, shutdown := newWriterWS(t, pingEnv)
@@ -503,11 +503,11 @@ func TestClient_ReadLoopDispatchesPing(t *testing.T) {
 
 func TestClient_ReadLoopDispatchesError(t *testing.T) {
 	// given: server sends an error envelope
-	errEnv := &gw.GameWebSocketEnvelope{
+	errEnv := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-1",
 		MessageId: "msg-err",
-		Payload: &gw.GameWebSocketEnvelope_Error{
-			Error: &gw.GameError{Code: "ERR_TEST", Message: "test error"},
+		Payload: &runtimepb.GameWebSocketEnvelope_Error{
+			Error: &runtimepb.GameError{Code: "ERR_TEST", Message: "test error"},
 		},
 	}
 	wsURL, shutdown := newWriterWS(t, errEnv)
@@ -543,18 +543,18 @@ func TestClient_ReadLoopDispatchesError(t *testing.T) {
 
 func TestClient_ReadLoopIgnoresUnknownType(t *testing.T) {
 	// given: server sends a hello envelope (which the agent read loop ignores)
-	helloEnv := &gw.GameWebSocketEnvelope{
+	helloEnv := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-1",
 		MessageId: "msg-hello",
-		Payload: &gw.GameWebSocketEnvelope_Hello{
-			Hello: &gw.GameHello{Role: gw.GameClientRole_GAME_CLIENT_ROLE_WEB},
+		Payload: &runtimepb.GameWebSocketEnvelope_Hello{
+			Hello: &runtimepb.GameHello{Role: runtimepb.GameClientRole_GAME_CLIENT_ROLE_WEB},
 		},
 	}
-	controlEnv := &gw.GameWebSocketEnvelope{
+	controlEnv := &runtimepb.GameWebSocketEnvelope{
 		SessionId: "session-1",
 		MessageId: "msg-ctrl",
-		Payload: &gw.GameWebSocketEnvelope_ControlRequest{
-			ControlRequest: &gw.GameControlRequest{
+		Payload: &runtimepb.GameWebSocketEnvelope_ControlRequest{
+			ControlRequest: &runtimepb.GameControlRequest{
 				OperationId: "op-after-hello",
 			},
 		},

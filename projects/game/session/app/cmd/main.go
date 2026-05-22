@@ -4,43 +4,41 @@ import (
 	"context"
 	"flag"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"strings"
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
-	"dominion/common/gopkg/grpc"
-	phttp "dominion/common/gopkg/http"
+	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/mongo"
 	"dominion/common/gopkg/otel"
+	"dominion/projects/game/pkg/const"
 	"dominion/projects/game/session"
-	"dominion/projects/game/session/runtime/gateway"
+	"dominion/projects/game/session/runtime/runtimeclient"
 	"dominion/projects/game/session/runtime/storage"
 	"dominion/projects/game/session/service"
 
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"google.golang.org/grpc"
 )
 
 const (
-	envHTTPPort = "HTTP_PORT"
+	envGRPCPort = "GRPC_PORT"
 
-	defaultHTTPListenAddr   = ":8081"
-	defaultMongoTarget      = "game/mongo"
+	defaultGRPCListenAddr   = ":9081"
 	defaultMongoDatabase    = "game"
 	defaultShutdownDeadline = 5 * time.Second
-	defaultGatewayTarget    = "game/gateway:internal-grpc"
 )
 
-var httpPort = flag.String("http-port", envOrDefault(envHTTPPort, defaultHTTPListenAddr), "HTTP listen address")
+var grpcPort = flag.String("grpc-port", envOrDefault(envGRPCPort, defaultGRPCListenAddr), "gRPC listen address")
 
 func main() {
 	flag.Parse()
 
-	httpAddr := normalizeListenAddr(*httpPort)
+	grpcAddr := normalizeListenAddr(*grpcPort)
 
 	// Create Mongo client and repo.
-	client, err := mongo.NewClient(defaultMongoTarget)
+	client, err := mongo.NewClient(gameconst.TargetMongo)
 	if err != nil {
 		log.Fatalf("create mongo client: %v", err)
 	}
@@ -51,26 +49,31 @@ func main() {
 		log.Fatalf("create session repository: %v", err)
 	}
 
-	// Create gRPC gateway client.
-	gatewayClient, err := gateway.NewGRPCGatewayClient(ctx, defaultGatewayTarget)
+	// Create gRPC runtime client.
+	runtimeClient, err := runtimeclient.NewGRPCRuntimeClient(ctx, gameconst.TargetRuntimeGRPC)
 	if err != nil {
-		log.Fatalf("create grpc gateway client: %v", err)
+		log.Fatalf("create grpc runtime client: %v", err)
 	}
 
 	// Create handler.
-	svc := service.NewSessionService(repo, gatewayClient)
+	svc := service.NewSessionService(repo, runtimeClient)
 	handler := session.NewHandler(svc)
 
-	// Server component.
-	httpMux := runtime.NewServeMux(grpc.GatewayDefault()...)
-	session.RegisterSessionServiceHandlerServer(context.Background(), httpMux, handler)
-	httpServer := &http.Server{Addr: httpAddr, Handler: phttp.Handler(httpMux, "session-http")}
+	// Create gRPC server.
+	grpcServer := grpc.NewServer(pgrpc.ServiceDefault()...)
+	session.RegisterSessionServiceServer(grpcServer, handler)
+
+	// Create gRPC listener.
+	grpcListener, err := netListen(grpcAddr)
+	if err != nil {
+		log.Fatalf("create gRPC listener: %v", err)
+	}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(defaultShutdownDeadline))
 	bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/game/session")))
 	bs.Register(bootstrap.MongoClient("mongo", client))
-	bs.Register(bootstrap.GRPCConn("gateway-client", gatewayClient.Conn()))
-	bs.Register(bootstrap.HTTPServer("session-http", httpServer))
+	bs.Register(bootstrap.GRPCConn("runtime-client", runtimeClient.Conn()))
+	bs.Register(bootstrap.GRPCServer("session-grpc", grpcServer, grpcListener))
 	if err := bs.Run(context.Background()); err != nil {
 		log.Fatalf("run session: %v", err)
 	}
@@ -90,4 +93,8 @@ func normalizeListenAddr(value string) string {
 	}
 
 	return ":" + value
+}
+
+func netListen(addr string) (net.Listener, error) {
+	return (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 }

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	gw "dominion/projects/game/gateway"
+	runtimepb "dominion/projects/game/runtime"
 	"dominion/projects/game/windows_agent/internal/capture"
 	"dominion/projects/game/windows_agent/internal/encoder"
 	"dominion/projects/game/windows_agent/internal/input"
@@ -82,7 +82,7 @@ type TransportClient interface {
 	SendMediaInit(ctx context.Context, sessionID, streamID, initID, mimeType, codec string, segment []byte) error
 	SendMediaSegment(ctx context.Context, sessionID, streamID, initID string, sequence uint64, segment []byte, randomAccess *bool, durationMS int32, discontinuity bool) error
 	SendControlAck(ctx context.Context, sessionID, operationID string) error
-	SendControlResult(ctx context.Context, sessionID, operationID string, status gw.GameControlResultStatus) error
+	SendControlResult(ctx context.Context, sessionID, operationID string, status runtimepb.GameControlResultStatus) error
 	SendPong(ctx context.Context, sessionID, nonce string) error
 	ReadLoop(ctx context.Context) (<-chan transport.InboundMessage, error)
 }

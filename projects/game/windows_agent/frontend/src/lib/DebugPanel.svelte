@@ -12,7 +12,7 @@
     connectedAt: '',
     sessionName: '',
     sessionType: '',
-    gatewayId: '',
+    runtimeId: '',
     streamingStartedAt: ''
   };
   let result: ScreenshotResult | null = null;
@@ -81,8 +81,8 @@
         {#if result.sessionName}
           <div class="row"><span class="label">Session</span><span class="mono">{result.sessionName}</span></div>
         {/if}
-        {#if result.gatewayID}
-          <div class="row"><span class="label">Gateway</span><span class="mono">{result.gatewayID}</span></div>
+        {#if result.runtimeID}
+          <div class="row"><span class="label">Runtime</span><span class="mono">{result.runtimeID}</span></div>
         {/if}
         {#if result.mimeType}
           <div class="row"><span class="label">格式</span><span>{result.mimeType}</span></div>

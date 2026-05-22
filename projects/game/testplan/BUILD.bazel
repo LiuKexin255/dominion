@@ -12,10 +12,9 @@ go_largetest(
         "SESSION_TOKEN_SECRET": "dev-session-token-secret",
     },
     deps = [
-        "//common/gopkg/solver",
         "//common/gopkg/testtool",
-        "//projects/game/gateway",
-        "//projects/game/gateway/token",
+        "//projects/game/pkg/token",
+        "//projects/game/runtime",
         "//projects/game/session",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",

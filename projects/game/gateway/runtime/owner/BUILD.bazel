@@ -10,7 +10,10 @@ go_library(
     ],
     importpath = "dominion/projects/game/gateway/runtime/owner",
     visibility = ["//visibility:public"],
-    deps = ["//common/gopkg/solver"],
+    deps = [
+        "//common/gopkg/solver",
+        "//projects/game/pkg/const",
+    ],
 )
 
 go_unittest(
