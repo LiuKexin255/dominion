@@ -1,3 +1,0 @@
-# Root BUILD.bazel for game gateway.
-# This file exists only for the directory package; all build targets
-# are defined in subdirectory BUILD.bazel files.
