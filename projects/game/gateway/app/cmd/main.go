@@ -1,8 +1,8 @@
 // Package main is the entry point for the game gateway edge proxy.
 //
 // The gateway is a pure edge aggregation layer that:
-//  1. Registers grpc-gateway handlers for session and runtime proto services,
-//     forwarding to their respective gRPC backends.
+//  1. Registers grpc-gateway handlers for session proto services,
+//     forwarding to the session gRPC backend.
 //  2. Proxies WebSocket upgrade requests to the owner runtime instance based
 //     on the owner_runtime_id extracted from the session token.
 //
@@ -25,7 +25,6 @@ import (
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/otel"
 	"dominion/projects/game/gateway/app"
-	"dominion/projects/game/gateway/config"
 	"dominion/projects/game/gateway/runtime/owner"
 	gameconst "dominion/projects/game/pkg/const"
 	"dominion/projects/game/pkg/token"
@@ -45,29 +44,27 @@ const (
 func main() {
 	httpPort := envOrDefault(envHTTPPort, defaultHTTPListenAddr)
 
-	cfg := config.NewGatewayConfig()
-	cfg.HTTPPort = httpPort
-
-	// Create gRPC client connections to backend services.
+	// Create gRPC client connection to session backend.
 	sessionConn, err := grpc.NewClient(solver.URI(gameconst.TargetSessionGRPC), grpcpkg.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("create session gRPC client: %v", err)
 	}
 
+	// Create gRPC client connection to runtime backend.
 	runtimeConn, err := grpc.NewClient(solver.URI(gameconst.TargetRuntimeGRPC), grpcpkg.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("create runtime gRPC client: %v", err)
 	}
 
-	// Create grpc-gateway mux and register backend handlers.
-	// The mux translates HTTP+JSON requests to gRPC and forwards them
-	// to the session and runtime gRPC backends.
+	// Create grpc-gateway mux and register session and runtime backend
+	// handlers. The mux translates HTTP+JSON requests to gRPC and forwards
+	// them to the appropriate gRPC backend.
 	publicMux := runtime.NewServeMux(grpcpkg.GatewayDefault()...)
 	if err := sessionpb.RegisterSessionServiceHandler(context.Background(), publicMux, sessionConn); err != nil {
 		log.Fatalf("register session service handler: %v", err)
 	}
-	if err := runtimepb.RegisterGameGatewayServiceHandler(context.Background(), publicMux, runtimeConn); err != nil {
-		log.Fatalf("register game gateway service handler: %v", err)
+	if err := runtimepb.RegisterGameRuntimeReaderHandler(context.Background(), publicMux, runtimeConn); err != nil {
+		log.Fatalf("register runtime reader handler: %v", err)
 	}
 
 	// Create owner resolver for WebSocket proxy routing.
@@ -77,9 +74,7 @@ func main() {
 	}
 
 	// OwnerExtractor parses routing claims from tokens without verification.
-	// The HMACSigner's ParseRoutingClaims method does not use the secret,
-	// so a dummy value is safe. Only ParseRoutingClaims is called.
-	ownerExtractor := token.NewHMACSigner("", 0)
+	ownerExtractor := token.NewParser()
 
 	router := &app.Router{
 		GRPCMux:        phttp.Handler(publicMux, "gateway-http"),
@@ -87,7 +82,7 @@ func main() {
 		OwnerExtractor: ownerExtractor,
 	}
 
-	httpServer := &http.Server{Addr: normalizeListenAddr(cfg.HTTPPort), Handler: router}
+	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: router}
 
 	bs := bootstrap.New(bootstrap.WithShutdownTimeout(5 * time.Second))
 	if err := bs.Register(otel.Component(otel.WithLoggerName("dominion/projects/game/gateway"))); err != nil {

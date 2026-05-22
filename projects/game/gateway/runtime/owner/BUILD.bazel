@@ -3,11 +3,7 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "owner",
-    srcs = [
-        "deploy.go",
-        "owner.go",
-        "router.go",
-    ],
+    srcs = ["owner.go"],
     importpath = "dominion/projects/game/gateway/runtime/owner",
     visibility = ["//visibility:public"],
     deps = [
@@ -18,10 +14,7 @@ go_library(
 
 go_unittest(
     name = "owner_test",
-    srcs = [
-        "owner_test.go",
-        "router_test.go",
-    ],
+    srcs = ["owner_test.go"],
     embed = [":owner"],
     deps = ["//common/gopkg/solver"],
 )

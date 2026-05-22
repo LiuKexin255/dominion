@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "runtimeclient",
+    srcs = [
+        "client.go",
+        "grpc_client.go",
+    ],
+    importpath = "dominion/projects/game/session/runtime/runtimeclient",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
+        "//projects/game/runtime",
+        "@org_golang_google_grpc//:grpc",
+    ],
+)

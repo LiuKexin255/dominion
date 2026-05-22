@@ -15,7 +15,6 @@ go_library(
         "//projects/game/runtime/config",
         "//projects/game/runtime/domain/sessionmanager",
         "//projects/game/runtime/service",
-        "@grpc_ecosystem_grpc_gateway//runtime",
         "@org_golang_google_grpc//:grpc",
     ],
 )

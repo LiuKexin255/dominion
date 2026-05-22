@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -828,5 +829,1103 @@ func TestWebSocket_OwnerSelf_ProceedsNormally(t *testing.T) {
 	}
 	if pong.GetPong().GetNonce() != "owner-self-verify" {
 		t.Fatalf("Nonce = %q, want %q", pong.GetPong().GetNonce(), "owner-self-verify")
+	}
+}
+func TestActionKindFromProto(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     *GameControlRequest
+		want    domain.OperationKind
+		wantErr bool
+	}{
+		{
+			name: "mouse_click",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseClick{MouseClick: &GameMouseClick{}},
+			},
+			want: domain.OperationKindMouseClick,
+		},
+		{
+			name: "mouse_double_click",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseDoubleClick{MouseDoubleClick: &GameMouseDoubleClick{}},
+			},
+			want: domain.OperationKindMouseDoubleClick,
+		},
+		{
+			name: "mouse_drag",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseDrag{MouseDrag: &GameMouseDrag{}},
+			},
+			want: domain.OperationKindMouseDrag,
+		},
+		{
+			name: "mouse_hover",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseHover{MouseHover: &GameMouseHover{}},
+			},
+			want: domain.OperationKindMouseHover,
+		},
+		{
+			name: "mouse_hold",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseHold{MouseHold: &GameMouseHold{}},
+			},
+			want: domain.OperationKindMouseHold,
+		},
+		{
+			name:    "no_action",
+			req:     &GameControlRequest{},
+			wantErr: true,
+		},
+		{
+			name:    "nil_request",
+			req:     nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ActionKindFromProto(tt.req)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ActionKindFromProto() expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ActionKindFromProto() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ActionKindFromProto() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProtoOperationKind(t *testing.T) {
+	tests := []struct {
+		name string
+		kind domain.OperationKind
+		want GameControlOperationKind
+	}{
+		{
+			name: "mouse_click",
+			kind: domain.OperationKindMouseClick,
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
+		},
+		{
+			name: "mouse_double_click",
+			kind: domain.OperationKindMouseDoubleClick,
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK,
+		},
+		{
+			name: "mouse_drag",
+			kind: domain.OperationKindMouseDrag,
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG,
+		},
+		{
+			name: "mouse_hover",
+			kind: domain.OperationKindMouseHover,
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER,
+		},
+		{
+			name: "mouse_hold",
+			kind: domain.OperationKindMouseHold,
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD,
+		},
+		{
+			name: "unknown_kind",
+			kind: domain.OperationKind("unknown"),
+			want: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ProtoOperationKind(tt.kind)
+			if got != tt.want {
+				t.Fatalf("ProtoOperationKind(%q) = %v, want %v", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDomainOperationKind(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    GameControlOperationKind
+		want    domain.OperationKind
+		wantErr bool
+	}{
+		{
+			name: "mouse_click",
+			kind: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_CLICK,
+			want: domain.OperationKindMouseClick,
+		},
+		{
+			name: "mouse_double_click",
+			kind: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DOUBLE_CLICK,
+			want: domain.OperationKindMouseDoubleClick,
+		},
+		{
+			name: "mouse_drag",
+			kind: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_DRAG,
+			want: domain.OperationKindMouseDrag,
+		},
+		{
+			name: "mouse_hover",
+			kind: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOVER,
+			want: domain.OperationKindMouseHover,
+		},
+		{
+			name: "mouse_hold",
+			kind: GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_MOUSE_HOLD,
+			want: domain.OperationKindMouseHold,
+		},
+		{
+			name:    "unspecified",
+			kind:    GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED,
+			wantErr: true,
+		},
+		{
+			name:    "unknown_enum_value",
+			kind:    GameControlOperationKind(999),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DomainOperationKind(tt.kind)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("DomainOperationKind(%v) expected error, got %q", tt.kind, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DomainOperationKind(%v) unexpected error: %v", tt.kind, err)
+			}
+			if got != tt.want {
+				t.Fatalf("DomainOperationKind(%v) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMouseButtonConvert(t *testing.T) {
+	t.Run("ProtoMouseButton", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			button string
+			want   GameMouseButton
+		}{
+			{name: "left", button: "left", want: GameMouseButton_GAME_MOUSE_BUTTON_LEFT},
+			{name: "right", button: "right", want: GameMouseButton_GAME_MOUSE_BUTTON_RIGHT},
+			{name: "middle", button: "middle", want: GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE},
+			{name: "left_case_insensitive", button: "LEFT", want: GameMouseButton_GAME_MOUSE_BUTTON_LEFT},
+			{name: "unknown_string", button: "unknown", want: GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED},
+			{name: "empty_string", button: "", want: GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := ProtoMouseButton(tt.button)
+				if got != tt.want {
+					t.Fatalf("ProtoMouseButton(%q) = %v, want %v", tt.button, got, tt.want)
+				}
+			})
+		}
+	})
+
+	t.Run("DomainMouseButton", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			button  GameMouseButton
+			want    string
+			wantErr bool
+		}{
+			{
+				name:   "left",
+				button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+				want:   "left",
+			},
+			{
+				name:   "right",
+				button: GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+				want:   "right",
+			},
+			{
+				name:   "middle",
+				button: GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE,
+				want:   "middle",
+			},
+			{
+				name:    "unspecified",
+				button:  GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+				wantErr: true,
+			},
+			{
+				name:    "unknown_enum_value",
+				button:  GameMouseButton(999),
+				wantErr: true,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got, err := DomainMouseButton(tt.button)
+
+				if tt.wantErr {
+					if err == nil {
+						t.Fatalf("DomainMouseButton(%v) expected error, got %q", tt.button, got)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("DomainMouseButton(%v) unexpected error: %v", tt.button, err)
+				}
+				if got != tt.want {
+					t.Fatalf("DomainMouseButton(%v) = %q, want %q", tt.button, got, tt.want)
+				}
+			})
+		}
+	})
+}
+
+func TestMouseButtonRoundTrip(t *testing.T) {
+	buttons := []string{"left", "right", "middle"}
+
+	for _, btn := range buttons {
+		t.Run(btn, func(t *testing.T) {
+			proto := ProtoMouseButton(btn)
+			got, err := DomainMouseButton(proto)
+			if err != nil {
+				t.Fatalf("round-trip DomainMouseButton(%v) unexpected error: %v", proto, err)
+			}
+			if got != btn {
+				t.Fatalf("round-trip %q: ProtoMouseButton → DomainMouseButton = %q, want %q", btn, got, btn)
+			}
+		})
+	}
+}
+
+// Ensure error messages contain the expected detail for debugging.
+func TestMouseButtonErrorMessages(t *testing.T) {
+	t.Run("DomainMouseButton_unspecified_error", func(t *testing.T) {
+		_, err := DomainMouseButton(GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED)
+		if err == nil {
+			t.Fatal("expected error for UNSPECIFIED")
+		}
+		if _, ok := err.(fmt.Stringer); ok {
+			t.Logf("error: %v", err)
+		}
+	})
+
+	t.Run("DomainOperationKind_unspecified_error", func(t *testing.T) {
+		_, err := DomainOperationKind(GameControlOperationKind_GAME_CONTROL_OPERATION_KIND_UNSPECIFIED)
+		if err == nil {
+			t.Fatal("expected error for UNSPECIFIED")
+		}
+	})
+}
+
+func TestValidateWebSocketEnvelope(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     *GameWebSocketEnvelope
+		wantErr bool
+	}{
+		{
+			name: "empty session_id",
+			env: &GameWebSocketEnvelope{
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty message_id",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing payload oneof",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid envelope",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateWebSocketEnvelope(tt.env)
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateWebSocketEnvelope() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateWebSocketEnvelope() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateHello(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     *GameWebSocketEnvelope
+		wantErr bool
+	}{
+		{
+			name: "missing hello payload",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid hello with unspecified role",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_Hello{
+					Hello: &GameHello{Role: GameClientRole_GAME_CLIENT_ROLE_UNSPECIFIED},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid hello with agent role",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_Hello{
+					Hello: &GameHello{Role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT},
+				},
+			},
+		},
+		{
+			name: "valid hello with web role",
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_Hello{
+					Hello: &GameHello{Role: GameClientRole_GAME_CLIENT_ROLE_WEB},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateHello(tt.env)
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateHello() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateHello() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRolePayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    GameClientRole
+		env     *GameWebSocketEnvelope
+		wantErr bool
+	}{
+		{
+			name: "agent sending media_init",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_MediaInit{
+					MediaInit: &GameMediaInit{MimeType: "video/mp4", Segment: []byte("init")},
+				},
+			},
+		},
+		{
+			name: "agent sending control_ack",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_ControlAck{
+					ControlAck: &GameControlAck{OperationId: "op-1"},
+				},
+			},
+		},
+		{
+			name: "agent sending control_result",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_ControlResult{
+					ControlResult: &GameControlResult{OperationId: "op-1"},
+				},
+			},
+		},
+		{
+			name: "agent sending pong",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Pong{Pong: &GamePong{Nonce: "n1"}},
+			},
+		},
+		{
+			name: "agent sending error",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Error{Error: &GameError{Code: "err", Message: "test"}},
+			},
+		},
+		{
+			name: "agent sending control_request",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{OperationId: "op-1"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "agent sending ping",
+			role: GameClientRole_GAME_CLIENT_ROLE_WINDOWS_AGENT,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{Nonce: "n1"}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "web sending control_request",
+			role: GameClientRole_GAME_CLIENT_ROLE_WEB,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_ControlRequest{
+					ControlRequest: &GameControlRequest{OperationId: "op-1"},
+				},
+			},
+		},
+		{
+			name: "web sending ping",
+			role: GameClientRole_GAME_CLIENT_ROLE_WEB,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{Nonce: "n1"}},
+			},
+		},
+		{
+			name: "web sending media_segment",
+			role: GameClientRole_GAME_CLIENT_ROLE_WEB,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_MediaSegment{
+					MediaSegment: &GameMediaSegment{StreamId: "stream-1", InitId: "init-1", Sequence: 1, Segment: []byte("seg")},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "web sending media_init",
+			role: GameClientRole_GAME_CLIENT_ROLE_WEB,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_MediaInit{
+					MediaInit: &GameMediaInit{MimeType: "video/mp4", Segment: []byte("init")},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "web sending control_ack",
+			role: GameClientRole_GAME_CLIENT_ROLE_WEB,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload: &GameWebSocketEnvelope_ControlAck{
+					ControlAck: &GameControlAck{OperationId: "op-1"},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unspecified role",
+			role: GameClientRole_GAME_CLIENT_ROLE_UNSPECIFIED,
+			env: &GameWebSocketEnvelope{
+				SessionId: "session-1",
+				MessageId: "msg-1",
+				Payload:   &GameWebSocketEnvelope_Ping{Ping: &GamePing{Nonce: "n1"}},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRolePayload(tt.role, tt.env)
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateRolePayload() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateRolePayload() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateControlRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     *GameControlRequest
+		wantErr bool
+	}{
+		{
+			name: "empty operation_id",
+			req: &GameControlRequest{
+				Action: &GameControlRequest_MouseClick{
+					MouseClick: &GameMouseClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      100,
+						Y:      200,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "action not set",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "click with valid data",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseClick{
+					MouseClick: &GameMouseClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      100,
+						Y:      200,
+					},
+				},
+			},
+		},
+		{
+			name: "click with unspecified button",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseClick{
+					MouseClick: &GameMouseClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+						X:      100,
+						Y:      200,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "click with negative x",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseClick{
+					MouseClick: &GameMouseClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:      -1,
+						Y:      200,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "double_click with valid data",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseDoubleClick{
+					MouseDoubleClick: &GameMouseDoubleClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_RIGHT,
+						X:      300,
+						Y:      400,
+					},
+				},
+			},
+		},
+		{
+			name: "double_click with unspecified button",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseDoubleClick{
+					MouseDoubleClick: &GameMouseDoubleClick{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+						X:      300,
+						Y:      400,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "drag with valid data",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseDrag{
+					MouseDrag: &GameMouseDrag{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						FromX:  10,
+						FromY:  20,
+						ToX:    100,
+						ToY:    200,
+					},
+				},
+			},
+		},
+		{
+			name: "drag with unspecified button",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseDrag{
+					MouseDrag: &GameMouseDrag{
+						Button: GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+						FromX:  10,
+						FromY:  20,
+						ToX:    100,
+						ToY:    200,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "hover with valid data",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHover{
+					MouseHover: &GameMouseHover{
+						X: 500,
+						Y: 600,
+					},
+				},
+			},
+		},
+		{
+			name: "hover with negative x",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHover{
+					MouseHover: &GameMouseHover{
+						X: -1,
+						Y: 600,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "hold with valid data",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHold{
+					MouseHold: &GameMouseHold{
+						Button:     GameMouseButton_GAME_MOUSE_BUTTON_MIDDLE,
+						X:          100,
+						Y:          200,
+						DurationMs: 1000,
+					},
+				},
+			},
+		},
+		{
+			name: "hold with unspecified button",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHold{
+					MouseHold: &GameMouseHold{
+						Button:     GameMouseButton_GAME_MOUSE_BUTTON_UNSPECIFIED,
+						X:          100,
+						Y:          200,
+						DurationMs: 1000,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "hold with duration_ms=0",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHold{
+					MouseHold: &GameMouseHold{
+						Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:          100,
+						Y:          200,
+						DurationMs: 0,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "hold with duration_ms=30001",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHold{
+					MouseHold: &GameMouseHold{
+						Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:          100,
+						Y:          200,
+						DurationMs: 30001,
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "hold with negative duration_ms",
+			req: &GameControlRequest{
+				OperationId: "op-1",
+				Action: &GameControlRequest_MouseHold{
+					MouseHold: &GameMouseHold{
+						Button:     GameMouseButton_GAME_MOUSE_BUTTON_LEFT,
+						X:          100,
+						Y:          200,
+						DurationMs: -1,
+					},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateControlRequest(tt.req)
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateControlRequest() expected error, got nil")
+			}
+		})
+	}
+}
+
+var validTestSegment = []byte("ftypisommoov-test-data-for-init")
+
+func validTestInitID() string {
+	hash := sha256.Sum256(validTestSegment)
+	return hex.EncodeToString(hash[:])
+}
+
+func TestValidateMediaInit(t *testing.T) {
+	validInitID := validTestInitID()
+
+	// given
+	tests := []struct {
+		name    string
+		msg     *GameMediaInit
+		wantErr bool
+	}{
+		{
+			name: "valid init passes",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty stream_id rejected",
+			msg: &GameMediaInit{
+				StreamId: "",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty init_id rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "unsupported codec rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "vp9",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid mime_type missing video/mp4 rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/webm; codecs=\"avc1\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid mime_type missing avc1 rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"vp9\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty segment rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  []byte{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "oversized segment rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  make([]byte, domain.MaxSegmentSize+1),
+			},
+			wantErr: true,
+		},
+		{
+			name: "init_id hash mismatch rejected",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "wrong-hash-value",
+				MimeType: "video/mp4; codecs=\"avc1.64001f\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaInit(tt.msg)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateMediaInit() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateMediaInit() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMediaSegment(t *testing.T) {
+	// given
+	ra := true
+
+	tests := []struct {
+		name    string
+		msg     *GameMediaSegment
+		wantErr bool
+	}{
+		{
+			name: "valid segment passes",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty stream_id rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty init_id rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "",
+				Sequence:     1,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "sequence zero rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     0,
+				Segment:      []byte("moof-mdat-data"),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty segment rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      []byte{},
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "oversized segment rejected",
+			msg: &GameMediaSegment{
+				StreamId:     "stream-1",
+				InitId:       "init-1",
+				Sequence:     1,
+				Segment:      make([]byte, domain.MaxSegmentSize+1),
+				RandomAccess: &ra,
+			},
+			wantErr: true,
+		},
+		{
+			name: "random_access nil rejected",
+			msg: &GameMediaSegment{
+				StreamId: "stream-1",
+				InitId:   "init-1",
+				Sequence: 1,
+				Segment:  []byte("moof-mdat-data"),
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaSegment(tt.msg)
+
+			// then
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateMediaSegment() expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateMediaSegment() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMediaInit_ErrorMessages(t *testing.T) {
+	validInitID := validTestInitID()
+
+	// given
+	tests := []struct {
+		name       string
+		msg        *GameMediaInit
+		wantSubstr string
+	}{
+		{
+			name: "unsupported codec mentions codec",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   validInitID,
+				MimeType: "video/mp4; codecs=\"avc1\"",
+				Codec:    "vp9",
+				Segment:  validTestSegment,
+			},
+			wantSubstr: "unsupported codec",
+		},
+		{
+			name: "init_id mismatch mentions mismatch",
+			msg: &GameMediaInit{
+				StreamId: "stream-1",
+				InitId:   "bad-hash",
+				MimeType: "video/mp4; codecs=\"avc1\"",
+				Codec:    "h264-avc",
+				Segment:  validTestSegment,
+			},
+			wantSubstr: "mismatch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			err := ValidateMediaInit(tt.msg)
+
+			// then
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantSubstr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.wantSubstr)
+			}
+		})
 	}
 }

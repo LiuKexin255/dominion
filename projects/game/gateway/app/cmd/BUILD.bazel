@@ -13,7 +13,6 @@ go_library(
         "//common/gopkg/http",
         "//common/gopkg/otel",
         "//projects/game/gateway/app",
-        "//projects/game/gateway/config",
         "//projects/game/gateway/runtime/owner",
         "//projects/game/pkg/const",
         "//projects/game/pkg/token",

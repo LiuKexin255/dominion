@@ -18,7 +18,6 @@ import (
 	"dominion/projects/game/runtime/domain/sessionmanager"
 	"dominion/projects/game/runtime/service"
 
-	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 )
 
@@ -45,31 +44,30 @@ func main() {
 	sessions := sessionmanager.NewManager(cfg.RuntimeID, sessionmanager.WithIdleTTL(cfg.IdleTTL))
 	control := service.NewControlExecutor()
 	svc := service.NewRuntimeService(sessions, control, cfg, signer, signer)
-	handler := rt.NewHandler(svc, signer)
-	runtimeLifecycleHandler := rt.NewRuntimeHandler(svc, signer)
 
-	publicMux := runtime.NewServeMux(grpcpkg.GatewayDefault()...)
-	rt.RegisterGameGatewayServiceHandlerServer(context.Background(), publicMux, handler)
+	readerHandler := rt.NewHandler(svc, signer)
+	managerHandler := rt.NewRuntimeHandler(svc)
 
 	wsHandler := rt.NewWebSocketHandler(svc)
 
-	// Simple HTTP router (no owner router needed — owner resolution happens in gateway)
+	// HTTP server — only handles WebSocket upgrades.
+	// GameRuntimeReader is gRPC-only (no HTTP annotations).
 	httpMux := http.NewServeMux()
-	httpMux.Handle("/", publicMux)
 	httpMux.Handle("/v1/sessions/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check for WebSocket upgrade
 		if strings.HasSuffix(r.URL.Path, "/game/connect") &&
 			strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
 			wsHandler.ServeHTTP(w, r)
 			return
 		}
-		publicMux.ServeHTTP(w, r)
+		http.Error(w, "not found", http.StatusNotFound)
 	}))
 
 	httpServer := &http.Server{Addr: normalizeListenAddr(httpPort), Handler: httpMux}
 
+	// gRPC server — hosts both GameRuntimeReader and GameRuntimeManager.
 	internalGRPCServer := grpc.NewServer(grpcpkg.ServiceDefault()...)
-	rt.RegisterGameRuntimeServiceServer(internalGRPCServer, runtimeLifecycleHandler)
+	rt.RegisterGameRuntimeReaderServer(internalGRPCServer, readerHandler)
+	rt.RegisterGameRuntimeManagerServer(internalGRPCServer, managerHandler)
 
 	internalListener, err := net.Listen("tcp", normalizeListenAddr(cfg.GRPCPort))
 	if err != nil {

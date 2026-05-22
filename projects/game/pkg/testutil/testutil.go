@@ -34,9 +34,9 @@ var (
 	httpClient      = &http.Client{Timeout: httpClientTimeout}
 	jsonMarshaler   = protojson.MarshalOptions{}
 	jsonUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
-	// dummySigner is a token signer used solely for ParseRoutingClaims,
+	// dummySigner is a token parser used solely for ParseRoutingClaims,
 	// which only decodes and unmarshals the payload without verification.
-	dummySigner = token.NewHMACSigner("", 0)
+	dummySigner = token.NewParser()
 )
 
 // NewTestSessionID generates a unique session ID for testing prefixed with

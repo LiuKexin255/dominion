@@ -422,9 +422,9 @@ func TestGateway_ParseRoutingClaims_ExtractsOwnerRuntimeID(t *testing.T) {
 	tokenStr := sess.GetToken()
 	runtimeID := sess.GetOwnerRuntimeId()
 
-	// Use the dummy signer (no secret) for ParseRoutingClaims, matching the
+	// Use the parser (no secret) for ParseRoutingClaims, matching the
 	// gateway's OwnerExtractor usage in router.go.
-	dummySigner := token.NewHMACSigner("", 0)
+	dummySigner := token.NewParser()
 	claims, err := dummySigner.ParseRoutingClaims(tokenStr)
 	if err != nil {
 		t.Fatalf("ParseRoutingClaims: %v", err)
@@ -542,5 +542,51 @@ func TestGateway_Stateless_NoSessionOrRuntimeState(t *testing.T) {
 			}
 		}
 		cancel()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: Session ID path mismatch (gateway validates URL path vs token)
+// ---------------------------------------------------------------------------
+
+// TestGateway_SessionIDPathMismatch_Rejected verifies that the gateway
+// rejects WebSocket connections when the session ID in the URL path does not
+// match the session ID encoded in the token.
+func TestGateway_SessionIDPathMismatch_Rejected(t *testing.T) {
+	endpoint := gwMustEndpoint(t)
+	sessionID := testutil.NewTestSessionID()
+
+	ctx, cancel := context.WithTimeout(context.Background(), gwReadTimeout)
+	defer cancel()
+
+	sess, err := testutil.CreateSession(ctx, endpoint, "SESSION_TYPE_SAOLEI", sessionID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	defer gwCleanupSession(t, endpoint, sess.GetName())
+
+	runtimeID := sess.GetOwnerRuntimeId()
+	sessionIDFromName := strings.TrimPrefix(sess.GetName(), "sessions/")
+
+	// Issue a valid token for the real session.
+	signer := gwMustSigner(t)
+	tok, err := signer.Issue(sessionIDFromName, runtimeID, 1, token.TokenAudienceInternal, 0)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	// Forge a different session ID in the URL path.
+	fakeSessionID := fmt.Sprintf("forged-session-%d", time.Now().UnixNano())
+	fakeURL := gwBuildWsURL(t, endpoint, fakeSessionID, tok)
+
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), gwShortReadTimeout)
+	defer wsCancel()
+
+	conn, _, err := websocket.Dial(wsCtx, fakeURL, &websocket.DialOptions{HTTPHeader: http.Header{}})
+	if conn != nil {
+		conn.Close(websocket.StatusNormalClosure, "test done")
+	}
+	if err == nil {
+		t.Fatal("expected WebSocket connection to be rejected for session ID path mismatch, but it succeeded")
 	}
 }

@@ -81,3 +81,15 @@ func TestDeployOwnerResolver_Resolve_NoEndpoints(t *testing.T) {
 		t.Fatalf("Resolve() error = %v, want %v", err, solver.ErrInstanceNoReadyEndpoints)
 	}
 }
+
+func TestNewResolver(t *testing.T) {
+	t.Setenv("DOMINION_ENVIRONMENT", "dev.alpha")
+
+	resolver, err := NewResolver()
+	if err != nil {
+		t.Fatalf("NewResolver() error = %v", err)
+	}
+	if resolver == nil {
+		t.Fatal("NewResolver() = nil, want resolver")
+	}
+}
