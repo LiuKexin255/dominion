@@ -114,9 +114,6 @@ type ServiceConfig struct {
 	URI string `yaml:"uri,omitempty"`
 
 	Kind WorkloadKind `yaml:"kind,omitempty"`
-
-	// Exposure 指定有状态工作负载的暴露模式，仅 stateful 有效。
-	Exposure string `yaml:"exposure,omitempty"`
 }
 
 type ServiceArtifact struct {
@@ -243,10 +240,6 @@ func ParseServiceConfig(filePath string) (*ServiceConfig, error) {
 
 	if c.Kind == "" {
 		c.Kind = WorkloadKindStateless
-	}
-
-	if c.Kind == WorkloadKindStateless && c.Exposure != "" {
-		return nil, fmt.Errorf("exposure is only valid for stateful workloads, got kind=%q exposure=%q", c.Kind, c.Exposure)
 	}
 
 	return c, nil

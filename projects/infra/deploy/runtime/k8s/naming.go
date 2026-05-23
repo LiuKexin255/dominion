@@ -3,7 +3,6 @@ package k8s
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"regexp"
 	"strings"
 )
@@ -35,12 +34,6 @@ const (
 	WorkloadKindSecret WorkloadKind = "secret"
 	// WorkloadKindStatefulSet 表示 StatefulSet 类型前缀。
 	WorkloadKindStatefulSet WorkloadKind = "sts"
-	// WorkloadKindInstanceService 表示 StatefulSet 实例 Service 类型前缀。
-	WorkloadKindInstanceService WorkloadKind = "sisvc"
-	// WorkloadKindInstanceRoute 表示 StatefulSet 实例 HTTPRoute 类型前缀。
-	WorkloadKindInstanceRoute WorkloadKind = "sirt"
-	// WorkloadKindAggregateService 表示 aggregate Service 类型前缀。
-	WorkloadKindAggregateService WorkloadKind = "agsvc"
 
 	maxK8sResourceNameSize = 63
 )
@@ -66,16 +59,6 @@ func sanitizeNamePart(part string) string {
 	part = nonDNSLabel.ReplaceAllString(part, "-")
 	part = strings.Trim(part, "-")
 	return part
-}
-
-func newInstanceObjectName(kind WorkloadKind, fullEnvName string, serviceName string, instanceIndex int) string {
-	base := newObjectName(kind, fullEnvName, serviceName)
-	suffix := fmt.Sprintf("-%d", instanceIndex)
-	maxBase := maxK8sResourceNameSize - len(suffix)
-	if len(base) > maxBase {
-		base = base[:maxBase]
-	}
-	return base + suffix
 }
 
 func shortNameHash(fullEnvName string) string {
