@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "handler",
+    srcs = ["handler.go"],
+    importpath = "dominion/projects/game/agent/handler",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//projects/game",
+        "//projects/game/agent/domain",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
