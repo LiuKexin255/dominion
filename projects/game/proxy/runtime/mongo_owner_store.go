@@ -7,10 +7,14 @@ import (
 
 	"dominion/projects/game/proxy/domain"
 
-	"go.mongodb.org/mongo-driver/bson"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// ownerFilter is a concrete BSON filter struct for querying by session_id.
+type ownerFilter struct {
+	SessionID string `bson:"session_id"`
+}
 
 const (
 	// databaseName is the MongoDB database name for proxy storage.
@@ -69,7 +73,7 @@ func NewMongoOwnerStore(client *mongodriver.Client) domain.OwnerStore {
 func (s *mongoOwnerStore) Create(ctx context.Context, owner *domain.AgentOwner) error {
 	// Check for existing record before inserting.
 	existing := new(agentOwnerDocument)
-	if err := s.collection.FindOne(ctx, bson.M{"session_id": owner.SessionID}).Decode(existing); err == nil {
+	if err := s.collection.FindOne(ctx, ownerFilter{SessionID: owner.SessionID}).Decode(existing); err == nil {
 		return domain.ErrOwnerAlreadyExists
 	} else if !errors.Is(err, mongodriver.ErrNoDocuments) {
 		return err
@@ -94,7 +98,7 @@ func (s *mongoOwnerStore) Create(ctx context.Context, owner *domain.AgentOwner) 
 // Get retrieves an agent owner by session ID.
 func (s *mongoOwnerStore) Get(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
 	result := new(agentOwnerDocument)
-	if err := s.collection.FindOne(ctx, bson.M{"session_id": sessionID}).Decode(result); err != nil {
+	if err := s.collection.FindOne(ctx, ownerFilter{SessionID: sessionID}).Decode(result); err != nil {
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
 			return nil, domain.ErrOwnerNotFound
 		}
@@ -106,7 +110,7 @@ func (s *mongoOwnerStore) Get(ctx context.Context, sessionID string) (*domain.Ag
 
 // Delete removes an agent owner by session ID.
 func (s *mongoOwnerStore) Delete(ctx context.Context, sessionID string) error {
-	result, err := s.collection.DeleteOne(ctx, bson.M{"session_id": sessionID})
+	result, err := s.collection.DeleteOne(ctx, ownerFilter{SessionID: sessionID})
 	if err != nil {
 		return err
 	}

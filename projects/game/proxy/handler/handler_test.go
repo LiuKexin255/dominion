@@ -202,6 +202,38 @@ func TestCreateAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("init_agent_fails", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		picker := &mockOwnerPicker{result: 1}
+		resolver := &mockStatefulResolver{instances: instances}
+		agentMock := &mockAgentClient{initErr: errors.New("agent init failed")}
+
+		h := NewProxyHandler(
+			store,
+			picker,
+			resolver,
+			func(_ context.Context, _ int) (AgentClient, error) {
+				return agentMock, nil
+			},
+		)
+
+		req := &game.CreateAgentRequest{
+			Parent: "sessions/test-session-002",
+		}
+
+		// when
+		_, err := h.CreateAgent(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("CreateAgent() expected error, got nil")
+		}
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("CreateAgent() status = %v, want Internal, err=%v", status.Code(err), err)
+		}
+	})
+
 	t.Run("owner already exists", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
@@ -324,6 +356,46 @@ func TestGetAgent(t *testing.T) {
 		}
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("GetAgent() status = %v, want NotFound, err=%v", status.Code(err), err)
+		}
+	})
+
+	t.Run("get_status_fails", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		owner := &domain.AgentOwner{
+			SessionID:  "session-get-status-fail",
+			OwnerIndex: 0,
+			Owner:      "agent-0",
+			CreateTime: time.Now(),
+		}
+		store.records["session-get-status-fail"] = owner
+
+		picker := &mockOwnerPicker{result: 0}
+		resolver := &mockStatefulResolver{}
+		agentMock := &mockAgentClient{getStatusErr: errors.New("agent status failed")}
+
+		h := NewProxyHandler(
+			store,
+			picker,
+			resolver,
+			func(_ context.Context, _ int) (AgentClient, error) {
+				return agentMock, nil
+			},
+		)
+
+		req := &game.GetAgentRequest{
+			Name: "sessions/session-get-status-fail/agent",
+		}
+
+		// when
+		_, err := h.GetAgent(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("GetAgent() expected error, got nil")
+		}
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("GetAgent() status = %v, want Internal, err=%v", status.Code(err), err)
 		}
 	})
 

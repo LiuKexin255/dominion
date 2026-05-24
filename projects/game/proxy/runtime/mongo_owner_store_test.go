@@ -77,7 +77,15 @@ func (c *fakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*op
 
 	f, ok := filter.(bson.M)
 	if !ok {
-		return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
+		// Try converting via bson marshal/unmarshal round-trip.
+		data, err := bson.Marshal(filter)
+		if err != nil {
+			return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
+		}
+		f = make(bson.M)
+		if err := bson.Unmarshal(data, &f); err != nil {
+			return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
+		}
 	}
 
 	sessionID, _ := f["session_id"].(string)
@@ -95,7 +103,15 @@ func (c *fakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*
 
 	f, ok := filter.(bson.M)
 	if !ok {
-		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
+		// Try converting via bson marshal/unmarshal round-trip.
+		data, err := bson.Marshal(filter)
+		if err != nil {
+			return &mongodriver.DeleteResult{DeletedCount: 0}, nil
+		}
+		f = make(bson.M)
+		if err := bson.Unmarshal(data, &f); err != nil {
+			return &mongodriver.DeleteResult{DeletedCount: 0}, nil
+		}
 	}
 
 	sessionID, _ := f["session_id"].(string)
