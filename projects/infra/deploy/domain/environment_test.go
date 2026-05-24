@@ -1482,37 +1482,21 @@ func Test_normalizeArtifactSpec(t *testing.T) {
 	tests := []struct {
 		name         string
 		spec         ArtifactSpec
-		wantExposure ExposureMode
 		wantReplicas int32
 	}{
 		{
-			name:         "stateful with unspecified exposure defaults to aggregate",
-			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModeUnspecified, Replicas: 3},
-			wantExposure: ExposureModeAggregate,
+			name:         "zero replicas defaults to 1",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Replicas: 0},
+			wantReplicas: 1,
+		},
+		{
+			name:         "non-zero replicas unchanged",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Replicas: 3},
 			wantReplicas: 3,
 		},
 		{
-			name:         "stateful with explicit exposure unchanged",
-			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModePerInstance, Replicas: 2},
-			wantExposure: ExposureModePerInstance,
-			wantReplicas: 2,
-		},
-		{
-			name:         "stateless exposure unchanged",
-			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Exposure: ExposureModeUnspecified, Replicas: 1},
-			wantExposure: ExposureModeUnspecified,
-			wantReplicas: 1,
-		},
-		{
-			name:         "zero replicas defaults to 1",
-			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateless, Replicas: 0},
-			wantExposure: ExposureModeUnspecified,
-			wantReplicas: 1,
-		},
-		{
-			name:         "stateful with zero replicas normalizes both",
-			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Exposure: ExposureModeUnspecified, Replicas: 0},
-			wantExposure: ExposureModeAggregate,
+			name:         "stateful with zero replicas normalizes replicas",
+			spec:         ArtifactSpec{WorkloadKind: WorkloadKindStateful, Replicas: 0},
 			wantReplicas: 1,
 		},
 	}
@@ -1526,9 +1510,6 @@ func Test_normalizeArtifactSpec(t *testing.T) {
 			normalizeArtifactSpec(&spec)
 
 			// then
-			if spec.Exposure != tt.wantExposure {
-				t.Fatalf("Exposure = %v, want %v", spec.Exposure, tt.wantExposure)
-			}
 			if spec.Replicas != tt.wantReplicas {
 				t.Fatalf("Replicas = %d, want %d", spec.Replicas, tt.wantReplicas)
 			}
@@ -1561,9 +1542,6 @@ func TestNewEnvironment_NormalizesArtifactSpec(t *testing.T) {
 
 	// then
 	artifact := env.DesiredState().Artifacts[0]
-	if artifact.Exposure != ExposureModeAggregate {
-		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
-	}
 	if artifact.Replicas != 1 {
 		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
 	}
@@ -1597,9 +1575,6 @@ func TestSetDesiredPresent_NormalizesArtifactSpec(t *testing.T) {
 
 	// then
 	artifact := env.DesiredState().Artifacts[0]
-	if artifact.Exposure != ExposureModeAggregate {
-		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
-	}
 	if artifact.Replicas != 1 {
 		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
 	}
@@ -1611,7 +1586,7 @@ func TestRehydrateEnvironment_NormalizesArtifactSpec(t *testing.T) {
 		t.Fatalf("NewEnvironmentName() unexpected error: %v", err)
 	}
 
-	// given - old data with stateful workload and unspecified exposure
+	// given - old data with stateful workload
 	snapshot := EnvironmentSnapshot{
 		Name:    name,
 		EnvType: EnvironmentTypeProd,
@@ -1635,9 +1610,6 @@ func TestRehydrateEnvironment_NormalizesArtifactSpec(t *testing.T) {
 
 	// then
 	artifact := env.DesiredState().Artifacts[0]
-	if artifact.Exposure != ExposureModeAggregate {
-		t.Fatalf("Exposure = %v, want %v", artifact.Exposure, ExposureModeAggregate)
-	}
 	if artifact.Replicas != 1 {
 		t.Fatalf("Replicas = %d, want 1", artifact.Replicas)
 	}

@@ -97,7 +97,10 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 		}
 		compiledArtifact.Http = compiledArtifactHTTP
 		compiledArtifact.WorkloadKind = mapWorkloadKind(serviceConfig.Kind)
-		compiledArtifact.Exposure = mapExposureMode(serviceConfig.Exposure)
+
+		if compiledArtifact.WorkloadKind == deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL && compiledArtifact.Http != nil {
+			return nil, fmt.Errorf("service %s: http is only supported for stateless workloads, got kind=stateful", artifact.Name)
+		}
 
 		desiredState.Artifacts = append(desiredState.Artifacts, compiledArtifact)
 	}
@@ -187,17 +190,6 @@ func mapWorkloadKind(kind config.WorkloadKind) deploy.WorkloadKind {
 		return deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL
 	default:
 		return deploy.WorkloadKind_WORKLOAD_KIND_STATELESS
-	}
-}
-
-func mapExposureMode(exposure string) deploy.ExposureMode {
-	switch exposure {
-	case "aggregate":
-		return deploy.ExposureMode_EXPOSURE_MODE_AGGREGATE
-	case "per-instance":
-		return deploy.ExposureMode_EXPOSURE_MODE_PER_INSTANCE
-	default:
-		return deploy.ExposureMode_EXPOSURE_MODE_UNSPECIFIED
 	}
 }
 

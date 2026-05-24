@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
-	"strings"
 
 	"dominion/tools/release/deploy/pkg/config"
 	"dominion/tools/release/deploy/pkg/workspace"
@@ -109,13 +108,5 @@ func collectHostnames(deployCfg *config.DeployConfig) map[string]bool {
 }
 
 func hostnameMatches(host string, hostnameSet map[string]bool) bool {
-	if hostnameSet[host] {
-		return true
-	}
-	for h := range hostnameSet {
-		if strings.HasSuffix(host, "-"+h) {
-			return true
-		}
-	}
-	return false
+	return hostnameSet[host]
 }

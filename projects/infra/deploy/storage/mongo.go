@@ -147,7 +147,6 @@ type mongoArtifactSpec struct {
 	TLSEnabled   bool                    `bson:"tls_enabled"`
 	OSSEnabled   bool                    `bson:"oss_enabled"`
 	WorkloadKind int                     `bson:"workload_kind"`
-	ExposureMode int                     `bson:"exposure_mode"`
 	HTTP         *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
 	Env          map[string]string       `bson:"env,omitempty"`
 }
@@ -545,7 +544,6 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 			TLSEnabled:   s.TLSEnabled,
 			OSSEnabled:   s.OSSEnabled,
 			WorkloadKind: int(s.WorkloadKind),
-			ExposureMode: int(s.Exposure),
 			HTTP:         artifactHTTPSpecToMongo(s.HTTP),
 			Env:          s.Env,
 		}
@@ -687,7 +685,6 @@ func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 			TLSEnabled:   s.TLSEnabled,
 			OSSEnabled:   s.OSSEnabled,
 			WorkloadKind: domain.WorkloadKind(s.WorkloadKind),
-			Exposure:     domain.ExposureMode(s.ExposureMode),
 			HTTP:         artifactHTTPSpecFromMongo(s.HTTP),
 			Env:          normalizeEnv(s.Env),
 		}

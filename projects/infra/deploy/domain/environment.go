@@ -420,12 +420,8 @@ func cloneInfras(infras []*InfraSpec) []*InfraSpec {
 }
 
 // normalizeArtifactSpec applies domain defaults to an artifact spec.
-// Stateful workloads with unspecified exposure default to aggregate;
-// zero replicas default to 1.
+// Zero replicas default to 1.
 func normalizeArtifactSpec(spec *ArtifactSpec) {
-	if spec.WorkloadKind == WorkloadKindStateful && spec.Exposure == ExposureModeUnspecified {
-		spec.Exposure = ExposureModeAggregate
-	}
 	if spec.Replicas == 0 {
 		spec.Replicas = 1
 	}

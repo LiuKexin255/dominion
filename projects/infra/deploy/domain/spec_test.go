@@ -1,12 +1,16 @@
 package domain
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestArtifactSpec_Validate(t *testing.T) {
 	tests := []struct {
-		name    string
-		spec    ArtifactSpec
-		wantErr bool
+		name         string
+		spec         ArtifactSpec
+		wantErr      bool
+		wantContains string
 	}{
 		{
 			name: "valid artifact spec without http",
@@ -47,58 +51,6 @@ func TestArtifactSpec_Validate(t *testing.T) {
 				App:   "app",
 				Image: "repo/app:v1",
 				HTTP:  &ArtifactHTTPSpec{},
-			},
-			wantErr: true,
-		},
-		{
-			name: "stateful valid with full matches",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateful,
-				HTTP: &ArtifactHTTPSpec{
-					Hostnames: []string{"example.com"},
-					Matches: []HTTPRouteRule{{
-						Backend: "http",
-						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
-					}},
-				},
-			},
-		},
-		{
-			name: "stateful valid without http",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateful,
-			},
-		},
-		{
-			name: "stateful with hostnames but no matches rejected",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateful,
-				HTTP: &ArtifactHTTPSpec{
-					Hostnames: []string{"example.com"},
-				},
-			},
-			wantErr: true,
-		},
-		{
-			name: "stateful with empty backend rejected",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateful,
-				HTTP: &ArtifactHTTPSpec{
-					Hostnames: []string{"example.com"},
-					Matches:   []HTTPRouteRule{{}},
-				},
 			},
 			wantErr: true,
 		},
@@ -159,65 +111,30 @@ func TestArtifactSpec_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "stateless with unspecified exposure valid",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateless,
-				Exposure:     ExposureModeUnspecified,
-			},
-		},
-		{
-			name: "stateless with aggregate exposure rejected",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateless,
-				Exposure:     ExposureModeAggregate,
-			},
-			wantErr: true,
-		},
-		{
-			name: "stateless with per instance exposure rejected",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateless,
-				Exposure:     ExposureModePerInstance,
-			},
-			wantErr: true,
-		},
-		{
-			name: "stateful with aggregate exposure valid",
+			name: "stateful with http rejected",
 			spec: ArtifactSpec{
 				Name:         "api",
 				App:          "app",
 				Image:        "repo/app:v1",
 				WorkloadKind: WorkloadKindStateful,
-				Exposure:     ExposureModeAggregate,
+				HTTP: &ArtifactHTTPSpec{
+					Hostnames: []string{"example.com"},
+					Matches: []HTTPRouteRule{{
+						Backend: "http",
+						Path:    HTTPPathRule{Type: HTTPPathRuleTypePathPrefix, Value: "/"},
+					}},
+				},
 			},
+			wantErr:      true,
+			wantContains: "http is only supported for stateless workloads",
 		},
 		{
-			name: "stateful with per instance exposure valid",
+			name: "stateful without http valid",
 			spec: ArtifactSpec{
 				Name:         "api",
 				App:          "app",
 				Image:        "repo/app:v1",
 				WorkloadKind: WorkloadKindStateful,
-				Exposure:     ExposureModePerInstance,
-			},
-		},
-		{
-			name: "stateful with unspecified exposure valid",
-			spec: ArtifactSpec{
-				Name:         "api",
-				App:          "app",
-				Image:        "repo/app:v1",
-				WorkloadKind: WorkloadKindStateful,
-				Exposure:     ExposureModeUnspecified,
 			},
 		},
 	}
@@ -237,6 +154,9 @@ func TestArtifactSpec_Validate(t *testing.T) {
 				}
 				if err.Error() == "" || err.Error() == ErrInvalidSpec.Error() {
 					t.Fatalf("Validate() error = %v, want detailed invalid spec error", err)
+				}
+				if tt.wantContains != "" && !strings.Contains(err.Error(), tt.wantContains) {
+					t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantContains)
 				}
 				return
 			}

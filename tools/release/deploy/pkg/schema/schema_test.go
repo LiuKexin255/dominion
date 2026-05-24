@@ -489,6 +489,22 @@ artifacts:
 `),
 			wantErr: true,
 		},
+		{
+			name: "service yaml rejects exposure field",
+			raw: []byte(`name: service
+app: grpc-hello-world
+desc: grpc hello world service
+kind: stateful
+exposure: aggregate
+artifacts:
+  - name: service
+    target: //experimental/grpc_hello_world/service:service_image
+    ports:
+      - name: grpc
+        port: 50051
+`),
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

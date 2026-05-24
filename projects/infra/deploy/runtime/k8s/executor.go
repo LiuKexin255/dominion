@@ -89,15 +89,6 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 	deploymentCount := len(objects.Deployments) + len(objects.MongoDBWorkloads)
 	statefulsetCount := len(objects.StatefulWorkloads)
 	serviceCount := len(objects.Deployments) + len(objects.StatefulWorkloads) + len(objects.MongoDBWorkloads)
-	for _, sw := range objects.StatefulWorkloads {
-		switch sw.Exposure {
-		case domain.ExposureModePerInstance:
-			serviceCount += int(sw.Replicas)
-		default:
-			serviceCount++
-		}
-	}
-
 	span.SetAttributes(
 		attribute.Int(logFieldDeploymentCount, deploymentCount),
 		attribute.Int(logFieldServiceCount, serviceCount),
@@ -133,34 +124,6 @@ func (r *K8sRuntime) applyInner(ctx context.Context, env *domain.Environment, en
 	}
 	for _, workload := range objects.StatefulWorkloads {
 		if err := r.applyStatefulSet(ctx, workload); err != nil {
-			return err
-		}
-	}
-	// Apply exposure-mode specific services
-	for _, workload := range objects.StatefulWorkloads {
-		switch workload.Exposure {
-		case domain.ExposureModePerInstance:
-			for i := 0; i < int(workload.Replicas); i++ {
-				if err := r.applyPerInstanceService(ctx, workload, i); err != nil {
-					return err
-				}
-			}
-		default:
-			// Aggregate (or unspecified → normalized to aggregate by domain)
-			if err := r.applyAggregateService(ctx, workload); err != nil {
-				return err
-			}
-		}
-	}
-	// Apply per-instance HTTPRoutes (only populated for per-instance mode by converter)
-	instanceRouteIdx := map[string]int{}
-	for _, workload := range objects.InstanceRoutes {
-		if workload == nil {
-			continue
-		}
-		idx := instanceRouteIdx[workload.ServiceName]
-		instanceRouteIdx[workload.ServiceName] = idx + 1
-		if err := r.applyPerInstanceHTTPRoute(ctx, workload, idx); err != nil {
 			return err
 		}
 	}
@@ -261,23 +224,6 @@ func buildExpectedApplyResources(objects *DeployObjects) *expectedApplyResources
 		}
 		resources.statefulSets[workload.WorkloadName()] = struct{}{}
 		resources.services[workload.ServiceResourceName()] = struct{}{}
-		switch workload.Exposure {
-		case domain.ExposureModePerInstance:
-			for i := 0; i < int(workload.Replicas); i++ {
-				resources.services[newInstanceObjectName(WorkloadKindInstanceService, workload.EnvironmentName, workload.ServiceName, i)] = struct{}{}
-			}
-		default:
-			resources.services[workload.AggregateServiceName()] = struct{}{}
-		}
-	}
-	instanceRouteIdx := map[string]int{}
-	for _, workload := range objects.InstanceRoutes {
-		if workload == nil {
-			continue
-		}
-		idx := instanceRouteIdx[workload.ServiceName]
-		instanceRouteIdx[workload.ServiceName] = idx + 1
-		resources.httpRoutes[newInstanceObjectName(WorkloadKindInstanceRoute, workload.EnvironmentName, workload.ServiceName, idx)] = struct{}{}
 	}
 
 	return resources
@@ -642,20 +588,6 @@ func (r *K8sRuntime) applyGoverningService(ctx context.Context, workload *Statef
 		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
 }
 
-func (r *K8sRuntime) applyAggregateService(ctx context.Context, workload *StatefulWorkload) error {
-	if workload == nil {
-		return fmt.Errorf("failed to build %s <nil>: stateful workload 为空", resourceKindService)
-	}
-
-	desired, err := BuildStatefulAggregateService(workload, r.client.K8sConfig)
-	if err != nil {
-		return fmt.Errorf("构建 aggregate %s %s 失败: %w", resourceKindService, workload.AggregateServiceName(), err)
-	}
-
-	return applyTypedService(ctx, desired.Name,
-		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
-}
-
 func (r *K8sRuntime) applyStatefulSet(ctx context.Context, workload *StatefulWorkload) error {
 	if workload == nil {
 		return fmt.Errorf("failed to build %s <nil>: stateful workload 为空", resourceKindStatefulSet)
@@ -668,51 +600,6 @@ func (r *K8sRuntime) applyStatefulSet(ctx context.Context, workload *StatefulWor
 
 	return applyStatefulSetResource(ctx, resourceKindStatefulSet, desired.Name,
 		r.client.TypedClient.AppsV1().StatefulSets(desired.Namespace), desired)
-}
-
-func (r *K8sRuntime) applyPerInstanceService(ctx context.Context, workload *StatefulWorkload, instanceIndex int) error {
-	if workload == nil {
-		return fmt.Errorf("failed to build %s <nil>: stateful workload 为空", resourceKindService)
-	}
-
-	desired, err := BuildPerInstanceService(workload, r.client.K8sConfig, instanceIndex)
-	if err != nil {
-		return fmt.Errorf("构建 instance %s %s-%d 失败: %w", resourceKindService, workload.ServiceName, instanceIndex, err)
-	}
-
-	return applyTypedService(ctx, desired.Name,
-		r.client.TypedClient.CoreV1().Services(desired.Namespace), desired)
-}
-
-func (r *K8sRuntime) applyPerInstanceHTTPRoute(ctx context.Context, workload *HTTPRouteWorkload, instanceIndex int) error {
-	if workload == nil {
-		return fmt.Errorf("failed to build %s <nil>: instance http route workload 为空", resourceKindHTTPRoute)
-	}
-
-	desired, err := BuildPerInstanceHTTPRoute(workload, r.client.K8sConfig, instanceIndex)
-	if err != nil {
-		return fmt.Errorf("构建 instance %s %s-%d 失败: %w", resourceKindHTTPRoute, workload.ServiceName, instanceIndex, err)
-	}
-
-	client := r.client.DynamicClient.Resource(httpRouteGVR()).Namespace(desired.GetNamespace())
-	current, err := client.Get(ctx, desired.GetName(), metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			if _, err := client.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("创建 instance %s %s/%s 失败: %w", resourceKindHTTPRoute, desired.GetNamespace(), desired.GetName(), err)
-			}
-			return nil
-		}
-
-		return fmt.Errorf("获取 instance %s %s/%s 失败: %w", resourceKindHTTPRoute, desired.GetNamespace(), desired.GetName(), err)
-	}
-
-	desired.SetResourceVersion(current.GetResourceVersion())
-	if _, err := client.Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("更新 instance %s %s/%s 失败: %w", resourceKindHTTPRoute, desired.GetNamespace(), desired.GetName(), err)
-	}
-
-	return nil
 }
 
 func (r *K8sRuntime) applyPVC(ctx context.Context, workload *MongoDBWorkload) error {
