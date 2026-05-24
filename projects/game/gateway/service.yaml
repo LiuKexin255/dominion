@@ -1,0 +1,12 @@
+version: "3.0"
+name: gateway
+app: game
+kind: stateless
+desc: game gateway with grpc-gateway and WebSocket
+ports:
+  - name: http
+    port: 80
+artifacts:
+  - name: gateway
+    target: :cmd_image
+    tls: true
