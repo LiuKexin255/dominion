@@ -1,0 +1,11 @@
+load("//tools/dev/go:defs.bzl", "go_largetest")
+
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = ["system_test.go"],
+    deps = [
+        "//common/gopkg/testtool",
+        "@com_github_gorilla_websocket//:websocket",
+    ],
+)

@@ -1,0 +1,27 @@
+name: game-agent-step1-system-test
+description: |
+  Game agent step1 system integration test
+
+  Services: session, proxy, agent, gateway + MongoDB
+  Interface: HTTP REST API + WebSocket
+  Base path: /api/v1/
+  Test cases:
+    1. Create session
+    2. Create agent
+    3. MongoDB records exist
+    4. Get agent returns owner
+    5. Consistent owner routing
+    6. WebSocket connect
+    7. WebSocket echo response
+    8. Delete agent and session
+    9. Full lifecycle
+
+suites:
+  - name: default
+    env: game.lt
+    deploy: //projects/game/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test
