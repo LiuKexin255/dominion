@@ -14,9 +14,9 @@ import (
 	"dominion/common/gopkg/solver"
 	game "dominion/projects/game"
 	"dominion/projects/game/proxy/domain"
-	"dominion/projects/game/proxy/runtime"
 
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -33,13 +33,29 @@ var (
 // agentTarget is the dominion target for resolving agent service instances.
 var agentTarget = solver.MustParseTarget("game/agent:grpc")
 
+// AgentClient performs operations against an agent service instance.
+type AgentClient interface {
+	// InitAgent initializes the agent for a given session.
+	InitAgent(ctx context.Context, req *game.InitAgentRequest) (*game.AgentStatus, error)
+	// GetAgentStatus returns the current status of the agent in a session.
+	GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error)
+	// Connect establishes a bidirectional stream to the agent service.
+	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
+	// Close releases resources associated with the client.
+	Close() error
+}
+
+// AgentClientFactory creates an AgentClient for a specific instance index.
+type AgentClientFactory func(ctx context.Context, instanceIndex int) (AgentClient, error)
+
 // ProxyHandler implements game.ProxyServiceServer.
 type ProxyHandler struct {
 	game.UnimplementedProxyServiceServer
 
-	ownerStore       domain.OwnerStore
-	ownerPicker      domain.OwnerPicker
-	statefulResolver solver.StatefulResolver
+	ownerStore         domain.OwnerStore
+	ownerPicker        domain.OwnerPicker
+	statefulResolver   solver.StatefulResolver
+	agentClientFactory AgentClientFactory
 }
 
 // NewProxyHandler creates a new ProxyHandler.
@@ -47,11 +63,13 @@ func NewProxyHandler(
 	ownerStore domain.OwnerStore,
 	ownerPicker domain.OwnerPicker,
 	statefulResolver solver.StatefulResolver,
+	agentClientFactory AgentClientFactory,
 ) *ProxyHandler {
 	return &ProxyHandler{
-		ownerStore:       ownerStore,
-		ownerPicker:      ownerPicker,
-		statefulResolver: statefulResolver,
+		ownerStore:         ownerStore,
+		ownerPicker:        ownerPicker,
+		statefulResolver:   statefulResolver,
+		agentClientFactory: agentClientFactory,
 	}
 }
 
@@ -78,7 +96,7 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	ownerName := fmt.Sprintf("agent-%d", agentIndex)
 
 	// Initialize the agent on the selected instance.
-	agentClient, err := runtime.NewAgentClient(ctx, agentIndex)
+	agentClient, err := h.agentClientFactory(ctx, agentIndex)
 	if err != nil {
 		logs.Error(ctx, "create agent client failed", event.Int("agent_index", agentIndex), event.Err(err))
 		return nil, status.Errorf(codes.Internal, "create agent client: %v", err)
@@ -131,7 +149,7 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	}
 
 	// Verify the agent is alive by querying its status.
-	agentClient, err := runtime.NewAgentClient(ctx, owner.OwnerIndex)
+	agentClient, err := h.agentClientFactory(ctx, owner.OwnerIndex)
 	if err != nil {
 		logs.Error(ctx, "create agent client failed", event.Int("agent_index", owner.OwnerIndex), event.Err(err))
 		return nil, status.Errorf(codes.Internal, "create agent client: %v", err)
@@ -189,7 +207,7 @@ func (h *ProxyHandler) ConnectAgent(stream game.ProxyService_ConnectAgentServer)
 	}
 
 	// Create a client to the owner agent instance.
-	agentClient, err := runtime.NewAgentClient(ctx, owner.OwnerIndex)
+	agentClient, err := h.agentClientFactory(ctx, owner.OwnerIndex)
 	if err != nil {
 		logs.Error(ctx, "connect agent: create client failed",
 			event.String("session_id", sessionID),

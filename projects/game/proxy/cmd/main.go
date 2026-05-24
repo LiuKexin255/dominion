@@ -47,7 +47,9 @@ func main() {
 	hashPicker := runtime.NewHashPicker()
 
 	// Proxy handler implements the ProxyService gRPC server interface.
-	h := handler.NewProxyHandler(mongoOwnerStore, hashPicker, statefulResolver)
+	h := handler.NewProxyHandler(mongoOwnerStore, hashPicker, statefulResolver, func(ctx context.Context, instanceIndex int) (handler.AgentClient, error) {
+		return runtime.NewAgentClient(ctx, instanceIndex)
+	})
 
 	// gRPC server with default service options (OTel tracing, TLS).
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)

@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "runtime",
@@ -17,6 +18,22 @@ go_library(
         "//projects/game",
         "//projects/game/proxy/domain",
         "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
+
+go_unittest(
+    name = "runtime_test",
+    srcs = [
+        "hash_picker_test.go",
+        "mongo_owner_store_test.go",
+    ],
+    embed = [":runtime"],
+    deps = [
+        "//common/gopkg/solver",
+        "//projects/game/proxy/domain",
         "@org_mongodb_go_mongo_driver//bson",
         "@org_mongodb_go_mongo_driver//mongo",
         "@org_mongodb_go_mongo_driver//mongo/options",
