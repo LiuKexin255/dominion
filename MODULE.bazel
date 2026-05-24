@@ -18,6 +18,8 @@ bazel_dep(name = "aspect_rules_ts", version = "3.8.8")
 bazel_dep(name = "rules_nodejs", version = "6.7.4")
 bazel_dep(name = "aspect_rules_swc", version = "2.7.1")
 bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "2.0.2")
+bazel_dep(name = "rules_python_gazelle_plugin", version = "2.0.2")
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
@@ -130,6 +132,27 @@ rules_ts_ext.deps(
     ts_version_from = "//:package.json",
 )
 use_repo(rules_ts_ext, "npm_typescript")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.defaults(
+    python_version = "3.13",
+)
+python.toolchain(
+    python_version = "3.13",
+)
+use_repo(
+    python,
+    "python_3_13",
+    "pythons_hub",
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "python_deps",
+    python_version = "3.13",
+    requirements_lock = "//:requirements_lock.txt",
+)
+use_repo(pip, "python_deps")
 
 ffmpeg_ext = use_extension("//third_party/www.gyan.dev/ffmpeg:defs.bzl", "ffmpeg_windows_amd64")
 use_repo(ffmpeg_ext, "ffmpeg_windows_amd64")
