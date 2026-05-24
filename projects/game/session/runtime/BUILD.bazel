@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "runtime",
+    srcs = [
+        "model.go",
+        "mongo_repository.go",
+    ],
+    importpath = "dominion/projects/game/session/runtime",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/session/domain",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
