@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "runtime",
+    srcs = [
+        "agent_client.go",
+        "hash_picker.go",
+        "model.go",
+        "mongo_owner_store.go",
+    ],
+    importpath = "dominion/projects/game/proxy/runtime",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
+        "//common/gopkg/solver",
+        "//projects/game",
+        "//projects/game/proxy/domain",
+        "@org_golang_google_grpc//:grpc",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
