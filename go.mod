@@ -9,7 +9,6 @@ require (
 	github.com/bep/debounce v1.2.1
 	github.com/bitfield/script v0.24.0
 	github.com/charmbracelet/glamour v0.8.0
-	github.com/coder/websocket v1.8.14
 	github.com/flytam/filenamify v1.2.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.13.2
@@ -50,6 +49,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	golang.org/x/mod v0.33.0
+	golang.org/x/sync v0.20.0
 	golang.org/x/tools v0.42.0
 	google.golang.org/grpc v1.80.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -154,7 +154,6 @@ require (
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/image v0.12.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/term v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
@@ -172,8 +171,6 @@ require (
 )
 
 require (
-	github.com/Eyevinn/hi264 v0.10.0
-	github.com/Eyevinn/mp4ff v0.51.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2

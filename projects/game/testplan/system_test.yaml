@@ -18,7 +18,6 @@ description: |
 
 suites:
   - name: default
-    env: game.lt
     deploy: //projects/game/testplan/deploy.yaml
     endpoint:
       http:

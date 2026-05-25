@@ -1,0 +1,9 @@
+load("//tools/release:defs.bzl", "artifact_image")
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    service = "gateway",
+    binary = "//projects/game/gateway/cmd:cmd",
+    visibility = ["//visibility:public"],
+)
