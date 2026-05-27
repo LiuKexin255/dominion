@@ -61,11 +61,19 @@ func main() {
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
-	// Longer /api/v1/sessions/ pattern takes priority over /api/v1/ prefix.
+	// All /api/v1/ requests flow through a single handler that dispatches
+	// WebSocket upgrades before falling through to grpc-gateway.
+	// A single subtree pattern avoids Go's ServeMux 307 redirect when
+	// both "/api/v1/" and "/api/v1/sessions/" are registered separately.
 	rootMux := http.NewServeMux()
 
-	// grpc-gateway handles all /api/v1/ unary HTTP/JSON requests.
-	rootMux.Handle("/api/v1/", gwmux)
+	rootMux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketConnectPath(r.URL.Path) {
+			handleWebSocketConnect(w, r, proxyConn)
+			return
+		}
+		gwmux.ServeHTTP(w, r)
+	})
 
 	// Sessions handler intercepts /api/v1/sessions/* to dispatch between
 	// grpc-gateway (unary agent CRUD) and WebSocket (ConnectAgent stream).

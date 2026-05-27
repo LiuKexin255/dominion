@@ -62,4 +62,3 @@ func (r *SimpleRuntime) Status(ctx context.Context, sessionID string) (*domain.S
 		Status:    "unknown",
 	}, nil
 }
-
