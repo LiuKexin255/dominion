@@ -24,7 +24,7 @@ func newMockRuntime() *mockRuntime {
 	}
 }
 
-func (m *mockRuntime) Init(_ context.Context, sessionID string) (*domain.Status, error) {
+func (m *mockRuntime) Create(_ context.Context, sessionID string) (*domain.Status, error) {
 	s := &domain.Status{
 		SessionId:  sessionID,
 		Status:     "initialized",
@@ -35,6 +35,13 @@ func (m *mockRuntime) Init(_ context.Context, sessionID string) (*domain.Status,
 	m.mu.Unlock()
 	cp := *s
 	return &cp, nil
+}
+
+func (m *mockRuntime) Delete(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	delete(m.sessions, sessionID)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *mockRuntime) Status(_ context.Context, sessionID string) (*domain.Status, error) {
@@ -55,18 +62,18 @@ func (m *mockRuntime) Connect(_ domain.AgentStream) error {
 	return nil
 }
 
-func TestInitAgent(t *testing.T) {
+func TestCreateAgent(t *testing.T) {
 	// given
 	rt := newMockRuntime()
 	h := NewAgentHandler(rt)
 	ctx := context.Background()
 
 	// when
-	resp, err := h.InitAgent(ctx, &game.InitAgentRequest{SessionId: "test"})
+	resp, err := h.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: "test"})
 
 	// then
 	if err != nil {
-		t.Fatalf("InitAgent() unexpected error: %v", err)
+		t.Fatalf("CreateAgent() unexpected error: %v", err)
 	}
 	if resp.GetSessionId() != "test" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "test")
@@ -84,7 +91,7 @@ func TestGetAgentStatus(t *testing.T) {
 	rt := newMockRuntime()
 	h := NewAgentHandler(rt)
 	ctx := context.Background()
-	_, _ = rt.Init(ctx, "known-session")
+	_, _ = rt.Create(ctx, "known-session")
 
 	// when
 	resp, err := h.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: "known-session"})
@@ -130,6 +137,38 @@ func TestGetAgentStatusUnknown(t *testing.T) {
 			}
 			if resp.GetSessionId() != tt.sessionID {
 				t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), tt.sessionID)
+			}
+		})
+	}
+}
+
+func TestDeleteAgent(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "existing session", sessionID: "to-delete"},
+		{name: "non-existent session", sessionID: "nonexistent"},
+		{name: "empty session id", sessionID: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			rt := newMockRuntime()
+			h := NewAgentHandler(rt)
+			ctx := context.Background()
+			_, _ = rt.Create(ctx, "to-delete")
+
+			// when
+			resp, err := h.DeleteAgent(ctx, &game.AgentDeleteRequest{SessionId: tt.sessionID})
+
+			// then
+			if err != nil {
+				t.Fatalf("DeleteAgent() unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("DeleteAgent() resp is nil, want non-nil")
 			}
 		})
 	}

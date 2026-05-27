@@ -1,6 +1,6 @@
-// Package runtime provides the MongoDB-backed OwnerStore, hash-based
+// Package mongo provides the MongoDB-backed OwnerStore, hash-based
 // OwnerPicker, and gRPC agent client implementations for the proxy service.
-package runtime
+package mongo
 
 import (
 	"time"

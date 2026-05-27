@@ -9,6 +9,7 @@ require (
 	github.com/bep/debounce v1.2.1
 	github.com/bitfield/script v0.24.0
 	github.com/charmbracelet/glamour v0.8.0
+	github.com/coder/websocket v1.8.14
 	github.com/flytam/filenamify v1.2.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.13.2

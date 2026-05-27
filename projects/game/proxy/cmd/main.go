@@ -14,7 +14,11 @@ import (
 	"dominion/common/gopkg/solver"
 	game "dominion/projects/game"
 	"dominion/projects/game/proxy/handler"
-	"dominion/projects/game/proxy/runtime"
+	"dominion/projects/game/proxy/runtime/agentclient"
+	proxymongo "dominion/projects/game/proxy/runtime/mongo"
+	"dominion/projects/game/proxy/runtime/picker"
+	"dominion/projects/game/proxy/runtime/stream"
+	"dominion/projects/game/proxy/service"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -35,7 +39,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create mongo client: %v", err)
 	}
-	mongoOwnerStore := runtime.NewMongoOwnerStore(mongoClient)
+	mongoOwnerStore := proxymongo.NewMongoOwnerStore(mongoClient)
 
 	// StatefulResolver discovers agent service instances.
 	statefulResolver, err := solver.NewDeployStatefulResolver()
@@ -44,22 +48,31 @@ func main() {
 	}
 
 	// Hash-based owner picker.
-	hashPicker := runtime.NewHashPicker()
+	hashPicker := picker.NewHashPicker()
+
+	// Agent client manager with periodic refresh.
+	agentTarget := solver.MustParseTarget("game/agent:grpc")
+	manager := agentclient.NewManager(context.Background(), statefulResolver, agentTarget, agentclient.DefaultRefreshInterval)
+
+	// Bidirectional stream binder.
+	binder := stream.NewBinder()
+
+	// ConnectAgenter handles bidirectional agent stream connections.
+	connectAgenter := service.NewConnectAgenter(mongoOwnerStore, manager, binder)
 
 	// Proxy handler implements the ProxyService gRPC server interface.
-	h := handler.NewProxyHandler(mongoOwnerStore, hashPicker, statefulResolver, func(ctx context.Context, instanceIndex int) (handler.AgentClient, error) {
-		return runtime.NewAgentClient(ctx, instanceIndex)
-	})
+	handler := handler.NewProxyHandler(mongoOwnerStore, hashPicker, manager, connectAgenter)
 
 	// gRPC server with default service options (OTel tracing, TLS).
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
-	game.RegisterProxyServiceServer(grpcServer, h)
+	game.RegisterProxyServiceServer(grpcServer, handler)
 	reflection.Register(grpcServer)
 
-	// Bootstrap lifecycle: OTEL → Mongo client → gRPC server.
+	// Bootstrap lifecycle: OTEL → Mongo client → Agent client manager → gRPC server.
 	b := bootstrap.New()
 	b.Register(otel.Component())
 	b.Register(bootstrap.MongoClient("mongo", mongoClient))
+	b.Register(manager)
 	b.Register(bootstrap.GRPCServer("grpc", grpcServer, listener))
 	log.Fatal(b.Run(context.Background()))
 }

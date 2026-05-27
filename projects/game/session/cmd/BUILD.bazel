@@ -8,11 +8,12 @@ go_library(
     deps = [
         "//common/gopkg/bootstrap",
         "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
         "//common/gopkg/mongo",
         "//common/gopkg/otel",
         "//projects/game",
         "//projects/game/session/handler",
-        "//projects/game/session/runtime",
+        "//projects/game/session/runtime/mongo",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//reflection",
     ],

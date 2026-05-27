@@ -26,8 +26,8 @@ func NewSimpleRuntime() *SimpleRuntime {
 	}
 }
 
-// Init stores the session status as "initialized" and returns a copy.
-func (r *SimpleRuntime) Init(ctx context.Context, sessionID string) (*domain.Status, error) {
+// Create creates the agent session with status "initialized" and returns a copy.
+func (r *SimpleRuntime) Create(ctx context.Context, sessionID string) (*domain.Status, error) {
 	s := &domain.Status{
 		SessionId:  sessionID,
 		Status:     "initialized",
@@ -38,6 +38,15 @@ func (r *SimpleRuntime) Init(ctx context.Context, sessionID string) (*domain.Sta
 	r.mu.Unlock()
 	cp := *s
 	return &cp, nil
+}
+
+// Delete removes the agent session from the in-memory map.
+// It is idempotent: deleting a non-existent session returns nil.
+func (r *SimpleRuntime) Delete(_ context.Context, sessionID string) error {
+	r.mu.Lock()
+	delete(r.data, sessionID)
+	r.mu.Unlock()
+	return nil
 }
 
 // Status returns the current status for the session.

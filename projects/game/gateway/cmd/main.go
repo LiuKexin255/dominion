@@ -9,7 +9,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -21,13 +23,19 @@ import (
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-var port = flag.String("port", "80", "Port to listen on")
+var (
+	port = flag.String("port", "80", "Port to listen on")
+	
+	// unmarshalOpts discards unknown JSON fields to tolerate forward-compatible
+	// proto changes without breaking the gateway.
+	unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
+)
 
 func main() {
 	flag.Parse()
@@ -54,12 +62,7 @@ func main() {
 		log.Fatalf("register proxy handler: %v", err)
 	}
 
-	// 3. Create WebSocket upgrader.
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-
-	// 4. Create root HTTP mux with path-based routing.
+	// 3. Create root HTTP mux with path-based routing.
 	// Longer /api/v1/sessions/ pattern takes priority over /api/v1/ prefix.
 	rootMux := http.NewServeMux()
 
@@ -70,7 +73,7 @@ func main() {
 	// grpc-gateway (unary agent CRUD) and WebSocket (ConnectAgent stream).
 	rootMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
 		if isWebSocketConnectPath(r.URL.Path) {
-			handleWebSocketConnect(w, r, upgrader, proxyConn)
+			handleWebSocketConnect(w, r, proxyConn)
 			return
 		}
 		gwmux.ServeHTTP(w, r)
@@ -117,20 +120,23 @@ func extractSessionID(path string) string {
 // and the underlying ProxyService.ConnectAgent gRPC stream.
 //
 // Messages are serialized as AgentFrame JSON (protojson) over WebSocket
-// text frames on both directions.
-func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, upgrader websocket.Upgrader, proxyConn *grpc.ClientConn) {
+// text frames on both directions. Unknown JSON fields are silently
+// discarded during deserialization (DiscardUnknown).
+func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *grpc.ClientConn) {
 	sessionID := extractSessionID(r.URL.Path)
 	if sessionID == "" {
 		http.Error(w, "invalid session_id in path", http.StatusBadRequest)
 		return
 	}
 
-	ws, err := upgrader.Upgrade(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: []string{"*"},
+	})
 	if err != nil {
-		log.Printf("ws upgrade: %v", err)
+		log.Printf("ws accept: %v", err)
 		return
 	}
-	defer ws.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	proxyClient := game.NewProxyServiceClient(proxyConn)
 	ctx, cancel := context.WithCancel(r.Context())
@@ -146,18 +152,18 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, upgrader web
 	go func() {
 		defer cancel()
 		for {
-			_, msg, err := ws.ReadMessage()
+			_, msg, err := conn.Read(ctx)
 			if err != nil {
+				if !isCleanClose(err) {
+					log.Printf("ws read: %v", err)
+				}
 				return
 			}
 			frame := new(game.AgentFrame)
-			if err := protojson.Unmarshal(msg, frame); err != nil {
-				// Treat unrecognized JSON as raw payload echo.
-				frame = &game.AgentFrame{
-					SessionId: sessionID,
-					Type:      "echo",
-					Payload:   msg,
-				}
+			if err := unmarshalOpts.Unmarshal(msg, frame); err != nil {
+				// Invalid JSON: close the connection with a protocol error.
+				conn.Close(websocket.StatusInvalidFramePayloadData, "invalid agent frame JSON")
+				return
 			}
 			frame.SessionId = sessionID
 			if err := stream.Send(frame); err != nil {
@@ -176,8 +182,19 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, upgrader web
 		if err != nil {
 			break
 		}
-		if err := ws.WriteMessage(websocket.TextMessage, msg); err != nil {
+		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
 			break
 		}
 	}
+}
+
+// isCleanClose reports whether the error represents a normal WebSocket or
+// context closure that should not be logged as an error.
+func isCleanClose(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	// coder/websocket: CloseStatus returns -1 for non-close errors.
+	status := websocket.CloseStatus(err)
+	return status != -1
 }

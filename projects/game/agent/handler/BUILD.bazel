@@ -13,6 +13,7 @@ go_library(
         "//projects/game/agent/domain",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
         "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )

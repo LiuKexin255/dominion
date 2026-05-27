@@ -8,12 +8,13 @@ import (
 
 	"dominion/common/gopkg/bootstrap"
 	pgrpc "dominion/common/gopkg/grpc"
+	"dominion/common/gopkg/grpc/solver"
 	"dominion/common/gopkg/mongo"
 	"dominion/common/gopkg/otel"
 
 	game "dominion/projects/game"
 	"dominion/projects/game/session/handler"
-	"dominion/projects/game/session/runtime"
+	sessionmongo "dominion/projects/game/session/runtime/mongo"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -34,9 +35,15 @@ func main() {
 		log.Fatalf("failed to create mongo client: %v", err)
 	}
 
-	sessionRepo := runtime.NewSessionRepository(mongoClient, "game_session", "sessions")
+	sessionRepo := sessionmongo.NewSessionRepository(mongoClient, "game_session", "sessions")
 
-	h := handler.NewSessionHandler(sessionRepo)
+	proxyConn, err := grpcgo.NewClient(solver.URI("game/proxy:grpc"), pgrpc.ClientDefault()...)
+	if err != nil {
+		log.Fatalf("proxy dial: %v", err)
+	}
+	proxyClient := game.NewProxyServiceClient(proxyConn)
+
+	h := handler.NewSessionHandler(sessionRepo, proxyClient)
 
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
 	game.RegisterSessionServiceServer(grpcServer, h)
@@ -45,6 +52,7 @@ func main() {
 	b := bootstrap.New()
 	b.Register(otel.Component())
 	b.Register(bootstrap.MongoClient("mongo", mongoClient))
+	b.Register(bootstrap.GRPCConn("proxy", proxyConn))
 	b.Register(bootstrap.GRPCServer("grpc", grpcServer, listener))
 	log.Fatal(b.Run(context.Background()))
 }

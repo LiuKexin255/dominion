@@ -1,4 +1,4 @@
-package runtime
+package mongo
 
 import (
 	"context"
@@ -46,23 +46,23 @@ func (c *fakeCollection) InsertOne(_ context.Context, document interface{}, _ ..
 	if !ok {
 		return nil, errors.New("invalid document type")
 	}
-	if _, exists := c.docs[doc.Name]; exists {
+	if _, exists := c.docs[doc.SessionID]; exists {
 		return nil, mongodriver.WriteException{
 			WriteErrors: []mongodriver.WriteError{
 				{Code: 11000, Message: "duplicate key error"},
 			},
 		}
 	}
-	c.docs[doc.Name] = doc
+	c.docs[doc.SessionID] = doc
 	return &mongodriver.InsertOneResult{}, nil
 }
 
 func (c *fakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*options.FindOneOptions) singleResult {
-	f, ok := filter.(sessionNameFilter)
+	f, ok := filter.(sessionFilter)
 	if !ok {
 		return &fakeSingleResult{err: errors.New("invalid filter type")}
 	}
-	doc, exists := c.docs[f.Name]
+	doc, exists := c.docs[f.SessionID]
 	if !exists {
 		return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
 	}
@@ -70,14 +70,14 @@ func (c *fakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*op
 }
 
 func (c *fakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
-	f, ok := filter.(sessionNameFilter)
+	f, ok := filter.(sessionFilter)
 	if !ok {
 		return nil, errors.New("invalid filter type")
 	}
-	if _, exists := c.docs[f.Name]; !exists {
+	if _, exists := c.docs[f.SessionID]; !exists {
 		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
 	}
-	delete(c.docs, f.Name)
+	delete(c.docs, f.SessionID)
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
@@ -157,11 +157,11 @@ func TestGetSession(t *testing.T) {
 		wantErrTyp error
 	}{
 		{
-			name:     "success - fields match after create then get",
-			seed:     &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
-			getName:  "sessions/abc123",
-			wantName: "sessions/abc123",
-			wantID:   "abc123",
+			name:       "success - fields match after create then get",
+			seed:       &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
+			getName:    "sessions/abc123",
+			wantName:   "sessions/abc123",
+			wantID:     "abc123",
 		},
 		{
 			name:       "not found",
@@ -295,9 +295,8 @@ func Test_toDomain(t *testing.T) {
 		want *domain.Session
 	}{
 		{
-			name: "full conversion",
+			name: "name generated from session_id",
 			doc: &sessionDocument{
-				Name:       "sessions/abc123",
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
@@ -348,14 +347,13 @@ func Test_fromDomain(t *testing.T) {
 		want    *sessionDocument
 	}{
 		{
-			name: "full conversion",
+			name: "name is not stored in document",
 			session: &domain.Session{
 				Name:       "sessions/abc123",
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
 			want: &sessionDocument{
-				Name:       "sessions/abc123",
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
@@ -379,9 +377,6 @@ func Test_fromDomain(t *testing.T) {
 			if got == nil || tt.want == nil {
 				t.Fatalf("sessionDocumentFromDomain() = %v, want %v", got, tt.want)
 			}
-			if got.Name != tt.want.Name {
-				t.Fatalf("sessionDocumentFromDomain() name = %q, want %q", got.Name, tt.want.Name)
-			}
 			if got.SessionID != tt.want.SessionID {
 				t.Fatalf("sessionDocumentFromDomain() session_id = %q, want %q", got.SessionID, tt.want.SessionID)
 			}
@@ -400,7 +395,7 @@ func TestRoundTrip(t *testing.T) {
 		session *domain.Session
 	}{
 		{
-			name: "domain to document and back",
+			name: "domain to document and back - name is reconstructed from session_id",
 			session: &domain.Session{
 				Name:       "sessions/roundtrip",
 				SessionID:  "roundtrip",

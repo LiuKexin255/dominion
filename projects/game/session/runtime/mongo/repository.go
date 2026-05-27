@@ -1,8 +1,10 @@
-package runtime
+// Package mongo provides the MongoDB-backed SessionRepository implementation.
+package mongo
 
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"dominion/projects/game/session/domain"
@@ -17,6 +19,9 @@ const (
 	// collectionName is the MongoDB collection name for sessions.
 	collectionName = "sessions"
 )
+
+// sessionNamePrefix is the resource name prefix for sessions.
+const sessionNamePrefix = "sessions/"
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
 type singleResult interface {
@@ -82,9 +87,10 @@ func (r *sessionRepository) Create(ctx context.Context, session *domain.Session)
 	return doc.toDomain(), nil
 }
 
-// Get retrieves a session by its resource name.
+// Get retrieves a session by its resource name (e.g. "sessions/abc123").
 func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Session, error) {
-	filter := sessionNameFilter{Name: name}
+	sessionID := strings.TrimPrefix(name, sessionNamePrefix)
+	filter := sessionFilter{SessionID: sessionID}
 	result := new(sessionDocument)
 	if err := r.collection.FindOne(ctx, filter).Decode(result); err != nil {
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
@@ -96,9 +102,10 @@ func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Sessi
 	return result.toDomain(), nil
 }
 
-// Delete removes a session by its resource name.
+// Delete removes a session by its resource name (e.g. "sessions/abc123").
 func (r *sessionRepository) Delete(ctx context.Context, name string) error {
-	filter := sessionNameFilter{Name: name}
+	sessionID := strings.TrimPrefix(name, sessionNamePrefix)
+	filter := sessionFilter{SessionID: sessionID}
 	result, err := r.collection.DeleteOne(ctx, filter)
 	if err != nil {
 		return err
@@ -110,7 +117,7 @@ func (r *sessionRepository) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// sessionNameFilter is a concrete BSON filter struct for querying by session name.
-type sessionNameFilter struct {
-	Name string `bson:"name"`
+// sessionFilter is a concrete BSON filter struct for querying by session ID.
+type sessionFilter struct {
+	SessionID string `bson:"session_id"`
 }

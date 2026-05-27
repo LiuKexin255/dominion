@@ -88,10 +88,10 @@ service ProxyService {
 //
 // Prefix Path: /api/v1/agents
 service AgentService {
-  // InitAgent initializes the agent for a given session.
-  rpc InitAgent(InitAgentRequest) returns (AgentStatus) {
+  // CreateAgent creates an agent for a given session.
+  rpc CreateAgent(AgentCreateRequest) returns (AgentStatus) {
     option (google.api.http) = {
-      post: "/api/v1/agents:init"
+      post: "/api/v1/agents:create"
       body: "*"
     };
 
@@ -102,6 +102,15 @@ service AgentService {
   rpc GetAgentStatus(GetAgentStatusRequest) returns (AgentStatus) {
     option (google.api.http) = {
       get: "/api/v1/agents/{session_id}/status"
+    };
+
+    option (google.api.method_signature) = "session_id";
+  }
+
+  // DeleteAgent deletes the agent for a given session.
+  rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/agents/{session_id}"
     };
 
     option (google.api.method_signature) = "session_id";
@@ -250,8 +259,14 @@ message DeleteAgentRequest {
   ];
 }
 
-// InitAgentRequest is the request to initialize an agent for a session.
-message InitAgentRequest {
+// AgentCreateRequest is the request to create an agent for a session.
+message AgentCreateRequest {
+  // The session identifier.
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// AgentDeleteRequest is the request to delete an agent for a session.
+message AgentDeleteRequest {
   // The session identifier.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }

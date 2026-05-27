@@ -1,4 +1,5 @@
-package runtime
+// Package agentclient provides the gRPC client wrapper for the AgentService.
+package agentclient
 
 import (
 	"context"
@@ -8,7 +9,24 @@ import (
 	game "dominion/projects/game"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// Client is the interface for agent service operations.
+type Client interface {
+	CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error)
+	DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error)
+	GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error)
+	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
+	Close() error
+}
+
+// ClientRef is a reference to an agent client with its owner metadata.
+type ClientRef struct {
+	OwnerIndex int
+	Owner      string
+	Client     Client
+}
 
 // AgentClient is a gRPC client wrapper for the AgentService.
 type AgentClient struct {
@@ -31,9 +49,14 @@ func NewAgentClient(ctx context.Context, instanceIndex int) (*AgentClient, error
 	}, nil
 }
 
-// InitAgent initializes the agent for a given session.
-func (c *AgentClient) InitAgent(ctx context.Context, req *game.InitAgentRequest) (*game.AgentStatus, error) {
-	return c.client.InitAgent(ctx, req)
+// CreateAgent creates an agent for a given session.
+func (c *AgentClient) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
+	return c.client.CreateAgent(ctx, req)
+}
+
+// DeleteAgent deletes the agent for a given session.
+func (c *AgentClient) DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error) {
+	return c.client.DeleteAgent(ctx, req)
 }
 
 // GetAgentStatus returns the current status of the agent in a session.

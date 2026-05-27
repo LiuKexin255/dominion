@@ -10,8 +10,10 @@ import (
 
 	game "dominion/projects/game"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // mockSessionRepo implements domain.SessionRepository for handler testing.
@@ -31,6 +33,36 @@ func (m *mockSessionRepo) Get(ctx context.Context, name string) (*domain.Session
 
 func (m *mockSessionRepo) Delete(ctx context.Context, name string) error {
 	return m.deleteFn(ctx, name)
+}
+
+// mockProxyClient implements game.ProxyServiceClient for handler testing.
+type mockProxyClient struct {
+	deleteAgentFn func(ctx context.Context, req *game.DeleteAgentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+}
+
+func (m *mockProxyClient) DeleteAgent(ctx context.Context, req *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	return m.deleteAgentFn(ctx, req)
+}
+
+func (m *mockProxyClient) CreateAgent(_ context.Context, _ *game.CreateAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockProxyClient) GetAgent(_ context.Context, _ *game.GetAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockProxyClient) ConnectAgent(_ context.Context, _ ...grpc.CallOption) (game.ProxyService_ConnectAgentClient, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+// noopProxyClient returns a proxy client whose DeleteAgent always succeeds.
+func noopProxyClient() *mockProxyClient {
+	return &mockProxyClient{
+		deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+			return new(emptypb.Empty), nil
+		},
+	}
 }
 
 func TestCreateSession(t *testing.T) {
@@ -73,7 +105,7 @@ func TestCreateSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock)
+			handler := NewSessionHandler(tt.mock, noopProxyClient())
 
 			// when
 			got, err := handler.CreateSession(ctx, tt.req)
@@ -133,7 +165,7 @@ func TestGetSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock)
+			handler := NewSessionHandler(tt.mock, noopProxyClient())
 
 			// when
 			got, err := handler.GetSession(ctx, tt.req)
@@ -154,37 +186,91 @@ func TestDeleteSession(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name     string
-		req      *game.DeleteSessionRequest
-		mock     *mockSessionRepo
-		wantCode codes.Code
+		name        string
+		req         *game.DeleteSessionRequest
+		mockRepo    *mockSessionRepo
+		mockProxy   *mockProxyClient
+		wantCode    codes.Code
+		wantDeleted bool
 	}{
 		{
-			name: "success - returns empty",
+			name: "success - proxy deletes agent then session deleted",
 			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
-			mock: &mockSessionRepo{
+			mockRepo: &mockSessionRepo{
+				deleteFn: func(_ context.Context, name string) error {
+					if name != "sessions/abc123" {
+						t.Fatalf("repo.Delete() name = %q, want %q", name, "sessions/abc123")
+					}
+					return nil
+				},
+			},
+			mockProxy: &mockProxyClient{
+				deleteAgentFn: func(_ context.Context, req *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+					wantName := "sessions/abc123/agent"
+					if req.GetName() != wantName {
+						t.Fatalf("DeleteAgent() name = %q, want %q", req.GetName(), wantName)
+					}
+					return new(emptypb.Empty), nil
+				},
+			},
+			wantCode:    codes.OK,
+			wantDeleted: true,
+		},
+		{
+			name: "proxy NotFound - session still deleted (idempotent)",
+			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
+			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, _ string) error {
 					return nil
 				},
 			},
-			wantCode: codes.OK,
+			mockProxy: &mockProxyClient{
+				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+					return nil, status.Error(codes.NotFound, "agent not found")
+				},
+			},
+			wantCode:    codes.OK,
+			wantDeleted: true,
 		},
 		{
-			name: "not found - returns NotFound status",
+			name: "proxy error - session NOT deleted",
+			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
+			mockRepo: &mockSessionRepo{
+				deleteFn: func(_ context.Context, _ string) error {
+					t.Fatal("repo.Delete() should not be called when proxy fails")
+					return nil
+				},
+			},
+			mockProxy: &mockProxyClient{
+				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+					return nil, status.Error(codes.Unavailable, "proxy unavailable")
+				},
+			},
+			wantCode:    codes.Internal,
+			wantDeleted: false,
+		},
+		{
+			name: "repo NotFound - returns NotFound after proxy succeeds",
 			req:  &game.DeleteSessionRequest{Name: "sessions/missing"},
-			mock: &mockSessionRepo{
+			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, _ string) error {
 					return domain.ErrNotFound
 				},
 			},
-			wantCode: codes.NotFound,
+			mockProxy: &mockProxyClient{
+				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+					return new(emptypb.Empty), nil
+				},
+			},
+			wantCode:    codes.NotFound,
+			wantDeleted: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock)
+			handler := NewSessionHandler(tt.mockRepo, tt.mockProxy)
 
 			// when
 			got, err := handler.DeleteSession(ctx, tt.req)
@@ -243,14 +329,14 @@ func Test_toStatusError(t *testing.T) {
 
 func Test_sessionToProto(t *testing.T) {
 	tests := []struct {
-		name    string
-		session *domain.Session
-		wantNil bool
+		name     string
+		session  *domain.Session
+		wantNil  bool
 		wantName string
 		wantID   string
 	}{
 		{
-			name: "nil session returns nil",
+			name:    "nil session returns nil",
 			session: nil,
 			wantNil: true,
 		},

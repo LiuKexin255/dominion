@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "picker",
+    srcs = ["hash_picker.go"],
+    importpath = "dominion/projects/game/proxy/runtime/picker",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/proxy/domain",
+        "//projects/game/proxy/runtime/agentclient",
+    ],
+)
+
+go_unittest(
+    name = "picker_test",
+    srcs = ["hash_picker_test.go"],
+    embed = [":picker"],
+    deps = [
+        "//projects/game/proxy/domain",
+        "//projects/game/proxy/runtime/agentclient",
+    ],
+)

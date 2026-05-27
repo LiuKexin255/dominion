@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -217,6 +216,56 @@ func buildWSURL(sutHostURL, path string) string {
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 
+// getAgentWithStatus sends a GET request for an agent and returns the HTTP
+// status code and response body without fatalling on non-200 responses.
+func getAgentWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest getAgentWithStatus: %v", err)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET agent: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read getAgentWithStatus response: %v", err)
+	}
+	return resp.StatusCode, respBody
+}
+
+// getSessionWithStatus sends a GET request for a session and returns the HTTP
+// status code and response body without fatalling on non-200 responses.
+func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest getSessionWithStatus: %v", err)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET session: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read getSessionWithStatus response: %v", err)
+	}
+	return resp.StatusCode, respBody
+}
+
 // TestCreateSession verifies that a session can be created successfully via
 // POST /api/v1/sessions and returns the expected resource name.
 func TestCreateSession(t *testing.T) {
@@ -393,14 +442,15 @@ func TestWebSocketConnect(t *testing.T) {
 	}
 }
 
-// TestWebSocketEchoResponse verifies that sending an echo frame over WebSocket
-// receives an echo response with the same payload.
-func TestWebSocketEchoResponse(t *testing.T) {
+// TestWebSocketStatusResponse verifies that sending a status frame over
+// WebSocket receives a status response with payload "initialized", and that
+// sending an echo frame receives an echoed response.
+func TestWebSocketStatusResponse(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-ws-echo-007"
+	sessionID := "test-ws-status-007"
 	createSession(t, sutHostURL, sutEnvName, sessionID)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
@@ -416,32 +466,133 @@ func TestWebSocketEchoResponse(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// when: send status frame
+	statusFrame := agentFrame{
+		SessionID: sessionID,
+		Type:      "status",
+		Payload:   "",
+	}
+	if err := conn.WriteJSON(statusFrame); err != nil {
+		t.Fatalf("WriteJSON status frame: %v", err)
+	}
+
+	// then: read status response
+	var statusResp agentFrame
+	if err := conn.ReadJSON(&statusResp); err != nil {
+		t.Fatalf("ReadJSON status response: %v", err)
+	}
+	if statusResp.Type != "status" {
+		t.Errorf("status response type = %q, want %q", statusResp.Type, "status")
+	}
+	if statusResp.Payload != "initialized" {
+		t.Errorf("status response payload = %q, want %q", statusResp.Payload, "initialized")
+	}
+
 	// when: send echo frame
 	echoPayload := "aGVsbG8="
-	sendFrame := agentFrame{
+	echoFrame := agentFrame{
 		SessionID: sessionID,
 		Type:      "echo",
 		Payload:   echoPayload,
 	}
-	if err := conn.WriteJSON(sendFrame); err != nil {
+	if err := conn.WriteJSON(echoFrame); err != nil {
 		t.Fatalf("WriteJSON echo frame: %v", err)
 	}
 
 	// then: read echo response
-	var recvFrame agentFrame
-	if err := conn.ReadJSON(&recvFrame); err != nil {
+	var echoResp agentFrame
+	if err := conn.ReadJSON(&echoResp); err != nil {
 		t.Fatalf("ReadJSON echo response: %v", err)
 	}
-	if recvFrame.Type != "echo" {
-		t.Errorf("echo response type = %q, want %q", recvFrame.Type, "echo")
+	if echoResp.Type != "echo" {
+		t.Errorf("echo response type = %q, want %q", echoResp.Type, "echo")
 	}
-	if recvFrame.Payload != echoPayload {
-		t.Errorf("echo response payload = %q, want %q", recvFrame.Payload, echoPayload)
+	if echoResp.Payload != echoPayload {
+		t.Errorf("echo response payload = %q, want %q", echoResp.Payload, echoPayload)
+	}
+}
+
+// TestWebSocketUnknownFields verifies that sending a valid AgentFrame JSON
+// with extra unknown fields still receives a valid response, confirming the
+// gateway uses protojson DiscardUnknown.
+func TestWebSocketUnknownFields(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given
+	sessionID := "test-ws-unknown-010"
+	createSession(t, sutHostURL, sutEnvName, sessionID)
+	createAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
+	wsURL := buildWSURL(sutHostURL, wsPath)
+
+	header := http.Header{}
+	header.Set(headerEnv, sutEnvName)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	defer conn.Close()
+
+	// when: send JSON with unknown extra fields
+	unknownJSON := fmt.Sprintf(
+		`{"session_id":%q,"type":"status","payload":"","unknown_field":"should_be_ignored"}`,
+		sessionID,
+	)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(unknownJSON)); err != nil {
+		t.Fatalf("WriteMessage unknown fields: %v", err)
+	}
+
+	// then: expect a valid response (unknown fields discarded by gateway)
+	var recvFrame agentFrame
+	if err := conn.ReadJSON(&recvFrame); err != nil {
+		t.Fatalf("ReadJSON response: %v", err)
+	}
+	if recvFrame.Type != "status" {
+		t.Errorf("response type = %q, want %q", recvFrame.Type, "status")
+	}
+}
+
+// TestWebSocketInvalidJSON verifies that sending invalid JSON over WebSocket
+// causes the connection to be closed with an error (no echo fallback).
+func TestWebSocketInvalidJSON(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given
+	sessionID := "test-ws-invalid-011"
+	createSession(t, sutHostURL, sutEnvName, sessionID)
+	createAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
+	wsURL := buildWSURL(sutHostURL, wsPath)
+
+	header := http.Header{}
+	header.Set(headerEnv, sutEnvName)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	defer conn.Close()
+
+	// when: send invalid JSON
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("{not valid json")); err != nil {
+		t.Fatalf("WriteMessage invalid JSON: %v", err)
+	}
+
+	// then: expect connection to be closed or read error
+	var recvFrame agentFrame
+	err = conn.ReadJSON(&recvFrame)
+	if err == nil {
+		t.Fatal("ReadJSON should return error for invalid JSON, got nil")
 	}
 }
 
 // TestDeleteAgentAndSession verifies that deleting agent then session works,
-// and that subsequent GET requests return errors.
+// and that subsequent GET requests return NotFound status codes.
 func TestDeleteAgentAndSession(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -469,17 +620,101 @@ func TestDeleteAgentAndSession(t *testing.T) {
 		t.Errorf("DELETE session status = %d, want %d", sessResp.StatusCode, http.StatusOK)
 	}
 
-	// when: get deleted agent — should fail
-	getAgentBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-	// GET on deleted session should return empty or error body; not checking
-	// the exact response format as it depends on gap service implementation,
-	// but the call should not panic.
-	_ = getAgentBody
+	// when: get deleted agent
+	agentStatus, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: should return NotFound
+	if agentStatus != http.StatusNotFound {
+		t.Errorf("GET deleted agent status = %d, want %d", agentStatus, http.StatusNotFound)
+	}
+
+	// when: get deleted session
+	sessStatus, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: should return NotFound (cascading cleanup)
+	if sessStatus != http.StatusNotFound {
+		t.Errorf("GET deleted session status = %d, want %d", sessStatus, http.StatusNotFound)
+	}
+}
+
+// TestDeleteSessionCascade verifies that deleting a session directly (without
+// deleting the agent first) cascades cleanup to the agent/owner records.
+func TestDeleteSessionCascade(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given
+	sessionID := "test-delete-session-cascade-012"
+	createSession(t, sutHostURL, sutEnvName, sessionID)
+	createAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	// when: delete session directly (without deleting agent first)
+	sessResp := deleteSession(t, sutHostURL, sutEnvName, sessionID)
+	defer sessResp.Body.Close()
+
+	// then: delete session returns 200
+	if sessResp.StatusCode != http.StatusOK {
+		t.Errorf("DELETE session status = %d, want %d", sessResp.StatusCode, http.StatusOK)
+	}
+
+	// when: get deleted session
+	sessStatus, _ := getSessionWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: session is deleted
+	if sessStatus != http.StatusNotFound {
+		t.Errorf("GET deleted session status = %d, want %d", sessStatus, http.StatusNotFound)
+	}
+
+	// when: get agent after session deletion
+	agentStatus, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: agent/owner records are cleaned up (cascade)
+	if agentStatus != http.StatusNotFound {
+		t.Errorf("GET agent after session delete status = %d, want %d (cascade cleanup)", agentStatus, http.StatusNotFound)
+	}
+}
+
+// TestDeleteAgentCascade verifies that deleting an agent cleans up the owner
+// record. The session should still exist after agent deletion.
+func TestDeleteAgentCascade(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given
+	sessionID := "test-delete-agent-cascade-013"
+	createSession(t, sutHostURL, sutEnvName, sessionID)
+	createAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	// when: delete agent
+	agentResp := deleteAgent(t, sutHostURL, sutEnvName, sessionID)
+	defer agentResp.Body.Close()
+
+	// then: delete agent returns 200
+	if agentResp.StatusCode != http.StatusOK {
+		t.Errorf("DELETE agent status = %d, want %d", agentResp.StatusCode, http.StatusOK)
+	}
+
+	// when: get deleted agent
+	agentStatus, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: agent is deleted
+	if agentStatus != http.StatusNotFound {
+		t.Errorf("GET deleted agent status = %d, want %d", agentStatus, http.StatusNotFound)
+	}
+
+	// when: get session — should still exist
+	sessStatus, sessBody := getSessionWithStatus(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: session still exists
+	if sessStatus != http.StatusOK {
+		t.Errorf("GET session after agent delete status = %d, want %d (session should still exist)", sessStatus, http.StatusOK)
+		t.Logf("session body: %s", string(sessBody))
+	}
 }
 
 // TestFullLifecycle executes the complete lifecycle: create session → create
-// agent → query agent → WebSocket connect → WebSocket echo → delete agent →
-// delete session → verify deleted.
+// agent → query agent → WebSocket connect → WebSocket status response →
+// delete agent → delete session → verify deleted.
 func TestFullLifecycle(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -531,22 +766,24 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("step4 WebSocket upgrade status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
 
-	// Step 5: WebSocket echo
-	echoPayload := "aGVsbG8="
-	sendFrame := agentFrame{
+	// Step 5: WebSocket status response
+	statusFrame := agentFrame{
 		SessionID: sessionID,
-		Type:      "echo",
-		Payload:   echoPayload,
+		Type:      "status",
+		Payload:   "",
 	}
-	if err := conn.WriteJSON(sendFrame); err != nil {
-		t.Fatalf("step5 WriteJSON echo: %v", err)
+	if err := conn.WriteJSON(statusFrame); err != nil {
+		t.Fatalf("step5 WriteJSON status: %v", err)
 	}
 	var recvFrame agentFrame
 	if err := conn.ReadJSON(&recvFrame); err != nil {
-		t.Fatalf("step5 ReadJSON echo response: %v", err)
+		t.Fatalf("step5 ReadJSON status response: %v", err)
 	}
-	if recvFrame.Payload != echoPayload {
-		t.Errorf("step5 echo payload = %q, want %q", recvFrame.Payload, echoPayload)
+	if recvFrame.Type != "status" {
+		t.Errorf("step5 response type = %q, want %q", recvFrame.Type, "status")
+	}
+	if recvFrame.Payload != "initialized" {
+		t.Errorf("step5 status payload = %q, want %q", recvFrame.Payload, "initialized")
 	}
 	conn.Close()
 
@@ -564,9 +801,14 @@ func TestFullLifecycle(t *testing.T) {
 		t.Errorf("step7 DELETE session status = %d, want %d", delSessResp.StatusCode, http.StatusOK)
 	}
 
-	// Step 8: verify deleted — get should return error
-	getAgentBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-	// The response body should indicate the resource is gone.
-	// We don't enforce exact error format but log it for diagnostics.
-	t.Logf("step8 GET deleted agent body: %s", strings.TrimSpace(string(getAgentBody)))
+	// Step 8: verify deleted — GET should return NotFound
+	agentStatus, agentGetBody := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
+	if agentStatus != http.StatusNotFound {
+		t.Errorf("step8 GET deleted agent status = %d, want %d, body: %s", agentStatus, http.StatusNotFound, agentGetBody)
+	}
+
+	sessStatus, sessGetBody := getSessionWithStatus(t, sutHostURL, sutEnvName, sessionID)
+	if sessStatus != http.StatusNotFound {
+		t.Errorf("step8 GET deleted session status = %d, want %d, body: %s", sessStatus, http.StatusNotFound, sessGetBody)
+	}
 }

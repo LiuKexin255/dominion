@@ -32,6 +32,7 @@ use_repo(
     "com_github_bep_debounce",
     "com_github_bitfield_script",
     "com_github_charmbracelet_glamour",
+    "com_github_coder_websocket",
     "com_github_flytam_filenamify",
     "com_github_fsnotify_fsnotify",
     "com_github_go_git_go_git_v5",

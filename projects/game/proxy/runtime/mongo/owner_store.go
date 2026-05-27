@@ -1,4 +1,5 @@
-package runtime
+// Package mongo provides the MongoDB-backed OwnerStore implementation.
+package mongo
 
 import (
 	"context"

@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -32,20 +33,35 @@ func NewAgentHandler(rt domain.Runtime) *AgentHandler {
 	}
 }
 
-// InitAgent initializes the agent for a given session.
-func (h *AgentHandler) InitAgent(ctx context.Context, req *game.InitAgentRequest) (*game.AgentStatus, error) {
+// CreateAgent creates an agent for a given session.
+func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
 	sessionID := req.GetSessionId()
 
-	s, err := h.runtime.Init(ctx, sessionID)
+	s, err := h.runtime.Create(ctx, sessionID)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("agent init: %v", err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("agent create: %v", err))
 	}
 
-	logs.Info(ctx, "agent initialized",
+	logs.Info(ctx, "agent created",
 		event.String(logFieldSessionID, sessionID),
 	)
 
 	return statusToProto(s), nil
+}
+
+// DeleteAgent deletes the agent for a given session.
+func (h *AgentHandler) DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error) {
+	sessionID := req.GetSessionId()
+
+	if err := h.runtime.Delete(ctx, sessionID); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("agent delete: %v", err))
+	}
+
+	logs.Info(ctx, "agent deleted",
+		event.String(logFieldSessionID, sessionID),
+	)
+
+	return new(emptypb.Empty), nil
 }
 
 // GetAgentStatus returns the current status of the agent in a session.
