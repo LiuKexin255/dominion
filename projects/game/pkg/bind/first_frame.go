@@ -1,6 +1,6 @@
 package bind
 
-import game "dominion/projects/game"
+import "dominion/projects/game"
 
 // firstFrameStream wraps an AgentFrameStream to replay a pre-read first frame.
 type firstFrameStream struct {
