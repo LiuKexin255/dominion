@@ -44,18 +44,17 @@ func NewSessionHandler(repo domain.SessionRepository, proxyClient game.ProxyServ
 // CreateSession creates a new Session resource.
 func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSessionRequest) (*game.Session, error) {
 	sessionID := req.GetSessionId()
-	name := gameconst.SessionName(sessionID)
 
 	s, err := h.sessionRepo.Create(ctx, &domain.Session{
-		Name:      name,
 		SessionID: sessionID,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
+	sessionName := gameconst.SessionName(s.SessionID)
 	logs.Info(ctx, "session created",
-		event.String(logFieldName, s.Name),
+		event.String(logFieldName, sessionName),
 		event.String(logFieldSessionID, s.SessionID),
 	)
 
@@ -64,7 +63,8 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSess
 
 // GetSession retrieves a Session by its resource name.
 func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionRequest) (*game.Session, error) {
-	s, err := h.sessionRepo.Get(ctx, req.GetName())
+	sessionID := strings.TrimPrefix(req.GetName(), gameconst.SessionNamePrefix)
+	s, err := h.sessionRepo.Get(ctx, sessionID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -85,7 +85,7 @@ func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSess
 		return nil, status.Errorf(codes.Internal, "delete agent failed: %v", err)
 	}
 
-	if err := h.sessionRepo.Delete(ctx, req.GetName()); err != nil {
+	if err := h.sessionRepo.Delete(ctx, sessionID); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -103,7 +103,7 @@ func sessionToProto(s *domain.Session) *game.Session {
 	}
 
 	p := &game.Session{
-		Name:      s.Name,
+		Name:      gameconst.SessionName(s.SessionID),
 		SessionId: s.SessionID,
 	}
 	if !s.CreateTime.IsZero() {

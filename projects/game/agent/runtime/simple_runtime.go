@@ -3,11 +3,9 @@ package runtime
 
 import (
 	"context"
-	"io"
 	"sync"
 	"time"
 
-	game "dominion/projects/game"
 	"dominion/projects/game/agent/domain"
 )
 
@@ -65,47 +63,3 @@ func (r *SimpleRuntime) Status(ctx context.Context, sessionID string) (*domain.S
 	}, nil
 }
 
-// Connect handles the bidirectional stream for agent communication.
-// It reads AgentFrames from the stream and responds:
-//   - "status" frames reply with the current status string.
-//   - all other frames are echoed back with type "echo".
-//
-// Returns nil on io.EOF (clean close) or the error from Recv/Send.
-func (r *SimpleRuntime) Connect(stream domain.AgentStream) error {
-	for {
-		frame, err := stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-		switch frame.Type {
-		case "status":
-			r.mu.Lock()
-			s, ok := r.data[frame.SessionId]
-			r.mu.Unlock()
-			statusStr := "unknown"
-			if ok {
-				statusStr = s.Status
-			}
-			resp := &game.AgentFrame{
-				SessionId: frame.SessionId,
-				Type:      "status",
-				Payload:   []byte(statusStr),
-			}
-			if err := stream.Send(resp); err != nil {
-				return err
-			}
-		default:
-			resp := &game.AgentFrame{
-				SessionId: frame.SessionId,
-				Type:      "echo",
-				Payload:   frame.Payload,
-			}
-			if err := stream.Send(resp); err != nil {
-				return err
-			}
-		}
-	}
-}

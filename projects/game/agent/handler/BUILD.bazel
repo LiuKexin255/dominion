@@ -25,5 +25,6 @@ go_unittest(
     deps = [
         "//projects/game",
         "//projects/game/agent/domain",
+        "@org_golang_google_grpc//metadata",
     ],
 )

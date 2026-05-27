@@ -3,7 +3,9 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
@@ -77,25 +79,46 @@ func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentSta
 	return statusToProto(s), nil
 }
 
-// Connect establishes a bidirectional streaming channel for agent communication.
-// It delegates to the runtime's Connect method after adapting the gRPC stream.
+// Connect handles the bidirectional stream for agent communication.
+// It reads AgentFrames from the gRPC stream and dispatches to the runtime.
+//   - "status" frames reply with the current status from runtime.Status().
+//   - all other frames are echoed back with type "echo".
+//
+// Returns nil on io.EOF (clean close) or the error from Recv/Send.
 func (h *AgentHandler) Connect(stream game.AgentService_ConnectServer) error {
-	return h.runtime.Connect(&grpcAgentStream{stream: stream})
-}
+	for {
+		frame, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
 
-// grpcAgentStream adapts a gRPC AgentService_ConnectServer to the domain.AgentStream interface.
-type grpcAgentStream struct {
-	stream game.AgentService_ConnectServer
-}
+		var resp *game.AgentFrame
+		switch frame.Type {
+		case "status":
+			s, sErr := h.runtime.Status(stream.Context(), frame.SessionId)
+			if sErr != nil {
+				return sErr
+			}
+			resp = &game.AgentFrame{
+				SessionId: frame.SessionId,
+				Type:      "status",
+				Payload:   []byte(s.Status),
+			}
+		default:
+			resp = &game.AgentFrame{
+				SessionId: frame.SessionId,
+				Type:      "echo",
+				Payload:   frame.Payload,
+			}
+		}
 
-// Recv receives the next AgentFrame from the gRPC stream.
-func (s *grpcAgentStream) Recv() (*game.AgentFrame, error) {
-	return s.stream.Recv()
-}
-
-// Send sends an AgentFrame on the gRPC stream.
-func (s *grpcAgentStream) Send(f *game.AgentFrame) error {
-	return s.stream.Send(f)
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
 }
 
 // statusToProto converts a domain Status to a proto AgentStatus.

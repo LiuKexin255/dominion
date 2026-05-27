@@ -19,20 +19,20 @@ import (
 // mockSessionRepo implements domain.SessionRepository for handler testing.
 type mockSessionRepo struct {
 	createFn func(ctx context.Context, session *domain.Session) (*domain.Session, error)
-	getFn    func(ctx context.Context, name string) (*domain.Session, error)
-	deleteFn func(ctx context.Context, name string) error
+	getFn    func(ctx context.Context, sessionID string) (*domain.Session, error)
+	deleteFn func(ctx context.Context, sessionID string) error
 }
 
 func (m *mockSessionRepo) Create(ctx context.Context, session *domain.Session) (*domain.Session, error) {
 	return m.createFn(ctx, session)
 }
 
-func (m *mockSessionRepo) Get(ctx context.Context, name string) (*domain.Session, error) {
-	return m.getFn(ctx, name)
+func (m *mockSessionRepo) Get(ctx context.Context, sessionID string) (*domain.Session, error) {
+	return m.getFn(ctx, sessionID)
 }
 
-func (m *mockSessionRepo) Delete(ctx context.Context, name string) error {
-	return m.deleteFn(ctx, name)
+func (m *mockSessionRepo) Delete(ctx context.Context, sessionID string) error {
+	return m.deleteFn(ctx, sessionID)
 }
 
 // mockProxyClient implements game.ProxyServiceClient for handler testing.
@@ -81,7 +81,6 @@ func TestCreateSession(t *testing.T) {
 			mock: &mockSessionRepo{
 				createFn: func(_ context.Context, s *domain.Session) (*domain.Session, error) {
 					return &domain.Session{
-						Name:       s.Name,
 						SessionID:  s.SessionID,
 						CreateTime: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 					}, nil
@@ -139,10 +138,9 @@ func TestGetSession(t *testing.T) {
 			name: "success - returns proto session",
 			req:  &game.GetSessionRequest{Name: "sessions/abc123"},
 			mock: &mockSessionRepo{
-				getFn: func(_ context.Context, name string) (*domain.Session, error) {
+				getFn: func(_ context.Context, sessionID string) (*domain.Session, error) {
 					return &domain.Session{
-						Name:       name,
-						SessionID:  "abc123",
+						SessionID:  sessionID,
 						CreateTime: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 					}, nil
 				},
@@ -197,9 +195,9 @@ func TestDeleteSession(t *testing.T) {
 			name: "success - proxy deletes agent then session deleted",
 			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
 			mockRepo: &mockSessionRepo{
-				deleteFn: func(_ context.Context, name string) error {
-					if name != "sessions/abc123" {
-						t.Fatalf("repo.Delete() name = %q, want %q", name, "sessions/abc123")
+				deleteFn: func(_ context.Context, sessionID string) error {
+					if sessionID != "abc123" {
+						t.Fatalf("repo.Delete() sessionID = %q, want %q", sessionID, "abc123")
 					}
 					return nil
 				},
@@ -343,7 +341,6 @@ func Test_sessionToProto(t *testing.T) {
 		{
 			name: "session with fields",
 			session: &domain.Session{
-				Name:       "sessions/test",
 				SessionID:  "test",
 				CreateTime: time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
@@ -354,7 +351,6 @@ func Test_sessionToProto(t *testing.T) {
 		{
 			name: "session with zero create time has no create_time",
 			session: &domain.Session{
-				Name:      "sessions/notime",
 				SessionID: "notime",
 			},
 			wantNil:  false,

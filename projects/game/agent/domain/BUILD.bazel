@@ -8,5 +8,4 @@ go_library(
     ],
     importpath = "dominion/projects/game/agent/domain",
     visibility = ["//visibility:public"],
-    deps = ["//projects/game"],
 )

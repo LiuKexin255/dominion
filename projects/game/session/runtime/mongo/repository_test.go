@@ -94,7 +94,6 @@ func TestCreateSession(t *testing.T) {
 	tests := []struct {
 		name       string
 		session    *domain.Session
-		wantName   string
 		wantID     string
 		wantErr    bool
 		wantErrTyp error
@@ -102,11 +101,9 @@ func TestCreateSession(t *testing.T) {
 		{
 			name: "success",
 			session: &domain.Session{
-				Name:      "sessions/abc123",
 				SessionID: "abc123",
 			},
-			wantName: "sessions/abc123",
-			wantID:   "abc123",
+			wantID: "abc123",
 		},
 	}
 
@@ -131,9 +128,6 @@ func TestCreateSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Create() unexpected error: %v", err)
 			}
-			if got.Name != tt.wantName {
-				t.Fatalf("Create() name = %q, want %q", got.Name, tt.wantName)
-			}
 			if got.SessionID != tt.wantID {
 				t.Fatalf("Create() session_id = %q, want %q", got.SessionID, tt.wantID)
 			}
@@ -150,23 +144,21 @@ func TestGetSession(t *testing.T) {
 	tests := []struct {
 		name       string
 		seed       *domain.Session
-		getName    string
-		wantName   string
+		getID      string
 		wantID     string
 		wantErr    bool
 		wantErrTyp error
 	}{
 		{
-			name:       "success - fields match after create then get",
-			seed:       &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
-			getName:    "sessions/abc123",
-			wantName:   "sessions/abc123",
-			wantID:     "abc123",
+			name:   "success - fields match after create then get",
+			seed:   &domain.Session{SessionID: "abc123"},
+			getID:  "abc123",
+			wantID: "abc123",
 		},
 		{
 			name:       "not found",
-			seed:       &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
-			getName:    "sessions/missing",
+			seed:       &domain.Session{SessionID: "abc123"},
+			getID:      "missing",
 			wantErr:    true,
 			wantErrTyp: domain.ErrNotFound,
 		},
@@ -182,7 +174,7 @@ func TestGetSession(t *testing.T) {
 			}
 
 			// when
-			got, err := repo.Get(ctx, tt.getName)
+			got, err := repo.Get(ctx, tt.getID)
 
 			// then
 			if tt.wantErr {
@@ -197,9 +189,6 @@ func TestGetSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Get() unexpected error: %v", err)
 			}
-			if got.Name != tt.wantName {
-				t.Fatalf("Get() name = %q, want %q", got.Name, tt.wantName)
-			}
 			if got.SessionID != tt.wantID {
 				t.Fatalf("Get() session_id = %q, want %q", got.SessionID, tt.wantID)
 			}
@@ -213,7 +202,6 @@ func TestCreateSessionAlreadyExists(t *testing.T) {
 	// given
 	repo := newTestRepo()
 	session := &domain.Session{
-		Name:      "sessions/abc123",
 		SessionID: "abc123",
 	}
 	_, err := repo.Create(ctx, session)
@@ -239,19 +227,19 @@ func TestDeleteSession(t *testing.T) {
 	tests := []struct {
 		name       string
 		seed       *domain.Session
-		deleteName string
+		deleteID   string
 		wantErr    bool
 		wantErrTyp error
 	}{
 		{
-			name:       "success - delete existing session",
-			seed:       &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
-			deleteName: "sessions/abc123",
+			name:     "success - delete existing session",
+			seed:     &domain.Session{SessionID: "abc123"},
+			deleteID: "abc123",
 		},
 		{
 			name:       "not found - delete non-existent session",
-			seed:       &domain.Session{Name: "sessions/abc123", SessionID: "abc123"},
-			deleteName: "sessions/missing",
+			seed:       &domain.Session{SessionID: "abc123"},
+			deleteID:   "missing",
 			wantErr:    true,
 			wantErrTyp: domain.ErrNotFound,
 		},
@@ -267,7 +255,7 @@ func TestDeleteSession(t *testing.T) {
 			}
 
 			// when
-			err = repo.Delete(ctx, tt.deleteName)
+			err = repo.Delete(ctx, tt.deleteID)
 
 			// then
 			if tt.wantErr {
@@ -295,13 +283,12 @@ func Test_toDomain(t *testing.T) {
 		want *domain.Session
 	}{
 		{
-			name: "name generated from session_id",
+			name: "session_id and create_time are preserved",
 			doc: &sessionDocument{
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
 			want: &domain.Session{
-				Name:       "sessions/abc123",
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
@@ -325,9 +312,6 @@ func Test_toDomain(t *testing.T) {
 			if got == nil || tt.want == nil {
 				t.Fatalf("toDomain() = %v, want %v", got, tt.want)
 			}
-			if got.Name != tt.want.Name {
-				t.Fatalf("toDomain() name = %q, want %q", got.Name, tt.want.Name)
-			}
 			if got.SessionID != tt.want.SessionID {
 				t.Fatalf("toDomain() session_id = %q, want %q", got.SessionID, tt.want.SessionID)
 			}
@@ -349,7 +333,6 @@ func Test_fromDomain(t *testing.T) {
 		{
 			name: "name is not stored in document",
 			session: &domain.Session{
-				Name:       "sessions/abc123",
 				SessionID:  "abc123",
 				CreateTime: now,
 			},
@@ -395,9 +378,8 @@ func TestRoundTrip(t *testing.T) {
 		session *domain.Session
 	}{
 		{
-			name: "domain to document and back - name is reconstructed from session_id",
+			name: "domain to document and back - name is no longer in domain model",
 			session: &domain.Session{
-				Name:       "sessions/roundtrip",
 				SessionID:  "roundtrip",
 				CreateTime: now,
 			},
@@ -413,9 +395,6 @@ func TestRoundTrip(t *testing.T) {
 			got := doc.toDomain()
 
 			// then
-			if got.Name != tt.session.Name {
-				t.Fatalf("round-trip name = %q, want %q", got.Name, tt.session.Name)
-			}
 			if got.SessionID != tt.session.SessionID {
 				t.Fatalf("round-trip session_id = %q, want %q", got.SessionID, tt.session.SessionID)
 			}

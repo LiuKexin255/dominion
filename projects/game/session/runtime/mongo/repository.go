@@ -4,10 +4,8 @@ package mongo
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
-	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/domain"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -85,9 +83,8 @@ func (r *sessionRepository) Create(ctx context.Context, session *domain.Session)
 	return doc.toDomain(), nil
 }
 
-// Get retrieves a session by its resource name (e.g. "sessions/abc123").
-func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Session, error) {
-	sessionID := strings.TrimPrefix(name, gameconst.SessionNamePrefix)
+// Get retrieves a session by its session ID.
+func (r *sessionRepository) Get(ctx context.Context, sessionID string) (*domain.Session, error) {
 	filter := sessionFilter{SessionID: sessionID}
 	result := new(sessionDocument)
 	if err := r.collection.FindOne(ctx, filter).Decode(result); err != nil {
@@ -100,9 +97,8 @@ func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Sessi
 	return result.toDomain(), nil
 }
 
-// Delete removes a session by its resource name (e.g. "sessions/abc123").
-func (r *sessionRepository) Delete(ctx context.Context, name string) error {
-	sessionID := strings.TrimPrefix(name, gameconst.SessionNamePrefix)
+// Delete removes a session by its session ID.
+func (r *sessionRepository) Delete(ctx context.Context, sessionID string) error {
 	filter := sessionFilter{SessionID: sessionID}
 	result, err := r.collection.DeleteOne(ctx, filter)
 	if err != nil {

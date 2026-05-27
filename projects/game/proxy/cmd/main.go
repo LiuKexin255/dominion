@@ -51,9 +51,9 @@ func main() {
 	// Hash-based owner picker.
 	hashPicker := picker.NewHashPicker()
 
-	// Agent client manager with periodic refresh.
+	// Agent client manager with periodic refresh via Daemon.
 	agentTarget := solver.MustParseTarget(gameconst.AgentTarget)
-	manager := agentclient.NewManager(context.Background(), statefulResolver, agentTarget, agentclient.DefaultRefreshInterval)
+	manager := agentclient.NewManager(statefulResolver, agentTarget, agentclient.DefaultRefreshInterval)
 
 	// Bidirectional stream binder.
 	binder := bind.NewBinder()
@@ -73,7 +73,7 @@ func main() {
 	b := bootstrap.New()
 	b.Register(otel.Component())
 	b.Register(bootstrap.MongoClient("mongo", mongoClient))
-	b.Register(manager)
+	b.Register(agentclient.NewDaemon(manager, agentclient.DefaultRefreshInterval))
 	b.Register(bootstrap.GRPCServer("grpc", grpcServer, listener))
 	log.Fatal(b.Run(context.Background()))
 }

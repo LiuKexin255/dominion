@@ -16,52 +16,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// grpcServerStream adapts a gRPC proxy ConnectAgent server stream to AgentFrameStream.
-type grpcServerStream struct {
-	stream game.ProxyService_ConnectAgentServer
-}
-
-func (s *grpcServerStream) Recv() (*game.AgentFrame, error) {
-	return s.stream.Recv()
-}
-
-func (s *grpcServerStream) Send(frame *game.AgentFrame) error {
-	return s.stream.Send(frame)
-}
-
-// grpcClientStream adapts a gRPC agent Connect client stream to AgentFrameStream.
-type grpcClientStream struct {
-	stream game.AgentService_ConnectClient
-}
-
-func (s *grpcClientStream) Recv() (*game.AgentFrame, error) {
-	return s.stream.Recv()
-}
-
-func (s *grpcClientStream) Send(frame *game.AgentFrame) error {
-	return s.stream.Send(frame)
-}
-
-// prefixedGatewayStream wraps an AgentFrameStream and returns a pre-read first
-// frame on the first Recv() call, then delegates to the inner stream.
-type prefixedGatewayStream struct {
-	inner      bind.AgentFrameStream
-	firstFrame *game.AgentFrame
-	sentFirst  bool
-}
-
-func (s *prefixedGatewayStream) Recv() (*game.AgentFrame, error) {
-	if !s.sentFirst {
-		s.sentFirst = true
-		return s.firstFrame, nil
-	}
-	return s.inner.Recv()
-}
-
-func (s *prefixedGatewayStream) Send(frame *game.AgentFrame) error {
-	return s.inner.Send(frame)
-}
-
 // connectAgenter implements domain.ConnectAgenter.
 type connectAgenter struct {
 	ownerStore domain.OwnerStore
@@ -130,18 +84,11 @@ func (c *connectAgenter) Connect(stream game.ProxyService_ConnectAgentServer) er
 		event.Int("agent_index", owner.OwnerIndex),
 	)
 
-	// Wrap streams as AgentFrameStream adapters.
-	gatewayAdapter := &grpcServerStream{stream: stream}
-	agentAdapter := &grpcClientStream{stream: agentStream}
+	// The first frame was already read from the gateway — inject it via
+	// WithFirstFrame so the Binder forwards it to the agent first.
+	prefixed := bind.WithFirstFrame(stream, frame)
 
-	// The first frame was already read from the gateway — inject it via the
-	// prefixed stream so the Binder forwards it to the agent first.
-	prefixStream := &prefixedGatewayStream{
-		inner:      gatewayAdapter,
-		firstFrame: frame,
-	}
-
-	return c.binder.Bind(ctx, prefixStream, agentAdapter)
+	return c.binder.Bind(ctx, prefixed, agentStream)
 }
 
 // mapDomainError converts domain errors to gRPC status errors.

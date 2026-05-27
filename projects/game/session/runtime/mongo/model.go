@@ -4,26 +4,23 @@ package mongo
 import (
 	"time"
 
-	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/domain"
 )
 
 // sessionDocument stores Session documents in MongoDB.
-// Name is NOT stored in BSON; it is synthesized from SessionID on read.
+// Name is not stored in BSON; it is synthesized at the handler boundary.
 type sessionDocument struct {
 	SessionID  string    `bson:"session_id"`
 	CreateTime time.Time `bson:"create_time"`
 }
 
-// toDomain converts a MongoDB document into its domain representation,
-// generating the Name field from SessionID.
+// toDomain converts a MongoDB document into its domain representation.
 func (d *sessionDocument) toDomain() *domain.Session {
 	if d == nil {
 		return nil
 	}
 
 	return &domain.Session{
-		Name:       gameconst.SessionName(d.SessionID),
 		SessionID:  d.SessionID,
 		CreateTime: d.CreateTime,
 	}

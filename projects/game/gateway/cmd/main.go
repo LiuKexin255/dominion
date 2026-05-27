@@ -22,6 +22,7 @@ import (
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/bind"
 	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"github.com/coder/websocket"
@@ -32,10 +33,6 @@ import (
 
 var (
 	port = flag.String("port", "80", "Port to listen on")
-
-	// unmarshalOpts discards unknown JSON fields to tolerate forward-compatible
-	// proto changes without breaking the gateway.
-	unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
 )
 
 func main() {
@@ -116,6 +113,101 @@ func extractSessionID(path string) string {
 	return ""
 }
 
+// wsStream adapts a WebSocket connection to bind.AgentFrameStream.
+// It handles protojson serialization/deserialization and injects the
+// sessionID from the URL path into every received frame, overwriting
+// any client-supplied value.
+//
+// done carries the terminal Recv error so that the peer stream can
+// unblock with the same error and allow the binder to shut down cleanly.
+type wsStream struct {
+	conn      *websocket.Conn
+	sessionID string
+	done      chan error
+}
+
+// Recv reads a text frame from the WebSocket, unmarshals it as an
+// AgentFrame (protojson, DiscardUnknown), and injects the sessionID
+// from the URL path. On error it sends the error through done to
+// unblock the peer.
+func (s *wsStream) Recv() (*game.AgentFrame, error) {
+	_, data, err := s.conn.Read(context.Background())
+	if err != nil {
+		s.done <- err
+		close(s.done)
+		return nil, err
+	}
+	var frame game.AgentFrame
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &frame); err != nil {
+		s.done <- errors.Join(errProtocol, err)
+		close(s.done)
+		return nil, errors.Join(errProtocol, err)
+	}
+	// CRITICAL: inject sessionID from URL path — always wins over client-supplied value
+	frame.SessionId = s.sessionID
+	return &frame, nil
+}
+
+// Send marshals the AgentFrame as JSON and writes it as a text frame to
+// the WebSocket connection.
+func (s *wsStream) Send(frame *game.AgentFrame) error {
+	data, err := protojson.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return s.conn.Write(context.Background(), websocket.MessageText, data)
+}
+
+// gRPCStream wraps a bind.AgentFrameStream and checks the wsStream's
+// done channel concurrently with Recv, so that the binder can cleanly
+// shut down when the wsStream side encounters a terminal error.
+// The done channel carries the wsStream error, ensuring both binder
+// goroutines return the same error and eliminating a reporting race.
+type gRPCStream struct {
+	inner bind.AgentFrameStream
+	done  <-chan error
+}
+
+func (s *gRPCStream) Recv() (*game.AgentFrame, error) {
+	select {
+	case err := <-s.done:
+		return nil, err
+	default:
+	}
+
+	type recvResult struct {
+		frame *game.AgentFrame
+		err   error
+	}
+	ch := make(chan recvResult, 1)
+	go func() {
+		f, err := s.inner.Recv()
+		ch <- recvResult{f, err}
+	}()
+
+	select {
+	case err := <-s.done:
+		return nil, err
+	case r := <-ch:
+		return r.frame, r.err
+	}
+}
+
+func (s *gRPCStream) Send(frame *game.AgentFrame) error {
+	return s.inner.Send(frame)
+}
+
+// errProtocol is a sentinel error for protocol-level errors (e.g. invalid
+// AgentFrame JSON) that should result in a WebSocket InvalidFramePayloadData
+// close code.
+var errProtocol = errors.New("protocol error")
+
+// isProtocolError reports whether err is a protocol-level error (invalid
+// AgentFrame JSON) from the WebSocket adapter.
+func isProtocolError(err error) bool {
+	return errors.Is(err, errProtocol)
+}
+
 // handleWebSocketConnect upgrades an HTTP connection to WebSocket and
 // establishes a bidirectional forwarding bridge between the WebSocket
 // and the underlying ProxyService.ConnectAgent gRPC stream.
@@ -126,7 +218,7 @@ func extractSessionID(path string) string {
 func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *grpc.ClientConn) {
 	sessionID := extractSessionID(r.URL.Path)
 	if sessionID == "" {
-		http.Error(w, "invalid session_id in path", http.StatusBadRequest)
+		http.Error(w, "missing session_id", http.StatusBadRequest)
 		return
 	}
 
@@ -137,56 +229,33 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 		log.Printf("ws accept: %v", err)
 		return
 	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
+	defer conn.CloseNow()
 
 	proxyClient := game.NewProxyServiceClient(proxyConn)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	stream, err := proxyClient.ConnectAgent(ctx)
+	stream, err := proxyClient.ConnectAgent(r.Context())
 	if err != nil {
 		log.Printf("proxy ConnectAgent: %v", err)
 		return
 	}
 
-	// goroutine: WebSocket read → gRPC stream send
-	go func() {
-		defer cancel()
-		for {
-			_, msg, err := conn.Read(ctx)
-			if err != nil {
-				if !isCleanClose(err) {
-					log.Printf("ws read: %v", err)
-				}
-				return
-			}
-			frame := new(game.AgentFrame)
-			if err := unmarshalOpts.Unmarshal(msg, frame); err != nil {
-				// Invalid JSON: close the connection with a protocol error.
-				conn.Close(websocket.StatusInvalidFramePayloadData, "invalid agent frame JSON")
-				return
-			}
-			frame.SessionId = sessionID
-			if err := stream.Send(frame); err != nil {
-				return
-			}
-		}
-	}()
+	ws := &wsStream{conn: conn, sessionID: sessionID, done: make(chan error, 1)}
+	grs := &gRPCStream{inner: stream, done: ws.done}
+	b := bind.NewBinder()
+	err = b.Bind(r.Context(), ws, grs)
 
-	// main goroutine: gRPC stream recv → WebSocket write
-	for {
-		frame, err := stream.Recv()
-		if err != nil {
-			break
-		}
-		msg, err := protojson.Marshal(frame)
-		if err != nil {
-			break
-		}
-		if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-			break
-		}
+	if err == nil {
+		conn.Close(websocket.StatusNormalClosure, "")
+		return
 	}
+	if isCleanClose(err) {
+		conn.Close(websocket.StatusNormalClosure, "")
+		return
+	}
+	if isProtocolError(err) {
+		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame JSON")
+		return
+	}
+	conn.Close(websocket.StatusInternalError, "internal error")
 }
 
 // isCleanClose reports whether the error represents a normal WebSocket or

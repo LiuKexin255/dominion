@@ -6,15 +6,11 @@ go_library(
     srcs = ["simple_runtime.go"],
     importpath = "dominion/projects/game/agent/runtime",
     visibility = ["//visibility:public"],
-    deps = [
-        "//projects/game",
-        "//projects/game/agent/domain",
-    ],
+    deps = ["//projects/game/agent/domain"],
 )
 
 go_unittest(
     name = "runtime_test",
     srcs = ["simple_runtime_test.go"],
     embed = [":runtime"],
-    deps = ["//projects/game"],
 )
