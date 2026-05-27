@@ -4,6 +4,7 @@ package mongo
 import (
 	"time"
 
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/domain"
 )
 
@@ -22,7 +23,7 @@ func (d *sessionDocument) toDomain() *domain.Session {
 	}
 
 	return &domain.Session{
-		Name:       "sessions/" + d.SessionID,
+		Name:       gameconst.SessionName(d.SessionID),
 		SessionID:  d.SessionID,
 		CreateTime: d.CreateTime,
 	}

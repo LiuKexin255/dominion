@@ -9,6 +9,7 @@ import (
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/domain"
 
 	game "dominion/projects/game"
@@ -20,18 +21,16 @@ import (
 )
 
 const (
-	sessionNamePrefix = "sessions/"
-
-	logFieldName      = "name"
-	logFieldSessionID = "session_id"
+	logFieldName      = gameconst.LogFieldName
+	logFieldSessionID = gameconst.LogFieldSessionID
 )
 
 // SessionHandler implements SessionServiceServer for session CRUD operations.
 type SessionHandler struct {
 	game.UnimplementedSessionServiceServer
 
-	sessionRepo  domain.SessionRepository
-	proxyClient  game.ProxyServiceClient
+	sessionRepo domain.SessionRepository
+	proxyClient game.ProxyServiceClient
 }
 
 // NewSessionHandler creates a new SessionHandler with the given repository and proxy client.
@@ -45,7 +44,7 @@ func NewSessionHandler(repo domain.SessionRepository, proxyClient game.ProxyServ
 // CreateSession creates a new Session resource.
 func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSessionRequest) (*game.Session, error) {
 	sessionID := req.GetSessionId()
-	name := sessionNamePrefix + sessionID
+	name := gameconst.SessionName(sessionID)
 
 	s, err := h.sessionRepo.Create(ctx, &domain.Session{
 		Name:      name,
@@ -78,8 +77,8 @@ func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionReq
 // to clean up the associated Agent resource. If the proxy returns NotFound,
 // deletion continues (idempotent). Other proxy errors block session deletion.
 func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSessionRequest) (*emptypb.Empty, error) {
-	sessionID := strings.TrimPrefix(req.GetName(), sessionNamePrefix)
-	agentName := sessionNamePrefix + sessionID + "/agent"
+	sessionID := strings.TrimPrefix(req.GetName(), gameconst.SessionNamePrefix)
+	agentName := gameconst.AgentName(sessionID)
 
 	_, err := h.proxyClient.DeleteAgent(ctx, &game.DeleteAgentRequest{Name: agentName})
 	if err != nil && status.Code(err) != codes.NotFound {

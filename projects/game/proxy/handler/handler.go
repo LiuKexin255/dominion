@@ -11,6 +11,7 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
 
@@ -104,7 +105,7 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	)
 
 	return &game.Agent{
-		Name:       fmt.Sprintf("sessions/%s/agent", sessionID),
+		Name:       gameconst.AgentName(sessionID),
 		SessionId:  sessionID,
 		OwnerIndex: int32(pickedRef.OwnerIndex),
 		Owner:      pickedRef.Owner,

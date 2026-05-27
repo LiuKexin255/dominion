@@ -10,6 +10,7 @@ go_library(
         "//common/gopkg/logs",
         "//common/gopkg/logs/event",
         "//projects/game",
+        "//projects/game/pkg/gameconst",
         "//projects/game/session/domain",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

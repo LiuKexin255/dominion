@@ -7,6 +7,7 @@ import (
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/grpc/solver"
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -36,7 +37,7 @@ type AgentClient struct {
 
 // NewAgentClient creates a new gRPC client to the agent service for a specific instance.
 func NewAgentClient(ctx context.Context, instanceIndex int) (*AgentClient, error) {
-	uri := solver.URI("game/agent:grpc", solver.WithInstance(instanceIndex))
+	uri := solver.URI(gameconst.AgentTarget, solver.WithInstance(instanceIndex))
 	dialOpts := pgrpc.ClientDefault()
 	conn, err := grpc.NewClient(uri, dialOpts...)
 	if err != nil {

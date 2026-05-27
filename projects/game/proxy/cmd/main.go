@@ -13,11 +13,12 @@ import (
 	"dominion/common/gopkg/otel"
 	"dominion/common/gopkg/solver"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/bind"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/handler"
 	"dominion/projects/game/proxy/runtime/agentclient"
 	proxymongo "dominion/projects/game/proxy/runtime/mongo"
 	"dominion/projects/game/proxy/runtime/picker"
-	"dominion/projects/game/proxy/runtime/stream"
 	"dominion/projects/game/proxy/service"
 
 	grpcgo "google.golang.org/grpc"
@@ -51,11 +52,11 @@ func main() {
 	hashPicker := picker.NewHashPicker()
 
 	// Agent client manager with periodic refresh.
-	agentTarget := solver.MustParseTarget("game/agent:grpc")
+	agentTarget := solver.MustParseTarget(gameconst.AgentTarget)
 	manager := agentclient.NewManager(context.Background(), statefulResolver, agentTarget, agentclient.DefaultRefreshInterval)
 
 	// Bidirectional stream binder.
-	binder := stream.NewBinder()
+	binder := bind.NewBinder()
 
 	// ConnectAgenter handles bidirectional agent stream connections.
 	connectAgenter := service.NewConnectAgenter(mongoOwnerStore, manager, binder)

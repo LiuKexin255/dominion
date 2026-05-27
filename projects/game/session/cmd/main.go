@@ -13,6 +13,7 @@ import (
 	"dominion/common/gopkg/otel"
 
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/handler"
 	sessionmongo "dominion/projects/game/session/runtime/mongo"
 
@@ -37,7 +38,7 @@ func main() {
 
 	sessionRepo := sessionmongo.NewSessionRepository(mongoClient, "game_session", "sessions")
 
-	proxyConn, err := grpcgo.NewClient(solver.URI("game/proxy:grpc"), pgrpc.ClientDefault()...)
+	proxyConn, err := grpcgo.NewClient(solver.URI(gameconst.ProxyTarget), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("proxy dial: %v", err)
 	}

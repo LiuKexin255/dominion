@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/bind"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
-	"dominion/projects/game/proxy/runtime/stream"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -75,7 +75,7 @@ func (m *mockManager) Close() error { return nil }
 
 // mockAgentClient implements agentclient.Client for testing.
 type mockAgentClient struct {
-	connectErr error
+	connectErr  error
 	agentStream game.AgentService_ConnectClient
 }
 
@@ -102,8 +102,8 @@ func (c *mockAgentClient) Close() error { return nil }
 
 // mockAgentStream implements game.AgentService_ConnectClient for testing.
 type mockAgentStream struct {
-	recvCh <-chan *game.AgentFrame
-	sendCh chan<- *game.AgentFrame
+	recvCh  <-chan *game.AgentFrame
+	sendCh  chan<- *game.AgentFrame
 	sendErr error
 }
 
@@ -123,12 +123,12 @@ func (s *mockAgentStream) Send(f *game.AgentFrame) error {
 	return nil
 }
 
-func (s *mockAgentStream) Header() (metadata.MD, error)  { return nil, nil }
-func (s *mockAgentStream) Trailer() metadata.MD           { return nil }
-func (s *mockAgentStream) CloseSend() error               { return nil }
-func (s *mockAgentStream) Context() context.Context       { return context.Background() }
-func (s *mockAgentStream) SendMsg(m interface{}) error    { return nil }
-func (s *mockAgentStream) RecvMsg(m interface{}) error    { return nil }
+func (s *mockAgentStream) Header() (metadata.MD, error) { return nil, nil }
+func (s *mockAgentStream) Trailer() metadata.MD         { return nil }
+func (s *mockAgentStream) CloseSend() error             { return nil }
+func (s *mockAgentStream) Context() context.Context     { return context.Background() }
+func (s *mockAgentStream) SendMsg(m interface{}) error  { return nil }
+func (s *mockAgentStream) RecvMsg(m interface{}) error  { return nil }
 
 // mockProxyStream implements game.ProxyService_ConnectAgentServer for testing.
 type mockProxyStream struct {
@@ -154,15 +154,15 @@ func (s *mockProxyStream) SetHeader(metadata.MD) error  { return nil }
 func (s *mockProxyStream) SendHeader(metadata.MD) error { return nil }
 func (s *mockProxyStream) SetTrailer(metadata.MD)       {}
 func (s *mockProxyStream) Context() context.Context     { return s.ctx }
-func (s *mockProxyStream) SendMsg(m interface{}) error   { return nil }
-func (s *mockProxyStream) RecvMsg(m interface{}) error   { return nil }
+func (s *mockProxyStream) SendMsg(m interface{}) error  { return nil }
+func (s *mockProxyStream) RecvMsg(m interface{}) error  { return nil }
 
-// mockBinder implements stream.Binder for testing.
+// mockBinder implements bind.Binder for testing.
 type mockBinder struct {
 	err error
 }
 
-func (b *mockBinder) Bind(_ context.Context, _ stream.AgentFrameStream, _ stream.AgentFrameStream) error {
+func (b *mockBinder) Bind(_ context.Context, _ bind.AgentFrameStream, _ bind.AgentFrameStream) error {
 	return b.err
 }
 
@@ -178,13 +178,13 @@ func TestConnect(t *testing.T) {
 		name     string
 		wantCode codes.Code
 		wantErr  bool
-		setup    func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer)
+		setup    func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer)
 	}{
 		{
 			name:     "happy path",
 			wantErr:  false,
 			wantCode: codes.OK,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				// given: owner exists in store
 				store := newMockOwnerStore()
 				store.records[testSessionID] = &domain.AgentOwner{
@@ -223,7 +223,7 @@ func TestConnect(t *testing.T) {
 			name:     "missing session_id",
 			wantErr:  true,
 			wantCode: codes.InvalidArgument,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				store := newMockOwnerStore()
 				mgr := &mockManager{}
 				binder := &mockBinder{}
@@ -246,7 +246,7 @@ func TestConnect(t *testing.T) {
 			name:     "owner not found",
 			wantErr:  true,
 			wantCode: codes.NotFound,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				// empty store — no owner for session
 				store := newMockOwnerStore()
 				mgr := &mockManager{}
@@ -269,7 +269,7 @@ func TestConnect(t *testing.T) {
 			name:     "owner store returns other error",
 			wantErr:  true,
 			wantCode: codes.Internal,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				store := newMockOwnerStore()
 				store.getErr = status.Error(codes.Internal, "db connection lost")
 				mgr := &mockManager{}
@@ -292,7 +292,7 @@ func TestConnect(t *testing.T) {
 			name:     "manager get returns error",
 			wantErr:  true,
 			wantCode: codes.Internal,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				store := newMockOwnerStore()
 				store.records[testSessionID] = &domain.AgentOwner{
 					SessionID:  testSessionID,
@@ -319,7 +319,7 @@ func TestConnect(t *testing.T) {
 			name:     "agent stream open error",
 			wantErr:  true,
 			wantCode: codes.Internal,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				store := newMockOwnerStore()
 				store.records[testSessionID] = &domain.AgentOwner{
 					SessionID:  testSessionID,
@@ -347,7 +347,7 @@ func TestConnect(t *testing.T) {
 			name:     "first frame recv error",
 			wantErr:  true,
 			wantCode: codes.InvalidArgument,
-			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, stream.Binder, game.ProxyService_ConnectAgentServer) {
+			setup: func(t *testing.T) (domain.OwnerStore, agentclient.Manager, bind.Binder, game.ProxyService_ConnectAgentServer) {
 				store := newMockOwnerStore()
 				mgr := &mockManager{}
 				binder := &mockBinder{}
@@ -491,7 +491,7 @@ func TestConnect_firstFrameSendError(t *testing.T) {
 // an error to simulate the first frame failing to forward to the agent.
 type firstFrameSendErrorBinder struct{}
 
-func (b *firstFrameSendErrorBinder) Bind(_ context.Context, left stream.AgentFrameStream, _ stream.AgentFrameStream) error {
+func (b *firstFrameSendErrorBinder) Bind(_ context.Context, left bind.AgentFrameStream, _ bind.AgentFrameStream) error {
 	_, err := left.Recv()
 	if err != nil {
 		return err

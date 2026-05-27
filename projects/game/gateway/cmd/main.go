@@ -22,6 +22,7 @@ import (
 	phttp "dominion/common/gopkg/http"
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -31,7 +32,7 @@ import (
 
 var (
 	port = flag.String("port", "80", "Port to listen on")
-	
+
 	// unmarshalOpts discards unknown JSON fields to tolerate forward-compatible
 	// proto changes without breaking the gateway.
 	unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
@@ -41,12 +42,12 @@ func main() {
 	flag.Parse()
 
 	// 1. Create gRPC connections to backend services.
-	sessionConn, err := grpc.NewClient(solver.URI("game/session:grpc"), pgrpc.ClientDefault()...)
+	sessionConn, err := grpc.NewClient(solver.URI(gameconst.SessionTarget), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("session dial: %v", err)
 	}
 
-	proxyConn, err := grpc.NewClient(solver.URI("game/proxy:grpc"), pgrpc.ClientDefault()...)
+	proxyConn, err := grpc.NewClient(solver.URI(gameconst.ProxyTarget), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("proxy dial: %v", err)
 	}

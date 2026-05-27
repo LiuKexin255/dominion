@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "bind",
+    srcs = [
+        "binder.go",
+        "first_frame.go",
+    ],
+    importpath = "dominion/projects/game/pkg/bind",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game",
+        "@org_golang_x_sync//errgroup",
+    ],
+)
+
+go_unittest(
+    name = "bind_test",
+    srcs = [
+        "binder_test.go",
+        "first_frame_test.go",
+    ],
+    deps = [
+        ":bind",
+        "//projects/game",
+    ],
+)

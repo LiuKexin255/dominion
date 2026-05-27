@@ -8,9 +8,9 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/bind"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
-	"dominion/projects/game/proxy/runtime/stream"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -45,7 +45,7 @@ func (s *grpcClientStream) Send(frame *game.AgentFrame) error {
 // prefixedGatewayStream wraps an AgentFrameStream and returns a pre-read first
 // frame on the first Recv() call, then delegates to the inner stream.
 type prefixedGatewayStream struct {
-	inner      stream.AgentFrameStream
+	inner      bind.AgentFrameStream
 	firstFrame *game.AgentFrame
 	sentFirst  bool
 }
@@ -66,14 +66,14 @@ func (s *prefixedGatewayStream) Send(frame *game.AgentFrame) error {
 type connectAgenter struct {
 	ownerStore domain.OwnerStore
 	manager    agentclient.Manager
-	binder     stream.Binder
+	binder     bind.Binder
 }
 
 // NewConnectAgenter creates a new ConnectAgenter implementation.
 func NewConnectAgenter(
 	ownerStore domain.OwnerStore,
 	manager agentclient.Manager,
-	binder stream.Binder,
+	binder bind.Binder,
 ) domain.ConnectAgenter {
 	return &connectAgenter{
 		ownerStore: ownerStore,

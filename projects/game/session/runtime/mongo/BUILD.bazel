@@ -10,6 +10,7 @@ go_library(
     importpath = "dominion/projects/game/session/runtime/mongo",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/game/pkg/gameconst",
         "//projects/game/session/domain",
         "@org_mongodb_go_mongo_driver//mongo",
         "@org_mongodb_go_mongo_driver//mongo/options",

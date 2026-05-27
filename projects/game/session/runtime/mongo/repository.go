@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/session/domain"
 
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -19,9 +20,6 @@ const (
 	// collectionName is the MongoDB collection name for sessions.
 	collectionName = "sessions"
 )
-
-// sessionNamePrefix is the resource name prefix for sessions.
-const sessionNamePrefix = "sessions/"
 
 // singleResult wraps the decode behavior of a MongoDB single document query result.
 type singleResult interface {
@@ -89,7 +87,7 @@ func (r *sessionRepository) Create(ctx context.Context, session *domain.Session)
 
 // Get retrieves a session by its resource name (e.g. "sessions/abc123").
 func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Session, error) {
-	sessionID := strings.TrimPrefix(name, sessionNamePrefix)
+	sessionID := strings.TrimPrefix(name, gameconst.SessionNamePrefix)
 	filter := sessionFilter{SessionID: sessionID}
 	result := new(sessionDocument)
 	if err := r.collection.FindOne(ctx, filter).Decode(result); err != nil {
@@ -104,7 +102,7 @@ func (r *sessionRepository) Get(ctx context.Context, name string) (*domain.Sessi
 
 // Delete removes a session by its resource name (e.g. "sessions/abc123").
 func (r *sessionRepository) Delete(ctx context.Context, name string) error {
-	sessionID := strings.TrimPrefix(name, sessionNamePrefix)
+	sessionID := strings.TrimPrefix(name, gameconst.SessionNamePrefix)
 	filter := sessionFilter{SessionID: sessionID}
 	result, err := r.collection.DeleteOne(ctx, filter)
 	if err != nil {

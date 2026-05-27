@@ -15,6 +15,7 @@ go_library(
         "//common/gopkg/grpc/solver",
         "//common/gopkg/solver",
         "//projects/game",
+        "//projects/game/pkg/gameconst",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_protobuf//types/known/emptypb",
     ],

@@ -1,4 +1,4 @@
-package stream
+package bind_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/bind"
 )
 
 type mockStream struct {
@@ -106,6 +107,13 @@ func newFixture(err error) *streamFixture {
 	}
 }
 
+// newMockStream creates an empty mockStream for WithFirstFrame tests.
+func newMockStream() *mockStream {
+	return &mockStream{
+		recvCh: make(chan *game.AgentFrame, 8),
+	}
+}
+
 func TestBind(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -191,7 +199,7 @@ func TestBind(t *testing.T) {
 			fx, cancel := tt.setup(t)
 			defer cancel()
 
-			b := NewBinder()
+			b := bind.NewBinder()
 			err := b.Bind(context.Background(), fx.left, fx.right)
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected error, got nil")
@@ -214,7 +222,7 @@ func TestBind_contextCancellation(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		b := NewBinder()
+		b := bind.NewBinder()
 		errCh <- b.Bind(ctx, ctxLeft, ctxRight)
 	}()
 
@@ -245,7 +253,7 @@ func TestBind_bidirectionalForwarding(t *testing.T) {
 		close(fx.rightIn)
 	}()
 
-	b := NewBinder()
+	b := bind.NewBinder()
 	err := b.Bind(ctx, fx.left, fx.right)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

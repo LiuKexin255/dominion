@@ -1,5 +1,7 @@
-// Package stream provides bidirectional streaming logic for the proxy service.
-package stream
+// Package bind provides bidirectional stream binding logic for AgentFrame
+// streams. It is used by the proxy service to forward frames between the
+// gateway and agent, and by the gateway service to connect WebSocket and gRPC.
+package bind
 
 import (
 	"context"
