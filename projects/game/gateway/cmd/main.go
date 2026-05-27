@@ -75,16 +75,6 @@ func main() {
 		gwmux.ServeHTTP(w, r)
 	})
 
-	// Sessions handler intercepts /api/v1/sessions/* to dispatch between
-	// grpc-gateway (unary agent CRUD) and WebSocket (ConnectAgent stream).
-	rootMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
-		if isWebSocketConnectPath(r.URL.Path) {
-			handleWebSocketConnect(w, r, proxyConn)
-			return
-		}
-		gwmux.ServeHTTP(w, r)
-	})
-
 	// 5. Create HTTP server.
 	srv := &http.Server{
 		Addr:    ":" + *port,
