@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/gateway/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
+        "//common/gopkg/http",
+        "//common/gopkg/otel",
+        "//projects/game",
+        "//projects/game/pkg/bind",
+        "//projects/game/pkg/gameconst",
+        "@com_github_coder_websocket//:websocket",
+        "@grpc_ecosystem_grpc_gateway//runtime",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "cmd_test",
+    srcs = ["main_test.go"],
+    embed = [":cmd_lib"],
+    deps = [
+        "//projects/game",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//codes",
+        "@org_golang_google_grpc//credentials/insecure",
+        "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

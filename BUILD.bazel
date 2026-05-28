@@ -1,4 +1,4 @@
-load("@gazelle//:def.bzl", "gazelle")
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 
 # gazelle:prefix dominion
@@ -24,11 +24,21 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 # gazelle:resolve proto go google/protobuf/field_mask.proto @com_google_protobuf//:field_mask_go_proto
 # gazelle:resolve proto go google/protobuf/timestamp.proto @com_google_protobuf//:timestamp_go_proto
 
+gazelle_binary(
+    name = "gazelle_multilang",
+    languages = [
+        "@gazelle//language/proto",
+        "@gazelle//language/go",
+        "@rules_python_gazelle_plugin//python",
+    ],
+)
+
 gazelle(
     name = "gazelle",
     extra_args = [
         "-index=lazy",
     ],
+    gazelle = ":gazelle_multilang",
 )
 
 # 生成 node_modules（运行时需要）
@@ -49,4 +59,18 @@ alias(
     actual = "//tools/dev/js:pnpm",
 )
 
-exports_files(["pnpm-workspace.yaml"])
+alias(
+    name = "python",
+    actual = "@rules_python//python/bin:python",
+)
+
+alias(
+    name = "go",
+    actual = "@rules_go//go",
+)
+
+exports_files([
+    "gazelle_python.yaml",
+    "pnpm-workspace.yaml",
+    "requirements_lock.txt",
+])

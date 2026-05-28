@@ -13,10 +13,6 @@
 4. `style` 目录下的规范和风格指南。
 5. 对应语言/生态系统的通用最佳实践。
 
-### 其他
-
-> FOR Agent:
-> * 执行 `sub_agent` 或者 `category` 任务前，检查 `category` 和 `subagent_type` 是否只传递了一个（两个参数同时传递可能导致不符合预期的子任务执行），并且确认参数与任务分配相符。
 
 ## 开发环境
 
@@ -36,9 +32,9 @@
 #### Golang
 
 1. 使用 [`go_rules`](https://github.com/bazel-contrib/rules_go) 提供 golang 编译支持。
-2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
-3. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
-4. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
+2. 使用 `bazel run //:go` 来执行 `golang` 命令。
+3. 代码格式化：使用 `bazel run //:go -- fmt [变更文件]` 命令对代码进行格式化；
+4. 依赖更新：`bazel run //:go -- mod tidy -v` 更新 `go.mod`。
 5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译。仓库内**禁止**保存 `proto 和 grpc` 生成的代码。
 6. golang 大型测试的 `target` 使用 `go_largetest(//tools/dev/go:defs.bzl)` 规则，单元测试使用 `go_unittest` （默认生成）。
 
@@ -58,6 +54,22 @@ Golang 代码格式化与依赖更新步骤如下：
 2. `ts/js` 项目使用 `pnpm` monorepo 仓库来管理依赖，根目录的 `package.json` 管理所有包的依赖，不得在子包内保存 `pnpm-lock.yaml` 文件。在 `pnpm-workspace.yaml` 中使用 `catalog` 统一主包和所有子包依赖的版本（除少数需要在 `package.json` 中直接声明版本号的依赖，例如 `typescript`。但也要保持与 `catalog` 版本一致）。
 4. 修改 `package.json` 以后，使用 `pnpm up` 来更新所有依赖。不要手动修改 `pnpm-lock.yaml`。
 5. 对于 `proto` 依赖，使用 `bazel` 来进行依赖管理和编译（使用 `protobuf_ts rules`）。与 `golang` 类似，仓库内 **禁止** 保存 `proto 和 grpc` 生成的代码。
+
+#### python
+1. 仓库使用 [`rules_python`](https://github.com/bazel-contrib/rules_python) 提供 `python` 构建支持。
+2. 使用 `bazel run //:python -- [python 参数]` 执行 Python 命令，例如 `bazel run //:python -- --version` 或 `bazel run //:python -- -m compileall [目录]`。
+3. Python 依赖通过根目录 `requirements_lock.txt` 管理，并由 `MODULE.bazel` 中的 `pip.parse(hub_name = "python_deps")` 解析。不要使用 `pip install` 修改本地环境或依赖 Bazel 外部的 Python 环境。
+4. Python `BUILD.bazel` 文件使用 `bazel run //:gazelle` 生成/更新。
+
+##### 格式化与依赖更新
+
+Python 代码格式化与依赖更新步骤如下：
+
+1. step 1: 修改 `requirements_lock.txt`，添加、删除或更新 Python 依赖版本。
+2. step 2: 使用 `bazel mod tidy` 更新 Bazel 模块锁文件与依赖解析结果。
+3. step 3: 使用 `bazel run //:gazelle` 生成/更新 Python 相关 `BUILD.bazel` 文件。
+5. step 4: 使用 `bazel build //...` 和 `bazel test //...` 验证仓库构建与测试。
+
 
 ## 开发计划
 

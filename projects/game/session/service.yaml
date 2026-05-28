@@ -1,0 +1,12 @@
+version: "3.0"
+name: session
+app: game
+kind: stateless
+desc: game session service
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: session
+    target: :cmd_image
+    tls: true

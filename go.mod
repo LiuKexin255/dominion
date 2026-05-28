@@ -172,8 +172,6 @@ require (
 )
 
 require (
-	github.com/Eyevinn/hi264 v0.10.0
-	github.com/Eyevinn/mp4ff v0.51.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/minio/minio-go/v7 v7.0.100
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2

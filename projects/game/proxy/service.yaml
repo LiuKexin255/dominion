@@ -1,0 +1,12 @@
+version: "3.0"
+name: proxy
+app: game
+kind: stateless
+desc: game proxy service
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: proxy
+    target: :cmd_image
+    tls: true

@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "domain",
+    srcs = [
+        "errors.go",
+        "interfaces.go",
+        "model.go",
+    ],
+    importpath = "dominion/projects/game/proxy/domain",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game",
+        "//projects/game/proxy/runtime/agentclient",
+    ],
+)

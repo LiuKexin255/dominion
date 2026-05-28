@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/projects/game/proxy/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/mongo",
+        "//common/gopkg/otel",
+        "//common/gopkg/solver",
+        "//projects/game",
+        "//projects/game/pkg/bind",
+        "//projects/game/pkg/gameconst",
+        "//projects/game/proxy/handler",
+        "//projects/game/proxy/runtime/agentclient",
+        "//projects/game/proxy/runtime/mongo",
+        "//projects/game/proxy/runtime/picker",
+        "//projects/game/proxy/service",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//reflection",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)

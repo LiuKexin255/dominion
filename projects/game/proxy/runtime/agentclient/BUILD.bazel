@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "agentclient",
+    srcs = [
+        "client.go",
+        "manager.go",
+    ],
+    importpath = "dominion/projects/game/proxy/runtime/agentclient",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/grpc/solver",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/solver",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_protobuf//types/known/emptypb",
+    ],
+)
+
+go_unittest(
+    name = "agentclient_test",
+    srcs = ["manager_test.go"],
+    embed = [":agentclient"],
+    deps = [
+        "//common/gopkg/solver",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)

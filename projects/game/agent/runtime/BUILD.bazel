@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "runtime",
+    srcs = ["simple_runtime.go"],
+    importpath = "dominion/projects/game/agent/runtime",
+    visibility = ["//visibility:public"],
+    deps = ["//projects/game/agent/domain"],
+)
+
+go_unittest(
+    name = "runtime_test",
+    srcs = ["simple_runtime_test.go"],
+    embed = [":runtime"],
+)

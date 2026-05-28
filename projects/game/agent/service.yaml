@@ -1,0 +1,12 @@
+version: "3.0"
+name: agent
+app: game
+kind: stateful
+desc: game agent service
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: agent
+    target: :cmd_image
+    tls: true

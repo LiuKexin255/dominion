@@ -373,7 +373,11 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 	}
 	// Build StatefulInstances from headless EndpointSlices.
 	// Group endpoints by ordinal extracted from pod name (TargetRef.Name) or Hostname.
-	instanceEndpoints := make(map[int][]string)
+	type instanceInfo struct {
+		endpoints []string
+		hostname  string
+	}
+	instanceMap := make(map[int]*instanceInfo)
 	for i := range endpointSlices.Items {
 		slice := &endpointSlices.Items[i]
 		for j := range slice.Endpoints {
@@ -386,31 +390,30 @@ func (r *K8sRuntime) QueryStatefulServiceEndpoints(ctx context.Context, envLabel
 			if err != nil {
 				continue
 			}
+			info, ok := instanceMap[idx]
+			if !ok {
+				info = &instanceInfo{hostname: podName}
+				instanceMap[idx] = info
+			}
 			if includeEndpoint(ep) {
 				for _, ip := range ep.Addresses {
 					for _, port := range ports {
-						instanceEndpoints[idx] = append(instanceEndpoints[idx], net.JoinHostPort(ip, strconv.Itoa(int(port))))
+						info.endpoints = append(info.endpoints, net.JoinHostPort(ip, strconv.Itoa(int(port))))
 					}
-				}
-			} else {
-				// Ensure the ordinal entry exists even if not ready.
-				if _, ok := instanceEndpoints[idx]; !ok {
-					instanceEndpoints[idx] = nil
 				}
 			}
 		}
 	}
 
-	// Populate StatefulInstances from the grouped endpoints map.
-	for idx, eps := range instanceEndpoints {
+	for idx, info := range instanceMap {
 		result.StatefulInstances = append(result.StatefulInstances, &domain.StatefulInstance{
 			Index:     idx,
-			Hostname:  "",
-			Endpoints: eps,
+			Hostname:  info.hostname,
+			Endpoints: info.endpoints,
 		})
 	}
 
-	sort.Slice(result.StatefulInstances, func(i int, j int) bool {
+	sort.Slice(result.StatefulInstances, func(i, j int) bool {
 		return result.StatefulInstances[i].Index < result.StatefulInstances[j].Index
 	})
 
