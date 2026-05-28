@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"dominion/common/gopkg/bootstrap"
+	pgrpc "dominion/common/gopkg/grpc"
+	grpcsolver "dominion/common/gopkg/grpc/solver"
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/solver"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 )
@@ -17,20 +20,19 @@ import (
 // DefaultRefreshInterval is the default interval between agent client refreshes.
 const DefaultRefreshInterval = 30 * time.Second
 
-// Manager manages cached agent gRPC clients with periodic refresh.
+// Manager manages cached agent gRPC connections with periodic refresh.
 type Manager interface {
-	// Get returns the cached client for the given owner index.
-	Get(ctx context.Context, ownerIndex int) (Client, error)
-	// List returns all cached client references.
-	List(ctx context.Context) ([]ClientRef, error)
+	// Get returns the cached connection for the given owner index.
+	Get(ctx context.Context, ownerIndex int) (*ConnRef, error)
+	// List returns all cached connection references.
+	List(ctx context.Context) ([]*ConnRef, error)
 	// Close shuts down the background refresh goroutine and closes all connections.
 	Close() error
 }
 
-// clientEntry holds a cached agent client with its connection and owner metadata.
-type clientEntry struct {
+// connEntry holds a cached agent connection with its owner metadata.
+type connEntry struct {
 	conn       *grpc.ClientConn
-	client     Client
 	ownerIndex int
 	ownerName  string
 }
@@ -39,15 +41,16 @@ type clientEntry struct {
 type manager struct {
 	resolver        solver.StatefulResolver
 	target          *solver.Target
-	entries         map[int]*clientEntry
+	entries         map[int]*connEntry
 	mu              sync.RWMutex
 	refreshInterval time.Duration
 }
 
-// newAgentClient is a package-level variable for creating AgentClient instances.
+// newAgentConn is a package-level variable for creating gRPC connections.
 // Tests can replace it with a mock factory via save/restore.
-var newAgentClient = func(ctx context.Context, instanceIndex int) (Client, error) {
-	return NewAgentClient(ctx, instanceIndex)
+var newAgentConn = func(ctx context.Context, instanceIndex int) (*grpc.ClientConn, error) {
+	uri := grpcsolver.URI(gameconst.AgentTarget, grpcsolver.WithInstance(instanceIndex))
+	return grpc.NewClient(uri, pgrpc.ClientDefault()...)
 }
 
 // NewManager creates a new manager with the given resolver, target, and refresh interval.
@@ -58,34 +61,38 @@ func NewManager(resolver solver.StatefulResolver, target *solver.Target, refresh
 	return &manager{
 		resolver:        resolver,
 		target:          target,
-		entries:         make(map[int]*clientEntry),
+		entries:         make(map[int]*connEntry),
 		refreshInterval: refreshInterval,
 	}
 }
 
-// Get returns the cached client for the given owner index.
-func (m *manager) Get(ctx context.Context, ownerIndex int) (Client, error) {
+// Get returns the cached connection for the given owner index.
+func (m *manager) Get(ctx context.Context, ownerIndex int) (*ConnRef, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	entry, ok := m.entries[ownerIndex]
 	if !ok {
-		return nil, fmt.Errorf("agentclient: no client for owner index %d", ownerIndex)
+		return nil, fmt.Errorf("agentclient: no connection for owner index %d", ownerIndex)
 	}
-	return entry.client, nil
+	return &ConnRef{
+		OwnerIndex: entry.ownerIndex,
+		Owner:      entry.ownerName,
+		Conn:       entry.conn,
+	}, nil
 }
 
-// List returns all cached client references.
-func (m *manager) List(ctx context.Context) ([]ClientRef, error) {
+// List returns all cached connection references.
+func (m *manager) List(ctx context.Context) ([]*ConnRef, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var refs []ClientRef
+	var refs []*ConnRef
 	for _, entry := range m.entries {
-		refs = append(refs, ClientRef{
+		refs = append(refs, &ConnRef{
 			OwnerIndex: entry.ownerIndex,
 			Owner:      entry.ownerName,
-			Client:     entry.client,
+			Conn:       entry.conn,
 		})
 	}
 	return refs, nil
@@ -97,16 +104,16 @@ func (m *manager) Close() error {
 	defer m.mu.Unlock()
 
 	for _, entry := range m.entries {
-		if entry.client != nil {
-			entry.client.Close()
+		if entry.conn != nil {
+			entry.conn.Close()
 		}
 	}
 	m.entries = nil
 	return nil
 }
 
-// refresh resolves current instances, creates clients for new instances,
-// and closes clients for removed instances.
+// refresh resolves current instances, creates connections for new instances,
+// and closes connections for removed instances.
 func (m *manager) refresh(ctx context.Context) error {
 	instances, err := m.resolver.Resolve(ctx, m.target)
 	if err != nil {
@@ -125,8 +132,8 @@ func (m *manager) refresh(ctx context.Context) error {
 	// Remove stale entries.
 	for index, entry := range m.entries {
 		if _, ok := current[index]; !ok {
-			if entry.client != nil {
-				entry.client.Close()
+			if entry.conn != nil {
+				entry.conn.Close()
 			}
 			delete(m.entries, index)
 		}
@@ -137,17 +144,12 @@ func (m *manager) refresh(ctx context.Context) error {
 		if _, ok := m.entries[index]; ok {
 			continue
 		}
-		client, err := newAgentClient(ctx, index)
+		conn, err := newAgentConn(ctx, index)
 		if err != nil {
-			return fmt.Errorf("agentclient: create client for instance %d: %w", index, err)
+			return fmt.Errorf("agentclient: create connection for instance %d: %w", index, err)
 		}
-		var conn *grpc.ClientConn
-		if ac, ok := client.(*AgentClient); ok {
-			conn = ac.conn
-		}
-		m.entries[index] = &clientEntry{
+		m.entries[index] = &connEntry{
 			conn:       conn,
-			client:     client,
 			ownerIndex: index,
 			ownerName:  inst.Hostname,
 		}
@@ -180,7 +182,7 @@ type refresherWorker struct {
 // returns an error, which causes the Daemon to restart with exponential
 // backoff. After initial success, a periodic refresh loop runs until the
 // context is cancelled. Periodic refresh failures are logged but do not
-// cause a restart -- old clients are preserved.
+// cause a restart -- old connections are preserved.
 func (w *refresherWorker) Start(ctx context.Context) error {
 	// Initial refresh -- failure causes Daemon restart with backoff.
 	if err := w.manager.refresh(ctx); err != nil {
@@ -195,9 +197,9 @@ func (w *refresherWorker) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			// Periodic refresh -- failure logs error, keeps existing clients.
+			// Periodic refresh -- failure logs error, keeps existing connections.
 			if err := w.manager.refresh(ctx); err != nil {
-				logs.Warn(ctx, "periodic agent client refresh failed, keeping existing clients", event.Err(err))
+				logs.Warn(ctx, "periodic agent connection refresh failed, keeping existing connections", event.Err(err))
 			}
 		}
 	}
@@ -208,7 +210,7 @@ func (w *refresherWorker) Stop(ctx context.Context) error {
 	return w.manager.Close()
 }
 
-// NewDaemon creates a bootstrap.Component (Daemon) that manages the agent client
+// NewDaemon creates a bootstrap.Component (Daemon) that manages the agent connection
 // refresh loop with automatic restart on failure.
 func NewDaemon(m Manager, interval time.Duration) bootstrap.Component {
 	mgr, ok := m.(*manager)

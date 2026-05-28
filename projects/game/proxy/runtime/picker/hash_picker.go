@@ -17,16 +17,16 @@ func NewHashPicker() domain.OwnerPicker {
 	return new(hashPicker)
 }
 
-// Pick returns the agent client for the given session ID.
-func (p *hashPicker) Pick(_ context.Context, sessionID string, clients []agentclient.ClientRef) (agentclient.ClientRef, error) {
-	if len(clients) == 0 {
-		return agentclient.ClientRef{}, domain.ErrNoAgentInstances
+// Pick returns the agent connection for the given session ID.
+func (p *hashPicker) Pick(_ context.Context, sessionID string, conns []*agentclient.ConnRef) (*agentclient.ConnRef, error) {
+	if len(conns) == 0 {
+		return nil, domain.ErrNoAgentInstances
 	}
 
 	h := fnv.New32a()
 	if _, err := h.Write([]byte(sessionID)); err != nil {
-		return agentclient.ClientRef{}, err
+		return nil, err
 	}
 
-	return clients[int(h.Sum32())%len(clients)], nil
+	return conns[int(h.Sum32())%len(conns)], nil
 }

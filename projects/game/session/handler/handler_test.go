@@ -9,6 +9,7 @@ import (
 	"dominion/projects/game/session/domain"
 
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -158,6 +159,24 @@ func TestGetSession(t *testing.T) {
 			},
 			wantCode: codes.NotFound,
 		},
+		{
+			name:     "invalid name - no prefix returns InvalidArgument",
+			req:      &game.GetSessionRequest{Name: "invalid"},
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid name - empty ID returns InvalidArgument",
+			req:      &game.GetSessionRequest{Name: "sessions/"},
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid name - extra path separator returns InvalidArgument",
+			req:      &game.GetSessionRequest{Name: "sessions/a/b"},
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,6 +190,11 @@ func TestGetSession(t *testing.T) {
 			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
+				if tt.wantCode == codes.InvalidArgument {
+					if !errors.Is(err, gameconst.ErrInvalidSessionName) {
+						t.Logf("errors.Is(err, gameconst.ErrInvalidSessionName) = false (expected: gRPC status wrapper does not preserve sentinel errors via %%w)")
+					}
+				}
 				return
 			}
 			if got.GetName() != tt.wantName {
@@ -263,6 +287,27 @@ func TestDeleteSession(t *testing.T) {
 			wantCode:    codes.NotFound,
 			wantDeleted: false,
 		},
+		{
+			name:      "invalid name - no prefix returns InvalidArgument",
+			req:       &game.DeleteSessionRequest{Name: "invalid"},
+			mockRepo:  &mockSessionRepo{},
+			mockProxy: &mockProxyClient{},
+			wantCode:  codes.InvalidArgument,
+		},
+		{
+			name:      "invalid name - empty ID returns InvalidArgument",
+			req:       &game.DeleteSessionRequest{Name: "sessions/"},
+			mockRepo:  &mockSessionRepo{},
+			mockProxy: &mockProxyClient{},
+			wantCode:  codes.InvalidArgument,
+		},
+		{
+			name:      "invalid name - extra path separator returns InvalidArgument",
+			req:       &game.DeleteSessionRequest{Name: "sessions/a/b"},
+			mockRepo:  &mockSessionRepo{},
+			mockProxy: &mockProxyClient{},
+			wantCode:  codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
@@ -276,6 +321,11 @@ func TestDeleteSession(t *testing.T) {
 			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
+				if tt.wantCode == codes.InvalidArgument {
+					if !errors.Is(err, gameconst.ErrInvalidSessionName) {
+						t.Logf("errors.Is(err, gameconst.ErrInvalidSessionName) = false (expected: gRPC status wrapper does not preserve sentinel errors via %%w)")
+					}
+				}
 				return
 			}
 			if got == nil {

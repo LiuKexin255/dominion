@@ -116,29 +116,24 @@ func extractSessionID(path string) string {
 // sessionID from the URL path into every received frame, overwriting
 // any client-supplied value.
 //
-// done carries the terminal Recv error so that the peer stream can
-// unblock with the same error and allow the binder to shut down cleanly.
+// ctx holds the HTTP request context so that Read/Write respect request
+// cancellation (e.g. client disconnect).
 type wsStream struct {
+	ctx       context.Context
 	conn      *websocket.Conn
 	sessionID string
-	done      chan error
 }
 
 // Recv reads a text frame from the WebSocket, unmarshals it as an
 // AgentFrame (protojson, DiscardUnknown), and injects the sessionID
-// from the URL path. On error it sends the error through done to
-// unblock the peer.
+// from the URL path.
 func (s *wsStream) Recv() (*game.AgentFrame, error) {
-	_, data, err := s.conn.Read(context.Background())
+	_, data, err := s.conn.Read(s.ctx)
 	if err != nil {
-		s.done <- err
-		close(s.done)
 		return nil, err
 	}
 	var frame game.AgentFrame
 	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &frame); err != nil {
-		s.done <- errors.Join(errProtocol, err)
-		close(s.done)
 		return nil, errors.Join(errProtocol, err)
 	}
 	// CRITICAL: inject sessionID from URL path — always wins over client-supplied value
@@ -153,46 +148,7 @@ func (s *wsStream) Send(frame *game.AgentFrame) error {
 	if err != nil {
 		return err
 	}
-	return s.conn.Write(context.Background(), websocket.MessageText, data)
-}
-
-// gRPCStream wraps a bind.AgentFrameStream and checks the wsStream's
-// done channel concurrently with Recv, so that the binder can cleanly
-// shut down when the wsStream side encounters a terminal error.
-// The done channel carries the wsStream error, ensuring both binder
-// goroutines return the same error and eliminating a reporting race.
-type gRPCStream struct {
-	inner bind.AgentFrameStream
-	done  <-chan error
-}
-
-func (s *gRPCStream) Recv() (*game.AgentFrame, error) {
-	select {
-	case err := <-s.done:
-		return nil, err
-	default:
-	}
-
-	type recvResult struct {
-		frame *game.AgentFrame
-		err   error
-	}
-	ch := make(chan recvResult, 1)
-	go func() {
-		f, err := s.inner.Recv()
-		ch <- recvResult{f, err}
-	}()
-
-	select {
-	case err := <-s.done:
-		return nil, err
-	case r := <-ch:
-		return r.frame, r.err
-	}
-}
-
-func (s *gRPCStream) Send(frame *game.AgentFrame) error {
-	return s.inner.Send(frame)
+	return s.conn.Write(s.ctx, websocket.MessageText, data)
 }
 
 // errProtocol is a sentinel error for protocol-level errors (e.g. invalid
@@ -236,10 +192,9 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 		return
 	}
 
-	ws := &wsStream{conn: conn, sessionID: sessionID, done: make(chan error, 1)}
-	grs := &gRPCStream{inner: stream, done: ws.done}
+	ws := &wsStream{ctx: r.Context(), conn: conn, sessionID: sessionID}
 	b := bind.NewBinder()
-	err = b.Bind(r.Context(), ws, grs)
+	err = b.Bind(ws, stream)
 
 	if err == nil {
 		conn.Close(websocket.StatusNormalClosure, "")

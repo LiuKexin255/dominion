@@ -56,18 +56,23 @@ func (s *mockOwnerStore) Delete(_ context.Context, sessionID string) error {
 
 // mockManager implements agentclient.Manager for testing.
 type mockManager struct {
-	client agentclient.Client
-	getErr error
+	getErr  error
+	listErr error
 }
 
-func (m *mockManager) Get(_ context.Context, _ int) (agentclient.Client, error) {
+func (m *mockManager) Get(_ context.Context, ownerIndex int) (*agentclient.ConnRef, error) {
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
-	return m.client, nil
+	return &agentclient.ConnRef{
+		OwnerIndex: ownerIndex,
+	}, nil
 }
 
-func (m *mockManager) List(_ context.Context) ([]agentclient.ClientRef, error) {
+func (m *mockManager) List(_ context.Context) ([]*agentclient.ConnRef, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	return nil, nil
 }
 
@@ -97,8 +102,6 @@ func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game
 	}
 	return c.agentStream, nil
 }
-
-func (c *mockAgentClient) Close() error { return nil }
 
 // mockAgentStream implements game.AgentService_ConnectClient for testing.
 type mockAgentStream struct {
@@ -162,13 +165,23 @@ type mockBinder struct {
 	err error
 }
 
-func (b *mockBinder) Bind(_ context.Context, _ bind.AgentFrameStream, _ bind.AgentFrameStream) error {
+func (b *mockBinder) Bind(_ bind.AgentFrameStream, _ bind.AgentFrameStream) error {
 	return b.err
 }
 
 // makeFirstFrame creates an AgentFrame with the given session_id.
 func makeFirstFrame(sessionID string) *game.AgentFrame {
 	return &game.AgentFrame{SessionId: sessionID, Payload: []byte("hello")}
+}
+
+// setMockNewAgentClient replaces agentclient.NewAgentClient with a factory
+// that returns the given mockClient, and returns a restore function.
+func setMockNewAgentClient(mockClient agentclient.Client) func() {
+	old := agentclient.NewAgentClient
+	agentclient.NewAgentClient = func(conn *grpc.ClientConn) agentclient.Client {
+		return mockClient
+	}
+	return func() { agentclient.NewAgentClient = old }
 }
 
 func TestConnect(t *testing.T) {
@@ -201,8 +214,11 @@ func TestConnect(t *testing.T) {
 					sendCh: agentSendCh,
 				}
 
-				client := &mockAgentClient{agentStream: agentStream}
-				mgr := &mockManager{client: client}
+				agentMock := &mockAgentClient{agentStream: agentStream}
+				restore := setMockNewAgentClient(agentMock)
+				t.Cleanup(restore)
+
+				mgr := &mockManager{}
 				binder := &mockBinder{err: nil}
 
 				// proxy stream sends one frame then closes
@@ -299,7 +315,7 @@ func TestConnect(t *testing.T) {
 					OwnerIndex: 1,
 					Owner:      "agent-1",
 				}
-				mgr := &mockManager{getErr: status.Error(codes.NotFound, "no client for index 1")}
+				mgr := &mockManager{getErr: status.Error(codes.NotFound, "no connection for index 1")}
 				binder := &mockBinder{}
 
 				proxyRecvCh := make(chan *game.AgentFrame, 8)
@@ -326,8 +342,12 @@ func TestConnect(t *testing.T) {
 					OwnerIndex: 1,
 					Owner:      "agent-1",
 				}
-				client := &mockAgentClient{connectErr: status.Error(codes.Unavailable, "agent unreachable")}
-				mgr := &mockManager{client: client}
+
+				agentMock := &mockAgentClient{connectErr: status.Error(codes.Unavailable, "agent unreachable")}
+				restore := setMockNewAgentClient(agentMock)
+				t.Cleanup(restore)
+
+				mgr := &mockManager{}
 				binder := &mockBinder{}
 
 				proxyRecvCh := make(chan *game.AgentFrame, 8)
@@ -412,8 +432,11 @@ func TestConnect_binderError(t *testing.T) {
 		sendCh: agentSendCh,
 	}
 
-	client := &mockAgentClient{agentStream: agentStream}
-	mgr := &mockManager{client: client}
+	agentMock := &mockAgentClient{agentStream: agentStream}
+	restore := setMockNewAgentClient(agentMock)
+	defer restore()
+
+	mgr := &mockManager{}
 	binder := &mockBinder{err: status.Error(codes.Internal, "bind failed")}
 
 	proxyRecvCh := make(chan *game.AgentFrame, 8)
@@ -459,8 +482,11 @@ func TestConnect_firstFrameSendError(t *testing.T) {
 		sendErr: status.Error(codes.Internal, "send failed"),
 	}
 
-	client := &mockAgentClient{agentStream: agentStream}
-	mgr := &mockManager{client: client}
+	agentMock := &mockAgentClient{agentStream: agentStream}
+	restore := setMockNewAgentClient(agentMock)
+	defer restore()
+
+	mgr := &mockManager{}
 
 	// Use a binder that reads the prefixed first frame via Recv, then
 	// attempts Send on the agent stream which fails.
@@ -491,7 +517,7 @@ func TestConnect_firstFrameSendError(t *testing.T) {
 // an error to simulate the first frame failing to forward to the agent.
 type firstFrameSendErrorBinder struct{}
 
-func (b *firstFrameSendErrorBinder) Bind(_ context.Context, left bind.AgentFrameStream, _ bind.AgentFrameStream) error {
+func (b *firstFrameSendErrorBinder) Bind(left bind.AgentFrameStream, _ bind.AgentFrameStream) error {
 	_, err := left.Recv()
 	if err != nil {
 		return err

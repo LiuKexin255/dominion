@@ -1,8 +1,15 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "gameconst",
     srcs = ["const.go"],
     importpath = "dominion/projects/game/pkg/gameconst",
     visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "gameconst_test",
+    srcs = ["const_test.go"],
+    deps = [":gameconst"],
 )

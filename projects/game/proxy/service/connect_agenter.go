@@ -58,16 +58,17 @@ func (c *connectAgenter) Connect(stream game.ProxyService_ConnectAgentServer) er
 		return mapDomainError(err)
 	}
 
-	// Get the cached client for the owner instance.
-	client, err := c.manager.Get(ctx, owner.OwnerIndex)
+	// Get the cached connection for the owner instance and create a client.
+	connRef, err := c.manager.Get(ctx, owner.OwnerIndex)
 	if err != nil {
-		logs.Error(ctx, "connect agent: get client failed",
+		logs.Error(ctx, "connect agent: get connection failed",
 			event.String("session_id", sessionID),
 			event.Int("agent_index", owner.OwnerIndex),
 			event.Err(err),
 		)
-		return status.Errorf(codes.Internal, "get agent client: %v", err)
+		return status.Errorf(codes.Internal, "get agent connection: %v", err)
 	}
+	client := agentclient.NewAgentClient(connRef.Conn)
 
 	// Establish a bidirectional stream to the agent.
 	agentStream, err := client.Connect(ctx)
@@ -88,7 +89,7 @@ func (c *connectAgenter) Connect(stream game.ProxyService_ConnectAgentServer) er
 	// WithFirstFrame so the Binder forwards it to the agent first.
 	prefixed := bind.WithFirstFrame(stream, frame)
 
-	return c.binder.Bind(ctx, prefixed, agentStream)
+	return c.binder.Bind(prefixed, agentStream)
 }
 
 // mapDomainError converts domain errors to gRPC status errors.

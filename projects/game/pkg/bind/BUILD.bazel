@@ -9,10 +9,7 @@ go_library(
     ],
     importpath = "dominion/projects/game/pkg/bind",
     visibility = ["//visibility:public"],
-    deps = [
-        "//projects/game",
-        "@org_golang_x_sync//errgroup",
-    ],
+    deps = ["//projects/game"],
 )
 
 go_unittest(

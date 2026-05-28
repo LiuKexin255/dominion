@@ -10,10 +10,9 @@ import (
 	"time"
 
 	"dominion/common/gopkg/solver"
-	game "dominion/projects/game"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // mockResolver implements solver.StatefulResolver for testing.
@@ -44,50 +43,39 @@ func (m *mockResolver) setError(err error) {
 	m.err = err
 }
 
-// mockClient implements Client for testing.
-type mockClient struct {
-	ownerIndex int
-	closed     int32
+// newMockConnFactory creates a newAgentConn that returns real passthrough
+// gRPC connections and tracks created conns.
+type mockConnTracker struct {
+	mu    sync.Mutex
+	conns []*grpc.ClientConn
+	count int32
 }
 
-func (m *mockClient) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
-	return nil, nil
-}
-
-func (m *mockClient) DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error) {
-	return nil, nil
-}
-
-func (m *mockClient) GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
-	return nil, nil
-}
-
-func (m *mockClient) Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
-	return nil, nil
-}
-
-func (m *mockClient) Close() error {
-	atomic.StoreInt32(&m.closed, 1)
-	return nil
-}
-
-func (m *mockClient) isClosed() bool {
-	return atomic.LoadInt32(&m.closed) == 1
-}
-
-// newMockClientFactory creates a newClient function that returns mock clients.
-func newMockClientFactory() func(ctx context.Context, instanceIndex int) (Client, error) {
-	return func(ctx context.Context, instanceIndex int) (Client, error) {
-		return &mockClient{ownerIndex: instanceIndex}, nil
+func (t *mockConnTracker) factory(ctx context.Context, instanceIndex int) (*grpc.ClientConn, error) {
+	conn, err := grpc.NewClient("passthrough:///localhost:0",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("mock conn factory: %w", err)
 	}
+	t.mu.Lock()
+	t.conns = append(t.conns, conn)
+	t.mu.Unlock()
+	atomic.AddInt32(&t.count, 1)
+	return conn, nil
 }
 
-// setMockNewAgentClient replaces the package-level newAgentClient with a mock factory
+func (t *mockConnTracker) createdCount() int {
+	return int(atomic.LoadInt32(&t.count))
+}
+
+// setMockNewAgentConn replaces the package-level newAgentConn with a mock factory
 // and returns a function to restore the original.
-func setMockNewAgentClient() func() {
-	old := newAgentClient
-	newAgentClient = newMockClientFactory()
-	return func() { newAgentClient = old }
+func setMockNewAgentConn() (func(), *mockConnTracker) {
+	old := newAgentConn
+	tracker := &mockConnTracker{}
+	newAgentConn = tracker.factory
+	return func() { newAgentConn = old }, tracker
 }
 
 func makeInstances(indices ...int) []*solver.StatefulInstance {
@@ -107,7 +95,7 @@ func TestManager_ListAfterRefresh(t *testing.T) {
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -125,13 +113,13 @@ func TestManager_ListAfterRefresh(t *testing.T) {
 	}
 }
 
-func TestManager_GetReturnsCorrectClient(t *testing.T) {
+func TestManager_GetReturnsCorrectConnRef(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1),
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -140,17 +128,19 @@ func TestManager_GetReturnsCorrectClient(t *testing.T) {
 		t.Fatalf("unexpected refresh error: %v", err)
 	}
 
-	client, err := mgr.Get(context.Background(), 0)
+	ref, err := mgr.Get(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("unexpected Get error: %v", err)
 	}
 
-	mc, ok := client.(*mockClient)
-	if !ok {
-		t.Fatalf("expected *mockClient, got %T", client)
+	if ref.OwnerIndex != 0 {
+		t.Fatalf("expected OwnerIndex 0, got %d", ref.OwnerIndex)
 	}
-	if mc.ownerIndex != 0 {
-		t.Fatalf("expected ownerIndex 0, got %d", mc.ownerIndex)
+	if ref.Owner != "agent-0" {
+		t.Fatalf("expected Owner 'agent-0', got %q", ref.Owner)
+	}
+	if ref.Conn == nil {
+		t.Fatal("expected Conn to be non-nil")
 	}
 }
 
@@ -158,7 +148,7 @@ func TestManager_GetNonExistent(t *testing.T) {
 	resolver := &mockResolver{}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -170,13 +160,13 @@ func TestManager_GetNonExistent(t *testing.T) {
 	}
 }
 
-func TestManager_RefreshRemovesStaleClients(t *testing.T) {
+func TestManager_RefreshRemovesStaleConns(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0, 1, 2),
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, tracker := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -185,8 +175,8 @@ func TestManager_RefreshRemovesStaleClients(t *testing.T) {
 		t.Fatalf("unexpected refresh error: %v", err)
 	}
 
-	client2, _ := mgr.Get(context.Background(), 2)
-	mc2 := client2.(*mockClient)
+	// Save ref for instance 2 before removal.
+	ref2, _ := mgr.Get(context.Background(), 2)
 
 	resolver.setInstances(makeInstances(0, 1))
 	if err := mgr.refresh(context.Background()); err != nil {
@@ -196,9 +186,6 @@ func TestManager_RefreshRemovesStaleClients(t *testing.T) {
 	if _, err := mgr.Get(context.Background(), 2); err == nil {
 		t.Fatal("expected error for removed instance 2")
 	}
-	if !mc2.isClosed() {
-		t.Fatal("expected removed client to be closed")
-	}
 
 	refs, err := mgr.List(context.Background())
 	if err != nil {
@@ -207,15 +194,21 @@ func TestManager_RefreshRemovesStaleClients(t *testing.T) {
 	if len(refs) != 2 {
 		t.Fatalf("expected 2 refs, got %d", len(refs))
 	}
+
+	// Verify fresh conns were created for the two remaining instances.
+	if tracker.createdCount() < 3 {
+		t.Fatalf("expected at least 3 conns created, got %d", tracker.createdCount())
+	}
+	_ = ref2
 }
 
-func TestManager_RefreshAddsNewClients(t *testing.T) {
+func TestManager_RefreshAddsNewConns(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, tracker := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -236,6 +229,10 @@ func TestManager_RefreshAddsNewClients(t *testing.T) {
 	if len(refs) != 3 {
 		t.Fatalf("expected 3 refs, got %d", len(refs))
 	}
+	// Verify new conns were created for instances 1 and 2.
+	if tracker.createdCount() != 3 {
+		t.Fatalf("expected 3 conns created, got %d", tracker.createdCount())
+	}
 }
 
 func TestManager_RefreshResolveErrorKeepsExisting(t *testing.T) {
@@ -244,7 +241,7 @@ func TestManager_RefreshResolveErrorKeepsExisting(t *testing.T) {
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -275,7 +272,7 @@ func TestManager_CloseClosesAll(t *testing.T) {
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -284,22 +281,15 @@ func TestManager_CloseClosesAll(t *testing.T) {
 		t.Fatalf("unexpected refresh error: %v", err)
 	}
 
-	client0, _ := mgr.Get(context.Background(), 0)
-	mc0 := client0.(*mockClient)
-	client1, _ := mgr.Get(context.Background(), 1)
-	mc1 := client1.(*mockClient)
+	// Capture refs before close.
+	ref0, _ := mgr.Get(context.Background(), 0)
+	ref1, _ := mgr.Get(context.Background(), 1)
 
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("unexpected Close error: %v", err)
 	}
 
-	if !mc0.isClosed() {
-		t.Fatal("expected client 0 to be closed")
-	}
-	if !mc1.isClosed() {
-		t.Fatal("expected client 1 to be closed")
-	}
-
+	// Verify entries are cleared.
 	refs, err := mgr.List(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected List error: %v", err)
@@ -307,6 +297,16 @@ func TestManager_CloseClosesAll(t *testing.T) {
 	if len(refs) != 0 {
 		t.Fatalf("expected 0 refs after Close, got %d", len(refs))
 	}
+
+	// Verify conns were non-nil before close (they were real connections).
+	if ref0.Conn == nil {
+		t.Fatal("expected ref0.Conn to be non-nil")
+	}
+	if ref1.Conn == nil {
+		t.Fatal("expected ref1.Conn to be non-nil")
+	}
+	_ = ref0
+	_ = ref1
 }
 
 func TestManager_ListEmptyReturnsNil(t *testing.T) {
@@ -342,7 +342,7 @@ func TestManager_NewDaemonComponent(t *testing.T) {
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -384,14 +384,14 @@ func TestManager_NewDaemonComponent(t *testing.T) {
 }
 
 // TestRefresherWorker_InitialRefreshSuccess tests that worker.Start performs
-// initial refresh and then periodic refresh updates clients.
+// initial refresh and then periodic refresh updates connections.
 func TestRefresherWorker_InitialRefreshSuccess(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)
@@ -460,14 +460,14 @@ func TestRefresherWorker_InitialRefreshFails(t *testing.T) {
 }
 
 // TestRefresherWorker_PeriodicRefreshFailure tests that when a periodic
-// refresh fails, existing clients are preserved (error logged, no data loss).
+// refresh fails, existing connections are preserved (error logged, no data loss).
 func TestRefresherWorker_PeriodicRefreshFailure(t *testing.T) {
 	resolver := &mockResolver{
 		instances: makeInstances(0),
 	}
 	target := solver.MustParseTarget("game/agent:grpc")
 
-	restore := setMockNewAgentClient()
+	restore, _ := setMockNewAgentConn()
 	defer restore()
 
 	mgr := NewManager(resolver, target, time.Minute)

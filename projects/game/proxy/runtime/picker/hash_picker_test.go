@@ -13,7 +13,7 @@ func TestPickDeterministic(t *testing.T) {
 	ctx := context.Background()
 	picker := NewHashPicker()
 
-	clients := []agentclient.ClientRef{
+	conns := []*agentclient.ConnRef{
 		{OwnerIndex: 0, Owner: "host-0:5000"},
 		{OwnerIndex: 1, Owner: "host-1:5000"},
 		{OwnerIndex: 2, Owner: "host-2:5000"},
@@ -21,17 +21,17 @@ func TestPickDeterministic(t *testing.T) {
 
 	// when: pick multiple times with same sessionID
 	sessionID := "session-deterministic-123"
-	first, err := picker.Pick(ctx, sessionID, clients)
+	first, err := picker.Pick(ctx, sessionID, conns)
 	if err != nil {
 		t.Fatalf("Pick() unexpected error: %v", err)
 	}
 
 	for i := 0; i < 10; i++ {
-		got, err := picker.Pick(ctx, sessionID, clients)
+		got, err := picker.Pick(ctx, sessionID, conns)
 		if err != nil {
 			t.Fatalf("Pick() iteration %d unexpected error: %v", i, err)
 		}
-		// then: same sessionID always yields the same client
+		// then: same sessionID always yields the same connection
 		if got.OwnerIndex != first.OwnerIndex {
 			t.Fatalf("Pick() iteration %d = %d, want %d (deterministic)", i, got.OwnerIndex, first.OwnerIndex)
 		}
@@ -42,7 +42,7 @@ func TestPickDistribution(t *testing.T) {
 	ctx := context.Background()
 	picker := NewHashPicker()
 
-	clients := []agentclient.ClientRef{
+	conns := []*agentclient.ConnRef{
 		{OwnerIndex: 0, Owner: "host-0:5000"},
 		{OwnerIndex: 1, Owner: "host-1:5000"},
 		{OwnerIndex: 2, Owner: "host-2:5000"},
@@ -52,7 +52,7 @@ func TestPickDistribution(t *testing.T) {
 	seen := map[int]bool{}
 	for i := 0; i < 100; i++ {
 		sessionID := "session-distro-" + string(rune('A'+i%26)) + string(rune(i/26+'a'))
-		got, err := picker.Pick(ctx, sessionID, clients)
+		got, err := picker.Pick(ctx, sessionID, conns)
 		if err != nil {
 			t.Fatalf("Pick() session %q unexpected error: %v", sessionID, err)
 		}
@@ -65,27 +65,27 @@ func TestPickDistribution(t *testing.T) {
 	}
 }
 
-func TestPickEmptyClients(t *testing.T) {
+func TestPickEmptyConns(t *testing.T) {
 	ctx := context.Background()
 	picker := NewHashPicker()
 
-	// when: pick with empty client list
+	// when: pick with empty conn list
 	_, err := picker.Pick(ctx, "session-empty", nil)
 
 	// then
 	if err == nil {
-		t.Fatalf("Pick() with empty clients expected error, got nil")
+		t.Fatalf("Pick() with empty conns expected error, got nil")
 	}
 	if !errors.Is(err, domain.ErrNoAgentInstances) {
 		t.Fatalf("Pick() error = %v, want ErrNoAgentInstances", err)
 	}
 }
 
-func TestPickSingleClient(t *testing.T) {
+func TestPickSingleConn(t *testing.T) {
 	ctx := context.Background()
 	picker := NewHashPicker()
 
-	clients := []agentclient.ClientRef{
+	conns := []*agentclient.ConnRef{
 		{OwnerIndex: 0, Owner: "host-0:5000"},
 	}
 
@@ -102,7 +102,7 @@ func TestPickSingleClient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			got, err := picker.Pick(ctx, tt.sessionID, clients)
+			got, err := picker.Pick(ctx, tt.sessionID, conns)
 
 			// then
 			if err != nil {

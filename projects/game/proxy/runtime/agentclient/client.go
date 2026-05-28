@@ -4,10 +4,7 @@ package agentclient
 import (
 	"context"
 
-	pgrpc "dominion/common/gopkg/grpc"
-	"dominion/common/gopkg/grpc/solver"
 	game "dominion/projects/game"
-	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -19,35 +16,23 @@ type Client interface {
 	DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error)
 	GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
-	Close() error
 }
 
-// ClientRef is a reference to an agent client with its owner metadata.
-type ClientRef struct {
+// ConnRef is a reference to an agent connection with its owner metadata.
+type ConnRef struct {
 	OwnerIndex int
 	Owner      string
-	Client     Client
+	Conn       *grpc.ClientConn
 }
 
 // AgentClient is a gRPC client wrapper for the AgentService.
 type AgentClient struct {
 	client game.AgentServiceClient
-	conn   *grpc.ClientConn
 }
 
-// NewAgentClient creates a new gRPC client to the agent service for a specific instance.
-func NewAgentClient(ctx context.Context, instanceIndex int) (*AgentClient, error) {
-	uri := solver.URI(gameconst.AgentTarget, solver.WithInstance(instanceIndex))
-	dialOpts := pgrpc.ClientDefault()
-	conn, err := grpc.NewClient(uri, dialOpts...)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AgentClient{
-		client: game.NewAgentServiceClient(conn),
-		conn:   conn,
-	}, nil
+// NewAgentClient creates a new gRPC client to the agent service using the given connection.
+var NewAgentClient = func(conn *grpc.ClientConn) Client {
+	return &AgentClient{client: game.NewAgentServiceClient(conn)}
 }
 
 // CreateAgent creates an agent for a given session.
@@ -68,12 +53,4 @@ func (c *AgentClient) GetAgentStatus(ctx context.Context, req *game.GetAgentStat
 // Connect establishes a bidirectional stream to the agent service.
 func (c *AgentClient) Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
 	return c.client.Connect(ctx, opts...)
-}
-
-// Close closes the underlying gRPC connection.
-func (c *AgentClient) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
-	}
-	return nil
 }

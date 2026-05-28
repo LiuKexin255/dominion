@@ -20,9 +20,9 @@ type OwnerStore interface {
 
 // OwnerPicker selects an agent instance for a given session.
 type OwnerPicker interface {
-	// Pick selects an agent client for the session using a hash-based
-	// strategy. Returns the client or an error if no clients are available.
-	Pick(ctx context.Context, sessionID string, clients []agentclient.ClientRef) (agentclient.ClientRef, error)
+	// Pick selects an agent connection for the session using a hash-based
+	// strategy. Returns the connection or an error if no connections are available.
+	Pick(ctx context.Context, sessionID string, conns []*agentclient.ConnRef) (*agentclient.ConnRef, error)
 }
 
 // ConnectAgenter handles agent connection streams by reading the first frame,

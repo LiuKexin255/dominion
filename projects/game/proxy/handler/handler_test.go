@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
@@ -52,12 +53,18 @@ func (s *mockOwnerStore) Delete(_ context.Context, sessionID string) error {
 
 // mockOwnerPicker implements domain.OwnerPicker for testing.
 type mockOwnerPicker struct {
-	ref agentclient.ClientRef
+	ref agentclient.ConnRef
 	err error
 }
 
-func (p *mockOwnerPicker) Pick(_ context.Context, _ string, _ []agentclient.ClientRef) (agentclient.ClientRef, error) {
-	return p.ref, p.err
+func (p *mockOwnerPicker) Pick(_ context.Context, _ string, _ []*agentclient.ConnRef) (*agentclient.ConnRef, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &agentclient.ConnRef{
+		OwnerIndex: p.ref.OwnerIndex,
+		Owner:      p.ref.Owner,
+	}, nil
 }
 
 // mockAgentClient implements agentclient.Client for testing.
@@ -83,36 +90,32 @@ func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game
 	return nil, nil
 }
 
-func (c *mockAgentClient) Close() error { return nil }
-
 // mockManager implements agentclient.Manager for testing.
 type mockManager struct {
-	clients    map[int]*mockAgentClient
-	clientRefs []agentclient.ClientRef
-	listErr    error
-	getErr     error
+	connRefs []*agentclient.ConnRef
+	listErr  error
+	getErr   error
 }
 
 func newMockManager() *mockManager {
-	return &mockManager{clients: make(map[int]*mockAgentClient)}
+	return &mockManager{}
 }
 
-func (m *mockManager) Get(_ context.Context, ownerIndex int) (agentclient.Client, error) {
+func (m *mockManager) Get(_ context.Context, ownerIndex int) (*agentclient.ConnRef, error) {
 	if m.getErr != nil {
 		return nil, m.getErr
 	}
-	c, ok := m.clients[ownerIndex]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return c, nil
+	return &agentclient.ConnRef{
+		OwnerIndex: ownerIndex,
+		Owner:      fmt.Sprintf("agent-%d", ownerIndex),
+	}, nil
 }
 
-func (m *mockManager) List(_ context.Context) ([]agentclient.ClientRef, error) {
+func (m *mockManager) List(_ context.Context) ([]*agentclient.ConnRef, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
-	return m.clientRefs, nil
+	return m.connRefs, nil
 }
 
 func (m *mockManager) Close() error { return nil }
@@ -126,11 +129,21 @@ func (m *mockConnectAgenter) Connect(_ game.ProxyService_ConnectAgentServer) err
 	return m.err
 }
 
-func twoClientRefs(mockClient *mockAgentClient) []agentclient.ClientRef {
-	return []agentclient.ClientRef{
-		{OwnerIndex: 0, Owner: "agent-0", Client: mockClient},
-		{OwnerIndex: 1, Owner: "agent-1", Client: mockClient},
+func twoConnRefs() []*agentclient.ConnRef {
+	return []*agentclient.ConnRef{
+		{OwnerIndex: 0, Owner: "agent-0"},
+		{OwnerIndex: 1, Owner: "agent-1"},
 	}
+}
+
+// setMockNewAgentClient replaces agentclient.NewAgentClient with a factory
+// that returns the given mockClient, and returns a restore function.
+func setMockNewAgentClient(mockClient agentclient.Client) func() {
+	old := agentclient.NewAgentClient
+	agentclient.NewAgentClient = func(conn *grpc.ClientConn) agentclient.Client {
+		return mockClient
+	}
+	return func() { agentclient.NewAgentClient = old }
 }
 
 func TestCreateAgent(t *testing.T) {
@@ -139,11 +152,13 @@ func TestCreateAgent(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 1, Owner: "agent-1"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[1] = agentMock
-		mgr.clientRefs = twoClientRefs(agentMock)
+		mgr.connRefs = twoConnRefs()
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -176,11 +191,13 @@ func TestCreateAgent(t *testing.T) {
 	t.Run("invalid parent", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
-		mgr.clientRefs = twoClientRefs(agentMock)
+		mgr.connRefs = twoConnRefs()
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -206,9 +223,11 @@ func TestCreateAgent(t *testing.T) {
 		store := newMockOwnerStore()
 		picker := &mockOwnerPicker{err: domain.ErrNoAgentInstances}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
-		mgr.clientRefs = twoClientRefs(agentMock)
+		mgr.connRefs = twoConnRefs()
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -232,11 +251,13 @@ func TestCreateAgent(t *testing.T) {
 	t.Run("init_agent_fails", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 1, Owner: "agent-1"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
 		agentMock := &mockAgentClient{initErr: errors.New("agent init failed")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[1] = agentMock
-		mgr.clientRefs = twoClientRefs(agentMock)
+		mgr.connRefs = twoConnRefs()
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -268,11 +289,13 @@ func TestCreateAgent(t *testing.T) {
 		}
 		store.records["session-exist"] = existing
 
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
-		mgr.clientRefs = twoClientRefs(agentMock)
+		mgr.connRefs = twoConnRefs()
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -308,10 +331,12 @@ func TestGetAgent(t *testing.T) {
 		}
 		store.records["session-get"] = owner
 
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[2] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -344,10 +369,12 @@ func TestGetAgent(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -379,10 +406,12 @@ func TestGetAgent(t *testing.T) {
 		}
 		store.records["session-get-status-fail"] = owner
 
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := &mockAgentClient{getStatusErr: errors.New("agent status failed")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -406,10 +435,12 @@ func TestGetAgent(t *testing.T) {
 	t.Run("invalid name", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -445,10 +476,12 @@ func TestDeleteAgent(t *testing.T) {
 		}
 		store.records["session-del"] = owner
 
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -469,10 +502,12 @@ func TestDeleteAgent(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)
@@ -496,10 +531,12 @@ func TestDeleteAgent(t *testing.T) {
 	t.Run("invalid name", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
-		picker := &mockOwnerPicker{ref: agentclient.ClientRef{OwnerIndex: 0, Owner: "agent-0"}}
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
 		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
 		mgr := newMockManager()
-		mgr.clients[0] = agentMock
 		connectAgenter := new(mockConnectAgenter)
 
 		h := NewProxyHandler(store, picker, mgr, connectAgenter)

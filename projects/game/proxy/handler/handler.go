@@ -60,25 +60,26 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	// List available agent clients.
-	clients, err := h.manager.List(ctx)
+	// List available agent connections.
+	conns, err := h.manager.List(ctx)
 	if err != nil {
-		logs.Error(ctx, "list agent clients failed", event.Err(err))
-		return nil, status.Errorf(codes.Internal, "list agent clients: %v", err)
+		logs.Error(ctx, "list agent connections failed", event.Err(err))
+		return nil, status.Errorf(codes.Internal, "list agent connections: %v", err)
 	}
 
 	// Pick an owner instance for this session.
-	pickedRef, err := h.ownerPicker.Pick(ctx, sessionID, clients)
+	pickedRef, err := h.ownerPicker.Pick(ctx, sessionID, conns)
 	if err != nil {
 		return nil, mapDomainError(err)
 	}
 
-	// Get the cached agent client.
-	client, err := h.manager.Get(ctx, pickedRef.OwnerIndex)
+	// Get the cached agent connection and create a client from it.
+	connRef, err := h.manager.Get(ctx, pickedRef.OwnerIndex)
 	if err != nil {
-		logs.Error(ctx, "get agent client failed", event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
-		return nil, status.Errorf(codes.Internal, "get agent client: %v", err)
+		logs.Error(ctx, "get agent connection failed", event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
+		return nil, status.Errorf(codes.Internal, "get agent connection: %v", err)
 	}
+	client := agentclient.NewAgentClient(connRef.Conn)
 
 	if _, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID}); err != nil {
 		logs.Error(ctx, "create agent failed", event.String("session_id", sessionID), event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
@@ -126,11 +127,12 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	}
 
 	// Verify the agent is alive by querying its status.
-	client, err := h.manager.Get(ctx, owner.OwnerIndex)
+	connRef, err := h.manager.Get(ctx, owner.OwnerIndex)
 	if err != nil {
-		logs.Error(ctx, "get agent client failed", event.Int("agent_index", owner.OwnerIndex), event.Err(err))
-		return nil, status.Errorf(codes.Internal, "get agent client: %v", err)
+		logs.Error(ctx, "get agent connection failed", event.Int("agent_index", owner.OwnerIndex), event.Err(err))
+		return nil, status.Errorf(codes.Internal, "get agent connection: %v", err)
 	}
+	client := agentclient.NewAgentClient(connRef.Conn)
 
 	if _, err := client.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: sessionID}); err != nil {
 		logs.Error(ctx, "get agent status failed", event.String("session_id", sessionID), event.Err(err))
@@ -158,15 +160,16 @@ func (h *ProxyHandler) DeleteAgent(ctx context.Context, req *game.DeleteAgentReq
 		return nil, mapDomainError(err)
 	}
 
-	client, err := h.manager.Get(ctx, owner.OwnerIndex)
+	connRef, err := h.manager.Get(ctx, owner.OwnerIndex)
 	if err != nil {
-		logs.Error(ctx, "delete agent: get client failed",
+		logs.Error(ctx, "delete agent: get connection failed",
 			event.String("session_id", sessionID),
 			event.Int("agent_index", owner.OwnerIndex),
 			event.Err(err),
 		)
-		return nil, status.Errorf(codes.Internal, "get agent client: %v", err)
+		return nil, status.Errorf(codes.Internal, "get agent connection: %v", err)
 	}
+	client := agentclient.NewAgentClient(connRef.Conn)
 
 	if _, err := client.DeleteAgent(ctx, &game.AgentDeleteRequest{SessionId: sessionID}); err != nil {
 		if status.Code(err) == codes.NotFound {

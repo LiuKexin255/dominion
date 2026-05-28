@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -505,5 +506,70 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	// Verify the proto is valid.
 	if !proto.Equal(frame, &game.AgentFrame{SessionId: "s1", Type: "t1", Payload: []byte("data")}) {
 		t.Fatalf("frame = %v, want {session_id:s1 type:t1 payload:data}", frame)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: client disconnect does not leak goroutines
+// ---------------------------------------------------------------------------
+
+func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
+	// The gRPC server blocks on Recv until the test is done.
+	serverRecv := make(chan struct{})
+	serverDone := make(chan struct{})
+
+	mock := &mockProxyServer{
+		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+			defer close(serverDone)
+			// Block until the test signals or the stream errors.
+			_, err := stream.Recv()
+			close(serverRecv)
+			return err
+		},
+	}
+
+	proxyConn, _ := setupTestGRPC(t, mock)
+
+	// Use a WaitGroup to detect when handleWebSocketConnect returns.
+	var handlerDone sync.WaitGroup
+	handlerDone.Add(1)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocketConnect(w, r, proxyConn)
+		handlerDone.Done()
+	}))
+	defer httpSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/leak-test/agent/connect", nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+
+	// Close the client WebSocket immediately — handler must detect via
+	// request context cancellation or Read error and return.
+	conn.Close(websocket.StatusNormalClosure, "bye")
+
+	// Wait for the handler goroutine to finish.
+	doneCh := make(chan struct{})
+	go func() {
+		handlerDone.Wait()
+		close(doneCh)
+	}()
+
+	select {
+	case <-doneCh:
+		// Handler exited — no goroutine leak.
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleWebSocketConnect did not return within 5s after client disconnect — goroutine leak")
+	}
+
+	// Also verify the gRPC server's Recv unblocked.
+	select {
+	case <-serverRecv:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gRPC server Recv did not unblock after client disconnect")
 	}
 }

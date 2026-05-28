@@ -7,10 +7,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	game "dominion/projects/game"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // AgentFrameStream is the bidirectional stream interface for exchanging
@@ -25,15 +25,22 @@ type AgentFrameStream interface {
 
 // Binder binds two AgentFrameStream instances for bidirectional forwarding.
 // Frames received on one stream are forwarded to the other until either stream
-// closes or the context is cancelled.
+// closes or an error occurs.
 type Binder interface {
 	// Bind starts bidirectional forwarding between left and right streams.
-	// It blocks until both forwarding goroutines complete.
-	// Returns nil on clean close (io.EOF, context.Canceled).
-	Bind(ctx context.Context, left AgentFrameStream, right AgentFrameStream) error
+	// Blocks until the first goroutine reports an error (or nil on clean close).
+	// io.EOF and context.Canceled are treated as clean closes (nil).
+	Bind(left AgentFrameStream, right AgentFrameStream) error
 }
 
-// binder implements Binder using errgroup for goroutine coordination.
+// bindState tracks the shared state of a Bind operation.
+type bindState struct {
+	done  atomic.Bool
+	once  sync.Once
+	errCh chan error
+}
+
+// binder implements Binder.
 type binder struct{}
 
 // NewBinder creates a new Binder instance.
@@ -41,42 +48,85 @@ func NewBinder() Binder {
 	return new(binder)
 }
 
-// Bind starts two goroutines: left→right and right→left forwarding.
-// When any goroutine encounters an error, the errgroup cancels the shared context,
-// causing the other goroutine to see context.Canceled and exit.
+// Bind starts four goroutines for bidirectional forwarding:
+//   - Recv goroutine (left→channel): reads from left, writes to leftToRight
+//   - Recv goroutine (right→channel): reads from right, writes to rightToLeft
+//   - Send goroutine (channel→right): reads from leftToRight, sends to right
+//   - Send goroutine (channel→left): reads from rightToLeft, sends to left
+//
+// Blocks until the first goroutine reports an error (or nil on clean close).
 // io.EOF and context.Canceled are treated as clean closes.
-func (b *binder) Bind(ctx context.Context, left AgentFrameStream, right AgentFrameStream) error {
-	g, gCtx := errgroup.WithContext(ctx)
+func (b *binder) Bind(left AgentFrameStream, right AgentFrameStream) error {
+	leftToRight := make(chan *game.AgentFrame, 1)
+	rightToLeft := make(chan *game.AgentFrame, 1)
 
-	// left → right
-	g.Go(func() error {
-		return forward(gCtx, left, right)
-	})
-
-	// right → left
-	g.Go(func() error {
-		return forward(gCtx, right, left)
-	})
-
-	if err := g.Wait(); err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
+	s := &bindState{
+		errCh: make(chan error, 1),
 	}
-	return nil
+
+	// left recv → leftToRight
+	go func() {
+		defer close(leftToRight)
+		for {
+			frame, err := left.Recv()
+			if err != nil {
+				b.report(s, err)
+				return
+			}
+			if s.done.Load() {
+				return
+			}
+			leftToRight <- frame
+		}
+	}()
+
+	// right recv → rightToLeft
+	go func() {
+		defer close(rightToLeft)
+		for {
+			frame, err := right.Recv()
+			if err != nil {
+				b.report(s, err)
+				return
+			}
+			if s.done.Load() {
+				return
+			}
+			rightToLeft <- frame
+		}
+	}()
+
+	// leftToRight → right send
+	go func() {
+		for frame := range leftToRight {
+			if err := right.Send(frame); err != nil {
+				b.report(s, err)
+				return
+			}
+		}
+	}()
+
+	// rightToLeft → left send
+	go func() {
+		for frame := range rightToLeft {
+			if err := left.Send(frame); err != nil {
+				b.report(s, err)
+				return
+			}
+		}
+	}()
+
+	return <-s.errCh
 }
 
-// forward reads frames from src and sends them to dst until an error occurs.
-// io.EOF and context.Canceled are returned as-is so Bind can handle them.
-func forward(_ context.Context, src AgentFrameStream, dst AgentFrameStream) error {
-	for {
-		frame, err := src.Recv()
-		if err != nil {
-			return err
-		}
-		if err := dst.Send(frame); err != nil {
-			return err
-		}
+// report normalizes io.EOF and context.Canceled to nil, then sets done and
+// writes the first result to errCh using sync.Once.
+func (b *binder) report(s *bindState, err error) {
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		err = nil
 	}
+	s.once.Do(func() {
+		s.done.Store(true)
+		s.errCh <- err
+	})
 }

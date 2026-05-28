@@ -484,8 +484,8 @@ func TestWebSocketStatusResponse(t *testing.T) {
 	if statusResp.Type != "status" {
 		t.Errorf("status response type = %q, want %q", statusResp.Type, "status")
 	}
-	if statusResp.Payload != "initialized" {
-		t.Errorf("status response payload = %q, want %q", statusResp.Payload, "initialized")
+	if statusResp.Payload != "aW5pdGlhbGl6ZWQ=" {
+		t.Errorf("status response payload = %q, want %q", statusResp.Payload, "aW5pdGlhbGl6ZWQ=")
 	}
 
 	// when: send echo frame
@@ -782,8 +782,8 @@ func TestFullLifecycle(t *testing.T) {
 	if recvFrame.Type != "status" {
 		t.Errorf("step5 response type = %q, want %q", recvFrame.Type, "status")
 	}
-	if recvFrame.Payload != "initialized" {
-		t.Errorf("step5 status payload = %q, want %q", recvFrame.Payload, "initialized")
+	if recvFrame.Payload != "aW5pdGlhbGl6ZWQ=" {
+		t.Errorf("step5 status payload = %q, want %q", recvFrame.Payload, "aW5pdGlhbGl6ZWQ=")
 	}
 	conn.Close()
 

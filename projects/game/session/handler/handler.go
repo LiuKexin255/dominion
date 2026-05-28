@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
@@ -63,7 +62,10 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSess
 
 // GetSession retrieves a Session by its resource name.
 func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionRequest) (*game.Session, error) {
-	sessionID := strings.TrimPrefix(req.GetName(), gameconst.SessionNamePrefix)
+	sessionID, err := gameconst.SessionID(req.GetName())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid session name: %v", err)
+	}
 	s, err := h.sessionRepo.Get(ctx, sessionID)
 	if err != nil {
 		return nil, toStatusError(err)
@@ -77,10 +79,13 @@ func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionReq
 // to clean up the associated Agent resource. If the proxy returns NotFound,
 // deletion continues (idempotent). Other proxy errors block session deletion.
 func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSessionRequest) (*emptypb.Empty, error) {
-	sessionID := strings.TrimPrefix(req.GetName(), gameconst.SessionNamePrefix)
+	sessionID, err := gameconst.SessionID(req.GetName())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid session name: %v", err)
+	}
 	agentName := gameconst.AgentName(sessionID)
 
-	_, err := h.proxyClient.DeleteAgent(ctx, &game.DeleteAgentRequest{Name: agentName})
+	_, err = h.proxyClient.DeleteAgent(ctx, &game.DeleteAgentRequest{Name: agentName})
 	if err != nil && status.Code(err) != codes.NotFound {
 		return nil, status.Errorf(codes.Internal, "delete agent failed: %v", err)
 	}
