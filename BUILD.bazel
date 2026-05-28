@@ -64,6 +64,11 @@ alias(
     actual = "@rules_python//python/bin:python",
 )
 
+alias(
+    name = "go",
+    actual = "@rules_go//go",
+)
+
 exports_files([
     "gazelle_python.yaml",
     "pnpm-workspace.yaml",

@@ -32,9 +32,9 @@
 #### Golang
 
 1. 使用 [`go_rules`](https://github.com/bazel-contrib/rules_go) 提供 golang 编译支持。
-2. 使用 `bazel run @rules_go//go` 来执行 `golang` 命令。
-3. 代码格式化：使用 `bazel run @rules_go//go -- fmt [变更文件]` 命令对代码进行格式化；
-4. 依赖更新：`bazel run @rules_go//go -- mod tidy -v` 更新 `go.mod`。
+2. 使用 `bazel run //:go` 来执行 `golang` 命令。
+3. 代码格式化：使用 `bazel run //:go -- fmt [变更文件]` 命令对代码进行格式化；
+4. 依赖更新：`bazel run //:go -- mod tidy -v` 更新 `go.mod`。
 5. 涉及 `proto` 的代码，使用 `gazelle` 生成 `BUILD.bazel` 后，使用 `bazel` 进行测试和编译。仓库内**禁止**保存 `proto 和 grpc` 生成的代码。
 6. golang 大型测试的 `target` 使用 `go_largetest(//tools/dev/go:defs.bzl)` 规则，单元测试使用 `go_unittest` （默认生成）。
 
