@@ -24,6 +24,11 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 # gazelle:resolve proto go google/protobuf/field_mask.proto @com_google_protobuf//:field_mask_go_proto
 # gazelle:resolve proto go google/protobuf/timestamp.proto @com_google_protobuf//:timestamp_go_proto
 
+# gazelle:resolve go github.com/wailsapp/wails/v2 //third_party/github.com/wailsapp/wails/v2:wails
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options //third_party/github.com/wailsapp/wails/v2/pkg/options
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/options/assetserver //third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver
+# gazelle:resolve go github.com/wailsapp/wails/v2/pkg/runtime //third_party/github.com/wailsapp/wails/v2/pkg/runtime
+
 gazelle_binary(
     name = "gazelle_multilang",
     languages = [

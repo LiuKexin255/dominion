@@ -1,0 +1,19 @@
+{
+    "name": "@dominion/game-desktop",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "",
+        "build": "vite build",
+        "preview": ""
+    },
+    "dependencies": {
+        "svelte": "catalog:",
+        "@sveltejs/vite-plugin-svelte": "catalog:"
+    },
+    "devDependencies": {
+        "typescript": "catalog:",
+        "vite": "catalog:",
+        "@types/node": "catalog:"
+    }
+}

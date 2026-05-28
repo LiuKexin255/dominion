@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/release:defs.bzl", "s3_artifacts_push")
+load("//tools/release/wails:defs.bzl", "wails_app")
+
+# gazelle:ignore
+go_library(
+    name = "desktop_lib",
+    srcs = [
+        "app.go",
+        "main.go",
+    ],
+    importpath = "dominion/projects/game/desktop",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//projects/game/desktop/assets:assets_lib",
+        "//projects/game/desktop/internal/api",
+        "//projects/game/desktop/internal/applog",
+        "//third_party/github.com/wailsapp/wails/v2:wails",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
+        "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
+    ],
+)
+
+wails_app(
+    name = "desktop",
+    assets = "//projects/game/desktop/assets:assets",
+    binary_name = "game-desktop",
+    go_library = ":desktop_lib",
+    platform = "windows/amd64",
+    visibility = ["//visibility:public"],
+)
+
+s3_artifacts_push(
+    name = "desktop_push",
+    artifacts = [":desktop"],
+    manifest = ":release.yaml",
+    visibility = ["//visibility:public"],
+)

@@ -1,5 +1,6 @@
 packages:
   - experimental/ts/*
+  - projects/game/desktop/frontend
 
 catalog:
   "@sveltejs/vite-plugin-svelte": "^5.0.3"

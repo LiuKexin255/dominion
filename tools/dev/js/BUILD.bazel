@@ -1,5 +1,7 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
+exports_files(["vite.bzl"])
+
 sh_binary(
     name = "pnpm",
     srcs = ["pnpm.sh"],

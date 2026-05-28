@@ -1,0 +1,12 @@
+load("//tools/dev/js:vite.bzl", "vite_build")
+
+vite_build(
+    name = "dist",
+    srcs = glob(["src/**"]),
+    config = "vite.config.ts",
+    index_html = "index.html",
+    package_json = "package.json",
+    svelte_config = "svelte.config.js",
+    tsconfig = "tsconfig.json",
+    visibility = ["//visibility:public"],
+)

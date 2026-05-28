@@ -1,0 +1,7 @@
+name: game-desktop
+version: 0.1.0
+artifacts:
+  - target: //projects/game/desktop:desktop
+    filename: game-desktop-windows-amd64.exe
+    platform: windows
+    arch: amd64
