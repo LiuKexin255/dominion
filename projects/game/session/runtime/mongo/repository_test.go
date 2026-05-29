@@ -34,7 +34,7 @@ func (r *fakeSingleResult) Decode(v interface{}) error {
 
 // fakeCollection implements collectionOps with in-memory storage.
 type fakeCollection struct {
-	docs    map[string]*sessionDocument
+	docs      map[string]*sessionDocument
 	docsOrder []string
 }
 
@@ -91,19 +91,62 @@ func (c *fakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
+func (c *fakeCollection) Indexes() mongodriver.IndexView {
+	return mongodriver.IndexView{}
+}
+
+// matchOrCondition evaluates whether a doc matches any condition in a $or filter.
+// Each condition is a bson.M with create_time and/or session_id constraints.
+func (c *fakeCollection) matchOrCondition(doc *sessionDocument, orList bson.A) bool {
+	for _, cond := range orList {
+		condMap, ok := cond.(bson.M)
+		if !ok {
+			continue
+		}
+		if ctVal, hasCT := condMap["create_time"]; hasCT {
+			switch ct := ctVal.(type) {
+			case bson.M:
+				if ltVal, ok2 := ct["$lt"]; ok2 {
+					cursorTime := ltVal.(time.Time)
+					if doc.CreateTime.Before(cursorTime) {
+						return true
+					}
+				}
+			case time.Time:
+				if doc.CreateTime.Equal(ct) {
+					if sidVal, hasSID := condMap["session_id"]; hasSID {
+						if sidMap, ok2 := sidVal.(bson.M); ok2 {
+							if ltSID, ok3 := sidMap["$lt"]; ok3 {
+								cursorSID := ltSID.(string)
+								if doc.SessionID < cursorSID {
+									return true
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (c *fakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
-	var sortField string
-	var sortDir int
 	findOpts := options.Find()
 	for _, o := range opts {
 		if o != nil {
 			findOpts = o
 		}
 	}
+
+	var sortKeys []string
+	var sortDirs []int
 	if findOpts.Sort != nil {
-		if d, ok := findOpts.Sort.(bson.D); ok && len(d) > 0 {
-			sortField = d[0].Key
-			sortDir = d[0].Value.(int)
+		if s, ok := findOpts.Sort.(bson.D); ok {
+			for _, e := range s {
+				sortKeys = append(sortKeys, e.Key)
+				sortDirs = append(sortDirs, e.Value.(int))
+			}
 		}
 	}
 
@@ -117,22 +160,53 @@ func (c *fakeCollection) Find(_ context.Context, filter interface{}, opts ...*op
 
 	for _, id := range c.docsOrder {
 		doc := c.docs[id]
-		if isMap && sortField == "_id" {
-			if gt, ok := filterMap["_id"]; ok {
-				if gtMap, ok := gt.(bson.M); ok {
-					if gtVal, ok := gtMap["$gt"]; ok && doc.SessionID <= gtVal.(string) {
-						continue
-					}
+
+		if isMap {
+			if orConditions, hasOr := filterMap["$or"]; hasOr {
+				orList, ok := orConditions.(bson.A)
+				if !ok {
+					filtered = append(filtered, doc)
+					continue
+				}
+				matched := c.matchOrCondition(doc, orList)
+				if !matched {
+					continue
 				}
 			}
 		}
+
 		filtered = append(filtered, doc)
 	}
 
-	if sortField == "_id" && sortDir == 1 {
-		// docsOrder is already insertion order; sort by SessionID string for deterministic _id ordering
+	if len(sortKeys) > 0 {
 		sort.Slice(filtered, func(i, j int) bool {
-			return filtered[i].SessionID < filtered[j].SessionID
+			for k := 0; k < len(sortKeys); k++ {
+				var cmp int
+				switch sortKeys[k] {
+				case "create_time":
+					if filtered[i].CreateTime.Before(filtered[j].CreateTime) {
+						cmp = -1
+					} else if filtered[i].CreateTime.After(filtered[j].CreateTime) {
+						cmp = 1
+					}
+				case "session_id":
+					si, sj := filtered[i].SessionID, filtered[j].SessionID
+					if si < sj {
+						cmp = -1
+					} else if si > sj {
+						cmp = 1
+					}
+				default:
+					continue
+				}
+				if sortDirs[k] == -1 {
+					cmp = -cmp
+				}
+				if cmp != 0 {
+					return cmp < 0
+				}
+			}
+			return false
 		})
 	}
 
@@ -487,44 +561,51 @@ func TestRoundTrip(t *testing.T) {
 
 func TestListSessions(t *testing.T) {
 	ctx := context.Background()
+	t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
 
-	// given - seed 3 sessions with sortable IDs
+	// given - seed 3 sessions with distinct create times
 	repo := newTestRepo()
-	_, err := repo.Create(ctx, &domain.Session{SessionID: "aaa"})
+	_, err := repo.Create(ctx, &domain.Session{SessionID: "session_a", CreateTime: t1})
 	if err != nil {
 		t.Fatalf("Create() seed unexpected error: %v", err)
 	}
-	_, err = repo.Create(ctx, &domain.Session{SessionID: "bbb"})
+	_, err = repo.Create(ctx, &domain.Session{SessionID: "session_b", CreateTime: t2})
 	if err != nil {
 		t.Fatalf("Create() seed unexpected error: %v", err)
 	}
-	_, err = repo.Create(ctx, &domain.Session{SessionID: "ccc"})
+	_, err = repo.Create(ctx, &domain.Session{SessionID: "session_c", CreateTime: t3})
 	if err != nil {
 		t.Fatalf("Create() seed unexpected error: %v", err)
 	}
 
 	// when - first page with pageSize=2
-	result, err := repo.List(ctx, 2, "")
+	result, err := repo.List(ctx, 2, nil)
 
-	// then - first page has 2 sessions with next token
+	// then - first page has 2 sessions (DESC: c, b) with next token encoding c
 	if err != nil {
 		t.Fatalf("List() unexpected error: %v", err)
 	}
 	if len(result.Sessions) != 2 {
 		t.Fatalf("List() got %d sessions, want 2", len(result.Sessions))
 	}
-	if result.Sessions[0].SessionID != "aaa" {
-		t.Fatalf("List() first session_id = %q, want %q", result.Sessions[0].SessionID, "aaa")
+	if result.Sessions[0].SessionID != "session_c" {
+		t.Fatalf("List() first session_id = %q, want %q", result.Sessions[0].SessionID, "session_c")
 	}
-	if result.Sessions[1].SessionID != "bbb" {
-		t.Fatalf("List() second session_id = %q, want %q", result.Sessions[1].SessionID, "bbb")
+	if result.Sessions[1].SessionID != "session_b" {
+		t.Fatalf("List() second session_id = %q, want %q", result.Sessions[1].SessionID, "session_b")
 	}
-	if result.NextPageToken != "bbb" {
-		t.Fatalf("List() next_page_token = %q, want %q", result.NextPageToken, "bbb")
+	if result.NextPageToken == "" {
+		t.Fatalf("List() next_page_token is empty, want non-empty")
 	}
 
-	// when - second page using next token
-	result2, err := repo.List(ctx, 2, result.NextPageToken)
+	// when - second page using cursor from first page
+	page2Cursor, err := domain.DecodePageToken(result.NextPageToken)
+	if err != nil {
+		t.Fatalf("DecodePageToken() unexpected error: %v", err)
+	}
+	result2, err := repo.List(ctx, 2, page2Cursor)
 
 	// then - second page has 1 session, no next token
 	if err != nil {
@@ -533,8 +614,8 @@ func TestListSessions(t *testing.T) {
 	if len(result2.Sessions) != 1 {
 		t.Fatalf("List() page 2 got %d sessions, want 1", len(result2.Sessions))
 	}
-	if result2.Sessions[0].SessionID != "ccc" {
-		t.Fatalf("List() page 2 session_id = %q, want %q", result2.Sessions[0].SessionID, "ccc")
+	if result2.Sessions[0].SessionID != "session_a" {
+		t.Fatalf("List() page 2 session_id = %q, want %q", result2.Sessions[0].SessionID, "session_a")
 	}
 	if result2.NextPageToken != "" {
 		t.Fatalf("List() page 2 next_page_token = %q, want empty", result2.NextPageToken)
@@ -543,15 +624,22 @@ func TestListSessions(t *testing.T) {
 
 func TestListSessions_Empty(t *testing.T) {
 	ctx := context.Background()
+	t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name      string
-		pageSize  int
-		pageToken string
+		name   string
+		cursor *domain.ListPageCursor
 	}{
 		{
-			name:     "no sessions returns nil",
-			pageSize: 10,
+			name:   "nil cursor returns nil,nil",
+			cursor: nil,
+		},
+		{
+			name: "non-nil cursor returns nil,nil",
+			cursor: &domain.ListPageCursor{
+				CreateTime: t1,
+				SessionID:  "session_a",
+			},
 		},
 	}
 
@@ -561,17 +649,14 @@ func TestListSessions_Empty(t *testing.T) {
 			repo := newTestRepo()
 
 			// when
-			result, err := repo.List(ctx, tt.pageSize, tt.pageToken)
+			result, err := repo.List(ctx, 10, tt.cursor)
 
 			// then
 			if err != nil {
 				t.Fatalf("List() unexpected error: %v", err)
 			}
-			if result.Sessions != nil {
-				t.Fatalf("List() sessions = %v, want nil", result.Sessions)
-			}
-			if result.NextPageToken != "" {
-				t.Fatalf("List() next_page_token = %q, want empty", result.NextPageToken)
+			if result != nil {
+				t.Fatalf("List() result = %v, want nil", result)
 			}
 		})
 	}
@@ -579,23 +664,38 @@ func TestListSessions_Empty(t *testing.T) {
 
 func TestListSessions_DefaultPageSize(t *testing.T) {
 	ctx := context.Background()
+	t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
 
 	tests := []struct {
 		name         string
 		pageSize     int
-		wantMax      int
+		wantLen      int
 		wantNextPage bool
 	}{
 		{
-			name:         "pageSize 0 defaults to 50",
-			pageSize:     0,
-			wantMax:      3,
+			name:         "pageSize 1 returns 1 session with next token",
+			pageSize:     1,
+			wantLen:      1,
+			wantNextPage: true,
+		},
+		{
+			name:         "pageSize 2 returns 2 sessions with next token",
+			pageSize:     2,
+			wantLen:      2,
+			wantNextPage: true,
+		},
+		{
+			name:         "pageSize 3 returns all 3 sessions without next token",
+			pageSize:     3,
+			wantLen:      3,
 			wantNextPage: false,
 		},
 		{
-			name:         "negative pageSize defaults to 50",
-			pageSize:     -1,
-			wantMax:      3,
+			name:         "pageSize 10 exceeds available sessions, no next token",
+			pageSize:     10,
+			wantLen:      3,
 			wantNextPage: false,
 		},
 	}
@@ -604,32 +704,113 @@ func TestListSessions_DefaultPageSize(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given - seed 3 sessions
 			repo := newTestRepo()
-			_, err := repo.Create(ctx, &domain.Session{SessionID: "aaa"})
+			_, err := repo.Create(ctx, &domain.Session{SessionID: "session_a", CreateTime: t1})
 			if err != nil {
 				t.Fatalf("Create() seed unexpected error: %v", err)
 			}
-			_, err = repo.Create(ctx, &domain.Session{SessionID: "bbb"})
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "session_b", CreateTime: t2})
 			if err != nil {
 				t.Fatalf("Create() seed unexpected error: %v", err)
 			}
-			_, err = repo.Create(ctx, &domain.Session{SessionID: "ccc"})
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "session_c", CreateTime: t3})
 			if err != nil {
 				t.Fatalf("Create() seed unexpected error: %v", err)
 			}
 
 			// when
-			result, err := repo.List(ctx, tt.pageSize, "")
+			result, err := repo.List(ctx, tt.pageSize, nil)
 
 			// then
 			if err != nil {
 				t.Fatalf("List() unexpected error: %v", err)
 			}
-			if len(result.Sessions) != tt.wantMax {
-				t.Fatalf("List() got %d sessions, want %d", len(result.Sessions), tt.wantMax)
+			if len(result.Sessions) != tt.wantLen {
+				t.Fatalf("List() got %d sessions, want %d", len(result.Sessions), tt.wantLen)
 			}
 			hasNext := result.NextPageToken != ""
 			if hasNext != tt.wantNextPage {
 				t.Fatalf("List() next_page_token present = %v, want %v", hasNext, tt.wantNextPage)
+			}
+		})
+	}
+}
+
+func TestListSessions_CursorPagination(t *testing.T) {
+	ctx := context.Background()
+	t1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	t3 := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		pageSize  int
+		wantIDs   []string
+		wantToken bool
+	}{
+		{
+			name:      "page through all 3 sessions one at a time",
+			pageSize:  1,
+			wantIDs:   []string{"session_c"},
+			wantToken: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given - seed 3 sessions with distinct create times
+			repo := newTestRepo()
+			_, err := repo.Create(ctx, &domain.Session{SessionID: "session_a", CreateTime: t1})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "session_b", CreateTime: t2})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "session_c", CreateTime: t3})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+
+			var cursor *domain.ListPageCursor
+			allIDs := make([]string, 0, 3)
+
+			for page := 0; page < 3; page++ {
+				// when
+				result, err := repo.List(ctx, 1, cursor)
+
+				// then
+				if err != nil {
+					t.Fatalf("List() page %d unexpected error: %v", page, err)
+				}
+				if result == nil {
+					// no more results expected
+					if page < 3 {
+						t.Fatalf("List() page %d returned nil, want non-nil", page)
+					}
+					break
+				}
+				if len(result.Sessions) != 1 {
+					t.Fatalf("List() page %d got %d sessions, want 1", page, len(result.Sessions))
+				}
+				allIDs = append(allIDs, result.Sessions[0].SessionID)
+
+				if result.NextPageToken != "" {
+					cursor, err = domain.DecodePageToken(result.NextPageToken)
+					if err != nil {
+						t.Fatalf("DecodePageToken() page %d unexpected error: %v", page, err)
+					}
+				} else {
+					cursor = nil
+				}
+			}
+
+			// then - expect descending order: c, b, a
+			if len(allIDs) != 3 {
+				t.Fatalf("List() pagination complete got %d total sessions, want 3", len(allIDs))
+			}
+			if allIDs[0] != "session_c" || allIDs[1] != "session_b" || allIDs[2] != "session_a" {
+				t.Fatalf("List() all page order = %v, want [session_c session_b session_a]", allIDs)
 			}
 		})
 	}

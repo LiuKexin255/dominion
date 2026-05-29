@@ -109,10 +109,22 @@ func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSess
 func (h *SessionHandler) ListSessions(ctx context.Context, req *game.ListSessionsRequest) (*game.ListSessionsResponse, error) {
 	pageSize := int(req.GetPageSize())
 	if pageSize <= 0 {
-		pageSize = 50
+		pageSize = domain.DefaultListSessionsPageSize
+	}
+	if pageSize > domain.MaxListSessionsPageSize {
+		pageSize = domain.MaxListSessionsPageSize
 	}
 
-	res, err := h.sessionRepo.List(ctx, pageSize, req.GetPageToken())
+	var cursor *domain.ListPageCursor
+	if token := req.GetPageToken(); token != "" {
+		var err error
+		cursor, err = domain.DecodePageToken(token)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid page token: %v", err)
+		}
+	}
+
+	res, err := h.sessionRepo.List(ctx, pageSize, cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}

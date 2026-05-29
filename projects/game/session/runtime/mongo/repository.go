@@ -37,6 +37,7 @@ type collectionOps interface {
 	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) singleResult
 	DeleteOne(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error)
+	Indexes() mongodriver.IndexView
 }
 
 // sessionCollection wraps a MongoDB Collection to implement collectionOps.
@@ -64,6 +65,10 @@ func (c *sessionCollection) Find(ctx context.Context, filter interface{}, opts .
 	return &mongoCursor{Cursor: cur}, nil
 }
 
+func (c *sessionCollection) Indexes() mongodriver.IndexView {
+	return c.Collection.Indexes()
+}
+
 // mongoCursor wraps a MongoDB Cursor to implement cursorOps.
 type mongoCursor struct {
 	*mongodriver.Cursor
@@ -80,9 +85,17 @@ type sessionRepository struct {
 }
 
 // NewSessionRepository creates a MongoDB-backed SessionRepository.
+// It ensures the composite index {create_time: -1, session_id: -1} exists.
 func NewSessionRepository(client *mongodriver.Client, dbName string, collName string) domain.SessionRepository {
+	coll := newSessionCollection(client, dbName, collName)
+	indexModel := mongodriver.IndexModel{
+		Keys: bson.D{{"create_time", -1}, {"session_id", -1}},
+	}
+	// Create composite index for cursor-based list pagination.
+	// Ignore error for duplicate index (e.g., from previous service start).
+	_, _ = coll.Indexes().CreateOne(context.Background(), indexModel)
 	return &sessionRepository{
-		collection: newSessionCollection(client, dbName, collName),
+		collection: coll,
 	}
 }
 
@@ -132,18 +145,24 @@ func (r *sessionRepository) Delete(ctx context.Context, sessionID string) error 
 	return nil
 }
 
-// List retrieves a page of sessions using _id cursor-based pagination.
-func (r *sessionRepository) List(ctx context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
-	if pageSize <= 0 {
-		pageSize = 50
+// List retrieves a page of sessions sorted by create_time DESC, session_id DESC.
+// The cursor parameter points to the last session of the previous page; pass nil for the first page.
+func (r *sessionRepository) List(ctx context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+	var filter interface{} = bson.M{}
+	if cursor != nil {
+		filter = bson.M{
+			"$or": bson.A{
+				bson.M{"create_time": bson.M{"$lt": cursor.CreateTime}},
+				bson.M{"create_time": cursor.CreateTime, "session_id": bson.M{"$lt": cursor.SessionID}},
+			},
+		}
 	}
 
-	filter := bson.M{}
-	if pageToken != "" {
-		filter = bson.M{"_id": bson.M{"$gt": pageToken}}
-	}
+	limit := int64(pageSize) + 1
+	opts := options.Find().
+		SetSort(bson.D{{"create_time", -1}, {"session_id", -1}}).
+		SetLimit(limit)
 
-	opts := options.Find().SetSort(bson.D{{"_id", 1}}).SetLimit(int64(pageSize))
 	cur, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
@@ -156,17 +175,26 @@ func (r *sessionRepository) List(ctx context.Context, pageSize int, pageToken st
 	}
 
 	if len(docs) == 0 {
-		return &domain.ListSessionsResult{}, nil
+		return nil, nil
+	}
+
+	nextPageToken := ""
+	if len(docs) > pageSize {
+		lastDoc := docs[pageSize-1]
+		token, err := domain.EncodePageToken(&domain.ListPageCursor{
+			CreateTime: lastDoc.CreateTime,
+			SessionID:  lastDoc.SessionID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		nextPageToken = token
+		docs = docs[:pageSize]
 	}
 
 	sessions := make([]*domain.Session, 0, len(docs))
 	for _, doc := range docs {
 		sessions = append(sessions, doc.toDomain())
-	}
-
-	nextPageToken := ""
-	if len(docs) >= pageSize {
-		nextPageToken = docs[len(docs)-1].SessionID
 	}
 
 	return &domain.ListSessionsResult{
