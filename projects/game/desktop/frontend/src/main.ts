@@ -1,10 +1,15 @@
-import './style.css'
+import { mount } from 'svelte'
 import App from './App.svelte'
 import { log } from './logger'
+import './style.css'
 
-// Mount the Svelte app
-const app = new App({
-  target: document.getElementById('app')!
+const target = document.getElementById('app')
+if (!target) {
+  throw new Error('app mount target not found')
+}
+
+const app = mount(App, {
+  target
 })
 
 // Listen for backend log events via Wails runtime

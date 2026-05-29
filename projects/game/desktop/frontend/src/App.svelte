@@ -1,94 +1,96 @@
 <script lang="ts">
+  import type { AgentFrame, CheckResult, LogEntry } from './api'
   import {
-    setConfig,
-    createSession, getSession, deleteSession,
-    createAgent, getAgent, deleteAgent, connectAgent,
-    sendAgentFrame, runConnectivityCheck
+    connectAgent,
+    createAgent,
+    createSession,
+    deleteAgent,
+    deleteSession,
+    getAgent,
+    getSession,
+    runConnectivityCheck,
+    sendAgentFrame,
+    setConfig
   } from './api'
   import { log, setLogSink } from './logger'
-  import type { LogEntry, AgentFrame, CheckResult } from './api'
 
-  // ===== Reactive State (Svelte 5 runes) =====
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
-  let sessionID = $state('desktop-' + Date.now())
+  let sessionID = $state(`desktop-${Date.now()}`)
   let logEntries = $state<LogEntry[]>([])
   let isRunning = $state(false)
   let logContainer: HTMLDivElement
 
-  // Wire up the log sink so logger.ts calls push to our state
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
   })
 
-  // ===== Auto-scroll log to bottom =====
   $effect(() => {
     if (logEntries.length && logContainer) {
       logContainer.scrollTop = logContainer.scrollHeight
     }
   })
 
-  // ===== Action handlers =====
   async function handleApplyConfig() {
     await setConfig({ gateway_url: gatewayURL, env })
-    log('info', 'frontend', 'Config applied: ' + gatewayURL)
+    log('info', 'frontend', `Config applied: ${gatewayURL}`)
   }
 
   async function handleCreateSession() {
     try {
       const session = await createSession(sessionID)
-      log('info', 'frontend', 'Session created: ' + session.session_id)
-    } catch (e: unknown) { log('error', 'frontend', 'Create session failed: ' + String(e)) }
+      log('info', 'frontend', `Session created: ${session.session_id}`)
+    } catch (e: unknown) { log('error', 'frontend', `Create session failed: ${String(e)}`) }
   }
 
   async function handleGetSession() {
     try {
       const session = await getSession(sessionID)
-      log('info', 'frontend', 'Session: ' + JSON.stringify(session))
-    } catch (e: unknown) { log('error', 'frontend', 'Get session failed: ' + String(e)) }
+      log('info', 'frontend', `Session: ${JSON.stringify(session)}`)
+    } catch (e: unknown) { log('error', 'frontend', `Get session failed: ${String(e)}`) }
   }
 
   async function handleDeleteSession() {
     try {
       await deleteSession(sessionID)
-      log('info', 'frontend', 'Session deleted: ' + sessionID)
-    } catch (e: unknown) { log('error', 'frontend', 'Delete session failed: ' + String(e)) }
+      log('info', 'frontend', `Session deleted: ${sessionID}`)
+    } catch (e: unknown) { log('error', 'frontend', `Delete session failed: ${String(e)}`) }
   }
 
   async function handleCreateAgent() {
     try {
       const agent = await createAgent(sessionID)
-      log('info', 'frontend', 'Agent created: ' + agent.session_id)
-    } catch (e: unknown) { log('error', 'frontend', 'Create agent failed: ' + String(e)) }
+      log('info', 'frontend', `Agent created: ${agent.session_id}`)
+    } catch (e: unknown) { log('error', 'frontend', `Create agent failed: ${String(e)}`) }
   }
 
   async function handleGetAgent() {
     try {
       const agent = await getAgent(sessionID)
-      log('info', 'frontend', 'Agent: ' + JSON.stringify(agent))
-    } catch (e: unknown) { log('error', 'frontend', 'Get agent failed: ' + String(e)) }
+      log('info', 'frontend', `Agent: ${JSON.stringify(agent)}`)
+    } catch (e: unknown) { log('error', 'frontend', `Get agent failed: ${String(e)}`) }
   }
 
   async function handleDeleteAgent() {
     try {
       await deleteAgent(sessionID)
-      log('info', 'frontend', 'Agent deleted: ' + sessionID)
-    } catch (e: unknown) { log('error', 'frontend', 'Delete agent failed: ' + String(e)) }
+      log('info', 'frontend', `Agent deleted: ${sessionID}`)
+    } catch (e: unknown) { log('error', 'frontend', `Delete agent failed: ${String(e)}`) }
   }
 
   async function handleConnectAgent() {
     try {
       await connectAgent(sessionID)
       log('info', 'frontend', 'Agent connected via WebSocket')
-    } catch (e: unknown) { log('error', 'frontend', 'Connect agent failed: ' + String(e)) }
+    } catch (e: unknown) { log('error', 'frontend', `Connect agent failed: ${String(e)}`) }
   }
 
   async function handleSendStatus() {
     try {
       const frame: AgentFrame = { session_id: sessionID, type: 'status', payload: '' }
       const resp = await sendAgentFrame(frame)
-      log('info', 'frontend', 'Status response: ' + JSON.stringify(resp))
-    } catch (e: unknown) { log('error', 'frontend', 'Send status failed: ' + String(e)) }
+      log('info', 'frontend', `Status response: ${JSON.stringify(resp)}`)
+    } catch (e: unknown) { log('error', 'frontend', `Send status failed: ${String(e)}`) }
   }
 
   async function handleSendEcho() {
@@ -96,8 +98,8 @@
       const echoData = btoa('hello-desktop')
       const frame: AgentFrame = { session_id: sessionID, type: 'echo', payload: echoData }
       const resp = await sendAgentFrame(frame)
-      log('info', 'frontend', 'Echo response: ' + JSON.stringify(resp))
-    } catch (e: unknown) { log('error', 'frontend', 'Send echo failed: ' + String(e)) }
+      log('info', 'frontend', `Echo response: ${JSON.stringify(resp)}`)
+    } catch (e: unknown) { log('error', 'frontend', `Send echo failed: ${String(e)}`) }
   }
 
   async function handleFullCheck() {
@@ -106,7 +108,7 @@
       const result: CheckResult = await runConnectivityCheck(sessionID)
       log('info', 'frontend', result.success ? 'CONNECTIVITY CHECK PASSED' : 'CONNECTIVITY CHECK FAILED')
     } catch (e: unknown) {
-      log('error', 'frontend', 'Connectivity check failed: ' + String(e))
+      log('error', 'frontend', `Connectivity check failed: ${String(e)}`)
     } finally {
       isRunning = false
     }
@@ -116,7 +118,6 @@
     logEntries = []
   }
 
-  // ===== Helper =====
   function formatTime(t: string): string {
     return new Date(t).toLocaleTimeString()
   }
@@ -126,16 +127,16 @@
   <!-- Config Area -->
   <div class="config-area">
     <div class="config-row">
-      <label>Gateway URL</label>
-      <input type="text" bind:value={gatewayURL} placeholder="https://game.liukexin.com" />
+      <label for="gateway-url">Gateway URL</label>
+      <input id="gateway-url" type="text" bind:value={gatewayURL} placeholder="https://game.liukexin.com" />
     </div>
     <div class="config-row">
-      <label>Env</label>
-      <input type="text" bind:value={env} placeholder="environment" />
+      <label for="env">Env</label>
+      <input id="env" type="text" bind:value={env} placeholder="environment" />
     </div>
     <div class="config-row">
-      <label>Session ID</label>
-      <input type="text" bind:value={sessionID} placeholder="desktop-..." />
+      <label for="session-id">Session ID</label>
+      <input id="session-id" type="text" bind:value={sessionID} placeholder="desktop-..." />
     </div>
     <button class="btn btn-primary" onclick={handleApplyConfig}>Apply Config</button>
   </div>
