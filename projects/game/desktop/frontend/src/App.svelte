@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AgentFrame, CheckResult, LogEntry } from './api'
+  import type { AgentFrame, LogEntry } from './api'
   import {
     connectAgent,
     createAgent,
@@ -8,7 +8,6 @@
     deleteSession,
     getAgent,
     getSession,
-    runConnectivityCheck,
     sendAgentFrame,
     setConfig
   } from './api'
@@ -18,7 +17,6 @@
   let env = $state('')
   let sessionID = $state(`desktop-${Date.now()}`)
   let logEntries = $state<LogEntry[]>([])
-  let isRunning = $state(false)
   let logContainer: HTMLDivElement
 
   setLogSink((entry: LogEntry) => {
@@ -38,8 +36,8 @@
 
   async function handleCreateSession() {
     try {
-      const session = await createSession(sessionID)
-      log('info', 'frontend', `Session created: ${session.session_id}`)
+      const session = await createSession()
+      log('info', 'frontend', `Session created: ${session.sessionId}`)
     } catch (e: unknown) { log('error', 'frontend', `Create session failed: ${String(e)}`) }
   }
 
@@ -60,7 +58,7 @@
   async function handleCreateAgent() {
     try {
       const agent = await createAgent(sessionID)
-      log('info', 'frontend', `Agent created: ${agent.session_id}`)
+      log('info', 'frontend', `Agent created: ${agent.sessionId}`)
     } catch (e: unknown) { log('error', 'frontend', `Create agent failed: ${String(e)}`) }
   }
 
@@ -87,7 +85,7 @@
 
   async function handleSendStatus() {
     try {
-      const frame: AgentFrame = { session_id: sessionID, type: 'status', payload: '' }
+      const frame: AgentFrame = { sessionId: sessionID, frameId: '', createTime: '', status: { status: 'ping' } }
       const resp = await sendAgentFrame(frame)
       log('info', 'frontend', `Status response: ${JSON.stringify(resp)}`)
     } catch (e: unknown) { log('error', 'frontend', `Send status failed: ${String(e)}`) }
@@ -96,22 +94,10 @@
   async function handleSendEcho() {
     try {
       const echoData = btoa('hello-desktop')
-      const frame: AgentFrame = { session_id: sessionID, type: 'echo', payload: echoData }
+      const frame: AgentFrame = { sessionId: sessionID, frameId: '', createTime: '', echo: { data: echoData } }
       const resp = await sendAgentFrame(frame)
       log('info', 'frontend', `Echo response: ${JSON.stringify(resp)}`)
     } catch (e: unknown) { log('error', 'frontend', `Send echo failed: ${String(e)}`) }
-  }
-
-  async function handleFullCheck() {
-    isRunning = true
-    try {
-      const result: CheckResult = await runConnectivityCheck(sessionID)
-      log('info', 'frontend', result.success ? 'CONNECTIVITY CHECK PASSED' : 'CONNECTIVITY CHECK FAILED')
-    } catch (e: unknown) {
-      log('error', 'frontend', `Connectivity check failed: ${String(e)}`)
-    } finally {
-      isRunning = false
-    }
   }
 
   function handleClearLogs() {
@@ -152,9 +138,6 @@
     <button class="btn" onclick={handleConnectAgent}>Connect WS</button>
     <button class="btn" onclick={handleSendStatus}>Send Status</button>
     <button class="btn" onclick={handleSendEcho}>Send Echo</button>
-    <button class="btn btn-primary" onclick={handleFullCheck} disabled={isRunning}>
-      {isRunning ? 'Running...' : 'Full Check'}
-    </button>
   </div>
 
   <!-- Log Area -->
