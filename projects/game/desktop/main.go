@@ -13,6 +13,9 @@ import (
 )
 
 func main() {
+	// Enable DPI awareness before creating any windows (Windows only).
+	setProcessDPIAware()
+
 	// Create logger
 	logger := applog.NewLogger()
 

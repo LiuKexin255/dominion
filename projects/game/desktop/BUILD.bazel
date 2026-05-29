@@ -8,6 +8,8 @@ go_library(
     srcs = [
         "app.go",
         "main.go",
+        "main_other.go",
+        "main_windows.go",
     ],
     importpath = "dominion/projects/game/desktop",
     visibility = ["//visibility:private"],
@@ -16,10 +18,12 @@ go_library(
         "//projects/game/desktop/assets:assets_lib",
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",
+        "//projects/game/desktop/internal/capture",
         "//third_party/github.com/wailsapp/wails/v2:wails",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
         "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
