@@ -654,8 +654,6 @@ func TestScreenshotFrameRoundtrip(t *testing.T) {
 				Data:        pngData,
 				WidthPx:     800,
 				HeightPx:    600,
-				ClientXPx:   0,
-				ClientYPx:   0,
 				ScaleFactor: 1.5,
 				WindowTitle: "Test Window",
 			},

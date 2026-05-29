@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ type mockSessionRepo struct {
 	createFn func(ctx context.Context, session *domain.Session) (*domain.Session, error)
 	getFn    func(ctx context.Context, sessionID string) (*domain.Session, error)
 	deleteFn func(ctx context.Context, sessionID string) error
-	listFn   func(ctx context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error)
+	listFn   func(ctx context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error)
 }
 
 func (m *mockSessionRepo) Create(ctx context.Context, session *domain.Session) (*domain.Session, error) {
@@ -46,8 +47,8 @@ func (m *mockSessionRepo) Delete(ctx context.Context, sessionID string) error {
 	return m.deleteFn(ctx, sessionID)
 }
 
-func (m *mockSessionRepo) List(ctx context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
-	return m.listFn(ctx, pageSize, pageToken)
+func (m *mockSessionRepo) List(ctx context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+	return m.listFn(ctx, pageSize, cursor)
 }
 
 // mockProxyClient implements game.ProxyServiceClient for handler testing.
@@ -174,7 +175,7 @@ func TestListSessions(t *testing.T) {
 			CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
 		}
 		mockRepo := &mockSessionRepo{
-			listFn: func(_ context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
+			listFn: func(_ context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
 				return &domain.ListSessionsResult{
 					Sessions:      []*domain.Session{sessionA, sessionB},
 					NextPageToken: "",
@@ -211,12 +212,22 @@ func TestListSessions_Pagination(t *testing.T) {
 		session1 := &domain.Session{SessionID: "s1", CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 		session2 := &domain.Session{SessionID: "s2", CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)}
 		session3 := &domain.Session{SessionID: "s3", CreateTime: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)}
+
+		nextPageCursor := &domain.ListPageCursor{
+			SessionID:  "s2",
+			CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+		}
+		nextPageToken, err := domain.EncodePageToken(nextPageCursor)
+		if err != nil {
+			t.Fatalf("EncodePageToken() error: %v", err)
+		}
+
 		mockRepo := &mockSessionRepo{
-			listFn: func(_ context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
-				if pageToken == "" {
+			listFn: func(_ context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+				if cursor == nil {
 					return &domain.ListSessionsResult{
 						Sessions:      []*domain.Session{session1, session2},
-						NextPageToken: "cursor_s3",
+						NextPageToken: nextPageToken,
 					}, nil
 				}
 				return &domain.ListSessionsResult{
@@ -235,8 +246,8 @@ func TestListSessions_Pagination(t *testing.T) {
 		if len(page1.GetSessions()) != 2 {
 			t.Fatalf("page 1: got %d sessions, want 2", len(page1.GetSessions()))
 		}
-		if page1.GetNextPageToken() != "cursor_s3" {
-			t.Fatalf("page 1: next_page_token = %q, want %q", page1.GetNextPageToken(), "cursor_s3")
+		if page1.GetNextPageToken() != nextPageToken {
+			t.Fatalf("page 1: next_page_token = %q, want %q", page1.GetNextPageToken(), nextPageToken)
 		}
 
 		// when - second page
@@ -561,6 +572,161 @@ func Test_sessionToProto(t *testing.T) {
 			if got.GetSessionId() != tt.wantID {
 				t.Fatalf("sessionToProto() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
 			}
+		})
+	}
+}
+
+// TestListSessions_DefaultPageSize verifies that page_size <= 0 is treated as 0 and
+// the handler defaults to domain.DefaultListSessionsPageSize.
+func TestListSessions_DefaultPageSize(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	var capturedPageSize int
+	mockRepo := &mockSessionRepo{
+		listFn: func(_ context.Context, pageSize int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+			capturedPageSize = pageSize
+			return &domain.ListSessionsResult{}, nil
+		},
+	}
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+	// when
+	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 0})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if capturedPageSize != domain.DefaultListSessionsPageSize {
+		t.Fatalf("pageSize = %d, want %d", capturedPageSize, domain.DefaultListSessionsPageSize)
+	}
+}
+
+// TestListSessions_MaxPageSizeTruncation verifies that page_size > MaxListSessionsPageSize is truncated.
+func TestListSessions_MaxPageSizeTruncation(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	var capturedPageSize int
+	mockRepo := &mockSessionRepo{
+		listFn: func(_ context.Context, pageSize int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+			capturedPageSize = pageSize
+			return &domain.ListSessionsResult{}, nil
+		},
+	}
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+	// when
+	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 2000})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if capturedPageSize != domain.MaxListSessionsPageSize {
+		t.Fatalf("pageSize = %d, want %d", capturedPageSize, domain.MaxListSessionsPageSize)
+	}
+}
+
+// TestListSessions_NextPageToken verifies that next_page_token is present in the response
+// when the repository returns one.
+func TestListSessions_NextPageToken(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	mockRepo := &mockSessionRepo{
+		listFn: func(_ context.Context, _ int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+			return &domain.ListSessionsResult{
+				NextPageToken: "token-for-next-page",
+			}, nil
+		},
+	}
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+	// when
+	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got.GetNextPageToken() != "token-for-next-page" {
+		t.Fatalf("next_page_token = %q, want %q", got.GetNextPageToken(), "token-for-next-page")
+	}
+}
+
+// TestListSessions_EmptyResult verifies that a nil result from the repository returns
+// an empty, non-nil proto response.
+func TestListSessions_EmptyResult(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	mockRepo := &mockSessionRepo{
+		listFn: func(_ context.Context, _ int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+			return nil, nil
+		},
+	}
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+	// when
+	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if got == nil {
+		t.Fatal("ListSessions() returned nil, want non-nil response")
+	}
+	if len(got.GetSessions()) != 0 {
+		t.Fatalf("ListSessions() returned %d sessions, want 0", len(got.GetSessions()))
+	}
+}
+
+// TestListSessions_InvalidToken verifies that invalid page tokens return InvalidArgument.
+func TestListSessions_InvalidToken(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		pageToken string
+		wantCode  codes.Code
+	}{
+		{
+			name:      "empty token - success",
+			pageToken: "",
+			wantCode:  codes.OK,
+		},
+		{
+			name:      "invalid base64 token",
+			pageToken: "!!!not-valid!!!",
+			wantCode:  codes.InvalidArgument,
+		},
+		{
+			name:      "valid base64 but invalid JSON",
+			pageToken: base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte("not-json")),
+			wantCode:  codes.InvalidArgument,
+		},
+		{
+			name:      "missing create_time",
+			pageToken: base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(`{"session_id":"abc"}`)),
+			wantCode:  codes.InvalidArgument,
+		},
+		{
+			name:      "missing session_id",
+			pageToken: base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(`{"create_time":"2026-05-29T12:34:56Z"}`)),
+			wantCode:  codes.InvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			mockRepo := &mockSessionRepo{
+				listFn: func(_ context.Context, _ int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
+					return &domain.ListSessionsResult{}, nil
+				},
+			}
+			handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+			// when
+			_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageToken: tt.pageToken})
+
+			// then
+			assertStatusCode(t, err, tt.wantCode)
 		})
 	}
 }
