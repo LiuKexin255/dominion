@@ -7,6 +7,7 @@ go_library(
         "errors.go",
         "id_generator.go",
         "model.go",
+        "pagination.go",
         "repository.go",
     ],
     importpath = "dominion/projects/game/session/domain",
@@ -15,6 +16,9 @@ go_library(
 
 go_unittest(
     name = "domain_test",
-    srcs = ["id_generator_test.go"],
+    srcs = [
+        "id_generator_test.go",
+        "pagination_test.go",
+    ],
     embed = [":domain"],
 )
