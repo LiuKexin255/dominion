@@ -1,108 +1,288 @@
 <script lang="ts">
-  import type { AgentFrame } from './api'
+  import type { Session, Agent, WindowRef, AgentAckFrame, Config } from './api'
   import {
-    connectAgent,
-    createAgent,
+    setConfig,
     createSession,
-    deleteAgent,
+    listSessions,
     deleteSession,
+    createAgent,
     getAgent,
-    getSession,
-    sendAgentFrame,
-    setConfig
+    deleteAgent,
+    connectAgent,
+    listWindows,
+    bindWindow,
+    captureScreenshot,
+    sendScreenshot
   } from './api'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
+  import SessionList from './components/SessionList.svelte'
+  import SessionDetail from './components/SessionDetail.svelte'
+  import PlayView from './components/PlayView.svelte'
   import LogPanel from './components/LogPanel.svelte'
 
+  // --- Page state ---
+  let page = $state<'sessions' | 'detail' | 'play'>('sessions')
+
+  // --- App-level state ---
+  let selectedSession: Session | null = $state(null)
+  let sessions: Session[] = $state([])
+  let agent: Agent | null = $state(null)
+  let wsConnected = $state(false)
+  let windows: WindowRef[] = $state([])
+  let boundWindow: WindowRef | null = $state(null)
+  let screenshotData: string | null = $state(null)
+  let screenshotMeta: { width: number; height: number; encoding: string } | null = $state(null)
+  let ackResult: AgentAckFrame | null = $state(null)
+  let playState = $state('idle')
+  let logEntries: LogEntry[] = $state([])
+  let loading = $state(false)
+  let error: string | null = $state(null)
+
+  // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
-  let sessionID = $state(`desktop-${Date.now()}`)
-  let logEntries = $state<LogEntry[]>([])
 
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
   })
 
+  // --- Config handlers ---
   async function handleApplyConfig() {
-    await setConfig({ gateway_url: gatewayURL, env })
-    log('info', 'frontend', `Config applied: ${gatewayURL}`)
+    try {
+      loading = true
+      error = null
+      await setConfig({ gateway_url: gatewayURL, env })
+      log('info', 'config', `Config applied: ${gatewayURL}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'config', `Apply config failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
-  async function handleCreateSession() {
+  // --- SessionList handlers ---
+  async function handleRefresh() {
     try {
+      loading = true
+      error = null
+      const resp = await listSessions(50, '')
+      sessions = resp.sessions
+      log('info', 'sessions', `Listed ${sessions.length} sessions`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'sessions', `Refresh failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  async function handleCreate() {
+    try {
+      loading = true
+      error = null
       const session = await createSession()
-      log('info', 'frontend', `Session created: ${session.sessionId}`)
-    } catch (e: unknown) { log('error', 'frontend', `Create session failed: ${String(e)}`) }
+      log('info', 'sessions', `Session created: ${session.sessionId}`)
+      await handleRefresh()
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'sessions', `Create failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
-  async function handleGetSession() {
+  async function handleDelete(sessionId: string) {
     try {
-      const session = await getSession(sessionID)
-      log('info', 'frontend', `Session: ${JSON.stringify(session)}`)
-    } catch (e: unknown) { log('error', 'frontend', `Get session failed: ${String(e)}`) }
+      loading = true
+      error = null
+      await deleteSession(sessionId)
+      log('info', 'sessions', `Session deleted: ${sessionId}`)
+      await handleRefresh()
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'sessions', `Delete failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
-  async function handleDeleteSession() {
-    try {
-      await deleteSession(sessionID)
-      log('info', 'frontend', `Session deleted: ${sessionID}`)
-    } catch (e: unknown) { log('error', 'frontend', `Delete session failed: ${String(e)}`) }
+  function handleSelectSession(session: Session) {
+    selectedSession = session
+    agent = null
+    error = null
+    page = 'detail'
   }
 
+  // --- SessionDetail handlers ---
   async function handleCreateAgent() {
+    if (!selectedSession) return
     try {
-      const agent = await createAgent(sessionID)
-      log('info', 'frontend', `Agent created: ${agent.sessionId}`)
-    } catch (e: unknown) { log('error', 'frontend', `Create agent failed: ${String(e)}`) }
+      loading = true
+      error = null
+      agent = await createAgent(selectedSession.sessionId)
+      log('info', 'agent', `Agent created: ${agent.sessionId}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'agent', `Create agent failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
   async function handleGetAgent() {
+    if (!selectedSession) return
     try {
-      const agent = await getAgent(sessionID)
-      log('info', 'frontend', `Agent: ${JSON.stringify(agent)}`)
-    } catch (e: unknown) { log('error', 'frontend', `Get agent failed: ${String(e)}`) }
+      loading = true
+      error = null
+      agent = await getAgent(selectedSession.sessionId)
+      log('info', 'agent', `Agent: ${JSON.stringify(agent)}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'agent', `Get agent failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
   async function handleDeleteAgent() {
+    if (!selectedSession) return
     try {
-      await deleteAgent(sessionID)
-      log('info', 'frontend', `Agent deleted: ${sessionID}`)
-    } catch (e: unknown) { log('error', 'frontend', `Delete agent failed: ${String(e)}`) }
+      loading = true
+      error = null
+      await deleteAgent(selectedSession.sessionId)
+      agent = null
+      log('info', 'agent', `Agent deleted: ${selectedSession.sessionId}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'agent', `Delete agent failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
   async function handleConnectAgent() {
+    if (!selectedSession) return
     try {
-      await connectAgent(sessionID)
-      log('info', 'frontend', 'Agent connected via WebSocket')
-    } catch (e: unknown) { log('error', 'frontend', `Connect agent failed: ${String(e)}`) }
+      loading = true
+      error = null
+      await connectAgent(selectedSession.sessionId)
+      wsConnected = true
+      log('info', 'agent', 'Agent connected via WebSocket')
+    } catch (e: unknown) {
+      wsConnected = false
+      error = String(e)
+      log('error', 'agent', `Connect agent failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
-  async function handleSendStatus() {
-    try {
-      const frame: AgentFrame = { sessionId: sessionID, frameId: '', createTime: '', status: { status: 'ping' } }
-      const resp = await sendAgentFrame(frame)
-      log('info', 'frontend', `Status response: ${JSON.stringify(resp)}`)
-    } catch (e: unknown) { log('error', 'frontend', `Send status failed: ${String(e)}`) }
+  function handleEnterPlay() {
+    playState = 'idle'
+    windows = []
+    boundWindow = null
+    screenshotData = null
+    screenshotMeta = null
+    ackResult = null
+    error = null
+    page = 'play'
   }
 
-  async function handleSendEcho() {
-    try {
-      const echoData = btoa('hello-desktop')
-      const frame: AgentFrame = { sessionId: sessionID, frameId: '', createTime: '', echo: { data: echoData } }
-      const resp = await sendAgentFrame(frame)
-      log('info', 'frontend', `Echo response: ${JSON.stringify(resp)}`)
-    } catch (e: unknown) { log('error', 'frontend', `Send echo failed: ${String(e)}`) }
+  function handleBackToSessions() {
+    selectedSession = null
+    agent = null
+    wsConnected = false
+    error = null
+    page = 'sessions'
   }
 
+  function handleBackToDetail() {
+    error = null
+    page = 'detail'
+  }
+
+  // --- PlayView handlers ---
+  async function handleListWindows() {
+    try {
+      loading = true
+      error = null
+      windows = await listWindows()
+      log('info', 'play', `Listed ${windows.length} windows`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `List windows failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  async function handleBindWindow(hwnd: number) {
+    try {
+      loading = true
+      error = null
+      await bindWindow(hwnd)
+      const found = windows.find(w => w.handle === hwnd)
+      if (found) {
+        boundWindow = found
+      }
+      playState = 'window_bound'
+      log('info', 'play', `Bound window: ${found?.title || String(hwnd)}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `Bind window failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  async function handleCaptureScreenshot() {
+    try {
+      loading = true
+      error = null
+      const img = await captureScreenshot()
+      // Convert number[] to base64 string
+      const bytes = new Uint8Array(img.data)
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i])
+      }
+      screenshotData = btoa(binary)
+      screenshotMeta = { width: img.widthPx, height: img.heightPx, encoding: img.encoding }
+      playState = 'screenshot_captured'
+      log('info', 'play', `Screenshot captured: ${img.widthPx}x${img.heightPx} ${img.encoding}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `Capture screenshot failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  async function handleSendScreenshot(hwnd: number) {
+    try {
+      loading = true
+      error = null
+      ackResult = await sendScreenshot(hwnd)
+      playState = 'screenshot_sent'
+      log('info', 'play', `Screenshot sent, ack: ${ackResult.ackFrameId}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `Send screenshot failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  // --- Log handler ---
   function handleClearLogs() {
     logEntries = []
   }
-
 </script>
 
 <div class="app-container">
-  <!-- Config Area -->
+  <!-- Config Area (top) -->
   <div class="config-area">
     <div class="config-row">
       <label for="gateway-url">Gateway URL</label>
@@ -112,26 +292,55 @@
       <label for="env">Env</label>
       <input id="env" type="text" bind:value={env} placeholder="environment" />
     </div>
-    <div class="config-row">
-      <label for="session-id">Session ID</label>
-      <input id="session-id" type="text" bind:value={sessionID} placeholder="desktop-..." />
-    </div>
-    <button class="btn btn-primary" onclick={handleApplyConfig}>Apply Config</button>
+    <button class="btn btn-primary" onclick={handleApplyConfig} disabled={loading}>Apply Config</button>
   </div>
 
-  <!-- Action Area -->
-  <div class="action-area">
-    <button class="btn" onclick={handleCreateSession}>Create Session</button>
-    <button class="btn" onclick={handleGetSession}>Get Session</button>
-    <button class="btn" onclick={handleDeleteSession}>Delete Session</button>
-    <button class="btn" onclick={handleCreateAgent}>Create Agent</button>
-    <button class="btn" onclick={handleGetAgent}>Get Agent</button>
-    <button class="btn" onclick={handleDeleteAgent}>Delete Agent</button>
-    <button class="btn" onclick={handleConnectAgent}>Connect WS</button>
-    <button class="btn" onclick={handleSendStatus}>Send Status</button>
-    <button class="btn" onclick={handleSendEcho}>Send Echo</button>
-  </div>
+  <!-- Page Content (middle) -->
+  {#if page === 'sessions'}
+    <SessionList
+      {sessions}
+      selectedSessionId={selectedSession?.sessionId ?? null}
+      {loading}
+      {error}
+      onSelect={handleSelectSession}
+      onRefresh={handleRefresh}
+      onCreate={handleCreate}
+      onDelete={handleDelete}
+    />
+  {:else if page === 'detail'}
+    <SessionDetail
+      session={selectedSession}
+      {agent}
+      {wsConnected}
+      {loading}
+      {error}
+      onCreateAgent={handleCreateAgent}
+      onGetAgent={handleGetAgent}
+      onDeleteAgent={handleDeleteAgent}
+      onConnectAgent={handleConnectAgent}
+      onEnterPlay={handleEnterPlay}
+      onBack={handleBackToSessions}
+    />
+  {:else if page === 'play'}
+    <PlayView
+      sessionId={selectedSession?.sessionId ?? ''}
+      {windows}
+      {boundWindow}
+      {screenshotData}
+      {screenshotMeta}
+      {ackResult}
+      {playState}
+      {wsConnected}
+      {loading}
+      {error}
+      onListWindows={handleListWindows}
+      onBindWindow={handleBindWindow}
+      onCaptureScreenshot={handleCaptureScreenshot}
+      onSendScreenshot={handleSendScreenshot}
+      onBack={handleBackToDetail}
+    />
+  {/if}
 
-  <!-- Log Area -->
+  <!-- Log Panel (bottom, always visible) -->
   <LogPanel logs={logEntries} onclear={handleClearLogs} />
 </div>
