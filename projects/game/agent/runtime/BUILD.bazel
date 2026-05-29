@@ -13,4 +13,5 @@ go_unittest(
     name = "runtime_test",
     srcs = ["simple_runtime_test.go"],
     embed = [":runtime"],
+    deps = ["//projects/game/agent/domain"],
 )

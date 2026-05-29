@@ -4,6 +4,9 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
+
+	"dominion/projects/game/agent/domain"
 )
 
 func TestCreate(t *testing.T) {
@@ -183,6 +186,145 @@ func TestDeleteIdempotent(t *testing.T) {
 			// then
 			if err != nil {
 				t.Fatalf("Delete() unexpected error for %q: %v", tt.sessionID, err)
+			}
+		})
+	}
+}
+
+func TestReceiveScreenshot_Valid(t *testing.T) {
+	// given
+	rt := NewSimpleRuntime()
+	ctx := context.Background()
+	input := &domain.ScreenshotInput{
+		SessionId:   "session1",
+		CaptureId:   "capture-001",
+		Encoding:    "PNG",
+		Data:        []byte{0x89, 0x50, 0x4E, 0x47},
+		WidthPx:     1920,
+		HeightPx:    1080,
+		ClientXPx:   0,
+		ClientYPx:   0,
+		ScaleFactor: 1.0,
+		WindowTitle: "Test Window",
+		CaptureTime: time.Now(),
+	}
+
+	// when
+	receipt, err := rt.ReceiveScreenshot(ctx, input)
+
+	// then
+	if err != nil {
+		t.Fatalf("ReceiveScreenshot() unexpected error: %v", err)
+	}
+	if receipt.AckFrameId != "capture-001" {
+		t.Errorf("AckFrameId = %q, want %q", receipt.AckFrameId, "capture-001")
+	}
+	if receipt.Message != "screenshot received" {
+		t.Errorf("Message = %q, want %q", receipt.Message, "screenshot received")
+	}
+}
+
+func TestReceiveScreenshot_InvalidEncoding(t *testing.T) {
+	// given
+	tests := []struct {
+		name     string
+		encoding string
+	}{
+		{name: "JPEG encoding", encoding: "JPEG"},
+		{name: "empty encoding", encoding: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := NewSimpleRuntime()
+			ctx := context.Background()
+			input := &domain.ScreenshotInput{
+				SessionId: "session1",
+				CaptureId: "capture-002",
+				Encoding:  tt.encoding,
+				Data:      []byte{0x01},
+				WidthPx:   100,
+				HeightPx:  100,
+			}
+
+			// when
+			_, err := rt.ReceiveScreenshot(ctx, input)
+
+			// then
+			if err == nil {
+				t.Fatalf("ReceiveScreenshot() encoding=%q expected error", tt.encoding)
+			}
+		})
+	}
+}
+
+func TestReceiveScreenshot_EmptyData(t *testing.T) {
+	// given
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{name: "nil data", data: nil},
+		{name: "empty data", data: []byte{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := NewSimpleRuntime()
+			ctx := context.Background()
+			input := &domain.ScreenshotInput{
+				SessionId: "session1",
+				CaptureId: "capture-003",
+				Encoding:  "PNG",
+				Data:      tt.data,
+				WidthPx:   100,
+				HeightPx:  100,
+			}
+
+			// when
+			_, err := rt.ReceiveScreenshot(ctx, input)
+
+			// then
+			if err == nil {
+				t.Fatalf("ReceiveScreenshot() data=%v expected error", tt.data)
+			}
+		})
+	}
+}
+
+func TestReceiveScreenshot_ZeroDimensions(t *testing.T) {
+	// given
+	tests := []struct {
+		name     string
+		widthPx  int32
+		heightPx int32
+	}{
+		{name: "zero width", widthPx: 0, heightPx: 100},
+		{name: "zero height", widthPx: 100, heightPx: 0},
+		{name: "both zero", widthPx: 0, heightPx: 0},
+		{name: "negative width", widthPx: -1, heightPx: 100},
+		{name: "negative height", widthPx: 100, heightPx: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := NewSimpleRuntime()
+			ctx := context.Background()
+			input := &domain.ScreenshotInput{
+				SessionId: "session1",
+				CaptureId: "capture-004",
+				Encoding:  "PNG",
+				Data:      []byte{0x01},
+				WidthPx:   tt.widthPx,
+				HeightPx:  tt.heightPx,
+			}
+
+			// when
+			_, err := rt.ReceiveScreenshot(ctx, input)
+
+			// then
+			if err == nil {
+				t.Fatalf("ReceiveScreenshot() width=%d height=%d expected error", tt.widthPx, tt.heightPx)
 			}
 		})
 	}

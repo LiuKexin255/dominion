@@ -12,4 +12,7 @@ type SessionRepository interface {
 	Create(ctx context.Context, session *Session) (*Session, error)
 	// Delete removes a session by its session ID.
 	Delete(ctx context.Context, sessionID string) error
+	// List retrieves a page of sessions using cursor-based pagination.
+	// pageSize controls the maximum number of results; pageToken is the _id cursor.
+	List(ctx context.Context, pageSize int, pageToken string) (*ListSessionsResult, error)
 }

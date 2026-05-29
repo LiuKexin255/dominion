@@ -3,11 +3,13 @@ package mongo
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
 	"dominion/projects/game/session/domain"
 
+	"go.mongodb.org/mongo-driver/bson"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -32,7 +34,8 @@ func (r *fakeSingleResult) Decode(v interface{}) error {
 
 // fakeCollection implements collectionOps with in-memory storage.
 type fakeCollection struct {
-	docs map[string]*sessionDocument
+	docs    map[string]*sessionDocument
+	docsOrder []string
 }
 
 func newFakeCollection() *fakeCollection {
@@ -54,6 +57,7 @@ func (c *fakeCollection) InsertOne(_ context.Context, document interface{}, _ ..
 		}
 	}
 	c.docs[doc.SessionID] = doc
+	c.docsOrder = append(c.docsOrder, doc.SessionID)
 	return &mongodriver.InsertOneResult{}, nil
 }
 
@@ -78,7 +82,83 @@ func (c *fakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*
 		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
 	}
 	delete(c.docs, f.SessionID)
+	for i, id := range c.docsOrder {
+		if id == f.SessionID {
+			c.docsOrder = append(c.docsOrder[:i], c.docsOrder[i+1:]...)
+			break
+		}
+	}
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
+}
+
+func (c *fakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
+	var sortField string
+	var sortDir int
+	findOpts := options.Find()
+	for _, o := range opts {
+		if o != nil {
+			findOpts = o
+		}
+	}
+	if findOpts.Sort != nil {
+		if d, ok := findOpts.Sort.(bson.D); ok && len(d) > 0 {
+			sortField = d[0].Key
+			sortDir = d[0].Value.(int)
+		}
+	}
+
+	var limit int64
+	if findOpts.Limit != nil {
+		limit = *findOpts.Limit
+	}
+
+	var filtered []*sessionDocument
+	filterMap, isMap := filter.(bson.M)
+
+	for _, id := range c.docsOrder {
+		doc := c.docs[id]
+		if isMap && sortField == "_id" {
+			if gt, ok := filterMap["_id"]; ok {
+				if gtMap, ok := gt.(bson.M); ok {
+					if gtVal, ok := gtMap["$gt"]; ok && doc.SessionID <= gtVal.(string) {
+						continue
+					}
+				}
+			}
+		}
+		filtered = append(filtered, doc)
+	}
+
+	if sortField == "_id" && sortDir == 1 {
+		// docsOrder is already insertion order; sort by SessionID string for deterministic _id ordering
+		sort.Slice(filtered, func(i, j int) bool {
+			return filtered[i].SessionID < filtered[j].SessionID
+		})
+	}
+
+	if limit > 0 && int64(len(filtered)) > limit {
+		filtered = filtered[:limit]
+	}
+
+	return &fakeCursor{docs: filtered}, nil
+}
+
+// fakeCursor implements cursorOps with in-memory results.
+type fakeCursor struct {
+	docs []*sessionDocument
+}
+
+func (c *fakeCursor) All(_ context.Context, results interface{}) error {
+	ptr, ok := results.(*[]*sessionDocument)
+	if !ok {
+		return errors.New("invalid results target type")
+	}
+	*ptr = c.docs
+	return nil
+}
+
+func (c *fakeCursor) Close(_ context.Context) error {
+	return nil
 }
 
 // newTestRepo creates a sessionRepository backed by a fakeCollection.
@@ -400,6 +480,156 @@ func TestRoundTrip(t *testing.T) {
 			}
 			if !got.CreateTime.Equal(tt.session.CreateTime) {
 				t.Fatalf("round-trip create_time = %v, want %v", got.CreateTime, tt.session.CreateTime)
+			}
+		})
+	}
+}
+
+func TestListSessions(t *testing.T) {
+	ctx := context.Background()
+
+	// given - seed 3 sessions with sortable IDs
+	repo := newTestRepo()
+	_, err := repo.Create(ctx, &domain.Session{SessionID: "aaa"})
+	if err != nil {
+		t.Fatalf("Create() seed unexpected error: %v", err)
+	}
+	_, err = repo.Create(ctx, &domain.Session{SessionID: "bbb"})
+	if err != nil {
+		t.Fatalf("Create() seed unexpected error: %v", err)
+	}
+	_, err = repo.Create(ctx, &domain.Session{SessionID: "ccc"})
+	if err != nil {
+		t.Fatalf("Create() seed unexpected error: %v", err)
+	}
+
+	// when - first page with pageSize=2
+	result, err := repo.List(ctx, 2, "")
+
+	// then - first page has 2 sessions with next token
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(result.Sessions) != 2 {
+		t.Fatalf("List() got %d sessions, want 2", len(result.Sessions))
+	}
+	if result.Sessions[0].SessionID != "aaa" {
+		t.Fatalf("List() first session_id = %q, want %q", result.Sessions[0].SessionID, "aaa")
+	}
+	if result.Sessions[1].SessionID != "bbb" {
+		t.Fatalf("List() second session_id = %q, want %q", result.Sessions[1].SessionID, "bbb")
+	}
+	if result.NextPageToken != "bbb" {
+		t.Fatalf("List() next_page_token = %q, want %q", result.NextPageToken, "bbb")
+	}
+
+	// when - second page using next token
+	result2, err := repo.List(ctx, 2, result.NextPageToken)
+
+	// then - second page has 1 session, no next token
+	if err != nil {
+		t.Fatalf("List() page 2 unexpected error: %v", err)
+	}
+	if len(result2.Sessions) != 1 {
+		t.Fatalf("List() page 2 got %d sessions, want 1", len(result2.Sessions))
+	}
+	if result2.Sessions[0].SessionID != "ccc" {
+		t.Fatalf("List() page 2 session_id = %q, want %q", result2.Sessions[0].SessionID, "ccc")
+	}
+	if result2.NextPageToken != "" {
+		t.Fatalf("List() page 2 next_page_token = %q, want empty", result2.NextPageToken)
+	}
+}
+
+func TestListSessions_Empty(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		pageSize  int
+		pageToken string
+	}{
+		{
+			name:     "no sessions returns nil",
+			pageSize: 10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			repo := newTestRepo()
+
+			// when
+			result, err := repo.List(ctx, tt.pageSize, tt.pageToken)
+
+			// then
+			if err != nil {
+				t.Fatalf("List() unexpected error: %v", err)
+			}
+			if result.Sessions != nil {
+				t.Fatalf("List() sessions = %v, want nil", result.Sessions)
+			}
+			if result.NextPageToken != "" {
+				t.Fatalf("List() next_page_token = %q, want empty", result.NextPageToken)
+			}
+		})
+	}
+}
+
+func TestListSessions_DefaultPageSize(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		pageSize     int
+		wantMax      int
+		wantNextPage bool
+	}{
+		{
+			name:         "pageSize 0 defaults to 50",
+			pageSize:     0,
+			wantMax:      3,
+			wantNextPage: false,
+		},
+		{
+			name:         "negative pageSize defaults to 50",
+			pageSize:     -1,
+			wantMax:      3,
+			wantNextPage: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given - seed 3 sessions
+			repo := newTestRepo()
+			_, err := repo.Create(ctx, &domain.Session{SessionID: "aaa"})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "bbb"})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+			_, err = repo.Create(ctx, &domain.Session{SessionID: "ccc"})
+			if err != nil {
+				t.Fatalf("Create() seed unexpected error: %v", err)
+			}
+
+			// when
+			result, err := repo.List(ctx, tt.pageSize, "")
+
+			// then
+			if err != nil {
+				t.Fatalf("List() unexpected error: %v", err)
+			}
+			if len(result.Sessions) != tt.wantMax {
+				t.Fatalf("List() got %d sessions, want %d", len(result.Sessions), tt.wantMax)
+			}
+			hasNext := result.NextPageToken != ""
+			if hasNext != tt.wantNextPage {
+				t.Fatalf("List() next_page_token present = %v, want %v", hasNext, tt.wantNextPage)
 			}
 		})
 	}

@@ -12,3 +12,11 @@ type Session struct {
 	// CreateTime is the timestamp when this session was created.
 	CreateTime time.Time
 }
+
+// ListSessionsResult is the result of listing sessions.
+type ListSessionsResult struct {
+	// Sessions is the list of sessions in the current page.
+	Sessions []*Session
+	// NextPageToken is the token to retrieve the next page of results.
+	NextPageToken string
+}

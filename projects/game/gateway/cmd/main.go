@@ -185,6 +185,9 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	}
 	defer conn.CloseNow()
 
+	// Allow up to 10MB per frame to support PNG screenshot uploads.
+	conn.SetReadLimit(10 << 20)
+
 	proxyClient := game.NewProxyServiceClient(proxyConn)
 	stream, err := proxyClient.ConnectAgent(r.Context())
 	if err != nil {

@@ -170,8 +170,12 @@ func (b *mockBinder) Bind(_ bind.AgentFrameStream, _ bind.AgentFrameStream) erro
 }
 
 // makeFirstFrame creates an AgentFrame with the given session_id.
+// The payload is a status frame (minimal valid oneof payload).
 func makeFirstFrame(sessionID string) *game.AgentFrame {
-	return &game.AgentFrame{SessionId: sessionID, Payload: []byte("hello")}
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "ready"}},
+	}
 }
 
 // setMockNewAgentClient replaces agentclient.NewAgentClient with a factory
@@ -246,7 +250,10 @@ func TestConnect(t *testing.T) {
 
 				// first frame has empty session_id
 				proxyRecvCh := make(chan *game.AgentFrame, 8)
-				proxyRecvCh <- &game.AgentFrame{SessionId: "", Payload: []byte("hello")}
+				proxyRecvCh <- &game.AgentFrame{
+					SessionId: "",
+					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "ready"}},
+				}
 				close(proxyRecvCh)
 				proxySendCh := make(chan *game.AgentFrame, 8)
 				proxyStream := &mockProxyStream{

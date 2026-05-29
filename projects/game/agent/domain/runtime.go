@@ -14,4 +14,7 @@ type Runtime interface {
 	Delete(ctx context.Context, sessionID string) error
 	// Status returns the current status of the agent for the given session.
 	Status(ctx context.Context, sessionID string) (*Status, error)
+	// ReceiveScreenshot processes a screenshot sent by a client and returns
+	// a receipt that echoes the capture ID for correlation.
+	ReceiveScreenshot(ctx context.Context, input *ScreenshotInput) (*ScreenshotReceipt, error)
 }
