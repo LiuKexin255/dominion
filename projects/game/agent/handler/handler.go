@@ -10,9 +10,8 @@ import (
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
-	"dominion/projects/game/agent/domain"
-
 	game "dominion/projects/game"
+	"dominion/projects/game/agent/domain"
 
 	"google.golang.org/grpc/codes"
 	grpcStatus "google.golang.org/grpc/status"

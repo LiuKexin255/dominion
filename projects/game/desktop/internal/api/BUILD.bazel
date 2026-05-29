@@ -11,6 +11,7 @@ go_library(
     visibility = ["//projects/game/desktop:__subpackages__"],
     deps = [
         "//projects/game",
+        "//projects/game/desktop/internal/trace",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
     ],

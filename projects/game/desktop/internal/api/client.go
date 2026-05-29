@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/desktop/internal/trace"
 
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -29,7 +30,7 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	return &Client{
 		cfg:  cfg,
-		http: &http.Client{},
+		http: &http.Client{Transport: trace.NewHTTPTransport()},
 	}
 }
 

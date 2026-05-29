@@ -59,8 +59,8 @@ type point struct {
 	Y int32
 }
 
-func enumWindows(callback syscall.Handle, lparam uintptr) error {
-	ret, _, err := procEnumWindows.Call(uintptr(callback), lparam)
+func enumWindows(callback uintptr, lparam uintptr) error {
+	ret, _, err := procEnumWindows.Call(callback, lparam)
 	if ret == 0 {
 		return err
 	}
