@@ -1,0 +1,8 @@
+{
+  "name": "game-desktop",
+  "outputfilename": "game-desktop",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto"
+}

@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "applog",
+    srcs = ["logger.go"],
+    importpath = "dominion/projects/game/desktop/internal/applog",
+    visibility = ["//projects/game/desktop:__subpackages__"],
+)
+
+go_unittest(
+    name = "applog_test",
+    srcs = ["logger_test.go"],
+    embed = [":applog"],
+)

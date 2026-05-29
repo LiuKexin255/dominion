@@ -1,20 +1,15 @@
 load("//tools/release/wails:defs.bzl", "wails_asset_library", "wails_asset_provider")
 
-exports_files(
-    ["dist"],
-    visibility = ["//visibility:public"],
-)
-
 wails_asset_library(
     name = "assets_lib",
-    src = "dist",
-    importpath = "dominion/tools/wails/testdata/asset_library/assets",
+    src = "//projects/game/desktop/frontend:dist",
+    importpath = "dominion/projects/game/desktop/assets",
     visibility = ["//visibility:public"],
 )
 
 wails_asset_provider(
     name = "assets",
-    importpath = "dominion/tools/wails/testdata/asset_library/assets",
+    importpath = "dominion/projects/game/desktop/assets",
     library = ":assets_lib",
     visibility = ["//visibility:public"],
 )

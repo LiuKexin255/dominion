@@ -1,15 +1,17 @@
 load("@rules_go//go:def.bzl", "go_library")
-load("//tools/release/wails:defs.bzl", "wails_app", "wails_asset_library")
-
-filegroup(
-    name = "frontend_dist_src",
-    srcs = ["//tools/release/wails/testdata/asset_library:dist"],
-)
+load("//tools/release/wails:defs.bzl", "wails_app", "wails_asset_library", "wails_asset_provider")
 
 wails_asset_library(
-    name = "assets",
-    src = ":frontend_dist_src",
+    name = "assets_lib",
+    src = "//tools/release/wails/testdata/asset_library:dist",
     importpath = "dominion/tools/wails/testdata/app/assets",
+    visibility = ["//visibility:public"],
+)
+
+wails_asset_provider(
+    name = "assets",
+    importpath = "dominion/tools/wails/testdata/app/assets",
+    library = ":assets_lib",
     visibility = ["//visibility:public"],
 )
 
@@ -22,7 +24,7 @@ go_library(
 
 wails_app(
     name = "app",
-    assets = ":assets_provider",
+    assets = ":assets",
     binary_name = "wails-app-fixture",
     go_library = ":app_lib",
     platform = "windows/amd64",

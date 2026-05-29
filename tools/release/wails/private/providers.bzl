@@ -2,9 +2,8 @@
 
 WailsAssetsInfo = provider(
     fields = {
-        "library": "Go assets library target consumed by app go_library",
-        "assets_dir": "Declared frontend_dist tree artifact",
-        "importpath": "Go importpath for the generated or declared assets package",
+        "library": "Go assets library target consumed by the app go_library",
+        "importpath": "Go importpath for the generated assets package",
     },
 )
 

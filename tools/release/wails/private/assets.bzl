@@ -7,7 +7,6 @@ def _wails_assets_provider_impl(ctx):
     return [
         WailsAssetsInfo(
             library = ctx.attr.library,
-            assets_dir = ctx.attr.assets_dir,
             importpath = ctx.attr.importpath,
         ),
     ]
@@ -16,7 +15,6 @@ _wails_assets_provider = rule(
     implementation = _wails_assets_provider_impl,
     attrs = {
         "library": attr.label(mandatory = True),
-        "assets_dir": attr.label(mandatory = True),
         "importpath": attr.string(mandatory = True),
     },
     provides = [WailsAssetsInfo],
@@ -46,7 +44,10 @@ def _stage_assets_impl(ctx):
 _stage_assets = rule(
     implementation = _stage_assets_impl,
     attrs = {
-        "src": attr.label(mandatory = True, cfg = "exec"),
+        "src": attr.label(
+            mandatory = True,
+            allow_files = True,
+        ),
         "out": attr.string(default = "frontend_dist"),
         "_helper": attr.label(
             default = "//tools/release/wails/helpers:helpers",
@@ -121,10 +122,17 @@ def wails_asset_library(
         **kwargs
     )
 
+def wails_asset_provider(
+        name,
+        library,
+        importpath,
+        visibility = None,
+        **kwargs):
+    """Provides WailsAssetsInfo for a Go assets library."""
     _wails_assets_provider(
-        name = name + "_provider",
-        library = name,
-        assets_dir = name + "_stage",
+        name = name,
+        library = library,
         importpath = importpath,
         visibility = visibility,
+        **kwargs
     )
