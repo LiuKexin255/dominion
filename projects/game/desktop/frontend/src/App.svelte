@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { AgentFrame, LogEntry } from './api'
+  import type { AgentFrame } from './api'
   import {
     connectAgent,
     createAgent,
@@ -12,21 +12,16 @@
     setConfig
   } from './api'
   import { log, setLogSink } from './logger'
+  import type { LogEntry } from './logger'
+  import LogPanel from './components/LogPanel.svelte'
 
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
   let sessionID = $state(`desktop-${Date.now()}`)
   let logEntries = $state<LogEntry[]>([])
-  let logContainer: HTMLDivElement
 
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
-  })
-
-  $effect(() => {
-    if (logEntries.length && logContainer) {
-      logContainer.scrollTop = logContainer.scrollHeight
-    }
   })
 
   async function handleApplyConfig() {
@@ -104,9 +99,6 @@
     logEntries = []
   }
 
-  function formatTime(t: string): string {
-    return new Date(t).toLocaleTimeString()
-  }
 </script>
 
 <div class="app-container">
@@ -141,30 +133,5 @@
   </div>
 
   <!-- Log Area -->
-  <div class="log-area">
-    <div class="log-header">
-      <span>Logs ({logEntries.length})</span>
-      <button class="btn btn-small" onclick={handleClearLogs}>Clear Logs</button>
-    </div>
-    <div class="log-container" bind:this={logContainer}>
-      {#if logEntries.length === 0}
-        <div class="log-empty">No logs yet. Click a button to start.</div>
-      {/if}
-      {#each logEntries as entry}
-        <div class="log-entry log-{entry.level}">
-          <span class="log-time">{formatTime(entry.time)}</span>
-          <span class="log-level">{entry.level.toUpperCase()}</span>
-          <span class="log-source">[{entry.source}]</span>
-          <span class="log-msg">{entry.message}</span>
-          {#if entry.fields && Object.keys(entry.fields).length > 0}
-            <span class="log-fields">
-              {#each Object.entries(entry.fields) as [key, value]}
-                <span class="log-field">{key}={JSON.stringify(value)}</span>
-              {/each}
-            </span>
-          {/if}
-        </div>
-      {/each}
-    </div>
-  </div>
+  <LogPanel logs={logEntries} onclear={handleClearLogs} />
 </div>
