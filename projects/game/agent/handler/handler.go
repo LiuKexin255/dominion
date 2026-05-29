@@ -193,8 +193,6 @@ func screenshotFrameToInput(f *game.AgentScreenshotFrame, sessionID string) *dom
 		Data:        f.GetData(),
 		WidthPx:     f.GetWidthPx(),
 		HeightPx:    f.GetHeightPx(),
-		ClientXPx:   f.GetClientXPx(),
-		ClientYPx:   f.GetClientYPx(),
 		ScaleFactor: f.GetScaleFactor(),
 		WindowTitle: f.GetWindowTitle(),
 		CaptureTime: captureTime,

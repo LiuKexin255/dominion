@@ -53,8 +53,6 @@ export interface AgentScreenshotFrame {
   data: string // base64-encoded bytes
   widthPx: number
   heightPx: number
-  clientXPx: number
-  clientYPx: number
   scaleFactor: number
   windowTitle: string
   captureTime: string

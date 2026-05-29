@@ -202,8 +202,6 @@ func TestReceiveScreenshot_Valid(t *testing.T) {
 		Data:        []byte{0x89, 0x50, 0x4E, 0x47},
 		WidthPx:     1920,
 		HeightPx:    1080,
-		ClientXPx:   0,
-		ClientYPx:   0,
 		ScaleFactor: 1.0,
 		WindowTitle: "Test Window",
 		CaptureTime: time.Now(),

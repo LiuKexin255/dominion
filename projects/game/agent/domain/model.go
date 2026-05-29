@@ -18,10 +18,6 @@ type ScreenshotInput struct {
 	WidthPx int32
 	// HeightPx is the image height in pixels.
 	HeightPx int32
-	// ClientXPx is the x-coordinate of the captured region on the client screen.
-	ClientXPx int32
-	// ClientYPx is the y-coordinate of the captured region on the client screen.
-	ClientYPx int32
 	// ScaleFactor is the display scale factor of the captured region.
 	ScaleFactor float64
 	// WindowTitle is the title of the window at capture time.

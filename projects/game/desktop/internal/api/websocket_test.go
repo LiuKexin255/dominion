@@ -281,8 +281,6 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 				Data:        imageData,
 				WidthPx:     1920,
 				HeightPx:    1080,
-				ClientXPx:   0,
-				ClientYPx:   0,
 				ScaleFactor: 1.0,
 				WindowTitle: "Test Window",
 			},
