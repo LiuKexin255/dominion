@@ -24,7 +24,7 @@ func newTestStream() *testStream {
 }
 
 func TestWithFirstFrame_FirstRecvReturnsFirst(t *testing.T) {
-	first := &game.AgentFrame{SessionId: "first", Type: "test"}
+	first := &game.AgentFrame{SessionId: "first", Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("test")}}}
 	inner := newTestStream()
 	wrapped := bind.WithFirstFrame(inner, first)
 
