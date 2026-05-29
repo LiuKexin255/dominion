@@ -12,6 +12,7 @@ go_library(
     importpath = "dominion/projects/game/desktop",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/game",
         "//projects/game/desktop/assets:assets_lib",
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",

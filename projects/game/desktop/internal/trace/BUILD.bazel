@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "trace",
+    srcs = ["transport.go"],
+    importpath = "dominion/projects/game/desktop/internal/trace",
+    visibility = ["//projects/game/desktop:__subpackages__"],
+    deps = ["//common/gopkg/otel/tracecontext"],
+)
+
+go_unittest(
+    name = "trace_test",
+    srcs = ["transport_test.go"],
+    deps = [
+        ":trace",
+        "//common/gopkg/otel/tracecontext",
+    ],
+)

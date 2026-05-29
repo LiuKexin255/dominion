@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	game "dominion/projects/game"
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 )
@@ -155,11 +156,11 @@ func (a *App) ConnectAgent(sessionID string) error {
 }
 
 // SendAgentFrame sends a frame over the WebSocket and returns the response.
-func (a *App) SendAgentFrame(frame api.AgentFrame) (*api.AgentFrame, error) {
+func (a *App) SendAgentFrame(frame *game.AgentFrame) (*game.AgentFrame, error) {
 	if a.ws == nil {
 		return nil, fmt.Errorf("send frame: not connected")
 	}
-	a.logger.Info("backend", "Sending frame", map[string]any{"type": frame.Type})
+	a.logger.Info("backend", "Sending frame", map[string]any{"session_id": frame.GetSessionId()})
 	if err := a.ws.SendFrame(frame); err != nil {
 		a.logger.Error("backend", "Send frame failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -169,7 +170,7 @@ func (a *App) SendAgentFrame(frame api.AgentFrame) (*api.AgentFrame, error) {
 		a.logger.Error("backend", "Receive frame failed", map[string]any{"error": err.Error()})
 		return nil, err
 	}
-	a.logger.Info("backend", "Frame received", map[string]any{"type": resp.Type})
+	a.logger.Info("backend", "Frame received", map[string]any{"session_id": resp.GetSessionId()})
 	return resp, nil
 }
 
@@ -242,7 +243,12 @@ func (a *App) RunConnectivityCheck(sessionID string) (*api.CheckResult, error) {
 
 	// Step 6: Send status frame — verify response
 	result.Steps = append(result.Steps, "SendStatus")
-	statusFrame := api.AgentFrame{SessionID: sessionID, Type: "status", Payload: ""}
+	statusFrame := &game.AgentFrame{
+		SessionId: sessionID,
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: "initialized"},
+		},
+	}
 	respStatus, err := a.SendAgentFrame(statusFrame)
 	if err != nil {
 		result.Error = fmt.Sprintf("SendStatus failed: %v", err)
@@ -251,11 +257,12 @@ func (a *App) RunConnectivityCheck(sessionID string) (*api.CheckResult, error) {
 		a.DeleteSession(sessionID)
 		return result, err
 	}
-	// Check payload is "aW5pdGlhbGl6ZWQ=" (base64 of "initialized")
-	if respStatus.Payload != "aW5pdGlhbGl6ZWQ=" {
-		err := fmt.Errorf("unexpected status response payload: %s", respStatus.Payload)
+	// Check status response contains expected status
+	statusPayload := respStatus.GetStatus()
+	if statusPayload == nil || statusPayload.GetStatus() != "initialized" {
+		err := fmt.Errorf("unexpected status response: %v", respStatus.GetPayload())
 		result.Error = err.Error()
-		a.logger.Error("backend", "Connectivity check failed at SendStatus verification", map[string]any{"payload": respStatus.Payload})
+		a.logger.Error("backend", "Connectivity check failed at SendStatus verification", map[string]any{"response": respStatus.String()})
 		a.DeleteAgent(sessionID)
 		a.DeleteSession(sessionID)
 		return result, err
@@ -264,7 +271,12 @@ func (a *App) RunConnectivityCheck(sessionID string) (*api.CheckResult, error) {
 
 	// Step 7: Send echo frame — verify echo back
 	result.Steps = append(result.Steps, "SendEcho")
-	echoFrame := api.AgentFrame{SessionID: sessionID, Type: "echo", Payload: "aGVsbG8="} // base64 of "hello"
+	echoFrame := &game.AgentFrame{
+		SessionId: sessionID,
+		Payload: &game.AgentFrame_Echo{
+			Echo: &game.AgentEchoFrame{Data: []byte("hello")},
+		},
+	}
 	respEcho, err := a.SendAgentFrame(echoFrame)
 	if err != nil {
 		result.Error = fmt.Sprintf("SendEcho failed: %v", err)
@@ -273,10 +285,11 @@ func (a *App) RunConnectivityCheck(sessionID string) (*api.CheckResult, error) {
 		a.DeleteSession(sessionID)
 		return result, err
 	}
-	if respEcho.Payload != echoFrame.Payload {
-		err := fmt.Errorf("echo payload mismatch: expected %s, got %s", echoFrame.Payload, respEcho.Payload)
+	echoPayload := respEcho.GetEcho()
+	if echoPayload == nil || string(echoPayload.GetData()) != "hello" {
+		err := fmt.Errorf("echo payload mismatch: expected hello, got %v", respEcho.GetPayload())
 		result.Error = err.Error()
-		a.logger.Error("backend", "Connectivity check failed at echo verification", map[string]any{"expected": echoFrame.Payload, "got": respEcho.Payload})
+		a.logger.Error("backend", "Connectivity check failed at echo verification", map[string]any{"expected": "hello", "got": respEcho.String()})
 		a.DeleteAgent(sessionID)
 		a.DeleteSession(sessionID)
 		return result, err

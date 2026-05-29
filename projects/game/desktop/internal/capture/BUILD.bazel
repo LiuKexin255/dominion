@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "capture",
+    srcs = [
+        "capture.go",
+        "png.go",
+        "stub_nonwindows.go",
+        "window.go",
+        "windows.go",
+    ],
+    importpath = "dominion/projects/game/desktop/internal/capture",
+    visibility = ["//projects/game/desktop:__subpackages__"],
+)
+
+go_unittest(
+    name = "capture_test",
+    srcs = [
+        "capture_test.go",
+        "png_test.go",
+        "window_test.go",
+    ],
+    embed = [":capture"],
+)

@@ -1,12 +1,17 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	game "dominion/projects/game"
+
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,21 +21,18 @@ import (
 func TestClient_CreateSession(t *testing.T) {
 	tests := []struct {
 		name       string
-		sessionID  string
 		statusCode int
 		respBody   string
 		wantErr    bool
 	}{
 		{
 			name:       "success",
-			sessionID:  "test-session",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/test-session","session_id":"test-session","create_time":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/test-session","sessionId":"test-session","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
 			name:       "server error",
-			sessionID:  "bad",
 			statusCode: http.StatusInternalServerError,
 			respBody:   "internal error",
 			wantErr:    true,
@@ -52,12 +54,8 @@ func TestClient_CreateSession(t *testing.T) {
 				}
 
 				body, _ := io.ReadAll(r.Body)
-				var payload map[string]string
-				if err := json.Unmarshal(body, &payload); err != nil {
-					t.Fatalf("failed to parse request body: %v", err)
-				}
-				if payload["session_id"] != tt.sessionID {
-					t.Errorf("expected session_id %q in body, got %q", tt.sessionID, payload["session_id"])
+				if strings.TrimSpace(string(body)) != `{}` {
+					t.Errorf("expected request body {}, got %s", string(body))
 				}
 
 				w.WriteHeader(tt.statusCode)
@@ -68,7 +66,7 @@ func TestClient_CreateSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when: call CreateSession
-			session, err := client.CreateSession(tt.sessionID)
+			session, err := client.CreateSession()
 
 			// then: verify result
 			if tt.wantErr {
@@ -86,11 +84,175 @@ func TestClient_CreateSession(t *testing.T) {
 			if session == nil {
 				t.Fatal("expected session, got nil")
 			}
-			if session.SessionID != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, session.SessionID)
+			if session.GetSessionId() != "test-session" {
+				t.Errorf("expected session_id %q, got %q", "test-session", session.GetSessionId())
+			}
+			if session.GetName() != "sessions/test-session" {
+				t.Errorf("expected name %q, got %q", "sessions/test-session", session.GetName())
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TestCreateSession_ServerGeneratedID
+// ---------------------------------------------------------------------------
+
+func TestCreateSession_ServerGeneratedID(t *testing.T) {
+	// given: mock server that verifies empty request body
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// verify empty request body sent as {}
+		body, _ := io.ReadAll(r.Body)
+		if strings.TrimSpace(string(body)) != `{}` {
+			t.Errorf("expected empty request body {}, got %s", string(body))
+		}
+
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+
+		// return a session with server-generated ID
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"name":"sessions/server-gen-abc","sessionId":"server-gen-abc","createTime":"2024-06-01T12:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{GatewayURL: srv.URL})
+
+	// when: call CreateSession (no session_id argument)
+	session, err := client.CreateSession()
+
+	// then: verify SessionId is extracted from response
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if session.GetSessionId() != "server-gen-abc" {
+		t.Errorf("expected session_id %q, got %q", "server-gen-abc", session.GetSessionId())
+	}
+	if session.GetName() != "sessions/server-gen-abc" {
+		t.Errorf("expected name %q, got %q", "sessions/server-gen-abc", session.GetName())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_ListSessions
+// ---------------------------------------------------------------------------
+
+func TestClient_ListSessions(t *testing.T) {
+	tests := []struct {
+		name       string
+		pageSize   int32
+		pageToken  string
+		statusCode int
+		respBody   string
+		wantErr    bool
+		wantErrMsg string
+	}{
+		{
+			name:       "success with page_size and page_token",
+			pageSize:   10,
+			pageToken:  "token1",
+			statusCode: http.StatusOK,
+			respBody:   `{"sessions":[{"name":"sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/s2","sessionId":"s2","createTime":"2024-01-02T00:00:00Z"}],"nextPageToken":"next"}`,
+			wantErr:    false,
+		},
+		{
+			name:       "success with page_size only",
+			pageSize:   5,
+			statusCode: http.StatusOK,
+			respBody:   `{"sessions":[],"nextPageToken":""}`,
+			wantErr:    false,
+		},
+		{
+			name:       "success with no parameters",
+			statusCode: http.StatusOK,
+			respBody:   `{"sessions":[{"name":"sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"}]}`,
+			wantErr:    false,
+		},
+		{
+			name:       "server error",
+			pageSize:   10,
+			statusCode: http.StatusInternalServerError,
+			respBody:   "internal error",
+			wantErr:    true,
+			wantErrMsg: "list sessions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if r.URL.Path != "/api/v1/sessions" {
+					t.Errorf("expected /api/v1/sessions, got %s", r.URL.Path)
+				}
+
+				if tt.pageSize > 0 {
+					if got := r.URL.Query().Get("page_size"); got != "" {
+						if got != fmtInt32(tt.pageSize) {
+							t.Errorf("expected page_size %d, got %s", tt.pageSize, got)
+						}
+					}
+				}
+				if tt.pageToken != "" {
+					if got := r.URL.Query().Get("page_token"); got != tt.pageToken {
+						t.Errorf("expected page_token %q, got %q", tt.pageToken, got)
+					}
+				}
+
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			resp, err := client.ListSessions(context.Background(), tt.pageSize, tt.pageToken)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tt.wantErrMsg != "" && !strings.Contains(err.Error(), tt.wantErrMsg) {
+					t.Errorf("error should contain %q, got %q", tt.wantErrMsg, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("expected response, got nil")
+			}
+			if tt.pageToken == "token1" {
+				if resp.GetNextPageToken() != "next" {
+					t.Errorf("expected next_page_token %q, got %q", "next", resp.GetNextPageToken())
+				}
+				if len(resp.GetSessions()) != 2 {
+					t.Errorf("expected 2 sessions, got %d", len(resp.GetSessions()))
+				}
+				if resp.GetSessions()[0].GetSessionId() != "s1" {
+					t.Errorf("expected first session_id %q, got %q", "s1", resp.GetSessions()[0].GetSessionId())
+				}
+			}
+			if tt.pageSize == 5 {
+				if len(resp.GetSessions()) != 0 {
+					t.Errorf("expected 0 sessions, got %d", len(resp.GetSessions()))
+				}
+			}
+		})
+	}
+}
+
+// fmtInt32 formats an int32 as a string without importing fmt.
+func fmtInt32(v int32) string {
+	return fmt.Sprintf("%d", v)
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +271,7 @@ func TestClient_GetSession(t *testing.T) {
 			name:       "success",
 			sessionID:  "test123",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/test123","session_id":"test123","create_time":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/test123","sessionId":"test123","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -152,8 +314,8 @@ func TestClient_GetSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if session.SessionID != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, session.SessionID)
+			if session.GetSessionId() != tt.sessionID {
+				t.Errorf("expected session_id %q, got %q", tt.sessionID, session.GetSessionId())
 			}
 		})
 	}
@@ -237,7 +399,7 @@ func TestClient_CreateAgent(t *testing.T) {
 			name:       "success",
 			sessionID:  "sess-1",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","session_id":"sess-1","owner_index":0,"owner":"user","create_time":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","ownerIndex":0,"owner":"user","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -262,12 +424,12 @@ func TestClient_CreateAgent(t *testing.T) {
 				}
 
 				body, _ := io.ReadAll(r.Body)
-				var payload map[string]interface{}
-				if err := json.Unmarshal(body, &payload); err != nil {
-					t.Fatalf("failed to parse request body: %v", err)
+				req := new(game.CreateAgentRequest)
+				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+					t.Fatalf("failed to parse request body as CreateAgentRequest: %v", err)
 				}
-				if _, ok := payload["agent"]; !ok {
-					t.Errorf("expected body to contain 'agent' key, got %v", payload)
+				if req.GetAgent() == nil {
+					t.Errorf("expected body to contain 'agent' field, got nil agent in CreateAgentRequest")
 				}
 
 				w.WriteHeader(tt.statusCode)
@@ -293,8 +455,11 @@ func TestClient_CreateAgent(t *testing.T) {
 			if agent == nil {
 				t.Fatal("expected agent, got nil")
 			}
-			if agent.SessionID != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.SessionID)
+			if agent.GetSessionId() != tt.sessionID {
+				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.GetSessionId())
+			}
+			if agent.GetOwner() != "user" {
+				t.Errorf("expected owner %q, got %q", "user", agent.GetOwner())
 			}
 		})
 	}
@@ -316,7 +481,7 @@ func TestClient_GetAgent(t *testing.T) {
 			name:       "success",
 			sessionID:  "sess-1",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","session_id":"sess-1","owner_index":0,"owner":"user","create_time":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","ownerIndex":0,"owner":"user","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -362,8 +527,8 @@ func TestClient_GetAgent(t *testing.T) {
 			if agent == nil {
 				t.Fatal("expected agent, got nil")
 			}
-			if agent.SessionID != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.SessionID)
+			if agent.GetSessionId() != tt.sessionID {
+				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.GetSessionId())
 			}
 		})
 	}
@@ -432,6 +597,78 @@ func TestClient_DeleteAgent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestClient_GetAgentStatus
+// ---------------------------------------------------------------------------
+
+func TestClient_GetAgentStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionID  string
+		statusCode int
+		respBody   string
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			sessionID:  "sess-1",
+			statusCode: http.StatusOK,
+			respBody:   `{"sessionId":"sess-1","status":"initializing","createTime":"2024-01-01T00:00:00Z"}`,
+			wantErr:    false,
+		},
+		{
+			name:       "not found",
+			sessionID:  "missing",
+			statusCode: http.StatusNotFound,
+			respBody:   `{"error":"not found"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				wantPath := "/api/v1/agents/" + tt.sessionID + "/status"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			status, err := client.GetAgentStatus(tt.sessionID)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if status == nil {
+				t.Fatal("expected status, got nil")
+			}
+			if status.GetSessionId() != tt.sessionID {
+				t.Errorf("expected session_id %q, got %q", tt.sessionID, status.GetSessionId())
+			}
+			if status.GetStatus() != "initializing" {
+				t.Errorf("expected status %q, got %q", "initializing", status.GetStatus())
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestClient_URLTrailingSlash
 // ---------------------------------------------------------------------------
 
@@ -442,7 +679,7 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 			t.Errorf("URL path contains double slash: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"sessions/ts","session_id":"ts","create_time":"2024-01-01T00:00:00Z"}`))
+		w.Write([]byte(`{"name":"sessions/ts","sessionId":"ts","createTime":"2024-01-01T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -455,8 +692,8 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if session.SessionID != "ts" {
-		t.Errorf("expected session_id %q, got %q", "ts", session.SessionID)
+	if session.GetSessionId() != "ts" {
+		t.Errorf("expected session_id %q, got %q", "ts", session.GetSessionId())
 	}
 }
 
@@ -491,7 +728,7 @@ func TestClient_EnvHeader(t *testing.T) {
 					t.Errorf("expected env header %q, got %q", tt.wantEnv, got)
 				}
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"name":"sessions/e","session_id":"e","create_time":"2024-01-01T00:00:00Z"}`))
+				w.Write([]byte(`{"name":"sessions/e","sessionId":"e","createTime":"2024-01-01T00:00:00Z"}`))
 			}))
 			defer srv.Close()
 

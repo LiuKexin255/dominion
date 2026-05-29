@@ -5,12 +5,15 @@ go_library(
     name = "api",
     srcs = [
         "client.go",
-        "models.go",
         "websocket.go",
     ],
     importpath = "dominion/projects/game/desktop/internal/api",
     visibility = ["//projects/game/desktop:__subpackages__"],
-    deps = ["@com_github_coder_websocket//:websocket"],
+    deps = [
+        "//projects/game",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
 )
 
 go_unittest(
@@ -20,5 +23,9 @@ go_unittest(
         "websocket_test.go",
     ],
     embed = [":api"],
-    deps = ["@com_github_coder_websocket//:websocket"],
+    deps = [
+        "//projects/game",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
 )

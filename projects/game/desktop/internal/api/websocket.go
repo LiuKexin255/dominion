@@ -2,14 +2,16 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 
+	game "dominion/projects/game"
+
 	"github.com/coder/websocket"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // WSClient is a WebSocket client for the game gateway agent connect endpoint.
@@ -54,8 +56,8 @@ func (w *WSClient) Connect(gatewayURL, sessionID, env string) error {
 	return nil
 }
 
-// SendFrame sends a JSON-encoded AgentFrame over the WebSocket.
-func (w *WSClient) SendFrame(frame AgentFrame) error {
+// SendFrame sends a protojson-encoded AgentFrame over the WebSocket.
+func (w *WSClient) SendFrame(frame *game.AgentFrame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -63,7 +65,7 @@ func (w *WSClient) SendFrame(frame AgentFrame) error {
 		return fmt.Errorf("send frame: not connected")
 	}
 
-	data, err := json.Marshal(frame)
+	data, err := protojson.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("send frame: %w", err)
 	}
@@ -74,8 +76,9 @@ func (w *WSClient) SendFrame(frame AgentFrame) error {
 	return nil
 }
 
-// RecvFrame receives a JSON-encoded AgentFrame from the WebSocket.
-func (w *WSClient) RecvFrame() (*AgentFrame, error) {
+// RecvFrame receives a protojson-encoded AgentFrame from the WebSocket.
+// Unknown fields are discarded for forward compatibility.
+func (w *WSClient) RecvFrame() (*game.AgentFrame, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -88,11 +91,11 @@ func (w *WSClient) RecvFrame() (*AgentFrame, error) {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}
 
-	var frame AgentFrame
-	if err := json.Unmarshal(data, &frame); err != nil {
+	frame := new(game.AgentFrame)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}
-	return &frame, nil
+	return frame, nil
 }
 
 // Close closes the WebSocket connection.
