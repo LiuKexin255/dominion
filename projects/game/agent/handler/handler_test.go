@@ -61,6 +61,16 @@ func (m *mockRuntime) Status(_ context.Context, sessionID string) (*domain.Statu
 	}, nil
 }
 
+func (m *mockRuntime) ReceiveScreenshot(_ context.Context, input *domain.ScreenshotInput) (*domain.ScreenshotReceipt, error) {
+	if input == nil {
+		return nil, nil
+	}
+	return &domain.ScreenshotReceipt{
+		AckFrameId: input.CaptureId,
+		Message:    "screenshot received",
+	}, nil
+}
+
 // mockAgentConnectServer implements game.AgentService_ConnectServer for testing.
 type mockAgentConnectServer struct {
 	frames []*game.AgentFrame
@@ -115,28 +125,46 @@ func TestConnect(t *testing.T) {
 		{
 			name: "status frame returns status string",
 			frames: []*game.AgentFrame{
-				{SessionId: "test", Type: "status"},
+				{
+					SessionId: "test",
+					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{}},
+				},
 			},
 			wantResponses: []*game.AgentFrame{
-				{SessionId: "test", Type: "status", Payload: []byte("initialized")},
+				{
+					SessionId: "test",
+					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "initialized"}},
+				},
 			},
 		},
 		{
 			name: "status for unknown session returns unknown",
 			frames: []*game.AgentFrame{
-				{SessionId: "nonexistent", Type: "status"},
+				{
+					SessionId: "nonexistent",
+					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{}},
+				},
 			},
 			wantResponses: []*game.AgentFrame{
-				{SessionId: "nonexistent", Type: "status", Payload: []byte("unknown")},
+				{
+					SessionId: "nonexistent",
+					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "unknown"}},
+				},
 			},
 		},
 		{
 			name: "echo frame returns echo",
 			frames: []*game.AgentFrame{
-				{SessionId: "test", Type: "text", Payload: []byte("hello")},
+				{
+					SessionId: "test",
+					Payload:   &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}},
+				},
 			},
 			wantResponses: []*game.AgentFrame{
-				{SessionId: "test", Type: "echo", Payload: []byte("hello")},
+				{
+					SessionId: "test",
+					Payload:   &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}},
+				},
 			},
 		},
 	}
@@ -162,17 +190,125 @@ func TestConnect(t *testing.T) {
 				t.Fatalf("got %d responses, want %d", len(got), len(tt.wantResponses))
 			}
 			for i, r := range got {
-				if r.Type != tt.wantResponses[i].Type {
-					t.Errorf("response[%d].Type = %q, want %q", i, r.Type, tt.wantResponses[i].Type)
-				}
-				if string(r.Payload) != string(tt.wantResponses[i].Payload) {
-					t.Errorf("response[%d].Payload = %q, want %q", i, string(r.Payload), string(tt.wantResponses[i].Payload))
-				}
 				if r.SessionId != tt.wantResponses[i].SessionId {
 					t.Errorf("response[%d].SessionId = %q, want %q", i, r.SessionId, tt.wantResponses[i].SessionId)
 				}
+				switch want := tt.wantResponses[i].GetPayload().(type) {
+				case *game.AgentFrame_Status:
+					s, ok := r.GetPayload().(*game.AgentFrame_Status)
+					if !ok {
+						t.Errorf("response[%d]: expected status payload, got %T", i, r.GetPayload())
+						continue
+					}
+					if s.Status.GetStatus() != want.Status.GetStatus() {
+						t.Errorf("response[%d].status = %q, want %q", i, s.Status.GetStatus(), want.Status.GetStatus())
+					}
+				case *game.AgentFrame_Echo:
+					e, ok := r.GetPayload().(*game.AgentFrame_Echo)
+					if !ok {
+						t.Errorf("response[%d]: expected echo payload, got %T", i, r.GetPayload())
+						continue
+					}
+					if string(e.Echo.GetData()) != string(want.Echo.GetData()) {
+						t.Errorf("response[%d].echo.data = %q, want %q", i, string(e.Echo.GetData()), string(want.Echo.GetData()))
+					}
+				case *game.AgentFrame_Ack:
+					a, ok := r.GetPayload().(*game.AgentFrame_Ack)
+					if !ok {
+						t.Errorf("response[%d]: expected ack payload, got %T", i, r.GetPayload())
+						continue
+					}
+					if a.Ack.GetAckFrameId() != want.Ack.GetAckFrameId() {
+						t.Errorf("response[%d].ack.ack_frame_id = %q, want %q", i, a.Ack.GetAckFrameId(), want.Ack.GetAckFrameId())
+					}
+				}
 			}
 		})
+	}
+}
+
+func TestConnect_Screenshot(t *testing.T) {
+	// given
+	rt := newMockRuntime()
+	handler := NewAgentHandler(rt)
+
+	captureID := "capture-001"
+	frames := []*game.AgentFrame{
+		{
+			SessionId: "test",
+			Payload: &game.AgentFrame_Screenshot{
+				Screenshot: &game.AgentScreenshotFrame{
+					CaptureId: captureID,
+					Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:      []byte("png-data"),
+					WidthPx:   1920,
+					HeightPx:  1080,
+				},
+			},
+		},
+	}
+
+	stream := newMockAgentConnectServer(frames)
+
+	// when
+	err := handler.Connect(stream)
+
+	// then
+	if err != nil {
+		t.Fatalf("Connect() error: %v", err)
+	}
+
+	got := stream.Sent()
+	if len(got) != 1 {
+		t.Fatalf("got %d responses, want 1", len(got))
+	}
+
+	resp := got[0]
+	ack := resp.GetAck()
+	if ack == nil {
+		t.Fatal("response payload is not ack")
+	}
+	if ack.GetAckFrameId() != captureID {
+		t.Errorf("AckFrameId = %q, want %q", ack.GetAckFrameId(), captureID)
+	}
+}
+
+func TestConnect_EmptyPayload(t *testing.T) {
+	// given
+	rt := newMockRuntime()
+	handler := NewAgentHandler(rt)
+
+	echoData := []byte("after-empty")
+	frames := []*game.AgentFrame{
+		{SessionId: "test"},
+		{
+			SessionId: "test",
+			Payload:   &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: echoData}},
+		},
+	}
+
+	stream := newMockAgentConnectServer(frames)
+
+	// when
+	err := handler.Connect(stream)
+
+	// then
+	if err != nil {
+		t.Fatalf("Connect() error: %v", err)
+	}
+
+	// Empty frame is skipped; only the echo frame produces a response.
+	got := stream.Sent()
+	if len(got) != 1 {
+		t.Fatalf("got %d responses, want 1 (empty frame skipped)", len(got))
+	}
+
+	echo := got[0].GetEcho()
+	if echo == nil {
+		t.Fatal("response payload is not echo")
+	}
+	if string(echo.GetData()) != string(echoData) {
+		t.Errorf("echo data = %q, want %q", string(echo.GetData()), string(echoData))
 	}
 }
 

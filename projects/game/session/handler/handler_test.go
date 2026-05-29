@@ -17,11 +17,21 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+// mockIDGenerator implements domain.IDGenerator for handler testing.
+type mockIDGenerator struct {
+	newIDFn func(ctx context.Context) (string, error)
+}
+
+func (m *mockIDGenerator) NewID(ctx context.Context) (string, error) {
+	return m.newIDFn(ctx)
+}
+
 // mockSessionRepo implements domain.SessionRepository for handler testing.
 type mockSessionRepo struct {
 	createFn func(ctx context.Context, session *domain.Session) (*domain.Session, error)
 	getFn    func(ctx context.Context, sessionID string) (*domain.Session, error)
 	deleteFn func(ctx context.Context, sessionID string) error
+	listFn   func(ctx context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error)
 }
 
 func (m *mockSessionRepo) Create(ctx context.Context, session *domain.Session) (*domain.Session, error) {
@@ -34,6 +44,10 @@ func (m *mockSessionRepo) Get(ctx context.Context, sessionID string) (*domain.Se
 
 func (m *mockSessionRepo) Delete(ctx context.Context, sessionID string) error {
 	return m.deleteFn(ctx, sessionID)
+}
+
+func (m *mockSessionRepo) List(ctx context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
+	return m.listFn(ctx, pageSize, pageToken)
 }
 
 // mockProxyClient implements game.ProxyServiceClient for handler testing.
@@ -66,19 +80,29 @@ func noopProxyClient() *mockProxyClient {
 	}
 }
 
+// fixedIDGenerator returns an ID generator that always returns the given id.
+func fixedIDGenerator(id string) *mockIDGenerator {
+	return &mockIDGenerator{
+		newIDFn: func(_ context.Context) (string, error) {
+			return id, nil
+		},
+	}
+}
+
 func TestCreateSession(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
 		name     string
-		req      *game.CreateSessionRequest
+		idGen    *mockIDGenerator
 		mock     *mockSessionRepo
 		wantName string
+		wantID   string
 		wantCode codes.Code
 	}{
 		{
-			name: "success - returns proto with correct name",
-			req:  &game.CreateSessionRequest{SessionId: "abc123"},
+			name:  "success - handler generates ID and returns proto with correct name",
+			idGen: fixedIDGenerator("test-id-123"),
 			mock: &mockSessionRepo{
 				createFn: func(_ context.Context, s *domain.Session) (*domain.Session, error) {
 					return &domain.Session{
@@ -87,12 +111,13 @@ func TestCreateSession(t *testing.T) {
 					}, nil
 				},
 			},
-			wantName: "sessions/abc123",
+			wantName: "sessions/test-id-123",
+			wantID:   "test-id-123",
 			wantCode: codes.OK,
 		},
 		{
-			name: "already exists - returns AlreadyExists status",
-			req:  &game.CreateSessionRequest{SessionId: "abc123"},
+			name:  "already exists - returns AlreadyExists status",
+			idGen: fixedIDGenerator("test-id-123"),
 			mock: &mockSessionRepo{
 				createFn: func(_ context.Context, _ *domain.Session) (*domain.Session, error) {
 					return nil, domain.ErrAlreadyExists
@@ -100,15 +125,25 @@ func TestCreateSession(t *testing.T) {
 			},
 			wantCode: codes.AlreadyExists,
 		},
+		{
+			name: "id generation fails - returns Internal status",
+			idGen: &mockIDGenerator{
+				newIDFn: func(_ context.Context) (string, error) {
+					return "", errors.New("crypto failure")
+				},
+			},
+			mock:     &mockSessionRepo{},
+			wantCode: codes.Internal,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock, noopProxyClient())
+			handler := NewSessionHandler(tt.mock, tt.idGen, noopProxyClient())
 
 			// when
-			got, err := handler.CreateSession(ctx, tt.req)
+			got, err := handler.CreateSession(ctx, &game.CreateSessionRequest{})
 
 			// then
 			assertStatusCode(t, err, tt.wantCode)
@@ -118,11 +153,110 @@ func TestCreateSession(t *testing.T) {
 			if got.GetName() != tt.wantName {
 				t.Fatalf("CreateSession() name = %q, want %q", got.GetName(), tt.wantName)
 			}
-			if got.GetSessionId() != tt.req.GetSessionId() {
-				t.Fatalf("CreateSession() session_id = %q, want %q", got.GetSessionId(), tt.req.GetSessionId())
+			if got.GetSessionId() != tt.wantID {
+				t.Fatalf("CreateSession() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
 			}
 		})
 	}
+}
+
+func TestListSessions(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success - returns all sessions", func(t *testing.T) {
+		// given
+		sessionA := &domain.Session{
+			SessionID:  "aaa",
+			CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		}
+		sessionB := &domain.Session{
+			SessionID:  "bbb",
+			CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+		}
+		mockRepo := &mockSessionRepo{
+			listFn: func(_ context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
+				return &domain.ListSessionsResult{
+					Sessions:      []*domain.Session{sessionA, sessionB},
+					NextPageToken: "",
+				}, nil
+			},
+		}
+		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+		// when
+		got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+
+		// then
+		assertStatusCode(t, err, codes.OK)
+		if len(got.GetSessions()) != 2 {
+			t.Fatalf("ListSessions() returned %d sessions, want 2", len(got.GetSessions()))
+		}
+		if got.GetSessions()[0].GetSessionId() != "aaa" {
+			t.Fatalf("ListSessions()[0] session_id = %q, want %q", got.GetSessions()[0].GetSessionId(), "aaa")
+		}
+		if got.GetSessions()[1].GetSessionId() != "bbb" {
+			t.Fatalf("ListSessions()[1] session_id = %q, want %q", got.GetSessions()[1].GetSessionId(), "bbb")
+		}
+		if got.GetNextPageToken() != "" {
+			t.Fatalf("ListSessions() next_page_token = %q, want empty", got.GetNextPageToken())
+		}
+	})
+}
+
+func TestListSessions_Pagination(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success - paginates with page_size and page_token", func(t *testing.T) {
+		// given
+		session1 := &domain.Session{SessionID: "s1", CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+		session2 := &domain.Session{SessionID: "s2", CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)}
+		session3 := &domain.Session{SessionID: "s3", CreateTime: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)}
+		mockRepo := &mockSessionRepo{
+			listFn: func(_ context.Context, pageSize int, pageToken string) (*domain.ListSessionsResult, error) {
+				if pageToken == "" {
+					return &domain.ListSessionsResult{
+						Sessions:      []*domain.Session{session1, session2},
+						NextPageToken: "cursor_s3",
+					}, nil
+				}
+				return &domain.ListSessionsResult{
+					Sessions:      []*domain.Session{session3},
+					NextPageToken: "",
+				}, nil
+			},
+		}
+		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+
+		// when - first page
+		page1, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 2})
+
+		// then
+		assertStatusCode(t, err, codes.OK)
+		if len(page1.GetSessions()) != 2 {
+			t.Fatalf("page 1: got %d sessions, want 2", len(page1.GetSessions()))
+		}
+		if page1.GetNextPageToken() != "cursor_s3" {
+			t.Fatalf("page 1: next_page_token = %q, want %q", page1.GetNextPageToken(), "cursor_s3")
+		}
+
+		// when - second page
+		page2, err := handler.ListSessions(ctx, &game.ListSessionsRequest{
+			PageSize:  2,
+			PageToken: page1.GetNextPageToken(),
+		})
+
+		// then
+		assertStatusCode(t, err, codes.OK)
+		if len(page2.GetSessions()) != 1 {
+			t.Fatalf("page 2: got %d sessions, want 1", len(page2.GetSessions()))
+		}
+		if page2.GetSessions()[0].GetSessionId() != "s3" {
+			t.Fatalf("page 2: session_id = %q, want %q", page2.GetSessions()[0].GetSessionId(), "s3")
+		}
+		if page2.GetNextPageToken() != "" {
+			t.Fatalf("page 2: next_page_token = %q, want empty", page2.GetNextPageToken())
+		}
+	})
 }
 
 func TestGetSession(t *testing.T) {
@@ -182,7 +316,7 @@ func TestGetSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock, noopProxyClient())
+			handler := NewSessionHandler(tt.mock, fixedIDGenerator("unused"), noopProxyClient())
 
 			// when
 			got, err := handler.GetSession(ctx, tt.req)
@@ -313,7 +447,7 @@ func TestDeleteSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mockRepo, tt.mockProxy)
+			handler := NewSessionHandler(tt.mockRepo, fixedIDGenerator("unused"), tt.mockProxy)
 
 			// when
 			got, err := handler.DeleteSession(ctx, tt.req)
