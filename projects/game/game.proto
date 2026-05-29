@@ -242,11 +242,8 @@ message AgentScreenshotFrame {
   // The height of the captured image in pixels.
   int32 height_px = 5;
 
-  // The x offset of the captured region within the client area.
-  int32 client_x_px = 6;
-
-  // The y offset of the captured region within the client area.
-  int32 client_y_px = 7;
+  reserved 6, 7;
+  reserved "client_x_px", "client_y_px";
 
   // The DPI scale factor of the captured display.
   double scale_factor = 8;
