@@ -1,24 +1,28 @@
-name: game-agent-step1-system-test
+name: game-agent-step2-system-test
 description: |
-  Game agent step1 system integration test
+  Game agent step2 system integration test
 
   Services: session, proxy, agent, gateway + MongoDB
   Interface: HTTP REST API + WebSocket
   Base path: /api/v1/
+  Step2 features: server-generated session IDs, oneof AgentFrame format,
+  ListSessions pagination, screenshot frame with ack
   Test cases:
-    1. Create session
+    1. Create session (empty body, server-generated ID)
     2. Create agent
     3. MongoDB records exist
     4. Get agent returns owner
     5. Consistent owner routing
     6. WebSocket connect
-    7. WebSocket status response (status + echo frames)
+    7. WebSocket status + echo (oneof format)
     8. WebSocket unknown fields (DiscardUnknown)
     9. WebSocket invalid JSON (connection close)
     10. Delete agent and session (NotFound verification)
     11. Delete session cascade (cleans up agent/owner)
     12. Delete agent cascade (cleans up owner, session persists)
     13. Full lifecycle (create→status WS→delete→verify NotFound)
+    14. List sessions (pagination, nextPageToken)
+    15. Screenshot frame (PNG upload, ack receipt)
 
 suites:
   - name: default

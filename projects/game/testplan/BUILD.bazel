@@ -4,6 +4,7 @@ go_largetest(
     name = "testplan_test",
     size = "small",
     srcs = ["system_test.go"],
+    data = ["testdata/test_screenshot.png"],
     deps = [
         "//common/gopkg/testtool",
         "@com_github_gorilla_websocket//:websocket",
