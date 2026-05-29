@@ -78,14 +78,6 @@ func TestAgentFrameOneofRoundtrip(t *testing.T) {
 	if screenshot.GetHeightPx() != 1080 {
 		t.Errorf("heightPx: got %d, want %d", screenshot.GetHeightPx(), 1080)
 	}
-	// then: verify reserved fields clientXPx/clientYPx are absent from JSON output
-	jsonStr := string(jsonBytes)
-	if contains(jsonStr, `"clientXPx"`) {
-		t.Errorf("JSON output should not contain reserved field clientXPx, got: %s", jsonStr)
-	}
-	if contains(jsonStr, `"clientYPx"`) {
-		t.Errorf("JSON output should not contain reserved field clientYPx, got: %s", jsonStr)
-	}
 	if screenshot.GetScaleFactor() != 1.5 {
 		t.Errorf("scaleFactor: got %f, want %f", screenshot.GetScaleFactor(), 1.5)
 	}

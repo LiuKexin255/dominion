@@ -7,6 +7,12 @@ import (
 	"dominion/projects/game/session/domain"
 )
 
+// BSON field name constants for MongoDB documents.
+const (
+	fieldCreateTime = "create_time"
+	fieldSessionID  = "session_id"
+)
+
 // sessionDocument stores Session documents in MongoDB.
 // Name is not stored in BSON; it is synthesized at the handler boundary.
 type sessionDocument struct {

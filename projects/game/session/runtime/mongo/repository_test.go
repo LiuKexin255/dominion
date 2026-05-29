@@ -103,7 +103,7 @@ func (c *fakeCollection) matchOrCondition(doc *sessionDocument, orList bson.A) b
 		if !ok {
 			continue
 		}
-		if ctVal, hasCT := condMap["create_time"]; hasCT {
+		if ctVal, hasCT := condMap[fieldCreateTime]; hasCT {
 			switch ct := ctVal.(type) {
 			case bson.M:
 				if ltVal, ok2 := ct["$lt"]; ok2 {
@@ -114,7 +114,7 @@ func (c *fakeCollection) matchOrCondition(doc *sessionDocument, orList bson.A) b
 				}
 			case time.Time:
 				if doc.CreateTime.Equal(ct) {
-					if sidVal, hasSID := condMap["session_id"]; hasSID {
+					if sidVal, hasSID := condMap[fieldSessionID]; hasSID {
 						if sidMap, ok2 := sidVal.(bson.M); ok2 {
 							if ltSID, ok3 := sidMap["$lt"]; ok3 {
 								cursorSID := ltSID.(string)
@@ -183,13 +183,13 @@ func (c *fakeCollection) Find(_ context.Context, filter interface{}, opts ...*op
 			for k := 0; k < len(sortKeys); k++ {
 				var cmp int
 				switch sortKeys[k] {
-				case "create_time":
+				case fieldCreateTime:
 					if filtered[i].CreateTime.Before(filtered[j].CreateTime) {
 						cmp = -1
 					} else if filtered[i].CreateTime.After(filtered[j].CreateTime) {
 						cmp = 1
 					}
-				case "session_id":
+				case fieldSessionID:
 					si, sj := filtered[i].SessionID, filtered[j].SessionID
 					if si < sj {
 						cmp = -1

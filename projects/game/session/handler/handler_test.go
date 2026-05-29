@@ -601,28 +601,18 @@ func TestListSessions_DefaultPageSize(t *testing.T) {
 	}
 }
 
-// TestListSessions_MaxPageSizeTruncation verifies that page_size > MaxListSessionsPageSize is truncated.
-func TestListSessions_MaxPageSizeTruncation(t *testing.T) {
+// TestListSessions_MaxPageSizeExceeded verifies that page_size > MaxListSessionsPageSize returns InvalidArgument.
+func TestListSessions_MaxPageSizeExceeded(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	var capturedPageSize int
-	mockRepo := &mockSessionRepo{
-		listFn: func(_ context.Context, pageSize int, _ *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
-			capturedPageSize = pageSize
-			return &domain.ListSessionsResult{}, nil
-		},
-	}
-	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+	handler := NewSessionHandler(&mockSessionRepo{}, fixedIDGenerator("unused"), noopProxyClient())
 
 	// when
 	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 2000})
 
 	// then
-	assertStatusCode(t, err, codes.OK)
-	if capturedPageSize != domain.MaxListSessionsPageSize {
-		t.Fatalf("pageSize = %d, want %d", capturedPageSize, domain.MaxListSessionsPageSize)
-	}
+	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
 // TestListSessions_NextPageToken verifies that next_page_token is present in the response

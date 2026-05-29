@@ -242,17 +242,14 @@ message AgentScreenshotFrame {
   // The height of the captured image in pixels.
   int32 height_px = 5;
 
-  reserved 6, 7;
-  reserved "client_x_px", "client_y_px";
-
   // The DPI scale factor of the captured display.
-  double scale_factor = 8;
+  double scale_factor = 6;
 
   // The title of the window that was captured.
-  string window_title = 9;
+  string window_title = 7;
 
   // The timestamp when the screenshot was captured.
-  google.protobuf.Timestamp capture_time = 10;
+  google.protobuf.Timestamp capture_time = 8;
 }
 
 // AgentStatus reports the current status of an agent in a session.

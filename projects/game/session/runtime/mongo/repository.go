@@ -89,7 +89,7 @@ type sessionRepository struct {
 func NewSessionRepository(client *mongodriver.Client, dbName string, collName string) domain.SessionRepository {
 	coll := newSessionCollection(client, dbName, collName)
 	indexModel := mongodriver.IndexModel{
-		Keys: bson.D{{"create_time", -1}, {"session_id", -1}},
+		Keys: bson.D{{fieldCreateTime, -1}, {fieldSessionID, -1}},
 	}
 	// Create composite index for cursor-based list pagination.
 	// Ignore error for duplicate index (e.g., from previous service start).
@@ -148,19 +148,19 @@ func (r *sessionRepository) Delete(ctx context.Context, sessionID string) error 
 // List retrieves a page of sessions sorted by create_time DESC, session_id DESC.
 // The cursor parameter points to the last session of the previous page; pass nil for the first page.
 func (r *sessionRepository) List(ctx context.Context, pageSize int, cursor *domain.ListPageCursor) (*domain.ListSessionsResult, error) {
-	var filter interface{} = bson.M{}
+	filter := bson.M{}
 	if cursor != nil {
 		filter = bson.M{
 			"$or": bson.A{
-				bson.M{"create_time": bson.M{"$lt": cursor.CreateTime}},
-				bson.M{"create_time": cursor.CreateTime, "session_id": bson.M{"$lt": cursor.SessionID}},
+				bson.M{fieldCreateTime: bson.M{"$lt": cursor.CreateTime}},
+				bson.M{fieldCreateTime: cursor.CreateTime, fieldSessionID: bson.M{"$lt": cursor.SessionID}},
 			},
 		}
 	}
 
 	limit := int64(pageSize) + 1
 	opts := options.Find().
-		SetSort(bson.D{{"create_time", -1}, {"session_id", -1}}).
+		SetSort(bson.D{{fieldCreateTime, -1}, {fieldSessionID, -1}}).
 		SetLimit(limit)
 
 	cur, err := r.collection.Find(ctx, filter, opts)

@@ -112,7 +112,7 @@ func (h *SessionHandler) ListSessions(ctx context.Context, req *game.ListSession
 		pageSize = domain.DefaultListSessionsPageSize
 	}
 	if pageSize > domain.MaxListSessionsPageSize {
-		pageSize = domain.MaxListSessionsPageSize
+		return nil, status.Errorf(codes.InvalidArgument, "page_size exceeds maximum of %d", domain.MaxListSessionsPageSize)
 	}
 
 	var cursor *domain.ListPageCursor
