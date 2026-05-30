@@ -50,8 +50,6 @@
       <div class="detail-section">
         <div class="section-label">Session</div>
         <div class="info-grid">
-          <span class="info-key">Name</span>
-          <span class="info-value">{session.name || '—'}</span>
           <span class="info-key">Session ID</span>
           <span class="info-value">{session.sessionId}</span>
           <span class="info-key">Created</span>
