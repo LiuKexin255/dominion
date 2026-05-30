@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
 	game "dominion/projects/game"
+	tracecontext "dominion/common/gopkg/otel/tracecontext"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -89,7 +91,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 
 	// when: client connects
 	ws := &WSClient{}
-	err := ws.Connect(srv.URL, "sess-123", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	defer srv2.Close()
 
 	ws2 := &WSClient{}
-	err = ws2.Connect(srv2.URL, "sess-123", "test-env")
+	err = ws2.Connect(context.Background(), srv2.URL, "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -148,7 +150,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 
 	// when: client connects with env header
 	ws := &WSClient{}
-	err := ws.Connect(srv.URL, "session-1", "production")
+	err := ws.Connect(context.Background(), srv.URL, "session-1", "production")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -192,7 +194,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 
 	// when: client connects and sends a status frame
 	ws := &WSClient{}
-	err := ws.Connect(srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -265,7 +267,7 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 
 	// when: client connects and sends a screenshot frame
 	ws := &WSClient{}
-	err := ws.Connect(srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -317,6 +319,55 @@ func TestWSClient_Close_NotConnected(t *testing.T) {
 	err := ws.Close()
 	if err != nil {
 		t.Errorf("Close() = %v, want nil", err)
+	}
+}
+
+// TestWSConnect_Traceparent verifies that Connect injects a W3C traceparent header
+// into the WebSocket upgrade request when the context carries a valid trace context.
+func TestWSConnect_Traceparent(t *testing.T) {
+	// given: a context with a valid trace context
+	ctx := tracecontext.Ensure(context.Background())
+	expectedTraceID := tracecontext.ID(ctx)
+
+	// start a server that captures the traceparent header from the upgrade request
+	var traceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceparent = r.Header.Get("traceparent")
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			OriginPatterns: []string{"*"},
+		})
+		if err != nil {
+			return
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	defer srv.Close()
+
+	// when: connect with the trace context
+	ws := &WSClient{}
+	err := ws.Connect(ctx, srv.URL, "sess-trace", "test-env")
+	if err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// then: traceparent header is present
+	if traceparent == "" {
+		t.Fatal("server received no traceparent header")
+	}
+
+	// then: traceparent matches W3C format: 00-{32hex}-{16hex}-{flags}
+	matched, err := regexp.MatchString(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`, traceparent)
+	if err != nil {
+		t.Fatalf("regexp error: %v", err)
+	}
+	if !matched {
+		t.Fatalf("traceparent header = %q, want format 00-{32hex}-{16hex}-{flags}", traceparent)
+	}
+
+	// then: traceparent contains the expected trace ID
+	if !strings.Contains(traceparent, expectedTraceID) {
+		t.Fatalf("traceparent header = %q, expected to contain trace ID %q", traceparent, expectedTraceID)
 	}
 }
 

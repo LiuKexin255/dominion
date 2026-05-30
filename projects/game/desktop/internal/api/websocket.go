@@ -11,6 +11,7 @@ import (
 	game "dominion/projects/game"
 
 	"github.com/coder/websocket"
+	"dominion/projects/game/desktop/internal/trace"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -24,7 +25,7 @@ type WSClient struct {
 // Connect establishes a WebSocket connection to the gateway's agent connect endpoint.
 // gatewayURL is the HTTP URL (e.g., "https://game.liukexin.com").
 // The URL is converted from https:// to wss:// (or http:// to ws://).
-func (w *WSClient) Connect(gatewayURL, sessionID, env string) error {
+func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -44,7 +45,8 @@ func (w *WSClient) Connect(gatewayURL, sessionID, env string) error {
 	}
 
 	// Dial the WebSocket
-	conn, _, err := websocket.Dial(context.Background(), fullURL, &websocket.DialOptions{
+	conn, _, err := websocket.Dial(ctx, fullURL, &websocket.DialOptions{
+		HTTPClient: &http.Client{Transport: trace.NewHTTPTransport()},
 		HTTPHeader: header,
 	})
 	if err != nil {

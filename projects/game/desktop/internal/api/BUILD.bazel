@@ -25,6 +25,7 @@ go_unittest(
     ],
     embed = [":api"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
         "//projects/game",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
