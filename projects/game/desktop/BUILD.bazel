@@ -1,8 +1,8 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
 load("//tools/release/wails:defs.bzl", "wails_app")
 
-# gazelle:ignore
 go_library(
     name = "desktop_lib",
     srcs = [
@@ -10,6 +10,7 @@ go_library(
         "main.go",
         "main_other.go",
         "main_windows.go",
+        "view_model.go",
     ],
     importpath = "dominion/projects/game/desktop",
     visibility = ["//visibility:private"],
@@ -41,4 +42,15 @@ s3_artifacts_push(
     artifacts = [":desktop"],
     manifest = ":release.yaml",
     visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "desktop_test",
+    srcs = ["view_model_test.go"],
+    embed = [":desktop_lib"],
+    deps = [
+        "//projects/game",
+        "//projects/game/desktop/assets:assets_lib",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
 )

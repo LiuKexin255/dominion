@@ -70,7 +70,7 @@ func (a *App) SetConfig(cfg api.Config) error {
 func (a *App) CreateSession() (*game.Session, error) {
 	a.ensureClient()
 	a.logger.Info("backend", "Creating session")
-	session, err := a.client.CreateSession()
+	session, err := a.client.CreateSession(a.ctx)
 	if err != nil {
 		a.logger.Error("backend", "Create session failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -95,7 +95,7 @@ func (a *App) ListSessions(pageSize int, pageToken string) (*game.ListSessionsRe
 func (a *App) GetSession(sessionID string) (*game.Session, error) {
 	a.ensureClient()
 	a.logger.Info("backend", "Getting session", map[string]any{"session_id": sessionID})
-	session, err := a.client.GetSession(sessionID)
+	session, err := a.client.GetSession(a.ctx, sessionID)
 	if err != nil {
 		a.logger.Error("backend", "Get session failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -107,7 +107,7 @@ func (a *App) GetSession(sessionID string) (*game.Session, error) {
 func (a *App) DeleteSession(sessionID string) error {
 	a.ensureClient()
 	a.logger.Info("backend", "Deleting session", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteSession(sessionID); err != nil {
+	if err := a.client.DeleteSession(a.ctx, sessionID); err != nil {
 		a.logger.Error("backend", "Delete session failed", map[string]any{"error": err.Error()})
 		return err
 	}
@@ -119,7 +119,7 @@ func (a *App) DeleteSession(sessionID string) error {
 func (a *App) CreateAgent(sessionID string) (*game.Agent, error) {
 	a.ensureClient()
 	a.logger.Info("backend", "Creating agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.CreateAgent(sessionID)
+	agent, err := a.client.CreateAgent(a.ctx, sessionID)
 	if err != nil {
 		a.logger.Error("backend", "Create agent failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -132,7 +132,7 @@ func (a *App) CreateAgent(sessionID string) (*game.Agent, error) {
 func (a *App) GetAgent(sessionID string) (*game.Agent, error) {
 	a.ensureClient()
 	a.logger.Info("backend", "Getting agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.GetAgent(sessionID)
+	agent, err := a.client.GetAgent(a.ctx, sessionID)
 	if err != nil {
 		a.logger.Error("backend", "Get agent failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -144,7 +144,7 @@ func (a *App) GetAgent(sessionID string) (*game.Agent, error) {
 func (a *App) DeleteAgent(sessionID string) error {
 	a.ensureClient()
 	a.logger.Info("backend", "Deleting agent", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteAgent(sessionID); err != nil {
+	if err := a.client.DeleteAgent(a.ctx, sessionID); err != nil {
 		a.logger.Error("backend", "Delete agent failed", map[string]any{"error": err.Error()})
 		return err
 	}
@@ -288,7 +288,7 @@ func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
 func (a *App) GetAgentStatus(sessionID string) (*game.AgentStatus, error) {
 	a.ensureClient()
 	a.logger.Info("backend", "Getting agent status", map[string]any{"session_id": sessionID})
-	status, err := a.client.GetAgentStatus(sessionID)
+	status, err := a.client.GetAgentStatus(a.ctx, sessionID)
 	if err != nil {
 		a.logger.Error("backend", "Get agent status failed", map[string]any{"error": err.Error()})
 		return nil, err
@@ -307,7 +307,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 	}
 
 	ws := &api.WSClient{}
-	if err := ws.Connect(a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
+	if err := ws.Connect(a.ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
 		a.logger.Error("backend", "Connect agent failed", map[string]any{"error": err.Error()})
 		return err
 	}
