@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	tracecontext "dominion/common/gopkg/otel/tracecontext"
 	game "dominion/projects/game"
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
+	desktoptrace "dominion/projects/game/desktop/internal/trace"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -67,88 +69,180 @@ func (a *App) SetConfig(cfg api.Config) error {
 
 // CreateSession creates a game session via the gateway.
 // The session ID is generated server-side.
-func (a *App) CreateSession() (*game.Session, error) {
+func (a *App) CreateSession() (*SessionView, error) {
 	a.ensureClient()
-	a.logger.Info("backend", "Creating session")
-	session, err := a.client.CreateSession(a.ctx)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Creating session", map[string]any{
+		"trace_id": traceID,
+	})
+	session, err := a.client.CreateSession(ctx)
 	if err != nil {
-		a.logger.Error("backend", "Create session failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Create session failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Session created", map[string]any{"session_id": session.GetSessionId()})
-	return session, nil
+	view := sessionViewFromProto(session)
+	a.logger.Info("backend", "Session created", map[string]any{
+		"session_id": view.SessionID,
+		"trace_id":   traceID,
+	})
+	return &view, nil
 }
 
 // ListSessions lists sessions with pagination support.
-func (a *App) ListSessions(pageSize int, pageToken string) (*game.ListSessionsResponse, error) {
+func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, error) {
 	a.ensureClient()
-	a.logger.Info("backend", "Listing sessions", map[string]any{"page_size": pageSize, "page_token": pageToken})
-	resp, err := a.client.ListSessions(a.ctx, int32(pageSize), pageToken)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Listing sessions", map[string]any{
+		"trace_id":   traceID,
+		"page_size":  pageSize,
+		"page_token": pageToken,
+	})
+	resp, err := a.client.ListSessions(ctx, int32(pageSize), pageToken)
 	if err != nil {
-		a.logger.Error("backend", "List sessions failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "List sessions failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
-	return resp, nil
+	view := listSessionsViewFromProto(resp)
+	a.logger.Info("backend", "Sessions listed", map[string]any{
+		"trace_id": traceID,
+		"count":    len(view.Sessions),
+	})
+	return &view, nil
 }
 
 // GetSession retrieves a session by ID.
-func (a *App) GetSession(sessionID string) (*game.Session, error) {
+func (a *App) GetSession(sessionID string) (*SessionView, error) {
 	a.ensureClient()
-	a.logger.Info("backend", "Getting session", map[string]any{"session_id": sessionID})
-	session, err := a.client.GetSession(a.ctx, sessionID)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Getting session", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	session, err := a.client.GetSession(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get session failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Get session failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
-	return session, nil
+	view := sessionViewFromProto(session)
+	a.logger.Info("backend", "Session retrieved", map[string]any{
+		"session_id": view.SessionID,
+		"trace_id":   traceID,
+	})
+	return &view, nil
 }
 
 // DeleteSession deletes a session by ID.
 func (a *App) DeleteSession(sessionID string) error {
 	a.ensureClient()
-	a.logger.Info("backend", "Deleting session", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteSession(a.ctx, sessionID); err != nil {
-		a.logger.Error("backend", "Delete session failed", map[string]any{"error": err.Error()})
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Deleting session", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	if err := a.client.DeleteSession(ctx, sessionID); err != nil {
+		a.logger.Error("backend", "Delete session failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return err
 	}
-	a.logger.Info("backend", "Session deleted")
+	a.logger.Info("backend", "Session deleted", map[string]any{
+		"trace_id": traceID,
+	})
 	return nil
 }
 
 // CreateAgent creates an agent for a session.
-func (a *App) CreateAgent(sessionID string) (*game.Agent, error) {
+func (a *App) CreateAgent(sessionID string) (*AgentView, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
 	a.ensureClient()
-	a.logger.Info("backend", "Creating agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.CreateAgent(a.ctx, sessionID)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Creating agent", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	agent, err := a.client.CreateAgent(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Create agent failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Create agent failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Agent created", map[string]any{"session_id": agent.GetSessionId()})
-	return agent, nil
+	view := agentViewFromProto(agent)
+	a.logger.Info("backend", "Agent created", map[string]any{
+		"session_id": view.SessionID,
+		"trace_id":   traceID,
+	})
+	return &view, nil
 }
 
 // GetAgent retrieves the agent for a session.
-func (a *App) GetAgent(sessionID string) (*game.Agent, error) {
+func (a *App) GetAgent(sessionID string) (*AgentView, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
 	a.ensureClient()
-	a.logger.Info("backend", "Getting agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.GetAgent(a.ctx, sessionID)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Getting agent", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	agent, err := a.client.GetAgent(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get agent failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Get agent failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
-	return agent, nil
+	view := agentViewFromProto(agent)
+	a.logger.Info("backend", "Agent retrieved", map[string]any{
+		"session_id": view.SessionID,
+		"trace_id":   traceID,
+	})
+	return &view, nil
 }
 
 // DeleteAgent deletes the agent for a session.
 func (a *App) DeleteAgent(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
 	a.ensureClient()
-	a.logger.Info("backend", "Deleting agent", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteAgent(a.ctx, sessionID); err != nil {
-		a.logger.Error("backend", "Delete agent failed", map[string]any{"error": err.Error()})
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Deleting agent", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	if err := a.client.DeleteAgent(ctx, sessionID); err != nil {
+		a.logger.Error("backend", "Delete agent failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return err
 	}
-	a.logger.Info("backend", "Agent deleted")
+	a.logger.Info("backend", "Agent deleted", map[string]any{
+		"trace_id": traceID,
+	})
 	return nil
 }
 
@@ -287,19 +381,39 @@ func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
 // GetAgentStatus retrieves the agent status for a session.
 func (a *App) GetAgentStatus(sessionID string) (*game.AgentStatus, error) {
 	a.ensureClient()
-	a.logger.Info("backend", "Getting agent status", map[string]any{"session_id": sessionID})
-	status, err := a.client.GetAgentStatus(a.ctx, sessionID)
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Getting agent status", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
+	status, err := a.client.GetAgentStatus(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get agent status failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Get agent status failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return nil, err
 	}
+	a.logger.Info("backend", "Agent status retrieved", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
 	return status, nil
 }
 
 // ConnectAgent establishes a WebSocket connection for the agent.
 // It stores the sessionID for subsequent SendScreenshot calls.
 func (a *App) ConnectAgent(sessionID string) error {
-	a.logger.Info("backend", "Connecting agent via WebSocket", map[string]any{"session_id": sessionID})
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	a.logger.Info("backend", "Connecting agent via WebSocket", map[string]any{
+		"trace_id":   traceID,
+		"session_id": sessionID,
+	})
 
 	// Close any existing WS connection first.
 	if a.ws != nil {
@@ -307,13 +421,18 @@ func (a *App) ConnectAgent(sessionID string) error {
 	}
 
 	ws := &api.WSClient{}
-	if err := ws.Connect(a.ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
-		a.logger.Error("backend", "Connect agent failed", map[string]any{"error": err.Error()})
+	if err := ws.Connect(ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
+		a.logger.Error("backend", "Connect agent failed", map[string]any{
+			"trace_id": traceID,
+			"error":    err.Error(),
+		})
 		return err
 	}
 	a.ws = ws
 	a.sessionID = sessionID
-	a.logger.Info("backend", "Agent connected via WebSocket")
+	a.logger.Info("backend", "Agent connected via WebSocket", map[string]any{
+		"trace_id": traceID,
+	})
 	return nil
 }
 
