@@ -28,38 +28,38 @@ type AgentView struct {
 }
 
 // sessionViewFromProto converts a proto Session to a view model.
-func sessionViewFromProto(s *game.Session) SessionView {
+func sessionViewFromProto(s *game.Session) *SessionView {
 	if s == nil {
-		return SessionView{}
+		return nil
 	}
-	return SessionView{
+	return &SessionView{
 		SessionID:  s.GetSessionId(),
 		CreateTime: timestampString(s.GetCreateTime()),
 	}
 }
 
 // listSessionsViewFromProto converts a proto ListSessionsResponse to a view model.
-func listSessionsViewFromProto(r *game.ListSessionsResponse) ListSessionsView {
+func listSessionsViewFromProto(r *game.ListSessionsResponse) *ListSessionsView {
 	if r == nil {
-		return ListSessionsView{Sessions: []SessionView{}}
+		return nil
 	}
 	sessions := r.GetSessions()
 	views := make([]SessionView, len(sessions))
 	for i, s := range sessions {
-		views[i] = sessionViewFromProto(s)
+		views[i] = *sessionViewFromProto(s)
 	}
-	return ListSessionsView{
+	return &ListSessionsView{
 		Sessions:      views,
 		NextPageToken: r.GetNextPageToken(),
 	}
 }
 
 // agentViewFromProto converts a proto Agent to a view model.
-func agentViewFromProto(a *game.Agent) AgentView {
+func agentViewFromProto(a *game.Agent) *AgentView {
 	if a == nil {
-		return AgentView{}
+		return nil
 	}
-	return AgentView{
+	return &AgentView{
 		SessionID:  a.GetSessionId(),
 		OwnerIndex: a.GetOwnerIndex(),
 		Owner:      a.GetOwner(),

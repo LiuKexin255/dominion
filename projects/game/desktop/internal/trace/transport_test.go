@@ -19,12 +19,13 @@ func TestHTTPTransport_InjectTraceparent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// when: a request is sent via the trace transport
+	// when: a request with a valid trace context is sent via the trace transport
 	client := &http.Client{
 		Transport: desktoptrace.NewHTTPTransport(),
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	ctx := tracecontext.Ensure(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() error: %v", err)
 	}

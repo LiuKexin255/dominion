@@ -84,12 +84,11 @@ func (a *App) CreateSession() (*SessionView, error) {
 		})
 		return nil, err
 	}
-	view := sessionViewFromProto(session)
 	a.logger.Info("backend", "Session created", map[string]any{
-		"session_id": view.SessionID,
+		"session_id": session.GetSessionId(),
 		"trace_id":   traceID,
 	})
-	return &view, nil
+	return sessionViewFromProto(session), nil
 }
 
 // ListSessions lists sessions with pagination support.
@@ -110,12 +109,11 @@ func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, e
 		})
 		return nil, err
 	}
-	view := listSessionsViewFromProto(resp)
 	a.logger.Info("backend", "Sessions listed", map[string]any{
 		"trace_id": traceID,
-		"count":    len(view.Sessions),
+		"count":    len(resp.GetSessions()),
 	})
-	return &view, nil
+	return listSessionsViewFromProto(resp), nil
 }
 
 // GetSession retrieves a session by ID.
@@ -135,12 +133,11 @@ func (a *App) GetSession(sessionID string) (*SessionView, error) {
 		})
 		return nil, err
 	}
-	view := sessionViewFromProto(session)
 	a.logger.Info("backend", "Session retrieved", map[string]any{
-		"session_id": view.SessionID,
+		"session_id": sessionID,
 		"trace_id":   traceID,
 	})
-	return &view, nil
+	return sessionViewFromProto(session), nil
 }
 
 // DeleteSession deletes a session by ID.
@@ -185,12 +182,11 @@ func (a *App) CreateAgent(sessionID string) (*AgentView, error) {
 		})
 		return nil, err
 	}
-	view := agentViewFromProto(agent)
 	a.logger.Info("backend", "Agent created", map[string]any{
-		"session_id": view.SessionID,
+		"session_id": sessionID,
 		"trace_id":   traceID,
 	})
-	return &view, nil
+	return agentViewFromProto(agent), nil
 }
 
 // GetAgent retrieves the agent for a session.
@@ -213,12 +209,11 @@ func (a *App) GetAgent(sessionID string) (*AgentView, error) {
 		})
 		return nil, err
 	}
-	view := agentViewFromProto(agent)
 	a.logger.Info("backend", "Agent retrieved", map[string]any{
-		"session_id": view.SessionID,
+		"session_id": sessionID,
 		"trace_id":   traceID,
 	})
-	return &view, nil
+	return agentViewFromProto(agent), nil
 }
 
 // DeleteAgent deletes the agent for a session.

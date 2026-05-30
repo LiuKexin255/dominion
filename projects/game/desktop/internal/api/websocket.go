@@ -10,8 +10,8 @@ import (
 
 	game "dominion/projects/game"
 
-	"github.com/coder/websocket"
 	"dominion/projects/game/desktop/internal/trace"
+	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 

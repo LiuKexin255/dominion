@@ -59,21 +59,9 @@ func TestSessionViewFromProto_Nil(t *testing.T) {
 	// when: convert to view model
 	view := sessionViewFromProto(nil)
 
-	// then: returns zero-value struct
-	if view.SessionID != "" {
-		t.Fatalf("expected empty SessionID, got %q", view.SessionID)
-	}
-	if view.CreateTime != "" {
-		t.Fatalf("expected empty CreateTime, got %q", view.CreateTime)
-	}
-
-	// and: JSON marshalling still works
-	data, err := json.Marshal(view)
-	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
-	}
-	if string(data) != `{"sessionId":""}` {
-		t.Fatalf("expected JSON %q, got %q", `{"sessionId":""}`, string(data))
+	// then: returns nil
+	if view != nil {
+		t.Fatal("expected nil, got non-nil")
 	}
 }
 
@@ -144,7 +132,18 @@ func TestListSessionsViewFromProto_NilSessions(t *testing.T) {
 			// when: convert to view model
 			view := listSessionsViewFromProto(tt.input)
 
-			// then: Sessions is non-nil empty slice
+			if tt.input == nil {
+				// then: returns nil
+				if view != nil {
+					t.Fatal("expected nil, got non-nil")
+				}
+				return
+			}
+
+			// then: non-nil view with empty Sessions slice
+			if view == nil {
+				t.Fatal("expected non-nil view, got nil")
+			}
 			if view.Sessions == nil {
 				t.Fatal("expected non-nil Sessions slice, got nil")
 			}
@@ -212,18 +211,9 @@ func TestAgentViewFromProto_Nil(t *testing.T) {
 	// when: convert to view model
 	view := agentViewFromProto(nil)
 
-	// then: returns zero-value struct
-	if view.SessionID != "" {
-		t.Fatalf("expected empty SessionID, got %q", view.SessionID)
-	}
-	if view.OwnerIndex != 0 {
-		t.Fatalf("expected OwnerIndex 0, got %d", view.OwnerIndex)
-	}
-	if view.Owner != "" {
-		t.Fatalf("expected empty Owner, got %q", view.Owner)
-	}
-	if view.CreateTime != "" {
-		t.Fatalf("expected empty CreateTime, got %q", view.CreateTime)
+	// then: returns nil
+	if view != nil {
+		t.Fatal("expected nil, got non-nil")
 	}
 }
 

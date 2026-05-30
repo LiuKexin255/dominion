@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	game "dominion/projects/game"
 	tracecontext "dominion/common/gopkg/otel/tracecontext"
+	game "dominion/projects/game"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
