@@ -11,10 +11,10 @@ import (
 
 // CapturedImage holds the PNG-encoded screenshot of a window's client area.
 type CapturedImage struct {
-	Data     []byte
-	WidthPx  int
-	HeightPx int
-	Encoding string
+	Data     []byte `json:"data"`
+	WidthPx  int    `json:"widthPx"`
+	HeightPx int    `json:"heightPx"`
+	Encoding string `json:"encoding"`
 }
 
 // CaptureWindow captures the client area of the specified window as a PNG image.
@@ -82,7 +82,7 @@ func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	bmi := buildBitmapInfo(width, height)
 	procGetDIBits := gdi32.NewProc("GetDIBits")
-	procGetDIBits.Call(
+	scanLines, _, _ := procGetDIBits.Call(
 		memDC,
 		bitmap,
 		0,
@@ -91,6 +91,10 @@ func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
 		uintptr(unsafe.Pointer(&bmi)),
 		0, // DIB_RGB_COLORS
 	)
+	if scanLines == 0 {
+		return nil, fmt.Errorf("capture: GetDIBits failed")
+	}
+	normalizeBGRA(img.Pix)
 
 	// Encode as PNG.
 	pngBytes, err := EncodePNG(img)

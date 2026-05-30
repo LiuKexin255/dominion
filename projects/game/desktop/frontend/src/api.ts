@@ -89,7 +89,7 @@ export interface WindowRef {
 }
 
 export interface CapturedImage {
-  data: number[]
+  data: string // base64-encoded PNG bytes (Wails serializes Go []byte as base64 string)
   widthPx: number
   heightPx: number
   encoding: string

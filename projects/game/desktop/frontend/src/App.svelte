@@ -242,13 +242,8 @@
       loading = true
       error = null
       const img = await captureScreenshot()
-      // Convert number[] to base64 string
-      const bytes = new Uint8Array(img.data)
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i])
-      }
-      screenshotData = btoa(binary)
+      // img.data is already a base64-encoded PNG string (Wails serializes Go []byte as base64)
+      screenshotData = img.data
       screenshotMeta = { width: img.widthPx, height: img.heightPx, encoding: img.encoding }
       playState = 'screenshot_captured'
       log('info', 'play', `Screenshot captured: ${img.widthPx}x${img.heightPx} ${img.encoding}`)

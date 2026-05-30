@@ -11,12 +11,12 @@ import (
 
 // WindowRef represents a visible, non-cloaked top-level window.
 type WindowRef struct {
-	Handle         uintptr
-	Title          string
-	ProcessID      uint32
-	ClientWidthPx  int
-	ClientHeightPx int
-	ScaleFactor    float64
+	Handle         uintptr  `json:"handle"`
+	Title          string   `json:"title"`
+	ProcessID      uint32   `json:"processID"`
+	ClientWidthPx  int      `json:"clientWidthPx"`
+	ClientHeightPx int      `json:"clientHeightPx"`
+	ScaleFactor    float64  `json:"scaleFactor"`
 }
 
 // ListWindows enumerates all visible, non-minimized, non-cloaked top-level windows
