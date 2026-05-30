@@ -66,7 +66,7 @@ func TestClient_CreateSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when: call CreateSession
-			session, err := client.CreateSession()
+			session, err := client.CreateSession(context.Background())
 
 			// then: verify result
 			if tt.wantErr {
@@ -121,7 +121,7 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 	client := NewClient(Config{GatewayURL: srv.URL})
 
 	// when: call CreateSession (no session_id argument)
-	session, err := client.CreateSession()
+	session, err := client.CreateSession(context.Background())
 
 	// then: verify SessionId is extracted from response
 	if err != nil {
@@ -302,7 +302,7 @@ func TestClient_GetSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			session, err := client.GetSession(tt.sessionID)
+			session, err := client.GetSession(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -367,7 +367,7 @@ func TestClient_DeleteSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			err := client.DeleteSession(tt.sessionID)
+			err := client.DeleteSession(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -440,7 +440,7 @@ func TestClient_CreateAgent(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			agent, err := client.CreateAgent(tt.sessionID)
+			agent, err := client.CreateAgent(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -512,7 +512,7 @@ func TestClient_GetAgent(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			agent, err := client.GetAgent(tt.sessionID)
+			agent, err := client.GetAgent(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -580,7 +580,7 @@ func TestClient_DeleteAgent(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			err := client.DeleteAgent(tt.sessionID)
+			err := client.DeleteAgent(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -643,7 +643,7 @@ func TestClient_GetAgentStatus(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			status, err := client.GetAgentStatus(tt.sessionID)
+			status, err := client.GetAgentStatus(context.Background(), tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -686,7 +686,7 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 	client := NewClient(Config{GatewayURL: srv.URL + "/"})
 
 	// when: make a request
-	session, err := client.GetSession("ts")
+	session, err := client.GetSession(context.Background(), "ts")
 
 	// then: no double slash, request succeeds
 	if err != nil {
@@ -738,7 +738,7 @@ func TestClient_EnvHeader(t *testing.T) {
 			})
 
 			// when
-			_, err := client.GetSession("e")
+			_, err := client.GetSession(context.Background(), "e")
 
 			// then
 			if err != nil {
