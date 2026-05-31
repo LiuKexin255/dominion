@@ -6,10 +6,11 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"unsafe"
+
+	"github.com/kbinani/screenshot"
 )
 
-// CapturedImage holds the PNG-encoded screenshot of a window's client area.
+// CapturedImage holds the PNG-encoded screenshot of a window's full window.
 type CapturedImage struct {
 	Data     []byte `json:"data"`
 	WidthPx  int    `json:"widthPx"`
@@ -17,121 +18,61 @@ type CapturedImage struct {
 	Encoding string `json:"encoding"`
 }
 
-// CaptureWindow captures the client area of the specified window as a PNG image.
-// It first tries PrintWindow with PW_CLIENTONLY, then falls back to BitBlt with SRCCOPY.
-// Returns a CapturedImage with PNG-encoded data.
+// CaptureWindow captures the full window of the specified window as a PNG image.
+// It validates the window state, captures using screenshot.CaptureRect, and encodes as PNG.
 func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
-	// Check context cancellation.
-	select {
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
-	default:
 	}
 
-	// Get client rect.
-	r := getClientRect(hwnd)
-	width := int(r.Right - r.Left)
-	height := int(r.Bottom - r.Top)
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("capture: invalid client rect %dx%d", width, height)
+	if hwnd == 0 {
+		return nil, fmt.Errorf("capture window: hwnd is 0")
 	}
 
-	// ClientToScreen: convert client area to screen coordinates for BitBlt fallback.
-	pt := point{X: r.Left, Y: r.Top}
-	clientToScreen(hwnd, &pt)
-	screenX := int(pt.X)
-	screenY := int(pt.Y)
-
-	// Get screen DC for fallback.
-	screenDC := getDC(0)
-	if screenDC == 0 {
-		return nil, fmt.Errorf("capture: GetDC(0) failed")
+	if !isWindow(hwnd) {
+		return nil, fmt.Errorf("capture window: hwnd %d no longer exists", hwnd)
 	}
 
-	// Create memory DC and compatible bitmap.
-	memDC := createCompatibleDC(screenDC)
-	if memDC == 0 {
-		releaseDC(0, screenDC)
-		return nil, fmt.Errorf("capture: CreateCompatibleDC failed")
+	if !isWindowVisible(hwnd) {
+		return nil, fmt.Errorf("capture window: hwnd %d is not visible", hwnd)
 	}
-	defer deleteDC(memDC)
 
-	bitmap := createCompatibleBitmap(screenDC, int32(width), int32(height))
-	if bitmap == 0 {
-		releaseDC(0, screenDC)
-		return nil, fmt.Errorf("capture: CreateCompatibleBitmap failed")
+	if isIconic(hwnd) {
+		return nil, fmt.Errorf("capture window: hwnd %d is minimized", hwnd)
 	}
-	defer deleteObject(bitmap)
 
-	oldBitmap := selectObject(memDC, bitmap)
-	defer selectObject(memDC, oldBitmap)
-
-	// Strategy 1: PrintWindow with client-only flag.
-	printOK := printWindow(hwnd, memDC, PW_CLIENTONLY)
-
-	if !printOK {
-		// Strategy 2: BitBlt fallback.
-		if !bitBlt(memDC, 0, 0, int32(width), int32(height), screenDC, int32(screenX), int32(screenY), SRCCOPY) {
-			releaseDC(0, screenDC)
-			return nil, fmt.Errorf("capture: both PrintWindow and BitBlt failed")
-		}
+	if isCloaked(hwnd) {
+		return nil, fmt.Errorf("capture window: hwnd %d is cloaked", hwnd)
 	}
-	releaseDC(0, screenDC)
 
-	// Build Go image from bitmap data.
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	bmi := buildBitmapInfo(width, height)
-	procGetDIBits := gdi32.NewProc("GetDIBits")
-	scanLines, _, _ := procGetDIBits.Call(
-		memDC,
-		bitmap,
-		0,
-		uintptr(height),
-		uintptr(unsafe.Pointer(&img.Pix[0])),
-		uintptr(unsafe.Pointer(&bmi)),
-		0, // DIB_RGB_COLORS
-	)
-	if scanLines == 0 {
-		return nil, fmt.Errorf("capture: GetDIBits failed")
+	bounds, err := CaptureWindowBounds(hwnd)
+	if err != nil {
+		return nil, fmt.Errorf("capture window: %w", err)
 	}
-	normalizeBGRA(img.Pix)
 
-	// Encode as PNG.
+	img, err := screenshot.CaptureRect(image.Rect(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom))
+	if err != nil {
+		return nil, fmt.Errorf("capture window: capture rect: %w", err)
+	}
+
+	if img == nil {
+		return nil, fmt.Errorf("capture window: capture rect returned nil image")
+	}
+
 	pngBytes, err := EncodePNG(img)
 	if err != nil {
-		return nil, fmt.Errorf("capture: %w", err)
+		return nil, fmt.Errorf("capture window: %w", err)
 	}
 
 	return &CapturedImage{
 		Data:     pngBytes,
-		WidthPx:  width,
-		HeightPx: height,
+		WidthPx:  bounds.Width(),
+		HeightPx: bounds.Height(),
 		Encoding: "PNG",
 	}, nil
 }
 
-// bitmapInfoHeader builds a BITMAPINFOHEADER for GetDIBits.
-type bitmapInfoHeader struct {
-	Size          uint32
-	Width         int32
-	Height        int32
-	Planes        uint16
-	BitCount      uint16
-	Compression   uint32
-	SizeImage     uint32
-	XPelsPerMeter int32
-	YPelsPerMeter int32
-	ClrUsed       uint32
-	ClrImportant  uint32
-}
-
-func buildBitmapInfo(width, height int) bitmapInfoHeader {
-	return bitmapInfoHeader{
-		Size:        40,
-		Width:       int32(width),
-		Height:      -int32(height), // top-down DIB
-		Planes:      1,
-		BitCount:    32,
-		Compression: 0, // BI_RGB
-	}
+// isCloaked checks if a window is cloaked (hidden by DWM composition).
+func isCloaked(hwnd uintptr) bool {
+	return dwmGetWindowAttribute(hwnd, dwmwaCloaked) != dwmNotCloaked
 }

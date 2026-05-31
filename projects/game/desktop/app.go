@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	tracecontext "dominion/common/gopkg/otel/tracecontext"
-	game "dominion/projects/game"
+	"dominion/common/gopkg/otel/tracecontext"
+	"dominion/projects/game"
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
@@ -285,13 +285,23 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 	if a.boundWin.Handle == 0 {
 		return nil, fmt.Errorf("capture screenshot: no window bound")
 	}
+	// Capture bounds before screenshot for logging.
+	bnds, _ := capture.CaptureWindowBounds(a.boundWin.Handle)
 	a.logger.Info("backend", "Capturing screenshot", map[string]any{"hwnd": a.boundWin.Handle})
 	img, err := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
 	if err != nil {
 		a.logger.Error("backend", "Capture screenshot failed", map[string]any{"error": err.Error()})
 		return nil, err
 	}
-	a.logger.Info("backend", "Screenshot captured", map[string]any{"width": img.WidthPx, "height": img.HeightPx})
+	a.logger.Info("backend", "screenshot captured", map[string]any{
+		"hwnd":      a.boundWin.Handle,
+		"title":     a.boundWin.Title,
+		"bounds":    map[string]int{"left": bnds.Left, "top": bnds.Top, "right": bnds.Right, "bottom": bnds.Bottom},
+		"width_px":  img.WidthPx,
+		"height_px": img.HeightPx,
+		"encoding":  img.Encoding,
+		"size":      len(img.Data),
+	})
 	return img, nil
 }
 

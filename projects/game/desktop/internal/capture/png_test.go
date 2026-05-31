@@ -27,26 +27,6 @@ func TestEncodePNG(t *testing.T) {
 	}
 }
 
-func TestNormalizeBGRA(t *testing.T) {
-	// given: two GDI 32bpp BI_RGB pixels in BGRA/BGRX byte order
-	pix := []byte{
-		0x11, 0x22, 0x33, 0x00,
-		0x44, 0x55, 0x66, 0x7f,
-	}
-
-	// when: normalizing to Go image.RGBA byte order
-	normalizeBGRA(pix)
-
-	// then: red and blue are swapped and alpha is fully opaque
-	want := []byte{
-		0x33, 0x22, 0x11, 0xff,
-		0x66, 0x55, 0x44, 0xff,
-	}
-	if string(pix) != string(want) {
-		t.Fatalf("normalizeBGRA() = %#v, want %#v", pix, want)
-	}
-}
-
 func TestValidatePNG_Success(t *testing.T) {
 	// given: a valid PNG image with known dimensions
 	img := image.NewRGBA(image.Rect(0, 0, 100, 50))

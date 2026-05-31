@@ -83,8 +83,8 @@ export interface WindowRef {
   handle: number
   title: string
   processID: number
-  clientWidthPx: number
-  clientHeightPx: number
+  widthPx: number
+  heightPx: number
   scaleFactor: number
 }
 

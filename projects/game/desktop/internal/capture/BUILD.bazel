@@ -12,6 +12,12 @@ go_library(
     ],
     importpath = "dominion/projects/game/desktop/internal/capture",
     visibility = ["//projects/game/desktop:__subpackages__"],
+    deps = select({
+        "@rules_go//go/platform:windows": [
+            "@com_github_kbinani_screenshot//:screenshot",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_unittest(
@@ -19,6 +25,7 @@ go_unittest(
     srcs = [
         "capture_test.go",
         "png_test.go",
+        "stub_nonwindows_test.go",
         "window_test.go",
     ],
     embed = [":capture"],

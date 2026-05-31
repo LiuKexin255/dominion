@@ -64,7 +64,7 @@
             <div class="window-info">
               <span class="window-title">{win.title || '(untitled)'}</span>
               <span class="window-detail">PID: {win.processID}</span>
-              <span class="window-detail">{win.clientWidthPx} × {win.clientHeightPx}</span>
+              <span class="window-detail">{win.widthPx} × {win.heightPx}</span>
             </div>
             <button
               class="btn btn-small"
@@ -84,7 +84,7 @@
       <div class="bound-info">
         Bound: <strong>{boundWindow.title || '(untitled)'}</strong>
         &nbsp;PID {boundWindow.processID}
-        &nbsp;{boundWindow.clientWidthPx} × {boundWindow.clientHeightPx}
+        &nbsp;{boundWindow.widthPx} × {boundWindow.heightPx}
         &nbsp;Scale {boundWindow.scaleFactor}
       </div>
     {/if}

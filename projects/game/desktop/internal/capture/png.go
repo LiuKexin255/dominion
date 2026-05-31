@@ -17,13 +17,6 @@ func EncodePNG(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func normalizeBGRA(pix []byte) {
-	for i := 0; i+3 < len(pix); i += 4 {
-		pix[i], pix[i+2] = pix[i+2], pix[i]
-		pix[i+3] = 0xff
-	}
-}
-
 // DecodePNG decodes PNG bytes to an image.
 func DecodePNG(data []byte) (image.Image, error) {
 	img, err := png.Decode(bytes.NewReader(data))
