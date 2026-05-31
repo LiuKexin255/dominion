@@ -111,6 +111,7 @@ interface WailsApp {
   SendScreenshot(hwnd: number): Promise<AgentAckFrame>
   GetAgentStatus(sessionID: string): Promise<AgentStatus>
   ConnectAgent(sessionID: string): Promise<void>
+  CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
 }
 
@@ -206,6 +207,12 @@ export async function connectAgent(sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ConnectAgent(sessionID)
+}
+
+export async function closeAgent(): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CloseAgent()
 }
 
 export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {

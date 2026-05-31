@@ -4,25 +4,29 @@
   let {
     session,
     agent,
-    wsConnected,
+    connectionState,
+    agentLoadState,
     loading,
     error,
     onCreateAgent,
-    onGetAgent,
     onDeleteAgent,
     onConnectAgent,
+    onDeleteSession,
+    onRefresh,
     onEnterPlay,
     onBack
   }: {
     session: Session | null
     agent: Agent | null
-    wsConnected: boolean
+    connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
+    agentLoadState: 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
     loading: boolean
     error: string | null
     onCreateAgent: () => void
-    onGetAgent: () => void
     onDeleteAgent: () => void
     onConnectAgent: () => void
+    onDeleteSession: () => void
+    onRefresh: () => void
     onEnterPlay: () => void
     onBack: () => void
   } = $props()
@@ -37,8 +41,13 @@
     <button class="btn btn-small" onclick={onBack}>Back</button>
     <span class="detail-title">Session Detail</span>
     <span class="ws-status">
-      <span class="ws-dot" class:connected={wsConnected} class:disconnected={!wsConnected}></span>
-      <span class="ws-text">{wsConnected ? 'Connected' : 'Disconnected'}</span>
+      <span class="ws-dot" class:connected={connectionState === 'connected'} class:connecting={connectionState === 'connecting'} class:disconnected={connectionState === 'disconnected' || connectionState === 'error'}></span>
+      <span class="ws-text">
+        {#if connectionState === 'connected'}Connected
+        {:else if connectionState === 'connecting'}Connecting...
+        {:else if connectionState === 'error'}Error
+        {:else}Disconnected{/if}
+      </span>
     </span>
   </div>
 
@@ -66,14 +75,26 @@
         <div class="section-label">Agent Operations</div>
         <div class="ops-buttons">
           <button class="btn" onclick={onCreateAgent} disabled={loading}>Create Agent</button>
-          <button class="btn" onclick={onGetAgent} disabled={loading}>Get Agent</button>
           <button class="btn" onclick={onDeleteAgent} disabled={loading}>Delete Agent</button>
-          <button class="btn" onclick={onConnectAgent} disabled={loading}>Connect Agent</button>
+          <button class="btn" onclick={onConnectAgent} disabled={loading || connectionState === 'connected' || connectionState === 'connecting'}>Connect Agent</button>
+          <button class="btn" onclick={onRefresh} disabled={loading}>Refresh</button>
         </div>
       </div>
 
       <!-- Agent Info -->
-      {#if agent}
+      {#if agentLoadState === 'loading'}
+        <div class="detail-section">
+          <div class="detail-empty">Loading agent...</div>
+        </div>
+      {:else if agentLoadState === 'not_found'}
+        <div class="detail-section">
+          <div class="detail-empty">No agent created yet for this session. Click "Create Agent" above.</div>
+        </div>
+      {:else if agentLoadState === 'error' && !agent}
+        <div class="detail-section">
+          <div class="detail-empty">Failed to load agent. Click Refresh to retry.</div>
+        </div>
+      {:else if agent}
         <div class="detail-section">
           <div class="section-label">Agent</div>
           <div class="info-grid">
@@ -89,8 +110,16 @@
 
       <!-- Play -->
       <div class="detail-section">
-        <button class="btn btn-primary enter-play-btn" onclick={onEnterPlay} disabled={loading || !wsConnected}>
+        <button class="btn btn-primary enter-play-btn" onclick={onEnterPlay} disabled={loading || connectionState !== 'connected'}>
           Enter Play
+        </button>
+      </div>
+
+      <!-- Danger Zone -->
+      <div class="detail-section">
+        <div class="section-label">Danger Zone</div>
+        <button class="btn btn-danger" onclick={onDeleteSession} disabled={loading}>
+          Delete Session
         </button>
       </div>
     {/if}
@@ -141,6 +170,10 @@
 
   .ws-dot.disconnected {
     background: #ff6b6b;
+  }
+
+  .ws-dot.connecting {
+    background: #ffc107;
   }
 
   .ws-text {
@@ -212,5 +245,16 @@
 
   .enter-play-btn {
     width: 100%;
+  }
+
+  .btn-danger {
+    background: rgba(255, 107, 107, 0.15);
+    color: #ff6b6b;
+    border: 1px solid rgba(255, 107, 107, 0.3);
+    width: 100%;
+  }
+
+  .btn-danger:hover {
+    background: rgba(255, 107, 107, 0.25);
   }
 </style>

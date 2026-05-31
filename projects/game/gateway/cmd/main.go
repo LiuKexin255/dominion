@@ -20,6 +20,8 @@ import (
 	pgrpc "dominion/common/gopkg/grpc"
 	"dominion/common/gopkg/grpc/solver"
 	phttp "dominion/common/gopkg/http"
+	"dominion/common/gopkg/logs"
+	"dominion/common/gopkg/logs/event"
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
 	"dominion/projects/game/pkg/bind"
@@ -180,10 +182,16 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 		OriginPatterns: []string{"*"},
 	})
 	if err != nil {
-		log.Printf("ws accept: %v", err)
+		logs.Error(r.Context(), "ws accept failed",
+			event.String("session_id", sessionID),
+			event.Err(err),
+		)
 		return
 	}
 	defer conn.CloseNow()
+	logs.Info(r.Context(), "ws connected",
+		event.String("session_id", sessionID),
+	)
 
 	// Allow up to 10MB per frame to support PNG screenshot uploads.
 	conn.SetReadLimit(10 << 20)
@@ -191,7 +199,10 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	proxyClient := game.NewProxyServiceClient(proxyConn)
 	stream, err := proxyClient.ConnectAgent(r.Context())
 	if err != nil {
-		log.Printf("proxy ConnectAgent: %v", err)
+		logs.Error(r.Context(), "proxy ConnectAgent: stream creation failed",
+			event.String("session_id", sessionID),
+			event.Err(err),
+		)
 		return
 	}
 
@@ -200,17 +211,31 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	err = b.Bind(ws, stream)
 
 	if err == nil {
+		logs.Info(r.Context(), "agent connect stream closed",
+			event.String("session_id", sessionID),
+		)
 		conn.Close(websocket.StatusNormalClosure, "")
 		return
 	}
 	if isCleanClose(err) {
+		logs.Info(r.Context(), "agent connect stream closed (clean)",
+			event.String("session_id", sessionID),
+		)
 		conn.Close(websocket.StatusNormalClosure, "")
 		return
 	}
 	if isProtocolError(err) {
+		logs.Warn(r.Context(), "agent connect: protocol error",
+			event.String("session_id", sessionID),
+			event.Err(err),
+		)
 		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame JSON")
 		return
 	}
+	logs.Error(r.Context(), "agent connect: internal error",
+		event.String("session_id", sessionID),
+		event.Err(err),
+	)
 	conn.Close(websocket.StatusInternalError, "internal error")
 }
 

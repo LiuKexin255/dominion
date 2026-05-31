@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import type { Session, Agent, WindowRef, AgentAckFrame, Config } from './api'
   import {
     setConfig,
@@ -9,6 +10,7 @@
     getAgent,
     deleteAgent,
     connectAgent,
+    closeAgent,
     listWindows,
     bindWindow,
     captureScreenshot,
@@ -24,11 +26,16 @@
   // --- Page state ---
   let page = $state<'sessions' | 'detail' | 'play'>('sessions')
 
+  // --- Types ---
+  type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
+  type AgentLoadState = 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+
   // --- App-level state ---
   let selectedSession: Session | null = $state(null)
   let sessions: Session[] = $state([])
   let agent: Agent | null = $state(null)
-  let wsConnected = $state(false)
+  let connectionState: ConnectionState = $state('disconnected')
+  let agentLoadState: AgentLoadState = $state('idle')
   let windows: WindowRef[] = $state([])
   let boundWindow: WindowRef | null = $state(null)
   let screenshotData: string | null = $state(null)
@@ -45,6 +52,16 @@
 
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
+  })
+
+  // --- Auto-load sessions on mount ---
+  let initialized = false
+
+  onMount(() => {
+    if (!initialized) {
+      initialized = true
+      handleRefresh()
+    }
   })
 
   // --- Config handlers ---
@@ -112,7 +129,30 @@
     selectedSession = session
     agent = null
     error = null
+    agentLoadState = 'idle'
+    connectionState = 'disconnected'
     page = 'detail'
+    // Auto-load agent when entering detail
+    handleAutoGetAgent(session.sessionId)
+  }
+
+  async function handleAutoGetAgent(sessionId: string) {
+    try {
+      agentLoadState = 'loading'
+      error = null
+      agent = await getAgent(sessionId)
+      agentLoadState = 'loaded'
+      log('info', 'agent', `Agent loaded: ${agent.name || agent.sessionId}`)
+    } catch (e: unknown) {
+      const errStr = String(e)
+      if (errStr.includes('not found') || errStr.includes('NotFound') || errStr.includes('NOT_FOUND')) {
+        agentLoadState = 'not_found'
+      } else {
+        agentLoadState = 'error'
+        error = errStr
+      }
+      log('info', 'agent', `Get agent failed: ${errStr}`)
+    }
   }
 
   // --- SessionDetail handlers ---
@@ -167,11 +207,12 @@
     try {
       loading = true
       error = null
+      connectionState = 'connecting'
       await connectAgent(selectedSession.sessionId)
-      wsConnected = true
+      connectionState = 'connected'
       log('info', 'agent', 'Agent connected via WebSocket')
     } catch (e: unknown) {
-      wsConnected = false
+      connectionState = 'error'
       error = String(e)
       log('error', 'agent', `Connect agent failed: ${String(e)}`)
     } finally {
@@ -193,7 +234,8 @@
   function handleBackToSessions() {
     selectedSession = null
     agent = null
-    wsConnected = false
+    connectionState = 'disconnected'
+    agentLoadState = 'idle'
     error = null
     page = 'sessions'
   }
@@ -201,6 +243,41 @@
   function handleBackToDetail() {
     error = null
     page = 'detail'
+  }
+
+  async function handleDeleteSessionFromDetail() {
+    if (!selectedSession) return
+    try {
+      loading = true
+      error = null
+      // Close WS if connected
+      if (connectionState === 'connected') {
+        try {
+          await closeAgent()
+        } catch {
+          // ignore close errors
+        }
+        connectionState = 'disconnected'
+      }
+      await deleteSession(selectedSession.sessionId)
+      log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
+      selectedSession = null
+      agent = null
+      agentLoadState = 'idle'
+      page = 'sessions'
+      await handleRefresh()
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'sessions', `Delete session failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
+  async function handleRefreshFromDetail() {
+    if (!selectedSession) return
+    await handleAutoGetAgent(selectedSession.sessionId)
+    log('info', 'agent', 'Agent refreshed')
   }
 
   // --- PlayView handlers ---
@@ -306,13 +383,15 @@
     <SessionDetail
       session={selectedSession}
       {agent}
-      {wsConnected}
+      {connectionState}
+      {agentLoadState}
       {loading}
       {error}
       onCreateAgent={handleCreateAgent}
-      onGetAgent={handleGetAgent}
       onDeleteAgent={handleDeleteAgent}
       onConnectAgent={handleConnectAgent}
+      onDeleteSession={handleDeleteSessionFromDetail}
+      onRefresh={handleRefreshFromDetail}
       onEnterPlay={handleEnterPlay}
       onBack={handleBackToSessions}
     />
@@ -325,7 +404,7 @@
       {screenshotMeta}
       {ackResult}
       {playState}
-      {wsConnected}
+      wsConnected={connectionState === 'connected'}
       {loading}
       {error}
       onListWindows={handleListWindows}

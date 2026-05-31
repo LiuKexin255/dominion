@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tracecontext "dominion/common/gopkg/otel/tracecontext"
 	game "dominion/projects/game"
@@ -208,13 +209,13 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 			},
 		},
 	}
-	err = ws.SendFrame(sendFrame)
+	err = ws.SendFrame(context.Background(), sendFrame)
 	if err != nil {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
 	// then: received frame has echoed payload
-	resp, err := ws.RecvFrame()
+	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
 	}
@@ -288,13 +289,13 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 			},
 		},
 	}
-	err = ws.SendFrame(sendFrame)
+	err = ws.SendFrame(context.Background(), sendFrame)
 	if err != nil {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
 	// then: received ack references the capture ID
-	resp, err := ws.RecvFrame()
+	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
 	}
@@ -377,7 +378,7 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	ws := &WSClient{}
 
 	// when: sending a frame
-	err := ws.SendFrame(&game.AgentFrame{
+	err := ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "x",
 		Payload: &game.AgentFrame_Status{
 			Status: &game.AgentStatusFrame{Status: "test"},
@@ -390,5 +391,49 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not connected") {
 		t.Errorf("SendFrame() error = %q, want containing 'not connected'", err.Error())
+	}
+}
+
+// TestWSClient_RecvFrame_ContextCancel verifies RecvFrame detects context
+// cancellation via coder/websocket's AfterFunc that closes the connection.
+func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
+	// given: mock server that reads one frame then blocks forever (never replies)
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		_, _, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		// Block — never writes back.
+		select {}
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	if err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// Send a frame first so the server consumes it and enters the blocking select.
+	err = ws.SendFrame(context.Background(), &game.AgentFrame{
+		SessionId: "test-session",
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: "ping"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendFrame() unexpected error: %v", err)
+	}
+
+	// when: RecvFrame with a short timeout — server will never reply.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	// then: RecvFrame should fail because the timeout fires and closes the connection.
+	_, err = ws.RecvFrame(ctx)
+	if err == nil {
+		t.Fatal("RecvFrame() expected error with expiring context, got nil")
 	}
 }

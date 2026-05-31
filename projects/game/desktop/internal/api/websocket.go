@@ -59,7 +59,7 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env strin
 }
 
 // SendFrame sends a protojson-encoded AgentFrame over the WebSocket.
-func (w *WSClient) SendFrame(frame *game.AgentFrame) error {
+func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -72,7 +72,7 @@ func (w *WSClient) SendFrame(frame *game.AgentFrame) error {
 		return fmt.Errorf("send frame: %w", err)
 	}
 
-	if err := w.conn.Write(context.Background(), websocket.MessageText, data); err != nil {
+	if err := w.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		return fmt.Errorf("send frame: %w", err)
 	}
 	return nil
@@ -80,7 +80,7 @@ func (w *WSClient) SendFrame(frame *game.AgentFrame) error {
 
 // RecvFrame receives a protojson-encoded AgentFrame from the WebSocket.
 // Unknown fields are discarded for forward compatibility.
-func (w *WSClient) RecvFrame() (*game.AgentFrame, error) {
+func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -88,7 +88,7 @@ func (w *WSClient) RecvFrame() (*game.AgentFrame, error) {
 		return nil, fmt.Errorf("receive frame: not connected")
 	}
 
-	_, data, err := w.conn.Read(context.Background())
+	_, data, err := w.conn.Read(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}

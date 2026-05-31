@@ -1,11 +1,5 @@
 <script lang="ts">
-  interface LogEntry {
-    time: string
-    level: string
-    source: string
-    message: string
-    fields?: Record<string, unknown>
-  }
+  import type { LogEntry } from '../logger'
 
   let {
     logs,
@@ -44,7 +38,7 @@
         <span class="log-source">[{entry.source}]</span>
         <span class="log-msg">{entry.message}</span>
         {#if entry.fields && Object.keys(entry.fields).length > 0}
-          <span class="log-fields">{JSON.stringify(entry.fields)}</span>
+          <span class="log-fields">{JSON.stringify(entry.fields, null, 2)}</span>
         {/if}
       </div>
     {/each}
@@ -93,7 +87,7 @@
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 11px;
     line-height: 1.4;
-    white-space: nowrap;
+    word-break: break-word;
     border-bottom: 1px solid #1a1a3e;
     border-left: 3px solid #606080;
   }
@@ -130,13 +124,10 @@
   }
 
   .log-msg {
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .log-fields {
     color: #8be9fd;
-    flex-shrink: 0;
     margin-left: 4px;
   }
 </style>

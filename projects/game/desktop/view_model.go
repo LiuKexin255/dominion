@@ -9,6 +9,7 @@ import (
 
 // SessionView is the Wails view model for game.Session.
 type SessionView struct {
+	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
 	CreateTime string `json:"createTime,omitempty"`
 }
@@ -21,6 +22,7 @@ type ListSessionsView struct {
 
 // AgentView is the Wails view model for game.Agent.
 type AgentView struct {
+	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
 	OwnerIndex int32  `json:"ownerIndex"`
 	Owner      string `json:"owner,omitempty"`
@@ -33,6 +35,7 @@ func sessionViewFromProto(s *game.Session) *SessionView {
 		return nil
 	}
 	return &SessionView{
+		Name:       s.GetName(),
 		SessionID:  s.GetSessionId(),
 		CreateTime: timestampString(s.GetCreateTime()),
 	}
@@ -60,6 +63,7 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 		return nil
 	}
 	return &AgentView{
+		Name:       a.GetName(),
 		SessionID:  a.GetSessionId(),
 		OwnerIndex: a.GetOwnerIndex(),
 		Owner:      a.GetOwner(),
