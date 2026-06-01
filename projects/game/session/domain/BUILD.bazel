@@ -1,12 +1,24 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "domain",
     srcs = [
         "errors.go",
+        "id_generator.go",
         "model.go",
+        "pagination.go",
         "repository.go",
     ],
     importpath = "dominion/projects/game/session/domain",
     visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "domain_test",
+    srcs = [
+        "id_generator_test.go",
+        "pagination_test.go",
+    ],
+    embed = [":domain"],
 )

@@ -44,6 +44,7 @@ use_repo(
     "com_github_gorilla_websocket",
     "com_github_jackmordaunt_icns",
     "com_github_jaypipes_ghw",
+    "com_github_kbinani_screenshot",
     "com_github_labstack_echo_v4",
     "com_github_labstack_gommon",
     "com_github_leaanthony_clir",

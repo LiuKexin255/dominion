@@ -14,6 +14,7 @@ import (
 
 	game "dominion/projects/game"
 	gameconst "dominion/projects/game/pkg/gameconst"
+	"dominion/projects/game/session/domain"
 	"dominion/projects/game/session/handler"
 	sessionmongo "dominion/projects/game/session/runtime/mongo"
 
@@ -38,13 +39,15 @@ func main() {
 
 	sessionRepo := sessionmongo.NewSessionRepository(mongoClient, "game_session", "sessions")
 
+	idGenerator := new(domain.CryptoIDGenerator)
+
 	proxyConn, err := grpcgo.NewClient(solver.URI(gameconst.ProxyTarget), pgrpc.ClientDefault()...)
 	if err != nil {
 		log.Fatalf("proxy dial: %v", err)
 	}
 	proxyClient := game.NewProxyServiceClient(proxyConn)
 
-	h := handler.NewSessionHandler(sessionRepo, proxyClient)
+	h := handler.NewSessionHandler(sessionRepo, idGenerator, proxyClient)
 
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
 	game.RegisterSessionServiceServer(grpcServer, h)

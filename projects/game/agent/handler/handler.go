@@ -6,15 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
+	game "dominion/projects/game"
 	"dominion/projects/game/agent/domain"
 
-	game "dominion/projects/game"
-
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	grpcStatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -41,7 +41,7 @@ func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateReq
 
 	s, err := h.runtime.Create(ctx, sessionID)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("agent create: %v", err))
+		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent create: %v", err))
 	}
 
 	logs.Info(ctx, "agent created",
@@ -56,7 +56,7 @@ func (h *AgentHandler) DeleteAgent(ctx context.Context, req *game.AgentDeleteReq
 	sessionID := req.GetSessionId()
 
 	if err := h.runtime.Delete(ctx, sessionID); err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("agent delete: %v", err))
+		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent delete: %v", err))
 	}
 
 	logs.Info(ctx, "agent deleted",
@@ -73,19 +73,25 @@ func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentSta
 
 	s, err := h.runtime.Status(ctx, sessionID)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("agent status: %v", err))
+		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent status: %v", err))
 	}
 
 	return statusToProto(s), nil
 }
 
 // Connect handles the bidirectional stream for agent communication.
-// It reads AgentFrames from the gRPC stream and dispatches to the runtime.
-//   - "status" frames reply with the current status from runtime.Status().
-//   - all other frames are echoed back with type "echo".
+// It reads AgentFrames from the gRPC stream and dispatches based on the
+// oneof payload field:
+//   - status: queries runtime.Status and returns an AgentStatusFrame.
+//   - echo: echoes back the data in an AgentEchoFrame.
+//   - screenshot: converts to domain.ScreenshotInput, calls
+//     runtime.ReceiveScreenshot, and returns an AgentAckFrame.
+//   - empty payload: skipped gracefully with a warning log.
 //
 // Returns nil on io.EOF (clean close) or the error from Recv/Send.
 func (h *AgentHandler) Connect(stream game.AgentService_ConnectServer) error {
+	ctx := stream.Context()
+
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
@@ -95,29 +101,119 @@ func (h *AgentHandler) Connect(stream game.AgentService_ConnectServer) error {
 			return err
 		}
 
+		sessionID := frame.GetSessionId()
 		var resp *game.AgentFrame
-		switch frame.Type {
-		case "status":
-			s, sErr := h.runtime.Status(stream.Context(), frame.SessionId)
-			if sErr != nil {
-				return sErr
-			}
-			resp = &game.AgentFrame{
-				SessionId: frame.SessionId,
-				Type:      "status",
-				Payload:   []byte(s.Status),
-			}
+
+		switch p := frame.GetPayload().(type) {
+		case *game.AgentFrame_Status:
+			resp, err = h.handleStatus(ctx, sessionID)
+		case *game.AgentFrame_Echo:
+			resp = h.handleEcho(p.Echo, sessionID)
+		case *game.AgentFrame_Screenshot:
+			resp, err = h.handleScreenshot(ctx, p.Screenshot, sessionID)
 		default:
-			resp = &game.AgentFrame{
-				SessionId: frame.SessionId,
-				Type:      "echo",
-				Payload:   frame.Payload,
-			}
+			logs.Warn(ctx, "skipping frame with empty or unknown payload",
+				event.String(logFieldSessionID, sessionID),
+			)
+			continue
+		}
+
+		if err != nil {
+			return err
 		}
 
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
+	}
+}
+
+// handleStatus queries the runtime for the current status and returns
+// an AgentFrame containing an AgentStatusFrame.
+func (h *AgentHandler) handleStatus(ctx context.Context, sessionID string) (*game.AgentFrame, error) {
+	s, err := h.runtime.Status(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: s.Status},
+		},
+	}, nil
+}
+
+// handleEcho echoes back the data from the incoming echo frame.
+func (h *AgentHandler) handleEcho(echo *game.AgentEchoFrame, sessionID string) *game.AgentFrame {
+	var data []byte
+	if echo != nil {
+		data = echo.GetData()
+	}
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Payload: &game.AgentFrame_Echo{
+			Echo: &game.AgentEchoFrame{Data: data},
+		},
+	}
+}
+
+// handleScreenshot converts a proto screenshot frame to a domain input,
+// passes it to the runtime, and returns an ack frame.
+func (h *AgentHandler) handleScreenshot(ctx context.Context, f *game.AgentScreenshotFrame, sessionID string) (*game.AgentFrame, error) {
+	input := screenshotFrameToInput(f, sessionID)
+	receipt, err := h.runtime.ReceiveScreenshot(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	return receiptToAckFrame(receipt, sessionID), nil
+}
+
+// screenshotFrameToInput converts a proto AgentScreenshotFrame to a domain
+// ScreenshotInput. It maps the ImageEncoding enum to the "PNG" string
+// expected by the domain layer and handles nil CaptureTime gracefully.
+func screenshotFrameToInput(f *game.AgentScreenshotFrame, sessionID string) *domain.ScreenshotInput {
+	if f == nil {
+		return nil
+	}
+
+	encoding := ""
+	if f.GetEncoding() == game.ImageEncoding_IMAGE_ENCODING_PNG {
+		encoding = "PNG"
+	}
+
+	var captureTime time.Time
+	if ct := f.GetCaptureTime(); ct != nil {
+		captureTime = ct.AsTime()
+	}
+
+	return &domain.ScreenshotInput{
+		SessionId:   sessionID,
+		CaptureId:   f.GetCaptureId(),
+		Encoding:    encoding,
+		Data:        f.GetData(),
+		WidthPx:     f.GetWidthPx(),
+		HeightPx:    f.GetHeightPx(),
+		ScaleFactor: f.GetScaleFactor(),
+		WindowTitle: f.GetWindowTitle(),
+		CaptureTime: captureTime,
+	}
+}
+
+// receiptToAckFrame converts a domain ScreenshotReceipt to a proto AgentFrame
+// containing an AgentAckFrame. The AckFrameId echoes the original CaptureId
+// so the sender can correlate the acknowledgment.
+func receiptToAckFrame(receipt *domain.ScreenshotReceipt, sessionID string) *game.AgentFrame {
+	if receipt == nil {
+		return nil
+	}
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Payload: &game.AgentFrame_Ack{
+			Ack: &game.AgentAckFrame{
+				AckFrameId: receipt.AckFrameId,
+				Message:    receipt.Message,
+			},
+		},
 	}
 }
 

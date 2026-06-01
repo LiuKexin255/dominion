@@ -3,7 +3,7 @@ export interface LogEntry {
   level: string
   source: string
   message: string
-  fields?: Record<string, string>
+  fields?: Record<string, unknown>
 }
 
 // Global log entries array — shared with App.svelte via state
@@ -14,7 +14,7 @@ export function setLogSink(fn: (entry: LogEntry) => void) {
   logSink = fn
 }
 
-export function log(level: string, source: string, message: string, fields?: Record<string, string>) {
+export function log(level: string, source: string, message: string, fields?: Record<string, unknown>) {
   const entry: LogEntry = {
     time: new Date().toISOString(),
     level,

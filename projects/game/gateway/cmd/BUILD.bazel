@@ -11,6 +11,8 @@ go_library(
         "//common/gopkg/grpc",
         "//common/gopkg/grpc/solver",
         "//common/gopkg/http",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//common/gopkg/otel",
         "//projects/game",
         "//projects/game/pkg/bind",

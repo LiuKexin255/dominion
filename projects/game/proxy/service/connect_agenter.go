@@ -44,17 +44,25 @@ func (c *connectAgenter) Connect(stream game.ProxyService_ConnectAgentServer) er
 	// Receive the initial frame to identify the session.
 	frame, err := stream.Recv()
 	if err != nil {
+		logs.Error(ctx, "connect agent: receive initial frame failed",
+			event.Err(err),
+		)
 		return status.Errorf(codes.InvalidArgument, "failed to receive initial frame: %v", err)
 	}
 
 	sessionID := frame.GetSessionId()
 	if sessionID == "" {
+		logs.Warn(ctx, "connect agent: session_id is empty in initial frame")
 		return status.Error(codes.InvalidArgument, "session_id is required in the first frame")
 	}
 
 	// Look up the owner for this session.
 	owner, err := c.ownerStore.Get(ctx, sessionID)
 	if err != nil {
+		logs.Error(ctx, "connect agent: owner lookup failed",
+			event.String("session_id", sessionID),
+			event.Err(err),
+		)
 		return mapDomainError(err)
 	}
 
@@ -89,7 +97,15 @@ func (c *connectAgenter) Connect(stream game.ProxyService_ConnectAgentServer) er
 	// WithFirstFrame so the Binder forwards it to the agent first.
 	prefixed := bind.WithFirstFrame(stream, frame)
 
-	return c.binder.Bind(prefixed, agentStream)
+	err = c.binder.Bind(prefixed, agentStream)
+	if err != nil {
+		logs.Error(ctx, "connect agent: bind failed",
+			event.String("session_id", sessionID),
+			event.Int("agent_index", owner.OwnerIndex),
+			event.Err(err),
+		)
+	}
+	return err
 }
 
 // mapDomainError converts domain errors to gRPC status errors.

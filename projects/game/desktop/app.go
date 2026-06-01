@@ -2,19 +2,30 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"time"
 
+	"dominion/common/gopkg/otel/tracecontext"
+	"dominion/projects/game"
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
+	"dominion/projects/game/desktop/internal/capture"
+	desktoptrace "dominion/projects/game/desktop/internal/trace"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // App is the Wails application struct holding all state.
 type App struct {
-	logger *applog.Logger
-	client *api.Client
-	ws     *api.WSClient
-	cfg    api.Config
-	ctx    context.Context
+	logger    *applog.Logger
+	client    *api.Client
+	ws        *api.WSClient
+	cfg       api.Config
+	ctx       context.Context
+	boundWin  capture.WindowRef
+	sessionID string // active session from ConnectAgent
 }
 
 // NewApp creates a new App with default configuration.
@@ -30,6 +41,14 @@ func NewApp(logger *applog.Logger) *App {
 // SetContext is called by the Wails OnStartup hook to store the app context.
 func (a *App) SetContext(ctx context.Context) {
 	a.ctx = ctx
+}
+
+// ensureClient lazily creates the API client if not yet initialized.
+func (a *App) ensureClient() {
+	if a.client != nil {
+		return
+	}
+	a.client = api.NewClient(a.cfg)
 }
 
 // GetConfig returns the current configuration.
@@ -50,126 +69,532 @@ func (a *App) SetConfig(cfg api.Config) error {
 }
 
 // CreateSession creates a game session via the gateway.
-func (a *App) CreateSession(sessionID string) (*api.Session, error) {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
-	}
-	a.logger.Info("backend", "Creating session", map[string]any{"session_id": sessionID})
-	session, err := a.client.CreateSession(sessionID)
+// The session ID is generated server-side.
+func (a *App) CreateSession() (*SessionView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating session", map[string]any{
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	session, err := a.client.CreateSession(ctx)
 	if err != nil {
-		a.logger.Error("backend", "Create session failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Create session failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Session created", map[string]any{"session_id": session.SessionID})
-	return session, nil
+	a.logger.Info("backend", "Session created", map[string]any{
+		"session_id":     session.GetSessionId(),
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	return sessionViewFromProto(session), nil
+}
+
+// ListSessions lists sessions with pagination support.
+func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Listing sessions", map[string]any{
+		"trace_id":       traceID,
+		"page_size":      pageSize,
+		"page_token":     pageToken,
+		"correlation_id": corrID,
+	})
+	resp, err := a.client.ListSessions(ctx, int32(pageSize), pageToken)
+	if err != nil {
+		a.logger.Error("backend", "List sessions failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Sessions listed", map[string]any{
+		"trace_id":       traceID,
+		"count":          len(resp.GetSessions()),
+		"correlation_id": corrID,
+	})
+	return listSessionsViewFromProto(resp), nil
 }
 
 // GetSession retrieves a session by ID.
-func (a *App) GetSession(sessionID string) (*api.Session, error) {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
-	}
-	a.logger.Info("backend", "Getting session", map[string]any{"session_id": sessionID})
-	session, err := a.client.GetSession(sessionID)
+func (a *App) GetSession(sessionID string) (*SessionView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Getting session", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	session, err := a.client.GetSession(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get session failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Get session failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return nil, err
 	}
-	return session, nil
+	a.logger.Info("backend", "Session retrieved", map[string]any{
+		"session_id":     sessionID,
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	return sessionViewFromProto(session), nil
 }
 
 // DeleteSession deletes a session by ID.
 func (a *App) DeleteSession(sessionID string) error {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
-	}
-	a.logger.Info("backend", "Deleting session", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteSession(sessionID); err != nil {
-		a.logger.Error("backend", "Delete session failed", map[string]any{"error": err.Error()})
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Deleting session", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	if err := a.client.DeleteSession(ctx, sessionID); err != nil {
+		a.logger.Error("backend", "Delete session failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return err
 	}
-	a.logger.Info("backend", "Session deleted")
+	a.logger.Info("backend", "Session deleted", map[string]any{
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
 	return nil
 }
 
 // CreateAgent creates an agent for a session.
-func (a *App) CreateAgent(sessionID string) (*api.Agent, error) {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
+func (a *App) CreateAgent(sessionID string) (*AgentView, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
 	}
-	a.logger.Info("backend", "Creating agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.CreateAgent(sessionID)
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating agent", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	agent, err := a.client.CreateAgent(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Create agent failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Create agent failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Agent created", map[string]any{"session_id": agent.SessionID})
-	return agent, nil
+	a.logger.Info("backend", "Agent created", map[string]any{
+		"session_id":     sessionID,
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	return agentViewFromProto(agent), nil
 }
 
 // GetAgent retrieves the agent for a session.
-func (a *App) GetAgent(sessionID string) (*api.Agent, error) {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
+func (a *App) GetAgent(sessionID string) (*AgentView, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
 	}
-	a.logger.Info("backend", "Getting agent", map[string]any{"session_id": sessionID})
-	agent, err := a.client.GetAgent(sessionID)
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Getting agent", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	agent, err := a.client.GetAgent(ctx, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get agent failed", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Get agent failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return nil, err
 	}
-	return agent, nil
+	a.logger.Info("backend", "Agent retrieved", map[string]any{
+		"session_id":     sessionID,
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	return agentViewFromProto(agent), nil
 }
 
 // DeleteAgent deletes the agent for a session.
 func (a *App) DeleteAgent(sessionID string) error {
-	if a.client == nil {
-		a.client = api.NewClient(a.cfg)
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
 	}
-	a.logger.Info("backend", "Deleting agent", map[string]any{"session_id": sessionID})
-	if err := a.client.DeleteAgent(sessionID); err != nil {
-		a.logger.Error("backend", "Delete agent failed", map[string]any{"error": err.Error()})
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Deleting agent", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	if err := a.client.DeleteAgent(ctx, sessionID); err != nil {
+		a.logger.Error("backend", "Delete agent failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return err
 	}
-	a.logger.Info("backend", "Agent deleted")
+	a.logger.Info("backend", "Agent deleted", map[string]any{
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
 	return nil
 }
 
-// ConnectAgent establishes a WebSocket connection for the agent.
-func (a *App) ConnectAgent(sessionID string) error {
-	a.logger.Info("backend", "Connecting agent via WebSocket", map[string]any{"session_id": sessionID})
+// ListWindows enumerates visible top-level windows (Windows only).
+// Returns a not-supported error on other platforms.
+func (a *App) ListWindows() ([]capture.WindowRef, error) {
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Listing windows", map[string]any{"correlation_id": corrID})
+	windows, err := capture.ListWindows(a.ctx)
+	if err != nil {
+		a.logger.Error("backend", "List windows failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
+		return nil, err
+	}
+	a.logger.Info("backend", "Windows listed", map[string]any{"count": len(windows), "correlation_id": corrID})
+	return windows, nil
+}
 
-	// Close any existing WS connection first
+// BindWindow stores the given window handle as the currently bound window.
+// The bound window is used by CaptureScreenshot and SendScreenshot.
+func (a *App) BindWindow(hwnd uintptr) error {
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Binding window", map[string]any{"hwnd": hwnd, "correlation_id": corrID})
+	// Verify the window still exists by listing and matching.
+	windows, err := capture.ListWindows(a.ctx)
+	if err != nil {
+		a.logger.Error("backend", "Bind window: list windows failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
+		return fmt.Errorf("bind window: %w", err)
+	}
+	found := false
+	for _, w := range windows {
+		if w.Handle == hwnd {
+			a.boundWin = w
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("bind window: hwnd %d not found in visible windows", hwnd)
+	}
+	a.logger.Info("backend", "Window bound", map[string]any{"hwnd": hwnd, "title": a.boundWin.Title, "correlation_id": corrID})
+	return nil
+}
+
+// CaptureScreenshot captures the currently bound window as a PNG image.
+// Returns an error if no window is bound or the capture fails.
+func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
+	if a.boundWin.Handle == 0 {
+		return nil, fmt.Errorf("capture screenshot: no window bound")
+	}
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	// Capture bounds before screenshot for logging.
+	bnds, _ := capture.CaptureWindowBounds(a.boundWin.Handle)
+	a.logger.Info("backend", "Capturing screenshot", map[string]any{"hwnd": a.boundWin.Handle, "correlation_id": corrID})
+	img, err := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
+	if err != nil {
+		a.logger.Error("backend", "Capture screenshot failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
+		return nil, err
+	}
+	a.logger.Info("backend", "screenshot captured", map[string]any{
+		"hwnd":           a.boundWin.Handle,
+		"title":          a.boundWin.Title,
+		"bounds":         map[string]int{"left": bnds.Left, "top": bnds.Top, "right": bnds.Right, "bottom": bnds.Bottom},
+		"width_px":       img.WidthPx,
+		"height_px":      img.HeightPx,
+		"encoding":       img.Encoding,
+		"size":           len(img.Data),
+		"correlation_id": corrID,
+	})
+	return img, nil
+}
+
+// SendScreenshot captures the bound window, encodes as PNG, and sends it
+// to the agent via WebSocket. It waits for an ack frame with a matching
+// capture_id and returns the ack.
+func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
+	if a.ws == nil {
+		return nil, fmt.Errorf("send screenshot: not connected")
+	}
+
+	// Capture the window.
+	img, err := capture.CaptureWindow(a.ctx, hwnd)
+	if err != nil {
+		return nil, fmt.Errorf("send screenshot: %w", err)
+	}
+
+	// Generate capture_id and frame_id via crypto/rand (8 bytes → 16 hex chars).
+	captureID, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("send screenshot: %w", err)
+	}
+	frameID, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("send screenshot: %w", err)
+	}
+
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+
+	// Build the AgentFrame with a screenshot payload.
+	frame := &game.AgentFrame{
+		SessionId:  a.currentSessionID(),
+		FrameId:    frameID,
+		CreateTime: timestamppb.Now(),
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId:   captureID,
+				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:        img.Data,
+				WidthPx:     int32(img.WidthPx),
+				HeightPx:    int32(img.HeightPx),
+				ScaleFactor: a.boundWin.ScaleFactor,
+				WindowTitle: a.boundWin.Title,
+				CaptureTime: timestamppb.Now(),
+			},
+		},
+	}
+
+	a.logger.Info("backend", "Sending screenshot", map[string]any{
+		"session_id":     a.currentSessionID(),
+		"correlation_id": corrID,
+		"capture_id":     captureID,
+		"frame_id":       frameID,
+		"size":           len(img.Data),
+	})
+
+	// Send frame via WebSocket.
+	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
+		a.logger.Error("backend", "Send screenshot frame failed", map[string]any{
+			"error":          err.Error(),
+			"session_id":     a.currentSessionID(),
+			"correlation_id": corrID,
+			"frame_id":       frameID,
+		})
+		return nil, fmt.Errorf("send screenshot: %w", err)
+	}
+
+	// Read ack response.
+	resp, err := a.ws.RecvFrame(a.ctx)
+	if err != nil {
+		a.logger.Error("backend", "Receive screenshot ack failed", map[string]any{
+			"error":          err.Error(),
+			"session_id":     a.currentSessionID(),
+			"correlation_id": corrID,
+			"frame_id":       frameID,
+		})
+		return nil, fmt.Errorf("send screenshot: %w", err)
+	}
+
+	// Verify ack contains matching capture_id.
+	ack := resp.GetAck()
+	if ack == nil {
+		return nil, fmt.Errorf("send screenshot: expected ack frame, got %T", resp.GetPayload())
+	}
+	if ack.GetAckFrameId() != captureID {
+		return nil, fmt.Errorf("send screenshot: ack frame_id mismatch: expected %s, got %s", captureID, ack.GetAckFrameId())
+	}
+
+	a.logger.Info("backend", "Screenshot ack received", map[string]any{
+		"capture_id":     captureID,
+		"ack_frame_id":   ack.GetAckFrameId(),
+		"session_id":     a.currentSessionID(),
+		"correlation_id": corrID,
+	})
+	return ack, nil
+}
+
+// GetAgentStatus retrieves the agent status for a session.
+func (a *App) GetAgentStatus(sessionID string) (*game.AgentStatus, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Getting agent status", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	status, err := a.client.GetAgentStatus(ctx, sessionID)
+	if err != nil {
+		a.logger.Error("backend", "Get agent status failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent status retrieved", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	return status, nil
+}
+
+// ConnectAgent establishes a WebSocket connection for the agent.
+// After the WebSocket handshake, it performs an application-level probe
+// (round-trip ping) to verify the full path: desktop → gateway → proxy → agent.
+// The probe has a 10-second timeout. On failure, the WebSocket is closed
+// and no state is stored.
+func (a *App) ConnectAgent(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+
+	corrID, err := randomHex(8)
+	if err != nil {
+		corrID = "unknown"
+	} else {
+		corrID = "corr-" + corrID
+	}
+
+	a.logger.Info("backend", "Connecting agent via WebSocket", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+
+	// Close any existing WS connection first.
 	if a.ws != nil {
 		a.ws.Close()
 	}
 
 	ws := &api.WSClient{}
-	if err := ws.Connect(a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
-		a.logger.Error("backend", "Connect agent failed", map[string]any{"error": err.Error()})
+	if err := ws.Connect(ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
+		a.logger.Error("backend", "Connect agent failed", map[string]any{
+			"trace_id":       traceID,
+			"session_id":     sessionID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
 		return err
 	}
+
+	// Application-level probe: send a ping frame and wait for any response.
+	// This verifies the full path: desktop → gateway → proxy → agent.
+	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
+	probeFrame := &game.AgentFrame{
+		SessionId:  sessionID,
+		FrameId:    probeFrameID,
+		CreateTime: timestamppb.Now(),
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: "ping"},
+		},
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	a.logger.Info("backend", "Sending connect probe", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"frame_id":       probeFrameID,
+		"correlation_id": corrID,
+	})
+
+	if err := ws.SendFrame(probeCtx, probeFrame); err != nil {
+		a.logger.Error("backend", "Connect probe: send failed", map[string]any{
+			"trace_id":       traceID,
+			"session_id":     sessionID,
+			"frame_id":       probeFrameID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		ws.Close()
+		return fmt.Errorf("connect agent: probe send failed: %w", err)
+	}
+
+	resp, err := ws.RecvFrame(probeCtx)
+	if err != nil {
+		a.logger.Error("backend", "Connect probe: receive failed", map[string]any{
+			"trace_id":       traceID,
+			"session_id":     sessionID,
+			"frame_id":       probeFrameID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		ws.Close()
+		return fmt.Errorf("connect agent: probe receive failed: %w", err)
+	}
+
+	// Accept any response frame — the round-trip itself proves the path is alive.
+	a.logger.Info("backend", "Connect probe succeeded", map[string]any{
+		"trace_id":          traceID,
+		"session_id":        sessionID,
+		"frame_id":          probeFrameID,
+		"response_frame_id": resp.GetFrameId(),
+		"correlation_id":    corrID,
+	})
+
 	a.ws = ws
-	a.logger.Info("backend", "Agent connected via WebSocket")
+	a.sessionID = sessionID
+	a.logger.Info("backend", "Agent connected via WebSocket", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
 	return nil
 }
 
 // SendAgentFrame sends a frame over the WebSocket and returns the response.
-func (a *App) SendAgentFrame(frame api.AgentFrame) (*api.AgentFrame, error) {
+func (a *App) SendAgentFrame(frame *game.AgentFrame) (*game.AgentFrame, error) {
 	if a.ws == nil {
 		return nil, fmt.Errorf("send frame: not connected")
 	}
-	a.logger.Info("backend", "Sending frame", map[string]any{"type": frame.Type})
-	if err := a.ws.SendFrame(frame); err != nil {
+	a.logger.Info("backend", "Sending frame", map[string]any{"session_id": frame.GetSessionId()})
+	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
 		a.logger.Error("backend", "Send frame failed", map[string]any{"error": err.Error()})
 		return nil, err
 	}
-	resp, err := a.ws.RecvFrame()
+	resp, err := a.ws.RecvFrame(a.ctx)
 	if err != nil {
 		a.logger.Error("backend", "Receive frame failed", map[string]any{"error": err.Error()})
 		return nil, err
 	}
-	a.logger.Info("backend", "Frame received", map[string]any{"type": resp.Type})
+	a.logger.Info("backend", "Frame received", map[string]any{"session_id": resp.GetSessionId()})
 	return resp, nil
 }
 
@@ -187,124 +612,21 @@ func (a *App) CloseAgent() error {
 	return nil
 }
 
-// RunConnectivityCheck executes the full connectivity check sequence.
-// Sequence: CreateSession → CreateAgent → GetSession → GetAgent → ConnectAgent →
-//
-//	Send status (expect "initialized") → Send echo (expect echoed back) →
-//	DeleteAgent → DeleteSession
-func (a *App) RunConnectivityCheck(sessionID string) (*api.CheckResult, error) {
-	result := &api.CheckResult{Success: false, Steps: []string{}}
-	a.logger.Info("backend", "Starting connectivity check", map[string]any{"session_id": sessionID})
-
-	// Step 1: CreateSession
-	result.Steps = append(result.Steps, "CreateSession")
-	if _, err := a.CreateSession(sessionID); err != nil {
-		result.Error = fmt.Sprintf("CreateSession failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at CreateSession", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	// Step 2: CreateAgent
-	result.Steps = append(result.Steps, "CreateAgent")
-	if _, err := a.CreateAgent(sessionID); err != nil {
-		result.Error = fmt.Sprintf("CreateAgent failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at CreateAgent", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	// Step 3: GetSession
-	result.Steps = append(result.Steps, "GetSession")
-	if _, err := a.GetSession(sessionID); err != nil {
-		result.Error = fmt.Sprintf("GetSession failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at GetSession", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	// Step 4: GetAgent
-	result.Steps = append(result.Steps, "GetAgent")
-	if _, err := a.GetAgent(sessionID); err != nil {
-		result.Error = fmt.Sprintf("GetAgent failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at GetAgent", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	// Step 5: ConnectAgent
-	result.Steps = append(result.Steps, "ConnectAgent")
-	if err := a.ConnectAgent(sessionID); err != nil {
-		result.Error = fmt.Sprintf("ConnectAgent failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at ConnectAgent", map[string]any{"error": err.Error()})
-		// Clean up before returning
-		a.DeleteAgent(sessionID)
-		a.DeleteSession(sessionID)
-		return result, err
-	}
-	defer a.CloseAgent()
-
-	// Step 6: Send status frame — verify response
-	result.Steps = append(result.Steps, "SendStatus")
-	statusFrame := api.AgentFrame{SessionID: sessionID, Type: "status", Payload: ""}
-	respStatus, err := a.SendAgentFrame(statusFrame)
-	if err != nil {
-		result.Error = fmt.Sprintf("SendStatus failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at SendStatus", map[string]any{"error": err.Error()})
-		a.DeleteAgent(sessionID)
-		a.DeleteSession(sessionID)
-		return result, err
-	}
-	// Check payload is "aW5pdGlhbGl6ZWQ=" (base64 of "initialized")
-	if respStatus.Payload != "aW5pdGlhbGl6ZWQ=" {
-		err := fmt.Errorf("unexpected status response payload: %s", respStatus.Payload)
-		result.Error = err.Error()
-		a.logger.Error("backend", "Connectivity check failed at SendStatus verification", map[string]any{"payload": respStatus.Payload})
-		a.DeleteAgent(sessionID)
-		a.DeleteSession(sessionID)
-		return result, err
-	}
-	a.logger.Info("backend", "Status response verified", map[string]any{"status": "initialized"})
-
-	// Step 7: Send echo frame — verify echo back
-	result.Steps = append(result.Steps, "SendEcho")
-	echoFrame := api.AgentFrame{SessionID: sessionID, Type: "echo", Payload: "aGVsbG8="} // base64 of "hello"
-	respEcho, err := a.SendAgentFrame(echoFrame)
-	if err != nil {
-		result.Error = fmt.Sprintf("SendEcho failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at SendEcho", map[string]any{"error": err.Error()})
-		a.DeleteAgent(sessionID)
-		a.DeleteSession(sessionID)
-		return result, err
-	}
-	if respEcho.Payload != echoFrame.Payload {
-		err := fmt.Errorf("echo payload mismatch: expected %s, got %s", echoFrame.Payload, respEcho.Payload)
-		result.Error = err.Error()
-		a.logger.Error("backend", "Connectivity check failed at echo verification", map[string]any{"expected": echoFrame.Payload, "got": respEcho.Payload})
-		a.DeleteAgent(sessionID)
-		a.DeleteSession(sessionID)
-		return result, err
-	}
-	a.logger.Info("backend", "Echo response verified")
-
-	// Step 8: DeleteAgent
-	result.Steps = append(result.Steps, "DeleteAgent")
-	if err := a.DeleteAgent(sessionID); err != nil {
-		result.Error = fmt.Sprintf("DeleteAgent failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at DeleteAgent", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	// Step 9: DeleteSession
-	result.Steps = append(result.Steps, "DeleteSession")
-	if err := a.DeleteSession(sessionID); err != nil {
-		result.Error = fmt.Sprintf("DeleteSession failed: %v", err)
-		a.logger.Error("backend", "Connectivity check failed at DeleteSession", map[string]any{"error": err.Error()})
-		return result, err
-	}
-
-	result.Success = true
-	a.logger.Info("backend", "Connectivity check PASSED", map[string]any{"steps": result.Steps})
-	return result, nil
-}
-
 // Logs returns all current log entries.
 func (a *App) Logs() []applog.Entry {
 	return a.logger.Entries()
+}
+
+// currentSessionID returns the session ID associated with the current WS connection.
+func (a *App) currentSessionID() string {
+	return a.sessionID
+}
+
+// randomHex generates n random bytes and returns them as a hex string (2*n chars).
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("random hex: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

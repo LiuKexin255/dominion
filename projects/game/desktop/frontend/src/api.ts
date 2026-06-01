@@ -22,52 +22,97 @@ export interface Config {
 
 export interface Session {
   name: string
-  session_id: string
-  create_time: string
+  sessionId: string
+  createTime: string
 }
 
 export interface Agent {
   name: string
-  session_id: string
-  owner_index: number
+  sessionId: string
+  ownerIndex: number
   owner: string
-  create_time: string
+  createTime: string
+}
+
+export interface AgentStatusFrame {
+  status: string
+}
+
+export interface AgentEchoFrame {
+  data: string // base64-encoded bytes
+}
+
+export interface AgentAckFrame {
+  ackFrameId: string
+  message: string
+}
+
+export interface AgentScreenshotFrame {
+  captureId: string
+  encoding: string
+  data: string // base64-encoded bytes
+  widthPx: number
+  heightPx: number
+  scaleFactor: number
+  windowTitle: string
+  captureTime: string
 }
 
 export interface AgentFrame {
-  session_id: string
-  type: string
-  payload: string
+  sessionId: string
+  frameId: string
+  createTime: string
+  status?: AgentStatusFrame
+  echo?: AgentEchoFrame
+  screenshot?: AgentScreenshotFrame
+  ack?: AgentAckFrame
 }
 
-export interface LogEntry {
-  time: string
-  level: string
-  source: string
-  message: string
-  fields?: Record<string, string>
+export interface ListSessionsResponse {
+  sessions: Session[]
+  nextPageToken: string
 }
 
-export interface CheckResult {
-  success: boolean
-  steps: string[]
-  error?: string
+export interface AgentStatus {
+  sessionId: string
+  status: string
+  createTime: string
+}
+
+export interface WindowRef {
+  handle: number
+  title: string
+  processID: number
+  widthPx: number
+  heightPx: number
+  scaleFactor: number
+}
+
+export interface CapturedImage {
+  data: string // base64-encoded PNG bytes (Wails serializes Go []byte as base64 string)
+  widthPx: number
+  heightPx: number
+  encoding: string
 }
 
 interface WailsApp {
   GetConfig(): Promise<Config>
   SetConfig(cfg: Config): Promise<void>
-  CreateSession(sessionID: string): Promise<Session>
+  CreateSession(): Promise<Session>
+  ListSessions(pageSize: number, pageToken: string): Promise<ListSessionsResponse>
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
   CreateAgent(sessionID: string): Promise<Agent>
   GetAgent(sessionID: string): Promise<Agent>
   DeleteAgent(sessionID: string): Promise<void>
+  ListWindows(): Promise<WindowRef[]>
+  BindWindow(hwnd: number): Promise<void>
+  CaptureScreenshot(): Promise<CapturedImage>
+  SendScreenshot(hwnd: number): Promise<AgentAckFrame>
+  GetAgentStatus(sessionID: string): Promise<AgentStatus>
   ConnectAgent(sessionID: string): Promise<void>
-  SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
   CloseAgent(): Promise<void>
-  RunConnectivityCheck(sessionID: string): Promise<CheckResult>
-  Logs(): Promise<LogEntry[]>
+  SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
 }
 
 function app(): WailsApp | undefined {
@@ -86,10 +131,16 @@ export async function setConfig(cfg: Config): Promise<void> {
   return a.SetConfig(cfg)
 }
 
-export async function createSession(sessionID: string): Promise<Session> {
+export async function createSession(): Promise<Session> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateSession(sessionID)
+  return a.CreateSession()
+}
+
+export async function listSessions(pageSize: number, pageToken: string): Promise<ListSessionsResponse> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.ListSessions(pageSize, pageToken)
 }
 
 export async function getSession(sessionID: string): Promise<Session> {
@@ -122,16 +173,40 @@ export async function deleteAgent(sessionID: string): Promise<void> {
   return a.DeleteAgent(sessionID)
 }
 
+export async function listWindows(): Promise<WindowRef[]> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.ListWindows()
+}
+
+export async function bindWindow(hwnd: number): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.BindWindow(hwnd)
+}
+
+export async function captureScreenshot(): Promise<CapturedImage> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CaptureScreenshot()
+}
+
+export async function sendScreenshot(hwnd: number): Promise<AgentAckFrame> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.SendScreenshot(hwnd)
+}
+
+export async function getAgentStatus(sessionID: string): Promise<AgentStatus> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.GetAgentStatus(sessionID)
+}
+
 export async function connectAgent(sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ConnectAgent(sessionID)
-}
-
-export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.SendAgentFrame(frame)
 }
 
 export async function closeAgent(): Promise<void> {
@@ -140,14 +215,8 @@ export async function closeAgent(): Promise<void> {
   return a.CloseAgent()
 }
 
-export async function runConnectivityCheck(sessionID: string): Promise<CheckResult> {
+export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.RunConnectivityCheck(sessionID)
-}
-
-export async function logs(): Promise<LogEntry[]> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.Logs()
+  return a.SendAgentFrame(frame)
 }

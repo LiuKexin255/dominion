@@ -259,7 +259,7 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Send valid AgentFrame JSON with an extra unknown field.
-	frameJSON := `{"session_id":"","type":"status","payload":"dGVzdA==","unknown_field":"should be discarded"}`
+	frameJSON := `{"sessionId":"","status":{"status":"ready"},"unknown_field":"should be discarded"}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -271,11 +271,12 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 		if f.GetSessionId() != "test-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "test-session")
 		}
-		if f.GetType() != "status" {
-			t.Fatalf("type = %q, want %q", f.GetType(), "status")
+		sf := f.GetStatus()
+		if sf == nil {
+			t.Fatal("payload oneof = nil, want status")
 		}
-		if string(f.GetPayload()) != "test" {
-			t.Fatalf("payload = %q, want %q", string(f.GetPayload()), "test")
+		if sf.GetStatus() != "ready" {
+			t.Fatalf("status = %q, want %q", sf.GetStatus(), "ready")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for frame on gRPC server")
@@ -321,8 +322,9 @@ func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
 	// Send a valid AgentFrame.
 	sendFrame := &game.AgentFrame{
 		SessionId: "echo-session",
-		Type:      "text",
-		Payload:   []byte("hello"),
+		Payload: &game.AgentFrame_Echo{
+			Echo: &game.AgentEchoFrame{Data: []byte("hello")},
+		},
 	}
 	msg, err := protojson.Marshal(sendFrame)
 	if err != nil {
@@ -348,11 +350,12 @@ func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
 	if recvFrame.GetSessionId() != "echo-session" {
 		t.Fatalf("session_id = %q, want %q", recvFrame.GetSessionId(), "echo-session")
 	}
-	if recvFrame.GetType() != "text" {
-		t.Fatalf("type = %q, want %q", recvFrame.GetType(), "text")
+	echoPayload := recvFrame.GetEcho()
+	if echoPayload == nil {
+		t.Fatal("payload oneof = nil, want echo")
 	}
-	if string(recvFrame.GetPayload()) != "hello" {
-		t.Fatalf("payload = %q, want %q", string(recvFrame.GetPayload()), "hello")
+	if string(echoPayload.GetData()) != "hello" {
+		t.Fatalf("echo data = %q, want %q", string(echoPayload.GetData()), "hello")
 	}
 }
 
@@ -409,7 +412,12 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 
 	// Send a valid frame — the gRPC server will error on Recv or the
 	// stream will error immediately.
-	sendFrame := &game.AgentFrame{SessionId: "err-session", Type: "ping", Payload: []byte("data")}
+	sendFrame := &game.AgentFrame{
+		SessionId: "err-session",
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: "ping"},
+		},
+	}
 	msg, err := protojson.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -465,7 +473,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 
 	// Send a frame with a DIFFERENT session_id in JSON — gateway should
 	// overwrite it with the URL session_id.
-	frameJSON := `{"session_id":"from-json","type":"status","payload":""}`
+	frameJSON := `{"sessionId":"from-json","status":{"status":"ready"}}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -488,7 +496,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 func TestProtojsonDiscardUnknown(t *testing.T) {
 	// Verify that protojson.UnmarshalOptions{DiscardUnknown: true} actually
 	// discards unknown fields without error.
-	input := []byte(`{"session_id":"s1","type":"t1","payload":"ZGF0YQ==","future_field":"ignored"}`)
+	input := []byte(`{"sessionId":"s1","status":{"status":"running"},"future_field":"ignored"}`)
 
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	frame := new(game.AgentFrame)
@@ -499,13 +507,23 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	if frame.GetSessionId() != "s1" {
 		t.Fatalf("session_id = %q, want %q", frame.GetSessionId(), "s1")
 	}
-	if frame.GetType() != "t1" {
-		t.Fatalf("type = %q, want %q", frame.GetType(), "t1")
+	sf := frame.GetStatus()
+	if sf == nil {
+		t.Fatal("payload oneof = nil, want status")
+	}
+	if sf.GetStatus() != "running" {
+		t.Fatalf("status = %q, want %q", sf.GetStatus(), "running")
 	}
 
 	// Verify the proto is valid.
-	if !proto.Equal(frame, &game.AgentFrame{SessionId: "s1", Type: "t1", Payload: []byte("data")}) {
-		t.Fatalf("frame = %v, want {session_id:s1 type:t1 payload:data}", frame)
+	want := &game.AgentFrame{
+		SessionId: "s1",
+		Payload: &game.AgentFrame_Status{
+			Status: &game.AgentStatusFrame{Status: "running"},
+		},
+	}
+	if !proto.Equal(frame, want) {
+		t.Fatalf("frame = %v, want %v", frame, want)
 	}
 }
 
@@ -571,5 +589,200 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	case <-serverRecv:
 	case <-time.After(3 * time.Second):
 		t.Fatal("gRPC server Recv did not unblock after client disconnect")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: screenshot frame roundtrip
+// ---------------------------------------------------------------------------
+
+func TestScreenshotFrameRoundtrip(t *testing.T) {
+	received := make(chan *game.AgentFrame, 1)
+	ackSent := make(chan struct{})
+
+	mock := &mockProxyServer{
+		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+			frame, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			received <- frame
+			if err := stream.Send(&game.AgentFrame{
+				SessionId: frame.GetSessionId(),
+				Payload: &game.AgentFrame_Ack{
+					Ack: &game.AgentAckFrame{AckFrameId: frame.GetFrameId()},
+				},
+			}); err != nil {
+				return err
+			}
+			close(ackSent)
+			// Block until the test is done so the gRPC stream stays open
+			// for the gateway to forward the ack to the WS client.
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		},
+	}
+
+	proxyConn, _ := setupTestGRPC(t, mock)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocketConnect(w, r, proxyConn)
+	}))
+	defer httpSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/shot-session/agent/connect", nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	pngData := make([]byte, 256)
+	for i := range pngData {
+		pngData[i] = byte(i)
+	}
+
+	sendFrame := &game.AgentFrame{
+		SessionId: "shot-session",
+		FrameId:   "frame-1",
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId:   "cap-1",
+				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:        pngData,
+				WidthPx:     800,
+				HeightPx:    600,
+				ScaleFactor: 1.5,
+				WindowTitle: "Test Window",
+			},
+		},
+	}
+	msg, err := protojson.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	err = conn.Write(ctx, websocket.MessageText, msg)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case f := <-received:
+		if f.GetSessionId() != "shot-session" {
+			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
+		}
+		sf := f.GetScreenshot()
+		if sf == nil {
+			t.Fatal("payload oneof = nil, want screenshot")
+		}
+		if sf.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
+			t.Fatalf("encoding = %v, want PNG", sf.GetEncoding())
+		}
+		if string(sf.GetData()) != string(pngData) {
+			t.Fatalf("screenshot data mismatch: got %d bytes, want %d bytes", len(sf.GetData()), len(pngData))
+		}
+		if sf.GetWidthPx() != 800 || sf.GetHeightPx() != 600 {
+			t.Fatalf("dimensions = %dx%d, want 800x600", sf.GetWidthPx(), sf.GetHeightPx())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for screenshot frame on gRPC server")
+	}
+
+	_, resp, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+
+	recvFrame := new(game.AgentFrame)
+	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
+		t.Fatalf("unmarshal ack: %v", err)
+	}
+
+	ack := recvFrame.GetAck()
+	if ack == nil {
+		t.Fatal("response payload oneof = nil, want ack")
+	}
+	if ack.GetAckFrameId() != "frame-1" {
+		t.Fatalf("ack_frame_id = %q, want %q", ack.GetAckFrameId(), "frame-1")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: ReadLimit is configured (10MB for PNG screenshot support)
+// ---------------------------------------------------------------------------
+
+func TestReadLimitSet(t *testing.T) {
+	// Send a frame slightly above the default 32KB limit to verify ReadLimit
+	// has been raised. The default ReadLimit is 32768 bytes; we send 64KB.
+	// If ReadLimit were not set, the read would be rejected.
+
+	mock := &mockProxyServer{
+		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+			frame, err := stream.Recv()
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(frame); err != nil {
+				return err
+			}
+			// Keep stream alive so the WS client can read the echoed frame.
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		},
+	}
+
+	proxyConn, _ := setupTestGRPC(t, mock)
+
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocketConnect(w, r, proxyConn)
+	}))
+	defer httpSrv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/limit-test/agent/connect", nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Raise client-side ReadLimit too so we can read the large echoed response.
+	conn.SetReadLimit(10 << 20)
+
+	// Build a frame with 64KB of screenshot data — exceeds default 32KB limit.
+	largeData := make([]byte, 64*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	sendFrame := &game.AgentFrame{
+		SessionId: "limit-test",
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:     largeData,
+				WidthPx:  100,
+				HeightPx: 100,
+			},
+		},
+	}
+	msg, err := protojson.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	err = conn.Write(ctx, websocket.MessageText, msg)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Read the echoed response — if ReadLimit were 32KB, this would fail.
+	_, _, err = conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read echoed frame (64KB payload): %v — ReadLimit may not be set to 10MB", err)
 	}
 }

@@ -119,9 +119,9 @@ func TestBind(t *testing.T) {
 		{
 			name: "left to right forwarding",
 			setup: func(fx *streamFixture) {
-				fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("hello")}
-				fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("hello")}
-				fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("hello")}
+				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
+				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
+				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				sent := fx.right.SentFrames()
@@ -133,8 +133,8 @@ func TestBind(t *testing.T) {
 		{
 			name: "right to left forwarding",
 			setup: func(fx *streamFixture) {
-				fx.rightIn <- &game.AgentFrame{Type: "text", Payload: []byte("reply")}
-				fx.rightIn <- &game.AgentFrame{Type: "text", Payload: []byte("reply")}
+				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("reply")}}}
+				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("reply")}}}
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				sent := fx.left.SentFrames()
@@ -146,9 +146,9 @@ func TestBind(t *testing.T) {
 		{
 			name: "bidirectional simultaneous forwarding",
 			setup: func(fx *streamFixture) {
-				fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("L1")}
-				fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("L2")}
-				fx.rightIn <- &game.AgentFrame{Type: "binary", Payload: []byte("R1")}
+				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("L1")}}}
+				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("L2")}}}
+				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("R1")}}}
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				time.Sleep(20 * time.Millisecond)
@@ -228,7 +228,7 @@ func TestBind_sendReturnsError_propagatesError(t *testing.T) {
 	fx.right.sendErr = sendErr
 
 	// Send a frame to left, which will be forwarded to right where Send fails.
-	fx.leftIn <- &game.AgentFrame{Type: "text", Payload: []byte("hello")}
+	fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
 
 	b := bind.NewBinder()
 
@@ -268,7 +268,7 @@ func TestBind_doneFlagRespected(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Send a frame to right — it should be ignored since done is true.
-	rightIn <- &game.AgentFrame{Type: "text", Payload: []byte("should not forward")}
+	rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("should not forward")}}}
 	close(rightIn)
 
 	if !errors.Is(err, wantErr) {

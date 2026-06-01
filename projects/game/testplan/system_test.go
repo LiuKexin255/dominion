@@ -5,11 +5,13 @@ package testplan
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -22,42 +24,76 @@ const (
 	pathPrefix = "/api/v1/"
 )
 
-// sessionResponse mirrors the Session proto message returned via gRPC-gateway.
+// sessionResponse mirrors the Session proto message returned via gRPC-gateway
+// with protojson camelCase field names.
 type sessionResponse struct {
 	Name       string `json:"name"`
-	SessionID  string `json:"session_id"`
-	CreateTime string `json:"create_time"`
+	SessionID  string `json:"sessionId"`
+	CreateTime string `json:"createTime"`
 }
 
-// agentResponse mirrors the Agent proto message returned via gRPC-gateway.
+// agentResponse mirrors the Agent proto message returned via gRPC-gateway
+// with protojson camelCase field names.
 type agentResponse struct {
 	Name       string `json:"name"`
-	SessionID  string `json:"session_id"`
-	OwnerIndex int32  `json:"owner_index"`
+	SessionID  string `json:"sessionId"`
+	OwnerIndex int32  `json:"ownerIndex"`
 	Owner      string `json:"owner"`
-	CreateTime string `json:"create_time"`
+	CreateTime string `json:"createTime"`
 }
 
-// agentFrame mirrors the AgentFrame proto message for WebSocket communication.
-type agentFrame struct {
-	SessionID string `json:"session_id"`
-	Type      string `json:"type"`
-	Payload   string `json:"payload"`
+// listSessionsResponse mirrors the ListSessionsResponse proto message.
+type listSessionsResponse struct {
+	Sessions      []sessionResponse `json:"sessions"`
+	NextPageToken string            `json:"nextPageToken"`
 }
 
-// createSession sends a POST request to create a new session and returns the
-// response body as bytes.
-func createSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
+// wsFrame mirrors the AgentFrame proto message with oneof payload for
+// WebSocket communication using protojson camelCase field names.
+type wsFrame struct {
+	SessionID  string             `json:"sessionId"`
+	FrameID    string             `json:"frameId,omitempty"`
+	CreateTime string             `json:"createTime,omitempty"`
+	Status     *wsStatusFrame     `json:"status,omitempty"`
+	Echo       *wsEchoFrame       `json:"echo,omitempty"`
+	Screenshot *wsScreenshotFrame `json:"screenshot,omitempty"`
+	Ack        *wsAckFrame        `json:"ack,omitempty"`
+}
+
+// wsStatusFrame mirrors the AgentStatusFrame proto message.
+type wsStatusFrame struct {
+	Status string `json:"status"`
+}
+
+// wsEchoFrame mirrors the AgentEchoFrame proto message.
+type wsEchoFrame struct {
+	Data string `json:"data"`
+}
+
+// wsAckFrame mirrors the AgentAckFrame proto message.
+type wsAckFrame struct {
+	AckFrameID string `json:"ackFrameId"`
+	Message    string `json:"message,omitempty"`
+}
+
+// wsScreenshotFrame mirrors the AgentScreenshotFrame proto message.
+type wsScreenshotFrame struct {
+	CaptureID string `json:"captureId"`
+	Encoding  string `json:"encoding"`
+	Data      string `json:"data"`
+	WidthPx   int32  `json:"widthPx"`
+	HeightPx  int32  `json:"heightPx"`
+}
+
+// createSession sends a POST request with an empty CreateSessionRequest
+// body ({}) and returns the server-generated session ID together with the
+// raw response body.
+func createSession(t *testing.T, sutHostURL, sutEnvName string) (string, []byte) {
 	t.Helper()
 
-	reqBody := map[string]string{"session_id": sessionID}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		t.Fatalf("json.Marshal createSession request: %v", err)
-	}
-
+	reqBody := []byte("{}")
 	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "sessions")
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("http.NewRequest createSession: %v", err)
 	}
@@ -78,6 +114,43 @@ func createSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byt
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST createSession status=%d, body=%s", resp.StatusCode, respBody)
 	}
+
+	sess := new(sessionResponse)
+	if err := json.Unmarshal(respBody, sess); err != nil {
+		t.Fatalf("json.Unmarshal createSession response: %v", err)
+	}
+	if sess.SessionID == "" {
+		t.Fatal("createSession: server returned empty sessionId")
+	}
+	return sess.SessionID, respBody
+}
+
+// listSessions sends a GET request to list sessions with the given page
+// size and returns the raw response body.
+func listSessions(t *testing.T, sutHostURL, sutEnvName string, pageSize int) []byte {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions?page_size=%d", sutHostURL, pathPrefix, pageSize)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest listSessions: %v", err)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET listSessions: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read listSessions response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET listSessions status=%d, body=%s", resp.StatusCode, respBody)
+	}
 	return respBody
 }
 
@@ -86,14 +159,9 @@ func createSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byt
 func createAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
 	t.Helper()
 
-	reqBody := map[string]interface{}{"agent": struct{}{}}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		t.Fatalf("json.Marshal createAgent request: %v", err)
-	}
-
+	reqBody := []byte("{}")
 	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("http.NewRequest createAgent: %v", err)
 	}
@@ -266,26 +334,43 @@ func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string
 	return resp.StatusCode, respBody
 }
 
+// readTestPNG reads the test screenshot fixture from testdata and returns its
+// base64-encoded representation.
+func readTestPNG(t *testing.T) string {
+	t.Helper()
+
+	data, err := os.ReadFile("testdata/test_screenshot.png")
+	if err != nil {
+		t.Fatalf("read test_screenshot.png: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
 // TestCreateSession verifies that a session can be created successfully via
-// POST /api/v1/sessions and returns the expected resource name.
+// POST /api/v1/sessions with an empty body and that the server returns a
+// non-empty, server-generated sessionId.
 func TestCreateSession(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	// given
-	sessionID := "test-create-001"
+	// given: empty CreateSessionRequest
 
 	// when
-	respBody := createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, body := createSession(t, sutHostURL, sutEnvName)
 
 	// then
-	got := new(sessionResponse)
-	if err := json.Unmarshal(respBody, got); err != nil {
+	if sessionID == "" {
+		t.Error("createSession returned empty sessionId")
+	}
+
+	// verify the response body contains the expected name format
+	sess := new(sessionResponse)
+	if err := json.Unmarshal(body, sess); err != nil {
 		t.Fatalf("json.Unmarshal session response: %v", err)
 	}
 	wantName := "sessions/" + sessionID
-	if got.Name != wantName {
-		t.Errorf("session name = %q, want %q", got.Name, wantName)
+	if sess.Name != wantName {
+		t.Errorf("session name = %q, want %q", sess.Name, wantName)
 	}
 }
 
@@ -296,8 +381,7 @@ func TestCreateAgent(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-create-002"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
 	// when
 	respBody := createAgent(t, sutHostURL, sutEnvName, sessionID)
@@ -322,8 +406,7 @@ func TestMongoRecordsExist(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-mongo-003"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: get session
@@ -359,8 +442,7 @@ func TestGetAgentReturnsOwner(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-owner-004"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when
@@ -387,8 +469,7 @@ func TestConsistentOwnerRouting(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-consist-005"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: query agent twice
@@ -419,8 +500,7 @@ func TestWebSocketConnect(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-ws-conn-006"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when
@@ -443,15 +523,14 @@ func TestWebSocketConnect(t *testing.T) {
 }
 
 // TestWebSocketStatusResponse verifies that sending a status frame over
-// WebSocket receives a status response with payload "initialized", and that
+// WebSocket receives a status response with status "initialized", and that
 // sending an echo frame receives an echoed response.
 func TestWebSocketStatusResponse(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-ws-status-007"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
@@ -467,48 +546,46 @@ func TestWebSocketStatusResponse(t *testing.T) {
 	defer conn.Close()
 
 	// when: send status frame
-	statusFrame := agentFrame{
+	statusFrame := wsFrame{
 		SessionID: sessionID,
-		Type:      "status",
-		Payload:   "",
+		Status:    &wsStatusFrame{},
 	}
 	if err := conn.WriteJSON(statusFrame); err != nil {
 		t.Fatalf("WriteJSON status frame: %v", err)
 	}
 
 	// then: read status response
-	var statusResp agentFrame
+	var statusResp wsFrame
 	if err := conn.ReadJSON(&statusResp); err != nil {
 		t.Fatalf("ReadJSON status response: %v", err)
 	}
-	if statusResp.Type != "status" {
-		t.Errorf("status response type = %q, want %q", statusResp.Type, "status")
+	if statusResp.Status == nil {
+		t.Fatal("status response has no status oneof")
 	}
-	if statusResp.Payload != "aW5pdGlhbGl6ZWQ=" {
-		t.Errorf("status response payload = %q, want %q", statusResp.Payload, "aW5pdGlhbGl6ZWQ=")
+	if statusResp.Status.Status != "initialized" {
+		t.Errorf("status response status = %q, want %q", statusResp.Status.Status, "initialized")
 	}
 
 	// when: send echo frame
 	echoPayload := "aGVsbG8="
-	echoFrame := agentFrame{
+	echoFrame := wsFrame{
 		SessionID: sessionID,
-		Type:      "echo",
-		Payload:   echoPayload,
+		Echo:      &wsEchoFrame{Data: echoPayload},
 	}
 	if err := conn.WriteJSON(echoFrame); err != nil {
 		t.Fatalf("WriteJSON echo frame: %v", err)
 	}
 
 	// then: read echo response
-	var echoResp agentFrame
+	var echoResp wsFrame
 	if err := conn.ReadJSON(&echoResp); err != nil {
 		t.Fatalf("ReadJSON echo response: %v", err)
 	}
-	if echoResp.Type != "echo" {
-		t.Errorf("echo response type = %q, want %q", echoResp.Type, "echo")
+	if echoResp.Echo == nil {
+		t.Fatal("echo response has no echo oneof")
 	}
-	if echoResp.Payload != echoPayload {
-		t.Errorf("echo response payload = %q, want %q", echoResp.Payload, echoPayload)
+	if echoResp.Echo.Data != echoPayload {
+		t.Errorf("echo response data = %q, want %q", echoResp.Echo.Data, echoPayload)
 	}
 }
 
@@ -520,8 +597,7 @@ func TestWebSocketUnknownFields(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-ws-unknown-010"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
@@ -538,7 +614,7 @@ func TestWebSocketUnknownFields(t *testing.T) {
 
 	// when: send JSON with unknown extra fields
 	unknownJSON := fmt.Sprintf(
-		`{"session_id":%q,"type":"status","payload":"","unknown_field":"should_be_ignored"}`,
+		`{"sessionId":%q,"status":{"status":""},"unknownField":"should_be_ignored"}`,
 		sessionID,
 	)
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(unknownJSON)); err != nil {
@@ -546,12 +622,12 @@ func TestWebSocketUnknownFields(t *testing.T) {
 	}
 
 	// then: expect a valid response (unknown fields discarded by gateway)
-	var recvFrame agentFrame
+	var recvFrame wsFrame
 	if err := conn.ReadJSON(&recvFrame); err != nil {
 		t.Fatalf("ReadJSON response: %v", err)
 	}
-	if recvFrame.Type != "status" {
-		t.Errorf("response type = %q, want %q", recvFrame.Type, "status")
+	if recvFrame.Status == nil {
+		t.Fatal("response has no status oneof (unknown fields should be discarded)")
 	}
 }
 
@@ -562,8 +638,7 @@ func TestWebSocketInvalidJSON(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-ws-invalid-011"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
@@ -584,7 +659,7 @@ func TestWebSocketInvalidJSON(t *testing.T) {
 	}
 
 	// then: expect connection to be closed or read error
-	var recvFrame agentFrame
+	var recvFrame wsFrame
 	err = conn.ReadJSON(&recvFrame)
 	if err == nil {
 		t.Fatal("ReadJSON should return error for invalid JSON, got nil")
@@ -598,8 +673,7 @@ func TestDeleteAgentAndSession(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-delete-008"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: delete agent
@@ -644,8 +718,7 @@ func TestDeleteSessionCascade(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-delete-session-cascade-012"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: delete session directly (without deleting agent first)
@@ -681,8 +754,7 @@ func TestDeleteAgentCascade(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	// given
-	sessionID := "test-delete-agent-cascade-013"
-	createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: delete agent
@@ -719,10 +791,8 @@ func TestFullLifecycle(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	sessionID := "test-lifecycle-009"
-
 	// Step 1: create session
-	sessBody := createSession(t, sutHostURL, sutEnvName, sessionID)
+	sessionID, sessBody := createSession(t, sutHostURL, sutEnvName)
 	sess := new(sessionResponse)
 	if err := json.Unmarshal(sessBody, sess); err != nil {
 		t.Fatalf("step1 json.Unmarshal session: %v", err)
@@ -767,23 +837,22 @@ func TestFullLifecycle(t *testing.T) {
 	}
 
 	// Step 5: WebSocket status response
-	statusFrame := agentFrame{
+	statusFrame := wsFrame{
 		SessionID: sessionID,
-		Type:      "status",
-		Payload:   "",
+		Status:    &wsStatusFrame{},
 	}
 	if err := conn.WriteJSON(statusFrame); err != nil {
 		t.Fatalf("step5 WriteJSON status: %v", err)
 	}
-	var recvFrame agentFrame
+	var recvFrame wsFrame
 	if err := conn.ReadJSON(&recvFrame); err != nil {
 		t.Fatalf("step5 ReadJSON status response: %v", err)
 	}
-	if recvFrame.Type != "status" {
-		t.Errorf("step5 response type = %q, want %q", recvFrame.Type, "status")
+	if recvFrame.Status == nil {
+		t.Fatal("step5 response has no status oneof")
 	}
-	if recvFrame.Payload != "aW5pdGlhbGl6ZWQ=" {
-		t.Errorf("step5 status payload = %q, want %q", recvFrame.Payload, "aW5pdGlhbGl6ZWQ=")
+	if recvFrame.Status.Status != "initialized" {
+		t.Errorf("step5 status = %q, want %q", recvFrame.Status.Status, "initialized")
 	}
 	conn.Close()
 
@@ -810,5 +879,101 @@ func TestFullLifecycle(t *testing.T) {
 	sessStatus, sessGetBody := getSessionWithStatus(t, sutHostURL, sutEnvName, sessionID)
 	if sessStatus != http.StatusNotFound {
 		t.Errorf("step8 GET deleted session status = %d, want %d, body: %s", sessStatus, http.StatusNotFound, sessGetBody)
+	}
+}
+
+// TestListSessions verifies that listing sessions returns all created sessions
+// and that nextPageToken is empty when all sessions fit in one page.
+func TestListSessions(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: create two sessions
+	sess1ID, _ := createSession(t, sutHostURL, sutEnvName)
+	sess2ID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// when: list sessions
+	respBody := listSessions(t, sutHostURL, sutEnvName, 10)
+
+	// then: both sessions are in the response
+	got := new(listSessionsResponse)
+	if err := json.Unmarshal(respBody, got); err != nil {
+		t.Fatalf("json.Unmarshal listSessions response: %v", err)
+	}
+
+	found1 := false
+	found2 := false
+	for _, s := range got.Sessions {
+		if s.SessionID == sess1ID {
+			found1 = true
+		}
+		if s.SessionID == sess2ID {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("session %q not found in list result", sess1ID)
+	}
+	if !found2 {
+		t.Errorf("session %q not found in list result", sess2ID)
+	}
+	if got.NextPageToken != "" {
+		t.Errorf("next_page_token = %q, want empty", got.NextPageToken)
+	}
+}
+
+// TestScreenshotFrame verifies that sending a screenshot frame over WebSocket
+// receives an ack response with matching ackFrameId and confirmation message.
+func TestScreenshotFrame(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: create session, agent, and connect WebSocket
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	createAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
+	wsURL := buildWSURL(sutHostURL, wsPath)
+
+	header := http.Header{}
+	header.Set(headerEnv, sutEnvName)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	defer conn.Close()
+
+	// when: send screenshot frame with PNG data
+	pngBase64 := readTestPNG(t)
+	captureID := "test-screenshot-cap-001"
+
+	screenshotFrame := wsFrame{
+		SessionID: sessionID,
+		Screenshot: &wsScreenshotFrame{
+			CaptureID: captureID,
+			Encoding:  "IMAGE_ENCODING_PNG",
+			Data:      pngBase64,
+			WidthPx:   10,
+			HeightPx:  10,
+		},
+	}
+	if err := conn.WriteJSON(screenshotFrame); err != nil {
+		t.Fatalf("WriteJSON screenshot frame: %v", err)
+	}
+
+	// then: read ack response
+	var ackResp wsFrame
+	if err := conn.ReadJSON(&ackResp); err != nil {
+		t.Fatalf("ReadJSON ack response: %v", err)
+	}
+	if ackResp.Ack == nil {
+		t.Fatal("ack response has no ack oneof")
+	}
+	if ackResp.Ack.AckFrameID != captureID {
+		t.Errorf("ack ackFrameId = %q, want %q", ackResp.Ack.AckFrameID, captureID)
+	}
+	if ackResp.Ack.Message != "screenshot received" {
+		t.Errorf("ack message = %q, want %q", ackResp.Ack.Message, "screenshot received")
 	}
 }

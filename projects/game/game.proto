@@ -22,8 +22,13 @@ service SessionService {
       post: "/api/v1/sessions"
       body: "*"
     };
+  }
 
-    option (google.api.method_signature) = "session_id";
+  // ListSessions lists all Sessions.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/sessions"
+    };
   }
 
   // GetSession returns the Session resource identified by name.
@@ -136,7 +141,7 @@ message Session {
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
 
   // The unique identifier for this session.
-  string session_id = 2 [(google.api.field_behavior) = REQUIRED];
+  string session_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   // The timestamp when this session was created.
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
@@ -174,11 +179,77 @@ message AgentFrame {
   // The session this frame belongs to.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 
-  // The type of the frame payload (e.g. "status", "echo").
-  string type = 2;
+  // The unique identifier for this frame.
+  string frame_id = 2;
 
-  // The frame payload bytes.
-  bytes payload = 3;
+  // The timestamp when this frame was created.
+  google.protobuf.Timestamp create_time = 3;
+
+  // The frame payload, one of the following types.
+  oneof payload {
+    // Status update from the agent.
+    AgentStatusFrame status = 10;
+    // Echo response for connectivity check.
+    AgentEchoFrame echo = 11;
+    // Screenshot capture from the agent.
+    AgentScreenshotFrame screenshot = 12;
+    // Acknowledgement of a received frame.
+    AgentAckFrame ack = 13;
+  }
+}
+
+// AgentStatusFrame reports the current status string of an agent.
+message AgentStatusFrame {
+  // The current status string.
+  string status = 1;
+}
+
+// AgentEchoFrame is used for connectivity checks, echoing back arbitrary data.
+message AgentEchoFrame {
+  // The echoed data bytes.
+  bytes data = 1;
+}
+
+// AgentAckFrame acknowledges receipt of a specific frame.
+message AgentAckFrame {
+  // The frame_id of the frame being acknowledged.
+  string ack_frame_id = 1;
+
+  // Optional message accompanying the acknowledgement.
+  string message = 2;
+}
+
+// ImageEncoding specifies the encoding format for image data.
+enum ImageEncoding {
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  IMAGE_ENCODING_PNG = 1;
+}
+
+// AgentScreenshotFrame carries a screenshot capture from the agent's desktop.
+message AgentScreenshotFrame {
+  // The unique identifier for this capture.
+  string capture_id = 1;
+
+  // The encoding format of the image data (e.g. PNG).
+  ImageEncoding encoding = 2;
+
+  // The raw image bytes. Over protojson this is base64-encoded.
+  bytes data = 3;
+
+  // The width of the captured image in pixels.
+  int32 width_px = 4;
+
+  // The height of the captured image in pixels.
+  int32 height_px = 5;
+
+  // The DPI scale factor of the captured display.
+  double scale_factor = 6;
+
+  // The title of the window that was captured.
+  string window_title = 7;
+
+  // The timestamp when the screenshot was captured.
+  google.protobuf.Timestamp capture_time = 8;
 }
 
 // AgentStatus reports the current status of an agent in a session.
@@ -196,9 +267,18 @@ message AgentStatus {
 // ─── Request Messages ─────────────────────────────────────────────────────
 
 // CreateSessionRequest is the request to create a new Session.
-message CreateSessionRequest {
-  // The unique identifier for the new session.
-  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+message CreateSessionRequest {}
+
+// ListSessionsRequest is the request to list Sessions.
+message ListSessionsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+// ListSessionsResponse is the response for listing Sessions.
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+  string next_page_token = 2;
 }
 
 // GetSessionRequest is the request to retrieve a Session by name.

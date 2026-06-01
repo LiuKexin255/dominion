@@ -13,6 +13,7 @@ go_library(
         "//common/gopkg/otel",
         "//projects/game",
         "//projects/game/pkg/gameconst",
+        "//projects/game/session/domain",
         "//projects/game/session/handler",
         "//projects/game/session/runtime/mongo",
         "@org_golang_google_grpc//:grpc",

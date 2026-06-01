@@ -1,24 +1,32 @@
 load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
 load("//tools/release/wails:defs.bzl", "wails_app")
 
-# gazelle:ignore
 go_library(
     name = "desktop_lib",
     srcs = [
         "app.go",
         "main.go",
+        "main_other.go",
+        "main_windows.go",
+        "view_model.go",
     ],
     importpath = "dominion/projects/game/desktop",
     visibility = ["//visibility:private"],
     deps = [
+        "//common/gopkg/otel/tracecontext",
+        "//projects/game",
         "//projects/game/desktop/assets:assets_lib",
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",
+        "//projects/game/desktop/internal/capture",
+        "//projects/game/desktop/internal/trace",
         "//third_party/github.com/wailsapp/wails/v2:wails",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",
         "//third_party/github.com/wailsapp/wails/v2/pkg/runtime",
+        "@org_golang_google_protobuf//types/known/timestamppb",
     ],
 )
 
@@ -36,4 +44,21 @@ s3_artifacts_push(
     artifacts = [":desktop"],
     manifest = ":release.yaml",
     visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "desktop_test",
+    srcs = [
+        "app_test.go",
+        "view_model_test.go",
+    ],
+    embed = [":desktop_lib"],
+    deps = [
+        "//projects/game",
+        "//projects/game/desktop/internal/api",
+        "//projects/game/desktop/internal/applog",
+        "@com_github_coder_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
 )
