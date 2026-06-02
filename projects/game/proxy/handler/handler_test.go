@@ -520,11 +520,8 @@ func TestDeleteAgent(t *testing.T) {
 		_, err := h.DeleteAgent(ctx, req)
 
 		// then
-		if err == nil {
-			t.Fatalf("DeleteAgent() expected error, got nil")
-		}
-		if status.Code(err) != codes.NotFound {
-			t.Fatalf("DeleteAgent() status = %v, want NotFound, err=%v", status.Code(err), err)
+		if err != nil {
+			t.Fatalf("DeleteAgent() unexpected error for non-existent agent: %v", err)
 		}
 	})
 

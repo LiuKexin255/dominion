@@ -3,10 +3,10 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "domain",
     srcs = [
+        "errors.go",
         "model.go",
-        "prompt_client.go",
-        "runtime.go",
+        "repository.go",
     ],
-    importpath = "dominion/projects/game/agent/domain",
+    importpath = "dominion/projects/game/prompt/domain",
     visibility = ["//visibility:public"],
 )

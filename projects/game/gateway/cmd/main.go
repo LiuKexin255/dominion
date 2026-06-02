@@ -51,6 +51,11 @@ func main() {
 		log.Fatalf("proxy dial: %v", err)
 	}
 
+	promptConn, err := grpc.NewClient(solver.URI(gameconst.PromptTarget), pgrpc.ClientDefault()...)
+	if err != nil {
+		log.Fatalf("prompt dial: %v", err)
+	}
+
 	// 2. Create grpc-gateway mux and register handlers for unary RPCs.
 	gwmux := runtime.NewServeMux(pgrpc.GatewayDefault()...)
 
@@ -60,6 +65,9 @@ func main() {
 	}
 	if err := game.RegisterProxyServiceHandler(ctx, gwmux, proxyConn); err != nil {
 		log.Fatalf("register proxy handler: %v", err)
+	}
+	if err := game.RegisterPromptServiceHandler(ctx, gwmux, promptConn); err != nil {
+		log.Fatalf("register prompt handler: %v", err)
 	}
 
 	// 3. Create root HTTP mux with path-based routing.
@@ -90,6 +98,7 @@ func main() {
 	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCConn("session", sessionConn))
 	b.Register(bootstrap.GRPCConn("proxy", proxyConn))
+	b.Register(bootstrap.GRPCConn("prompt", promptConn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))
 }

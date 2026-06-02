@@ -81,7 +81,15 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	}
 	client := agentclient.NewAgentClient(connRef.Conn)
 
-	if _, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID}); err != nil {
+	agentProfileName := req.GetAgentProfileName()
+	if agentProfileName == "" {
+		agentProfileName = req.GetAgent().GetAgentProfileName()
+	}
+	if agentProfileName == "" {
+		agentProfileName = "default"
+	}
+
+	if _, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID, AgentProfileName: agentProfileName}); err != nil {
 		logs.Error(ctx, "create agent failed", event.String("session_id", sessionID), event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
 		return nil, status.Errorf(codes.Internal, "create agent: %v", err)
 	}
@@ -89,10 +97,11 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	// Persist the owner record.
 	now := time.Now()
 	owner := &domain.AgentOwner{
-		SessionID:  sessionID,
-		OwnerIndex: pickedRef.OwnerIndex,
-		Owner:      pickedRef.Owner,
-		CreateTime: now,
+		SessionID:        sessionID,
+		OwnerIndex:       pickedRef.OwnerIndex,
+		Owner:            pickedRef.Owner,
+		AgentProfileName: agentProfileName,
+		CreateTime:       now,
 	}
 	if err := h.ownerStore.Create(ctx, owner); err != nil {
 		logs.Error(ctx, "create owner record failed", event.String("session_id", sessionID), event.Err(err))
@@ -106,11 +115,12 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	)
 
 	return &game.Agent{
-		Name:       gameconst.AgentName(sessionID),
-		SessionId:  sessionID,
-		OwnerIndex: int32(pickedRef.OwnerIndex),
-		Owner:      pickedRef.Owner,
-		CreateTime: timestamppb.New(now),
+		Name:             gameconst.AgentName(sessionID),
+		SessionId:        sessionID,
+		OwnerIndex:       int32(pickedRef.OwnerIndex),
+		Owner:            pickedRef.Owner,
+		AgentProfileName: agentProfileName,
+		CreateTime:       timestamppb.New(now),
 	}, nil
 }
 
@@ -140,11 +150,12 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	}
 
 	return &game.Agent{
-		Name:       req.GetName(),
-		SessionId:  sessionID,
-		OwnerIndex: int32(owner.OwnerIndex),
-		Owner:      owner.Owner,
-		CreateTime: timestamppb.New(owner.CreateTime),
+		Name:             req.GetName(),
+		SessionId:        sessionID,
+		OwnerIndex:       int32(owner.OwnerIndex),
+		Owner:            owner.Owner,
+		AgentProfileName: owner.AgentProfileName,
+		CreateTime:       timestamppb.New(owner.CreateTime),
 	}, nil
 }
 
@@ -157,6 +168,9 @@ func (h *ProxyHandler) DeleteAgent(ctx context.Context, req *game.DeleteAgentReq
 
 	owner, err := h.ownerStore.Get(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrOwnerNotFound) {
+			return new(emptypb.Empty), nil
+		}
 		return nil, mapDomainError(err)
 	}
 

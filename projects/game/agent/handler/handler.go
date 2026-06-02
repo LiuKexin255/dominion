@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
@@ -35,11 +34,12 @@ func NewAgentHandler(rt domain.Runtime) *AgentHandler {
 	}
 }
 
-// CreateAgent creates an agent for a given session.
+// CreateAgent creates an agent for a given session using the specified profile.
 func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
 	sessionID := req.GetSessionId()
+	profileName := req.GetAgentProfileName()
 
-	s, err := h.runtime.Create(ctx, sessionID)
+	s, err := h.runtime.CreateWithProfile(ctx, sessionID, profileName)
 	if err != nil {
 		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent create: %v", err))
 	}
@@ -52,6 +52,7 @@ func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateReq
 }
 
 // DeleteAgent deletes the agent for a given session.
+// The runtime Delete is idempotent; deleting a non-existent session succeeds.
 func (h *AgentHandler) DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error) {
 	sessionID := req.GetSessionId()
 
@@ -67,7 +68,6 @@ func (h *AgentHandler) DeleteAgent(ctx context.Context, req *game.AgentDeleteReq
 }
 
 // GetAgentStatus returns the current status of the agent in a session.
-// Returns "unknown" status for sessions that have not been initialized.
 func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
 	sessionID := req.GetSessionId()
 
@@ -85,7 +85,9 @@ func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentSta
 //   - status: queries runtime.Status and returns an AgentStatusFrame.
 //   - echo: echoes back the data in an AgentEchoFrame.
 //   - screenshot: converts to domain.ScreenshotInput, calls
-//     runtime.ReceiveScreenshot, and returns an AgentAckFrame.
+//     runtime.ReceiveScreenshot, and converts returned domain.Frames to proto.
+//   - operation_result: converts to domain.OperationResult, calls
+//     runtime.ReceiveOperationResult.
 //   - empty payload: skipped gracefully with a warning log.
 //
 // Returns nil on io.EOF (clean close) or the error from Recv/Send.
@@ -102,28 +104,49 @@ func (h *AgentHandler) Connect(stream game.AgentService_ConnectServer) error {
 		}
 
 		sessionID := frame.GetSessionId()
-		var resp *game.AgentFrame
 
 		switch p := frame.GetPayload().(type) {
 		case *game.AgentFrame_Status:
-			resp, err = h.handleStatus(ctx, sessionID)
+			resp, err := h.handleStatus(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+
 		case *game.AgentFrame_Echo:
-			resp = h.handleEcho(p.Echo, sessionID)
+			resp := h.handleEcho(p.Echo, sessionID)
+			if err := stream.Send(resp); err != nil {
+				return err
+			}
+
 		case *game.AgentFrame_Screenshot:
-			resp, err = h.handleScreenshot(ctx, p.Screenshot, sessionID)
+			frames, err := h.handleScreenshot(ctx, p.Screenshot, sessionID)
+			if err != nil {
+				return err
+			}
+			for _, resp := range frames {
+				if err := stream.Send(resp); err != nil {
+					return err
+				}
+			}
+
+		case *game.AgentFrame_OperationResult:
+			frames, err := h.handleOperationResult(ctx, p.OperationResult, sessionID, frame.GetInvokeId(), frame.GetSequence())
+			if err != nil {
+				return err
+			}
+			for _, resp := range frames {
+				if err := stream.Send(resp); err != nil {
+					return err
+				}
+			}
+
 		default:
 			logs.Warn(ctx, "skipping frame with empty or unknown payload",
 				event.String(logFieldSessionID, sessionID),
 			)
-			continue
-		}
-
-		if err != nil {
-			return err
-		}
-
-		if err := stream.Send(resp); err != nil {
-			return err
 		}
 	}
 }
@@ -157,64 +180,113 @@ func (h *AgentHandler) handleEcho(echo *game.AgentEchoFrame, sessionID string) *
 	}
 }
 
-// handleScreenshot converts a proto screenshot frame to a domain input,
-// passes it to the runtime, and returns an ack frame.
-func (h *AgentHandler) handleScreenshot(ctx context.Context, f *game.AgentScreenshotFrame, sessionID string) (*game.AgentFrame, error) {
+// handleScreenshot converts a proto screenshot frame to domain input,
+// passes it to the runtime, and converts the returned domain frames to
+// proto frames.
+func (h *AgentHandler) handleScreenshot(ctx context.Context, f *game.AgentScreenshotFrame, sessionID string) ([]*game.AgentFrame, error) {
 	input := screenshotFrameToInput(f, sessionID)
-	receipt, err := h.runtime.ReceiveScreenshot(ctx, input)
+	domainFrames, err := h.runtime.ReceiveScreenshot(ctx, sessionID, input)
 	if err != nil {
 		return nil, err
 	}
-	return receiptToAckFrame(receipt, sessionID), nil
+	protoFrames := make([]*game.AgentFrame, 0, len(domainFrames))
+	for _, df := range domainFrames {
+		pf := convertFrameToProto(df, sessionID)
+		protoFrames = append(protoFrames, pf)
+	}
+	return protoFrames, nil
+}
+
+// handleOperationResult converts a proto operation result frame to domain,
+// and passes it to the runtime.
+func (h *AgentHandler) handleOperationResult(ctx context.Context, f *game.AgentOperationResultFrame, sessionID, invokeID string, sequence int64) ([]*game.AgentFrame, error) {
+	if f == nil {
+		return nil, nil
+	}
+	result := &domain.OperationResult{
+		OperationID: f.GetOperationId(),
+		InvokeID:    invokeID,
+		Sequence:    sequence,
+		Status:      int32(f.GetStatus()),
+		Message:     f.GetMessage(),
+	}
+	domainFrames, err := h.runtime.ReceiveOperationResult(ctx, sessionID, result)
+	if err != nil {
+		return nil, err
+	}
+	protoFrames := make([]*game.AgentFrame, 0, len(domainFrames))
+	for _, df := range domainFrames {
+		pf := convertFrameToProto(df, sessionID)
+		protoFrames = append(protoFrames, pf)
+	}
+	return protoFrames, nil
 }
 
 // screenshotFrameToInput converts a proto AgentScreenshotFrame to a domain
-// ScreenshotInput. It maps the ImageEncoding enum to the "PNG" string
-// expected by the domain layer and handles nil CaptureTime gracefully.
+// ScreenshotInput.
 func screenshotFrameToInput(f *game.AgentScreenshotFrame, sessionID string) *domain.ScreenshotInput {
 	if f == nil {
 		return nil
 	}
-
-	encoding := ""
-	if f.GetEncoding() == game.ImageEncoding_IMAGE_ENCODING_PNG {
-		encoding = "PNG"
-	}
-
-	var captureTime time.Time
-	if ct := f.GetCaptureTime(); ct != nil {
-		captureTime = ct.AsTime()
-	}
-
 	return &domain.ScreenshotInput{
-		SessionId:   sessionID,
-		CaptureId:   f.GetCaptureId(),
-		Encoding:    encoding,
-		Data:        f.GetData(),
-		WidthPx:     f.GetWidthPx(),
-		HeightPx:    f.GetHeightPx(),
-		ScaleFactor: f.GetScaleFactor(),
-		WindowTitle: f.GetWindowTitle(),
-		CaptureTime: captureTime,
+		SessionId: sessionID,
+		CaptureId: f.GetCaptureId(),
+		Data:      f.GetData(),
+		WidthPx:   f.GetWidthPx(),
+		HeightPx:  f.GetHeightPx(),
 	}
 }
 
-// receiptToAckFrame converts a domain ScreenshotReceipt to a proto AgentFrame
-// containing an AgentAckFrame. The AckFrameId echoes the original CaptureId
-// so the sender can correlate the acknowledgment.
-func receiptToAckFrame(receipt *domain.ScreenshotReceipt, sessionID string) *game.AgentFrame {
-	if receipt == nil {
+// convertFrameToProto converts a domain Frame to a proto AgentFrame.
+func convertFrameToProto(df *domain.Frame, sessionID string) *game.AgentFrame {
+	if df == nil {
 		return nil
 	}
-	return &game.AgentFrame{
+
+	frame := &game.AgentFrame{
 		SessionId: sessionID,
-		Payload: &game.AgentFrame_Ack{
-			Ack: &game.AgentAckFrame{
-				AckFrameId: receipt.AckFrameId,
-				Message:    receipt.Message,
-			},
-		},
 	}
+
+	switch df.Type {
+	case domain.FrameTypeText:
+		frame.Payload = &game.AgentFrame_Text{
+			Text: &game.AgentTextFrame{Content: df.Content},
+		}
+	case domain.FrameTypeThinking:
+		frame.Payload = &game.AgentFrame_Thinking{
+			Thinking: &game.AgentThinkingFrame{Content: df.Content},
+		}
+	case domain.FrameTypeOperation:
+		opFrame := &game.AgentOperationFrame{
+			OperationId:  df.OperationID,
+			ScreenshotId: df.ScreenshotID,
+			Sequence:     df.OperationSeq,
+		}
+		if df.IsMouse {
+			opFrame.Operation = &game.AgentOperationFrame_Mouse{
+				Mouse: &game.AgentMouseOperation{
+					Button:    game.AgentMouseButton(df.Button),
+					ClickType: game.AgentMouseClickType(df.ClickType),
+					XPx:       df.XPx,
+					YPx:       df.YPx,
+				},
+			}
+		} else {
+			opFrame.Operation = &game.AgentOperationFrame_Keyboard{
+				Keyboard: &game.AgentKeyboardOperation{KeyCodes: df.KeyCodes},
+			}
+		}
+		frame.Payload = &game.AgentFrame_Operation{Operation: opFrame}
+	case domain.FrameTypeWarn:
+		frame.Payload = &game.AgentFrame_Warn{
+			Warn: &game.AgentWarnFrame{
+				Message: df.WarnMessage,
+				Code:    df.WarnCode,
+			},
+		}
+	}
+
+	return frame
 }
 
 // statusToProto converts a domain Status to a proto AgentStatus.

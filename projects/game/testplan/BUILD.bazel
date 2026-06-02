@@ -10,3 +10,15 @@ go_largetest(
         "@com_github_gorilla_websocket//:websocket",
     ],
 )
+
+go_largetest(
+    name = "step3a_testplan_test",
+    srcs = ["step3a_test.go"],
+    data = ["testdata/test_screenshot.png"],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

@@ -19,6 +19,32 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestMain(m *testing.M) {
+	// Seed a "default" agent profile so that agent creation (which requires a
+	// profile) works out of the box for step2 regression tests.
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileURL := fmt.Sprintf("%s%sprompts/agentProfiles", sutHostURL, pathPrefix)
+	body := []byte(`{"agentProfileName":"default","enabled":true}`)
+	req, err := http.NewRequest(http.MethodPost, profileURL, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: create default profile request: %v\n", err)
+		os.Exit(1)
+	}
+	req.Header.Set(headerEnv, sutEnvName)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: create default profile: %v\n", err)
+		os.Exit(1)
+	}
+	resp.Body.Close()
+
+	os.Exit(m.Run())
+}
+
 const (
 	headerEnv  = "env"
 	pathPrefix = "/api/v1/"
@@ -51,13 +77,15 @@ type listSessionsResponse struct {
 // wsFrame mirrors the AgentFrame proto message with oneof payload for
 // WebSocket communication using protojson camelCase field names.
 type wsFrame struct {
-	SessionID  string             `json:"sessionId"`
-	FrameID    string             `json:"frameId,omitempty"`
-	CreateTime string             `json:"createTime,omitempty"`
-	Status     *wsStatusFrame     `json:"status,omitempty"`
-	Echo       *wsEchoFrame       `json:"echo,omitempty"`
-	Screenshot *wsScreenshotFrame `json:"screenshot,omitempty"`
-	Ack        *wsAckFrame        `json:"ack,omitempty"`
+	SessionID  string              `json:"sessionId"`
+	FrameID    string              `json:"frameId,omitempty"`
+	CreateTime string              `json:"createTime,omitempty"`
+	Status     *wsStatusFrame      `json:"status,omitempty"`
+	Echo       *wsEchoFrame        `json:"echo,omitempty"`
+	Screenshot *wsScreenshotFrame  `json:"screenshot,omitempty"`
+	Ack        *wsAckFrame         `json:"ack,omitempty"`
+	Text       *wsTextFrame        `json:"text,omitempty"`
+	Operation  *wsOperationFrame   `json:"operation,omitempty"`
 }
 
 // wsStatusFrame mirrors the AgentStatusFrame proto message.
@@ -83,6 +111,18 @@ type wsScreenshotFrame struct {
 	Data      string `json:"data"`
 	WidthPx   int32  `json:"widthPx"`
 	HeightPx  int32  `json:"heightPx"`
+}
+
+// wsTextFrame mirrors the AgentTextFrame proto message.
+type wsTextFrame struct {
+	Content string `json:"content"`
+}
+
+// wsOperationFrame mirrors the AgentOperationFrame proto message.
+type wsOperationFrame struct {
+	OperationID  string `json:"operationId"`
+	ScreenshotID string `json:"screenshotId"`
+	Sequence     string `json:"sequence"`
 }
 
 // createSession sends a POST request with an empty CreateSessionRequest
@@ -562,8 +602,8 @@ func TestWebSocketStatusResponse(t *testing.T) {
 	if statusResp.Status == nil {
 		t.Fatal("status response has no status oneof")
 	}
-	if statusResp.Status.Status != "initialized" {
-		t.Errorf("status response status = %q, want %q", statusResp.Status.Status, "initialized")
+	if statusResp.Status.Status != "idle" {
+		t.Errorf("status response status = %q, want %q", statusResp.Status.Status, "idle")
 	}
 
 	// when: send echo frame
@@ -851,8 +891,8 @@ func TestFullLifecycle(t *testing.T) {
 	if recvFrame.Status == nil {
 		t.Fatal("step5 response has no status oneof")
 	}
-	if recvFrame.Status.Status != "initialized" {
-		t.Errorf("step5 status = %q, want %q", recvFrame.Status.Status, "initialized")
+	if recvFrame.Status.Status != "idle" {
+		t.Errorf("step5 status = %q, want %q", recvFrame.Status.Status, "idle")
 	}
 	conn.Close()
 
@@ -892,8 +932,8 @@ func TestListSessions(t *testing.T) {
 	sess1ID, _ := createSession(t, sutHostURL, sutEnvName)
 	sess2ID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// when: list sessions
-	respBody := listSessions(t, sutHostURL, sutEnvName, 10)
+	// when: list sessions with large page size to avoid pagination from prior tests
+	respBody := listSessions(t, sutHostURL, sutEnvName, 100)
 
 	// then: both sessions are in the response
 	got := new(listSessionsResponse)
@@ -917,8 +957,8 @@ func TestListSessions(t *testing.T) {
 	if !found2 {
 		t.Errorf("session %q not found in list result", sess2ID)
 	}
-	if got.NextPageToken != "" {
-		t.Errorf("next_page_token = %q, want empty", got.NextPageToken)
+	if got.NextPageToken != "" && len(got.Sessions) < 100 {
+		t.Errorf("next_page_token = %q, want empty (got %d sessions)", got.NextPageToken, len(got.Sessions))
 	}
 }
 
@@ -962,18 +1002,27 @@ func TestScreenshotFrame(t *testing.T) {
 		t.Fatalf("WriteJSON screenshot frame: %v", err)
 	}
 
-	// then: read ack response
-	var ackResp wsFrame
-	if err := conn.ReadJSON(&ackResp); err != nil {
-		t.Fatalf("ReadJSON ack response: %v", err)
+	// then: read text frame response
+	var textResp wsFrame
+	if err := conn.ReadJSON(&textResp); err != nil {
+		t.Fatalf("ReadJSON text response: %v", err)
 	}
-	if ackResp.Ack == nil {
-		t.Fatal("ack response has no ack oneof")
+	if textResp.Text == nil {
+		t.Fatal("first response has no text oneof")
 	}
-	if ackResp.Ack.AckFrameID != captureID {
-		t.Errorf("ack ackFrameId = %q, want %q", ackResp.Ack.AckFrameID, captureID)
+	if textResp.Text.Content != "analyzing screenshot..." {
+		t.Errorf("text content = %q, want %q", textResp.Text.Content, "analyzing screenshot...")
 	}
-	if ackResp.Ack.Message != "screenshot received" {
-		t.Errorf("ack message = %q, want %q", ackResp.Ack.Message, "screenshot received")
+
+	// then: read operation frame response
+	var opResp wsFrame
+	if err := conn.ReadJSON(&opResp); err != nil {
+		t.Fatalf("ReadJSON operation response: %v", err)
+	}
+	if opResp.Operation == nil {
+		t.Fatal("second response has no operation oneof")
+	}
+	if opResp.Operation.ScreenshotID != captureID {
+		t.Errorf("operation screenshotId = %q, want %q", opResp.Operation.ScreenshotID, captureID)
 	}
 }

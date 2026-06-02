@@ -71,6 +71,14 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	}
 }
 
+// OperationResultView is the Wails view model for an operation execution result.
+type OperationResultView struct {
+	OperationID string `json:"operationId"`
+	Sequence    int64  `json:"sequence"`
+	Status      int32  `json:"status"`
+	Message     string `json:"message,omitempty"`
+}
+
 // timestampString formats a protobuf Timestamp as an RFC3339 string.
 // Returns "" if t is nil.
 func timestampString(t *timestamppb.Timestamp) string {

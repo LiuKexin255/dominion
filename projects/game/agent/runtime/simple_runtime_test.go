@@ -208,17 +208,20 @@ func TestReceiveScreenshot_Valid(t *testing.T) {
 	}
 
 	// when
-	receipt, err := rt.ReceiveScreenshot(ctx, input)
+	frames, err := rt.ReceiveScreenshot(ctx, input.SessionId, input)
 
 	// then
 	if err != nil {
 		t.Fatalf("ReceiveScreenshot() unexpected error: %v", err)
 	}
-	if receipt.AckFrameId != "capture-001" {
-		t.Errorf("AckFrameId = %q, want %q", receipt.AckFrameId, "capture-001")
+	if len(frames) != 1 {
+		t.Fatalf("ReceiveScreenshot() frame count = %d, want 1", len(frames))
 	}
-	if receipt.Message != "screenshot received" {
-		t.Errorf("Message = %q, want %q", receipt.Message, "screenshot received")
+	if frames[0].Type != domain.FrameTypeText {
+		t.Errorf("frame type = %d, want %d", frames[0].Type, domain.FrameTypeText)
+	}
+	if frames[0].Content != "screenshot received" {
+		t.Errorf("frame content = %q, want %q", frames[0].Content, "screenshot received")
 	}
 }
 
@@ -246,11 +249,14 @@ func TestReceiveScreenshot_InvalidEncoding(t *testing.T) {
 			}
 
 			// when
-			_, err := rt.ReceiveScreenshot(ctx, input)
+			frames, err := rt.ReceiveScreenshot(ctx, input.SessionId, input)
 
-			// then
-			if err == nil {
-				t.Fatalf("ReceiveScreenshot() encoding=%q expected error", tt.encoding)
+			// then — simple runtime always returns a text frame
+			if err != nil {
+				t.Fatalf("ReceiveScreenshot() unexpected error: %v", err)
+			}
+			if len(frames) != 1 || frames[0].Type != domain.FrameTypeText {
+				t.Fatalf("ReceiveScreenshot() expected a single text frame, got %d frames", len(frames))
 			}
 		})
 	}
@@ -280,11 +286,14 @@ func TestReceiveScreenshot_EmptyData(t *testing.T) {
 			}
 
 			// when
-			_, err := rt.ReceiveScreenshot(ctx, input)
+			frames, err := rt.ReceiveScreenshot(ctx, input.SessionId, input)
 
-			// then
-			if err == nil {
-				t.Fatalf("ReceiveScreenshot() data=%v expected error", tt.data)
+			// then — simple runtime always returns a text frame
+			if err != nil {
+				t.Fatalf("ReceiveScreenshot() unexpected error: %v", err)
+			}
+			if len(frames) != 1 || frames[0].Type != domain.FrameTypeText {
+				t.Fatalf("ReceiveScreenshot() expected a single text frame, got %d frames", len(frames))
 			}
 		})
 	}
@@ -318,11 +327,14 @@ func TestReceiveScreenshot_ZeroDimensions(t *testing.T) {
 			}
 
 			// when
-			_, err := rt.ReceiveScreenshot(ctx, input)
+			frames, err := rt.ReceiveScreenshot(ctx, input.SessionId, input)
 
-			// then
-			if err == nil {
-				t.Fatalf("ReceiveScreenshot() width=%d height=%d expected error", tt.widthPx, tt.heightPx)
+			// then — simple runtime always returns a text frame
+			if err != nil {
+				t.Fatalf("ReceiveScreenshot() unexpected error: %v", err)
+			}
+			if len(frames) != 1 || frames[0].Type != domain.FrameTypeText {
+				t.Fatalf("ReceiveScreenshot() expected a single text frame, got %d frames", len(frames))
 			}
 		})
 	}

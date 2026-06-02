@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "mongo",
+    srcs = [
+        "model.go",
+        "repository.go",
+    ],
+    importpath = "dominion/projects/game/prompt/runtime/mongo",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//projects/game/prompt/domain",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)
+
+go_unittest(
+    name = "mongo_test",
+    srcs = ["repository_test.go"],
+    embed = [":mongo"],
+    deps = [
+        "//projects/game/prompt/domain",
+        "@org_mongodb_go_mongo_driver//bson",
+        "@org_mongodb_go_mongo_driver//mongo",
+        "@org_mongodb_go_mongo_driver//mongo/options",
+    ],
+)

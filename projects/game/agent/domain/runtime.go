@@ -15,6 +15,12 @@ type Runtime interface {
 	// Status returns the current status of the agent for the given session.
 	Status(ctx context.Context, sessionID string) (*Status, error)
 	// ReceiveScreenshot processes a screenshot sent by a client and returns
-	// a receipt that echoes the capture ID for correlation.
-	ReceiveScreenshot(ctx context.Context, input *ScreenshotInput) (*ScreenshotReceipt, error)
+	// zero or more output frames (text, thinking, operation, warn).
+	ReceiveScreenshot(ctx context.Context, sessionID string, input *ScreenshotInput) ([]*Frame, error)
+	// CreateWithProfile creates the agent for the given session with a profile
+	// and returns the resulting status.
+	CreateWithProfile(ctx context.Context, sessionID string, profileName string) (*Status, error)
+	// ReceiveOperationResult handles the result of a desktop operation.
+	// Returns zero or more frames (e.g. warn frames for validation errors).
+	ReceiveOperationResult(ctx context.Context, sessionID string, result *OperationResult) ([]*Frame, error)
 }

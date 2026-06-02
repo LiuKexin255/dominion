@@ -3,7 +3,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -64,24 +63,24 @@ func (r *SimpleRuntime) Status(ctx context.Context, sessionID string) (*domain.S
 	}, nil
 }
 
-// ReceiveScreenshot validates and acknowledges a screenshot from a client.
-// It checks that the encoding is PNG, the data is non-empty, and dimensions
-// are positive. On success it returns a receipt echoing the capture ID.
-func (r *SimpleRuntime) ReceiveScreenshot(_ context.Context, input *domain.ScreenshotInput) (*domain.ScreenshotReceipt, error) {
-	if input == nil {
-		return nil, fmt.Errorf("screenshot input is nil")
-	}
-	if input.Encoding != "PNG" {
-		return nil, fmt.Errorf("unsupported encoding %q: only PNG is accepted", input.Encoding)
-	}
-	if len(input.Data) == 0 {
-		return nil, fmt.Errorf("screenshot data is empty")
-	}
-	if input.WidthPx <= 0 || input.HeightPx <= 0 {
-		return nil, fmt.Errorf("invalid dimensions %dx%d: width and height must be positive", input.WidthPx, input.HeightPx)
-	}
-	return &domain.ScreenshotReceipt{
-		AckFrameId: input.CaptureId,
-		Message:    "screenshot received",
+// CreateWithProfile delegates to Create since SimpleRuntime does not perform
+// profile validation.
+func (r *SimpleRuntime) CreateWithProfile(ctx context.Context, sessionID string, _ string) (*domain.Status, error) {
+	return r.Create(ctx, sessionID)
+}
+
+// ReceiveScreenshot acknowledges a screenshot from a client and returns a
+// single text frame indicating receipt.
+func (r *SimpleRuntime) ReceiveScreenshot(_ context.Context, _ string, _ *domain.ScreenshotInput) ([]*domain.Frame, error) {
+	return []*domain.Frame{
+		{
+			Type:    domain.FrameTypeText,
+			Content: "screenshot received",
+		},
 	}, nil
+}
+
+// ReceiveOperationResult is a no-op for SimpleRuntime.
+func (r *SimpleRuntime) ReceiveOperationResult(_ context.Context, _ string, _ *domain.OperationResult) ([]*domain.Frame, error) {
+	return nil, nil
 }

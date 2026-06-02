@@ -8,9 +8,10 @@ import (
 
 // gRPC target constants
 const (
-	SessionTarget = "game/session:grpc"
-	ProxyTarget   = "game/proxy:grpc"
-	AgentTarget   = "game/agent:grpc"
+	SessionTarget  = "game/session:grpc"
+	ProxyTarget    = "game/proxy:grpc"
+	AgentTarget    = "game/agent:grpc"
+	PromptTarget   = "game/prompt:grpc"
 
 	SessionNamePrefix = "sessions/"
 

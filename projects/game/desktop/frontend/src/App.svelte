@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, WindowRef, AgentAckFrame, Config } from './api'
+  import type { Session, Agent, WindowRef, AgentAckFrame, Config, AgentFrame, OperationResultView } from './api'
   import {
     setConfig,
     createSession,
@@ -14,7 +14,9 @@
     listWindows,
     bindWindow,
     captureScreenshot,
-    sendScreenshot
+    sendScreenshot,
+    executeOperation,
+    sendNextScreenshot
   } from './api'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
@@ -46,6 +48,21 @@
   let loading = $state(false)
   let error: string | null = $state(null)
 
+  type AgentFrameItem = {
+    type: 'text' | 'thinking' | 'operation' | 'warn'
+    content?: string
+    mouse?: { button: number; clickType: number; xPx: number; yPx: number }
+    keyboard?: { keyCodes: string }
+    operationId?: string
+    screenshotId?: string
+    sequence?: number
+    message?: string
+    code?: string
+  }
+
+  let agentFrames: AgentFrameItem[] = $state([])
+  let operationResult: OperationResultView | null = $state(null)
+
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
@@ -61,6 +78,14 @@
     if (!initialized) {
       initialized = true
       handleRefresh()
+    }
+
+    const runtime = window.runtime
+    if (runtime?.EventsOn) {
+      runtime.EventsOn('game:frame', (data: unknown) => {
+        const frame = data as AgentFrame
+        handleAgentFrame(frame)
+      })
     }
   })
 
@@ -227,8 +252,59 @@
     screenshotData = null
     screenshotMeta = null
     ackResult = null
+    agentFrames = []
+    operationResult = null
     error = null
     page = 'play'
+  }
+
+  function handleAgentFrame(frame: AgentFrame) {
+    if (frame.text) {
+      agentFrames = [...agentFrames, { type: 'text', content: frame.text.content }]
+    } else if (frame.thinking) {
+      agentFrames = [...agentFrames, { type: 'thinking', content: frame.thinking.content }]
+    } else if (frame.operation) {
+      const op = frame.operation
+      agentFrames = [...agentFrames, {
+        type: 'operation',
+        operationId: op.operationId,
+        screenshotId: op.screenshotId,
+        sequence: op.sequence,
+        mouse: op.mouse ? { button: op.mouse.button, clickType: op.mouse.clickType, xPx: op.mouse.xPx, yPx: op.mouse.yPx } : undefined,
+        keyboard: op.keyboard ? { keyCodes: op.keyboard.keyCodes } : undefined,
+      }]
+    } else if (frame.warn) {
+      agentFrames = [...agentFrames, { type: 'warn', message: frame.warn.message, code: frame.warn.code }]
+    } else if (frame.operationResult) {
+      operationResult = frame.operationResult
+    }
+  }
+
+  async function handleExecuteOperation(frame: AgentFrameItem) {
+    try {
+      loading = true
+      error = null
+      const result = await executeOperation(
+        frame.operationId || '',
+        frame.screenshotId || '',
+        frame.sequence || 0,
+        frame.mouse?.button || 1,
+        frame.mouse?.clickType || 1,
+        frame.mouse?.xPx || 0,
+        frame.mouse?.yPx || 0,
+        !!frame.mouse,
+        frame.keyboard?.keyCodes || '',
+        0,
+        0,
+      )
+      operationResult = result
+      log('info', 'play', `Operation executed: ${result.operationId} status=${result.status}`)
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `Execute operation failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
   }
 
   function handleBackToSessions() {
@@ -347,6 +423,23 @@
     }
   }
 
+  async function handleCaptureNext() {
+    try {
+      loading = true
+      error = null
+      await sendNextScreenshot()
+      operationResult = null
+      agentFrames = []
+      playState = 'next_screenshot_sent'
+      log('info', 'play', 'Next screenshot sent, waiting for agent response')
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'play', `Capture next screenshot failed: ${String(e)}`)
+    } finally {
+      loading = false
+    }
+  }
+
   // --- Log handler ---
   function handleClearLogs() {
     logEntries = []
@@ -403,6 +496,8 @@
       {screenshotData}
       {screenshotMeta}
       {ackResult}
+      {agentFrames}
+      {operationResult}
       {playState}
       wsConnected={connectionState === 'connected'}
       {loading}
@@ -411,6 +506,8 @@
       onBindWindow={handleBindWindow}
       onCaptureScreenshot={handleCaptureScreenshot}
       onSendScreenshot={handleSendScreenshot}
+      onExecuteOperation={handleExecuteOperation}
+      onCaptureNext={handleCaptureNext}
       onBack={handleBackToDetail}
     />
   {/if}

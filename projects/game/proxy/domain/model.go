@@ -13,6 +13,8 @@ type AgentOwner struct {
 	OwnerIndex int
 	// Owner is the identifier of the owner.
 	Owner string
+	// AgentProfileName is the profile name used to create this agent.
+	AgentProfileName string
 	// CreateTime is the timestamp when this ownership record was created.
 	CreateTime time.Time
 }

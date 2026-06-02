@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game Agent step1 system test"
+desc: "Game Agent step3a system test"
 services:
   - infra:
       resource: mongodb
