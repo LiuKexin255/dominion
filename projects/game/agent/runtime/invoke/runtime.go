@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"dominion/projects/game/agent/domain"
 )
@@ -42,20 +43,25 @@ func (r *InvokeRuntime) CreateWithProfile(_ context.Context, sessionID string, c
 		skillNames[i] = sk.SkillName
 	}
 
+	now := time.Now()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.agents[sessionID] = &domain.InvokeContext{
 		SessionID:   sessionID,
 		State:       domain.InvokeStateIdle,
+		CreateTime:  now,
 		ProfileName: config.ProfileName,
 		Skills:      skillNames,
 		MCPNames:    config.MCPNames,
 	}
 
 	return &domain.Status{
-		SessionId: sessionID,
-		Status:    "created",
+		SessionId:   sessionID,
+		Status:      "created",
+		ProfileName: config.ProfileName,
+		CreateTime:  now,
 	}, nil
 }
 
@@ -75,12 +81,14 @@ func (r *InvokeRuntime) Status(_ context.Context, sessionID string) (*domain.Sta
 	r.mu.Unlock()
 
 	if !ok {
-		return nil, fmt.Errorf("agent %q not found", sessionID)
+		return nil, fmt.Errorf("%w: %q", domain.ErrNotFound, sessionID)
 	}
 
 	return &domain.Status{
-		SessionId: sessionID,
-		Status:    invokeStateString(ictx.State),
+		SessionId:   sessionID,
+		Status:      invokeStateString(ictx.State),
+		ProfileName: ictx.ProfileName,
+		CreateTime:  ictx.CreateTime,
 	}, nil
 }
 

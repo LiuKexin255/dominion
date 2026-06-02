@@ -146,12 +146,6 @@ export interface ListSessionsResponse {
   nextPageToken: string
 }
 
-export interface AgentStatus {
-  sessionId: string
-  status: string
-  createTime: string
-}
-
 // ─── Operation Execution ─────────────────────────────────────────────────────
 
 export interface OperationResultView {
@@ -218,7 +212,6 @@ interface WailsApp {
   BindWindow(hwnd: number): Promise<void>
   CaptureScreenshot(): Promise<CapturedImage>
   SendScreenshot(hwnd: number): Promise<AgentAckFrame>
-  GetAgentStatus(sessionID: string): Promise<AgentStatus>
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
@@ -321,12 +314,6 @@ export async function sendScreenshot(hwnd: number): Promise<AgentAckFrame> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SendScreenshot(hwnd)
-}
-
-export async function getAgentStatus(sessionID: string): Promise<AgentStatus> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.GetAgentStatus(sessionID)
 }
 
 export async function connectAgent(sessionID: string): Promise<void> {

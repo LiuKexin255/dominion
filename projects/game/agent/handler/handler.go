@@ -11,6 +11,7 @@ import (
 	"dominion/common/gopkg/logs/event"
 	game "dominion/projects/game"
 	"dominion/projects/game/agent/domain"
+	"dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/grpc/codes"
 	grpcStatus "google.golang.org/grpc/status"
@@ -35,7 +36,7 @@ func NewAgentHandler(rt domain.Runtime) *AgentHandler {
 }
 
 // CreateAgent creates an agent for a given session using the specified profile.
-func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
+func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.Agent, error) {
 	sessionID := req.GetSessionId()
 	profileName := req.GetAgentProfileName()
 	if profileName == "" {
@@ -54,7 +55,7 @@ func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateReq
 		event.String(logFieldSessionID, sessionID),
 	)
 
-	return statusToProto(s), nil
+	return agentToProto(s), nil
 }
 
 // DeleteAgent deletes the agent for a given session.
@@ -73,16 +74,19 @@ func (h *AgentHandler) DeleteAgent(ctx context.Context, req *game.AgentDeleteReq
 	return new(emptypb.Empty), nil
 }
 
-// GetAgentStatus returns the current status of the agent in a session.
-func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
+// GetAgent returns the agent resource for a session.
+func (h *AgentHandler) GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error) {
 	sessionID := req.GetSessionId()
 
 	s, err := h.runtime.Status(ctx, sessionID)
 	if err != nil {
-		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent status: %v", err))
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, grpcStatus.Error(codes.NotFound, fmt.Sprintf("agent not found: %s", sessionID))
+		}
+		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent get: %v", err))
 	}
 
-	return statusToProto(s), nil
+	return agentToProto(s), nil
 }
 
 // Connect handles the bidirectional stream for agent communication.
@@ -257,19 +261,18 @@ func convertFrameToProto(df *domain.Frame, sessionID string) *game.AgentFrame {
 	return frame
 }
 
-// statusToProto converts a domain Status to a proto AgentStatus.
-func statusToProto(s *domain.Status) *game.AgentStatus {
+// agentToProto converts a domain Status to a proto Agent.
+func agentToProto(s *domain.Status) *game.Agent {
 	if s == nil {
 		return nil
 	}
-
-	p := &game.AgentStatus{
-		SessionId: s.SessionId,
-		Status:    s.Status,
+	p := &game.Agent{
+		Name:             gameconst.AgentName(s.SessionId),
+		SessionId:        s.SessionId,
+		AgentProfileName: s.ProfileName,
 	}
 	if !s.CreateTime.IsZero() {
 		p.CreateTime = timestamppb.New(s.CreateTime)
 	}
-
 	return p
 }

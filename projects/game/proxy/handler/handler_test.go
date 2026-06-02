@@ -9,6 +9,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
 
@@ -74,16 +75,22 @@ type mockAgentClient struct {
 	deleteErr    error
 }
 
-func (c *mockAgentClient) CreateAgent(_ context.Context, _ *game.AgentCreateRequest) (*game.AgentStatus, error) {
-	return new(game.AgentStatus), c.initErr
+func (c *mockAgentClient) CreateAgent(_ context.Context, req *game.AgentCreateRequest) (*game.Agent, error) {
+	return &game.Agent{
+		Name:      gameconst.AgentName(req.GetSessionId()),
+		SessionId: req.GetSessionId(),
+	}, c.initErr
 }
 
 func (c *mockAgentClient) DeleteAgent(_ context.Context, _ *game.AgentDeleteRequest) (*emptypb.Empty, error) {
 	return new(emptypb.Empty), c.deleteErr
 }
 
-func (c *mockAgentClient) GetAgentStatus(_ context.Context, _ *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
-	return new(game.AgentStatus), c.getStatusErr
+func (c *mockAgentClient) GetAgent(_ context.Context, req *game.AgentGetRequest) (*game.Agent, error) {
+	return &game.Agent{
+		Name:      gameconst.AgentName(req.GetSessionId()),
+		SessionId: req.GetSessionId(),
+	}, c.getStatusErr
 }
 
 func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
@@ -179,12 +186,6 @@ func TestCreateAgent(t *testing.T) {
 		}
 		if agent.GetSessionId() != "test-session-001" {
 			t.Fatalf("CreateAgent().SessionId = %q, want %q", agent.GetSessionId(), "test-session-001")
-		}
-		if agent.GetOwnerIndex() != 1 {
-			t.Fatalf("CreateAgent().OwnerIndex = %d, want %d", agent.GetOwnerIndex(), 1)
-		}
-		if agent.GetOwner() != "agent-1" {
-			t.Fatalf("CreateAgent().Owner = %q, want %q", agent.GetOwner(), "agent-1")
 		}
 	})
 
@@ -358,12 +359,6 @@ func TestGetAgent(t *testing.T) {
 		if agent.GetSessionId() != "session-get" {
 			t.Fatalf("GetAgent().SessionId = %q, want %q", agent.GetSessionId(), "session-get")
 		}
-		if agent.GetOwnerIndex() != 2 {
-			t.Fatalf("GetAgent().OwnerIndex = %d, want %d", agent.GetOwnerIndex(), 2)
-		}
-		if agent.GetOwner() != "agent-2" {
-			t.Fatalf("GetAgent().Owner = %q, want %q", agent.GetOwner(), "agent-2")
-		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
@@ -395,7 +390,7 @@ func TestGetAgent(t *testing.T) {
 		}
 	})
 
-	t.Run("get_status_fails", func(t *testing.T) {
+	t.Run("get_agent_fails", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
 		owner := &domain.AgentOwner{

@@ -12,9 +12,9 @@ import (
 
 // Client is the interface for agent service operations.
 type Client interface {
-	CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error)
+	CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.Agent, error)
 	DeleteAgent(ctx context.Context, req *game.AgentDeleteRequest) (*emptypb.Empty, error)
-	GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error)
+	GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
 }
 
@@ -36,7 +36,7 @@ var NewAgentClient = func(conn *grpc.ClientConn) Client {
 }
 
 // CreateAgent creates an agent for a given session.
-func (c *AgentClient) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
+func (c *AgentClient) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.Agent, error) {
 	return c.client.CreateAgent(ctx, req)
 }
 
@@ -45,9 +45,9 @@ func (c *AgentClient) DeleteAgent(ctx context.Context, req *game.AgentDeleteRequ
 	return c.client.DeleteAgent(ctx, req)
 }
 
-// GetAgentStatus returns the current status of the agent in a session.
-func (c *AgentClient) GetAgentStatus(ctx context.Context, req *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
-	return c.client.GetAgentStatus(ctx, req)
+// GetAgent returns the current agent in a session.
+func (c *AgentClient) GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error) {
+	return c.client.GetAgent(ctx, req)
 }
 
 // Connect establishes a bidirectional stream to the agent service.

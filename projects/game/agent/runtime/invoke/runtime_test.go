@@ -2,6 +2,7 @@ package invoke
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"dominion/projects/game/agent/domain"
@@ -31,6 +32,12 @@ func TestCreateWithProfile_Valid(t *testing.T) {
 	}
 	if status.Status != "created" {
 		t.Errorf("Status = %q, want created", status.Status)
+	}
+	if status.ProfileName != "test-profile" {
+		t.Errorf("ProfileName = %q, want test-profile", status.ProfileName)
+	}
+	if status.CreateTime.IsZero() {
+		t.Error("CreateTime is zero, want non-zero")
 	}
 }
 
@@ -198,8 +205,8 @@ func TestInvokeRuntime_Delete_ExistingAgent(t *testing.T) {
 
 	// verify agent is removed
 	_, err = rt.Status(ctx, "sess1")
-	if err == nil {
-		t.Fatal("Status() expected error after delete, got nil")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Status() after delete: error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -221,5 +228,11 @@ func TestInvokeRuntime_Status(t *testing.T) {
 	}
 	if status.Status != "idle" {
 		t.Errorf("Status = %q, want idle", status.Status)
+	}
+	if status.ProfileName != "test-profile" {
+		t.Errorf("ProfileName = %q, want test-profile", status.ProfileName)
+	}
+	if status.CreateTime.IsZero() {
+		t.Error("CreateTime is zero, want non-zero")
 	}
 }

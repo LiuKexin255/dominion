@@ -94,32 +94,13 @@ service ProxyService {
 // Prefix Path: /api/v1/agents
 service AgentService {
   // CreateAgent creates an agent for a given session.
-  rpc CreateAgent(AgentCreateRequest) returns (AgentStatus) {
-    option (google.api.http) = {
-      post: "/api/v1/agents:create"
-      body: "*"
-    };
+  rpc CreateAgent(AgentCreateRequest) returns (Agent);
 
-    option (google.api.method_signature) = "session_id";
-  }
-
-  // GetAgentStatus returns the current status of the agent in a session.
-  rpc GetAgentStatus(GetAgentStatusRequest) returns (AgentStatus) {
-    option (google.api.http) = {
-      get: "/api/v1/agents/{session_id}/status"
-    };
-
-    option (google.api.method_signature) = "session_id";
-  }
+  // GetAgent returns the Agent resource for a session.
+  rpc GetAgent(AgentGetRequest) returns (Agent);
 
   // DeleteAgent deletes the agent for a given session.
-  rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/api/v1/agents/{session_id}"
-    };
-
-    option (google.api.method_signature) = "session_id";
-  }
+  rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty);
 
   // Connect establishes a bidirectional streaming channel for agent-to-agent
   // communication. Messages are exchanged as AgentFrame units.
@@ -404,18 +385,6 @@ message AgentScreenshotRequestFrame {
   string reason = 1;
 }
 
-// AgentStatus reports the current status of an agent in a session.
-message AgentStatus {
-  // The session identifier.
-  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
-
-  // The current status string.
-  string status = 2;
-
-  // The timestamp when this status was recorded.
-  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
-}
-
 // AgentProfile describes the configuration for creating an agent.
 message AgentProfile {
   // The resource name, e.g. "agentProfiles/my-profile".
@@ -547,8 +516,8 @@ message AgentDeleteRequest {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
-// GetAgentStatusRequest is the request to get the agent status for a session.
-message GetAgentStatusRequest {
+// AgentGetRequest is the request to get an agent for a session.
+message AgentGetRequest {
   // The session identifier.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }

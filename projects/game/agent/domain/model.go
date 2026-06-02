@@ -1,7 +1,10 @@
 // Package domain provides the domain models and interfaces for the agent service.
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // ScreenshotInput carries the raw screenshot data sent by a client.
 type ScreenshotInput struct {
@@ -41,9 +44,14 @@ type Status struct {
 	SessionId string
 	// Status is the current status string (e.g. "initialized", "unknown").
 	Status string
+	// ProfileName is the agent profile name used to create this agent.
+	ProfileName string
 	// CreateTime is the timestamp when this status was recorded.
 	CreateTime time.Time
 }
+
+// ErrNotFound is returned when an agent session is not found.
+var ErrNotFound = errors.New("agent not found")
 
 // InvokeState represents the state of an invoke cycle.
 type InvokeState int
@@ -61,6 +69,7 @@ type InvokeContext struct {
 	InvokeID    string
 	Sequence    int64
 	State       InvokeState
+	CreateTime  time.Time
 	ProfileName string
 	Skills      []string
 	MCPNames    []string

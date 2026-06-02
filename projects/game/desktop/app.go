@@ -443,36 +443,6 @@ func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
 	})
 	return ack, nil
 }
-
-// GetAgentStatus retrieves the agent status for a session.
-func (a *App) GetAgentStatus(sessionID string) (*game.AgentStatus, error) {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, _ := randomHex(8)
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting agent status", map[string]any{
-		"trace_id":       traceID,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	status, err := a.client.GetAgentStatus(ctx, sessionID)
-	if err != nil {
-		a.logger.Error("backend", "Get agent status failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Agent status retrieved", map[string]any{
-		"trace_id":       traceID,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	return status, nil
-}
-
 // ConnectAgent establishes a WebSocket connection for the agent.
 // After the WebSocket handshake, it performs an application-level probe
 // (round-trip ping) to verify the full path: desktop → gateway → proxy → agent.

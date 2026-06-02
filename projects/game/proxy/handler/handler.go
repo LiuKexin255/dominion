@@ -11,14 +11,12 @@ import (
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
 	game "dominion/projects/game"
-	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var (
@@ -86,12 +84,12 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 		agentProfileName = req.GetAgent().GetAgentProfileName()
 	}
 
-	if _, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID, AgentProfileName: agentProfileName}); err != nil {
+	agent, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID, AgentProfileName: agentProfileName})
+	if err != nil {
 		logs.Error(ctx, "create agent failed", event.String("session_id", sessionID), event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
 		return nil, status.Errorf(codes.Internal, "create agent: %v", err)
 	}
 
-	// Persist the owner record.
 	now := time.Now()
 	owner := &domain.AgentOwner{
 		SessionID:  sessionID,
@@ -110,14 +108,7 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 		event.Int("agent_index", pickedRef.OwnerIndex),
 	)
 
-	return &game.Agent{
-		Name:             gameconst.AgentName(sessionID),
-		SessionId:        sessionID,
-		OwnerIndex:       int32(pickedRef.OwnerIndex),
-		Owner:            pickedRef.Owner,
-		AgentProfileName: agentProfileName,
-		CreateTime:       timestamppb.New(now),
-	}, nil
+	return agent, nil
 }
 
 // GetAgent returns the Agent resource identified by name.
@@ -140,19 +131,13 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	}
 	client := agentclient.NewAgentClient(connRef.Conn)
 
-	if _, err := client.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: sessionID}); err != nil {
-		logs.Error(ctx, "get agent status failed", event.String("session_id", sessionID), event.Err(err))
-		return nil, status.Errorf(codes.Internal, "get agent status: %v", err)
+	agent, err := client.GetAgent(ctx, &game.AgentGetRequest{SessionId: sessionID})
+	if err != nil {
+		logs.Error(ctx, "get agent failed", event.String("session_id", sessionID), event.Err(err))
+		return nil, status.Errorf(codes.Internal, "get agent: %v", err)
 	}
 
-	return &game.Agent{
-		Name:             req.GetName(),
-		SessionId:        sessionID,
-		OwnerIndex:       int32(owner.OwnerIndex),
-		Owner:            owner.Owner,
-		AgentProfileName: "",
-		CreateTime:       timestamppb.New(owner.CreateTime),
-	}, nil
+	return agent, nil
 }
 
 // DeleteAgent deletes the Agent resource identified by name.
