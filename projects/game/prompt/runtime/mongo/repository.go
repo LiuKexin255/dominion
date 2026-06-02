@@ -94,13 +94,13 @@ func NewRepository(client *mongodriver.Client, dbName string) *Repository {
 
 	// Create unique index on agent_profile_name.
 	_, _ = profilesColl.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
-		Keys:    bson.D{{fieldAgentProfileName, 1}},
+		Keys:    bson.D{{Key: fieldAgentProfileName, Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
 
 	// Create unique index on skill_name.
 	_, _ = skillsColl.Indexes().CreateOne(context.Background(), mongodriver.IndexModel{
-		Keys:    bson.D{{fieldSkillName, 1}},
+		Keys:    bson.D{{Key: fieldSkillName, Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
 
@@ -236,7 +236,7 @@ func listProfiles(coll collectionOps, ctx context.Context, pageSize int, pageTok
 
 	limit := int64(pageSize) + 1
 	opts := options.Find().
-		SetSort(bson.D{{fieldAgentProfileName, 1}}).
+		SetSort(bson.D{{Key: fieldAgentProfileName, Value: 1}}).
 		SetLimit(limit)
 
 	cur, err := coll.Find(ctx, filter, opts)
@@ -280,7 +280,7 @@ func listSkills(coll collectionOps, ctx context.Context, pageSize int, pageToken
 
 	limit := int64(pageSize) + 1
 	opts := options.Find().
-		SetSort(bson.D{{fieldSkillName, 1}}).
+		SetSort(bson.D{{Key: fieldSkillName, Value: 1}}).
 		SetLimit(limit)
 
 	cur, err := coll.Find(ctx, filter, opts)

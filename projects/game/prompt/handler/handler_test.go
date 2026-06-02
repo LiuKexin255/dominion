@@ -23,7 +23,7 @@ func newInMemoryAgentProfileRepo() *inMemoryAgentProfileRepo {
 	return &inMemoryAgentProfileRepo{profiles: make(map[string]*domain.AgentProfile)}
 }
 
-func (r *inMemoryAgentProfileRepo) Create(_ context.Context, profile *domain.AgentProfile) error {
+func (r *inMemoryAgentProfileRepo) CreateAgentProfile(_ context.Context, profile *domain.AgentProfile) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.profiles[profile.AgentProfileName]; exists {
@@ -33,7 +33,7 @@ func (r *inMemoryAgentProfileRepo) Create(_ context.Context, profile *domain.Age
 	return nil
 }
 
-func (r *inMemoryAgentProfileRepo) Get(_ context.Context, profileName string) (*domain.AgentProfile, error) {
+func (r *inMemoryAgentProfileRepo) GetAgentProfile(_ context.Context, profileName string) (*domain.AgentProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.profiles[profileName]
@@ -43,7 +43,7 @@ func (r *inMemoryAgentProfileRepo) Get(_ context.Context, profileName string) (*
 	return p, nil
 }
 
-func (r *inMemoryAgentProfileRepo) List(_ context.Context, pageSize int, pageToken string) ([]*domain.AgentProfile, string, error) {
+func (r *inMemoryAgentProfileRepo) ListAgentProfiles(_ context.Context, pageSize int, pageToken string) ([]*domain.AgentProfile, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result := make([]*domain.AgentProfile, 0, len(r.profiles))
@@ -53,7 +53,7 @@ func (r *inMemoryAgentProfileRepo) List(_ context.Context, pageSize int, pageTok
 	return result, "", nil
 }
 
-func (r *inMemoryAgentProfileRepo) Delete(_ context.Context, profileName string) error {
+func (r *inMemoryAgentProfileRepo) DeleteAgentProfile(_ context.Context, profileName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.profiles[profileName]; !ok {
@@ -73,7 +73,7 @@ func newInMemorySkillRepo() *inMemorySkillRepo {
 	return &inMemorySkillRepo{skills: make(map[string]*domain.Skill)}
 }
 
-func (r *inMemorySkillRepo) Create(_ context.Context, skill *domain.Skill) error {
+func (r *inMemorySkillRepo) CreateSkill(_ context.Context, skill *domain.Skill) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.skills[skill.SkillName]; exists {
@@ -83,7 +83,7 @@ func (r *inMemorySkillRepo) Create(_ context.Context, skill *domain.Skill) error
 	return nil
 }
 
-func (r *inMemorySkillRepo) Get(_ context.Context, skillName string) (*domain.Skill, error) {
+func (r *inMemorySkillRepo) GetSkill(_ context.Context, skillName string) (*domain.Skill, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.skills[skillName]
@@ -93,7 +93,7 @@ func (r *inMemorySkillRepo) Get(_ context.Context, skillName string) (*domain.Sk
 	return s, nil
 }
 
-func (r *inMemorySkillRepo) List(_ context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
+func (r *inMemorySkillRepo) ListSkills(_ context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result := make([]*domain.Skill, 0, len(r.skills))
@@ -103,7 +103,7 @@ func (r *inMemorySkillRepo) List(_ context.Context, pageSize int, pageToken stri
 	return result, "", nil
 }
 
-func (r *inMemorySkillRepo) Delete(_ context.Context, skillName string) error {
+func (r *inMemorySkillRepo) DeleteSkill(_ context.Context, skillName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.skills[skillName]; !ok {
@@ -315,7 +315,6 @@ func Test_agentProfileToProto(t *testing.T) {
 		{
 			name: "profile with fields",
 			profile: &domain.AgentProfile{
-				Name:             "agentProfiles/test",
 				AgentProfileName: "test",
 				Model:            "gpt-4",
 				Enabled:          true,
@@ -328,7 +327,6 @@ func Test_agentProfileToProto(t *testing.T) {
 		{
 			name: "profile with zero times has no timestamps",
 			profile: &domain.AgentProfile{
-				Name:             "agentProfiles/notime",
 				AgentProfileName: "notime",
 			},
 			wantNil:  false,
@@ -370,7 +368,6 @@ func Test_skillToProto(t *testing.T) {
 		{
 			name: "skill with fields",
 			skill: &domain.Skill{
-				Name:       "skills/test",
 				SkillName:  "test",
 				Content:    "some content",
 				Enabled:    true,

@@ -38,8 +38,14 @@ func NewAgentHandler(rt domain.Runtime) *AgentHandler {
 func (h *AgentHandler) CreateAgent(ctx context.Context, req *game.AgentCreateRequest) (*game.AgentStatus, error) {
 	sessionID := req.GetSessionId()
 	profileName := req.GetAgentProfileName()
+	if profileName == "" {
+		return nil, grpcStatus.Error(codes.InvalidArgument, "agent_profile_name is required")
+	}
 
-	s, err := h.runtime.CreateWithProfile(ctx, sessionID, profileName)
+	config := &domain.InvokeRuntimeConfig{
+		ProfileName: profileName,
+	}
+	s, err := h.runtime.CreateWithProfile(ctx, sessionID, config)
 	if err != nil {
 		return nil, grpcStatus.Error(codes.Internal, fmt.Sprintf("agent create: %v", err))
 	}
@@ -86,8 +92,6 @@ func (h *AgentHandler) GetAgentStatus(ctx context.Context, req *game.GetAgentSta
 //   - echo: echoes back the data in an AgentEchoFrame.
 //   - screenshot: converts to domain.ScreenshotInput, calls
 //     runtime.ReceiveScreenshot, and converts returned domain.Frames to proto.
-//   - operation_result: converts to domain.OperationResult, calls
-//     runtime.ReceiveOperationResult.
 //   - empty payload: skipped gracefully with a warning log.
 //
 // Returns nil on io.EOF (clean close) or the error from Recv/Send.
@@ -123,17 +127,6 @@ func (h *AgentHandler) Connect(stream game.AgentService_ConnectServer) error {
 
 		case *game.AgentFrame_Screenshot:
 			frames, err := h.handleScreenshot(ctx, p.Screenshot, sessionID)
-			if err != nil {
-				return err
-			}
-			for _, resp := range frames {
-				if err := stream.Send(resp); err != nil {
-					return err
-				}
-			}
-
-		case *game.AgentFrame_OperationResult:
-			frames, err := h.handleOperationResult(ctx, p.OperationResult, sessionID, frame.GetInvokeId(), frame.GetSequence())
 			if err != nil {
 				return err
 			}
@@ -197,31 +190,6 @@ func (h *AgentHandler) handleScreenshot(ctx context.Context, f *game.AgentScreen
 	return protoFrames, nil
 }
 
-// handleOperationResult converts a proto operation result frame to domain,
-// and passes it to the runtime.
-func (h *AgentHandler) handleOperationResult(ctx context.Context, f *game.AgentOperationResultFrame, sessionID, invokeID string, sequence int64) ([]*game.AgentFrame, error) {
-	if f == nil {
-		return nil, nil
-	}
-	result := &domain.OperationResult{
-		OperationID: f.GetOperationId(),
-		InvokeID:    invokeID,
-		Sequence:    sequence,
-		Status:      int32(f.GetStatus()),
-		Message:     f.GetMessage(),
-	}
-	domainFrames, err := h.runtime.ReceiveOperationResult(ctx, sessionID, result)
-	if err != nil {
-		return nil, err
-	}
-	protoFrames := make([]*game.AgentFrame, 0, len(domainFrames))
-	for _, df := range domainFrames {
-		pf := convertFrameToProto(df, sessionID)
-		protoFrames = append(protoFrames, pf)
-	}
-	return protoFrames, nil
-}
-
 // screenshotFrameToInput converts a proto AgentScreenshotFrame to a domain
 // ScreenshotInput.
 func screenshotFrameToInput(f *game.AgentScreenshotFrame, sessionID string) *domain.ScreenshotInput {
@@ -245,6 +213,7 @@ func convertFrameToProto(df *domain.Frame, sessionID string) *game.AgentFrame {
 
 	frame := &game.AgentFrame{
 		SessionId: sessionID,
+		Sequence:  df.Sequence,
 	}
 
 	switch df.Type {
@@ -260,7 +229,6 @@ func convertFrameToProto(df *domain.Frame, sessionID string) *game.AgentFrame {
 		opFrame := &game.AgentOperationFrame{
 			OperationId:  df.OperationID,
 			ScreenshotId: df.ScreenshotID,
-			Sequence:     df.OperationSeq,
 		}
 		if df.IsMouse {
 			opFrame.Operation = &game.AgentOperationFrame_Mouse{

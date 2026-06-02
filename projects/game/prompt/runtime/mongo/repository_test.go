@@ -341,7 +341,6 @@ func TestAgentProfileCreateGet(t *testing.T) {
 	// given
 	repo := newTestRepo()
 	profile := &domain.AgentProfile{
-		Name:             "agentProfiles/test-profile",
 		AgentProfileName: "test-profile",
 		Model:            "gpt-4",
 		SystemPrompt:     "You are a helpful assistant.",
@@ -388,7 +387,6 @@ func TestSkillCreateGet(t *testing.T) {
 	// given
 	repo := newTestRepo()
 	skill := &domain.Skill{
-		Name:      "skills/test-skill",
 		SkillName: "test-skill",
 		Content:   "You are an expert coder.",
 		Enabled:   true,
@@ -426,7 +424,6 @@ func TestAgentProfileCreateDuplicate(t *testing.T) {
 	// given
 	repo := newTestRepo()
 	profile := &domain.AgentProfile{
-		Name:             "agentProfiles/test-profile",
 		AgentProfileName: "test-profile",
 		Model:            "gpt-4",
 	}

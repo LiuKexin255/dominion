@@ -8,6 +8,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/prompt/domain"
 
 	"google.golang.org/grpc/codes"
@@ -39,7 +40,6 @@ func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentP
 	now := time.Now()
 	profileName := req.GetAgentProfileName()
 	profile := &domain.AgentProfile{
-		Name:             "agentProfiles/" + profileName,
 		AgentProfileName: profileName,
 		Model:            req.GetModel(),
 		SystemPrompt:     req.GetSystemPrompt(),
@@ -50,7 +50,7 @@ func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentP
 		UpdateTime:       now,
 	}
 
-	if err := h.agentProfileRepo.Create(ctx, profile); err != nil {
+	if err := h.agentProfileRepo.CreateAgentProfile(ctx, profile); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentP
 
 // GetAgentProfile retrieves an AgentProfile by its profile name.
 func (h *Handler) GetAgentProfile(ctx context.Context, req *game.GetAgentProfileRequest) (*game.AgentProfile, error) {
-	profile, err := h.agentProfileRepo.Get(ctx, req.GetAgentProfileName())
+	profile, err := h.agentProfileRepo.GetAgentProfile(ctx, req.GetAgentProfileName())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -73,7 +73,7 @@ func (h *Handler) ListAgentProfiles(ctx context.Context, req *game.ListAgentProf
 		pageSize = 100
 	}
 
-	profiles, nextPageToken, err := h.agentProfileRepo.List(ctx, pageSize, req.GetPageToken())
+	profiles, nextPageToken, err := h.agentProfileRepo.ListAgentProfiles(ctx, pageSize, req.GetPageToken())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -91,7 +91,7 @@ func (h *Handler) ListAgentProfiles(ctx context.Context, req *game.ListAgentProf
 
 // DeleteAgentProfile deletes an AgentProfile by its profile name.
 func (h *Handler) DeleteAgentProfile(ctx context.Context, req *game.DeleteAgentProfileRequest) (*emptypb.Empty, error) {
-	if err := h.agentProfileRepo.Delete(ctx, req.GetAgentProfileName()); err != nil {
+	if err := h.agentProfileRepo.DeleteAgentProfile(ctx, req.GetAgentProfileName()); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -104,7 +104,6 @@ func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest)
 	now := time.Now()
 	skillName := req.GetSkillName()
 	skill := &domain.Skill{
-		Name:       "skills/" + skillName,
 		SkillName:  skillName,
 		Content:    req.GetContent(),
 		Enabled:    req.GetEnabled(),
@@ -112,7 +111,7 @@ func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest)
 		UpdateTime: now,
 	}
 
-	if err := h.skillRepo.Create(ctx, skill); err != nil {
+	if err := h.skillRepo.CreateSkill(ctx, skill); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -121,7 +120,7 @@ func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest)
 
 // GetSkill retrieves a Skill by its skill name.
 func (h *Handler) GetSkill(ctx context.Context, req *game.GetSkillRequest) (*game.Skill, error) {
-	skill, err := h.skillRepo.Get(ctx, req.GetSkillName())
+	skill, err := h.skillRepo.GetSkill(ctx, req.GetSkillName())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -135,7 +134,7 @@ func (h *Handler) ListSkills(ctx context.Context, req *game.ListSkillsRequest) (
 		pageSize = 100
 	}
 
-	skills, nextPageToken, err := h.skillRepo.List(ctx, pageSize, req.GetPageToken())
+	skills, nextPageToken, err := h.skillRepo.ListSkills(ctx, pageSize, req.GetPageToken())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -153,7 +152,7 @@ func (h *Handler) ListSkills(ctx context.Context, req *game.ListSkillsRequest) (
 
 // DeleteSkill deletes a Skill by its skill name.
 func (h *Handler) DeleteSkill(ctx context.Context, req *game.DeleteSkillRequest) (*emptypb.Empty, error) {
-	if err := h.skillRepo.Delete(ctx, req.GetSkillName()); err != nil {
+	if err := h.skillRepo.DeleteSkill(ctx, req.GetSkillName()); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -168,7 +167,7 @@ func agentProfileToProto(p *domain.AgentProfile) *game.AgentProfile {
 	}
 
 	pb := &game.AgentProfile{
-		Name:             p.Name,
+		Name:             gameconst.AgentProfileName(p.AgentProfileName),
 		AgentProfileName: p.AgentProfileName,
 		Model:            p.Model,
 		SystemPrompt:     p.SystemPrompt,
@@ -193,7 +192,7 @@ func skillToProto(s *domain.Skill) *game.Skill {
 	}
 
 	pb := &game.Skill{
-		Name:      s.Name,
+		Name:      gameconst.SkillName(s.SkillName),
 		SkillName: s.SkillName,
 		Content:   s.Content,
 		Enabled:   s.Enabled,

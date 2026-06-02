@@ -253,7 +253,6 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 			Operation: &game.AgentOperationFrame{
 				OperationId:  "op-001",
 				ScreenshotId: "ss-001",
-				Sequence:     1,
 				Operation: &game.AgentOperationFrame_Mouse{
 					Mouse: &game.AgentMouseOperation{
 						Button:    game.AgentMouseButton_LEFT,
@@ -289,9 +288,6 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 	if op.GetScreenshotId() != "ss-001" {
 		t.Errorf("screenshotId: got %q, want %q", op.GetScreenshotId(), "ss-001")
 	}
-	if op.GetSequence() != 1 {
-		t.Errorf("sequence: got %d, want %d", op.GetSequence(), 1)
-	}
 
 	// then: verify mouse operation
 	mouse := op.GetMouse()
@@ -309,53 +305,6 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 	}
 	if mouse.GetYPx() != 300 {
 		t.Errorf("yPx: got %d, want %d", mouse.GetYPx(), 300)
-	}
-}
-
-func TestAgentFrameOperationResultRoundtrip(t *testing.T) {
-	// given: an AgentFrame with operation_result payload
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-opresult",
-		InvokeId:  "invoke-001",
-		Sequence:  3,
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: "op-001",
-				Sequence:    2,
-				Status:      game.AgentOperationResultStatus_EXECUTED,
-				Message:     "Click executed at (500,350)",
-			},
-		},
-	}
-
-	// when: marshal to protojson
-	jsonBytes, err := protojson.Marshal(given)
-	if err != nil {
-		t.Fatalf("protojson.Marshal() error: %v", err)
-	}
-
-	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
-	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
-		t.Fatalf("protojson.Unmarshal() error: %v", err)
-	}
-
-	// then: verify operation_result payload
-	opResult := got.GetOperationResult()
-	if opResult == nil {
-		t.Fatal("GetOperationResult() returned nil")
-	}
-	if opResult.GetOperationId() != "op-001" {
-		t.Errorf("operationId: got %q, want %q", opResult.GetOperationId(), "op-001")
-	}
-	if opResult.GetSequence() != 2 {
-		t.Errorf("sequence: got %d, want %d", opResult.GetSequence(), 2)
-	}
-	if opResult.GetStatus() != game.AgentOperationResultStatus_EXECUTED {
-		t.Errorf("status: got %v, want %v", opResult.GetStatus(), game.AgentOperationResultStatus_EXECUTED)
-	}
-	if opResult.GetMessage() != "Click executed at (500,350)" {
-		t.Errorf("message: got %q, want %q", opResult.GetMessage(), "Click executed at (500,350)")
 	}
 }
 
@@ -404,7 +353,6 @@ func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
 		ScaleFactor:  1.0,
 		WindowTitle:  "Test Game",
 		ScreenshotId: "ss-002",
-		Sequence:     1,
 	}
 
 	// when: marshal to protojson
@@ -440,9 +388,6 @@ func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
 	}
 	if got.GetScreenshotId() != "ss-002" {
 		t.Errorf("screenshotId: got %q, want %q", got.GetScreenshotId(), "ss-002")
-	}
-	if got.GetSequence() != 1 {
-		t.Errorf("sequence: got %d, want %d", got.GetSequence(), 1)
 	}
 }
 

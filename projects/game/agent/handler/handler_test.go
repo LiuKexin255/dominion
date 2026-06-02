@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	game "dominion/projects/game"
 	"dominion/projects/game/agent/domain"
 
-	game "dominion/projects/game"
-
+	"google.golang.org/grpc/codes"
+	grpcStatus "google.golang.org/grpc/status"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -21,8 +22,6 @@ type mockRuntime struct {
 	sessions map[string]*domain.Status
 	// lastProfileName records the profile name passed to CreateWithProfile.
 	lastProfileName string
-	// lastOpResult records the last operation result received.
-	lastOpResult *domain.OperationResult
 	// screenshotFrames is the list of frames to return from ReceiveScreenshot.
 	// If nil, a default text frame is returned.
 	screenshotFrames []*domain.Frame
@@ -34,12 +33,12 @@ func newMockRuntime() *mockRuntime {
 	}
 }
 
-func (m *mockRuntime) Create(ctx context.Context, sessionID string) (*domain.Status, error) {
-	return m.CreateWithProfile(ctx, sessionID, "")
-}
-
-func (m *mockRuntime) CreateWithProfile(_ context.Context, sessionID string, profileName string) (*domain.Status, error) {
+func (m *mockRuntime) CreateWithProfile(_ context.Context, sessionID string, config *domain.InvokeRuntimeConfig) (*domain.Status, error) {
 	m.mu.Lock()
+	profileName := ""
+	if config != nil {
+		profileName = config.ProfileName
+	}
 	m.lastProfileName = profileName
 	m.mu.Unlock()
 
@@ -86,13 +85,6 @@ func (m *mockRuntime) ReceiveScreenshot(_ context.Context, sessionID string, _ *
 	return []*domain.Frame{
 		{Type: domain.FrameTypeText, Content: "screenshot received"},
 	}, nil
-}
-
-func (m *mockRuntime) ReceiveOperationResult(_ context.Context, _ string, result *domain.OperationResult) ([]*domain.Frame, error) {
-	m.mu.Lock()
-	m.lastOpResult = result
-	m.mu.Unlock()
-	return nil, nil
 }
 
 // mockAgentConnectServer implements game.AgentService_ConnectServer for testing.
@@ -196,7 +188,7 @@ func TestConnect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			rt := newMockRuntime()
-			_, _ = rt.CreateWithProfile(context.Background(), "test", "")
+			_, _ = rt.CreateWithProfile(context.Background(), "test", &domain.InvokeRuntimeConfig{})
 
 			stream := newMockAgentConnectServer(tt.frames)
 			handler := NewAgentHandler(rt)
@@ -260,7 +252,7 @@ func TestConnect_Screenshot(t *testing.T) {
 			Type:         domain.FrameTypeOperation,
 			OperationID:  "op-test-1",
 			ScreenshotID: "capture-001",
-			OperationSeq: 1,
+			Sequence:     1,
 			IsMouse:      true,
 			Button:       1,
 			ClickType:    1,
@@ -327,53 +319,6 @@ func TestConnect_Screenshot(t *testing.T) {
 	}
 	if mouse.GetXPx() != 960 || mouse.GetYPx() != 540 {
 		t.Errorf("mouse position = (%d, %d), want (960, 540)", mouse.GetXPx(), mouse.GetYPx())
-	}
-}
-
-func TestConnect_OperationResult(t *testing.T) {
-	// given
-	rt := newMockRuntime()
-	handler := NewAgentHandler(rt)
-
-	frames := []*game.AgentFrame{
-		{
-			SessionId: "test",
-			Payload: &game.AgentFrame_OperationResult{
-				OperationResult: &game.AgentOperationResultFrame{
-					OperationId: "op-test-1",
-					Status:      game.AgentOperationResultStatus_EXECUTED,
-					Message:     "done",
-				},
-			},
-		},
-	}
-
-	stream := newMockAgentConnectServer(frames)
-
-	// when
-	err := handler.Connect(stream)
-
-	// then
-	if err != nil {
-		t.Fatalf("Connect() error: %v", err)
-	}
-
-	got := stream.Sent()
-	if len(got) != 0 {
-		t.Fatalf("got %d responses, want 0 (operation_result is fire-and-forget)", len(got))
-	}
-
-	rt.mu.Lock()
-	result := rt.lastOpResult
-	rt.mu.Unlock()
-	if result == nil {
-		t.Fatal("lastOpResult is nil, want non-nil")
-	}
-	if result.OperationID != "op-test-1" {
-		t.Errorf("operation_id = %q, want %q", result.OperationID, "op-test-1")
-	}
-	if result.Message != "done" {
-		t.Errorf("message = %q, want %q", result.Message, "done")
 	}
 }
 
@@ -504,7 +449,7 @@ func TestGetAgentStatus(t *testing.T) {
 	rt := newMockRuntime()
 	h := NewAgentHandler(rt)
 	ctx := context.Background()
-	_, _ = rt.CreateWithProfile(ctx, "known-session", "")
+	_, _ = rt.CreateWithProfile(ctx, "known-session", &domain.InvokeRuntimeConfig{})
 
 	// when
 	resp, err := h.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: "known-session"})
@@ -571,7 +516,7 @@ func TestDeleteAgent(t *testing.T) {
 			rt := newMockRuntime()
 			h := NewAgentHandler(rt)
 			ctx := context.Background()
-			_, _ = rt.CreateWithProfile(ctx, "to-delete", "")
+			_, _ = rt.CreateWithProfile(ctx, "to-delete", &domain.InvokeRuntimeConfig{})
 
 			// when
 			resp, err := h.DeleteAgent(ctx, &game.AgentDeleteRequest{SessionId: tt.sessionID})
@@ -584,5 +529,26 @@ func TestDeleteAgent(t *testing.T) {
 				t.Fatal("DeleteAgent() resp is nil, want non-nil")
 			}
 		})
+	}
+}
+
+func TestCreateAgent_EmptyProfile_ReturnsInvalidArgument(t *testing.T) {
+	// given
+	rt := newMockRuntime()
+	h := NewAgentHandler(rt)
+	ctx := context.Background()
+
+	// when
+	_, err := h.CreateAgent(ctx, &game.AgentCreateRequest{
+		SessionId:        "test",
+		AgentProfileName: "",
+	})
+
+	// then
+	if err == nil {
+		t.Fatal("expected InvalidArgument error, got nil")
+	}
+	if grpcStatus.Code(err) != codes.InvalidArgument {
+		t.Errorf("status code = %v, want %v", grpcStatus.Code(err), codes.InvalidArgument)
 	}
 }

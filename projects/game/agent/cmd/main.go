@@ -11,9 +11,9 @@ import (
 	"dominion/common/gopkg/grpc/solver"
 	"dominion/common/gopkg/otel"
 	game "dominion/projects/game"
-	"dominion/projects/game/agent/domain"
 	"dominion/projects/game/agent/handler"
-	"dominion/projects/game/agent/runtime"
+	"dominion/projects/game/agent/runtime/invoke"
+	"dominion/projects/game/agent/runtime/promptclient"
 	gameconst "dominion/projects/game/pkg/gameconst"
 
 	grpcgo "google.golang.org/grpc"
@@ -21,45 +21,6 @@ import (
 )
 
 var port = flag.String("port", "50051", "Port to listen on")
-
-// promptClientAdapter adapts a gRPC PromptServiceClient to the domain
-// PromptServiceClient interface.
-type promptClientAdapter struct {
-	client game.PromptServiceClient
-}
-
-// GetProfile retrieves an agent profile by name via gRPC.
-func (a *promptClientAdapter) GetProfile(ctx context.Context, profileName string) (*domain.ProfileInfo, error) {
-	resp, err := a.client.GetAgentProfile(ctx, &game.GetAgentProfileRequest{
-		AgentProfileName: profileName,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &domain.ProfileInfo{
-		AgentProfileName: resp.GetAgentProfileName(),
-		Model:            resp.GetModel(),
-		SystemPrompt:     resp.GetSystemPrompt(),
-		SkillNames:       resp.GetSkillNames(),
-		MCPNames:         resp.GetMcpNames(),
-		Enabled:          resp.GetEnabled(),
-	}, nil
-}
-
-// GetSkill retrieves a skill by name via gRPC.
-func (a *promptClientAdapter) GetSkill(ctx context.Context, skillName string) (*domain.SkillInfo, error) {
-	resp, err := a.client.GetSkill(ctx, &game.GetSkillRequest{
-		SkillName: skillName,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &domain.SkillInfo{
-		SkillName: resp.GetSkillName(),
-		Content:   resp.GetContent(),
-		Enabled:   resp.GetEnabled(),
-	}, nil
-}
 
 func main() {
 	flag.Parse()
@@ -74,8 +35,9 @@ func main() {
 		log.Fatalf("prompt dial: %v", err)
 	}
 
-	promptClient := &promptClientAdapter{client: game.NewPromptServiceClient(promptConn)}
-	rt := runtime.NewInvokeRuntime(promptClient)
+	promptClient := &promptclient.Adapter{Client: game.NewPromptServiceClient(promptConn)}
+	_ = promptClient // reserved for future use (handler in Task 10)
+	rt := invoke.New(promptClient)
 	h := handler.NewAgentHandler(rt)
 
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)

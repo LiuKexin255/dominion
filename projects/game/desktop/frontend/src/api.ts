@@ -46,14 +46,6 @@ export enum AgentMouseClickType {
   DOUBLE = 2,
 }
 
-export enum AgentOperationResultStatus {
-  ACCEPTED = 1,
-  EXECUTED = 2,
-  REJECTED = 3,
-  FAILED = 4,
-  TIMED_OUT = 5,
-}
-
 // ─── Frame Types ───────────────────────────────────────────────────────────
 
 export interface AgentStatusFrame {
@@ -101,13 +93,6 @@ export interface AgentOperationFrame {
   keyboard?: AgentKeyboardOperation
 }
 
-export interface AgentOperationResultFrame {
-  operationId: string
-  sequence: number
-  status: AgentOperationResultStatus
-  message: string
-}
-
 export interface AgentProfile {
   name: string
   agentProfileName: string
@@ -153,7 +138,6 @@ export interface AgentFrame {
   text?: AgentTextFrame
   thinking?: AgentThinkingFrame
   operation?: AgentOperationFrame
-  operationResult?: AgentOperationResultFrame
   warn?: AgentWarnFrame
 }
 

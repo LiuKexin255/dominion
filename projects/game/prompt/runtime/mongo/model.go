@@ -18,7 +18,6 @@ const (
 // agentProfileDocument stores AgentProfile documents in MongoDB.
 type agentProfileDocument struct {
 	ID               interface{} `bson:"_id,omitempty"`
-	Name             string      `bson:"name"`
 	AgentProfileName string      `bson:"agent_profile_name"`
 	Model            string      `bson:"model"`
 	SystemPrompt     string      `bson:"system_prompt"`
@@ -36,7 +35,6 @@ func (d *agentProfileDocument) toDomain() *domain.AgentProfile {
 	}
 
 	return &domain.AgentProfile{
-		Name:             d.Name,
 		AgentProfileName: d.AgentProfileName,
 		Model:            d.Model,
 		SystemPrompt:     d.SystemPrompt,
@@ -55,7 +53,6 @@ func agentProfileDocumentFromDomain(p *domain.AgentProfile) *agentProfileDocumen
 	}
 
 	return &agentProfileDocument{
-		Name:             p.Name,
 		AgentProfileName: p.AgentProfileName,
 		Model:            p.Model,
 		SystemPrompt:     p.SystemPrompt,
@@ -70,7 +67,6 @@ func agentProfileDocumentFromDomain(p *domain.AgentProfile) *agentProfileDocumen
 // skillDocument stores Skill documents in MongoDB.
 type skillDocument struct {
 	ID         interface{} `bson:"_id,omitempty"`
-	Name       string      `bson:"name"`
 	SkillName  string      `bson:"skill_name"`
 	Content    string      `bson:"content"`
 	Enabled    bool        `bson:"enabled"`
@@ -85,7 +81,6 @@ func (d *skillDocument) toDomain() *domain.Skill {
 	}
 
 	return &domain.Skill{
-		Name:       d.Name,
 		SkillName:  d.SkillName,
 		Content:    d.Content,
 		Enabled:    d.Enabled,
@@ -101,7 +96,6 @@ func skillDocumentFromDomain(s *domain.Skill) *skillDocument {
 	}
 
 	return &skillDocument{
-		Name:       s.Name,
 		SkillName:  s.SkillName,
 		Content:    s.Content,
 		Enabled:    s.Enabled,

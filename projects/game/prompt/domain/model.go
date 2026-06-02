@@ -5,8 +5,6 @@ import "time"
 
 // AgentProfile describes the configuration for creating an agent.
 type AgentProfile struct {
-	// Name is the resource name, e.g. "agentProfiles/my-profile".
-	Name string
 	// AgentProfileName is the business identifier for this profile.
 	AgentProfileName string
 	// Model is the model name to use.
@@ -27,8 +25,6 @@ type AgentProfile struct {
 
 // Skill represents a tool-independent skill definition.
 type Skill struct {
-	// Name is the resource name, e.g. "skills/my-skill".
-	Name string
 	// SkillName is the business identifier for this skill.
 	SkillName string
 	// Content is the skill content (text).

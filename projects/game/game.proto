@@ -273,10 +273,12 @@ message AgentFrame {
     AgentThinkingFrame thinking = 15;
     // An operation request from the agent for desktop to execute.
     AgentOperationFrame operation = 16;
-    // The result of a desktop-executed operation.
-    AgentOperationResultFrame operation_result = 17;
     // Warning or error information about protocol state.
-    AgentWarnFrame warn = 18;
+    AgentWarnFrame warn = 17;
+    // Agent is waiting for input or instruction.
+    AgentWaitFrame wait = 18;
+    // Agent is requesting a screenshot from desktop.
+    AgentScreenshotRequestFrame screenshot_request = 19;
   }
 }
 
@@ -337,16 +339,6 @@ enum AgentMouseClickType {
   DOUBLE = 2;
 }
 
-// AgentOperationResultStatus represents the status of an operation execution.
-enum AgentOperationResultStatus {
-  AGENT_OPERATION_RESULT_STATUS_UNSPECIFIED = 0;
-  ACCEPTED = 1;
-  EXECUTED = 2;
-  REJECTED = 3;
-  FAILED = 4;
-  TIMED_OUT = 5;
-}
-
 // AgentScreenshotFrame carries a screenshot capture from the agent's desktop.
 message AgentScreenshotFrame {
   // The unique identifier for this capture.
@@ -375,15 +367,12 @@ message AgentScreenshotFrame {
 
   // The unique identifier for this screenshot.
   string screenshot_id = 9;
-  // Monotonically increasing sequence number within an invoke.
-  int64 sequence = 10;
 }
 
 // AgentOperationFrame represents an operation request from the agent.
 message AgentOperationFrame {
   string operation_id = 1;
   string screenshot_id = 2;
-  int64 sequence = 3;
   oneof operation {
     AgentMouseOperation mouse = 10;
     AgentKeyboardOperation keyboard = 11;
@@ -403,12 +392,16 @@ message AgentKeyboardOperation {
   string key_codes = 1;
 }
 
-// AgentOperationResultFrame carries the result of an operation execution.
-message AgentOperationResultFrame {
-  string operation_id = 1;
-  int64 sequence = 2;
-  AgentOperationResultStatus status = 3;
-  string message = 4;
+// AgentWaitFrame indicates the agent is waiting (e.g. for user instruction).
+message AgentWaitFrame {
+  // The reason the agent is waiting.
+  string reason = 1;
+}
+
+// AgentScreenshotRequestFrame requests a new screenshot from the desktop.
+message AgentScreenshotRequestFrame {
+  // The reason for requesting the screenshot.
+  string reason = 1;
 }
 
 // AgentStatus reports the current status of an agent in a session.

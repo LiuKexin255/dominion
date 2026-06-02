@@ -22,47 +22,8 @@ import (
 
 var port = flag.String("port", "50051", "Port to listen on")
 
-// agentProfileAdapter adapts *mongort.Repository to domain.AgentProfileRepository.
-type agentProfileAdapter struct {
-	*mongort.Repository
-}
-
-func (a *agentProfileAdapter) Create(ctx context.Context, profile *domain.AgentProfile) error {
-	return a.Repository.CreateAgentProfile(ctx, profile)
-}
-
-func (a *agentProfileAdapter) Get(ctx context.Context, profileName string) (*domain.AgentProfile, error) {
-	return a.Repository.GetAgentProfile(ctx, profileName)
-}
-
-func (a *agentProfileAdapter) List(ctx context.Context, pageSize int, pageToken string) ([]*domain.AgentProfile, string, error) {
-	return a.Repository.ListAgentProfiles(ctx, pageSize, pageToken)
-}
-
-func (a *agentProfileAdapter) Delete(ctx context.Context, profileName string) error {
-	return a.Repository.DeleteAgentProfile(ctx, profileName)
-}
-
-// skillAdapter adapts *mongort.Repository to domain.SkillRepository.
-type skillAdapter struct {
-	*mongort.Repository
-}
-
-func (s *skillAdapter) Create(ctx context.Context, skill *domain.Skill) error {
-	return s.Repository.CreateSkill(ctx, skill)
-}
-
-func (s *skillAdapter) Get(ctx context.Context, skillName string) (*domain.Skill, error) {
-	return s.Repository.GetSkill(ctx, skillName)
-}
-
-func (s *skillAdapter) List(ctx context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
-	return s.Repository.ListSkills(ctx, pageSize, pageToken)
-}
-
-func (s *skillAdapter) Delete(ctx context.Context, skillName string) error {
-	return s.Repository.DeleteSkill(ctx, skillName)
-}
+var _ domain.AgentProfileRepository = (*mongort.Repository)(nil)
+var _ domain.SkillRepository = (*mongort.Repository)(nil)
 
 func main() {
 	flag.Parse()
@@ -79,7 +40,7 @@ func main() {
 
 	repo := mongort.NewRepository(mongoClient, "game_prompt")
 
-	h := handler.NewHandler(&agentProfileAdapter{repo}, &skillAdapter{repo})
+	h := handler.NewHandler(repo, repo)
 
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
 	game.RegisterPromptServiceServer(grpcServer, h)

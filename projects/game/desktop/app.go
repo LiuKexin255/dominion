@@ -613,9 +613,16 @@ func (a *App) CloseAgent() error {
 	return nil
 }
 
+// Operation result status values for the frontend UI.
+const (
+	operationResultExecuted int32 = 2
+	operationResultFailed   int32 = 4
+)
+
 // ExecuteOperation executes a desktop operation (mouse click or key press)
-// at the given screenshot-relative coordinates, sends the result via
-// WebSocket, and returns the result view.
+// at the given screenshot-relative coordinates, captures and sends the next
+// screenshot via WebSocket to continue the agent loop, and returns the
+// result view for the frontend UI.
 func (a *App) ExecuteOperation(operationID string, screenshotID string, sequence int64,
 	button int32, clickType int32, xPx int32, yPx int32, isMouse bool, keyCodes string,
 	windowLeft int32, windowTop int32) *OperationResultView {
@@ -623,37 +630,30 @@ func (a *App) ExecuteOperation(operationID string, screenshotID string, sequence
 	corrSuffix, _ := randomHex(8)
 	corrID := "corr-" + corrSuffix
 
-	var resultStatus game.AgentOperationResultStatus
-	var resultMsg string
-
 	if isMouse {
 		screenX, screenY, err := operation.ScreenshotToScreenCoords(xPx, yPx, windowLeft, windowTop)
 		if err != nil {
 			a.logger.Error("backend", "ExecuteOperation: coordinate conversion failed", map[string]any{
 				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
 			})
-			resultStatus = game.AgentOperationResultStatus_FAILED
-			resultMsg = err.Error()
-			a.sendOperationResult(operationID, sequence, resultStatus, resultMsg, corrID)
+			a.sendNextScreenshot(operationID, corrID)
 			return &OperationResultView{
 				OperationID: operationID,
 				Sequence:    sequence,
-				Status:      int32(resultStatus),
-				Message:     resultMsg,
+				Status:      operationResultFailed,
+				Message:     err.Error(),
 			}
 		}
 		if err := operation.ExecuteMouseClick(screenX, screenY, button, clickType); err != nil {
 			a.logger.Error("backend", "ExecuteOperation: mouse click failed", map[string]any{
 				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
 			})
-			resultStatus = game.AgentOperationResultStatus_FAILED
-			resultMsg = err.Error()
-			a.sendOperationResult(operationID, sequence, resultStatus, resultMsg, corrID)
+			a.sendNextScreenshot(operationID, corrID)
 			return &OperationResultView{
 				OperationID: operationID,
 				Sequence:    sequence,
-				Status:      int32(resultStatus),
-				Message:     resultMsg,
+				Status:      operationResultFailed,
+				Message:     err.Error(),
 			}
 		}
 	} else {
@@ -661,20 +661,15 @@ func (a *App) ExecuteOperation(operationID string, screenshotID string, sequence
 			a.logger.Error("backend", "ExecuteOperation: key press failed", map[string]any{
 				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
 			})
-			resultStatus = game.AgentOperationResultStatus_FAILED
-			resultMsg = err.Error()
-			a.sendOperationResult(operationID, sequence, resultStatus, resultMsg, corrID)
+			a.sendNextScreenshot(operationID, corrID)
 			return &OperationResultView{
 				OperationID: operationID,
 				Sequence:    sequence,
-				Status:      int32(resultStatus),
-				Message:     resultMsg,
+				Status:      operationResultFailed,
+				Message:     err.Error(),
 			}
 		}
 	}
-
-	resultStatus = game.AgentOperationResultStatus_EXECUTED
-	resultMsg = "ok"
 
 	a.logger.Info("backend", "Operation executed", map[string]any{
 		"operation_id":   operationID,
@@ -684,61 +679,26 @@ func (a *App) ExecuteOperation(operationID string, screenshotID string, sequence
 		"correlation_id": corrID,
 	})
 
-	// Send operation result frame via WebSocket.
-	a.sendOperationResult(operationID, sequence+1, resultStatus, resultMsg, corrID)
+	// Capture and send next screenshot via WebSocket to continue the agent loop.
+	a.sendNextScreenshot(operationID, corrID)
 
 	return &OperationResultView{
 		OperationID: operationID,
 		Sequence:    sequence,
-		Status:      int32(resultStatus),
-		Message:     resultMsg,
+		Status:      operationResultExecuted,
+		Message:     "ok",
 	}
 }
 
-// sendOperationResult builds and sends an AgentOperationResultFrame via WebSocket.
-func (a *App) sendOperationResult(operationID string, sequence int64, status game.AgentOperationResultStatus, message string, corrID string) {
-	if a.ws == nil {
-		a.logger.Info("backend", "sendOperationResult: not connected, skipping WS send", map[string]any{
-			"operation_id": operationID, "correlation_id": corrID,
-		})
-		return
-	}
-
-	frameID, err := randomHex(8)
-	if err != nil {
-		a.logger.Error("backend", "sendOperationResult: frame ID generation failed", map[string]any{
-			"error": err.Error(), "correlation_id": corrID,
-		})
-		return
-	}
-
-	frame := &game.AgentFrame{
-		SessionId:  a.currentSessionID(),
-		FrameId:    frameID,
-		CreateTime: timestamppb.Now(),
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: operationID,
-				Sequence:    sequence,
-				Status:      status,
-				Message:     message,
-			},
-		},
-	}
-
-	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "sendOperationResult: send failed", map[string]any{
+// sendNextScreenshot captures the bound window and sends a new screenshot
+// to the agent via WebSocket. Errors are logged but not propagated — the
+// agent loop continues on the next tick regardless.
+func (a *App) sendNextScreenshot(operationID string, corrID string) {
+	if err := a.SendNextScreenshot(); err != nil {
+		a.logger.Error("backend", "Send next screenshot failed", map[string]any{
 			"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
 		})
-		return
 	}
-
-	a.logger.Info("backend", "Operation result sent via WebSocket", map[string]any{
-		"operation_id": operationID,
-		"frame_id":     frameID,
-		"status":       status.String(),
-		"correlation_id": corrID,
-	})
 }
 
 // SendNextScreenshot captures the bound window and sends a new screenshot

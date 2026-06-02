@@ -431,39 +431,7 @@ func TestPromptSkillCreateGet(t *testing.T) {
 	}
 }
 
-// ─── Test 3: Create Agent with Default Profile ───────────────────────────
-
-// TestCreateAgentWithDefaultProfile verifies that an agent can be created
-// with the implicit "default" profile when no profile name is specified.
-func TestCreateAgentWithDefaultProfile(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	// given: create a "default" profile
-	defaultProfile := &game.CreateAgentProfileRequest{
-		AgentProfileName: "default",
-		Model:            "gpt-4",
-		SystemPrompt:     "Default test agent.",
-		Enabled:          true,
-	}
-	_ = createAgentProfile(t, sutHostURL, sutEnvName, defaultProfile)
-
-	// given: create a session
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-
-	// when: create agent without explicit profile name
-	agent := createAgentWithProfileBody(t, sutHostURL, sutEnvName, sessionID, []byte("{}"))
-
-	// then: agent should be created successfully
-	if agent.GetOwner() == "" {
-		t.Error("agent owner is empty, want non-empty")
-	}
-	if agent.GetSessionId() == "" {
-		t.Error("agent sessionId is empty, want non-empty")
-	}
-}
-
-// ─── Test 4: Create Agent with Named Profile ─────────────────────────────
+// ─── Test 3: Create Agent with Named Profile ─────────────────────────────
 
 // TestCreateAgentWithNamedProfile verifies that an agent can be created
 // with an explicitly specified agent profile name.
@@ -498,10 +466,10 @@ func TestCreateAgentWithNamedProfile(t *testing.T) {
 	}
 }
 
-// ─── Test 5: Create Agent with Missing Profile ───────────────────────────
+// ─── Test 4: Create Agent with Missing Profile ───────────────────────────
 
 // TestCreateAgentMissingProfile verifies that creating an agent with a
-// non-existent profile name returns an error response.
+// non-existent or empty profile name returns an error response.
 func TestCreateAgentMissingProfile(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -520,9 +488,17 @@ func TestCreateAgentMissingProfile(t *testing.T) {
 	if resp.StatusCode == http.StatusOK {
 		t.Errorf("POST agent with non-existent profile returned 200, want error. body=%s", respBody)
 	}
+
+	// when: also try to create agent with empty profile name
+	resp2, respBody2 := doHTTP(t, http.MethodPost, url, sutEnvName, []byte(`{"agentProfileName":""}`))
+
+	// then: expect error response for empty profile too
+	if resp2.StatusCode == http.StatusOK {
+		t.Errorf("POST agent with empty profile returned 200, want error. body=%s", respBody2)
+	}
 }
 
-// ─── Test 6: Screenshot to Operation ─────────────────────────────────────
+// ─── Test 5: Screenshot to Operation ─────────────────────────────────────
 
 // TestScreenshotToOperation verifies that sending a screenshot over
 // WebSocket results in receiving text and operation frames from the agent.
@@ -576,6 +552,11 @@ func TestScreenshotToOperation(t *testing.T) {
 		}
 		if frame.GetOperation() != nil {
 			hasOp = true
+			// Sequence is on the outer AgentFrame envelope, not on the inner
+			// AgentOperationFrame (which no longer has a Sequence field).
+			if frame.GetSequence() < 0 {
+				t.Error("operation frame envelope has invalid sequence")
+			}
 			break
 		}
 		// Also check for other non-error frame types
@@ -592,95 +573,11 @@ func TestScreenshotToOperation(t *testing.T) {
 	}
 }
 
-// ─── Test 7: Operation Result Completes Invoke ───────────────────────────
+// ─── Test 6: Reject Stale Sequence ───────────────────────────────────────
 
-// TestOperationResultCompletesInvoke verifies that sending an
-// operation_result after receiving an operation completes the invoke cycle
-// without error.
-func TestOperationResultCompletesInvoke(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("opresult-profile-%s", uniqueSuffix())
-
-	// given: setup — create profile, session, agent, connect WS
-	_ = createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
-	})
-
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	agentBody := fmt.Sprintf(`{"agentProfileName":"%s"}`, profileName)
-	_ = createAgentWithProfileBody(t, sutHostURL, sutEnvName, sessionID, []byte(agentBody))
-
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn.Close()
-
-	// given: send screenshot, receive operation
-	rawPNG := readRawPNG(t)
-	invokeID := fmt.Sprintf("invoke-%s", uniqueSuffix())
-	screenshotFrame := &game.AgentFrame{
-		SessionId: sessionID,
-		InvokeId:  invokeID,
-		Sequence:  0,
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId: "opres-cap-001",
-				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:      rawPNG,
-				WidthPx:   10,
-				HeightPx:  10,
-			},
-		},
-	}
-	writeWSFrame(t, conn, screenshotFrame)
-
-	// read until we get an operation frame
-	var opFrame *game.AgentFrame
-	for i := 0; i < 10; i++ {
-		frame := readWSFrame(t, conn)
-		if frame.GetOperation() != nil {
-			opFrame = frame
-			break
-		}
-	}
-	if opFrame == nil {
-		t.Fatal("did not receive operation frame")
-	}
-
-	// when: send operation_result with ACCEPTED status
-	op := opFrame.GetOperation()
-	resultFrame := &game.AgentFrame{
-		SessionId: sessionID,
-		InvokeId:  invokeID,
-		Sequence:  op.GetSequence(),
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: op.GetOperationId(),
-				Sequence:    op.GetSequence(),
-				Status:      game.AgentOperationResultStatus_ACCEPTED,
-				Message:     "operation accepted",
-			},
-		},
-	}
-	writeWSFrame(t, conn, resultFrame)
-
-	// then: verify invoke completes without errors — no warn frames should be
-	// sent for a valid operation result. Set a short deadline to confirm no
-	// unexpected frames arrive.
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, err := conn.ReadMessage()
-	if err == nil {
-		t.Error("expected no frames after valid operation_result, but received one")
-	}
-}
-
-// ─── Test 8: Reject Stale Sequence ───────────────────────────────────────
-
-// TestRejectStaleSequence verifies that sending an operation_result with a
-// stale sequence number produces a warn frame.
+// TestRejectStaleSequence verifies that sending a screenshot with a stale
+// (already used) sequence number produces a warn frame in the new
+// screenshot→operation loop.
 func TestRejectStaleSequence(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -702,7 +599,7 @@ func TestRejectStaleSequence(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// given: send screenshot, receive operation
+	// given: send first screenshot with sequence 0, receive operation
 	rawPNG := readRawPNG(t)
 	invokeID := fmt.Sprintf("invoke-%s", uniqueSuffix())
 	screenshotFrame := &game.AgentFrame{
@@ -733,21 +630,24 @@ func TestRejectStaleSequence(t *testing.T) {
 		t.Fatal("did not receive operation frame")
 	}
 
-	// when: send operation_result with stale sequence (less than the operation sequence)
-	op := opFrame.GetOperation()
-	staleResultFrame := &game.AgentFrame{
+	// when: send another screenshot reusing the same sequence 0 (stale)
+	// In the new flow, desktop sends next screenshot instead of operation_result.
+	// A stale sequence means the desktop reused a sequence number already consumed.
+	staleScreenshotFrame := &game.AgentFrame{
 		SessionId: sessionID,
 		InvokeId:  invokeID,
-		Sequence:  op.GetSequence() - 1, // stale sequence
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: op.GetOperationId(),
-				Sequence:    op.GetSequence() - 1,
-				Status:      game.AgentOperationResultStatus_ACCEPTED,
+		Sequence:  0, // stale — same sequence as first screenshot
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId: "stale-cap-002",
+				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:      rawPNG,
+				WidthPx:   10,
+				HeightPx:  10,
 			},
 		},
 	}
-	writeWSFrame(t, conn, staleResultFrame)
+	writeWSFrame(t, conn, staleScreenshotFrame)
 
 	// then: expect a warn frame
 	var gotWarn bool
@@ -763,10 +663,11 @@ func TestRejectStaleSequence(t *testing.T) {
 	}
 }
 
-// ─── Test 9: Reject Wrong Invoke ID ──────────────────────────────────────
+// ─── Test 7: Reject Wrong Invoke ID ──────────────────────────────────────
 
-// TestRejectWrongInvokeID verifies that sending an operation_result with a
-// wrong invoke_id produces a warn frame.
+// TestRejectWrongInvokeID verifies that sending a screenshot with an
+// invoke_id that does not match the active invoke produces a warn frame
+// in the screenshot→operation loop.
 func TestRejectWrongInvokeID(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -788,12 +689,12 @@ func TestRejectWrongInvokeID(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// given: send screenshot, receive operation
+	// given: send screenshot with invoke_id A, receive operation
 	rawPNG := readRawPNG(t)
-	invokeID := fmt.Sprintf("invoke-%s", uniqueSuffix())
+	invokeIDA := fmt.Sprintf("invoke-%s", uniqueSuffix())
 	screenshotFrame := &game.AgentFrame{
 		SessionId: sessionID,
-		InvokeId:  invokeID,
+		InvokeId:  invokeIDA,
 		Sequence:  0,
 		Payload: &game.AgentFrame_Screenshot{
 			Screenshot: &game.AgentScreenshotFrame{
@@ -819,21 +720,25 @@ func TestRejectWrongInvokeID(t *testing.T) {
 		t.Fatal("did not receive operation frame")
 	}
 
-	// when: send operation_result with wrong invoke_id
-	op := opFrame.GetOperation()
-	wrongInvokeResult := &game.AgentFrame{
+	// when: send another screenshot with wrong invoke_id B
+	// In the screenshot→operation loop, the invoke_id must match the active
+	// invoke. A mismatched invoke_id indicates a protocol error.
+	invokeIDB := fmt.Sprintf("wrong-invoke-%s", uniqueSuffix())
+	wrongScreenshotFrame := &game.AgentFrame{
 		SessionId: sessionID,
-		InvokeId:  fmt.Sprintf("wrong-invoke-%s", uniqueSuffix()), // different invoke_id
-		Sequence:  op.GetSequence(),
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: op.GetOperationId(),
-				Sequence:    op.GetSequence(),
-				Status:      game.AgentOperationResultStatus_ACCEPTED,
+		InvokeId:  invokeIDB, // different from invokeIDA
+		Sequence:  1,
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId: "wronginv-cap-002",
+				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:      rawPNG,
+				WidthPx:   10,
+				HeightPx:  10,
 			},
 		},
 	}
-	writeWSFrame(t, conn, wrongInvokeResult)
+	writeWSFrame(t, conn, wrongScreenshotFrame)
 
 	// then: expect a warn frame
 	var gotWarn bool
@@ -849,7 +754,7 @@ func TestRejectWrongInvokeID(t *testing.T) {
 	}
 }
 
-// ─── Test 10: Delete Agent Idempotent ────────────────────────────────────
+// ─── Test 8: Delete Agent Idempotent ────────────────────────────────────
 
 // TestDeleteAgentIdempotent verifies that deleting an agent on a session
 // with no existing agent succeeds without error (idempotent behavior).
@@ -870,12 +775,12 @@ func TestDeleteAgentIdempotent(t *testing.T) {
 	}
 }
 
-// ─── Test 11: Full Step3a Lifecycle ──────────────────────────────────────
+// ─── Test 9: Full Step3a Lifecycle ──────────────────────────────────────
 
 // TestFullStep3aLifecycle executes the complete step3a lifecyle: create
 // profile and skill, create session and agent with profile, connect
-// WebSocket, send screenshot to receive operation, send operation_result to
-// complete invoke, and verify all steps succeed.
+// WebSocket, send screenshot to receive operation, then send the next
+// screenshot to continue the screenshot→operation loop.
 func TestFullStep3aLifecycle(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -959,30 +864,162 @@ func TestFullStep3aLifecycle(t *testing.T) {
 		t.Fatal("step6: did not receive operation frame")
 	}
 
-	// Step 7: send operation_result to complete the invoke
-	op := opFrame.GetOperation()
-	resultFrame := &game.AgentFrame{
+	// Step 7: send next screenshot to continue the screenshot→operation loop.
+	// After receiving the operation, the desktop executes it and captures
+	// the next screenshot, sending it to the agent for the next operation.
+	// This replaces the old operation_result flow.
+	nextScreenshotFrame := &game.AgentFrame{
 		SessionId: sessionID,
 		InvokeId:  invokeID,
-		Sequence:  op.GetSequence(),
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: &game.AgentOperationResultFrame{
-				OperationId: op.GetOperationId(),
-				Sequence:    op.GetSequence(),
-				Status:      game.AgentOperationResultStatus_EXECUTED,
-				Message:     "lifecycle operation executed",
+		Sequence:  1,
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId: "lifecycle-cap-002",
+				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:      rawPNG,
+				WidthPx:   10,
+				HeightPx:  10,
 			},
 		},
 	}
-	writeWSFrame(t, conn, resultFrame)
+	writeWSFrame(t, conn, nextScreenshotFrame)
 
-	// then: verify invoke completes without errors — no warn frames should be
-	// sent for a valid operation result. Set a short deadline to confirm.
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, err := conn.ReadMessage()
-	if err == nil {
-		t.Error("step7: expected no frames after valid operation_result, but received one")
-	} else {
-		t.Log("step7: invoke completed successfully without errors")
+	// then: verify the agent responds with another operation (multi-cycle)
+	var opFrame2 *game.AgentFrame
+	for i := 0; i < 10; i++ {
+		frame := readWSFrame(t, conn)
+		if frame.GetOperation() != nil {
+			opFrame2 = frame
+			break
+		}
+	}
+	if opFrame2 == nil {
+		t.Fatal("step7: did not receive second operation frame after next screenshot")
+	}
+}
+
+// ─── Test 10: Screenshot Operation Loop ──────────────────────────────────
+
+// TestScreenshotOperationLoop explicitly verifies the new screenshot→operation
+// loop by executing 2+ cycles: send screenshot → receive operation → send next
+// screenshot → receive another operation. It verifies outer frame Sequence
+// increments correctly across cycles.
+func TestScreenshotOperationLoop(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("loop-profile-%s", uniqueSuffix())
+
+	// given: setup
+	_ = createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		AgentProfileName: profileName,
+		Model:            "gpt-4",
+		SystemPrompt:     "You are a test agent that processes screenshots.",
+		Enabled:          true,
+	})
+
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	agentBody := fmt.Sprintf(`{"agentProfileName":"%s"}`, profileName)
+	_ = createAgentWithProfileBody(t, sutHostURL, sutEnvName, sessionID, []byte(agentBody))
+
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	rawPNG := readRawPNG(t)
+	invokeID := fmt.Sprintf("invoke-%s", uniqueSuffix())
+
+	// Cycle 1: send screenshot with sequence 0, receive operation
+	screenshot1 := &game.AgentFrame{
+		SessionId: sessionID,
+		InvokeId:  invokeID,
+		Sequence:  0,
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId: "loop-cap-001",
+				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:      rawPNG,
+				WidthPx:   10,
+				HeightPx:  10,
+			},
+		},
+	}
+	writeWSFrame(t, conn, screenshot1)
+
+	var opFrame1 *game.AgentFrame
+	for i := 0; i < 10; i++ {
+		frame := readWSFrame(t, conn)
+		if frame.GetOperation() != nil {
+			opFrame1 = frame
+			break
+		}
+	}
+	if opFrame1 == nil {
+		t.Fatal("cycle 1: did not receive operation frame")
+	}
+
+	// Cycle 2: send next screenshot with sequence 1, receive next operation
+	screenshot2 := &game.AgentFrame{
+		SessionId: sessionID,
+		InvokeId:  invokeID,
+		Sequence:  1,
+		Payload: &game.AgentFrame_Screenshot{
+			Screenshot: &game.AgentScreenshotFrame{
+				CaptureId: "loop-cap-002",
+				Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:      rawPNG,
+				WidthPx:   10,
+				HeightPx:  10,
+			},
+		},
+	}
+	writeWSFrame(t, conn, screenshot2)
+
+	var opFrame2 *game.AgentFrame
+	for i := 0; i < 10; i++ {
+		frame := readWSFrame(t, conn)
+		if frame.GetOperation() != nil {
+			opFrame2 = frame
+			break
+		}
+	}
+	if opFrame2 == nil {
+		t.Fatal("cycle 2: did not receive operation frame")
+	}
+
+	// then: verify both cycles produced valid operation frames
+	// with sequence increment across cycles
+	if opFrame1.GetSequence() < 0 {
+		t.Errorf("cycle 1: operation frame envelope has invalid sequence=%d", opFrame1.GetSequence())
+	}
+	if opFrame2.GetSequence() < 0 {
+		t.Errorf("cycle 2: operation frame envelope has invalid sequence=%d", opFrame2.GetSequence())
+	}
+	if opFrame2.GetSequence() <= opFrame1.GetSequence() {
+		t.Errorf("cycle 2 sequence=%d did not increment beyond cycle 1 sequence=%d",
+			opFrame2.GetSequence(), opFrame1.GetSequence())
+	}
+	t.Logf("screenshot→operation loop completed: cycle1 seq=%d, cycle2 seq=%d",
+		opFrame1.GetSequence(), opFrame2.GetSequence())
+}
+
+// ─── Test 11: Create Agent with Empty Profile Error ────────────────────────
+
+// TestCreateAgentEmptyProfileError verifies that creating an agent with an
+// empty agentProfileName returns an HTTP error response.
+func TestCreateAgentEmptyProfileError(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: create a session (no profile needed — empty profile is rejected
+	// regardless of existence)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// when: try to create agent with empty profile name
+	url := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPost, url, sutEnvName, []byte(`{"agentProfileName":""}`))
+
+	// then: expect error response (NOT any 2xx success)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		t.Errorf("POST agent with empty profile returned %d, want error (non-2xx). body=%s", resp.StatusCode, respBody)
 	}
 }

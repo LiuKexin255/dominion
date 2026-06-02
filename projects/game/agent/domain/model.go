@@ -49,11 +49,10 @@ type Status struct {
 type InvokeState int
 
 const (
-	InvokeStateIdle                    InvokeState = iota
-	InvokeStateInvoking                           = iota
-	InvokeStateWaitingForOperationResult           = iota
-	InvokeStateCompleted                           = iota
-	InvokeStateFailed                              = iota
+	InvokeStateIdle      InvokeState = iota
+	InvokeStateInvoking              = iota
+	InvokeStateCompleted             = iota
+	InvokeStateFailed                = iota
 )
 
 // InvokeContext holds the state of an active invoke.
@@ -65,6 +64,28 @@ type InvokeContext struct {
 	ProfileName string
 	Skills      []string
 	MCPNames    []string
+}
+
+// InvokeRuntimeConfig holds the configuration for creating an agent runtime.
+type InvokeRuntimeConfig struct {
+	// ProfileName is the agent profile name (business identifier).
+	ProfileName string
+	// Model is the model name to use.
+	Model string
+	// SystemPrompt is the system prompt for the agent.
+	SystemPrompt string
+	// Skills are the skills configured for this agent.
+	Skills []SkillConfig
+	// MCPNames are the names of MCP servers accessible to this agent.
+	MCPNames []string
+}
+
+// SkillConfig holds the configuration for a single skill.
+type SkillConfig struct {
+	// SkillName is the business identifier for this skill.
+	SkillName string
+	// Content is the skill content (text).
+	Content string
 }
 
 // OperationInput represents a desktop operation to execute.
@@ -79,15 +100,6 @@ type OperationInput struct {
 	// Keyboard operation fields
 	KeyCodes string
 	IsMouse  bool // true=mouse, false=keyboard
-}
-
-// OperationResult represents the result of executing an operation.
-type OperationResult struct {
-	OperationID string
-	InvokeID    string
-	Sequence    int64
-	Status      int32
-	Message     string
 }
 
 // FrameType identifies the kind of frame payload.
@@ -108,13 +120,14 @@ type Frame struct {
 	// Operation-specific fields (only set when Type == FrameTypeOperation)
 	OperationID  string
 	ScreenshotID string
-	OperationSeq int64
-	Button       int32
-	ClickType    int32
-	XPx          int32
-	YPx          int32
-	IsMouse      bool
-	KeyCodes     string
+	// Sequence carries the envelope sequence value (promoted to AgentFrame.Sequence by handler). This is NOT a payload-level sequence.
+	Sequence  int64
+	Button    int32
+	ClickType int32
+	XPx       int32
+	YPx       int32
+	IsMouse   bool
+	KeyCodes  string
 
 	// Warn-specific fields (only set when Type == FrameTypeWarn)
 	WarnMessage string
