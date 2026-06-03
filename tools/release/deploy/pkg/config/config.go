@@ -65,6 +65,8 @@ type DeployArtifact struct {
 	Replicas int `yaml:"replicas,omitempty"`
 	// Env 指定该产物的环境变量。
 	Env map[string]string `yaml:"env,omitempty"`
+	// Secrets 指定该产物需要注入的密钥绑定引用。
+	Secrets map[string]*SecretBindingRef `yaml:"secrets,omitempty"`
 }
 
 // DeployInfra 表示基于基础设施的部署定义。
@@ -117,11 +119,18 @@ type ServiceConfig struct {
 }
 
 type ServiceArtifact struct {
-	Name   string                 `yaml:"name"`
-	Target string                 `yaml:"target"`
-	TLS    bool                   `yaml:"tls,omitempty"`
-	OSS    bool                   `yaml:"oss,omitempty"`
-	Ports  []*ServiceArtifactPort `yaml:"ports"`
+	Name    string                 `yaml:"name"`
+	Target  string                 `yaml:"target"`
+	TLS     bool                   `yaml:"tls,omitempty"`
+	OSS     bool                   `yaml:"oss,omitempty"`
+	Secrets []string               `yaml:"secrets,omitempty"`
+	Ports   []*ServiceArtifactPort `yaml:"ports"`
+}
+
+// SecretBindingRef 引用一个已注册的密钥绑定。
+type SecretBindingRef struct {
+	Secret string `yaml:"secret"`
+	Key    string `yaml:"key"`
 }
 
 type ServiceArtifactPort struct {

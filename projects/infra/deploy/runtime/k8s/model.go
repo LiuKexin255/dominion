@@ -27,6 +27,7 @@ type DeploymentWorkload struct {
 	Ports           []*DeploymentPort
 	EnvType         domain.EnvironmentType
 	Env             map[string]string
+	SecretBindings  []*domain.SecretBinding
 }
 
 // WorkloadName 返回 deployment 对应的资源名。
@@ -99,6 +100,7 @@ type StatefulWorkload struct {
 	Ports           []*DeploymentPort
 	EnvType         domain.EnvironmentType
 	Env             map[string]string
+	SecretBindings  []*domain.SecretBinding
 }
 
 // WorkloadName 返回 statefulset 对应的资源名。

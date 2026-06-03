@@ -400,6 +400,13 @@ func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {
 			spec.Env = make(map[string]string, len(artifact.Env))
 			maps.Copy(spec.Env, artifact.Env)
 		}
+		if len(artifact.SecretBindings) > 0 {
+			spec.SecretBindings = make([]*SecretBinding, len(artifact.SecretBindings))
+			for j, sb := range artifact.SecretBindings {
+				cp := *sb
+				spec.SecretBindings[j] = &cp
+			}
+		}
 		cloned[i] = &spec
 	}
 

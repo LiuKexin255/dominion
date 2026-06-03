@@ -135,6 +135,66 @@ func TestParseDeployConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "读取包含 secrets 的部署配置成功",
+			path: filepath.Join(root, "testdata", "deploy.secrets.yaml"),
+			want: &DeployConfig{
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.secrets.yaml",
+				Services: []*DeployService{{
+					Artifact: DeployArtifact{
+						Path: "//testdata/service/service.yaml",
+						Name: "service",
+						Secrets: map[string]*SecretBindingRef{
+							"database-url": {
+								Secret: "prod-db",
+								Key:    "username",
+							},
+						},
+					},
+				}},
+			},
+		},
+		{
+			name: "不包含 secrets 的部署配置向后兼容",
+			path: filepath.Join(root, "testdata", "deploy.yaml"),
+			want: &DeployConfig{
+				Name:    "grpc.dev",
+				Desc:    "开发环境",
+				Type:    "dev",
+				Version: "2.0",
+				URI:     "//testdata/deploy.yaml",
+				Services: []*DeployService{
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/service/service.yaml",
+							Name: "service",
+						},
+					},
+					{
+						Artifact: DeployArtifact{
+							Path: "//testdata/gateway/service.yaml",
+							Name: "gateway",
+						},
+						HTTP: DeployHTTP{
+							Hostnames: []string{"hello.liukexin.com"},
+							Matches: []*DeployHTTPMatch{
+								{
+									Backend: "http",
+									Path: DeployHTTPPathMatch{
+										Type:  HTTPPathMatchTypePrefix,
+										Value: "/v1",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "读取包含 type 的部署配置成功",
 			path: filepath.Join(root, "testdata", "deploy.type.yaml"),
 			want: &DeployConfig{
@@ -366,6 +426,52 @@ func TestParseServiceConfig(t *testing.T) {
 						Port: 50051,
 					}},
 				}},
+				Kind: WorkloadKindStateless,
+			},
+		},
+		{
+			name: "读取包含 secrets 的服务配置成功",
+			path: filepath.Join(root, "testdata", "service.secrets.yaml"),
+			want: &ServiceConfig{
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service with secrets",
+				Version: "2.0",
+				URI:     "//testdata/service.secrets.yaml",
+				Artifacts: []*ServiceArtifact{{
+					Name:    "service",
+					Target:  "//testdata:service_image",
+					Secrets: []string{"database-url", "stripe-api-key"},
+					Ports: []*ServiceArtifactPort{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+				Kind: WorkloadKindStateless,
+			},
+		},
+		{
+			name: "不包含 secrets 的服务配置向后兼容",
+			path: filepath.Join(root, "testdata", "service.yaml"),
+			want: &ServiceConfig{
+				Name:    "service",
+				App:     "grpc-hello-world",
+				Desc:    "grpc hello world service",
+				Version: "2.0",
+				URI:     "//testdata/service.yaml",
+				Artifacts: []*ServiceArtifact{
+					{
+						Name:   "service",
+						Target: "//testdata:service_image",
+						TLS:    false,
+						Ports: []*ServiceArtifactPort{
+							{
+								Name: "grpc",
+								Port: 50051,
+							},
+						},
+					},
+				},
 				Kind: WorkloadKindStateless,
 			},
 		},

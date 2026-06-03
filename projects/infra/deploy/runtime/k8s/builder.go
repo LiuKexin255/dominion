@@ -55,6 +55,13 @@ const (
 	// envS3SecretKey 为 S3 Secret Key 环境变量名。
 	envS3SecretKey = "S3_SECRET_KEY"
 
+	// secretVolumeName 为 Secret projected volume 固定名称。
+	secretVolumeName = "dominion-secrets"
+	// secretMountPath 为 Secret 文件固定挂载目录。
+	secretMountPath = "/mnt/dominion/secret"
+	// envSecretDir 为 Secret 挂载目录环境变量名。
+	envSecretDir = "DOMINION_SECRET_DIR"
+
 	// httpRouteKind 是 Gateway API HTTPRoute 资源类型。
 	httpRouteKind = "HTTPRoute"
 	// statefulSetPodNameLabelKey 为 StatefulSet Pod 单实例选择器标签。
@@ -198,6 +205,36 @@ func BuildDeployment(workload *DeploymentWorkload, cfg *K8sConfig) (*appsv1.Depl
 		)
 	}
 
+	if len(workload.SecretBindings) > 0 {
+		var secretSources []corev1.VolumeProjection
+		for _, binding := range workload.SecretBindings {
+			secretSources = append(secretSources, corev1.VolumeProjection{
+				Secret: &corev1.SecretProjection{
+					LocalObjectReference: corev1.LocalObjectReference{Name: binding.SecretName},
+					Items: []corev1.KeyToPath{{
+						Key:  binding.Key,
+						Path: binding.LogicalName,
+					}},
+				},
+			})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: secretVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: secretSources},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      secretVolumeName,
+			MountPath: secretMountPath,
+			ReadOnly:  true,
+		})
+		containerEnv = append(containerEnv, corev1.EnvVar{
+			Name:  envSecretDir,
+			Value: secretMountPath,
+		})
+	}
+
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.WorkloadName(),
@@ -324,6 +361,36 @@ func BuildStatefulSet(workload *StatefulWorkload, cfg *K8sConfig) (*appsv1.State
 				},
 			},
 		)
+	}
+
+	if len(workload.SecretBindings) > 0 {
+		var secretSources []corev1.VolumeProjection
+		for _, binding := range workload.SecretBindings {
+			secretSources = append(secretSources, corev1.VolumeProjection{
+				Secret: &corev1.SecretProjection{
+					LocalObjectReference: corev1.LocalObjectReference{Name: binding.SecretName},
+					Items: []corev1.KeyToPath{{
+						Key:  binding.Key,
+						Path: binding.LogicalName,
+					}},
+				},
+			})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: secretVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{Sources: secretSources},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      secretVolumeName,
+			MountPath: secretMountPath,
+			ReadOnly:  true,
+		})
+		containerEnv = append(containerEnv, corev1.EnvVar{
+			Name:  envSecretDir,
+			Value: secretMountPath,
+		})
 	}
 
 	return &appsv1.StatefulSet{

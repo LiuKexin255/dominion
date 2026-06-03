@@ -73,9 +73,9 @@ func (s *ReconcileService) MarkRetryExhausted(ctx context.Context, envName domai
 	}
 
 	if err := s.repo.TransitionStatus(ctx, envName, env.Generation(), env.Status().State, &domain.EnvironmentStatus{
-		State: domain.StateFailed,
+		State:              domain.StateFailed,
 		ObservedGeneration: env.Generation(),
-		Message: "retry count exhausted",
+		Message:            "retry count exhausted",
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil

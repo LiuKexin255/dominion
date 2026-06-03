@@ -5,6 +5,63 @@ import (
 	"testing"
 )
 
+func TestSecretBinding_Validate(t *testing.T) {
+	tests := []struct {
+		name         string
+		binding      SecretBinding
+		wantErr      bool
+		wantContains string
+	}{
+		{
+			name:    "valid secret binding",
+			binding: SecretBinding{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+		},
+		{
+			name:         "empty logical_name",
+			binding:      SecretBinding{LogicalName: "", SecretName: "db-secret", Key: "password"},
+			wantErr:      true,
+			wantContains: "logical_name is required",
+		},
+		{
+			name:         "empty secret_name",
+			binding:      SecretBinding{LogicalName: "db-password", SecretName: "", Key: "password"},
+			wantErr:      true,
+			wantContains: "secret_name is required",
+		},
+		{
+			name:         "empty key",
+			binding:      SecretBinding{LogicalName: "db-password", SecretName: "db-secret", Key: ""},
+			wantErr:      true,
+			wantContains: "key is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			binding := tt.binding
+
+			// when
+			err := binding.Validate()
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Validate() expected error")
+				}
+				if tt.wantContains != "" && !strings.Contains(err.Error(), tt.wantContains) {
+					t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestArtifactSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -136,6 +193,32 @@ func TestArtifactSpec_Validate(t *testing.T) {
 				Image:        "repo/app:v1",
 				WorkloadKind: WorkloadKindStateful,
 			},
+		},
+		{
+			name: "valid with secret bindings",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				SecretBindings: []*SecretBinding{
+					{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+					{LogicalName: "api-key", SecretName: "api-secret", Key: "key"},
+				},
+			},
+		},
+		{
+			name: "duplicate secret binding logical_name",
+			spec: ArtifactSpec{
+				Name:  "api",
+				App:   "app",
+				Image: "repo/app:v1",
+				SecretBindings: []*SecretBinding{
+					{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+					{LogicalName: "db-password", SecretName: "other-secret", Key: "other"},
+				},
+			},
+			wantErr:      true,
+			wantContains: `secret_bindings[1]: duplicate logical_name "db-password"`,
 		},
 	}
 

@@ -276,9 +276,9 @@ func TestQueue_EnqueueAfter_Delay(t *testing.T) {
 func TestQueue_EnqueueAfter_Dedup(t *testing.T) {
 	tests := []struct {
 		name       string
-		setupFirst *WorkItem   // first item enqueued (via EnqueueAfter with 0 delay)
-		inFlight   bool        // whether to make the first item in-flight via a dummy
-		second     *WorkItem   // second item enqueued via EnqueueAfter
+		setupFirst *WorkItem      // first item enqueued (via EnqueueAfter with 0 delay)
+		inFlight   bool           // whether to make the first item in-flight via a dummy
+		second     *WorkItem      // second item enqueued via EnqueueAfter
 		wantSource WorkItemSource // expected source of dequeued item
 	}{
 		{

@@ -387,6 +387,139 @@ func TestArtifactSpecs_EnvPersistence(t *testing.T) {
 	}
 }
 
+func TestArtifactSpecs_SecretBindingsPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.ArtifactSpec
+		mongo      mongoArtifactSpec
+		want       []*domain.SecretBinding
+		checkRound bool
+	}{
+		{
+			name: "secret bindings round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+				SecretBindings: []*domain.SecretBinding{
+					{LogicalName: "DB_URL", SecretName: "db-secret", Key: "url"},
+					{LogicalName: "API_KEY", SecretName: "api-secret", Key: "key"},
+				},
+			},
+			want: []*domain.SecretBinding{
+				{LogicalName: "DB_URL", SecretName: "db-secret", Key: "url"},
+				{LogicalName: "API_KEY", SecretName: "api-secret", Key: "key"},
+			},
+			checkRound: true,
+		},
+		{
+			name: "nil secret bindings round trip",
+			source: &domain.ArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			want:       nil,
+			checkRound: true,
+		},
+		{
+			name: "empty slice from mongo normalizes to nil",
+			mongo: mongoArtifactSpec{
+				Name:           "svc",
+				App:            "app",
+				Image:          "image:v1",
+				Replicas:       1,
+				SecretBindings: []mongoSecretBinding{},
+			},
+			want: nil,
+		},
+		{
+			name: "old mongo document without secret_bindings defaults to nil",
+			mongo: mongoArtifactSpec{
+				Name:     "svc",
+				App:      "app",
+				Image:    "image:v1",
+				Replicas: 1,
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoSpecs []mongoArtifactSpec
+			if tt.source != nil {
+				// when
+				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
+
+				// then
+				if len(mongoSpecs) != 1 {
+					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+				}
+			} else {
+				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+			}
+
+			got := artifactSpecsFromMongo(mongoSpecs)
+
+			// then
+			if len(got) != 1 {
+				t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+			}
+			if !reflect.DeepEqual(got[0].SecretBindings, tt.want) {
+				t.Fatalf("artifactSpecsFromMongo() secret_bindings = %v, want %v", got[0].SecretBindings, tt.want)
+			}
+			if tt.checkRound && !reflect.DeepEqual(got[0].SecretBindings, tt.source.SecretBindings) {
+				t.Fatalf("round trip secret_bindings = %v, want %v", got[0].SecretBindings, tt.source.SecretBindings)
+			}
+		})
+	}
+}
+
+func TestArtifactSpecs_SecretBindings_BSONRoundTrip(t *testing.T) {
+	// given
+	source := &domain.ArtifactSpec{
+		Name:     "svc",
+		App:      "app",
+		Image:    "image:v1",
+		Replicas: 3,
+		SecretBindings: []*domain.SecretBinding{
+			{LogicalName: "DB_URL", SecretName: "db-secret", Key: "url"},
+			{LogicalName: "API_KEY", SecretName: "api-secret", Key: "key"},
+		},
+	}
+
+	// when — domain → mongo → BSON bytes
+	mongoSpecs := artifactSpecsToMongo([]*domain.ArtifactSpec{source})
+	if len(mongoSpecs) != 1 {
+		t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
+	}
+
+	bsonBytes, err := bson.Marshal(mongoSpecs[0])
+	if err != nil {
+		t.Fatalf("bson.Marshal() error = %v", err)
+	}
+
+	// when — BSON bytes → mongo → domain
+	var decoded mongoArtifactSpec
+	if err := bson.Unmarshal(bsonBytes, &decoded); err != nil {
+		t.Fatalf("bson.Unmarshal() error = %v", err)
+	}
+
+	got := artifactSpecsFromMongo([]mongoArtifactSpec{decoded})
+	if len(got) != 1 {
+		t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
+	}
+
+	// then
+	if !reflect.DeepEqual(got[0].SecretBindings, source.SecretBindings) {
+		t.Fatalf("BSON round trip secret_bindings = %v, want %v", got[0].SecretBindings, source.SecretBindings)
+	}
+}
+
 func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
 	tests := []struct {
 		name       string

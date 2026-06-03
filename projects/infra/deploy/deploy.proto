@@ -215,13 +215,29 @@ message ArtifactSpec {
 
   bool oss_enabled = 10;
 
-  reserved 11;
+  repeated SecretBinding secret_bindings = 11;
 }
 
 message ArtifactPortSpec {
   string name = 1;
 
   int32 port = 2;
+}
+
+// SecretBinding maps a logical reference in the deployment config to a
+// concrete secret stored in the underlying secrets backend.
+message SecretBinding {
+  // logical_name is the name used within the deployment configuration
+  // (e.g., "DB_PASSWORD") to reference this secret binding.
+  string logical_name = 1;
+
+  // secret_name identifies the secret resource in the secrets backend
+  // (e.g., the Vault path or Kubernetes Secret name).
+  string secret_name = 2;
+
+  // key is the key within the secret resource from which to retrieve the
+  // value (e.g., "password").
+  string key = 3;
 }
 
 message InfraSpec {

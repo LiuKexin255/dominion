@@ -1015,6 +1015,268 @@ func TestBuildStatefulSet(t *testing.T) {
 	}
 }
 
+// --- Secret Bindings Tests ---
+
+func TestBuildDeployment_WithoutSecretBindings(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.SecretBindings = nil
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	// Verify no secret volume or volume mount.
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		if vol.Name == secretVolumeName {
+			t.Fatalf("Should not have secret volume when SecretBindings is nil")
+		}
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == secretVolumeName {
+			t.Fatalf("Should not have secret volume mount when SecretBindings is nil")
+		}
+	}
+
+	// Verify no DOMINION_SECRET_DIR env var.
+	for _, e := range container.Env {
+		if e.Name == envSecretDir {
+			t.Fatalf("Should not have %s env var when SecretBindings is nil", envSecretDir)
+		}
+	}
+
+	// Verify backward compat: same env count as before.
+	// LOG_LEVEL + 3 reserved + 2 client TLS = 6.
+	if len(container.Env) != 6 {
+		t.Fatalf("Env count = %d, want 6 (backward compat when no secret bindings)", len(container.Env))
+	}
+}
+
+func TestBuildDeployment_WithSecretBindings(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.SecretBindings = []*domain.SecretBinding{
+		{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	// Verify secret volume exists AFTER TLS volume.
+	// Volumes: [tls, dominion-secrets].
+	if len(deploy.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	secretVol := deploy.Spec.Template.Spec.Volumes[1]
+	if secretVol.Name != secretVolumeName {
+		t.Fatalf("Secret Volume Name = %q, want %q", secretVol.Name, secretVolumeName)
+	}
+	if secretVol.Projected == nil {
+		t.Fatalf("Secret volume should use projected source")
+	}
+	if len(secretVol.Projected.Sources) != 1 {
+		t.Fatalf("Secret projected Sources count = %d, want 1", len(secretVol.Projected.Sources))
+	}
+	src := secretVol.Projected.Sources[0]
+	if src.Secret == nil {
+		t.Fatalf("Secret projection should be a Secret source")
+	}
+	if src.Secret.Name != "db-secret" {
+		t.Fatalf("Secret Name = %q, want %q", src.Secret.Name, "db-secret")
+	}
+	if len(src.Secret.Items) != 1 {
+		t.Fatalf("Secret Items count = %d, want 1", len(src.Secret.Items))
+	}
+	if src.Secret.Items[0].Key != "password" || src.Secret.Items[0].Path != "db-password" {
+		t.Fatalf("Secret Item = {Key: %q, Path: %q}, want {Key: password, Path: db-password}", src.Secret.Items[0].Key, src.Secret.Items[0].Path)
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	secMount := container.VolumeMounts[1]
+	if secMount.Name != secretVolumeName || secMount.MountPath != secretMountPath || !secMount.ReadOnly {
+		t.Fatalf("Secret VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			secMount.Name, secMount.MountPath, secMount.ReadOnly, secretVolumeName, secretMountPath)
+	}
+
+	// Verify DOMINION_SECRET_DIR env var is appended.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	}
+	if lastEnv.Value != secretMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envSecretDir, lastEnv.Value, secretMountPath)
+	}
+
+	// LOG_LEVEL + 3 reserved + 2 client TLS + 1 secret = 7.
+	if len(envs) != 7 {
+		t.Fatalf("Env count = %d, want 7", len(envs))
+	}
+}
+
+func TestBuildDeployment_WithSecretBindingsMultiple(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	w.SecretBindings = []*domain.SecretBinding{
+		{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+		{LogicalName: "api-key", SecretName: "api-secret", Key: "apikey"},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	// Volumes: [tls, dominion-secrets].
+	if len(deploy.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(deploy.Spec.Template.Spec.Volumes))
+	}
+	secretVol := deploy.Spec.Template.Spec.Volumes[1]
+	if secretVol.Name != secretVolumeName {
+		t.Fatalf("Secret Volume Name = %q, want %q", secretVol.Name, secretVolumeName)
+	}
+	if len(secretVol.Projected.Sources) != 2 {
+		t.Fatalf("Secret projected Sources count = %d, want 2", len(secretVol.Projected.Sources))
+	}
+
+	// First binding.
+	if secretVol.Projected.Sources[0].Secret.Name != "db-secret" {
+		t.Fatalf("Sources[0] Secret Name = %q, want %q", secretVol.Projected.Sources[0].Secret.Name, "db-secret")
+	}
+	if secretVol.Projected.Sources[0].Secret.Items[0].Key != "password" {
+		t.Fatalf("Sources[0] Item Key = %q, want %q", secretVol.Projected.Sources[0].Secret.Items[0].Key, "password")
+	}
+	if secretVol.Projected.Sources[0].Secret.Items[0].Path != "db-password" {
+		t.Fatalf("Sources[0] Item Path = %q, want %q", secretVol.Projected.Sources[0].Secret.Items[0].Path, "db-password")
+	}
+
+	// Second binding.
+	if secretVol.Projected.Sources[1].Secret.Name != "api-secret" {
+		t.Fatalf("Sources[1] Secret Name = %q, want %q", secretVol.Projected.Sources[1].Secret.Name, "api-secret")
+	}
+	if secretVol.Projected.Sources[1].Secret.Items[0].Key != "apikey" {
+		t.Fatalf("Sources[1] Item Key = %q, want %q", secretVol.Projected.Sources[1].Secret.Items[0].Key, "apikey")
+	}
+	if secretVol.Projected.Sources[1].Secret.Items[0].Path != "api-key" {
+		t.Fatalf("Sources[1] Item Path = %q, want %q", secretVol.Projected.Sources[1].Secret.Items[0].Path, "api-key")
+	}
+}
+
+func TestBuildStatefulSet_WithSecretBindings(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testStatefulWorkload()
+	w.SecretBindings = []*domain.SecretBinding{
+		{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+	}
+
+	sts, err := BuildStatefulSet(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildStatefulSet() error: %v", err)
+	}
+
+	container := sts.Spec.Template.Spec.Containers[0]
+
+	// Volumes: [tls, dominion-secrets].
+	if len(sts.Spec.Template.Spec.Volumes) != 2 {
+		t.Fatalf("Volumes count = %d, want 2", len(sts.Spec.Template.Spec.Volumes))
+	}
+	secretVol := sts.Spec.Template.Spec.Volumes[1]
+	if secretVol.Name != secretVolumeName {
+		t.Fatalf("Secret Volume Name = %q, want %q", secretVol.Name, secretVolumeName)
+	}
+	if secretVol.Projected == nil {
+		t.Fatalf("Secret volume should use projected source")
+	}
+	if len(secretVol.Projected.Sources) != 1 {
+		t.Fatalf("Secret projected Sources count = %d, want 1", len(secretVol.Projected.Sources))
+	}
+
+	// Verify volume mount.
+	if len(container.VolumeMounts) != 2 {
+		t.Fatalf("VolumeMounts count = %d, want 2", len(container.VolumeMounts))
+	}
+	secMount := container.VolumeMounts[1]
+	if secMount.Name != secretVolumeName || secMount.MountPath != secretMountPath || !secMount.ReadOnly {
+		t.Fatalf("Secret VolumeMount = {Name: %q, MountPath: %q, ReadOnly: %v}, want {Name: %q, MountPath: %q, ReadOnly: true}",
+			secMount.Name, secMount.MountPath, secMount.ReadOnly, secretVolumeName, secretMountPath)
+	}
+
+	// Verify DOMINION_SECRET_DIR env var appended last.
+	envs := container.Env
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	}
+	if lastEnv.Value != secretMountPath {
+		t.Fatalf("Env[%q] Value = %q, want %q", envSecretDir, lastEnv.Value, secretMountPath)
+	}
+}
+
+func TestBuildDeployment_SecretBindingsEnvOverridesUser(t *testing.T) {
+	cfg := testK8sConfig()
+	w := testDeploymentWorkload()
+	// User sets DOMINION_SECRET_DIR to a custom value.
+	w.Env = map[string]string{
+		"DOMINION_SECRET_DIR": "/custom/path",
+		"APP_DEBUG":           "true",
+	}
+	w.SecretBindings = []*domain.SecretBinding{
+		{LogicalName: "db-password", SecretName: "db-secret", Key: "password"},
+	}
+
+	deploy, err := BuildDeployment(w, cfg)
+	if err != nil {
+		t.Fatalf("BuildDeployment() error: %v", err)
+	}
+
+	container := deploy.Spec.Template.Spec.Containers[0]
+	envs := container.Env
+
+	// Expected order: sorted user env (APP_DEBUG, DOMINION_SECRET_DIR) + LOG_LEVEL + 3 reserved + 2 TLS + 1 secret.
+	// 2 user + 1 loglevel + 3 reserved + 2 TLS + 1 secret = 9.
+	if len(envs) != 9 {
+		t.Fatalf("Env count = %d, want 9", len(envs))
+	}
+
+	// User DOMINION_SECRET_DIR should come early (sorted), platform's appended last.
+	// Sorted user env: APP_DEBUG, DOMINION_SECRET_DIR (platform env appended AFTER).
+	if envs[0].Name != "APP_DEBUG" || envs[0].Value != "true" {
+		t.Fatalf("Env[0] = {Name: %q, Value: %q}, want APP_DEBUG/true", envs[0].Name, envs[0].Value)
+	}
+	if envs[1].Name != "DOMINION_SECRET_DIR" || envs[1].Value != "/custom/path" {
+		t.Fatalf("Env[1] = {Name: %q, Value: %q}, want DOMINION_SECRET_DIR/custom/path (user value)", envs[1].Name, envs[1].Value)
+	}
+
+	// Last env should be platform-injected DOMINION_SECRET_DIR (overrides user via K8s last-wins).
+	lastEnv := envs[len(envs)-1]
+	if lastEnv.Name != envSecretDir {
+		t.Fatalf("Last env Name = %q, want %q", lastEnv.Name, envSecretDir)
+	}
+	if lastEnv.Value != secretMountPath {
+		t.Fatalf("Last env Value = %q, want %q (platform should override user)", lastEnv.Value, secretMountPath)
+	}
+
+	// Verify both DOMINION_SECRET_DIR entries exist (user first, platform last).
+	count := 0
+	for _, e := range envs {
+		if e.Name == envSecretDir {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("DOMINION_SECRET_DIR appears %d times, want 2 (user value + platform override)", count)
+	}
+}
+
 // --- BuildGoverningService ---
 
 func TestBuildGoverningService(t *testing.T) {

@@ -137,18 +137,26 @@ type mongoArtifactPortSpec struct {
 	Port int32  `bson:"port"`
 }
 
+// mongoSecretBinding is the BSON representation of domain.SecretBinding.
+type mongoSecretBinding struct {
+	LogicalName string `bson:"logical_name"`
+	SecretName  string `bson:"secret_name"`
+	Key         string `bson:"key"`
+}
+
 // mongoArtifactSpec is the BSON representation of domain.ArtifactSpec.
 type mongoArtifactSpec struct {
-	Name         string                  `bson:"name"`
-	App          string                  `bson:"app"`
-	Image        string                  `bson:"image"`
-	Ports        []mongoArtifactPortSpec `bson:"ports"`
-	Replicas     int32                   `bson:"replicas"`
-	TLSEnabled   bool                    `bson:"tls_enabled"`
-	OSSEnabled   bool                    `bson:"oss_enabled"`
-	WorkloadKind int                     `bson:"workload_kind"`
-	HTTP         *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
-	Env          map[string]string       `bson:"env,omitempty"`
+	Name           string                  `bson:"name"`
+	App            string                  `bson:"app"`
+	Image          string                  `bson:"image"`
+	Ports          []mongoArtifactPortSpec `bson:"ports"`
+	Replicas       int32                   `bson:"replicas"`
+	TLSEnabled     bool                    `bson:"tls_enabled"`
+	OSSEnabled     bool                    `bson:"oss_enabled"`
+	WorkloadKind   int                     `bson:"workload_kind"`
+	HTTP           *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
+	Env            map[string]string       `bson:"env,omitempty"`
+	SecretBindings []mongoSecretBinding    `bson:"secret_bindings,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
@@ -536,16 +544,17 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 	result := make([]mongoArtifactSpec, len(specs))
 	for i, s := range specs {
 		result[i] = mongoArtifactSpec{
-			Name:         s.Name,
-			App:          s.App,
-			Image:        s.Image,
-			Ports:        artifactPortSpecsToMongo(s.Ports),
-			Replicas:     s.Replicas,
-			TLSEnabled:   s.TLSEnabled,
-			OSSEnabled:   s.OSSEnabled,
-			WorkloadKind: int(s.WorkloadKind),
-			HTTP:         artifactHTTPSpecToMongo(s.HTTP),
-			Env:          s.Env,
+			Name:           s.Name,
+			App:            s.App,
+			Image:          s.Image,
+			Ports:          artifactPortSpecsToMongo(s.Ports),
+			Replicas:       s.Replicas,
+			TLSEnabled:     s.TLSEnabled,
+			OSSEnabled:     s.OSSEnabled,
+			WorkloadKind:   int(s.WorkloadKind),
+			HTTP:           artifactHTTPSpecToMongo(s.HTTP),
+			Env:            s.Env,
+			SecretBindings: secretBindingsToMongo(s.SecretBindings),
 		}
 	}
 	return result
@@ -558,6 +567,21 @@ func artifactPortSpecsToMongo(specs []domain.ArtifactPortSpec) []mongoArtifactPo
 	result := make([]mongoArtifactPortSpec, len(specs))
 	for i, p := range specs {
 		result[i] = mongoArtifactPortSpec{Name: p.Name, Port: p.Port}
+	}
+	return result
+}
+
+func secretBindingsToMongo(bindings []*domain.SecretBinding) []mongoSecretBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	result := make([]mongoSecretBinding, len(bindings))
+	for i, b := range bindings {
+		result[i] = mongoSecretBinding{
+			LogicalName: b.LogicalName,
+			SecretName:  b.SecretName,
+			Key:         b.Key,
+		}
 	}
 	return result
 }
@@ -677,16 +701,17 @@ func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
 	result := make([]*domain.ArtifactSpec, len(specs))
 	for i, s := range specs {
 		result[i] = &domain.ArtifactSpec{
-			Name:         s.Name,
-			App:          s.App,
-			Image:        s.Image,
-			Ports:        artifactPortSpecsFromMongo(s.Ports),
-			Replicas:     s.Replicas,
-			TLSEnabled:   s.TLSEnabled,
-			OSSEnabled:   s.OSSEnabled,
-			WorkloadKind: domain.WorkloadKind(s.WorkloadKind),
-			HTTP:         artifactHTTPSpecFromMongo(s.HTTP),
-			Env:          normalizeEnv(s.Env),
+			Name:           s.Name,
+			App:            s.App,
+			Image:          s.Image,
+			Ports:          artifactPortSpecsFromMongo(s.Ports),
+			Replicas:       s.Replicas,
+			TLSEnabled:     s.TLSEnabled,
+			OSSEnabled:     s.OSSEnabled,
+			WorkloadKind:   domain.WorkloadKind(s.WorkloadKind),
+			HTTP:           artifactHTTPSpecFromMongo(s.HTTP),
+			Env:            normalizeEnv(s.Env),
+			SecretBindings: secretBindingsFromMongo(s.SecretBindings),
 		}
 	}
 	return result
@@ -706,6 +731,21 @@ func artifactPortSpecsFromMongo(specs []mongoArtifactPortSpec) []domain.Artifact
 	result := make([]domain.ArtifactPortSpec, len(specs))
 	for i, p := range specs {
 		result[i] = domain.ArtifactPortSpec{Name: p.Name, Port: p.Port}
+	}
+	return result
+}
+
+func secretBindingsFromMongo(bindings []mongoSecretBinding) []*domain.SecretBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	result := make([]*domain.SecretBinding, len(bindings))
+	for i, b := range bindings {
+		result[i] = &domain.SecretBinding{
+			LogicalName: b.LogicalName,
+			SecretName:  b.SecretName,
+			Key:         b.Key,
+		}
 	}
 	return result
 }

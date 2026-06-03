@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -100,6 +101,41 @@ func Compile(deployConfig *config.DeployConfig, serviceConfigs map[string]*confi
 
 		if compiledArtifact.WorkloadKind == deploy.WorkloadKind_WORKLOAD_KIND_STATEFUL && compiledArtifact.Http != nil {
 			return nil, fmt.Errorf("service %s: http is only supported for stateless workloads, got kind=stateful", artifact.Name)
+		}
+
+		// Validate and compile secret bindings.
+		if len(artifact.Secrets) > 0 || len(deployService.Artifact.Secrets) > 0 {
+			declaredSet := make(map[string]struct{}, len(artifact.Secrets))
+			for _, name := range artifact.Secrets {
+				declaredSet[name] = struct{}{}
+			}
+
+			var errs []error
+			for _, declaredName := range artifact.Secrets {
+				if _, ok := deployService.Artifact.Secrets[declaredName]; !ok {
+					errs = append(errs, fmt.Errorf("artifact %s in %s: secret %q declared but not bound", artifact.Name, deployConfig.Name, declaredName))
+				}
+			}
+			for boundName := range deployService.Artifact.Secrets {
+				if _, ok := declaredSet[boundName]; !ok {
+					errs = append(errs, fmt.Errorf("artifact %s in %s: secret binding %q not declared by service artifact", artifact.Name, deployConfig.Name, boundName))
+				}
+			}
+			if len(errs) > 0 {
+				return nil, errors.Join(errs...)
+			}
+
+			compiledArtifact.SecretBindings = make([]*deploy.SecretBinding, 0, len(deployService.Artifact.Secrets))
+			for name, ref := range deployService.Artifact.Secrets {
+				compiledArtifact.SecretBindings = append(compiledArtifact.SecretBindings, &deploy.SecretBinding{
+					LogicalName: name,
+					SecretName:  ref.Secret,
+					Key:         ref.Key,
+				})
+			}
+			sort.Slice(compiledArtifact.SecretBindings, func(i, j int) bool {
+				return compiledArtifact.SecretBindings[i].GetLogicalName() < compiledArtifact.SecretBindings[j].GetLogicalName()
+			})
 		}
 
 		desiredState.Artifacts = append(desiredState.Artifacts, compiledArtifact)

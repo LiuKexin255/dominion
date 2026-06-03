@@ -437,16 +437,17 @@ func toProtoArtifacts(artifacts []*domain.ArtifactSpec) []*ArtifactSpec {
 	result := make([]*ArtifactSpec, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		result = append(result, &ArtifactSpec{
-			Name:         artifact.Name,
-			App:          artifact.App,
-			Image:        artifact.Image,
-			Ports:        toProtoArtifactPorts(artifact.Ports),
-			Replicas:     artifact.Replicas,
-			TlsEnabled:   artifact.TLSEnabled,
-			OssEnabled:   artifact.OSSEnabled,
-			WorkloadKind: workloadKindToProto(artifact.WorkloadKind),
-			Http:         toProtoArtifactHTTP(artifact.HTTP),
-			Env:          artifact.Env,
+			Name:           artifact.Name,
+			App:            artifact.App,
+			Image:          artifact.Image,
+			Ports:          toProtoArtifactPorts(artifact.Ports),
+			Replicas:       artifact.Replicas,
+			TlsEnabled:     artifact.TLSEnabled,
+			OssEnabled:     artifact.OSSEnabled,
+			WorkloadKind:   workloadKindToProto(artifact.WorkloadKind),
+			Http:           toProtoArtifactHTTP(artifact.HTTP),
+			Env:            artifact.Env,
+			SecretBindings: toProtoSecretBindings(artifact.SecretBindings),
 		})
 	}
 
@@ -464,16 +465,17 @@ func fromProtoArtifacts(artifacts []*ArtifactSpec) ([]*domain.ArtifactSpec, erro
 			return nil, domain.ErrInvalidSpec
 		}
 		result = append(result, &domain.ArtifactSpec{
-			Name:         artifact.GetName(),
-			App:          artifact.GetApp(),
-			Image:        artifact.GetImage(),
-			Ports:        fromProtoArtifactPorts(artifact.GetPorts()),
-			Replicas:     artifact.GetReplicas(),
-			TLSEnabled:   artifact.GetTlsEnabled(),
-			OSSEnabled:   artifact.GetOssEnabled(),
-			WorkloadKind: workloadKindFromProto(artifact.GetWorkloadKind()),
-			HTTP:         fromProtoArtifactHTTP(artifact.GetHttp()),
-			Env:          normalizeEnv(artifact.GetEnv()),
+			Name:           artifact.GetName(),
+			App:            artifact.GetApp(),
+			Image:          artifact.GetImage(),
+			Ports:          fromProtoArtifactPorts(artifact.GetPorts()),
+			Replicas:       artifact.GetReplicas(),
+			TLSEnabled:     artifact.GetTlsEnabled(),
+			OSSEnabled:     artifact.GetOssEnabled(),
+			WorkloadKind:   workloadKindFromProto(artifact.GetWorkloadKind()),
+			HTTP:           fromProtoArtifactHTTP(artifact.GetHttp()),
+			Env:            normalizeEnv(artifact.GetEnv()),
+			SecretBindings: fromProtoSecretBindings(artifact.GetSecretBindings()),
 		})
 	}
 
@@ -535,6 +537,43 @@ func fromProtoArtifactPorts(ports []*ArtifactPortSpec) []domain.ArtifactPortSpec
 		result = append(result, domain.ArtifactPortSpec{
 			Name: port.GetName(),
 			Port: port.GetPort(),
+		})
+	}
+
+	return result
+}
+
+func toProtoSecretBindings(bindings []*domain.SecretBinding) []*SecretBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	result := make([]*SecretBinding, 0, len(bindings))
+	for _, b := range bindings {
+		result = append(result, &SecretBinding{
+			LogicalName: b.LogicalName,
+			SecretName:  b.SecretName,
+			Key:         b.Key,
+		})
+	}
+
+	return result
+}
+
+func fromProtoSecretBindings(bindings []*SecretBinding) []*domain.SecretBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	result := make([]*domain.SecretBinding, 0, len(bindings))
+	for _, b := range bindings {
+		if b == nil {
+			continue
+		}
+		result = append(result, &domain.SecretBinding{
+			LogicalName: b.GetLogicalName(),
+			SecretName:  b.GetSecretName(),
+			Key:         b.GetKey(),
 		})
 	}
 
