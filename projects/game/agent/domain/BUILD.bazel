@@ -4,6 +4,7 @@ go_library(
     name = "domain",
     srcs = [
         "model.go",
+        "prompt_client.go",
         "runtime.go",
     ],
     importpath = "dominion/projects/game/agent/domain",

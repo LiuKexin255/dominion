@@ -84,16 +84,16 @@ type mockAgentClient struct {
 	agentStream game.AgentService_ConnectClient
 }
 
-func (c *mockAgentClient) CreateAgent(_ context.Context, _ *game.AgentCreateRequest) (*game.AgentStatus, error) {
-	return new(game.AgentStatus), nil
+func (c *mockAgentClient) CreateAgent(_ context.Context, _ *game.AgentCreateRequest) (*game.Agent, error) {
+	return &game.Agent{}, nil
 }
 
 func (c *mockAgentClient) DeleteAgent(_ context.Context, _ *game.AgentDeleteRequest) (*emptypb.Empty, error) {
 	return new(emptypb.Empty), nil
 }
 
-func (c *mockAgentClient) GetAgentStatus(_ context.Context, _ *game.GetAgentStatusRequest) (*game.AgentStatus, error) {
-	return new(game.AgentStatus), nil
+func (c *mockAgentClient) GetAgent(_ context.Context, _ *game.AgentGetRequest) (*game.Agent, error) {
+	return &game.Agent{}, nil
 }
 
 func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.AgentService_ConnectClient, error) {

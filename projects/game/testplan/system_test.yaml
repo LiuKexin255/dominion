@@ -25,10 +25,18 @@ description: |
     15. Screenshot frame (PNG upload, ack receipt)
 
 suites:
-  - name: default
+  - name: step2-regression
     deploy: //projects/game/testplan/deploy.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:testplan_test
+
+  - name: step3a
+    deploy: //projects/game/testplan/deploy_step3a.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:step3a_testplan_test

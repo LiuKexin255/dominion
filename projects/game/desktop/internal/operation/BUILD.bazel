@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "operation",
+    srcs = [
+        "convert.go",
+        "execute_other.go",
+        "execute_windows.go",
+    ],
+    importpath = "dominion/projects/game/desktop/internal/operation",
+    visibility = ["//projects/game/desktop:__subpackages__"],
+)
+
+go_unittest(
+    name = "operation_test",
+    srcs = ["convert_test.go"],
+    deps = [":operation"],
+)

@@ -10,8 +10,8 @@ import (
 
 // agentOwnerDocument stores AgentOwner documents in MongoDB.
 type agentOwnerDocument struct {
-	SessionID  string    `bson:"session_id"`
-	OwnerIndex int       `bson:"owner_index"`
+	SessionID        string    `bson:"session_id"`
+	OwnerIndex       int       `bson:"owner_index"`
 	Owner      string    `bson:"owner"`
 	CreateTime time.Time `bson:"create_time"`
 }

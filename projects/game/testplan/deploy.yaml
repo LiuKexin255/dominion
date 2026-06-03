@@ -20,6 +20,9 @@ services:
       path: //projects/game/agent/service.yaml
       name: agent
   - artifact:
+      path: //projects/game/prompt/service.yaml
+      name: prompt
+  - artifact:
       path: //projects/game/gateway/service.yaml
       name: gateway
     http:

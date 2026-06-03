@@ -246,28 +246,3 @@ func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// GetAgentStatus retrieves the agent status for a session via GET to /api/v1/agents/{sessionID}/status.
-func (c *Client) GetAgentStatus(ctx context.Context, sessionID string) (*game.AgentStatus, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/agents/"+sessionID+"/status"), nil)
-	if err != nil {
-		return nil, fmt.Errorf("get agent status: %w", err)
-	}
-	c.setCommonHeaders(req)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("get agent status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("get agent status: status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	status := new(game.AgentStatus)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, status); err != nil {
-		return nil, fmt.Errorf("get agent status: %w", err)
-	}
-	return status, nil
-}

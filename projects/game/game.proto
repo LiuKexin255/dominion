@@ -94,36 +94,81 @@ service ProxyService {
 // Prefix Path: /api/v1/agents
 service AgentService {
   // CreateAgent creates an agent for a given session.
-  rpc CreateAgent(AgentCreateRequest) returns (AgentStatus) {
-    option (google.api.http) = {
-      post: "/api/v1/agents:create"
-      body: "*"
-    };
+  rpc CreateAgent(AgentCreateRequest) returns (Agent);
 
-    option (google.api.method_signature) = "session_id";
-  }
-
-  // GetAgentStatus returns the current status of the agent in a session.
-  rpc GetAgentStatus(GetAgentStatusRequest) returns (AgentStatus) {
-    option (google.api.http) = {
-      get: "/api/v1/agents/{session_id}/status"
-    };
-
-    option (google.api.method_signature) = "session_id";
-  }
+  // GetAgent returns the Agent resource for a session.
+  rpc GetAgent(AgentGetRequest) returns (Agent);
 
   // DeleteAgent deletes the agent for a given session.
-  rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/api/v1/agents/{session_id}"
-    };
-
-    option (google.api.method_signature) = "session_id";
-  }
+  rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty);
 
   // Connect establishes a bidirectional streaming channel for agent-to-agent
   // communication. Messages are exchanged as AgentFrame units.
   rpc Connect(stream AgentFrame) returns (stream AgentFrame);
+}
+
+// PromptService manages AgentProfile and Skill resources for agent
+// configuration.
+//
+// Prefix Path: /api/v1/prompts
+service PromptService {
+  // CreateAgentProfile creates a new AgentProfile resource.
+  rpc CreateAgentProfile(CreateAgentProfileRequest) returns (AgentProfile) {
+    option (google.api.http) = {
+      post: "/api/v1/prompts/agentProfiles"
+      body: "*"
+    };
+  }
+
+  // GetAgentProfile returns the AgentProfile resource identified by name.
+  rpc GetAgentProfile(GetAgentProfileRequest) returns (AgentProfile) {
+    option (google.api.http) = {
+      get: "/api/v1/prompts/agentProfiles/{agent_profile_name}"
+    };
+  }
+
+  // ListAgentProfiles lists all AgentProfile resources.
+  rpc ListAgentProfiles(ListAgentProfilesRequest) returns (ListAgentProfilesResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/prompts/agentProfiles"
+    };
+  }
+
+  // DeleteAgentProfile deletes the AgentProfile resource identified by name.
+  rpc DeleteAgentProfile(DeleteAgentProfileRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/prompts/agentProfiles/{agent_profile_name}"
+    };
+  }
+
+  // CreateSkill creates a new Skill resource.
+  rpc CreateSkill(CreateSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      post: "/api/v1/prompts/skills"
+      body: "*"
+    };
+  }
+
+  // GetSkill returns the Skill resource identified by name.
+  rpc GetSkill(GetSkillRequest) returns (Skill) {
+    option (google.api.http) = {
+      get: "/api/v1/prompts/skills/{skill_name}"
+    };
+  }
+
+  // ListSkills lists all Skill resources.
+  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/prompts/skills"
+    };
+  }
+
+  // DeleteSkill deletes the Skill resource identified by name.
+  rpc DeleteSkill(DeleteSkillRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/prompts/skills/{skill_name}"
+    };
+  }
 }
 
 // ─── Shared Messages ──────────────────────────────────────────────────────
@@ -171,6 +216,9 @@ message Agent {
 
   // The timestamp when this agent was created.
   google.protobuf.Timestamp create_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // The agent profile name used to configure this agent's behavior.
+  string agent_profile_name = 6;
 }
 
 // AgentFrame is the minimal transport unit exchanged over WebSocket and gRPC
@@ -185,6 +233,11 @@ message AgentFrame {
   // The timestamp when this frame was created.
   google.protobuf.Timestamp create_time = 3;
 
+  // The invoke identifier linking related frames within an invoke cycle.
+  string invoke_id = 4;
+  // Monotonically increasing sequence number within an invoke.
+  int64 sequence = 5;
+
   // The frame payload, one of the following types.
   oneof payload {
     // Status update from the agent.
@@ -195,6 +248,18 @@ message AgentFrame {
     AgentScreenshotFrame screenshot = 12;
     // Acknowledgement of a received frame.
     AgentAckFrame ack = 13;
+    // Text output from the agent for desktop display.
+    AgentTextFrame text = 14;
+    // Thinking or intermediate process content from the agent.
+    AgentThinkingFrame thinking = 15;
+    // An operation request from the agent for desktop to execute.
+    AgentOperationFrame operation = 16;
+    // Warning or error information about protocol state.
+    AgentWarnFrame warn = 17;
+    // Agent is waiting for input or instruction.
+    AgentWaitFrame wait = 18;
+    // Agent is requesting a screenshot from desktop.
+    AgentScreenshotRequestFrame screenshot_request = 19;
   }
 }
 
@@ -219,10 +284,40 @@ message AgentAckFrame {
   string message = 2;
 }
 
+// AgentTextFrame carries text output from the agent for desktop display.
+message AgentTextFrame {
+  string content = 1;
+}
+
+// AgentThinkingFrame carries thinking or intermediate process output.
+message AgentThinkingFrame {
+  string content = 1;
+}
+
+// AgentWarnFrame carries warning or error information.
+message AgentWarnFrame {
+  string message = 1;
+  string code = 2;
+}
+
 // ImageEncoding specifies the encoding format for image data.
 enum ImageEncoding {
   IMAGE_ENCODING_UNSPECIFIED = 0;
   IMAGE_ENCODING_PNG = 1;
+}
+
+// AgentMouseButton specifies the mouse button for an operation.
+enum AgentMouseButton {
+  AGENT_MOUSE_BUTTON_UNSPECIFIED = 0;
+  LEFT = 1;
+  RIGHT = 2;
+}
+
+// AgentMouseClickType specifies the type of mouse click.
+enum AgentMouseClickType {
+  AGENT_MOUSE_CLICK_TYPE_UNSPECIFIED = 0;
+  SINGLE = 1;
+  DOUBLE = 2;
 }
 
 // AgentScreenshotFrame carries a screenshot capture from the agent's desktop.
@@ -250,18 +345,82 @@ message AgentScreenshotFrame {
 
   // The timestamp when the screenshot was captured.
   google.protobuf.Timestamp capture_time = 8;
+
+  // The unique identifier for this screenshot.
+  string screenshot_id = 9;
 }
 
-// AgentStatus reports the current status of an agent in a session.
-message AgentStatus {
-  // The session identifier.
-  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+// AgentOperationFrame represents an operation request from the agent.
+message AgentOperationFrame {
+  string operation_id = 1;
+  string screenshot_id = 2;
+  oneof operation {
+    AgentMouseOperation mouse = 10;
+    AgentKeyboardOperation keyboard = 11;
+  }
+}
 
-  // The current status string.
-  string status = 2;
+// AgentMouseOperation specifies a mouse click operation.
+message AgentMouseOperation {
+  AgentMouseButton button = 1;
+  AgentMouseClickType click_type = 2;
+  int32 x_px = 3;
+  int32 y_px = 4;
+}
 
-  // The timestamp when this status was recorded.
-  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+// AgentKeyboardOperation specifies a keyboard key press operation.
+message AgentKeyboardOperation {
+  string key_codes = 1;
+}
+
+// AgentWaitFrame indicates the agent is waiting (e.g. for user instruction).
+message AgentWaitFrame {
+  // The reason the agent is waiting.
+  string reason = 1;
+}
+
+// AgentScreenshotRequestFrame requests a new screenshot from the desktop.
+message AgentScreenshotRequestFrame {
+  // The reason for requesting the screenshot.
+  string reason = 1;
+}
+
+// AgentProfile describes the configuration for creating an agent.
+message AgentProfile {
+  // The resource name, e.g. "agentProfiles/my-profile".
+  string name = 1;
+  // The business identifier for this profile.
+  string agent_profile_name = 2;
+  // The model name to use.
+  string model = 3;
+  // The system prompt for the agent.
+  string system_prompt = 4;
+  // Names of skills referenced by this profile.
+  repeated string skill_names = 5;
+  // Names of MCP servers referenced by this profile.
+  repeated string mcp_names = 6;
+  // Whether this profile is enabled.
+  bool enabled = 7;
+  // Timestamp of creation.
+  google.protobuf.Timestamp create_time = 8;
+  // Timestamp of last update.
+  google.protobuf.Timestamp update_time = 9;
+}
+
+// Skill represents a tool-independent skill definition.
+message Skill {
+  // The resource name, e.g. "skills/my-skill".
+  string name = 1;
+  // The business identifier for this skill.
+  string skill_name = 2;
+  // The skill content (text).
+  string content = 3;
+  // Whether this skill is enabled.
+  bool enabled = 4;
+  // Timestamp of creation.
+  google.protobuf.Timestamp create_time = 5;
+  // Timestamp of last update.
+  google.protobuf.Timestamp update_time = 6;
 }
 
 // ─── Request Messages ─────────────────────────────────────────────────────
@@ -315,6 +474,9 @@ message CreateAgentRequest {
 
   // The Agent resource to create.
   Agent agent = 2 [(google.api.field_behavior) = REQUIRED];
+
+  // The agent profile name to use for creating the agent.
+  string agent_profile_name = 3;
 }
 
 // GetAgentRequest is the request to retrieve an Agent by name.
@@ -343,6 +505,9 @@ message DeleteAgentRequest {
 message AgentCreateRequest {
   // The session identifier.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+
+  // The agent profile name to use for creating the agent.
+  string agent_profile_name = 2;
 }
 
 // AgentDeleteRequest is the request to delete an agent for a session.
@@ -351,8 +516,69 @@ message AgentDeleteRequest {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
-// GetAgentStatusRequest is the request to get the agent status for a session.
-message GetAgentStatusRequest {
+// AgentGetRequest is the request to get an agent for a session.
+message AgentGetRequest {
   // The session identifier.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// CreateAgentProfileRequest is the request to create an AgentProfile.
+message CreateAgentProfileRequest {
+  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
+  string model = 2;
+  string system_prompt = 3;
+  repeated string skill_names = 4;
+  repeated string mcp_names = 5;
+  bool enabled = 6;
+}
+
+// GetAgentProfileRequest is the request to retrieve an AgentProfile.
+message GetAgentProfileRequest {
+  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// ListAgentProfilesRequest is the request to list AgentProfiles.
+message ListAgentProfilesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+// ListAgentProfilesResponse is the response for listing AgentProfiles.
+message ListAgentProfilesResponse {
+  repeated AgentProfile agent_profiles = 1;
+  string next_page_token = 2;
+}
+
+// DeleteAgentProfileRequest is the request to delete an AgentProfile.
+message DeleteAgentProfileRequest {
+  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// CreateSkillRequest is the request to create a Skill.
+message CreateSkillRequest {
+  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
+  string content = 2;
+  bool enabled = 3;
+}
+
+// GetSkillRequest is the request to retrieve a Skill.
+message GetSkillRequest {
+  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+// ListSkillsRequest is the request to list Skills.
+message ListSkillsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+// ListSkillsResponse is the response for listing Skills.
+message ListSkillsResponse {
+  repeated Skill skills = 1;
+  string next_page_token = 2;
+}
+
+// DeleteSkillRequest is the request to delete a Skill.
+message DeleteSkillRequest {
+  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
 }

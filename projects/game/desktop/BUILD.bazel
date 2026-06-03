@@ -21,6 +21,7 @@ go_library(
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",
         "//projects/game/desktop/internal/capture",
+        "//projects/game/desktop/internal/operation",
         "//projects/game/desktop/internal/trace",
         "//third_party/github.com/wailsapp/wails/v2:wails",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options",

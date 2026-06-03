@@ -2,15 +2,17 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
 	"time"
 
+	game "dominion/projects/game"
 	"dominion/projects/game/agent/domain"
 
-	game "dominion/projects/game"
-
+	"google.golang.org/grpc/codes"
+	grpcStatus "google.golang.org/grpc/status"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -19,6 +21,11 @@ import (
 type mockRuntime struct {
 	mu       sync.Mutex
 	sessions map[string]*domain.Status
+	// lastProfileName records the profile name passed to CreateWithProfile.
+	lastProfileName string
+	// screenshotFrames is the list of frames to return from ReceiveScreenshot.
+	// If nil, a default text frame is returned.
+	screenshotFrames []*domain.Frame
 }
 
 func newMockRuntime() *mockRuntime {
@@ -27,11 +34,20 @@ func newMockRuntime() *mockRuntime {
 	}
 }
 
-func (m *mockRuntime) Create(_ context.Context, sessionID string) (*domain.Status, error) {
+func (m *mockRuntime) CreateWithProfile(_ context.Context, sessionID string, config *domain.InvokeRuntimeConfig) (*domain.Status, error) {
+	m.mu.Lock()
+	profileName := ""
+	if config != nil {
+		profileName = config.ProfileName
+	}
+	m.lastProfileName = profileName
+	m.mu.Unlock()
+
 	s := &domain.Status{
-		SessionId:  sessionID,
-		Status:     "initialized",
-		CreateTime: time.Now(),
+		SessionId:   sessionID,
+		Status:      "initialized",
+		ProfileName: profileName,
+		CreateTime:  time.Now(),
 	}
 	m.mu.Lock()
 	m.sessions[sessionID] = s
@@ -49,25 +65,23 @@ func (m *mockRuntime) Delete(_ context.Context, sessionID string) error {
 
 func (m *mockRuntime) Status(_ context.Context, sessionID string) (*domain.Status, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.sessions[sessionID]
-	m.mu.Unlock()
-	if ok {
-		cp := *s
-		return &cp, nil
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", domain.ErrNotFound, sessionID)
 	}
-	return &domain.Status{
-		SessionId: sessionID,
-		Status:    "unknown",
-	}, nil
+	return s, nil
 }
 
-func (m *mockRuntime) ReceiveScreenshot(_ context.Context, input *domain.ScreenshotInput) (*domain.ScreenshotReceipt, error) {
-	if input == nil {
-		return nil, nil
+func (m *mockRuntime) ReceiveScreenshot(_ context.Context, sessionID string, _ *domain.ScreenshotInput) ([]*domain.Frame, error) {
+	m.mu.Lock()
+	frames := m.screenshotFrames
+	m.mu.Unlock()
+	if frames != nil {
+		return frames, nil
 	}
-	return &domain.ScreenshotReceipt{
-		AckFrameId: input.CaptureId,
-		Message:    "screenshot received",
+	return []*domain.Frame{
+		{Type: domain.FrameTypeText, Content: "screenshot received"},
 	}, nil
 }
 
@@ -138,21 +152,6 @@ func TestConnect(t *testing.T) {
 			},
 		},
 		{
-			name: "status for unknown session returns unknown",
-			frames: []*game.AgentFrame{
-				{
-					SessionId: "nonexistent",
-					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{}},
-				},
-			},
-			wantResponses: []*game.AgentFrame{
-				{
-					SessionId: "nonexistent",
-					Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "unknown"}},
-				},
-			},
-		},
-		{
 			name: "echo frame returns echo",
 			frames: []*game.AgentFrame{
 				{
@@ -172,7 +171,7 @@ func TestConnect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
 			rt := newMockRuntime()
-			_, _ = rt.Create(context.Background(), "test")
+			_, _ = rt.CreateWithProfile(context.Background(), "test", &domain.InvokeRuntimeConfig{})
 
 			stream := newMockAgentConnectServer(tt.frames)
 			handler := NewAgentHandler(rt)
@@ -212,14 +211,14 @@ func TestConnect(t *testing.T) {
 					if string(e.Echo.GetData()) != string(want.Echo.GetData()) {
 						t.Errorf("response[%d].echo.data = %q, want %q", i, string(e.Echo.GetData()), string(want.Echo.GetData()))
 					}
-				case *game.AgentFrame_Ack:
-					a, ok := r.GetPayload().(*game.AgentFrame_Ack)
+				case *game.AgentFrame_Text:
+					txt, ok := r.GetPayload().(*game.AgentFrame_Text)
 					if !ok {
-						t.Errorf("response[%d]: expected ack payload, got %T", i, r.GetPayload())
+						t.Errorf("response[%d]: expected text payload, got %T", i, r.GetPayload())
 						continue
 					}
-					if a.Ack.GetAckFrameId() != want.Ack.GetAckFrameId() {
-						t.Errorf("response[%d].ack.ack_frame_id = %q, want %q", i, a.Ack.GetAckFrameId(), want.Ack.GetAckFrameId())
+					if txt.Text.GetContent() != want.Text.GetContent() {
+						t.Errorf("response[%d].text.content = %q, want %q", i, txt.Text.GetContent(), want.Text.GetContent())
 					}
 				}
 			}
@@ -230,15 +229,28 @@ func TestConnect(t *testing.T) {
 func TestConnect_Screenshot(t *testing.T) {
 	// given
 	rt := newMockRuntime()
+	rt.screenshotFrames = []*domain.Frame{
+		{Type: domain.FrameTypeText, Content: "analyzing screenshot..."},
+		{
+			Type:         domain.FrameTypeOperation,
+			OperationID:  "op-test-1",
+			ScreenshotID: "capture-001",
+			Sequence:     1,
+			IsMouse:      true,
+			Button:       1,
+			ClickType:    1,
+			XPx:          960,
+			YPx:          540,
+		},
+	}
 	handler := NewAgentHandler(rt)
 
-	captureID := "capture-001"
 	frames := []*game.AgentFrame{
 		{
 			SessionId: "test",
 			Payload: &game.AgentFrame_Screenshot{
 				Screenshot: &game.AgentScreenshotFrame{
-					CaptureId: captureID,
+					CaptureId: "capture-001",
 					Encoding:  game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:      []byte("png-data"),
 					WidthPx:   1920,
@@ -259,17 +271,110 @@ func TestConnect_Screenshot(t *testing.T) {
 	}
 
 	got := stream.Sent()
+	if len(got) != 2 {
+		t.Fatalf("got %d responses, want 2", len(got))
+	}
+
+	// First response: text frame
+	textPayload, ok := got[0].GetPayload().(*game.AgentFrame_Text)
+	if !ok {
+		t.Fatalf("response[0]: expected text payload, got %T", got[0].GetPayload())
+	}
+	if textPayload.Text.GetContent() != "analyzing screenshot..." {
+		t.Errorf("response[0].text.content = %q, want %q", textPayload.Text.GetContent(), "analyzing screenshot...")
+	}
+
+	// Second response: operation frame
+	opPayload, ok := got[1].GetPayload().(*game.AgentFrame_Operation)
+	if !ok {
+		t.Fatalf("response[1]: expected operation payload, got %T", got[1].GetPayload())
+	}
+	op := opPayload.Operation
+	if op.GetOperationId() != "op-test-1" {
+		t.Errorf("operation_id = %q, want %q", op.GetOperationId(), "op-test-1")
+	}
+	if op.GetScreenshotId() != "capture-001" {
+		t.Errorf("screenshot_id = %q, want %q", op.GetScreenshotId(), "capture-001")
+	}
+	mouse := op.GetMouse()
+	if mouse == nil {
+		t.Fatal("operation mouse is nil, want non-nil")
+	}
+	if mouse.GetXPx() != 960 || mouse.GetYPx() != 540 {
+		t.Errorf("mouse position = (%d, %d), want (960, 540)", mouse.GetXPx(), mouse.GetYPx())
+	}
+}
+
+func TestConnect_StatusUnknownSession(t *testing.T) {
+	// given: runtime has no agent for the session; Status returns ErrNotFound.
+	rt := newMockRuntime()
+	handler := NewAgentHandler(rt)
+
+	stream := newMockAgentConnectServer([]*game.AgentFrame{
+		{
+			SessionId: "nonexistent",
+			Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{}},
+		},
+	})
+
+	// when
+	err := handler.Connect(stream)
+
+	// then
+	if err == nil {
+		t.Fatal("Connect() expected error for unknown session status query, got nil")
+	}
+}
+
+func TestConnect_WarnFrame(t *testing.T) {
+	// given: runtime returns a warn frame for stale state
+	rt := newMockRuntime()
+	rt.screenshotFrames = []*domain.Frame{
+		{
+			Type:        domain.FrameTypeWarn,
+			WarnMessage: "screenshot received while waiting for operation result",
+			WarnCode:    "WRONG_STATE",
+		},
+	}
+	handler := NewAgentHandler(rt)
+
+	frames := []*game.AgentFrame{
+		{
+			SessionId: "test",
+			Payload: &game.AgentFrame_Screenshot{
+				Screenshot: &game.AgentScreenshotFrame{
+					CaptureId: "capture-002",
+					WidthPx:   800,
+					HeightPx:  600,
+				},
+			},
+		},
+	}
+
+	stream := newMockAgentConnectServer(frames)
+
+	// when
+	err := handler.Connect(stream)
+
+	// then
+	if err != nil {
+		t.Fatalf("Connect() error: %v", err)
+	}
+
+	got := stream.Sent()
 	if len(got) != 1 {
 		t.Fatalf("got %d responses, want 1", len(got))
 	}
 
-	resp := got[0]
-	ack := resp.GetAck()
-	if ack == nil {
-		t.Fatal("response payload is not ack")
+	warnPayload, ok := got[0].GetPayload().(*game.AgentFrame_Warn)
+	if !ok {
+		t.Fatalf("response[0]: expected warn payload, got %T", got[0].GetPayload())
 	}
-	if ack.GetAckFrameId() != captureID {
-		t.Errorf("AckFrameId = %q, want %q", ack.GetAckFrameId(), captureID)
+	if warnPayload.Warn.GetMessage() != "screenshot received while waiting for operation result" {
+		t.Errorf("warn.message = %q, want %q", warnPayload.Warn.GetMessage(), "screenshot received while waiting for operation result")
+	}
+	if warnPayload.Warn.GetCode() != "WRONG_STATE" {
+		t.Errorf("warn.code = %q, want %q", warnPayload.Warn.GetCode(), "WRONG_STATE")
 	}
 }
 
@@ -319,74 +424,80 @@ func TestCreateAgent(t *testing.T) {
 	ctx := context.Background()
 
 	// when
-	resp, err := h.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: "test"})
+	resp, err := h.CreateAgent(ctx, &game.AgentCreateRequest{
+		SessionId:       "test",
+		AgentProfileName: "my-profile",
+	})
 
 	// then
 	if err != nil {
 		t.Fatalf("CreateAgent() unexpected error: %v", err)
 	}
+	if resp.GetName() != "sessions/test/agent" {
+		t.Errorf("Name = %q, want %q", resp.GetName(), "sessions/test/agent")
+	}
 	if resp.GetSessionId() != "test" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "test")
 	}
-	if resp.GetStatus() != "initialized" {
-		t.Errorf("Status = %q, want %q", resp.GetStatus(), "initialized")
+	if resp.GetAgentProfileName() != "my-profile" {
+		t.Errorf("AgentProfileName = %q, want %q", resp.GetAgentProfileName(), "my-profile")
 	}
-	if resp.GetCreateTime() == nil {
-		t.Error("CreateTime is nil, want non-nil timestamp")
+
+	rt.mu.Lock()
+	profileName := rt.lastProfileName
+	rt.mu.Unlock()
+	if profileName != "my-profile" {
+		t.Errorf("profile name passed to runtime = %q, want %q", profileName, "my-profile")
 	}
 }
 
-func TestGetAgentStatus(t *testing.T) {
+func TestGetAgent(t *testing.T) {
 	// given
 	rt := newMockRuntime()
 	h := NewAgentHandler(rt)
 	ctx := context.Background()
-	_, _ = rt.Create(ctx, "known-session")
+	_, _ = rt.CreateWithProfile(ctx, "known-session", &domain.InvokeRuntimeConfig{ProfileName: "my-profile"})
 
 	// when
-	resp, err := h.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: "known-session"})
+	resp, err := h.GetAgent(ctx, &game.AgentGetRequest{SessionId: "known-session"})
 
 	// then
 	if err != nil {
-		t.Fatalf("GetAgentStatus() unexpected error: %v", err)
+		t.Fatalf("GetAgent() unexpected error: %v", err)
 	}
 	if resp.GetSessionId() != "known-session" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "known-session")
 	}
-	if resp.GetStatus() != "initialized" {
-		t.Errorf("Status = %q, want %q", resp.GetStatus(), "initialized")
+	if resp.GetAgentProfileName() == "" {
+		t.Error("AgentProfileName should not be empty")
 	}
 }
 
-func TestGetAgentStatusUnknown(t *testing.T) {
+func TestGetAgentNotFound(t *testing.T) {
 	// given
 	rt := newMockRuntime()
 	h := NewAgentHandler(rt)
 	ctx := context.Background()
 
 	tests := []struct {
-		name       string
-		sessionID  string
-		wantStatus string
+		name      string
+		sessionID string
 	}{
-		{name: "non-existent session", sessionID: "nonexistent", wantStatus: "unknown"},
-		{name: "empty session id", sessionID: "", wantStatus: "unknown"},
+		{name: "non-existent session", sessionID: "nonexistent"},
+		{name: "empty session id", sessionID: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			resp, err := h.GetAgentStatus(ctx, &game.GetAgentStatusRequest{SessionId: tt.sessionID})
+			_, err := h.GetAgent(ctx, &game.AgentGetRequest{SessionId: tt.sessionID})
 
-			// then — "unknown" is NOT an error; it returns a valid AgentStatus
-			if err != nil {
-				t.Fatalf("GetAgentStatus() unexpected error: %v", err)
+			// then — expect NotFound error
+			if err == nil {
+				t.Fatal("GetAgent() expected error, got nil")
 			}
-			if resp.GetStatus() != tt.wantStatus {
-				t.Errorf("Status = %q, want %q", resp.GetStatus(), tt.wantStatus)
-			}
-			if resp.GetSessionId() != tt.sessionID {
-				t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), tt.sessionID)
+			if grpcStatus.Code(err) != codes.NotFound {
+				t.Fatalf("GetAgent() status = %v, want NotFound", grpcStatus.Code(err))
 			}
 		})
 	}
@@ -408,7 +519,7 @@ func TestDeleteAgent(t *testing.T) {
 			rt := newMockRuntime()
 			h := NewAgentHandler(rt)
 			ctx := context.Background()
-			_, _ = rt.Create(ctx, "to-delete")
+			_, _ = rt.CreateWithProfile(ctx, "to-delete", &domain.InvokeRuntimeConfig{})
 
 			// when
 			resp, err := h.DeleteAgent(ctx, &game.AgentDeleteRequest{SessionId: tt.sessionID})
@@ -421,5 +532,26 @@ func TestDeleteAgent(t *testing.T) {
 				t.Fatal("DeleteAgent() resp is nil, want non-nil")
 			}
 		})
+	}
+}
+
+func TestCreateAgent_EmptyProfile_ReturnsInvalidArgument(t *testing.T) {
+	// given
+	rt := newMockRuntime()
+	h := NewAgentHandler(rt)
+	ctx := context.Background()
+
+	// when
+	_, err := h.CreateAgent(ctx, &game.AgentCreateRequest{
+		SessionId:        "test",
+		AgentProfileName: "",
+	})
+
+	// then
+	if err == nil {
+		t.Fatal("expected InvalidArgument error, got nil")
+	}
+	if grpcStatus.Code(err) != codes.InvalidArgument {
+		t.Errorf("status code = %v, want %v", grpcStatus.Code(err), codes.InvalidArgument)
 	}
 }
