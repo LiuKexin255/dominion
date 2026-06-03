@@ -13,8 +13,9 @@ description: "Task list template for feature implementation"
 
 **Constitution**: Generated tasks MUST satisfy `.specify/memory/constitution.md`.
 Include repository-specific verification tasks for formatting, Gazelle/dependency
-synchronization, unit tests, large tests for service code, testplan execution when
-a plan exists, and full-repository Bazel build/test validation.
+synchronization, pnpm catalog updates for TypeScript/JavaScript dependency
+versions, unit tests, large tests for service code, testplan execution when a plan
+exists, and full-repository Bazel build/test validation.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
@@ -164,6 +165,8 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX Run quickstart.md validation
 - [ ] TXXX Run language formatting through repository Bazel wrappers for changed code
 - [ ] TXXX Run Gazelle and dependency synchronization when BUILD/dependency inputs changed
+- [ ] TXXX Confirm TypeScript/JavaScript dependency versions are centralized in the root
+  `pnpm-workspace.yaml` catalog, or document the special direct-version exception
 - [ ] TXXX Run `bazel test` for affected unit-test targets
 - [ ] TXXX Run required large-test/testplan validation for service changes, or document approved skip reason
 - [ ] TXXX Run `bazel build //...` and `bazel test //...` for full-repository verification

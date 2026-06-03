@@ -49,8 +49,10 @@ violation is documented in Complexity Tracking with user-approved rationale.
   Python/Go wrappers; direct ecosystem tools are not used when Bazel wrappers
   exist.
 - **Generated Files & Dependencies**: Plan preserves Gazelle ownership of
-  `BUILD.bazel`, keeps Bazel module/dependency state synchronized, and forbids
-  committed proto/grpc generated source.
+  `BUILD.bazel`, keeps Bazel module/dependency state synchronized, requires
+  TypeScript/JavaScript dependency versions to be added or changed through the
+  root `pnpm-workspace.yaml` catalog unless a documented special exception is
+  required, and forbids committed proto/grpc generated source.
 - **Testing Strategy**: Plan defines tests first when practical; otherwise it
   records a concrete test plan and cases before implementation. Service changes
   include large-test acceptance unless the nearest service README exempts them.

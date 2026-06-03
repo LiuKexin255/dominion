@@ -1,12 +1,13 @@
 <!--
 Sync Impact Report
-Version change: 1.0.0 → 1.1.0
-Modified principles: IV. Spec Kit SDD Workflow; V. Quality Review and Remediation
+Version change: 1.1.0 → 1.2.0
+Modified principles: II. Bazel-First Repository Integrity; Technology Stack and Build System / TypeScript and JavaScript; Development Workflow and Quality Gates
 Added sections: none
 Removed sections: none
 Templates requiring updates:
 - ✅ .specify/templates/plan-template.md
 - ✅ .specify/templates/tasks-template.md
+- ✅ specs/003-step3b-agent-runtime/plan.md
 - ✅ AGENTS.md
 Follow-up TODOs: none
 -->
@@ -32,7 +33,9 @@ This constitution is the durable project-governance source for Spec Kit workflow
 
 All build, test, and dependency workflows MUST be mediated through Bazel and the
 repository-provided Bazel wrappers. Plans and implementation tasks MUST preserve a
-green whole-repository build and test state.
+green whole-repository build and test state. JavaScript and TypeScript dependency
+version changes MUST be made through the root `pnpm-workspace.yaml` catalog unless
+the dependency is explicitly documented as a special direct-version exception.
 
 `BUILD.bazel` files MUST be generated or updated through Gazelle unless Gazelle
 cannot express the required target, such as a manually added deployment target.
@@ -99,9 +102,12 @@ TypeScript, JavaScript, Python, protobuf, and supporting build or test assets.
   project directory.
 - The repository root package files own monorepo dependency state; subpackages
   MUST NOT commit their own `pnpm-lock.yaml` files.
-- Shared dependency versions SHOULD be centralized through the workspace catalog
-  except when a package must declare a direct version, which MUST stay aligned
-  with the catalog.
+- Dependency versions MUST be centralized in the root `pnpm-workspace.yaml`
+  catalog. Package manifests SHOULD reference catalog entries instead of inline
+  versions.
+- A package MAY declare an inline dependency version only when the dependency is a
+  documented special exception that cannot use the catalog. The exception MUST be
+  recorded near the dependency change and reviewed during planning and tasks.
 - Protobuf dependencies MUST be managed and compiled through Bazel protobuf rules.
 
 ### Python
@@ -122,14 +128,16 @@ Every feature plan MUST pass a Constitution Check before Phase 0 research and
 again after Phase 1 design. The check MUST cover:
 
 - Whether the selected implementation follows the authority order and style docs.
-- Whether Bazel, Gazelle, dependency, and generated-code rules are respected.
+- Whether Bazel, Gazelle, dependency, pnpm catalog, and generated-code rules are
+  respected.
 - Whether unit tests, large tests, or test-plan alternatives match the feature.
 - Whether full-repository build and test validation is planned.
 - Whether acceptance validates behavior through the artifact's real surface.
 
 Tasks generated from plans MUST include explicit verification tasks for formatting,
-Gazelle or dependency synchronization when relevant, unit tests, large tests when
-service code changes, and full-repository build and test checks.
+Gazelle or dependency synchronization when relevant, pnpm catalog synchronization
+when JavaScript or TypeScript package manifests change, unit tests, large tests
+when service code changes, and full-repository build and test checks.
 
 ## Governance
 
@@ -149,4 +157,4 @@ Plans and reviews MUST verify compliance with the active constitution. Any
 intentional violation MUST be documented in the plan's Complexity Tracking section
 with the reason and rejected simpler alternative.
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-02
+**Version**: 1.2.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-03
