@@ -87,7 +87,7 @@ services:
   - artifact:
       path: //projects/orders/service.yaml
       name: api
-      secret_bindings:
+      secrets:
         database-url:
           secret: orders-prod-secrets
           key: DATABASE_URL
