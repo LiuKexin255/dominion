@@ -70,6 +70,19 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "secrets": {
+                "type": "object",
+                "description": "逻辑 secret 名到 Kubernetes Secret 的绑定",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["secret", "key"],
+                  "properties": {
+                    "secret": { "type": "string", "minLength": 1, "description": "Kubernetes Secret 资源名" },
+                    "key": { "type": "string", "minLength": 1, "description": "Kubernetes Secret 中的 key" }
+                  }
+                }
               }
             }
           },

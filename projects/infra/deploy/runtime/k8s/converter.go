@@ -76,6 +76,7 @@ func convertArtifactToStatefulWorkload(artifact *domain.ArtifactSpec, envName st
 		Ports:           convertPorts(artifact.Ports),
 		EnvType:         envType,
 		Env:             artifact.Env,
+		SecretBindings:  artifact.SecretBindings,
 	}
 }
 
@@ -91,6 +92,7 @@ func convertArtifactToDeployment(artifact *domain.ArtifactSpec, envName string, 
 		Ports:           convertPorts(artifact.Ports),
 		EnvType:         envType,
 		Env:             artifact.Env,
+		SecretBindings:  artifact.SecretBindings,
 	}
 }
 

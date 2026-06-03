@@ -65,3 +65,4 @@ step3.b 是 step3 的第二阶段，目标是在 step3.a 的协议和 prompt 能
 4. agent 单次 invoke 默认超时时间为 10 分钟；超过 30 分钟未激活且没有正在执行的 invoke 或待处理操作时自动删除 agent。DeleteAgent 删除空 agent 不返回错误。
 5. desktop 重构 UI 以支持 prompt 管理和对话式 play 页面。play 页面中 desktop 仅发送图片，默认折叠展示；agent 展示 thinking 内容、文本输出以及操作内容。
 6. 本阶段验收优先使用 testplan 覆盖 TS agent 的 gRPC/WS 链路、deepagent 最小推理闭环、profile 加载、工具无关 SKILLS 加载、超时和 idle 删除；真实窗口操作保留 Windows 手动验收。
+7. agent 除了默认的 deepagent 默认的 provider，额外支持 opencode go provider（https://opencode.ai/docs/zh-cn/go/）。另外，provider 的密钥会以 k8s secret 形式保存，如果未读取到密钥则显式报错。除此以外不需要支持其他的 provider，但未来可能会扩展

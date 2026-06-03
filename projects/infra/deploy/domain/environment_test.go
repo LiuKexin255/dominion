@@ -1463,6 +1463,44 @@ func TestCloneArtifacts_DeepCopyEnv(t *testing.T) {
 	}
 }
 
+func TestCloneArtifacts_DeepCopySecretBindings(t *testing.T) {
+	// given
+	original := []*ArtifactSpec{
+		{
+			Name: "api", App: "demo", Image: "repo/demo:v1",
+			SecretBindings: []*SecretBinding{
+				{LogicalName: "db_password", SecretName: "db-secret", Key: "password"},
+				{LogicalName: "api_key", SecretName: "api-secret", Key: "token"},
+			},
+		},
+		{
+			Name: "worker", App: "demo", Image: "repo/worker:v1",
+		},
+	}
+
+	// when
+	cloned := cloneArtifacts(original)
+
+	// then
+	if len(cloned) != 2 {
+		t.Fatalf("len(cloned) = %d, want 2", len(cloned))
+	}
+	if len(cloned[0].SecretBindings) != 2 {
+		t.Fatalf("len(cloned[0].SecretBindings) = %d, want 2", len(cloned[0].SecretBindings))
+	}
+	if cloned[0].SecretBindings[0].SecretName != "db-secret" {
+		t.Fatalf(`cloned[0].SecretBindings[0].SecretName = %q, want "db-secret"`, cloned[0].SecretBindings[0].SecretName)
+	}
+
+	// when - mutate cloned artifact's SecretBindings
+	cloned[0].SecretBindings[0].SecretName = "hacked-secret"
+
+	// then - original unaffected
+	if original[0].SecretBindings[0].SecretName != "db-secret" {
+		t.Fatalf(`original[0].SecretBindings[0].SecretName = %q, want "db-secret" (deep copy failed)`, original[0].SecretBindings[0].SecretName)
+	}
+}
+
 func TestCloneArtifacts_NilEnv(t *testing.T) {
 	// given
 	original := []*ArtifactSpec{

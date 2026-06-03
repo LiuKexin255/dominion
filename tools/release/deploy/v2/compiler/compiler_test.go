@@ -640,6 +640,169 @@ func TestCompile(t *testing.T) {
 			},
 		},
 		{
+			name: "secret binding complete",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+						Secrets: map[string]*config.SecretBindingRef{
+							"db-password": {Secret: "vault-db", Key: "password"},
+							"api-key":     {Secret: "vault-api", Key: "token"},
+						},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:    "service-a",
+						Target:  "//apps/service-a:image",
+						Secrets: []string{"db-password", "api-key"},
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+					SecretBindings: []*deploy.SecretBinding{
+						{LogicalName: "api-key", SecretName: "vault-api", Key: "token"},
+						{LogicalName: "db-password", SecretName: "vault-db", Key: "password"},
+					},
+				}},
+			},
+		},
+		{
+			name: "secret binding incomplete",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+						Secrets: map[string]*config.SecretBindingRef{
+							"db-password": {Secret: "vault-db", Key: "password"},
+						},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:    "service-a",
+						Target:  "//apps/service-a:image",
+						Secrets: []string{"db-password", "api-key"},
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantErr: `artifact service-a in alpha.test: secret "api-key" declared but not bound`,
+		},
+		{
+			name: "secret binding extra",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+						Secrets: map[string]*config.SecretBindingRef{
+							"db-password":    {Secret: "vault-db", Key: "password"},
+							"api-key":        {Secret: "vault-api", Key: "token"},
+							"unknown-secret": {Secret: "vault-extra", Key: "value"},
+						},
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:    "service-a",
+						Target:  "//apps/service-a:image",
+						Secrets: []string{"db-password", "api-key"},
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			wantErr: `artifact service-a in alpha.test: secret binding "unknown-secret" not declared by service artifact`,
+		},
+		{
+			name: "secret binding no declarations",
+			deployConfig: &config.DeployConfig{
+				Name: "alpha.test",
+				Services: []*config.DeployService{{
+					Artifact: config.DeployArtifact{
+						Path: testServiceAPath,
+						Name: "service-a",
+					},
+				}},
+			},
+			serviceConfigs: map[string]*config.ServiceConfig{
+				testServiceAPath: {
+					Name: "service-a",
+					App:  "alpha",
+					Artifacts: []*config.ServiceArtifact{{
+						Name:   "service-a",
+						Target: "//apps/service-a:image",
+						Ports: []*config.ServiceArtifactPort{{
+							Name: "grpc",
+							Port: 50051,
+						}},
+					}},
+				},
+			},
+			imageResults: map[string]*imagepush.Result{
+				"//apps/service-a:image": {URL: "registry.example.com/service-a", Dest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			},
+			want: &deploy.EnvironmentDesiredState{
+				Artifacts: []*deploy.ArtifactSpec{{
+					Name:         "service-a",
+					App:          "alpha",
+					Image:        "registry.example.com/service-a@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Replicas:     1,
+					WorkloadKind: deploy.WorkloadKind_WORKLOAD_KIND_STATELESS,
+					Ports: []*deploy.ArtifactPortSpec{{
+						Name: "grpc",
+						Port: 50051,
+					}},
+				}},
+			},
+		},
+		{
 			name: "multiple artifacts share service ports",
 			deployConfig: &config.DeployConfig{
 				Services: []*config.DeployService{

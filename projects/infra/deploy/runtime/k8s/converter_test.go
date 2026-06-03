@@ -804,6 +804,136 @@ func wantDeployObjectsWithoutPorts() *DeployObjects {
 	}
 }
 
+func TestConvertToWorkloads_DeploymentSecretBindingsPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *domain.Environment
+		want []*domain.SecretBinding
+	}{
+		{
+			name: "deployment with secret bindings",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "web",
+						App:      "webapp",
+						Image:    "webapp:v1",
+						Replicas: 1,
+						SecretBindings: []*domain.SecretBinding{
+							{LogicalName: "db-url", SecretName: "prod-db", Key: "url"},
+							{LogicalName: "api-key", SecretName: "prod-api", Key: "key"},
+						},
+					},
+				},
+			}),
+			want: []*domain.SecretBinding{
+				{LogicalName: "db-url", SecretName: "prod-db", Key: "url"},
+				{LogicalName: "api-key", SecretName: "prod-api", Key: "key"},
+			},
+		},
+		{
+			name: "deployment with nil secret bindings",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:     "web",
+						App:      "webapp",
+						Image:    "webapp:v1",
+						Replicas: 1,
+					},
+				},
+			}),
+			want: nil,
+		},
+		{
+			name: "deployment with empty secret bindings",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{
+					{
+						Name:           "web",
+						App:            "webapp",
+						Image:          "webapp:v1",
+						Replicas:       1,
+						SecretBindings: []*domain.SecretBinding{},
+					},
+				},
+			}),
+			want: []*domain.SecretBinding{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ConvertToWorkloads(tt.env, newTestConfig())
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			if len(got.Deployments) != 1 {
+				t.Fatalf("Deployments count = %d, want 1", len(got.Deployments))
+			}
+			if !reflect.DeepEqual(got.Deployments[0].SecretBindings, tt.want) {
+				t.Fatalf("SecretBindings = %#v, want %#v", got.Deployments[0].SecretBindings, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertToWorkloads_StatefulSecretBindingsPassthrough(t *testing.T) {
+	tests := []struct {
+		name string
+		env  *domain.Environment
+		want []*domain.SecretBinding
+	}{
+		{
+			name: "stateful with secret bindings",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "queue",
+					App:          "worker",
+					Image:        "worker:v1",
+					Replicas:     2,
+					WorkloadKind: domain.WorkloadKindStateful,
+					Ports:        []domain.ArtifactPortSpec{{Name: "grpc", Port: 50051}},
+					SecretBindings: []*domain.SecretBinding{
+						{LogicalName: "db-url", SecretName: "prod-db", Key: "url"},
+					},
+				}},
+			}),
+			want: []*domain.SecretBinding{
+				{LogicalName: "db-url", SecretName: "prod-db", Key: "url"},
+			},
+		},
+		{
+			name: "stateful with nil secret bindings",
+			env: newTestEnv(t, &domain.DesiredState{
+				Artifacts: []*domain.ArtifactSpec{{
+					Name:         "queue",
+					App:          "worker",
+					Image:        "worker:v1",
+					Replicas:     1,
+					WorkloadKind: domain.WorkloadKindStateful,
+				}},
+			}),
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ConvertToWorkloads(tt.env, newTestConfig())
+			if err != nil {
+				t.Fatalf("ConvertToWorkloads() unexpected error: %v", err)
+			}
+			if len(got.StatefulWorkloads) != 1 {
+				t.Fatalf("StatefulWorkloads count = %d, want 1", len(got.StatefulWorkloads))
+			}
+			if !reflect.DeepEqual(got.StatefulWorkloads[0].SecretBindings, tt.want) {
+				t.Fatalf("SecretBindings = %#v, want %#v", got.StatefulWorkloads[0].SecretBindings, tt.want)
+			}
+		})
+	}
+}
+
 func Test_convertPorts(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -66,6 +66,10 @@ services:
       path: //experimental/grpc_hello_world/service/service.yaml
       name: service
       replicas: 3              # 可选，默认 1
+      secrets:                 # 可选：逻辑名到 K8s Secret 的绑定
+        database-url:
+          secret: prod-db
+          key: username
     http:                      # 可选：生成 HTTPRoute
       hostnames:
         - hello.example.com
@@ -89,6 +93,9 @@ artifacts:
     target: :cmd_image    # 指向 artifact_image target
     tls: true             # 可选：启用 TLS
     oss: false            # 可选：启用 OSS
+    secrets:              # 可选：声明所需 secret 逻辑名
+      - database-url
+      - stripe-api-key
     ports:
       - name: grpc
         port: 50051
@@ -101,9 +108,11 @@ artifacts:
 | `artifact.path` | `service.yaml` 路径。 |
 | `artifact.name` | 引用 `artifacts[].name` 的名称。 |
 | `artifact.env` | 可选，环境变量 key-value。 |
+| `artifact.secrets` | 可选，对象。键为 service.yaml 中声明的逻辑名，值为 `{secret, key}` 映射到 Kubernetes Secret（见[Secret 配置](#secret-配置)）。 |
 | `artifacts[].target` | 指向 `artifact_image` target（见[服务镜像构建](#服务镜像构建)）。 |
 | `artifacts[].tls` | 可选，启用 TLS（见[TLS](#tls-配置)）。 |
 | `artifacts[].oss` | 可选，启用 OSS（见[OSS](#oss-配置)）。 |
+| `artifacts[].secrets` | 可选，字符串数组，声明该产物运行时所需的 Kubernetes Secret 逻辑名。每个名字须匹配 `^[a-z][a-z0-9_-]{0,63}$`（见[Secret 配置](#secret-配置)）。 |
 | `kind` | `stateless`（默认）或 `stateful`。 |
 | `http` | 可选，生成 HTTPRoute；`backend` 填写端口名。 |
 
@@ -229,6 +238,62 @@ deploy scope {scope-name}   # 设置
 
 在 `service.yaml` 中设置 `artifacts[].oss: true` 启用对象存储（S3 兼容）。凭证由 deploy 工具自动注入（环境变量 `S3_ACCESS_KEY`、`S3_SECRET_KEY`）。
 
+## Secret 配置
+
+在 `service.yaml` 中声明 secret 逻辑名，在 `deploy.yaml` 中将逻辑名绑定到 Kubernetes Secret。
+
+```yaml
+# service.yaml
+version: "3.0"
+name: orders-api
+app: orders
+kind: stateless
+artifacts:
+  - name: api
+    target: :api_image
+    secrets:
+      - database-url
+      - stripe-api-key
+```
+
+```yaml
+# deploy.yaml
+version: "3.0"
+name: orders.prod
+desc: "orders production environment"
+type: prod
+services:
+  - artifact:
+      path: //projects/orders/service.yaml
+      name: api
+      secrets:
+        database-url:
+          secret: orders-prod-secrets
+          key: DATABASE_URL
+        stripe-api-key:
+          secret: orders-prod-secrets
+          key: STRIPE_API_KEY
+```
+
+Secret 名称规则：
+- 必须以小写字母开头，只允许小写字母、数字、下划线、连字符。
+- 最长 63 字符：`^[a-z][a-z0-9_-]{0,63}$`。
+- 同一 artifact 内不可重复。
+
+部署时，deploy 工具会校验：
+- 每个声明的 secret 必须有绑定（否则拒绝部署）。
+- 不允许绑定未声明的 secret（防止拼写错误或过期配置）。
+
+运行时，secret 文件通过 projected volume 挂载到容器：
+- 环境变量 `DOMINION_SECRET_DIR` 指向 `/mnt/dominion/secret`（平台保留，自动注入）。
+- 文件路径为 `/mnt/dominion/secret/{logical_name}`。
+
+```bash
+# 读取 secret 文件示例
+cat /mnt/dominion/secret/database-url
+cat /mnt/dominion/secret/stripe-api-key
+```
+
 ## 环境变量配置
 
 在 `deploy.yaml` 中通过 `artifact.env` 配置：
@@ -244,4 +309,4 @@ services:
 ```
 
 - key 须匹配 `^[a-zA-Z_][a-zA-Z0-9_]*$`。
-- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`。
+- 以下为平台保留变量名，不可使用：`SERVICE_APP`、`DOMINION_ENVIRONMENT`、`POD_NAMESPACE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_CA_FILE`、`TLS_SERVER_NAME`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`DOMINION_SECRET_DIR`。

@@ -32,6 +32,33 @@ type ArtifactPortSpec struct {
 	Port int32
 }
 
+// SecretBinding maps a logical secret name to a Kubernetes Secret key.
+type SecretBinding struct {
+	LogicalName string
+	SecretName  string
+	Key         string
+}
+
+// Validate checks that the SecretBinding fields are non-empty.
+func (b *SecretBinding) Validate() error {
+	var errs []error
+
+	if b.LogicalName == "" {
+		errs = append(errs, errors.New("logical_name is required"))
+	}
+	if b.SecretName == "" {
+		errs = append(errs, errors.New("secret_name is required"))
+	}
+	if b.Key == "" {
+		errs = append(errs, errors.New("key is required"))
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, errors.Join(errs...))
+	}
+	return nil
+}
+
 // ArtifactHTTPSpec describes the desired HTTP routing state for an artifact.
 type ArtifactHTTPSpec struct {
 	Hostnames []string
@@ -44,16 +71,17 @@ var envKeyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // ArtifactSpec describes the desired state of a deployable application artifact.
 type ArtifactSpec struct {
-	Name         string
-	App          string
-	Image        string
-	Ports        []ArtifactPortSpec
-	Replicas     int32
-	TLSEnabled   bool
-	OSSEnabled   bool
-	WorkloadKind WorkloadKind
-	HTTP         *ArtifactHTTPSpec
-	Env          map[string]string
+	Name           string
+	App            string
+	Image          string
+	Ports          []ArtifactPortSpec
+	Replicas       int32
+	TLSEnabled     bool
+	OSSEnabled     bool
+	WorkloadKind   WorkloadKind
+	HTTP           *ArtifactHTTPSpec
+	Env            map[string]string
+	SecretBindings []*SecretBinding
 }
 
 // InfraPersistenceSpec describes infrastructure persistence settings.
@@ -121,6 +149,22 @@ func (s *ArtifactSpec) Validate() error {
 	if s.HTTP != nil {
 		if err := s.HTTP.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("http: %w", err))
+		}
+	}
+	for i, b := range s.SecretBindings {
+		if err := b.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("secret_bindings[%d]: %w", i, err))
+		}
+	}
+	seen := make(map[string]int, len(s.SecretBindings))
+	for i, b := range s.SecretBindings {
+		if b.LogicalName == "" {
+			continue
+		}
+		if _, ok := seen[b.LogicalName]; ok {
+			errs = append(errs, fmt.Errorf("secret_bindings[%d]: duplicate logical_name %q", i, b.LogicalName))
+		} else {
+			seen[b.LogicalName] = i
 		}
 	}
 

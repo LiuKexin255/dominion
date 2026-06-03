@@ -1362,6 +1362,89 @@ func Test_toProtoArtifacts_fromProtoArtifacts_ossEnabledRoundTrip(t *testing.T) 
 	}
 }
 
+func Test_toProtoArtifacts_fromProtoArtifacts_secretBindingsRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		domain   []*domain.ArtifactSpec
+		wantNil  bool
+		wantRefs []*domain.SecretBinding
+	}{
+		{
+			name: "secret bindings round-trip preserves values",
+			domain: []*domain.ArtifactSpec{{
+				Name:  "api",
+				App:   "gateway",
+				Image: "example.com/gateway:v1",
+				SecretBindings: []*domain.SecretBinding{
+					{LogicalName: "DB_PASSWORD", SecretName: "db-secret", Key: "password"},
+					{LogicalName: "API_KEY", SecretName: "api-secret", Key: "key"},
+				},
+			}},
+			wantNil: false,
+			wantRefs: []*domain.SecretBinding{
+				{LogicalName: "DB_PASSWORD", SecretName: "db-secret", Key: "password"},
+				{LogicalName: "API_KEY", SecretName: "api-secret", Key: "key"},
+			},
+		},
+		{
+			name: "nil secret bindings stays nil",
+			domain: []*domain.ArtifactSpec{{
+				Name:           "api",
+				App:            "gateway",
+				Image:          "example.com/gateway:v1",
+				SecretBindings: nil,
+			}},
+			wantNil: true,
+		},
+		{
+			name: "empty secret bindings stays nil",
+			domain: []*domain.ArtifactSpec{{
+				Name:           "api",
+				App:            "gateway",
+				Image:          "example.com/gateway:v1",
+				SecretBindings: []*domain.SecretBinding{},
+			}},
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			proto := toProtoArtifacts(tt.domain)
+			got, err := fromProtoArtifacts(proto)
+
+			// then
+			if err != nil {
+				t.Fatalf("fromProtoArtifacts() error = %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("fromProtoArtifacts() len = %d, want 1", len(got))
+			}
+			if tt.wantNil {
+				if got[0].SecretBindings != nil {
+					t.Fatalf("SecretBindings = %v, want nil", got[0].SecretBindings)
+				}
+				return
+			}
+			if len(got[0].SecretBindings) != len(tt.wantRefs) {
+				t.Fatalf("SecretBindings len = %d, want %d", len(got[0].SecretBindings), len(tt.wantRefs))
+			}
+			for i, want := range tt.wantRefs {
+				if got[0].SecretBindings[i].LogicalName != want.LogicalName {
+					t.Fatalf("SecretBindings[%d].LogicalName = %q, want %q", i, got[0].SecretBindings[i].LogicalName, want.LogicalName)
+				}
+				if got[0].SecretBindings[i].SecretName != want.SecretName {
+					t.Fatalf("SecretBindings[%d].SecretName = %q, want %q", i, got[0].SecretBindings[i].SecretName, want.SecretName)
+				}
+				if got[0].SecretBindings[i].Key != want.Key {
+					t.Fatalf("SecretBindings[%d].Key = %q, want %q", i, got[0].SecretBindings[i].Key, want.Key)
+				}
+			}
+		})
+	}
+}
+
 func Test_fromProtoArtifacts_emptyEnvMapNormalizedToNil(t *testing.T) {
 	proto := []*ArtifactSpec{{
 		Name:  "api",

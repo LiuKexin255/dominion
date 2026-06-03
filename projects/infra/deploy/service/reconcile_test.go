@@ -140,7 +140,7 @@ type transitionRecord struct {
 	gen       int64
 	fromState domain.EnvironmentState
 	toState   domain.EnvironmentState
-	toStatus *domain.EnvironmentStatus
+	toStatus  *domain.EnvironmentStatus
 }
 
 func newFakeReconcileRepository(seed ...*domain.Environment) *fakeReconcileRepository {

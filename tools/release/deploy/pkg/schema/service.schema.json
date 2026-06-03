@@ -124,6 +124,16 @@
                 }
               }
             }
+          },
+          "secrets": {
+            "type": "array",
+            "description": "该产物运行时所需的 secret 逻辑名列表",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "uniqueItems": true
           }
         }
       }
