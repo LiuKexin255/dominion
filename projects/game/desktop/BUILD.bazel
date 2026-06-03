@@ -3,6 +3,8 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 load("//tools/release:defs.bzl", "s3_artifacts_push")
 load("//tools/release/wails:defs.bzl", "wails_app")
 
+# gazelle:resolve go dominion/projects/game/desktop/assets //projects/game/desktop/assets:assets_lib
+
 go_library(
     name = "desktop_lib",
     srcs = [
@@ -17,6 +19,7 @@ go_library(
     deps = [
         "//common/gopkg/otel/tracecontext",
         "//projects/game",
+        "//projects/game/desktop/assets:assets_lib",
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",
         "//projects/game/desktop/internal/capture",
