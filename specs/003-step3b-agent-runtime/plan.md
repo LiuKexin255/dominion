@@ -45,7 +45,7 @@
 
 - **Authority & Style**: PASS. Applicable files: `.specify/memory/constitution.md`, root `README.md`, `ideas/llm_agent_play_game/README.md`, `style/README.md`, `style/api.md`, `style/large_test.md`, Google TypeScript Style reference. Implementation tasks must require every executor to read these plus this plan before code changes.
 - **Bazel Integrity**: PASS. TypeScript and pnpm commands must use Bazel-managed entrypoints (`bazel run @pnpm -- --dir <absolute path>`); Go commands use repository wrappers; proto/dependency changes require Gazelle/Bazel synchronization.
-- **Generated Files & Dependencies**: PASS. Existing `projects/game/game.proto` remains the source contract; generated Go/TS proto/grpc sources are not committed. New dependencies are added through root package/workspace catalog and synchronized via Bazel/pnpm rules, `bazel run //:gazelle` where needed, and `bazel mod tidy` where Bazel module state changes.
+- **Generated Files & Dependencies**: PASS. Existing `projects/game/game.proto` remains the source contract; generated Go/TS proto/grpc sources are not committed. New TypeScript/JavaScript dependency versions are added through the root `pnpm-workspace.yaml` catalog unless documented as special direct-version exceptions, then synchronized via Bazel/pnpm rules, `bazel run //:gazelle` where needed, and `bazel mod tidy` where Bazel module state changes.
 - **Testing Strategy**: PASS. Plan requires tests before implementation where practical: TS runtime unit tests for state/provider/tool mapping, gRPC stream tests for `AgentService`, compatibility tests for proxy/gateway/desktop contract changes, and a testplan large-test for service-chain acceptance.
 - **Behavioral Acceptance**: PASS. Acceptance drives real surfaces: `CreateAgent`, `ConnectAgent` WebSocket/gRPC streaming, screenshot-to-DeepAgent progress/operation, prompt/profile/SKILL CRUD from desktop, timeout/idle cleanup, and testplan deployment.
 - **Review Scope**: PASS. Tasks must include code quality review, TypeScript style review, test-code review, and protocol contract review against `projects/game/game.proto`.
@@ -81,7 +81,7 @@ projects/game/
 
 # New TypeScript agent service root (exact package path finalized in tasks)
 projects/game/agent-ts/
-├── package.json         # Workspace package; dependencies from root catalog when possible
+├── package.json         # Workspace package; dependency versions from root pnpm catalog unless documented exception
 ├── tsconfig.json
 ├── BUILD.bazel          # Gazelle/manual Bazel TS targets as required
 ├── src/
