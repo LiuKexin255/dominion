@@ -1,0 +1,12 @@
+version: "3.0"
+name: service
+app: grpc-hello-world-ts
+kind: stateless
+desc: grpc-js hello world TypeScript service
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: service
+    target: :cmd_image
+    tls: true

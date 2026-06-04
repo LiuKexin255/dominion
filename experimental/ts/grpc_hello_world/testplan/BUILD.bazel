@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/dev/go:defs.bzl", "go_largetest")
+load("//tools/release:defs.bzl", "artifact_image")
+
+go_library(
+    name = "wrapper_lib",
+    srcs = ["wrapper/main.go"],
+    importpath = "dominion/experimental/ts/grpc_hello_world/testplan",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//experimental/ts/grpc_hello_world:grpc_hello_world_go",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//credentials/insecure",
+    ],
+)
+
+go_binary(
+    name = "wrapper",
+    embed = [":wrapper_lib"],
+    visibility = ["//visibility:public"],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "grpc-hello-world-ts",
+    binary = ":wrapper",
+    service = "wrapper",
+)
+
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = ["interface_test.go"],
+    deps = ["//common/gopkg/testtool"],
+)
