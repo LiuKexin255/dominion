@@ -2,6 +2,7 @@
 
 load("@aspect_bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_proto//proto:defs.bzl", "ProtoInfo")
 
 _PUSH_TOOL = Label("//tools/release/s3push")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles")
@@ -268,16 +269,6 @@ artifact_pkg_go = rule(
     },
 )
 
-def _single_file(target):
-    files = target.files.to_list()
-    if len(files) != 1:
-        fail("artifact_pkg_js files entries must each produce exactly one file: {} produced {}".format(
-            target.label,
-            len(files),
-        ))
-
-    return files[0]
-
 def _artifact_pkg_js_impl(ctx):
     output = ctx.actions.declare_file(ctx.attr.name + ".tar")
     base_dir = "dominion/{app}/{service}".format(
@@ -290,14 +281,33 @@ def _artifact_pkg_js_impl(ctx):
     args.add(output.path)
     args.add(base_dir)
 
-    for target, dest in ctx.attr.files.items():
-        src = _single_file(target)
+    # Phase 1: ts_project files
+    ts_project_label = ctx.attr.ts_project.label
+    pkg_prefix = ts_project_label.package + "/" if ts_project_label.package else ""
+    for src in ctx.attr.ts_project.files.to_list():
+        short = src.short_path
+        dest = short[len(pkg_prefix):] if (pkg_prefix and short.startswith(pkg_prefix)) else short
         inputs.append(src)
         args.add(src.path)
         args.add(dest)
 
-    npm_inputs = []
-    npm_args = ctx.actions.args()
+    # Phase 2: proto files
+    args.add("--proto-files")
+    for target in ctx.attr.runtime_protos:
+        proto_info = target[ProtoInfo]
+        for src in proto_info.transitive_sources.to_list():
+            if src.short_path.startswith("google/protobuf/"):
+                continue
+            if src.owner.workspace_name:
+                canonical = src.short_path[len(src.owner.workspace_name) + 1:]
+            else:
+                canonical = src.short_path
+            inputs.append(src)
+            args.add(src.path)
+            args.add(canonical)
+
+    # Phase 3: npm_deps
+    args.add("--npm-deps")
     for target in ctx.attr.npm_deps:
         for src in target.files.to_list():
             node_modules_index = src.short_path.find("node_modules/")
@@ -317,21 +327,21 @@ def _artifact_pkg_js_impl(ctx):
                 if nm2 >= 0:
                     rel = "node_modules" + rel[nm2 + len("/node_modules"):]
 
-            npm_inputs.append(src)
-            npm_args.add(src.path)
-            npm_args.add(rel)
+            inputs.append(src)
+            args.add(src.path)
+            args.add(rel)
 
     ctx.actions.run_shell(
-        inputs = inputs + npm_inputs,
+        inputs = inputs,
         outputs = [output],
-        arguments = [args, "--npm-deps", npm_args],
+        arguments = [args],
         command = """set -euo pipefail
 out="$1"
 base_dir="$2"
 shift 2
+# Phase 1: ts_project files
 while (( "$#" )); do
-  if [[ "$1" == "--npm-deps" ]]; then
-    shift
+  if [[ "$1" == "--proto-files" ]] || [[ "$1" == "--npm-deps" ]]; then
     break
   fi
   src="$1"
@@ -341,15 +351,34 @@ while (( "$#" )); do
   mkdir -p "$(dirname "${dest_path}")"
   cp "${src}" "${dest_path}"
 done
-while (( "$#" )); do
-  src="$1"
-  dest="$2"
-  shift 2
-  dest_path="$(dirname "${out}")/${base_dir}/${dest}"
-  mkdir -p "$(dirname "${dest_path}")"
-  rm -rf "${dest_path}"
-  cp -aL "${src}" "${dest_path}"
-done
+# Phase 2: proto files
+if [[ "${1:-}" == "--proto-files" ]]; then
+  shift
+  while (( "$#" )); do
+    if [[ "$1" == "--npm-deps" ]]; then
+      break
+    fi
+    src="$1"
+    dest="$2"
+    shift 2
+    dest_path="$(dirname "${out}")/${base_dir}/${dest}"
+    mkdir -p "$(dirname "${dest_path}")"
+    cp "${src}" "${dest_path}"
+  done
+fi
+# Phase 3: npm_deps
+if [[ "${1:-}" == "--npm-deps" ]]; then
+  shift
+  while (( "$#" )); do
+    src="$1"
+    dest="$2"
+    shift 2
+    dest_path="$(dirname "${out}")/${base_dir}/${dest}"
+    mkdir -p "$(dirname "${dest_path}")"
+    rm -rf "${dest_path}"
+    cp -aL "${src}" "${dest_path}"
+  done
+fi
 tar -cf "${out}" -C "$(dirname "${out}")" dominion
 """,
         mnemonic = "ArtifactPkgJs",
@@ -371,18 +400,26 @@ artifact_pkg_js = rule(
     implementation = _artifact_pkg_js_impl,
     doc = """Packages JS service files into a tar layer.
 
-    Each file is placed under ``/dominion/{app}/{service}/{dest_path}`` inside
-    the tar and exposes ArtifactPkgInfo for artifact_image. Runtime npm
-    dependencies listed in ``npm_deps`` are copied under
-    ``/dominion/{app}/{service}/node_modules`` using their Bazel node_modules
-    layout, so Node's normal module resolver can find them in deployed images.
+    Source files from ``ts_project`` are placed under
+    ``/dominion/{app}/{service}/`` using paths relative to the
+    ts_project package directory. Proto files from ``runtime_protos``
+    are placed at their canonical import paths under the same root.
+    Runtime npm dependencies listed in ``npm_deps`` are copied under
+    ``/dominion/{app}/{service}/node_modules`` using their Bazel
+    node_modules layout, so Node's normal module resolver can find
+    them in deployed images.
     """,
     attrs = {
         "app": attr.string(mandatory = True),
         "entrypoint": attr.string(mandatory = True),
-        "files": attr.label_keyed_string_dict(
-            allow_files = True,
+        "ts_project": attr.label(
             mandatory = True,
+            doc = "A ts_project target. Its DefaultInfo.files (compiled JS) are collected and placed relative to the package directory.",
+        ),
+        "runtime_protos": attr.label_list(
+            allow_empty = True,
+            providers = [ProtoInfo],
+            doc = "proto_library targets whose transitive proto sources are collected at canonical import paths.",
         ),
         "npm_deps": attr.label_list(
             allow_files = True,
