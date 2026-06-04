@@ -149,7 +149,9 @@ services:
 
 #### JS 规范（`type = "js"`）
 
-- 文件按 `files` dict 指定的路径放置于 `/dominion/{app}/{service}/` 下。
+- `ts_project` 编译产出的 JS 文件按相对包目录的路径放置于 `/dominion/{app}/{service}/` 下。
+- `runtime_protos` 中的 proto 文件按标准导入路径放置于同一目录下。
+- `npm_deps` 中的 Node 模块放于 `/dominion/{app}/{service}/node_modules/` 下。
 - 基础镜像：`@distroless_nodejs`。
 - 容器启动：`ENTRYPOINT ["node"]`，`CMD ["/dominion/{app}/{service}/{entrypoint}"]`。
 
@@ -203,11 +205,15 @@ load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 artifact_pkg_js(
     name = "server_pkg",
     app = "my-app",
-    entrypoint = "src/server.js",  # 入口脚本（files 中的目标路径）
-    files = {
-        ":server": "src/server.js",    # label → 目标路径（相对于 /dominion/{app}/{service}/）
-        "greeter.proto": "greeter.proto",
-    },
+    entrypoint = "src/server.js",  # 入口脚本（相对于 ts_project 包目录）
+    ts_project = ":server",         # ts_project target，自动收集编译后的 JS 文件
+    runtime_protos = [              # proto_library targets，自动收集传递依赖的 proto 文件
+        ":greeter_proto",
+    ],
+    npm_deps = [                    # 运行时 npm 依赖
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
     service = "service",
 )
 
@@ -225,7 +231,7 @@ artifact_image(
 | 规则 | 说明 |
 |------|------|
 | `artifact_pkg_go(name, app, service, binary)` | 将 Go 二进制打包为 tar，放置于 `/dominion/{app}/{service}/bin/{binary_name}`。生成带 `ArtifactPkgInfo` 的常规 target。 |
-| `artifact_pkg_js(name, app, service, files, entrypoint)` | 将 JS 文件打包为 tar。`files` 为 dict：`{源标签: 目标路径}`，目标路径相对于 `/dominion/{app}/{service}/`。`entrypoint` 指定入口脚本的目标路径。生成带 `ArtifactPkgInfo` 的常规 target。 |
+| `artifact_pkg_js(name, app, service, ts_project, entrypoint, runtime_protos, npm_deps)` | 将 JS 文件打包为 tar。`ts_project` 指向 ts_project target，自动收集编译后的 JS 文件。`runtime_protos` 为 proto_library target 列表，自动收集传递依赖的 proto 文件（按标准导入路径放置）。`npm_deps` 为运行时 npm 依赖列表。`entrypoint` 指定入口脚本（相对于 ts_project 包目录）。生成带 `ArtifactPkgInfo` 的常规 target。 |
 | `artifact_image(name, app, service, pkg)` | 从打包 target 构建 OCI 镜像。根据打包类型自动选择基础镜像、entrypoint 和 cmd。 |
 
 ## 部署工具

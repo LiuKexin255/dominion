@@ -5,15 +5,18 @@ import * as protoLoader from "@grpc/proto-loader";
 import type { GreeterHandlers } from "../greeter_types/experimental/ts/grpc_hello_world/Greeter";
 import type { ProtoGrpcType } from "../greeter_types/greeter";
 
-const protoPath = path.join(__dirname, "..", "greeter.proto");
-const protoIncludeDirs = [path.join(__dirname, "..")];
+// Service root: the parent directory of the src/ directory.
+// In the deployed package, src/server.js is at service/src/server.js,
+// so __dirname points to service/src/, and ".." gives us service/.
+const protoRoot = path.join(__dirname, "..");
 
-for (const workspaceName of ["googleapis+", "googleapis"]) {
-	const includeDir = path.join(process.env.RUNFILES_DIR || "", workspaceName);
-	if (fs.existsSync(path.join(includeDir, "google/api/annotations.proto"))) {
-		protoIncludeDirs.push(includeDir);
-	}
-}
+// Proto files are placed at their canonical import paths under the service root.
+// For example: service/experimental/ts/grpc_hello_world/greeter.proto
+const protoPath = path.join(protoRoot, "experimental/ts/grpc_hello_world/greeter.proto");
+
+// All proto dependencies (e.g. google/api/annotations.proto) are also under
+// the service root, so a single includeDir covers all imports.
+const protoIncludeDirs = [protoRoot];
 
 if (!fs.existsSync(protoPath)) {
 	throw new Error(`greeter.proto not found at ${protoPath}`);
