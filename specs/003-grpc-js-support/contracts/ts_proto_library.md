@@ -9,7 +9,7 @@
 Generates TypeScript type files from `.proto` files using the officially recommended `proto-loader-gen-types` tool. The generated files provide compile-time types for services that load `.proto` files dynamically with `@grpc/proto-loader`; this rule does not generate static JavaScript or TypeScript protobuf/gRPC stubs.
 
 ```python
-load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 ```
 
 #### Attributes
@@ -24,6 +24,7 @@ load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
 | `defaults` | `bool` | no | `True` | Whether to set default values on output types |
 | `oneofs` | `bool` | no | `True` | Whether to include oneof fields |
 | `keep_case` | `bool` | no | `False` | Whether to preserve proto field names; maps to `--keepCase` and runtime `keepCase` |
+| `tool` | `label` | no | `//tools/dev/js:proto_loader_gen_types` | Executable `proto-loader-gen-types` target; override only for exceptional projects |
 
 #### Providers
 
@@ -35,7 +36,7 @@ load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
 
 ```python
 load("@rules_proto//proto:defs.bzl", "proto_library")
-load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 
 proto_library(
     name = "greeter_proto",
@@ -70,6 +71,7 @@ bazel-out/.../generated/
 - Generated files MUST NOT be committed to source control
 - Rule MUST handle transitive proto dependencies (for Google API annotation support)
 - Output `.ts` files are consumable as `srcs` by `ts_project`
+- Normal projects MUST use the default repository-global `//tools/dev/js:proto_loader_gen_types` tool target and MUST NOT create a project-local `proto_loader.proto_loader_gen_types_binary` target unless they need an explicit override
 - Static protobuf/gRPC JavaScript or TypeScript stubs are not produced by this rule
 
 #### ts_project Integration
@@ -141,7 +143,7 @@ load("@rules_proto//proto:defs.bzl", "proto_library")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_js//js:defs.bzl", "js_binary")
-load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 
 proto_library(
     name = "greeter_proto",
@@ -176,12 +178,12 @@ js_binary(
 
 ### Testplan Contract
 
-The example service acceptance test is testplan-based. It launches the compiled TypeScript server plus a Go HTTP wrapper from the testplan suite as the system under test. Deploy exposes the testplan-owned wrapper over HTTP; the wrapper calls the TypeScript server over gRPC. Unit tests MUST NOT start the service process in-process for this acceptance path.
+The example service acceptance test is testplan-based. It launches the compiled TypeScript server plus a Go grpc-gateway adapter from the testplan suite as the system under test. Deploy exposes the testplan-owned adapter over HTTP; the adapter calls the TypeScript server over gRPC. Unit tests MUST NOT start the service process in-process for this acceptance path.
 
 Required acceptance behavior:
 
 1. Launch the TypeScript gRPC server artifact through the repository testplan/deploy workflow.
-2. Resolve the wrapper HTTP endpoint from the testplan-provided environment using `common/gopkg/testtool`.
-3. Send HTTP request `GET /say-hello?name=World` to the wrapper.
-4. Wrapper calls grpc-js `SayHello` over gRPC and returns `Hello World` within a 5-second client deadline.
-5. Let the testplan workflow clean up both the grpc-js service and the testplan-owned wrapper service.
+2. Resolve the adapter HTTP endpoint from the testplan-provided environment using `common/gopkg/testtool`.
+3. Send HTTP request `GET /experimental/ts/grpc-hello-world/say-hello?name=World` through the `apitest.liukexin.com` large-test route prefix.
+4. grpc-gateway calls grpc-js `SayHello` over gRPC and returns `Hello World` within a 5-second client deadline.
+5. Let the testplan workflow clean up both the grpc-js service and the testplan-owned adapter service.

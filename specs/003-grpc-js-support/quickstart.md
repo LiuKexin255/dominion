@@ -39,7 +39,7 @@ message Item {
 ```python
 # BUILD.bazel
 load("@rules_proto//proto:defs.bzl", "proto_library")
-load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_js//js:defs.bzl", "js_binary")
@@ -54,6 +54,8 @@ ts_proto_library(
     proto = ":my_service_proto",
 )
 ```
+
+`ts_proto_library` uses the repository-global `//tools/dev/js:proto_loader_gen_types` executable by default, so ordinary projects do not need to define their own `proto_loader.proto_loader_gen_types_binary` target.
 
 > **TypeScript config note**: Projects consuming `ts_proto_library` generated sources must include both `src/**/*.ts` and `generated/**/*.ts` in `tsconfig.json`, and must not set `rootDir` to `src`. This differs from `experimental/ts/hello_world` because generated proto type files are compiled with the handwritten server source.
 
@@ -121,7 +123,7 @@ It does not produce static protobuf message implementations or gRPC stub impleme
 
 ## Acceptance Testing
 
-The TypeScript gRPC demo is verified through the repository testplan workflow. Because deploy exposes HTTP and not raw gRPC, the testplan launches both the grpc-js service and a small Go HTTP wrapper from `testplan/wrapper/`. The large-test client resolves the wrapper HTTP endpoint, calls `GET /say-hello?name=World`, the wrapper forwards to the internal grpc-js `SayHello` RPC, and the test verifies `Hello World` within the configured timeout. Do not validate acceptance by starting the service process inside a unit test.
+The TypeScript gRPC demo is verified through the repository testplan workflow. Because deploy exposes HTTP and not raw gRPC, the testplan launches both the grpc-js service and a Go grpc-gateway adapter from `testplan/gateway/`. The large-test client resolves the adapter HTTP endpoint, calls `GET /experimental/ts/grpc-hello-world/say-hello?name=World` through the `apitest.liukexin.com` route prefix, the adapter forwards to the internal grpc-js `SayHello` RPC, and the test verifies `Hello World` within the configured timeout. Do not validate acceptance by starting the service process inside a unit test.
 
 ## Dependency Management
 

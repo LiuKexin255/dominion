@@ -46,9 +46,9 @@ The plan combines:
 
 ## R3: Custom Bazel Rule Design
 
-### Decision: Create `ts_proto_library` custom rule in `tools/proto/`
+### Decision: Create `ts_proto_library` custom rule in `tools/dev/js/` with a global proto-loader target
 
-**Rationale**: The user explicitly mentioned "必要时可以提供类似 js_proto_library/ts_proto_library 等自定义 rules 进行封装". Since no existing Bazel rule exactly matches the proto-loader-gen-types workflow, a custom rule is the right approach.
+**Rationale**: The user explicitly mentioned "必要时可以提供类似 js_proto_library/ts_proto_library 等自定义 rules 进行封装". Since no existing Bazel rule exactly matches the proto-loader-gen-types workflow, a custom rule is the right approach. The rule belongs under `tools/dev/js/` because it is JavaScript/TypeScript build tooling, and ordinary projects should not repeat `proto_loader.proto_loader_gen_types_binary` boilerplate.
 
 **Rule design**:
 ```python
@@ -63,12 +63,13 @@ ts_proto_library(
     keep_case = False,                  # maps to runtime keepCase; false by default
 )
 # Produces .ts type files consumable by ts_project
+# tool defaults to //tools/dev/js:proto_loader_gen_types
 ```
 
 **Implementation strategy**:
 1. Accept `proto_library` target via `ProtoInfo` provider
 2. Extract `transitive_sources` and `transitive_proto_path` for dependency resolution
-3. Run `proto-loader-gen-types` via a Bazel executable action, passing `--outDir` as the declared generated output directory
+3. Run `proto-loader-gen-types` via a Bazel executable action, passing `--outDir` as the declared generated output directory; default the executable to repository-global `//tools/dev/js:proto_loader_gen_types`
 4. Declare generated `.ts` files under a `generated/` output layout
 5. Make outputs available to `ts_project` as `srcs`
 
@@ -171,18 +172,18 @@ catalog:
 
 ## R7: Testing Strategy
 
-### Decision: Testplan-based acceptance test for the example service
+### Decision: Testplan-based acceptance test through grpc-gateway for the example service
 
 **Rationale**:
 - `style/large_test.md` says gRPC services need large-test/testplan coverage
 - The user explicitly requires a testplan for the TypeScript demo and disallows starting the service process inside a unit test
-- A testplan verifies the actual artifact through a deployed HTTP wrapper owned by the testplan suite, matching the repository large-test guidance that gRPC systems are tested through HTTP when deploy does not expose raw gRPC
+- A testplan verifies the actual artifact through a deployed grpc-gateway HTTP adapter owned by the testplan suite, matching the repository large-test guidance that gRPC systems are tested through HTTP when deploy does not expose raw gRPC
 - Repository build verification (`bazel build //...` and `bazel test //...`) validates no regressions
 
 **Test approach**:
 - Build the server artifact through Bazel
-- Launch the TypeScript demo service and suite-owned HTTP wrapper as the system under test through the repository testplan/deploy workflow
-- Use a Go HTTP large-test case to call the deployed wrapper endpoint `GET /say-hello?name=World`; the wrapper calls grpc-js `SayHello("World")` internally
+- Launch the TypeScript demo service and suite-owned grpc-gateway adapter as the system under test through the repository testplan/deploy workflow
+- Use a Go HTTP large-test case to call the deployed adapter endpoint `GET /experimental/ts/grpc-hello-world/say-hello?name=World` through `apitest.liukexin.com`; the adapter calls grpc-js `SayHello("World")` internally
 - Verify the response is `Hello World`
 - Let the testplan workflow clean up the launched service
 - Build verification: Full `bazel build //...` and `bazel test //...`

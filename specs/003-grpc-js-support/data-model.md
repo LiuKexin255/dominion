@@ -68,14 +68,14 @@ Runnable Node.js process implementing gRPC service handlers.
 
 ### 6. Testplan Acceptance
 
-Repository testplan assets that launch the TypeScript gRPC service plus an HTTP wrapper as the system under test. Deploy exposes the testplan-owned wrapper over HTTP; the wrapper verifies the grpc-js service by forwarding HTTP requests to gRPC internally.
+Repository testplan assets that launch the TypeScript gRPC service plus a grpc-gateway HTTP adapter as the system under test. Deploy exposes the testplan-owned adapter over HTTP; the adapter verifies the grpc-js service by forwarding HTTP requests to gRPC internally.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | deploy_plan | file path | Deployment material used by the testplan to launch the service |
-| http_endpoint | string | Public HTTP wrapper endpoint provided to the test case by the testplan environment |
-| wrapper_service | file path | Go HTTP wrapper that bridges HTTP requests to grpc-js `SayHello` |
-| test_case | file path | Go HTTP large-test case that sends the acceptance request to the wrapper |
+| http_endpoint | string | Public HTTP adapter endpoint provided to the test case by the testplan environment |
+| adapter_service | file path | Go grpc-gateway adapter that bridges HTTP requests to grpc-js `SayHello` |
+| test_case | file path | Go HTTP large-test case that sends the acceptance request to the adapter |
 | expected_response | string | Expected HTTP response message (`Hello World`) |
 
 ## File Flow Relationships
@@ -98,9 +98,9 @@ greeter.proto
                           runnable server ──→ loads greeter.proto at runtime
                                                     via @grpc/proto-loader
                                  │
-                                 ├── [Go HTTP wrapper] HTTP /say-hello → gRPC SayHello
-                                 │
-                                 └── [testplan] launches service + suite wrapper and verifies HTTP response
+                                  ├── [grpc-gateway adapter] HTTP /experimental/ts/grpc-hello-world/say-hello → gRPC SayHello
+                                  │
+                                  └── [testplan] launches service + suite adapter and verifies HTTP response
 ```
 
 ## Key Entity: ts_proto_library Rule
@@ -117,6 +117,7 @@ The custom Bazel rule that bridges proto_library and TypeScript compilation.
 | defaults | bool | no | output default values (default `True`) |
 | oneofs | bool | no | output virtual oneof fields (default `True`) |
 | keep_case | bool | no | preserve proto field names; must match runtime `keepCase` (default `False`) |
+| tool | label | no | proto-loader-gen-types executable (default `//tools/dev/js:proto_loader_gen_types`) |
 
 | Output | Description |
 |--------|-------------|
@@ -135,7 +136,7 @@ The custom Bazel rule that bridges proto_library and TypeScript compilation.
   │
   ├── bazel run :run ──────────────→ [RUNNING] gRPC server listening on port
   │
-  └── guitar/testplan run ─────────→ [ACCEPTANCE] service + suite HTTP wrapper launched as SUT
-                                        │
-                                        └── client calls wrapper HTTP endpoint ──→ wrapper calls gRPC ──→ [RESPONDED] server replies
+  └── guitar/testplan run ─────────→ [ACCEPTANCE] service + suite grpc-gateway adapter launched as SUT
+                                          │
+                                          └── client calls adapter HTTP endpoint ──→ adapter calls gRPC ──→ [RESPONDED] server replies
 ```

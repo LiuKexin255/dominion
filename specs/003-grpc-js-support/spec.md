@@ -32,13 +32,13 @@ A developer creates a gRPC service implementation entirely in TypeScript under `
 
 **Why this priority**: This proves the generated types are usable in real TypeScript code and demonstrates the end-to-end developer workflow, from proto definition to running service.
 
-**Independent Test**: Can be fully tested by a testplan suite that deploys the TypeScript grpc-js service plus a small Go HTTP wrapper that belongs to the testplan suite that lives under the testplan suite material. The wrapper exposes an HTTP endpoint in the test environment, forwards the request to the internal grpc-js service over gRPC, and the repository-standard Go large-test client verifies the wrapper response. Unit tests MUST NOT start the service process in-process for this acceptance path.
+**Independent Test**: Can be fully tested by a testplan suite that deploys the TypeScript grpc-js service plus a suite-owned Go grpc-gateway HTTP adapter under the testplan material. The adapter exposes an HTTP endpoint in the test environment using the repository large-test HTTP routing convention, forwards the request to the internal grpc-js service over gRPC, and the repository-standard Go large-test client verifies the adapter response. Unit tests MUST NOT start the service process in-process for this acceptance path.
 
 **Acceptance Scenarios**:
 
 1. **Given** the example service project under `experimental/ts/`, **When** the developer runs `bazel build` on the service target, **Then** the TypeScript source compiles without type errors, successfully referencing the generated gRPC types.
 2. **Given** the compiled service binary, **When** the developer runs it via `bazel run`, **Then** the gRPC server starts and listens on the configured port.
-3. **Given** a running example gRPC server and Go HTTP wrapper managed by the testplan, **When** the Go large-test HTTP client calls the wrapper endpoint for the proto-defined RPC method, **Then** the wrapper forwards to the grpc-js service and returns a correctly structured response within 5 seconds.
+3. **Given** a running example gRPC server and Go grpc-gateway adapter managed by the testplan, **When** the Go large-test HTTP client calls the adapter endpoint for the proto-defined RPC method, **Then** the adapter forwards to the grpc-js service and returns a correctly structured response within 5 seconds.
 
 ---
 
@@ -63,7 +63,7 @@ After adding gRPC-JS support, the entire repository continues to build and test 
 - What happens when a proto definition references types from another proto file in a different Bazel package? The build system should resolve cross-package proto dependencies correctly.
 - What happens when the proto file contains syntax errors? The build should fail with a clear error message pointing to the proto file and line number.
 - What happens when the TypeScript service code uses a generated type incorrectly? The TypeScript compiler should report a type error at build time, preventing runtime failures.
-- What happens when the service binary runs under a testplan environment rather than a unit-test process? The service should be launched as an external system under test and verified through the deployed HTTP wrapper that forwards to its internal gRPC surface.
+- What happens when the service binary runs under a testplan environment rather than a unit-test process? The service should be launched as an external system under test and verified through the deployed grpc-gateway HTTP adapter that forwards to its internal gRPC surface.
 
 ## Requirements *(mandatory)*
 
@@ -77,7 +77,9 @@ After adding gRPC-JS support, the entire repository continues to build and test 
 - **FR-006**: The example project MUST follow the same conventions as `experimental/ts/hello_world`: `ts_project` compilation, SWC transpilation, CommonJS output, ES2020 target, strict mode, `@dominion/` package namespace, and catalog-based dependency management.
 - **FR-007**: All new npm dependency versions MUST be declared in the root `pnpm-workspace.yaml` catalog, referenced via the `"catalog:"` protocol in the example project's `package.json`.
 - **FR-008**: The full repository MUST build (`bazel build //...`) and pass all tests (`bazel test //...`) after the changes are applied.
-- **FR-009**: The TypeScript gRPC example MUST include a testplan-based acceptance test that verifies the running grpc-js service through an HTTP wrapper deployed in the same suite; the wrapper MAY be Go and MUST translate HTTP requests to the internal gRPC `SayHello` call, while the service implementation MUST remain TypeScript and unit tests MUST NOT start the service process in-process for this acceptance path.
+- **FR-009**: The TypeScript gRPC example MUST include a testplan-based acceptance test that verifies the running grpc-js service through a suite-owned Go grpc-gateway HTTP adapter deployed in the same suite; the adapter MUST translate HTTP requests to the internal gRPC `SayHello` call, while the service implementation MUST remain TypeScript and unit tests MUST NOT start the service process in-process for this acceptance path.
+- **FR-010**: The TypeScript proto generation rule MUST live with repository JavaScript tooling under `tools/dev/js/` and MUST default to a repository-global `proto-loader-gen-types` executable target so normal projects do not define a local `proto_loader.proto_loader_gen_types_binary` target.
+- **FR-011**: The repository `artifact_image` macro MUST support packaging the grpc-js Node service while preserving existing Go service defaults, and the TypeScript gRPC example MUST use that macro instead of hand-written OCI image rules.
 
 ## Success Criteria *(mandatory)*
 
@@ -96,4 +98,4 @@ After adding gRPC-JS support, the entire repository continues to build and test 
 - The code generation tooling integrates with the existing `rules_proto` infrastructure already declared in `MODULE.bazel`.
 - Gazelle auto-generation for TypeScript proto targets is out of scope; BUILD files for proto compilation will be written manually following the pattern established by the Go targets.
 - The example service uses dynamic `.proto` loading at runtime; generated files provide compile-time TypeScript typing only.
-- The TypeScript demo acceptance path uses the repository testplan workflow rather than a unit test that starts the service process inside the test runtime; because deploy only exposes HTTP endpoints, the suite deploys a Go HTTP wrapper that calls the internal grpc-js service, and the test case uses existing Go large-test HTTP client infrastructure.
+- The TypeScript demo acceptance path uses the repository testplan workflow rather than a unit test that starts the service process inside the test runtime; because deploy only exposes HTTP endpoints, the suite deploys a Go grpc-gateway adapter that calls the internal grpc-js service, and the test case uses existing Go large-test HTTP client infrastructure.
