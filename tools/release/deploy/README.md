@@ -137,16 +137,43 @@ services:
 
 ## 服务镜像构建
 
-业务服务在 `BUILD.bazel` 中使用 `artifact_image` 宏声明镜像：
+业务服务在 `BUILD.bazel` 中使用 `artifact_pkg_go`/`artifact_pkg_js` 打包，再用 `artifact_image` 构建镜像。打包规则生成常规 Bazel target，`artifact_image` 通过 `pkg` label 引用该 target，并根据其 provider 自动选择基础镜像和启动参数。
+
+### 打包规范
+
+#### Go 规范（`type = "go"`）
+
+- 二进制放置于 `/dominion/{app}/{service}/bin/{binary_name}`。
+- 基础镜像：`@distroless_base`。
+- 容器启动：`ENTRYPOINT ["/dominion/{app}/{service}/bin/{binary_name}"]`。
+
+#### JS 规范（`type = "js"`）
+
+- `ts_project` 编译产出的 JS 文件按相对包目录的路径放置于 `/dominion/{app}/{service}/` 下。
+- `runtime_protos` 中的 proto 文件按标准导入路径放置于同一目录下。
+- `npm_deps` 中的 Node 模块放于 `/dominion/{app}/{service}/node_modules/` 下。
+- 基础镜像：`@distroless_nodejs`。
+- 容器启动：`ENTRYPOINT ["node"]`，`CMD ["/dominion/{app}/{service}/{entrypoint}"]`。
+
+### Go 服务
 
 ```python
-load("//tools/release:defs.bzl", "artifact_image")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
 
+# 将 Go 二进制打包为 tar
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "game",
+    binary = ":cmd",       # go_binary 标签
+    service = "session",
+)
+
+# 从打包信息构建 OCI 镜像
 artifact_image(
     name = "cmd_image",
     app = "game",
+    pkg = ":service_pkg",
     service = "session",
-    binary = ":cmd",
 )
 ```
 
@@ -166,6 +193,46 @@ artifacts:
 ```
 
 deploy CLI 会校验 `service.yaml` 中的 `app`/`name` 与 `artifact_image` 声明一致。
+
+### Node.js / grpc-js 服务
+
+Node/grpc-js 服务使用 `artifact_pkg_js` 打包文件，需通过 `entrypoint` 参数指定入口脚本：
+
+```python
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+# 将 JS 服务文件打包为 tar
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "my-app",
+    entrypoint = "src/server.js",  # 入口脚本（相对于 ts_project 包目录）
+    ts_project = ":server",         # ts_project target，自动收集编译后的 JS 文件
+    runtime_protos = [              # proto_library targets，自动收集传递依赖的 proto 文件
+        ":greeter_proto",
+    ],
+    npm_deps = [                    # 运行时 npm 依赖
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    service = "service",
+)
+
+# 从打包信息构建 OCI 镜像
+artifact_image(
+    name = "cmd_image",
+    app = "my-app",
+    pkg = ":server_pkg",
+    service = "service",
+)
+```
+
+### 规则说明
+
+| 规则 | 说明 |
+|------|------|
+| `artifact_pkg_go(name, app, service, binary)` | 将 Go 二进制打包为 tar，放置于 `/dominion/{app}/{service}/bin/{binary_name}`。生成带 `ArtifactPkgInfo` 的常规 target。 |
+| `artifact_pkg_js(name, app, service, ts_project, entrypoint, runtime_protos, npm_deps)` | 将 JS 文件打包为 tar。`ts_project` 指向 ts_project target，自动收集编译后的 JS 文件。`runtime_protos` 为 proto_library target 列表，自动收集传递依赖的 proto 文件（按标准导入路径放置）。`npm_deps` 为运行时 npm 依赖列表。`entrypoint` 指定入口脚本（相对于 ts_project 包目录）。生成带 `ArtifactPkgInfo` 的常规 target。 |
+| `artifact_image(name, app, service, pkg)` | 从打包 target 构建 OCI 镜像。根据打包类型自动选择基础镜像、entrypoint 和 cmd。 |
 
 ## 部署工具
 

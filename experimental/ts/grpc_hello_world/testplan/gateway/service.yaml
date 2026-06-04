@@ -1,0 +1,12 @@
+version: "3.0"
+name: gateway
+app: grpc-hello-world-ts
+kind: stateless
+desc: grpc-js testplan grpc-gateway HTTP adapter
+ports:
+  - name: http
+    port: 80
+artifacts:
+  - name: gateway
+    target: //experimental/ts/grpc_hello_world/testplan:cmd_image
+    tls: true

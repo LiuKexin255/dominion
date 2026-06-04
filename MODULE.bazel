@@ -112,6 +112,14 @@ oci.pull(
 )
 use_repo(oci, "distroless_base", "distroless_base_linux_amd64")
 
+oci.pull(
+    name = "distroless_nodejs",
+    digest = "sha256:fb614bb0790340827f5bddb1a4f70039cb79b13cd4afdafb744da67fa8008a4f",
+    image = "gcr.io/distroless/nodejs24-debian12",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "distroless_nodejs", "distroless_nodejs_linux_amd64")
+
 node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
 node.toolchain(node_version = "24.14.0")
 

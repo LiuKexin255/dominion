@@ -26,7 +26,7 @@ metadata:
 
 在执行前先读取：
 
-1. `styles/large_test.md`
+1. `style/large_test.md`
 2. 对应服务目录下的 `README.md`（如果存在）
 3. 测试计划 YAML 文件本身
 
@@ -168,7 +168,7 @@ guitar run <plan.yaml>
 
 ## 仓库内可直接参考的文件
 
-- `styles/large_test.md`
+- `style/large_test.md`
 - `design/guitar_yaml_testplan.md`
 - `tools/test/guitar/README.md`
 - `tools/release/deploy/README.md`

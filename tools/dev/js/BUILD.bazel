@@ -1,6 +1,10 @@
+load("@npm//experimental/ts/grpc_hello_world:@grpc/proto-loader/package_json.bzl", proto_loader = "bin")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
-exports_files(["vite.bzl"])
+exports_files([
+    "ts_proto_library.bzl",
+    "vite.bzl",
+])
 
 sh_binary(
     name = "pnpm",
@@ -9,5 +13,10 @@ sh_binary(
         "@bazel_tools//tools/bash/runfiles",
         "@pnpm",
     ],
+    visibility = ["//visibility:public"],
+)
+
+proto_loader.proto_loader_gen_types_binary(
+    name = "proto_loader_gen_types",
     visibility = ["//visibility:public"],
 )

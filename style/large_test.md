@@ -62,6 +62,7 @@ suites:
 
 * 使用 `http` 接口对 `grpc` 系统进行测试。
 * 可以使用 `grpc-gateway` 组件为 `grpc` 服务提供 `http` 服务。
+* 如果被测服务是纯 `grpc` 服务，则在 `testplan` 中增加一个 `grpc-gateway` 服务作为 adapter，用于将 `grpc->http`。这类 `http` 统一使用 `apitest.liukexin.com` 域名，并且通过 prefix 确保唯一，例如 `apitest.liukexin.com/{app}/{service}`。然后在这个 adapter 服务当中进行路径转换。
 
 ### 环境变量
 

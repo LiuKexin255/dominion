@@ -1,0 +1,17 @@
+name: grpc-js-hello-world-interface-test
+description: |
+  grpc-js hello world HTTP acceptance test
+
+  Service: grpc-js hello world TypeScript service
+  Interface: HTTP wrapper exposed endpoint
+  Test cases:
+    1. TestSayHello — GET /say-hello?name=World returns "Hello World"
+
+suites:
+  - name: default
+    deploy: //experimental/ts/grpc_hello_world/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://apitest.liukexin.com
+    cases:
+      - //experimental/ts/grpc_hello_world/testplan:testplan_test

@@ -3,10 +3,12 @@ packages:
   - projects/game/desktop/frontend
 
 catalog:
+  "@grpc/grpc-js": "^1.14.4"
+  "@grpc/proto-loader": "^0.8.1"
   "@sveltejs/vite-plugin-svelte": "^5.0.3"
   "@types/node": "^22.19.19"
   svelte: "^5.33.0"
-  typescript: "^6.0.2"
+  typescript: "^6.0.3"
   vite: "^6.4.2"
   vitest: "^3.2.4"
 ignoredBuiltDependencies: []

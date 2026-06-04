@@ -1,0 +1,12 @@
+{
+    "name": "@dominion/grpc_hello_world",
+    "private": true,
+    "dependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:"
+    }
+}

@@ -1,5 +1,5 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("//tools/release:defs.bzl", "artifact_image")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
 
 go_library(
     name = "cmd_lib",
@@ -26,9 +26,16 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "mongo-demo",
+    binary = ":cmd",
+    service = "service",
+)
+
 artifact_image(
     name = "cmd_image",
     app = "mongo-demo",
-    binary = ":cmd",
+    pkg = ":service_pkg",
     service = "service",
 )
