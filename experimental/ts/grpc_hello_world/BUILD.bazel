@@ -2,44 +2,24 @@ load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
-load("@npm//experimental/ts/grpc_hello_world:@grpc/proto-loader/package_json.bzl", proto_loader = "bin")
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
-load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@rules_proto//proto:defs.bzl", "proto_library")
-load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
 npm_link_all_packages(name = "node_modules")
-
-proto_loader.proto_loader_gen_types_binary(
-    name = "proto_loader_tool",
-    visibility = ["//visibility:public"],
-)
 
 proto_library(
     name = "greeter_proto",
     srcs = ["greeter.proto"],
     visibility = ["//visibility:public"],
+    deps = ["@googleapis//google/api:annotations_proto"],
 )
 
 ts_proto_library(
     name = "greeter_types",
     proto = ":greeter_proto",
-    tool = ":proto_loader_tool",
-    visibility = ["//visibility:public"],
-)
-
-proto_library(
-    name = "annotations_fixture_proto",
-    srcs = ["annotations_fixture.proto"],
-    visibility = ["//visibility:public"],
-    deps = ["@googleapis//google/api:annotations_proto"],
-)
-
-ts_proto_library(
-    name = "annotations_fixture_types",
-    proto = ":annotations_fixture_proto",
-    tool = ":proto_loader_tool",
     visibility = ["//visibility:public"],
 )
 
@@ -53,6 +33,7 @@ go_proto_library(
     importpath = "dominion/experimental/ts/grpc_hello_world",
     proto = ":greeter_proto",
     visibility = ["//visibility:public"],
+    deps = ["@googleapis//google/api:annotations_go_proto"],
 )
 
 go_library(
@@ -86,30 +67,41 @@ js_library(
 js_binary(
     name = "run",
     data = [
-        "greeter.proto",
         ":server",
+        "@googleapis//google/api:annotations.proto",
+        "@googleapis//google/api:http.proto",
+        "greeter.proto",
     ],
     entry_point = "src/server.js",
+    no_copy_to_bin = [
+        "@googleapis//google/api:annotations.proto",
+        "@googleapis//google/api:http.proto",
+    ],
+)
+
+# Package JS service files into a tar layer
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "grpc-hello-world-ts",
+    entrypoint = "src/server.js",
+    files = {
+        ":server": "src/server.js",
+        "@googleapis//google/api:annotations.proto": "google/api/annotations.proto",
+        "@googleapis//google/api:http.proto": "google/api/http.proto",
+        "greeter.proto": "greeter.proto",
+    },
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    service = "service",
 )
 
 # OCI image for the TypeScript gRPC server
-genrule(
-    name = "server_layer",
-    srcs = [":server"],
-    outs = ["server_layer.tar"],
-    cmd = """
-mkdir -p src
-cp $(location :server) src/server.js
-tar cf $@ src/server.js
-""",
-    visibility = ["//visibility:public"],
-)
-
-oci_image(
+artifact_image(
     name = "cmd_image",
-    base = "@distroless_nodejs",
-    cmd = ["src/server.js"],
-    entrypoint = ["node"],
-    tars = [":server_layer"],
+    app = "grpc-hello-world-ts",
+    pkg = ":server_pkg",
+    service = "service",
     visibility = ["//visibility:public"],
 )

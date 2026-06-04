@@ -1,8 +1,8 @@
 package testplan
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -15,13 +15,13 @@ func TestSayHello(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	reqURL := fmt.Sprintf("%s/say-hello?name=World", sutHostURL)
+	reqURL := fmt.Sprintf("%s/experimental/ts/grpc-hello-world/say-hello?name=World", sutHostURL)
 
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	req.Header.Set("X-Env", sutEnvName)
+	req.Header.Set("env", sutEnvName)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -33,13 +33,14 @@ func TestSayHello(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read body: %v", err)
+	var respBody struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	expected := "Hello World"
-	if string(body) != expected {
-		t.Fatalf("expected %q, got %q", expected, string(body))
+	if respBody.Message != "Hello World" {
+		t.Fatalf("expected message %q, got %q", "Hello World", respBody.Message)
 	}
 }

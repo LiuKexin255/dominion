@@ -137,16 +137,41 @@ services:
 
 ## 服务镜像构建
 
-业务服务在 `BUILD.bazel` 中使用 `artifact_image` 宏声明镜像：
+业务服务在 `BUILD.bazel` 中使用 `artifact_pkg_go`/`artifact_pkg_js` 打包，再用 `artifact_image` 构建镜像。打包规则生成常规 Bazel target，`artifact_image` 通过 `pkg` label 引用该 target，并根据其 provider 自动选择基础镜像和启动参数。
+
+### 打包规范
+
+#### Go 规范（`type = "go"`）
+
+- 二进制放置于 `/dominion/{app}/{service}/bin/{binary_name}`。
+- 基础镜像：`@distroless_base`。
+- 容器启动：`ENTRYPOINT ["/dominion/{app}/{service}/bin/{binary_name}"]`。
+
+#### JS 规范（`type = "js"`）
+
+- 文件按 `files` dict 指定的路径放置于 `/dominion/{app}/{service}/` 下。
+- 基础镜像：`@distroless_nodejs`。
+- 容器启动：`ENTRYPOINT ["node"]`，`CMD ["/dominion/{app}/{service}/{entrypoint}"]`。
+
+### Go 服务
 
 ```python
-load("//tools/release:defs.bzl", "artifact_image")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
 
+# 将 Go 二进制打包为 tar
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "game",
+    binary = ":cmd",       # go_binary 标签
+    service = "session",
+)
+
+# 从打包信息构建 OCI 镜像
 artifact_image(
     name = "cmd_image",
     app = "game",
+    pkg = ":service_pkg",
     service = "session",
-    binary = ":cmd",
 )
 ```
 
@@ -166,6 +191,42 @@ artifacts:
 ```
 
 deploy CLI 会校验 `service.yaml` 中的 `app`/`name` 与 `artifact_image` 声明一致。
+
+### Node.js / grpc-js 服务
+
+Node/grpc-js 服务使用 `artifact_pkg_js` 打包文件，需通过 `entrypoint` 参数指定入口脚本：
+
+```python
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+# 将 JS 服务文件打包为 tar
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "my-app",
+    entrypoint = "src/server.js",  # 入口脚本（files 中的目标路径）
+    files = {
+        ":server": "src/server.js",    # label → 目标路径（相对于 /dominion/{app}/{service}/）
+        "greeter.proto": "greeter.proto",
+    },
+    service = "service",
+)
+
+# 从打包信息构建 OCI 镜像
+artifact_image(
+    name = "cmd_image",
+    app = "my-app",
+    pkg = ":server_pkg",
+    service = "service",
+)
+```
+
+### 规则说明
+
+| 规则 | 说明 |
+|------|------|
+| `artifact_pkg_go(name, app, service, binary)` | 将 Go 二进制打包为 tar，放置于 `/dominion/{app}/{service}/bin/{binary_name}`。生成带 `ArtifactPkgInfo` 的常规 target。 |
+| `artifact_pkg_js(name, app, service, files, entrypoint)` | 将 JS 文件打包为 tar。`files` 为 dict：`{源标签: 目标路径}`，目标路径相对于 `/dominion/{app}/{service}/`。`entrypoint` 指定入口脚本的目标路径。生成带 `ArtifactPkgInfo` 的常规 target。 |
+| `artifact_image(name, app, service, pkg)` | 从打包 target 构建 OCI 镜像。根据打包类型自动选择基础镜像、entrypoint 和 cmd。 |
 
 ## 部署工具
 

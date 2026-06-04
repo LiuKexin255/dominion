@@ -110,7 +110,7 @@ Generated layout:
                                   # Exports interface ProtoGrpcType
 
 Example usage:
-  load("//tools/proto:ts_proto_library.bzl", "ts_proto_library")
+  load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 
   ts_proto_library(
       name = "greeter_types",
@@ -186,12 +186,12 @@ keep_case=False), the corresponding runtime options are:
         "tool": attr.label(
             executable = True,
             cfg = "exec",
-            doc = "The proto-loader-gen-types binary from @grpc/proto-loader. " +
-                  "Use the proto_loader_gen_types_binary() factory from the " +
-                  "@grpc/proto-loader package_json.bzl to create this target. " +
-                  "Example: load(\"@npm//<package_path>/@grpc/proto-loader/package_json.bzl\", " +
-                  "proto_loader = \"bin\") then proto_loader.proto_loader_gen_types_binary(name = \"tool\")",
-            mandatory = True,
+            doc = "The proto-loader-gen-types binary. Defaults to the global " +
+                  "//tools/dev/js:proto_loader_gen_types target. Override this " +
+                  "for exceptional projects that need a different version of " +
+                  "@grpc/proto-loader (e.g., via proto_loader_gen_types_binary() " +
+                  "from @grpc/proto-loader package_json.bzl).",
+            default = Label("//tools/dev/js:proto_loader_gen_types"),
         ),
     },
 )

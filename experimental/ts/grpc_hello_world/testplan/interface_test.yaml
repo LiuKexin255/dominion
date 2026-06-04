@@ -12,6 +12,6 @@ suites:
     deploy: //experimental/ts/grpc_hello_world/testplan/deploy.yaml
     endpoint:
       http:
-        public: https://ts-grpc-hello.liukexin.com
+        public: https://apitest.liukexin.com
     cases:
       - //experimental/ts/grpc_hello_world/testplan:testplan_test
