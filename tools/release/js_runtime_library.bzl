@@ -17,12 +17,12 @@ def _js_runtime_pkg_impl(ctx):
             package_metadata = ctx.file.package_json,
             runtime_files = lib_files,
             type_files = depset([f for f in lib_files.to_list() if f.extension == "d.ts"]),
-            direct_runtime_deps = ctx.attr.direct_runtime_deps,
-            npm_runtime_deps = ctx.attr.npm_runtime_deps,
+            runtime_deps = ctx.attr.runtime_deps,
+            npm_deps = ctx.attr.npm_deps,
         ),
     ]
 
-js_runtime_pkg = rule(
+js_runtime_library = rule(
     implementation = _js_runtime_pkg_impl,
     doc = """Creates a workspace package target that exposes JsRuntimePackageInfo.
 
@@ -47,12 +47,12 @@ js_runtime_pkg = rule(
             mandatory = True,
             doc = "The package.json file for this workspace package.",
         ),
-        "direct_runtime_deps": attr.label_list(
+        "runtime_deps": attr.label_list(
             default = [],
             providers = [JsRuntimePackageInfo],
             doc = "Workspace packages this package depends on (targets exposing JsRuntimePackageInfo).",
         ),
-        "npm_runtime_deps": attr.label_list(
+        "npm_deps": attr.label_list(
             default = [],
             doc = "npm link targets for third-party packages needed at runtime.",
         ),

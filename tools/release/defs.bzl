@@ -26,8 +26,8 @@ JsRuntimePackageInfo = provider(
         "package_metadata": "File: the package.json file.",
         "runtime_files": "depset of File: compiled JS files to ship.",
         "type_files": "depset of File: declaration files (.d.ts).",
-        "direct_runtime_deps": "list of Target: workspace packages this depends on (targets exposing JsRuntimePackageInfo).",
-        "npm_runtime_deps": "list of Target: npm link targets for third-party packages.",
+        "runtime_deps": "list of Target: workspace packages this depends on (targets exposing JsRuntimePackageInfo).",
+        "npm_deps": "list of Target: npm link targets for third-party packages.",
     },
 )
 
@@ -35,7 +35,7 @@ def _collect_runtime_closure(runtime_deps):
     """Walk JsRuntimePackageInfo dependency closure breadth-first.
 
     Starts from service-declared runtime_deps, walks
-    JsRuntimePackageInfo.direct_runtime_deps transitively, and collects
+    JsRuntimePackageInfo.runtime_deps transitively, and collects
     both workspace packages and npm dependency targets.
 
     Deduplication: first occurrence of a package_name wins (earliest in
@@ -87,13 +87,13 @@ def _collect_runtime_closure(runtime_deps):
         ))
 
         # Collect unique npm deps (by target label).
-        for dep in info.npm_runtime_deps:
+        for dep in info.npm_deps:
             key = str(dep.label)
             if key not in visited_npm:
                 visited_npm[key] = True
                 npm_targets.append(dep)
 
-        queue.extend(info.direct_runtime_deps)
+        queue.extend(info.runtime_deps)
 
     return workspace_pkgs, npm_targets
 
@@ -379,11 +379,11 @@ def _artifact_pkg_js_impl(ctx):
                 fail("{}: JsRuntimePackageInfo from {} has empty package_metadata".format(ctx.label, target.label))
             if not info.package_name:
                 fail("{}: JsRuntimePackageInfo from {} has empty package_name".format(ctx.label, target.label))
-            if not info.npm_runtime_deps:
-                # Best-effort check: warn if npm_runtime_deps is empty.
+            if not info.npm_deps:
+                # Best-effort check: warn if npm_deps is empty.
                 # Try to read package.json to see if npm deps are declared;
                 # if reading fails, the check is skipped silently.
-                print("{}: JsRuntimePackageInfo from {} has empty npm_runtime_deps — npm deps may be missing at runtime".format(ctx.label, target.label))
+                print("{}: JsRuntimePackageInfo from {} has empty npm_deps — npm deps may be missing at runtime".format(ctx.label, target.label))
 
         workspace_pkgs, closure_npm_targets = _collect_runtime_closure(ctx.attr.runtime_deps)
         args.add("--workspace-deps")
@@ -567,7 +567,7 @@ artifact_pkg_js = rule(
     Workspace packages listed in ``runtime_deps`` are walked
     transitively via ``JsRuntimePackageInfo`` and placed under
     ``node_modules/{package_name}/`` preserving their source layout.
-    Their npm deps (``npm_runtime_deps``) are collected as well.
+    Their npm deps (``npm_deps``) are collected as well.
 
     Runtime npm dependencies listed in ``npm_deps`` are copied under
     ``/dominion/{app}/{service}/node_modules`` using their Bazel
