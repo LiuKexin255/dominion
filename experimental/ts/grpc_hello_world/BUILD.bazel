@@ -54,8 +54,8 @@ ts_project(
     tsconfig = ":tsconfig.json",
     deps = [
         ":greeter_types_lib",
-        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
@@ -76,11 +76,7 @@ artifact_pkg_js(
     name = "server_pkg",
     app = "grpc-hello-world-ts",
     entrypoint = "src/bootstrap.js",
-    ts_project = ":server",
     npm_deps = [
-        ":node_modules/@dominion/common-js-logs",
-        ":node_modules/@dominion/common-js-grpc-otel",
-        ":node_modules/@dominion/common-js-otel",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
@@ -88,6 +84,7 @@ artifact_pkg_js(
         ":greeter_proto",
     ],
     service = "service",
+    ts_project = ":server",
 )
 
 # OCI image for the TypeScript gRPC server

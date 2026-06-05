@@ -44,6 +44,9 @@ js_test(
     data = [
         ":lib",
         ":node_modules/vitest",
-    ] + glob(["src/**/*.test.ts"], allow_empty = True),
+    ] + glob(
+        ["src/**/*.test.ts"],
+        allow_empty = True,
+    ),
     entry_point = "run_vitest.mjs",
 )

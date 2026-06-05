@@ -50,9 +50,9 @@ js_test(
         "src/",
     ],
     data = [
+        "src/index.test.ts",
         ":lib",
         ":node_modules/vitest",
-        "src/index.test.ts",
     ],
     entry_point = "run_vitest.mjs",
 )
