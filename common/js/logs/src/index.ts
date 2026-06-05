@@ -25,7 +25,7 @@ export type { LogAttributes } from "./logger";
 export {
 	ConsoleReporter,
 	installReporter,
-	newOTelReporter,
+	createOTelReporter,
 	OTelReporter,
 	Reporter,
 } from "./reporter";

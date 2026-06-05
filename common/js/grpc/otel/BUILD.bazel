@@ -35,14 +35,14 @@ js_library(
 # requires JsInfo provider which only js_library provides.
 js_runtime_pkg(
     name = "runtime_pkg",
-    lib = ":lib",
-    package_json = "package.json",
     package_name = "@dominion/common-js-grpc-otel",
     direct_runtime_deps = [],
+    lib = ":lib",
     npm_runtime_deps = [
         ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/instrumentation-grpc",
     ],
+    package_json = "package.json",
     visibility = ["//visibility:public"],
 )
 

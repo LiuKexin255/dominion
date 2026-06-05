@@ -10,14 +10,14 @@
 
 import { init, shutdown } from "@dominion/common-js-otel";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
-import { info, installReporter, newOTelReporter } from "@dominion/common-js-logs";
+import { info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
 
 async function main() {
   // 1. Initialize OTel with gRPC instrumentation BEFORE grpc-js loads
   await init({ instrumentations: [createGrpcInstrumentation()] });
 
   // 2. Install OTel reporter for structured logs
-  const uninstallReporter = installReporter(newOTelReporter("grpc-hello-world-ts/service"));
+  const uninstallReporter = installReporter(createOTelReporter("grpc-hello-world-ts/service"));
 
   // 3. Log service startup
   info("service starting", { service: "grpc-hello-world-ts", port: 50051 });

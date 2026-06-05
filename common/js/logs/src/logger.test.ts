@@ -1,24 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { Logger, defaultLogger, LogLevel, type LogAttributes } from "./logger";
+import { Logger, defaultLogger, type LogAttributes } from "./logger";
 import { installReporter, ConsoleReporter } from "./reporter";
 
-// Inline event constructors — @dominion/common-js-logs-event is not
-// resolvable inside Bazel's vitest sandbox so we recreate the tiny
-// Event shape here.
-type TestEvent = { key: string; value: string | number | Error | undefined };
-
-function eventString(key: string, value: string): TestEvent {
-  return { key, value };
-}
-
-function eventInt(key: string, value: number): TestEvent {
-  return { key, value };
-}
-
-function eventErr(err: Error | null | undefined): TestEvent {
-  if (!err) return { key: "", value: undefined };
-  return { key: "error", value: err };
-}
+// LogLevel is now a string union: "debug" | "info" | "warn" | "error"
+// Tests use string literals directly instead of enum members.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,12 +56,12 @@ describe("Logger", () => {
   describe("info", () => {
     it("writes structured JSON to console.log when no reporter installed", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.DEBUG);
+      const logger = new Logger("debug");
       logger.info("hello", { user: "alice" });
       restore();
 
       const parsed = parseLine(output);
-      expect(parsed.level).toBe("INFO");
+      expect(parsed.level).toBe("info");
       expect(parsed.msg).toBe("hello");
       expect(parsed.user).toBe("alice");
     });
@@ -89,7 +74,7 @@ describe("Logger", () => {
       restore();
 
       const parsed = parseLine(output);
-      expect(parsed.level).toBe("INFO");
+      expect(parsed.level).toBe("info");
       expect(parsed.msg).toBe("reported");
       expect(parsed.key).toBe("val");
     });
@@ -99,37 +84,37 @@ describe("Logger", () => {
   // debug
   // -------------------------------------------------------------------------
   describe("debug", () => {
-    it("produces output when log level is DEBUG", () => {
+    it("produces output when log level is debug", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.DEBUG);
+      const logger = new Logger("debug");
       logger.debug("debug msg");
       restore();
 
       expect(output.length).toBe(1);
-      expect(JSON.parse(output[0]).level).toBe("DEBUG");
+      expect(JSON.parse(output[0]).level).toBe("debug");
     });
 
-    it("is suppressed when log level is INFO (default)", () => {
+    it("is suppressed when log level is info (default)", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.INFO);
+      const logger = new Logger("info");
       logger.debug("should not appear");
       restore();
 
       expect(output.length).toBe(0);
     });
 
-    it("is suppressed when log level is WARN", () => {
+    it("is suppressed when log level is warn", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.WARN);
+      const logger = new Logger("warn");
       logger.debug("should not appear");
       restore();
 
       expect(output.length).toBe(0);
     });
 
-    it("is suppressed when log level is ERROR", () => {
+    it("is suppressed when log level is error", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.ERROR);
+      const logger = new Logger("error");
       logger.debug("should not appear");
       restore();
 
@@ -141,38 +126,38 @@ describe("Logger", () => {
   // warn and error
   // -------------------------------------------------------------------------
   describe("warn and error", () => {
-    it("warn produces output at INFO level", () => {
+    it("warn produces output at info level", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.INFO);
+      const logger = new Logger("info");
       logger.warn("warning");
       restore();
 
       expect(output.length).toBe(1);
-      expect(JSON.parse(output[0]).level).toBe("WARN");
+      expect(JSON.parse(output[0]).level).toBe("warn");
     });
 
-    it("error produces output at INFO level", () => {
+    it("error produces output at info level", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.INFO);
+      const logger = new Logger("info");
       logger.error("error");
       restore();
 
       expect(output.length).toBe(1);
-      expect(JSON.parse(output[0]).level).toBe("ERROR");
+      expect(JSON.parse(output[0]).level).toBe("error");
     });
 
-    it("warn produces output at WARN level", () => {
+    it("warn produces output at warn level", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.WARN);
+      const logger = new Logger("warn");
       logger.warn("warning");
       restore();
 
       expect(output.length).toBe(1);
     });
 
-    it("error produces output at ERROR level", () => {
+    it("error produces output at error level", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.ERROR);
+      const logger = new Logger("error");
       logger.error("error");
       restore();
 
@@ -181,18 +166,13 @@ describe("Logger", () => {
   });
 
   // -------------------------------------------------------------------------
-  // events merging
+  // attributes
   // -------------------------------------------------------------------------
-  describe("events", () => {
-    it("merges event fields into attributes", () => {
+  describe("attributes", () => {
+    it("spreads attribute fields into output", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.DEBUG);
-      logger.info(
-        "event test",
-        { base: "attr" },
-        eventString("extra", "value"),
-        eventInt("count", 42),
-      );
+      const logger = new Logger("debug");
+      logger.info("attr test", { base: "attr", extra: "value", count: 42 });
       restore();
 
       const parsed = parseLine(output);
@@ -201,26 +181,27 @@ describe("Logger", () => {
       expect(parsed.count).toBe(42);
     });
 
-    it("skips zero-value events", () => {
+    it("omits undefined attribute values from output", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.DEBUG);
-      logger.info("skip test", { base: "attr" }, eventErr(null));
+      const logger = new Logger("debug");
+      logger.info("skip test", { base: "attr", empty: undefined });
       restore();
 
       const parsed = parseLine(output);
       expect(parsed.base).toBe("attr");
-      // eventErr(null) produces { key: "", value: undefined } — silently skipped
-      expect(parsed[""]).toBeUndefined();
+      // JSON.stringify drops undefined values
+      expect(parsed.empty).toBeUndefined();
     });
 
-    it("includes eventErr when given a real Error", () => {
+    it("includes Error attribute values in output", () => {
       const { output, restore } = captureConsole();
-      const logger = new Logger(LogLevel.DEBUG);
+      const logger = new Logger("debug");
       const err = new Error("boom");
-      logger.info("with error", {}, eventErr(err));
+      logger.info("with error", { error: err });
       restore();
 
       const parsed = parseLine(output);
+      // Error objects are serialized as {} by JSON.stringify
       expect(parsed.error).toBeDefined();
     });
   });

@@ -14,7 +14,7 @@
  */
 
 import {
-  LogLevel,
+  type LogLevel,
   getReporter,
 } from "./reporter";
 
@@ -46,8 +46,8 @@ export type LogAttributes = Record<string, LogAttributeValue>;
  */
 function resolveLogLevel(): LogLevel {
   const raw = (process.env.LOG_LEVEL || "").toLowerCase();
-  if (raw === "debug") return LogLevel.DEBUG;
-  return LogLevel.INFO;
+  if (raw === "debug") return "debug";
+  return "info";
 }
 
 /**
@@ -66,20 +66,20 @@ export class Logger {
   }
 
   info(msg: string, attrs?: LogAttributes): void {
-    this.log(LogLevel.INFO, msg, attrs ?? {});
+    this.log("info", msg, attrs ?? {});
   }
 
   warn(msg: string, attrs?: LogAttributes): void {
-    this.log(LogLevel.WARN, msg, attrs ?? {});
+    this.log("warn", msg, attrs ?? {});
   }
 
   error(msg: string, attrs?: LogAttributes): void {
-    this.log(LogLevel.ERROR, msg, attrs ?? {});
+    this.log("error", msg, attrs ?? {});
   }
 
   debug(msg: string, attrs?: LogAttributes): void {
-    if (this.level > LogLevel.DEBUG) return;
-    this.log(LogLevel.DEBUG, msg, attrs ?? {});
+    if (this.level !== "debug") return;
+    this.log("debug", msg, attrs ?? {});
   }
 
   private log(level: LogLevel, msg: string, attrs: LogAttributes): void {
@@ -87,8 +87,7 @@ export class Logger {
     if (reporter) {
       reporter.write(level, msg, attrs);
     } else {
-      const levelName = LogLevel[level];
-      console.log(JSON.stringify({ level: levelName, msg, ...attrs }));
+      console.log(JSON.stringify({ level, msg, ...attrs }));
     }
   }
 }

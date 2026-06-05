@@ -81,16 +81,16 @@ artifact_pkg_js(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],
-    runtime_deps = [
-        "//common/js/logs:runtime_pkg",
-        "//common/js/otel:runtime_pkg",
-        "//common/js/grpc/otel:runtime_pkg",
-    ],
     runtime_protos = [
         ":greeter_proto",
     ],
     service = "service",
     ts_project = ":server",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+    ],
 )
 
 # OCI image for the TypeScript gRPC server
@@ -108,6 +108,6 @@ sh_test(
     srcs = ["smoke_test.sh"],
     args = ["$(location :server_pkg)"],
     data = [":server_pkg"],
-    deps = ["@bazel_tools//tools/bash/runfiles"],
     tags = ["local"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
 )

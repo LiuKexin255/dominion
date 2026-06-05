@@ -59,7 +59,7 @@ describe("withAttributes", () => {
 
 describe("withLogger", () => {
   it("switches logger within scope", () => {
-    const custom = new Logger(LogLevel.DEBUG);
+    const custom = new Logger("debug");
     let captured: Logger | undefined;
     withLogger(custom, () => {
       captured = currentLogger();
@@ -84,7 +84,7 @@ describe("withLogger", () => {
   });
 
   it("default logger outside scope after withLogger returns", () => {
-    const custom = new Logger(LogLevel.DEBUG);
+    const custom = new Logger("debug");
     withLogger(custom, () => {
       // scope active
     });
@@ -92,13 +92,13 @@ describe("withLogger", () => {
   });
 
   it("returns the callback return value", () => {
-    const custom = new Logger(LogLevel.DEBUG);
+    const custom = new Logger("debug");
     const result = withLogger(custom, () => "hello");
     expect(result).toBe("hello");
   });
 
   it("preserves parent attributes when switching logger", () => {
-    const custom = new Logger(LogLevel.DEBUG);
+    const custom = new Logger("debug");
     let capturedAttrs: LogAttributes = {};
     let capturedLogger: Logger | undefined;
     withAttributes({ zone: "a" }, () => {
