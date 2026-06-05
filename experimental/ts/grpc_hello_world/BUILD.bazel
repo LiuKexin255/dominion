@@ -46,6 +46,7 @@ go_library(
 ts_project(
     name = "server",
     srcs = [
+        "src/bootstrap.ts",
         "src/server.ts",
     ],
     declaration = True,
@@ -53,9 +54,15 @@ ts_project(
     tsconfig = ":tsconfig.json",
     deps = [
         ":greeter_types_lib",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-otel",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
+        "//common/js/grpc/otel:lib",
+        "//common/js/logs:lib",
+        "//common/js/otel:lib",
     ],
 )
 
@@ -68,9 +75,12 @@ js_library(
 artifact_pkg_js(
     name = "server_pkg",
     app = "grpc-hello-world-ts",
-    entrypoint = "src/server.js",
+    entrypoint = "src/bootstrap.js",
     ts_project = ":server",
     npm_deps = [
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-otel",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
     ],

@@ -200,6 +200,15 @@ importers:
 
   experimental/ts/grpc_hello_world:
     dependencies:
+      '@dominion/common-js-grpc-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/grpc/otel
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../../../common/js/logs
+      '@dominion/common-js-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/otel
       '@grpc/grpc-js':
         specifier: 'catalog:'
         version: 1.14.4

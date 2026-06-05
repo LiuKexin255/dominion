@@ -1,4 +1,4 @@
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
@@ -14,6 +14,7 @@ ts_project(
     declaration = True,
     transpiler = swc,
     tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/api-logs",
@@ -29,6 +30,13 @@ ts_project(
         ":node_modules/@opentelemetry/semantic-conventions",
         ":node_modules/@types/node",
     ],
+)
+
+# Workspace package target required by npm_link_all_packages for workspace:* deps.
+js_library(
+    name = "pkg",
+    srcs = [":lib"],
+    visibility = ["//visibility:public"],
 )
 
 # Small bootstrap script that invokes vitest programmatically.
