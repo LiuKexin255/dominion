@@ -1,0 +1,13 @@
+{
+    "name": "@dominion/common-js-logs",
+    "private": true,
+    "dependencies": {
+        "@dominion/common-js-logs-event": "workspace:*",
+        "@opentelemetry/api": "catalog:",
+        "@opentelemetry/api-logs": "catalog:"
+    },
+    "devDependencies": {
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

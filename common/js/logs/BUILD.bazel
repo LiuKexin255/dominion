@@ -1,0 +1,41 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    deps = [
+        ":node_modules/@dominion/common-js-logs-event",
+        ":node_modules/@opentelemetry/api",
+        ":node_modules/@opentelemetry/api-logs",
+        "//common/js/logs/event:lib",
+    ],
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+)
+
+# Small bootstrap script that invokes vitest programmatically.
+# vitest.mjs is a bin file not exposed by npm_link_all_packages,
+# so we use vitest's programmatic API instead.
+js_test(
+    name = "lib_test",
+    size = "small",
+    args = [
+        "run",
+        "src/",
+    ],
+    data = [
+        ":lib",
+        ":node_modules/vitest",
+        "src/index.test.ts",
+    ],
+    entry_point = "run_vitest.mjs",
+)

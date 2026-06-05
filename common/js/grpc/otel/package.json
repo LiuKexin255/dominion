@@ -1,0 +1,14 @@
+{
+    "name": "@dominion/common-js-grpc-otel",
+    "private": true,
+    "dependencies": {
+        "@opentelemetry/api": "catalog:",
+        "@opentelemetry/instrumentation-grpc": "catalog:"
+    },
+    "devDependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}
