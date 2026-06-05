@@ -4,5 +4,8 @@ projects/game/windows_agent/frontend/node_modules
 projects/game/desktop/frontend/node_modules
 experimental/ts/grpc_hello_world/node_modules
 common/js/logs/event/node_modules
+common/js/logs/node_modules
+common/js/grpc/otel/node_modules
+common/js/otel/node_modules
 
 

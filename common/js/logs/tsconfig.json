@@ -4,7 +4,11 @@
     "module": "commonjs",
     "rootDir": "src",
     "strict": true,
-    "declaration": true
+    "declaration": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/common-js-logs-event": ["./event/src"]
+    }
   },
   "include": ["src/**/*.ts"]
 }

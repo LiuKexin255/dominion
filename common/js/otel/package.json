@@ -16,6 +16,7 @@
         "@opentelemetry/semantic-conventions": "catalog:"
     },
     "devDependencies": {
+        "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:"
     }

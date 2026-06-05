@@ -12,14 +12,15 @@ ts_project(
         exclude = ["**/*.test.ts"],
     ),
     declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
     deps = [
         ":node_modules/@dominion/common-js-logs-event",
         ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/api-logs",
+        ":node_modules/@types/node",
         "//common/js/logs/event:lib",
     ],
-    transpiler = swc,
-    tsconfig = ":tsconfig.json",
 )
 
 # Small bootstrap script that invokes vitest programmatically.
@@ -35,7 +36,6 @@ js_test(
     data = [
         ":lib",
         ":node_modules/vitest",
-        "src/index.test.ts",
-    ],
+    ] + glob(["src/**/*.test.ts"], allow_empty = True),
     entry_point = "run_vitest.mjs",
 )

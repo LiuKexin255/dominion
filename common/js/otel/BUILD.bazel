@@ -27,6 +27,7 @@ ts_project(
         ":node_modules/@opentelemetry/sdk-trace-base",
         ":node_modules/@opentelemetry/sdk-trace-node",
         ":node_modules/@opentelemetry/semantic-conventions",
+        ":node_modules/@types/node",
     ],
 )
 

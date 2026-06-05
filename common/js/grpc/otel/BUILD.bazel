@@ -17,6 +17,7 @@ ts_project(
     deps = [
         ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/instrumentation-grpc",
+        ":node_modules/@types/node",
     ],
 )
 
@@ -33,7 +34,6 @@ js_test(
     data = [
         ":lib",
         ":node_modules/vitest",
-        "src/index.test.ts",
-    ],
+    ] + glob(["src/**/*.test.ts"], allow_empty = True),
     entry_point = "run_vitest.mjs",
 )
