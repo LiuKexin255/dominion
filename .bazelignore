@@ -1,4 +1,5 @@
 node_modules
+common/js/**/node_modules
 experimental/ts/hello_world/node_modules
 projects/game/windows_agent/frontend/node_modules
 projects/game/desktop/frontend/node_modules
