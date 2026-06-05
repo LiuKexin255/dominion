@@ -1,8 +1,0 @@
-{
-    "name": "@dominion/common-js-logs-event",
-    "private": true,
-    "devDependencies": {
-        "typescript": "catalog:",
-        "vitest": "catalog:"
-    }
-}

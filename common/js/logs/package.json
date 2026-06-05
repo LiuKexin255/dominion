@@ -10,7 +10,6 @@
         }
     },
     "dependencies": {
-        "@dominion/common-js-logs-event": "workspace:*",
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/api-logs": "catalog:"
     },

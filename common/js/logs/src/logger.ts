@@ -3,7 +3,7 @@
  * Logger module provides structured logging with level-based filtering.
  *
  * The Logger class supports info, warn, error, and debug methods that accept
- * a message, optional structured attributes, and variadic Event fields.
+ * a message and optional structured attributes.
  * Records are routed through an installed Reporter when available, otherwise
  * fall back to console output.
  *
@@ -13,16 +13,30 @@
  * @module
  */
 
-import { type Event } from "@dominion/common-js-logs-event";
 import {
   LogLevel,
-  type LogAttributes,
   getReporter,
 } from "./reporter";
 
 // Re-export shared types for consumer convenience.
 export { LogLevel } from "./reporter";
-export type { LogAttributes } from "./reporter";
+
+/**
+ * Types accepted as log attribute values.
+ */
+export type LogAttributeValue =
+  | string
+  | number
+  | boolean
+  | Error
+  | null
+  | undefined
+  | Record<string, unknown>;
+
+/**
+ * Structured log attributes: a map of string keys to log attribute values.
+ */
+export type LogAttributes = Record<string, LogAttributeValue>;
 
 /**
  * Resolves the effective log level from the LOG_LEVEL environment variable.
@@ -37,29 +51,9 @@ function resolveLogLevel(): LogLevel {
 }
 
 /**
- * Merges base attributes with variadic Event fields into a single
- * LogAttributes object.
- *
- * Zero-value events (key = "" and value = undefined) are silently skipped.
- */
-function mergeEvents(
-  attrs: LogAttributes | undefined,
-  events: Event[],
-): LogAttributes {
-  const merged: LogAttributes = { ...attrs };
-  for (const e of events) {
-    if (e.key === "" && e.value === undefined) continue;
-    merged[e.key] = e.value;
-  }
-  return merged;
-}
-
-/**
  * Logger provides structured logging with level-based filtering.
  *
- * Each log method accepts a message string, optional structured attributes,
- * and variadic Event fields. Events are merged into the attributes before
- * emission.
+ * Each log method accepts a message string and optional structured attributes.
  *
  * Records are routed through an installed Reporter (via installReporter) when
  * available; otherwise they are written to console as JSON.
@@ -71,21 +65,21 @@ export class Logger {
     this.level = level ?? resolveLogLevel();
   }
 
-  info(msg: string, attrs?: LogAttributes, ...events: Event[]): void {
-    this.log(LogLevel.INFO, msg, mergeEvents(attrs, events));
+  info(msg: string, attrs?: LogAttributes): void {
+    this.log(LogLevel.INFO, msg, attrs ?? {});
   }
 
-  warn(msg: string, attrs?: LogAttributes, ...events: Event[]): void {
-    this.log(LogLevel.WARN, msg, mergeEvents(attrs, events));
+  warn(msg: string, attrs?: LogAttributes): void {
+    this.log(LogLevel.WARN, msg, attrs ?? {});
   }
 
-  error(msg: string, attrs?: LogAttributes, ...events: Event[]): void {
-    this.log(LogLevel.ERROR, msg, mergeEvents(attrs, events));
+  error(msg: string, attrs?: LogAttributes): void {
+    this.log(LogLevel.ERROR, msg, attrs ?? {});
   }
 
-  debug(msg: string, attrs?: LogAttributes, ...events: Event[]): void {
+  debug(msg: string, attrs?: LogAttributes): void {
     if (this.level > LogLevel.DEBUG) return;
-    this.log(LogLevel.DEBUG, msg, mergeEvents(attrs, events));
+    this.log(LogLevel.DEBUG, msg, attrs ?? {});
   }
 
   private log(level: LogLevel, msg: string, attrs: LogAttributes): void {

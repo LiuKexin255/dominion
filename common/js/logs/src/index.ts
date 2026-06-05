@@ -8,30 +8,17 @@
  * @module
  */
 
-import type { Event } from "@dominion/common-js-logs-event";
 import { defaultLogger, type LogAttributes } from "./logger";
 
-// ---------------------------------------------------------------------------
-// Re-exports from the event package
-// ---------------------------------------------------------------------------
-export {
-	Event,
-	eventAny,
-	eventBool,
-	eventErr,
-	eventInt,
-	eventString,
-	LogAttributeValue,
-} from "@dominion/common-js-logs-event";
 // ---------------------------------------------------------------------------
 // Re-exports from the context module
 // ---------------------------------------------------------------------------
 export { currentLogger, withAttributes, withLogger } from "./context";
-export type { LogAttributes } from "./logger";
 // ---------------------------------------------------------------------------
 // Re-exports from the logger module
 // ---------------------------------------------------------------------------
-export { defaultLogger, Logger, LogLevel } from "./logger";
+export { defaultLogger, Logger, LogLevel, LogAttributeValue } from "./logger";
+export type { LogAttributes } from "./logger";
 // ---------------------------------------------------------------------------
 // Re-exports from the reporter module
 // ---------------------------------------------------------------------------
@@ -52,14 +39,12 @@ export {
  *
  * @param msg - The log message
  * @param attrs - Optional structured attributes
- * @param events - Optional variadic Event fields to merge into attributes
  */
 export function info(
 	msg: string,
 	attrs?: LogAttributes,
-	...events: Event[]
 ): void {
-	defaultLogger().info(msg, attrs, ...events);
+	defaultLogger().info(msg, attrs);
 }
 
 /**
@@ -67,14 +52,12 @@ export function info(
  *
  * @param msg - The log message
  * @param attrs - Optional structured attributes
- * @param events - Optional variadic Event fields to merge into attributes
  */
 export function warn(
 	msg: string,
 	attrs?: LogAttributes,
-	...events: Event[]
 ): void {
-	defaultLogger().warn(msg, attrs, ...events);
+	defaultLogger().warn(msg, attrs);
 }
 
 /**
@@ -82,14 +65,12 @@ export function warn(
  *
  * @param msg - The log message
  * @param attrs - Optional structured attributes
- * @param events - Optional variadic Event fields to merge into attributes
  */
 export function error(
 	msg: string,
 	attrs?: LogAttributes,
-	...events: Event[]
 ): void {
-	defaultLogger().error(msg, attrs, ...events);
+	defaultLogger().error(msg, attrs);
 }
 
 /**
@@ -97,12 +78,10 @@ export function error(
  *
  * @param msg - The log message
  * @param attrs - Optional structured attributes
- * @param events - Optional variadic Event fields to merge into attributes
  */
 export function debug(
 	msg: string,
 	attrs?: LogAttributes,
-	...events: Event[]
 ): void {
-	defaultLogger().debug(msg, attrs, ...events);
+	defaultLogger().debug(msg, attrs);
 }
