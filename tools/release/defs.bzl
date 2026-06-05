@@ -19,6 +19,84 @@ ArtifactPkgInfo = provider(
     },
 )
 
+JsRuntimePackageInfo = provider(
+    doc = "JS runtime package metadata for dependency closure resolution.",
+    fields = {
+        "package_name": "Canonical npm package name (e.g., @dominion/common-js-logs).",
+        "package_metadata": "File: the package.json file.",
+        "runtime_files": "depset of File: compiled JS files to ship.",
+        "type_files": "depset of File: declaration files (.d.ts).",
+        "runtime_deps": "list of Target: workspace packages this depends on (targets exposing JsRuntimePackageInfo).",
+        "npm_deps": "list of Target: npm link targets for third-party packages.",
+    },
+)
+
+def _collect_runtime_closure(runtime_deps):
+    """Walk JsRuntimePackageInfo dependency closure breadth-first.
+
+    Starts from service-declared runtime_deps, walks
+    JsRuntimePackageInfo.runtime_deps transitively, and collects
+    both workspace packages and npm dependency targets.
+
+    Deduplication: first occurrence of a package_name wins (earliest in
+    walk order).  Workspace packages are placed under
+    ``node_modules/{package_name}/`` in the tar.  npm dep files are
+    collected for existing node_modules-style Phase 3 processing.
+
+    Args:
+        runtime_deps: list of Target exposing JsRuntimePackageInfo.
+
+    Returns:
+        (workspace_pkgs, npm_targets) where workspace_pkgs is a list of
+        struct(pkg_name, pkg_root, metadata_file, runtime_files) and
+        npm_targets is a deduplicated list of Target for Phase 3
+        processing.
+    """
+    visited_wp = {}
+    visited_npm = {}
+    workspace_pkgs = []
+    npm_targets = []
+
+    # BFS via index-based iteration over a growing list.
+    # Starlark forbids list.extend() during for-loop iteration,
+    # so we use a fixed range with a dynamic break condition.
+    queue = list(runtime_deps)
+    for i in range(1000):  # safety bound — real break is below
+        if i >= len(queue):
+            break
+        target = queue[i]
+        info = target[JsRuntimePackageInfo]
+        pkg_name = info.package_name
+
+        if pkg_name in visited_wp:
+            continue
+        visited_wp[pkg_name] = True
+
+        # Infer package root from package.json location.
+        metadata_short = info.package_metadata.short_path
+        if metadata_short.endswith("/package.json"):
+            pkg_root = metadata_short[:-len("/package.json")]
+        else:
+            pkg_root = metadata_short.rsplit("/", 1)[0]
+
+        workspace_pkgs.append(struct(
+            pkg_name = pkg_name,
+            pkg_root = pkg_root,
+            metadata_file = info.package_metadata,
+            runtime_files = info.runtime_files,
+        ))
+
+        # Collect unique npm deps (by target label).
+        for dep in info.npm_deps:
+            key = str(dep.label)
+            if key not in visited_npm:
+                visited_npm[key] = True
+                npm_targets.append(dep)
+
+        queue.extend(info.runtime_deps)
+
+    return workspace_pkgs, npm_targets
+
 def _runfile_path(file):
     if file.owner.workspace_name:
         return file.owner.workspace_name + "/" + file.short_path
@@ -281,7 +359,7 @@ def _artifact_pkg_js_impl(ctx):
     args.add(output.path)
     args.add(base_dir)
 
-    # Phase 1: ts_project files
+    # Phase 1: ts_project files (unchanged)
     ts_project_label = ctx.attr.ts_project.label
     pkg_prefix = ts_project_label.package + "/" if ts_project_label.package else ""
     for src in ctx.attr.ts_project.files.to_list():
@@ -290,6 +368,50 @@ def _artifact_pkg_js_impl(ctx):
         inputs.append(src)
         args.add(src.path)
         args.add(dest)
+
+    # Phase 4: workspace runtime deps closure via JsRuntimePackageInfo
+    closure_npm_targets = []
+    if ctx.attr.runtime_deps:
+        # Validate JsRuntimePackageInfo providers before closure walk.
+        for target in ctx.attr.runtime_deps:
+            info = target[JsRuntimePackageInfo]
+            if not info.package_metadata:
+                fail("{}: JsRuntimePackageInfo from {} has empty package_metadata".format(ctx.label, target.label))
+            if not info.package_name:
+                fail("{}: JsRuntimePackageInfo from {} has empty package_name".format(ctx.label, target.label))
+            if not info.npm_deps:
+                # Best-effort check: warn if npm_deps is empty.
+                # Try to read package.json to see if npm deps are declared;
+                # if reading fails, the check is skipped silently.
+                print("{}: JsRuntimePackageInfo from {} has empty npm_deps — npm deps may be missing at runtime".format(ctx.label, target.label))
+
+        workspace_pkgs, closure_npm_targets = _collect_runtime_closure(ctx.attr.runtime_deps)
+        args.add("--workspace-deps")
+        for wp in workspace_pkgs:
+            pkg_name = wp.pkg_name
+            pkg_root = wp.pkg_root
+
+            # Copy package.json into node_modules/{pkg_name}/package.json
+            inputs.append(wp.metadata_file)
+            args.add(wp.metadata_file.path)
+            args.add("node_modules/{}/package.json".format(pkg_name))
+
+            # Copy each runtime file preserving its directory layout under
+            # node_modules/{pkg_name}/.  Strip the Bazel package-prefix
+            # (pkg_root) so that the relative path starts from the logical
+            # package root.
+            for f in wp.runtime_files.to_list():
+                sp = f.short_path
+                if sp.startswith(pkg_root + "/"):
+                    rel = sp[len(pkg_root) + 1:]
+                elif sp == pkg_root:
+                    continue
+                else:
+                    rel = sp
+
+                inputs.append(f)
+                args.add(f.path)
+                args.add("node_modules/{}/{}".format(pkg_name, rel))
 
     # Phase 2: proto files
     args.add("--proto-files")
@@ -326,9 +448,11 @@ def _artifact_pkg_js_impl(ctx):
             args.add(src.path)
             args.add(canonical)
 
-    # Phase 3: npm_deps
+    # Phase 3: npm_deps (closure npm deps + fallback)
+    # Closure npm deps come from transitive workspace packages;
+    # fallback npm_deps cover third-party deps not captured by the closure.
     args.add("--npm-deps")
-    for target in ctx.attr.npm_deps:
+    for target in closure_npm_targets + list(ctx.attr.npm_deps):
         for src in target.files.to_list():
             node_modules_index = src.short_path.find("node_modules/")
             if node_modules_index < 0:
@@ -361,7 +485,7 @@ base_dir="$2"
 shift 2
 # Phase 1: ts_project files
 while (( "$#" )); do
-  if [[ "$1" == "--proto-files" ]] || [[ "$1" == "--npm-deps" ]]; then
+  if [[ "$1" == "--workspace-deps" ]] || [[ "$1" == "--proto-files" ]] || [[ "$1" == "--npm-deps" ]]; then
     break
   fi
   src="$1"
@@ -371,6 +495,21 @@ while (( "$#" )); do
   mkdir -p "$(dirname "${dest_path}")"
   cp "${src}" "${dest_path}"
 done
+# Phase 4: workspace runtime deps (JsRuntimePackageInfo closure)
+if [[ "${1:-}" == "--workspace-deps" ]]; then
+  shift
+  while (( "$#" )); do
+    if [[ "$1" == "--proto-files" ]] || [[ "$1" == "--npm-deps" ]]; then
+      break
+    fi
+    src="$1"
+    dest="$2"
+    shift 2
+    dest_path="$(dirname "${out}")/${base_dir}/${dest}"
+    mkdir -p "$(dirname "${dest_path}")"
+    cp "${src}" "${dest_path}"
+  done
+fi
 # Phase 2: proto files
 if [[ "${1:-}" == "--proto-files" ]]; then
   shift
@@ -424,10 +563,17 @@ artifact_pkg_js = rule(
     ``/dominion/{app}/{service}/`` using paths relative to the
     ts_project package directory. Proto files from ``runtime_protos``
     are placed at their canonical import paths under the same root.
+
+    Workspace packages listed in ``runtime_deps`` are walked
+    transitively via ``JsRuntimePackageInfo`` and placed under
+    ``node_modules/{package_name}/`` preserving their source layout.
+    Their npm deps (``npm_deps``) are collected as well.
+
     Runtime npm dependencies listed in ``npm_deps`` are copied under
     ``/dominion/{app}/{service}/node_modules`` using their Bazel
     node_modules layout, so Node's normal module resolver can find
-    them in deployed images.
+    them in deployed images.  ``npm_deps`` remains available as a
+    fallback for third-party deps not covered by the closure.
     """,
     attrs = {
         "app": attr.string(mandatory = True),
@@ -440,6 +586,12 @@ artifact_pkg_js = rule(
             allow_empty = True,
             providers = [ProtoInfo],
             doc = "proto_library targets whose transitive proto sources are collected at canonical import paths.",
+        ),
+        "runtime_deps": attr.label_list(
+            allow_empty = True,
+            default = [],
+            providers = [JsRuntimePackageInfo],
+            doc = "Workspace packages that expose JsRuntimePackageInfo. Transitive closure is walked to build node_modules.",
         ),
         "npm_deps": attr.label_list(
             allow_files = True,

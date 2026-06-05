@@ -1,0 +1,31 @@
+{
+    "name": "@dominion/common-js-otel",
+    "private": true,
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
+    "dependencies": {
+        "@opentelemetry/api": "catalog:",
+        "@opentelemetry/api-logs": "catalog:",
+        "@opentelemetry/exporter-logs-otlp-http": "catalog:",
+        "@opentelemetry/exporter-metrics-otlp-http": "catalog:",
+        "@opentelemetry/exporter-trace-otlp-http": "catalog:",
+        "@opentelemetry/instrumentation": "catalog:",
+        "@opentelemetry/resources": "catalog:",
+        "@opentelemetry/sdk-logs": "catalog:",
+        "@opentelemetry/sdk-metrics": "catalog:",
+        "@opentelemetry/sdk-trace-base": "catalog:",
+        "@opentelemetry/sdk-trace-node": "catalog:",
+        "@opentelemetry/semantic-conventions": "catalog:"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

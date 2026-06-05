@@ -5,6 +5,7 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
 load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
@@ -46,6 +47,7 @@ go_library(
 ts_project(
     name = "server",
     srcs = [
+        "src/bootstrap.ts",
         "src/server.ts",
     ],
     declaration = True,
@@ -53,9 +55,15 @@ ts_project(
     tsconfig = ":tsconfig.json",
     deps = [
         ":greeter_types_lib",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
+        "//common/js/grpc/otel:lib",
+        "//common/js/logs:lib",
+        "//common/js/otel:lib",
     ],
 )
 
@@ -68,8 +76,7 @@ js_library(
 artifact_pkg_js(
     name = "server_pkg",
     app = "grpc-hello-world-ts",
-    entrypoint = "src/server.js",
-    ts_project = ":server",
+    entrypoint = "src/bootstrap.js",
     npm_deps = [
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
@@ -78,6 +85,12 @@ artifact_pkg_js(
         ":greeter_proto",
     ],
     service = "service",
+    ts_project = ":server",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+    ],
 )
 
 # OCI image for the TypeScript gRPC server
@@ -87,4 +100,14 @@ artifact_image(
     pkg = ":server_pkg",
     service = "service",
     visibility = ["//visibility:public"],
+)
+
+# Smoke test: verify packaged service tar has no MODULE_NOT_FOUND errors
+sh_test(
+    name = "smoke_test",
+    srcs = ["smoke_test.sh"],
+    args = ["$(location :server_pkg)"],
+    data = [":server_pkg"],
+    tags = ["local"],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
 )

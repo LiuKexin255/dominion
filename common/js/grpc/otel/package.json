@@ -1,0 +1,26 @@
+{
+    "name": "@dominion/common-js-grpc-otel",
+    "private": true,
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
+    "dependencies": {
+        "@opentelemetry/api": "catalog:",
+        "@opentelemetry/instrumentation-grpc": "catalog:"
+    },
+    "devDependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "@opentelemetry/instrumentation": "catalog:",
+        "@opentelemetry/sdk-trace-base": "catalog:",
+        "@opentelemetry/sdk-trace-node": "catalog:",
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}
