@@ -1,6 +1,14 @@
 {
     "name": "@dominion/common-js-logs",
     "private": true,
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
     "dependencies": {
         "@dominion/common-js-logs-event": "workspace:*",
         "@opentelemetry/api": "catalog:",

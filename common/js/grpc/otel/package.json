@@ -1,6 +1,14 @@
 {
     "name": "@dominion/common-js-grpc-otel",
     "private": true,
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
     "dependencies": {
         "@opentelemetry/api": "catalog:",
         "@opentelemetry/instrumentation-grpc": "catalog:"
