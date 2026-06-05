@@ -1,4 +1,5 @@
 import { context, metrics, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
@@ -170,6 +171,7 @@ export async function init(config?: OtelConfig): Promise<void> {
 		_loggerProvider = new LoggerProvider({ resource });
 	}
 	_loggerProviderSet = true;
+	logs.setGlobalLoggerProvider(_loggerProvider);
 
 	// ---- Instrumentations ----------------------------------------------
 	if (config?.instrumentations && config.instrumentations.length > 0) {

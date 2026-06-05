@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import * as grpc from "@grpc/grpc-js";
-import * as protoLoader from "@grpc/proto-loader";
+import type * as grpcType from "@grpc/grpc-js";
+import type * as protoLoaderType from "@grpc/proto-loader";
 import * as path from "node:path";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
@@ -25,6 +25,10 @@ provider.register();
 registerInstrumentations({
   instrumentations: [createGrpcInstrumentation()],
 });
+
+// ---- Late-bound grpc imports (populated in beforeAll AFTER registration) ---
+let grpc: typeof grpcType;
+let protoLoader: typeof protoLoaderType;
 
 // ---- Proto & service setup --------------------------------------------------
 
@@ -82,11 +86,18 @@ const testService = {
 
 // ---- Server & client lifecycle ----------------------------------------------
 
-let server: grpc.Server;
+let server: grpcType.Server;
 let client: any;
 
 beforeAll(async () => {
   exporter.reset();
+
+  // Dynamic import AFTER instrumentation is registered (top-level code above runs first)
+  [grpc, protoLoader] = await Promise.all([
+    import("@grpc/grpc-js"),
+    import("@grpc/proto-loader"),
+  ]);
+
   const proto = getProtoPackage();
   server = new grpc.Server();
   server.addService(proto.test.TestService.service, testService);
