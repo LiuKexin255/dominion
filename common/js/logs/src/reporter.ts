@@ -17,21 +17,16 @@ import {
   type Logger as OTelLogger,
   SeverityNumber,
 } from "@opentelemetry/api-logs";
-import { type LogAttributeValue } from "@dominion/common-js-logs-event";
+import type { LogAttributeValue } from "./logger";
 
 // ---------------------------------------------------------------------------
 // Shared types (defined here to avoid circular imports with logger.ts)
 // ---------------------------------------------------------------------------
 
 /**
- * Log level enum controlling verbosity of log output.
+ * Log level type controlling verbosity of log output.
  */
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-}
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /**
  * Structured log attributes: a map of string keys to log attribute values.
@@ -59,7 +54,7 @@ export interface Reporter {
 export class ConsoleReporter implements Reporter {
   write(level: LogLevel, msg: string, attrs: LogAttributes): void {
     const entry = {
-      level: LogLevel[level],
+      level,
       msg,
       ...attrs,
       time: new Date().toISOString(),
@@ -89,9 +84,40 @@ export class OTelReporter implements Reporter {
   write(level: LogLevel, msg: string, attrs: LogAttributes): void {
     if (!this.logger) return;
     const severity = severityFromLevel(level);
-    const body = JSON.stringify({ msg, ...attrs });
-    this.logger.emit({ severityNumber: severity, body });
+    const attributes = toOTelAttributes(attrs);
+    this.logger.emit({
+      severityNumber: severity,
+      severityText: level,
+      body: msg,
+      attributes,
+    });
   }
+}
+
+/**
+ * Converts caller-supplied LogAttributes into OTel-compatible attribute values.
+ *
+ * Rules:
+ * - Primitives (string, number, boolean) and null pass through as-is.
+ * - Error instances are converted to their `.message` string representation.
+ * - `undefined` values are omitted (no sentinel attribute emitted).
+ * - Nested records pass through as AnyValueMap.
+ *
+ * @returns OTel-compatible attribute map (assignable to LogRecord.attributes)
+ */
+function toOTelAttributes(
+  attrs: LogAttributes,
+): Record<string, string | number | boolean | null | Record<string, any>> {
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined) continue;
+    if (value instanceof Error) {
+      result[key] = value.message;
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 /**
@@ -99,13 +125,13 @@ export class OTelReporter implements Reporter {
  */
 function severityFromLevel(level: LogLevel): SeverityNumber {
   switch (level) {
-    case LogLevel.DEBUG:
+    case "debug":
       return SeverityNumber.DEBUG;
-    case LogLevel.INFO:
+    case "info":
       return SeverityNumber.INFO;
-    case LogLevel.WARN:
+    case "warn":
       return SeverityNumber.WARN;
-    case LogLevel.ERROR:
+    case "error":
       return SeverityNumber.ERROR;
     default:
       return SeverityNumber.UNSPECIFIED;
@@ -166,7 +192,7 @@ export function installReporter(reporter: Reporter | null): () => void {
  * @param name - Logger name used to obtain an OTel Logger
  * @returns A Reporter that emits to the OTel Logs SDK
  */
-export function newOTelReporter(name: string): OTelReporter {
+export function createOTelReporter(name: string): OTelReporter {
   return new OTelReporter(name);
 }
 

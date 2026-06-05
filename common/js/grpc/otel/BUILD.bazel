@@ -2,6 +2,7 @@ load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/release:js_runtime_pkg.bzl", "js_runtime_pkg")
 
 npm_link_all_packages(name = "node_modules")
 
@@ -26,6 +27,22 @@ ts_project(
 js_library(
     name = "pkg",
     srcs = [":lib"],
+    visibility = ["//visibility:public"],
+)
+
+# Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
+# runtime_deps closure walking. Separate from :pkg because npm_link_all_packages
+# requires JsInfo provider which only js_library provides.
+js_runtime_pkg(
+    name = "runtime_pkg",
+    lib = ":lib",
+    package_json = "package.json",
+    package_name = "@dominion/common-js-grpc-otel",
+    direct_runtime_deps = [],
+    npm_runtime_deps = [
+        ":node_modules/@opentelemetry/api",
+        ":node_modules/@opentelemetry/instrumentation-grpc",
+    ],
     visibility = ["//visibility:public"],
 )
 
