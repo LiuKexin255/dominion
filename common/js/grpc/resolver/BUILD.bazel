@@ -1,0 +1,64 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@types/node",
+    ],
+)
+
+# Workspace package target required by npm_link_all_packages for workspace:* deps.
+js_library(
+    name = "pkg",
+    srcs = [":lib"],
+    visibility = ["//visibility:public"],
+)
+
+# Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
+# runtime_deps closure walking. Separate from :pkg because npm_link_all_packages
+# requires JsInfo provider which only js_library provides.
+js_runtime_library(
+    name = "runtime_pkg",
+    package_name = "@dominion/common-js-grpc-resolver",
+    lib = ":lib",
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+    ],
+    package_json = "package.json",
+    visibility = ["//visibility:public"],
+    runtime_deps = [],
+)
+
+js_test(
+    name = "lib_test",
+    size = "small",
+    args = [
+        "run",
+        "src/",
+    ],
+    data = [
+        ":lib",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@types/node",
+        ":node_modules/vitest",
+    ] + glob(
+        ["src/**/*.test.ts"],
+        allow_empty = True,
+    ),
+    entry_point = "run_vitest.mjs",
+)

@@ -118,6 +118,22 @@ importers:
         specifier: 'catalog:'
         version: 3.2.6(@types/node@22.19.19)
 
+  common/js/grpc/resolver:
+    dependencies:
+      '@grpc/grpc-js':
+        specifier: 'catalog:'
+        version: 1.14.4
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.19
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@22.19.19)
+
   common/js/logs:
     dependencies:
       '@opentelemetry/api':

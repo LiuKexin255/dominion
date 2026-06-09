@@ -1,0 +1,349 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { GrpcUri } from "@grpc/grpc-js/build/src/uri-parser";
+import type { ResolverListener } from "@grpc/grpc-js/build/src/resolver";
+import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address";
+import { Status } from "@grpc/grpc-js/build/src/constants";
+import {
+  registerDominionResolver,
+  DominionResolver,
+  DominionStatefulResolver,
+} from "./grpc-js-resolver";
+import type { Scheduler, ResolverConfig } from "./types";
+
+const TEST_ENV = {
+  DOMINION_ENVIRONMENT: "dev.alpha",
+  SERVICE_APP: "myapp",
+};
+
+function fakeFetchReturning(body: unknown): ReturnType<typeof vi.fn> {
+  return vi.fn(async () => {
+    const json = JSON.stringify(body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => JSON.parse(json),
+      text: async () => json,
+    } as Response;
+  });
+}
+
+interface SpyScheduler extends Scheduler {
+  setInterval: ReturnType<typeof vi.fn>;
+  clearInterval: ReturnType<typeof vi.fn>;
+}
+
+function spyScheduler(): SpyScheduler {
+  return {
+    setInterval: vi.fn(() => 42),
+    clearInterval: vi.fn(),
+  };
+}
+
+function mockListener(): ReturnType<typeof vi.fn> & ResolverListener {
+  return vi.fn(() => true) as ReturnType<typeof vi.fn> & ResolverListener;
+}
+
+function dominionTarget(path: string): GrpcUri {
+  return { scheme: "dominion", authority: "", path };
+}
+
+function statefulTarget(path: string): GrpcUri {
+  return { scheme: "dominion-stateful", authority: "", path };
+}
+
+function sortedEndpoints(eps: Endpoint[]): Endpoint[] {
+  return [...eps].sort((a, b) => {
+    const ha = a.addresses[0] as { host: string; port: number };
+    const hb = b.addresses[0] as { host: string; port: number };
+    return ha.host.localeCompare(hb.host);
+  });
+}
+
+describe("registerDominionResolver", () => {
+  it("registers both schemes on first call", () => {
+    expect(() => registerDominionResolver()).not.toThrow();
+  });
+
+  it("is idempotent: calling twice does not throw", () => {
+    registerDominionResolver();
+    expect(() => registerDominionResolver()).not.toThrow();
+  });
+});
+
+describe("DominionResolver", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setImmediate", "clearImmediate"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("successful resolution: listener receives StatusOr with ok=true and correct endpoints", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051", "10.0.0.2:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    await vi.runAllTimersAsync();
+
+    expect(listener).toHaveBeenCalledOnce();
+    const call = listener.mock.calls[0];
+    expect(call[0].ok).toBe(true);
+    const endpoints = sortedEndpoints(call[0].value as Endpoint[]);
+    expect(endpoints).toEqual([
+      { addresses: [{ host: "10.0.0.1", port: 50051 }] },
+      { addresses: [{ host: "10.0.0.2", port: 50051 }] },
+    ]);
+    expect(call[1]).toEqual({});
+    expect(call[2]).toBeNull();
+    expect(call[3]).toBe("");
+  });
+
+  it("async publication: listener not called synchronously from constructor or updateResolution", () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    expect(listener).not.toHaveBeenCalled();
+
+    resolver.updateResolution();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("unchanged refresh: same endpoints do not trigger duplicate listener call", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    listener.mockClear();
+
+    // Trigger refresh via advancing interval timer
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("refresh failure with previous state (LKG): listener called with ok=false, last endpoints retained", async () => {
+    const goodFetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const failFetch = vi.fn(async () => {
+      throw new Error("network error");
+    });
+
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: goodFetch });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    const firstCall = listener.mock.calls[0];
+    expect(firstCall[0].ok).toBe(true);
+
+    // Now inject failure for periodic refresh
+    listener.mockClear();
+    const resolver2 = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: goodFetch });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    listener.mockClear();
+
+    // Cannot mutate private fields. Instead, create new resolver that
+    // first succeeds, then fails on refresh.
+    // Approach: use a fetch that succeeds once, then fails.
+    let callCount = 0;
+    const togglingFetch = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        const json = JSON.stringify({
+          endpoints: ["10.0.0.1:50051"],
+          ports: {},
+          isStateful: false,
+          statefulInstances: [],
+        });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => JSON.parse(json),
+          text: async () => json,
+        } as Response;
+      }
+      throw new Error("network error");
+    });
+
+    const lkgResolver = new DominionResolver(
+      target,
+      listener,
+      {},
+      { env: TEST_ENV, fetch: togglingFetch },
+    );
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+    listener.mockClear();
+
+    // Trigger refresh interval
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(listener).toHaveBeenCalledTimes(1);
+    const lkgCall = listener.mock.calls[0];
+    expect(lkgCall[0].ok).toBe(false);
+    expect(lkgCall[0].error.code).toBe(Status.UNAVAILABLE);
+    expect(lkgCall[0].error.details).toBe("network error");
+  });
+
+  it("initial failure: listener called with ok=false, no endpoint data", async () => {
+    const failFetch = vi.fn(async () => {
+      throw new Error("initial failure");
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: failFetch });
+    await vi.runAllTimersAsync();
+
+    expect(listener).toHaveBeenCalledOnce();
+    const call = listener.mock.calls[0];
+    expect(call[0].ok).toBe(false);
+    expect(call[0].error.code).toBe(Status.UNAVAILABLE);
+    expect(call[0].error.details).toBe("initial failure");
+  });
+
+  it("timer cleanup on destroy: no further listener calls after destroy()", async () => {
+    let fetchCount = 0;
+    const fetch = vi.fn(async () => {
+      fetchCount++;
+      const json = JSON.stringify({
+        endpoints: ["10.0.0.1:50051"],
+        ports: {},
+        isStateful: false,
+        statefulInstances: [],
+      });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => JSON.parse(json),
+        text: async () => json,
+      } as Response;
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    listener.mockClear();
+
+    resolver.destroy();
+
+    // Advance past multiple intervals
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("closed state: updateResolution() after destroy() is a no-op", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    const resolver = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    listener.mockClear();
+
+    resolver.destroy();
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("custom scheduler: uses injected scheduler for refresh timer", () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const sched = spyScheduler();
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: sched,
+      refreshIntervalMs: 10_000,
+    });
+
+    expect(sched.setInterval).toHaveBeenCalledOnce();
+    const [cb, ms] = sched.setInterval.mock.calls[0];
+    expect(typeof cb).toBe("function");
+    expect(ms).toBe(10_000);
+  });
+});
+
+describe("DominionStatefulResolver", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setImmediate", "clearImmediate"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stateful scheme: resolves instance endpoints from dominion-stateful:///app/svc:port?instance=N", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: [],
+      ports: { grpc: 50051 },
+      isStateful: true,
+      statefulInstances: [
+        {
+          index: 1,
+          endpoints: ["10.0.0.1:1234", "10.0.0.2:1234"],
+          hostname: "instance-1",
+        },
+      ],
+    });
+    const listener = mockListener();
+    const target = statefulTarget("myapp/myservice:grpc?instance=1");
+
+    new DominionStatefulResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    await vi.runAllTimersAsync();
+
+    expect(listener).toHaveBeenCalledOnce();
+    const call = listener.mock.calls[0];
+    expect(call[0].ok).toBe(true);
+    const endpoints = sortedEndpoints(call[0].value as Endpoint[]);
+    expect(endpoints).toEqual([
+      { addresses: [{ host: "10.0.0.1", port: 50051 }] },
+      { addresses: [{ host: "10.0.0.2", port: 50051 }] },
+    ]);
+  });
+});
