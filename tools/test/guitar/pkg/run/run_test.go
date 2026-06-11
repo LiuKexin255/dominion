@@ -527,6 +527,61 @@ func TestSuiteFilter(t *testing.T) {
 	}
 }
 
+func TestSuiteFilter_DuplicateNameFirstMatchWins(t *testing.T) {
+	root := newBazelWorkspace(t)
+	// Create two suites with the same Name but different Cases to distinguish them.
+	suite1 := newSuite(t, root, "dup-first", "//case:first")
+	suite1.Name = "dup"
+	suite2 := newSuite(t, root, "dup-second", "//case:second")
+	suite2.Name = "dup"
+	cfg := newConfig(t, suite1, suite2)
+
+	var calls []commandCall
+	originalRunCommand := runCommand
+	runCommand = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, commandCall{name: name, args: append([]string(nil), args...)})
+		return nil
+	}
+	originalGenerateRunID := generateRunID
+	nextID := 0
+	generateRunID = func() (string, error) {
+		nextID++
+		return fmt.Sprintf("lt%06d", nextID), nil
+	}
+	var logOutput bytes.Buffer
+	originalStdout := stdout
+	stdout = &logOutput
+	defer func() {
+		runCommand = originalRunCommand
+		generateRunID = originalGenerateRunID
+		stdout = originalStdout
+	}()
+
+	err := Run(context.Background(), cfg, WithSuite("dup"))
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+
+	// Only one suite should run: deploy, test, cleanup = 3 calls.
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3 (only first dup suite)", len(calls))
+	}
+	// Verify first dup's case was passed to bazel test.
+	bazelCall := calls[1]
+	if bazelCall.name != bazelBinary {
+		t.Fatalf("second call name = %q, want %q", bazelCall.name, bazelBinary)
+	}
+	if !slices.Contains(bazelCall.args, "//case:first") {
+		t.Fatalf("bazel args = %v, want containing //case:first", bazelCall.args)
+	}
+	// Verify second dup's case is NOT in any call.
+	for _, call := range calls {
+		if slices.Contains(call.args, "//case:second") {
+			t.Fatalf("unexpected call for second dup suite: %+v", call)
+		}
+	}
+}
+
 func TestSuiteTimeout(t *testing.T) {
 	tests := []struct {
 		name    string

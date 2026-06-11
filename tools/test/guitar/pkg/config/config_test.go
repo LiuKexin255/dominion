@@ -172,6 +172,36 @@ suites:
 	}
 }
 
+func TestParse_TimeoutFloat(t *testing.T) {
+	root := newBazelWorkspace(t)
+
+	yamlContent := `name: test
+suites:
+  - name: default
+    deploy: //deploy.yaml
+    timeout: 60.5
+    cases:
+      - //test:test
+`
+	filePath := filepath.Join(root, "testdata", "timeout_float.yaml")
+	if err := os.WriteFile(filePath, []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() failed: %v", err)
+	}
+
+	got, err := Parse(filePath)
+	if err != nil {
+		t.Fatalf("Parse() unexpected error: %v", err)
+	}
+	if len(got.Suites) == 0 {
+		t.Fatal("Parse() returned no suites")
+	}
+	// goccy/go-yaml truncates float 60.5 to int 60; verify the value is
+	// an integer (60) not the original float (60.5).
+	if got.Suites[0].Timeout != 60 {
+		t.Errorf("Parse() timeout = %d, want 60 (float truncated to int)", got.Suites[0].Timeout)
+	}
+}
+
 func newBazelWorkspace(t *testing.T) string {
 	t.Helper()
 
