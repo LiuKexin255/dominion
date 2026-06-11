@@ -281,6 +281,92 @@ func TestValidate_InvalidEndpointName(t *testing.T) {
 	}
 }
 
+func TestValidate_NegativeTimeout(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:    "default",
+				Deploy:  "//testdata/deploy_test.yaml",
+				Cases:   []string{"//test:test"},
+				Timeout: -1,
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("Validate() succeeded unexpectedly, expected timeout must be non-negative error")
+	}
+	if !strings.Contains(err.Error(), "timeout must be non-negative") {
+		t.Fatalf("Validate() error = %q, want error containing 'timeout must be non-negative'", err)
+	}
+}
+
+func TestValidate_ZeroTimeout(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:    "default",
+				Deploy:  "//testdata/deploy_test.yaml",
+				Cases:   []string{"//test:test"},
+				Timeout: 0,
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_PositiveTimeout(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:    "default",
+				Deploy:  "//testdata/deploy_test.yaml",
+				Cases:   []string{"//test:test"},
+				Timeout: 60,
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestValidate_DefaultTimeout(t *testing.T) {
+	_ = newBazelWorkspace(t)
+
+	cfg := &guitarconfig.Config{
+		Name: "test",
+		Suites: []*guitarconfig.Suite{
+			{
+				Name:   "default",
+				Deploy: "//testdata/deploy_test.yaml",
+				Cases:  []string{"//test:test"},
+			},
+		},
+	}
+
+	err := Validate(cfg)
+	if err != nil {
+		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+}
+
 func TestHostnameMatches(t *testing.T) {
 	hostnameSet := map[string]bool{
 		"game.liukexin.com": true,
