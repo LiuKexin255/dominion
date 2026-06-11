@@ -63,6 +63,29 @@
 - Multiple testplan YAML files: rejected by user instruction.
 - One full deploy for all suites: rejected because it wastes resources and hides service dependencies.
 
+## Decision: Use `createDeepAgent` with default built-in capabilities
+
+**Rationale**: The `deepagents` npm package exports `createDeepAgent()` as the primary entry point. Built-in capabilities (conversation memory, tool-use scaffolding) are kept at their defaults since this version is a pure conversational agent with no tools/MCP/skills enabled.
+
+**Alternatives considered**:
+- Manual LangChain agent assembly: rejected because `createDeepAgent` bundles memory, prompt templating, and model binding in one call with sensible defaults, reducing boilerplate.
+
+## Decision: Use `initChatModel` Option B — custom `baseUrl` for opencode-go
+
+**Rationale**: The `initChatModel()` helper from `@langchain/core` accepts a `baseUrl` configuration. Pointing `baseUrl` at the opencode-go OpenAI-compatible endpoint allows using a stock `ChatOpenAI`-compatible interface without custom adapters or API gateway code.
+
+**Alternatives considered**:
+- Option A (`ChatOpenAI` directly with `configuration.baseURL`): equivalent behavior, but `initChatModel` is the idiomatic LangChain entry point used in official `createDeepAgent` examples.
+- Custom LangChain model class wrapping opencode-go HTTP: rejected because `initChatModel` with `baseUrl` already handles the OpenAI wire format.
+
+## Decision: Use `streamMode: "messages"` for streaming output
+
+**Rationale**: `streamMode: "messages"` produces `contentBlocks` arrays from the LLM. Filtering `contentBlocks` by block type enables clean separation: `reasoning` blocks → thinking frames, `text` blocks → assistant response frames. This avoids custom chunk parsing or string-based heuristic splitting.
+
+**Alternatives considered**:
+- `streamMode: "values"`: rejects because it streams the full state object on every tick, requiring application-level diffing to extract new content.
+- Raw `BaseMessageChunk` parsing: rejected because `contentBlocks` is a structured, documented API in LangChain JS.
+
 ## Decision: Preserve existing session/proxy/gateway/prompt architecture
 
 **Rationale**: The spec requires preserving the session-agent architecture. The Go proxy already resolves `game/agent:grpc` as a stateful service and forwards bidirectional `AgentFrame` streams. The Go gateway already bridges desktop WebSocket traffic to proxy. Reusing this topology minimizes integration risk while the agent implementation changes runtime.

@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game Agent step3a system test"
+desc: "Game agent dialog test (agent test artifact)"
 services:
   - infra:
       resource: mongodb
@@ -17,7 +17,7 @@ services:
       path: //projects/game/proxy/service.yaml
       name: proxy
   - artifact:
-      path: //projects/game/agent/service.yaml
+      path: //projects/game/agent/service_test.yaml
       name: agent
   - artifact:
       path: //projects/game/prompt/service.yaml

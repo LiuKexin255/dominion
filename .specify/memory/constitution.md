@@ -1,14 +1,14 @@
 <!--
 Sync Impact Report
-Version change: 1.1.0 → 1.2.0
-Modified principles: II. Bazel-First Repository Integrity; Technology Stack and Build System / TypeScript and JavaScript; Development Workflow and Quality Gates
-Added sections: none
+Version change: 1.2.0 → 1.3.0
+Modified principles: none
+Added sections:
+- VI. Test Impact Assessment
+- VII. Change Classification and Refactoring Discipline
 Removed sections: none
 Templates requiring updates:
-- ✅ .specify/templates/plan-template.md
-- ✅ .specify/templates/tasks-template.md
-- ✅ specs/003-step3b-agent-runtime/plan.md
-- ✅ AGENTS.md
+- ✅ .specify/templates/plan-template.md — Constitution Check section updated with new gates for test impact assessment and change classification
+- ✅ .specify/templates/tasks-template.md — Constitution note updated to require change-type classification and refactoring scope
 Follow-up TODOs: none
 -->
 
@@ -79,6 +79,26 @@ verifies that changed code follows the repository style guides.
 Acceptance findings discovered during planned validation MUST be fixed even when
 they were not introduced by the current change, unless the plan explicitly scopes
 them out with a documented reason approved by the user.
+
+### VI. Test Impact Assessment
+
+Every implementation plan MUST evaluate whether existing test cases — both unit
+tests and large tests — need modification as a result of the planned changes. The
+evaluation MUST be explicit: the plan MUST list each affected test file, describe
+the required change, and record it alongside the implementation tasks. Plans MUST
+NOT silently break or disable existing tests without documenting the reason and
+the residual risk.
+
+### VII. Change Classification and Refactoring Discipline
+
+Every implementation plan MUST classify each change as one of: **new** (adding a
+file, function, or module), **modify** (changing existing code), or **delete**
+(removing code or files). When existing code is modified, the change MUST be
+carried out as a **refactoring**: the plan MUST state the refactoring scope (which
+files, functions, or interfaces are affected), the refactoring goal (what
+structural improvement is achieved), and the invariants preserved. Plans MUST NOT
+accumulate additive patches on existing code without declaring the refactoring
+intent — code piling without structural justification is forbidden.
 
 ## Technology Stack and Build System
 
@@ -157,4 +177,4 @@ Plans and reviews MUST verify compliance with the active constitution. Any
 intentional violation MUST be documented in the plan's Complexity Tracking section
 with the reason and rejected simpler alternative.
 
-**Version**: 1.2.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-03
+**Version**: 1.3.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-10

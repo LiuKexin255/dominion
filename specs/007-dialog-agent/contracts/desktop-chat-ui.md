@@ -33,7 +33,6 @@ The sidebar shows at least:
 - Sending a message while the agent is processing keeps the UI responsive and indicates the message is queued or pending.
 - Queued messages appear in send order.
 - If the agent instance was cleaned up while the chat is open, the next send displays a clear recovery path such as reconnecting or creating a new instance.
-- Existing screenshot capture and window binding controls remain available alongside the new chat UI.
 
 ## Accessibility/localization baseline
 

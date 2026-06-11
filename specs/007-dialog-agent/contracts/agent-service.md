@@ -28,6 +28,26 @@ user text frame -> thinking frame(s) -> final text frame
 queued user text frame -> thinking frame(s) -> final text frame
 ```
 
+## Frame protocol mapping
+
+The `AgentFrame` message carries frame-level metadata that maps to higher-level conversation concepts:
+
+| AgentFrame field | Mapping | Description |
+|---|---|---|
+| `sender` | `FrameSender` enum | One of `USER`, `AGENT`, or `SYSTEM`. Identifies which side produced the frame. |
+| `invoke_id` | `turnId` | Every frame in the same conversational turn shares the same `invoke_id`. The gateway and desktop use this value as the `turnId` on `ConversationMessage` entries. |
+| `seq` | Sequence counter | Monotonically increasing integer scoped to the stream. The first frame sent by either side is `seq=1`. Enables ordered delivery and gap detection. |
+
+**Frame type to sender mapping**:
+
+| Frame type | Sender | Description |
+|---|---|---|
+| User text | `USER` | Message originating from the desktop user. |
+| Thinking | `AGENT` | Intermediate reasoning output from the agent LLM. |
+| Text (response) | `AGENT` | Final assistant response. |
+| Warn | `SYSTEM` | Recoverable error or warning (e.g., LLM timeout, rate limit). |
+| Error / Disconnect | `SYSTEM` | Unrecoverable error — gateway should translate to a disconnect signal. |
+
 ## CreateAgent semantics
 
 - `agent_profile_name` is required.

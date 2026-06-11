@@ -1,31 +1,51 @@
-// Package testplan contains system-level integration tests for the game agent
-// system. Tests are executed as part of a guitar test plan that deploys all
-// four services (session, proxy, agent, gateway) plus MongoDB.
+// Package testplan contains agent lifecycle integration tests covering
+// agent CRUD, ownership, WebSocket connectivity, and cascade delete behavior.
+// This file is compiled as its own test binary.
 package testplan
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
+	game "dominion/projects/game"
 
 	"github.com/gorilla/websocket"
 )
 
+// ─── Local WS types (JSON-based, for gateway WebSocket surface tests) ───────
+
+// wsFrame mirrors the AgentFrame proto message with oneof payload for
+// WebSocket communication using protojson camelCase field names.
+type wsFrame struct {
+	SessionID string         `json:"sessionId"`
+	Status    *wsStatusFrame `json:"status,omitempty"`
+	Echo      *wsEchoFrame   `json:"echo,omitempty"`
+}
+
+// wsStatusFrame mirrors the AgentStatusFrame proto message.
+type wsStatusFrame struct {
+	Status string `json:"status"`
+}
+
+// wsEchoFrame mirrors the AgentEchoFrame proto message.
+type wsEchoFrame struct {
+	Data string `json:"data"`
+}
+
+// ─── TestMain ────────────────────────────────────────────────────────────────
+
+// TestMain seeds a "default" agent profile so that agent creation (which
+// requires a profile) works out of the box for lifecycle tests.
 func TestMain(m *testing.M) {
-	// Seed a "default" agent profile so that agent creation (which requires a
-	// profile) works out of the box for step2 regression tests.
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	profileURL := fmt.Sprintf("%s%sprompts/agentProfiles", sutHostURL, pathPrefix)
+	profileURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "prompts/agentProfiles")
 	body := []byte(`{"agentProfileName":"default","enabled":true}`)
 	req, err := http.NewRequest(http.MethodPost, profileURL, bytes.NewReader(body))
 	if err != nil {
@@ -45,374 +65,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-const (
-	headerEnv  = "env"
-	pathPrefix = "/api/v1/"
-)
-
-// sessionResponse mirrors the Session proto message returned via gRPC-gateway
-// with protojson camelCase field names.
-type sessionResponse struct {
-	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
-	CreateTime string `json:"createTime"`
-}
-
-// agentResponse mirrors the Agent proto message returned via gRPC-gateway
-// with protojson camelCase field names.
-type agentResponse struct {
-	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
-	OwnerIndex int32  `json:"ownerIndex"`
-	Owner      string `json:"owner"`
-	CreateTime string `json:"createTime"`
-}
-
-// listSessionsResponse mirrors the ListSessionsResponse proto message.
-type listSessionsResponse struct {
-	Sessions      []sessionResponse `json:"sessions"`
-	NextPageToken string            `json:"nextPageToken"`
-}
-
-// wsFrame mirrors the AgentFrame proto message with oneof payload for
-// WebSocket communication using protojson camelCase field names.
-type wsFrame struct {
-	SessionID  string              `json:"sessionId"`
-	FrameID    string              `json:"frameId,omitempty"`
-	CreateTime string              `json:"createTime,omitempty"`
-	Status     *wsStatusFrame      `json:"status,omitempty"`
-	Echo       *wsEchoFrame        `json:"echo,omitempty"`
-	Screenshot *wsScreenshotFrame  `json:"screenshot,omitempty"`
-	Ack        *wsAckFrame         `json:"ack,omitempty"`
-	Text       *wsTextFrame        `json:"text,omitempty"`
-	Operation  *wsOperationFrame   `json:"operation,omitempty"`
-}
-
-// wsStatusFrame mirrors the AgentStatusFrame proto message.
-type wsStatusFrame struct {
-	Status string `json:"status"`
-}
-
-// wsEchoFrame mirrors the AgentEchoFrame proto message.
-type wsEchoFrame struct {
-	Data string `json:"data"`
-}
-
-// wsAckFrame mirrors the AgentAckFrame proto message.
-type wsAckFrame struct {
-	AckFrameID string `json:"ackFrameId"`
-	Message    string `json:"message,omitempty"`
-}
-
-// wsScreenshotFrame mirrors the AgentScreenshotFrame proto message.
-type wsScreenshotFrame struct {
-	CaptureID string `json:"captureId"`
-	Encoding  string `json:"encoding"`
-	Data      string `json:"data"`
-	WidthPx   int32  `json:"widthPx"`
-	HeightPx  int32  `json:"heightPx"`
-}
-
-// wsTextFrame mirrors the AgentTextFrame proto message.
-type wsTextFrame struct {
-	Content string `json:"content"`
-}
-
-// wsOperationFrame mirrors the AgentOperationFrame proto message.
-type wsOperationFrame struct {
-	OperationID  string `json:"operationId"`
-	ScreenshotID string `json:"screenshotId"`
-	Sequence     string `json:"sequence"`
-}
-
-// createSession sends a POST request with an empty CreateSessionRequest
-// body ({}) and returns the server-generated session ID together with the
-// raw response body.
-func createSession(t *testing.T, sutHostURL, sutEnvName string) (string, []byte) {
-	t.Helper()
-
-	reqBody := []byte("{}")
-	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "sessions")
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("http.NewRequest createSession: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST createSession: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read createSession response: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createSession status=%d, body=%s", resp.StatusCode, respBody)
-	}
-
-	sess := new(sessionResponse)
-	if err := json.Unmarshal(respBody, sess); err != nil {
-		t.Fatalf("json.Unmarshal createSession response: %v", err)
-	}
-	if sess.SessionID == "" {
-		t.Fatal("createSession: server returned empty sessionId")
-	}
-	return sess.SessionID, respBody
-}
-
-// listSessions sends a GET request to list sessions with the given page
-// size and returns the raw response body.
-func listSessions(t *testing.T, sutHostURL, sutEnvName string, pageSize int) []byte {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions?page_size=%d", sutHostURL, pathPrefix, pageSize)
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest listSessions: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET listSessions: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read listSessions response: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET listSessions status=%d, body=%s", resp.StatusCode, respBody)
-	}
-	return respBody
-}
-
-// createAgent sends a POST request to create an agent under the given session
-// and returns the response body as bytes.
-func createAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
-	t.Helper()
-
-	reqBody := []byte("{}")
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("http.NewRequest createAgent: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST createAgent: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read createAgent response: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createAgent status=%d, body=%s", resp.StatusCode, respBody)
-	}
-	return respBody
-}
-
-// getSession sends a GET request for a session and returns the response body.
-func getSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest getSession: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET session: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read getSession response: %v", err)
-	}
-	return respBody
-}
-
-// getAgent sends a GET request for an agent and returns the response body.
-func getAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest getAgent: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET agent: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read getAgent response: %v", err)
-	}
-	return respBody
-}
-
-// deleteAgent sends a DELETE request for an agent.
-func deleteAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http.Response {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodDelete, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest deleteAgent: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE agent: %v", err)
-	}
-	return resp
-}
-
-// deleteSession sends a DELETE request for a session.
-func deleteSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http.Response {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodDelete, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest deleteSession: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE session: %v", err)
-	}
-	return resp
-}
-
-// buildWSURL constructs a WebSocket URL from the HTTP endpoint by replacing
-// the scheme with ws or wss.
-func buildWSURL(sutHostURL, path string) string {
-	u, err := url.Parse(sutHostURL)
-	if err != nil {
-		panic(fmt.Sprintf("parse sutHostURL %q: %v", sutHostURL, err))
-	}
-	host := u.Host
-	scheme := "ws"
-	if u.Scheme == "https" {
-		scheme = "wss"
-	}
-	return fmt.Sprintf("%s://%s%s", scheme, host, path)
-}
-
-// getAgentWithStatus sends a GET request for an agent and returns the HTTP
-// status code and response body without fatalling on non-200 responses.
-func getAgentWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest getAgentWithStatus: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET agent: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read getAgentWithStatus response: %v", err)
-	}
-	return resp.StatusCode, respBody
-}
-
-// getSessionWithStatus sends a GET request for a session and returns the HTTP
-// status code and response body without fatalling on non-200 responses.
-func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest getSessionWithStatus: %v", err)
-	}
-	req.Header.Set(headerEnv, sutEnvName)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET session: %v", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read getSessionWithStatus response: %v", err)
-	}
-	return resp.StatusCode, respBody
-}
-
-// readTestPNG reads the test screenshot fixture from testdata and returns its
-// base64-encoded representation.
-func readTestPNG(t *testing.T) string {
-	t.Helper()
-
-	data, err := os.ReadFile("testdata/test_screenshot.png")
-	if err != nil {
-		t.Fatalf("read test_screenshot.png: %v", err)
-	}
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// TestCreateSession verifies that a session can be created successfully via
-// POST /api/v1/sessions with an empty body and that the server returns a
-// non-empty, server-generated sessionId.
-func TestCreateSession(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	// given: empty CreateSessionRequest
-
-	// when
-	sessionID, body := createSession(t, sutHostURL, sutEnvName)
-
-	// then
-	if sessionID == "" {
-		t.Error("createSession returned empty sessionId")
-	}
-
-	// verify the response body contains the expected name format
-	sess := new(sessionResponse)
-	if err := json.Unmarshal(body, sess); err != nil {
-		t.Fatalf("json.Unmarshal session response: %v", err)
-	}
-	wantName := "sessions/" + sessionID
-	if sess.Name != wantName {
-		t.Errorf("session name = %q, want %q", sess.Name, wantName)
-	}
-}
+// ─── Tests from system_test.go ───────────────────────────────────────────────
 
 // TestCreateAgent verifies that an agent can be created under a session via
 // POST /api/v1/sessions/{id}/agent and returns owner_index and owner fields.
@@ -499,7 +152,6 @@ func TestGetAgentReturnsOwner(t *testing.T) {
 	if got.OwnerIndex < 0 {
 		t.Errorf("agent owner_index = %d, want >= 0", got.OwnerIndex)
 	}
-	// owner_index and owner should be consistent — both present
 }
 
 // TestConsistentOwnerRouting verifies that querying the same session's agent
@@ -563,7 +215,7 @@ func TestWebSocketConnect(t *testing.T) {
 }
 
 // TestWebSocketStatusResponse verifies that sending a status frame over
-// WebSocket receives a status response with status "initialized", and that
+// WebSocket receives a status response with status "idle", and that
 // sending an echo frame receives an echoed response.
 func TestWebSocketStatusResponse(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
@@ -962,67 +614,105 @@ func TestListSessions(t *testing.T) {
 	}
 }
 
-// TestScreenshotFrame verifies that sending a screenshot frame over WebSocket
-// receives an ack response with matching ackFrameId and confirmation message.
-func TestScreenshotFrame(t *testing.T) {
+// ─── Tests from step3a_test.go ───────────────────────────────────────────────
+
+// TestCreateAgentWithNamedProfile verifies that an agent can be created
+// with an explicitly specified agent profile name.
+func TestCreateAgentWithNamedProfile(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	// given: create session, agent, and connect WebSocket
+	profileName := fmt.Sprintf("explicit-profile-%s", uniqueSuffix())
+
+	// given: create a named profile
+	createReq := &game.CreateAgentProfileRequest{
+		AgentProfileName: profileName,
+		Model:            "gpt-4",
+		SystemPrompt:     "Explicit test agent.",
+		Enabled:          true,
+	}
+	_ = createAgentProfile(t, sutHostURL, sutEnvName, createReq)
+
+	// given: create a session
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	createAgent(t, sutHostURL, sutEnvName, sessionID)
 
-	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
-	wsURL := buildWSURL(sutHostURL, wsPath)
+	// when: create agent with the named profile
+	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
 
-	header := http.Header{}
-	header.Set(headerEnv, sutEnvName)
+	// then: verify agent uses the correct profile
+	if agent.GetOwner() == "" {
+		t.Error("agent owner is empty, want non-empty")
+	}
+	if agent.GetAgentProfileName() != profileName {
+		t.Errorf("agent AgentProfileName = %q, want %q", agent.GetAgentProfileName(), profileName)
+	}
+}
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-	if err != nil {
-		t.Fatalf("websocket.Dial: %v", err)
-	}
-	defer conn.Close()
+// TestCreateAgentMissingProfile verifies that creating an agent with a
+// non-existent profile name returns an error response.
+func TestCreateAgentMissingProfile(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
 
-	// when: send screenshot frame with PNG data
-	pngBase64 := readTestPNG(t)
-	captureID := "test-screenshot-cap-001"
+	// given: create a session (no profile exists with a random name)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	screenshotFrame := wsFrame{
-		SessionID: sessionID,
-		Screenshot: &wsScreenshotFrame{
-			CaptureID: captureID,
-			Encoding:  "IMAGE_ENCODING_PNG",
-			Data:      pngBase64,
-			WidthPx:   10,
-			HeightPx:  10,
-		},
-	}
-	if err := conn.WriteJSON(screenshotFrame); err != nil {
-		t.Fatalf("WriteJSON screenshot frame: %v", err)
-	}
+	// when: try to create agent with non-existent profile
+	missingName := fmt.Sprintf("non-existent-profile-%s", uniqueSuffix())
+	agentBody := []byte(fmt.Sprintf(`{"agentProfileName":"%s"}`, missingName))
 
-	// then: read text frame response
-	var textResp wsFrame
-	if err := conn.ReadJSON(&textResp); err != nil {
-		t.Fatalf("ReadJSON text response: %v", err)
-	}
-	if textResp.Text == nil {
-		t.Fatal("first response has no text oneof")
-	}
-	if textResp.Text.Content != "analyzing screenshot..." {
-		t.Errorf("text content = %q, want %q", textResp.Text.Content, "analyzing screenshot...")
-	}
+	got, status, respBody := createAgentWithBody(t, sutHostURL, sutEnvName, sessionID, agentBody)
 
-	// then: read operation frame response
-	var opResp wsFrame
-	if err := conn.ReadJSON(&opResp); err != nil {
-		t.Fatalf("ReadJSON operation response: %v", err)
+	// then: expect error response (NOT 200 OK)
+	if status == http.StatusOK {
+		t.Errorf("POST agent with non-existent profile returned 200, want error. body=%s", respBody)
 	}
-	if opResp.Operation == nil {
-		t.Fatal("second response has no operation oneof")
+	_ = got
+
+	// when: also try to create agent with empty profile name
+	got2, status2, respBody2 := createAgentWithBody(t, sutHostURL, sutEnvName, sessionID, []byte(`{"agentProfileName":""}`))
+
+	// then: expect error response for empty profile too
+	if status2 == http.StatusOK {
+		t.Errorf("POST agent with empty profile returned 200, want error. body=%s", respBody2)
 	}
-	if opResp.Operation.ScreenshotID != captureID {
-		t.Errorf("operation screenshotId = %q, want %q", opResp.Operation.ScreenshotID, captureID)
+	_ = got2
+}
+
+// TestCreateAgentEmptyProfileError verifies that creating an agent with an
+// empty agentProfileName returns an HTTP error response.
+func TestCreateAgentEmptyProfileError(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: create a session (no profile needed — empty profile is rejected
+	// regardless of existence)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// when: try to create agent with empty profile name
+	_, status, respBody := createAgentWithBody(t, sutHostURL, sutEnvName, sessionID, []byte(`{"agentProfileName":""}`))
+
+	// then: expect error response (NOT any 2xx success)
+	if status >= 200 && status < 300 {
+		t.Errorf("POST agent with empty profile returned %d, want error (non-2xx). body=%s", status, respBody)
+	}
+}
+
+// TestDeleteAgentIdempotent verifies that deleting an agent on a session
+// with no existing agent succeeds without error (idempotent behavior).
+func TestDeleteAgentIdempotent(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	// given: create a session (no agent created)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// when: delete agent (not yet created)
+	resp := deleteAgent(t, sutHostURL, sutEnvName, sessionID)
+	defer resp.Body.Close()
+
+	// then: expect successful deletion (200 or 204)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Errorf("DELETE non-existent agent status = %d, want 200 or 204", resp.StatusCode)
 	}
 }

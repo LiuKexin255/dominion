@@ -1,0 +1,142 @@
+/**
+ * llm.test.ts — Tests for RealLLMAdapter using fakeModel() only.
+ *
+ * No real API calls. All model invocations go through fakeModel()
+ * from @langchain/core/testing.
+ */
+
+import { describe, expect, it } from "vitest";
+import { AIMessage } from "@langchain/core/messages";
+import { fakeModel } from "@langchain/core/testing";
+
+import { type ContentBlock, RealLLMAdapter } from "./llm";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Collect every ContentBlock from an async iterable. */
+async function collect(
+  iter: AsyncIterable<ContentBlock>,
+): Promise<ContentBlock[]> {
+  const blocks: ContentBlock[] = [];
+  for await (const block of iter) {
+    blocks.push(block);
+  }
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: Text response → contentBlocks with type: "text"
+// ---------------------------------------------------------------------------
+
+describe("Text response", () => {
+  it("produces contentBlocks with type: 'text'", async () => {
+    const model = fakeModel().respond(
+      new AIMessage({
+        content: [{ type: "text", text: "Hello, world!" }],
+      }),
+    );
+
+    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+    const blocks = await collect(
+      adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
+    );
+
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const block of blocks) {
+      if (block.type === "text") {
+        expect(block.text).toBeDefined();
+      }
+      expect(["reasoning", "text"]).toContain(block.type);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 2: Thinking + text response → contentBlocks with reasoning then text
+// ---------------------------------------------------------------------------
+
+describe("Thinking + text response", () => {
+  it("produces contentBlocks with reasoning before text", async () => {
+    const model = fakeModel().respond(
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "Step 1: analyze input" },
+          { type: "reasoning", reasoning: "Step 2: formulate response" },
+          { type: "text", text: "The answer is 42." },
+        ],
+      }),
+    );
+
+    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+    const blocks = await collect(
+      adapter.streamFromModel(model, "You are helpful.", [], "Why?"),
+    );
+
+    expect(blocks.length).toBeGreaterThanOrEqual(3);
+
+    // Reasoning blocks should come before text blocks.
+    const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
+    const textBlocks = blocks.filter((b) => b.type === "text");
+
+    expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
+    expect(textBlocks.length).toBeGreaterThanOrEqual(1);
+
+    // Verify ordering: reasoning blocks appear before text blocks
+    let lastReasoningIndex = -1;
+    let firstTextIndex = -1;
+    for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i].type === "reasoning") lastReasoningIndex = i;
+      if (blocks[i].type === "text" && firstTextIndex === -1) firstTextIndex = i;
+    }
+    if (lastReasoningIndex >= 0 && firstTextIndex >= 0) {
+      expect(lastReasoningIndex).toBeLessThan(firstTextIndex);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 3: Error response → error thrown
+// ---------------------------------------------------------------------------
+
+describe("Error response", () => {
+  it("throws when the model responds with an error", async () => {
+    const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
+
+    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+
+    await expect(
+      collect(
+        adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 4: Custom baseUrl is passed through
+// ---------------------------------------------------------------------------
+
+describe("Custom baseUrl", () => {
+  it("stores the baseUrl property from the constructor", () => {
+    const baseUrl = "https://custom-opencode.example.com/v1";
+    const adapter = new RealLLMAdapter("my-model", baseUrl);
+
+    expect(adapter.baseUrl).toBe(baseUrl);
+  });
+
+  it("stores the modelName property from the constructor", () => {
+    const modelName = "deepseek-v4-pro";
+    const adapter = new RealLLMAdapter(modelName, "https://test.example.com/v1");
+
+    expect(adapter.modelName).toBe(modelName);
+  });
+
+  it("implements the LLMAdapter interface", () => {
+    const adapter = new RealLLMAdapter("model", "https://example.com/v1");
+
+    expect(typeof adapter.generateTurn).toBe("function");
+    expect(typeof adapter.streamFromModel).toBe("function");
+  });
+});

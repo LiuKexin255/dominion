@@ -67,6 +67,13 @@ violation is documented in Complexity Tracking with user-approved rationale.
 - **Testplan Execution**: When a large-test plan or feature test plan exists,
   plan execution includes it; skipped execution records deployment blockers or
   out-of-scope pre-existing issues and the remaining validation risk.
+- **Test Impact Assessment**: Plan evaluates existing unit tests and large tests
+  for required modifications and explicitly lists each affected test alongside
+  the implementation tasks.
+- **Change Classification**: Plan classifies every change as new, modify, or
+  delete. Modifications to existing code are described as refactorings with
+  explicit scope, goal, and preserved invariants — additive patching without
+  structural justification is forbidden.
 
 ## Project Structure
 

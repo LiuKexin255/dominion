@@ -1,16 +1,147 @@
-load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
-artifact_pkg_go(
-    name = "service_pkg",
-    app = "game",
-    binary = "//projects/game/agent/cmd:cmd",
-    service = "agent",
+npm_link_all_packages(name = "node_modules")
+
+ts_proto_library(
+    name = "game_types",
+    proto = "//projects/game:game_proto",
+    visibility = ["//visibility:public"],
 )
 
+ts_project(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":game_types_lib",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/@types/node",
+        ":node_modules/deepagents",
+        ":node_modules/langchain",
+        "//common/js/grpc/otel:lib",
+        "//common/js/grpc/resolver:lib",
+        "//common/js/logs:lib",
+        "//common/js/otel:lib",
+    ],
+)
+
+js_library(
+    name = "game_types_lib",
+    srcs = [":game_types"],
+)
+
+# Package JS service files into a tar layer
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "game",
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/deepagents",
+        ":node_modules/langchain",
+    ],
+    runtime_protos = [
+        "//projects/game:game_proto",
+    ],
+    service = "agent",
+    ts_project = ":lib",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+    ],
+)
+
+# OCI image for the TypeScript game agent
 artifact_image(
     name = "cmd_image",
     app = "game",
-    pkg = ":service_pkg",
+    pkg = ":server_pkg",
     service = "agent",
     visibility = ["//visibility:public"],
+)
+
+# Test variant: uses fake-llm.ts instead of llm.ts.
+# Shares identical handler/runtime/server code -- only the LLM module differs.
+# Used by testplan (Task 19) for deterministic, no-network test deployment.
+artifact_pkg_js(
+    name = "server_pkg_test",
+    app = "game",
+    entrypoint = "src/bootstrap-test.js",
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/deepagents",
+        ":node_modules/langchain",
+    ],
+    runtime_protos = [
+        "//projects/game:game_proto",
+    ],
+    service = "agent",
+    ts_project = ":lib",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+    ],
+)
+
+artifact_image(
+    name = "cmd_image_test",
+    app = "game",
+    pkg = ":server_pkg_test",
+    service = "agent",
+    visibility = ["//visibility:public"],
+)
+
+# Small bootstrap script that invokes vitest programmatically.
+# vitest.mjs is a bin file not exposed by npm_link_all_packages,
+# so we use vitest's programmatic API instead.
+js_test(
+    name = "lib_test",
+    size = "small",
+    args = [
+        "run",
+        "src/",
+    ],
+    data = [
+        ":lib",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+        ":node_modules/vitest",
+    ] + glob(
+        ["src/**/*.test.ts"],
+        allow_empty = True,
+    ),
+    entry_point = "run_vitest.mjs",
 )

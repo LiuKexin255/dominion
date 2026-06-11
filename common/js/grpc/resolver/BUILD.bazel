@@ -23,9 +23,15 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:* deps.
+# package.json is required here so that the npm linker populates the virtual
+# store entry with the package manifest — without it, downstream js_test
+# targets cannot resolve this package via require().
 js_library(
     name = "pkg",
-    srcs = [":lib"],
+    srcs = [
+        ":lib",
+        "package.json",
+    ],
     visibility = ["//visibility:public"],
 )
 

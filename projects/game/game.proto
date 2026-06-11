@@ -221,6 +221,14 @@ message Agent {
   string agent_profile_name = 6;
 }
 
+// FrameSender identifies the originator of an AgentFrame.
+enum FrameSender {
+  FRAME_SENDER_UNSPECIFIED = 0;
+  FRAME_SENDER_USER = 1;
+  FRAME_SENDER_AGENT = 2;
+  FRAME_SENDER_SYSTEM = 3;
+}
+
 // AgentFrame is the minimal transport unit exchanged over WebSocket and gRPC
 // streams.
 message AgentFrame {
@@ -261,6 +269,9 @@ message AgentFrame {
     // Agent is requesting a screenshot from desktop.
     AgentScreenshotRequestFrame screenshot_request = 19;
   }
+
+  // The originator of this frame (user, agent, or system).
+  FrameSender sender = 20;
 }
 
 // AgentStatusFrame reports the current status string of an agent.

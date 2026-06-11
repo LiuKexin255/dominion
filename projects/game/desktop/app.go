@@ -216,6 +216,103 @@ func (a *App) CreateAgent(sessionID string) (*AgentView, error) {
 	return agentViewFromProto(agent), nil
 }
 
+// CreateAgentWithProfile creates an agent for a session using the specified agent profile.
+func (a *App) CreateAgentWithProfile(sessionID string, profileName string) (*AgentView, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	if profileName == "" {
+		return nil, fmt.Errorf("profile_name is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating agent with profile", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	agent, err := a.client.CreateAgentWithProfile(ctx, sessionID, profileName)
+	if err != nil {
+		a.logger.Error("backend", "Create agent with profile failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent created with profile", map[string]any{
+		"session_id":     sessionID,
+		"profile_name":   profileName,
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+	})
+	return agentViewFromProto(agent), nil
+}
+
+// ListAgentProfiles lists agent profiles from the prompt service via the gateway REST API.
+func (a *App) ListAgentProfiles(pageSize int, pageToken string) (*ListAgentProfilesView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Listing agent profiles", map[string]any{
+		"trace_id":       traceID,
+		"page_size":      pageSize,
+		"correlation_id": corrID,
+	})
+	resp, err := a.client.ListAgentProfiles(ctx, int32(pageSize), pageToken)
+	if err != nil {
+		a.logger.Error("backend", "List agent profiles failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent profiles listed", map[string]any{
+		"trace_id":       traceID,
+		"count":          len(resp.GetAgentProfiles()),
+		"correlation_id": corrID,
+	})
+	return listAgentProfilesViewFromProto(resp), nil
+}
+
+// SendAgentText sends a text frame to the agent via WebSocket and returns the response frame.
+func (a *App) SendAgentText(sessionID string, text string) (*game.AgentFrame, error) {
+	if a.ws == nil {
+		return nil, fmt.Errorf("send agent text: not connected")
+	}
+	frameID, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("send agent text: %w", err)
+	}
+
+	frame := &game.AgentFrame{
+		SessionId:  sessionID,
+		FrameId:    frameID,
+		CreateTime: timestamppb.Now(),
+		Sender:     game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_Text{
+			Text: &game.AgentTextFrame{Content: text},
+		},
+	}
+
+	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
+		return nil, fmt.Errorf("send agent text: %w", err)
+	}
+
+	resp, err := a.ws.RecvFrame(a.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("send agent text: receive: %w", err)
+	}
+	return resp, nil
+}
+
 // GetAgent retrieves the agent for a session.
 func (a *App) GetAgent(sessionID string) (*AgentView, error) {
 	if sessionID == "" {

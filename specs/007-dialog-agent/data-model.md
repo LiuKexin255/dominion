@@ -42,6 +42,16 @@ idle with no messages for >15 minutes -> cleaned up
 processing -> preserved by cleanup check
 ```
 
+## FrameSender
+
+Enum on `AgentFrame` identifying which side produced the frame, mapped to `ConversationMessage.role`.
+
+| Value | Source | Maps to `role` |
+|---|---|---|
+| `USER` | Desktop/gateway sending user input | `user` |
+| `AGENT` | Agent service sending LLM output | `thinking` or `assistant` |
+| `SYSTEM` | Agent service sending warnings or disconnect signals | `error` |
+
 ## Conversation Message
 
 Single chronological chat entry displayed in the desktop dialog area and supplied as context for future model calls.
@@ -56,6 +66,8 @@ Single chronological chat entry displayed in the desktop dialog area and supplie
 | `turnId` | string | Groups user input, thinking output, and final response for one turn. |
 
 **Ordering rule**: User messages, thinking output, and final response are appended in chronological order. Messages submitted while processing are queued and processed after the current turn.
+
+**turnId usage**: `turnId` maps to the gRPC `AgentFrame.invoke_id`. Every frame in the same conversational turn shares the same `invoke_id`, allowing the desktop to group user input, thinking output, and final response into a single turn. The gateway extracts `invoke_id` from incoming frames and sets `turnId` on the corresponding `ConversationMessage`.
 
 ## Provider Credential
 

@@ -1,7 +1,7 @@
 version: "3.0"
 name: game.{{run}}
 type: test
-desc: "Game Agent step1 system test"
+desc: "Game prompt/profile test (no agent/proxy)"
 services:
   - infra:
       resource: mongodb
@@ -10,15 +10,6 @@ services:
       app: game
       persistence:
         enabled: false
-  - artifact:
-      path: //projects/game/session/service.yaml
-      name: session
-  - artifact:
-      path: //projects/game/proxy/service.yaml
-      name: proxy
-  - artifact:
-      path: //projects/game/agent/service.yaml
-      name: agent
   - artifact:
       path: //projects/game/prompt/service.yaml
       name: prompt

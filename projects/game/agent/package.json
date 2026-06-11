@@ -1,0 +1,22 @@
+{
+    "name": "@dominion/game-agent",
+    "private": true,
+    "dependencies": {
+        "@grpc/grpc-js": "catalog:",
+        "@grpc/proto-loader": "catalog:",
+        "@langchain/core": "catalog:",
+        "@langchain/langgraph": "catalog:",
+        "@langchain/openai": "catalog:",
+        "deepagents": "catalog:",
+        "langchain": "catalog:",
+        "@dominion/common-js-logs": "workspace:*",
+        "@dominion/common-js-otel": "workspace:*",
+        "@dominion/common-js-grpc-otel": "workspace:*",
+        "@dominion/common-js-grpc-resolver": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

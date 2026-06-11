@@ -52,19 +52,18 @@ After connecting to an agent within a session, the user is presented with a chat
 
 ### User Story 3 - Agent Profile Management (Priority: P2)
 
-A user manages agent personality profiles through the desktop interface. Each profile contains a descriptive prompt that defines how the agent should behave. The user can create new profiles, view a list of existing profiles, edit profile descriptions, and delete profiles they no longer need. When creating an agent instance, the user selects a profile to determine the agent's personality.
+A user manages agent personality profiles through the desktop interface. Each profile contains a descriptive prompt that defines how the agent should behave. The user can create new profiles, view a list of existing profiles, and delete profiles they no longer need. When creating an agent instance, the user selects a profile to determine the agent's personality.<!-- AMENDMENT: Profile update/edit capability removed per interview decision (no UpdateAgentProfile RPC). -->
 
 **Why this priority**: Profile management enables customization of agent behavior. While important, a default profile can serve initially, making this secondary to the core conversation capability.
 
-**Independent Test**: Can be tested by creating, listing, editing, and deleting agent profiles through the desktop interface without involving a live agent conversation.
+**Independent Test**: Can be tested by creating, listing, and deleting agent profiles through the desktop interface without involving a live agent conversation.
 
 **Acceptance Scenarios**:
 
 1. **Given** the user opens the profile management module, **When** the user creates a new profile with a name and description, **Then** the profile is saved and appears in the profile list.
-2. **Given** an existing agent profile, **When** the user edits the profile description, **Then** the updated description is persisted and reflected in subsequent agent instances.
-3. **Given** an existing agent profile, **When** the user deletes the profile, **Then** the profile is removed and no longer available for new agent instances.
-4. **Given** multiple agent profiles exist, **When** the user views the profile list, **Then** all profiles are displayed with their names and descriptions.
-5. **Given** an agent profile was used to create an active agent instance, **When** the user deletes that profile, **Then** the profile is removed for future agent creation while the existing active instance continues running with the prompt copied at creation time.
+2. **Given** an existing agent profile, **When** the user deletes the profile, **Then** the profile is removed and no longer available for new agent instances.
+3. **Given** multiple agent profiles exist, **When** the user views the profile list, **Then** all profiles are displayed with their names and descriptions.
+4. **Given** an agent profile was used to create an active agent instance, **When** the user deletes that profile, **Then** the profile is removed for future agent creation while the existing active instance continues running with the prompt copied at creation time.
 
 ---
 
@@ -118,7 +117,7 @@ An administrator configures credentials for the AI provider that powers agent co
 - **FR-003**: System MUST maintain conversation history within an agent instance and provide the full history as context for each new message.
 - **FR-004**: System MUST NOT use external tools, MCP integrations, or skill capabilities in this version — the agent operates as a pure conversational agent.
 - **FR-005**: System MUST allow users to create agent personality profiles, each with a unique name and a descriptive prompt that shapes agent behavior.
-- **FR-006**: System MUST allow users to view, update, and delete existing agent personality profiles.
+- **FR-006**: System MUST allow users to view ~~update,~~ and delete existing agent personality profiles.<!-- AMENDMENT: Update/edit capability removed (no UpdateAgentProfile RPC). Create is covered by FR-005. -->
 - **FR-007**: System MUST create an agent instance by loading the description from a specified agent profile.
 - **FR-008**: System MUST automatically remove agent instances that have been inactive (no messages received and not actively processing) for more than 15 minutes.
 - **FR-009**: System MUST provide a desktop chat interface with a dialog area for the conversation thread and a sidebar for agent information.
@@ -127,7 +126,7 @@ An administrator configures credentials for the AI provider that powers agent co
 - **FR-012**: System MUST securely manage AI provider credentials through deployment-provisioned secret files, separate from application configuration.
 - **FR-013**: System MUST support at least one AI provider for powering agent conversations.
 - **FR-014**: System MUST preserve the existing session-agent architecture model established in prior milestones.
-- **FR-015**: System MUST preserve the existing desktop window binding and screenshot capture capabilities from the prior milestone, integrated alongside the new chat interface.
+- **FR-015**: ~~System MUST preserve the existing desktop window binding and screenshot capture capabilities from the prior milestone, integrated alongside the new chat interface.~~<!-- REMOVED: Screenshot capture and window binding UI removed per interview decision. Chat interface replaces entirely. -->
 - **FR-016**: System MUST queue user messages sent while an agent is processing and process queued messages in send order after the current response finishes.
 - **FR-017**: System MUST allow deletion of agent profiles that were used to create active agent instances; existing instances MUST continue running with the prompt copied at creation time because agent instances and profiles are loosely coupled after creation.
 
@@ -144,11 +143,11 @@ An administrator configures credentials for the AI provider that powers agent co
 
 - **SC-001**: Users can complete a full message exchange (send text, see thinking, see response) with the agent within each conversation turn.
 - **SC-002**: Agent instances that have been inactive for 15 minutes are removed within 1 minute of the threshold being crossed.
-- **SC-003**: Users can successfully perform all four profile management operations (create, read, update, delete) through the desktop interface.
+- **SC-003**: Users can successfully perform all profile management operations (create, read, delete) through the desktop interface.<!-- AMENDMENT: Narrowed to create, read (list), delete operations per interview decision. Update removed. -->
 - **SC-004**: The agent's responses demonstrate awareness of all prior messages exchanged in the current session.
 - **SC-005**: The chat interface clearly visually separates user input, agent thinking, and agent response entries so that a user can distinguish them at a glance.
 - **SC-006**: Provider credentials are never logged, displayed in configuration, or included in error messages.
-- **SC-007**: Existing session and agent architecture, window binding, and screenshot capabilities continue to function correctly after the introduction of the dialog agent.
+- **SC-007**: Existing session and agent architecture continues to function correctly after the introduction of the dialog agent.<!-- AMENDMENT: Narrowed to session/agent architecture continuity only per interview decision. Window binding and screenshot capabilities are removed from scope. -->
 
 ## Assumptions
 
@@ -158,6 +157,9 @@ An administrator configures credentials for the AI provider that powers agent co
 - The initial and only AI provider for this version is opencode-go.
 - Provider credentials are provisioned as a secret file mounted by the deployment tooling; future providers will follow the same pattern.
 - The existing session-agent architecture (session service, proxy service, gateway service) remains unchanged.
-- The desktop's window binding and screenshot capture from the prior milestone remain available and are presented alongside the new chat interface.
+- The desktop chat interface replaces the prior milestone's screenshot capture and window binding UI entirely. Screenshot and window binding features are removed from this milestone.
 - Agent profiles are managed by a dedicated prompt service that stores and retrieves profile definitions.
-- The desktop screenshot and window binding features continue to function alongside the new chat UI.
+- The agent implementation uses `createDeepAgent` from the `deepagents` npm package with built-in capabilities at their defaults.
+- LLM integration uses `initChatModel` with a custom `baseUrl` pointing to the opencode-go OpenAI-compatible endpoint.
+- Thinking output is streamed using `streamMode: "messages"` with `contentBlocks` filtering (reasoning blocks → thinking frames, text blocks → assistant response frames).
+- The `AgentFrame` proto includes a `FrameSender` enum (USER / AGENT / SYSTEM) and a `turnId` field mapped from the gRPC `invoke_id`.
