@@ -1,0 +1,25 @@
+version: "3.0"
+name: chain.{{run}}
+type: test
+desc: "grpc-chain integration test (gateway→grpc-js→grpc-go)"
+services:
+  - artifact:
+      path: //experimental/grpc_chain/backend/service.yaml
+      name: backend
+  - artifact:
+      path: //experimental/grpc_chain/mid/service.yaml
+      name: mid
+      env:
+        CHAIN_MODE: forward
+        OTEL_SEMCONV_STABILITY_OPT_IN: http
+  - artifact:
+      path: //experimental/grpc_chain/testplan/gateway/service.yaml
+      name: gateway
+    http:
+      hostnames:
+        - apitest.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /experimental/grpc-chain

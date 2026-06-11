@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package experimental.grpc_chain;
+
+import "google/api/annotations.proto";
+
+option go_package = "dominion/experimental/grpc_chain";
+
+// Echo service verifies the full gRPC chain:
+// grpc-gateway (Go) -> grpc-js (TS) -> grpc-go (Go backend).
+service Echo {
+  rpc Say(EchoRequest) returns (EchoResponse) {
+    option (google.api.http) = {
+      get: "/experimental/grpc-chain/echo/{message}"
+    };
+  }
+}
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+  // Chain metadata: which hops processed this request.
+  string chain = 2;
+}

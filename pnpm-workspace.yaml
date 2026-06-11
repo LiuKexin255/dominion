@@ -1,5 +1,6 @@
 packages:
   - experimental/ts/*
+  - experimental/grpc_chain/mid
   - common/js/**
   - projects/game/desktop/frontend
   - projects/game/agent
@@ -24,7 +25,7 @@ catalog:
   "@opentelemetry/sdk-trace-node": "^2.7.1"
   "@opentelemetry/semantic-conventions": "^1.29.0"
   "@sveltejs/vite-plugin-svelte": "^5.0.3"
-  "@types/node": "^22.19.19"
+  "@types/node": "^22.19.21"
   deepagents: "^1.10.2"
   langchain: "^1.4.4"
   svelte: "^5.33.0"

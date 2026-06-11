@@ -73,7 +73,6 @@ export function createStatefulResolver(
       const filtered = filterEndpoints(
         instanceData.endpoints,
         parsed.port,
-        serviceEndpoints.ports,
       );
 
       if (filtered.length === 0) {

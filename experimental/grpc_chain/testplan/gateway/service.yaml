@@ -1,0 +1,12 @@
+version: "3.0"
+name: gateway
+app: grpc-chain
+kind: stateless
+desc: grpc-chain gateway (HTTP to gRPC adapter for mid service)
+ports:
+  - name: http
+    port: 80
+artifacts:
+  - name: gateway
+    target: //experimental/grpc_chain/testplan:cmd_image
+    tls: true

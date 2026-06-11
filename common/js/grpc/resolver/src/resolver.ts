@@ -47,7 +47,6 @@ export function createResolver(config?: ResolverConfig): EndpointResolver {
       return filterEndpoints(
         serviceEndpoints.endpoints,
         target.port,
-        serviceEndpoints.ports,
       );
     },
   };

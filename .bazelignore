@@ -9,5 +9,6 @@ common/js/grpc/otel/node_modules
 common/js/grpc/resolver/node_modules
 common/js/otel/node_modules
 projects/game/agent/node_modules
+experimental/grpc_chain/mid/node_modules
 
 

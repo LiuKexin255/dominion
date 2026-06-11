@@ -1,0 +1,17 @@
+name: grpc-chain-interface-test
+description: |
+  grpc-chain integration test — verifies 3-service chain:
+  grpc-gateway (Go) → grpc-js (TS) → grpc-go (Go backend).
+
+  Test cases:
+    1. TestEchoChain — GET /experimental/grpc-chain/echo/{msg} traverses full chain
+    2. TestEchoChainMetadata — verifies chain metadata proves all hops
+
+suites:
+  - name: default
+    deploy: //experimental/grpc_chain/testplan/deploy.yaml
+    endpoint:
+      http:
+        public: https://apitest.liukexin.com
+    cases:
+      - //experimental/grpc_chain/testplan:testplan_test

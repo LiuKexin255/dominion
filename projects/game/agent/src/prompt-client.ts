@@ -30,7 +30,7 @@ const PROTO_OPTIONS: protoLoader.Options = {
 };
 
 /** Dominion resolver target for the prompt service. */
-export const PROMPT_SERVICE_TARGET = "dominion:///game/prompt:grpc";
+export const PROMPT_SERVICE_TARGET = "dominion:///game/prompt:50051";
 
 const TLS_CA_CERT = "/etc/tls/ca.crt";
 
@@ -109,8 +109,13 @@ export class PromptClient {
    */
   async getProfile(profileName: string): Promise<ProfileResult> {
     return new Promise<ProfileResult>((resolve, reject) => {
+      const deadline = new Date();
+      deadline.setSeconds(deadline.getSeconds() + 10);
+
       (this.client as any).getAgentProfile(
         { agentProfileName: profileName },
+        new grpc.Metadata({ waitForReady: true }),
+        { deadline },
         (err: grpc.ServiceError | null, response: any) => {
           if (err) {
             reject(err);

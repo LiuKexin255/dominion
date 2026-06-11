@@ -75,42 +75,11 @@ describe("ResolverState discriminated union", () => {
   });
 });
 
-describe("PortSelector discriminated union", () => {
-  it("narrows to number port on kind === 'number'", () => {
+describe("PortSelector", () => {
+  it("holds a numeric port", () => {
     const selector: PortSelector = { kind: "number", port: 50051 };
-
-    if (selector.kind === "number") {
-      expectTypeOf(selector.port).toEqualTypeOf<number>();
-      expect(selector.port).toBe(50051);
-    }
-  });
-
-  it("narrows to named port on kind === 'name'", () => {
-    const selector: PortSelector = { kind: "name", name: "grpc" };
-
-    if (selector.kind === "name") {
-      expectTypeOf(selector.name).toEqualTypeOf<string>();
-      expect(selector.name).toBe("grpc");
-    }
-  });
-
-  it("exhaustive switch compiles and covers every variant", () => {
-    const selector: PortSelector = { kind: "number", port: 50051 };
-
-    switch (selector.kind) {
-      case "number": {
-        expect(selector.port).toBe(50051);
-        break;
-      }
-      case "name": {
-        expect(selector.name).toBe("grpc");
-        break;
-      }
-      default: {
-        const _exhaustive: never = selector;
-        (_exhaustive as unknown);
-      }
-    }
+    expect(selector.kind).toBe("number");
+    expect(selector.port).toBe(50051);
   });
 });
 

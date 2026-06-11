@@ -64,7 +64,7 @@ catalogs:
       specifier: ^5.0.3
       version: 5.1.1
     '@types/node':
-      specifier: ^22.19.19
+      specifier: ^22.19.21
       version: 22.19.19
     deepagents:
       specifier: ^1.10.2
@@ -216,6 +216,34 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.6(@types/node@22.19.19)(yaml@2.9.0)
+
+  experimental/grpc_chain/mid:
+    dependencies:
+      '@dominion/common-js-grpc-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/grpc/otel
+      '@dominion/common-js-grpc-resolver':
+        specifier: workspace:*
+        version: link:../../../common/js/grpc/resolver
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../../../common/js/logs
+      '@dominion/common-js-otel':
+        specifier: workspace:*
+        version: link:../../../common/js/otel
+      '@grpc/grpc-js':
+        specifier: 'catalog:'
+        version: 1.14.4
+      '@grpc/proto-loader':
+        specifier: 'catalog:'
+        version: 0.8.1
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.21
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
 
   experimental/ts/grpc_hello_world:
     dependencies:
@@ -1160,6 +1188,9 @@ packages:
 
   '@types/node@22.19.19':
     resolution: {integrity: sha512-dyh/xO2Fh5bYrfWaaqGrRQQGkNdmYw6AmaAUvYeUMNTWQtvb796ikLdmTchRmOlOiIJ1TDXfWgVx1QkUlQ6Hew==}
+
+  '@types/node@22.19.21':
+    resolution: {integrity: sha512-VMeFBSCKQKmm2swI2kW51SFusDqekC6q9trBCvJ/JliDchFSuoYYKN7yVNjPthP1HKZcx3U1gI/wTcEBjEFKTA==}
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
@@ -2368,6 +2399,10 @@ snapshots:
   '@types/json-schema@7.0.15': {}
 
   '@types/node@22.19.19':
+    dependencies:
+      undici-types: 6.21.0
+
+  '@types/node@22.19.21':
     dependencies:
       undici-types: 6.21.0
 
