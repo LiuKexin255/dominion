@@ -16,7 +16,20 @@ func TestParse(t *testing.T) {
 		Description: "game-session HTTP REST interface test",
 		Suites: []*Suite{
 			{
-				Name:   "default",
+				Name:    "default",
+				Deploy:  "//projects/game/testplan/test_deploy.yaml",
+				Timeout: 60,
+				Endpoint: map[string]Endpoints{
+					"http": {
+						"public": "https://game.liukexin.com",
+					},
+				},
+				Cases: []string{
+					"//projects/game/testplan:testplan_test",
+				},
+			},
+			{
+				Name:   "backward-compat",
 				Deploy: "//projects/game/testplan/test_deploy.yaml",
 				Endpoint: map[string]Endpoints{
 					"http": {

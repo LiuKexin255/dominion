@@ -3,6 +3,14 @@ description: game-session HTTP REST interface test
 suites:
   - name: default
     deploy: //projects/game/testplan/test_deploy.yaml
+    timeout: 60
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test
+  - name: backward-compat
+    deploy: //projects/game/testplan/test_deploy.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
