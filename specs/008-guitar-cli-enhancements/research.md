@@ -40,21 +40,22 @@
 - Reject duplicate names during validation: rejected because the spec requires first-match semantics.
 - Run all matching duplicate suites: rejected by the acceptance scenario requiring only the first match.
 
-## Decision: Model suite timeout as optional seconds on `config.Suite`
+## Decision: Model suite timeout as plain `int` on `config.Suite` (0 = not set = fallback to global)
 
-**Rationale**: YAML needs a `timeout` field in seconds and omission must be distinguishable from explicit `0`. A pointer or equivalent optional integer field lets runtime distinguish omitted timeout from explicit no test-level timeout.
+**Rationale**: YAML needs a `timeout` field in seconds. With two-way semantics (omitted/0 = fallback to global, >0 = suite timeout), a plain `int` with `0` meaning "not set" is simpler than a pointer type. Both omitted and explicit `0` fall back to the global `--timeout`.
 
 **Alternatives considered**:
 - Use `time.Duration` in YAML: rejected because the spec says seconds and examples use integers.
-- Use non-pointer integer only: rejected because omitted and `0` would be indistinguishable, conflicting with fallback semantics.
+- Use pointer/optional integer: rejected because two-way semantics make omission and `0` equivalent, so the pointer distinction is unnecessary.
 
-## Decision: Apply suite timeout only around `bazel test`, while global timeout remains overall run context
+## Decision: Use context nesting for both global and suite timeouts
 
-**Rationale**: The spec assumption states suite timeout applies to the test execution phase only and does not cover deploy/cleanup. The existing global `--timeout` wraps the whole run. Effective test timeout should be the shorter positive value when both global and suite timeouts exist; explicit suite `timeout: 0` means no suite test-level deadline while the global run context still bounds the process.
+**Rationale**: The spec assumption states suite timeout applies to the test execution phase only and does not cover deploy/cleanup. The existing global `--timeout` wraps the whole run via a context deadline. The suite timeout creates a child context with its own deadline — if the suite timeout fires first, the test is interrupted; if the global timeout fires first, the entire run is interrupted. No manual `min()` calculation is needed.
 
 **Alternatives considered**:
 - Apply suite timeout to deploy/test/cleanup: rejected by the feature assumption.
 - Replace the global timeout with per-suite timeout: rejected because existing global timeout behavior must remain compatible.
+- Manual `min()` of global and suite timeouts: rejected because context nesting achieves the same effect naturally.
 
 ## Decision: Keep empty `suites` invalid
 

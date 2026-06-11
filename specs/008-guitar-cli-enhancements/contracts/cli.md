@@ -41,9 +41,8 @@ guitar run [--timeout=10m] [--suite <suite-name>] [-v|--verbose] <plan.yaml>
 ### Timeout behavior
 
 - Suite timeout applies only to `bazel test` for that suite.
-- Omitted suite timeout: `bazel test` uses the global `--timeout` as fallback.
-- Positive suite timeout: `bazel test` uses that deadline, shortened if the positive global run timeout is smaller.
-- `timeout: 0`: no suite-level `bazel test` deadline is added; the global run context still bounds the process when `--timeout` is positive.
+- Omitted or `0` suite timeout: `bazel test` uses the global `--timeout` as fallback.
+- Positive suite timeout: `bazel test` uses that deadline; the global run `--timeout` still bounds the full run context via context nesting.
 
 ## Help output
 

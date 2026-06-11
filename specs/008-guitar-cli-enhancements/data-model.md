@@ -21,16 +21,15 @@ Represents one deploy/test/cleanup unit in `suites`.
 | `deploy` | string | yes | Deploy config path, resolved through existing workspace rules. |
 | `endpoint` | map(protocol -> name -> URL) | no | Existing endpoint env mapping and validation remain. |
 | `cases` | list of Bazel targets | yes | Bazel large-test targets passed to `bazel test --config=largetest`. |
-| `timeout` | optional integer seconds | no | New field. Omitted means use global `--timeout` as test timeout fallback. `0` means no suite-level test timeout. Positive values set the suite test timeout. Negative or non-numeric values are invalid. |
+| `timeout` | optional integer seconds | no | New field. Omitted or `0` means use global `--timeout` as test timeout fallback. Positive values set the suite test timeout. Negative or non-numeric values are invalid. |
 
 ### Suite timeout state
 
 ```text
-omitted ──validate──> fallback to global --timeout for bazel test
-0       ──validate──> no suite-level test timeout; still bounded by global run context
->0      ──validate──> suite test timeout in seconds, shortened by positive global timeout when global is smaller
-<0      ──validate──> error
-non-int ──parse─────> error
+omitted/0 ──validate──> fallback to global --timeout for bazel test
+>0        ──validate──> suite test timeout in seconds
+<0        ──validate──> error
+non-int   ──parse─────> error
 ```
 
 ## Suite Filter
@@ -69,4 +68,4 @@ Transient reporting model used by the run reporter.
 - Suite `env` remains unsupported when set.
 - Endpoint names keep existing `^[a-zA-Z][a-zA-Z0-9]*$` validation.
 - Deploy config must remain test type and use `{scope}.{{run}}` naming.
-- Suite timeout must be omitted, zero, or positive integer seconds.
+- Suite timeout must be omitted, zero (both fallback to global), or positive integer seconds.

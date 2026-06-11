@@ -24,7 +24,7 @@ Enhance the Go-based `guitar` large-test orchestration CLI so multi-suite runs a
 
 **Performance Goals**: Suite filtering avoids all deploy/test/cleanup calls for non-selected suites. Reporter formatting adds negligible overhead relative to deploy and Bazel test execution. Per-suite timeouts terminate `bazel test` promptly at the configured deadline.
 
-**Constraints**: Use Bazel for all build/test commands; update Go code with `bazel run //:go -- fmt`; update Gazelle-generated `BUILD.bazel` only through `bazel run //:gazelle tools/test/guitar` if package files change; keep existing no-`env` suite rule; do not change deploy semantics; colors must be disabled for non-TTY output and unsupported/disabled terminals; suite `timeout` is seconds in YAML, accepts `0` as no test-level timeout, rejects negatives/non-numbers via parse/validate; global `--timeout` remains overall run context and suite test timeout fallback.
+**Constraints**: Use Bazel for all build/test commands; update Go code with `bazel run //:go -- fmt`; update Gazelle-generated `BUILD.bazel` only through `bazel run //:gazelle tools/test/guitar` if package files change; keep existing no-`env` suite rule; do not change deploy semantics; colors must be disabled for non-TTY output and unsupported/disabled terminals; suite `timeout` is seconds in YAML, accepts `0` as fallback to global timeout, rejects negatives/non-numbers via parse/validate; global `--timeout` remains overall run context and suite test timeout fallback.
 
 **Scale/Scope**: Modify one CLI command package, three guitar library packages, docs/example YAML, and their tests. No service code, database, proto, TypeScript, or production deployment configuration changes.
 
@@ -108,7 +108,7 @@ No constitution violations.
 - `tools/test/guitar/cmd/guitar_test.go`: add parse cases for `run --suite suite-b <plan.yaml>`, reject empty suite values, reject `--suite` on `validate` because suite selection is run-only, and update help text assertions.
 - `tools/test/guitar/pkg/config/config_test.go`: add `timeout` fixture coverage for omitted, positive, and zero values; ensure existing fixtures without timeout remain equal except zero-value field.
 - `tools/test/guitar/pkg/validate/validate_test.go`: add negative timeout rejection and positive/zero timeout acceptance.
-- `tools/test/guitar/pkg/run/run_test.go`: add only-selected-suite execution, nonexistent-suite error with available names, first duplicate name selection, per-suite timeout override, global timeout fallback, `timeout: 0` no test-level timeout, output title/indent/status checks, failure-color/status checks, and no-color checks for non-TTY writer mode.
+- `tools/test/guitar/pkg/run/run_test.go`: add only-selected-suite execution, nonexistent-suite error with available names, first duplicate name selection, per-suite timeout override, global timeout fallback, `timeout: 0` fallback to global timeout, output title/indent/status checks, failure-color/status checks, and no-color checks for non-TTY writer mode.
 - `tools/test/guitar/example.guitar.yaml`: validate after update with `guitar validate` or parser tests; keep it as documentation fixture if deploy paths are illustrative rather than runnable.
 
 ## Verification Plan

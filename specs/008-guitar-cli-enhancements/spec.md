@@ -57,7 +57,7 @@
 1. **Given** 一个 suite 配置了 `timeout: 60`（60 秒）, **When** 执行该 suite 的测试, **Then** 测试命令使用 60 秒超时，超时后终止并报错
 2. **Given** 一个 suite 未配置 timeout 字段, **When** 执行该 suite 的测试, **Then** 使用命令行全局 `--timeout` 参数的值作为回退超时
 3. **Given** 一个包含两个 suite 的测试计划，suite-a 配置 timeout: 30，suite-b 配置 timeout: 120, **When** 执行 `guitar run <plan.yaml>`, **Then** suite-a 使用 30 秒超时执行，suite-b 使用 120 秒超时执行
-4. **Given** 一个 suite 配置了 `timeout: 0`（无超时）, **When** 执行该 suite 的测试, **Then** 不设置测试级别的超时限制，仅受全局超时约束
+4. **Given** 一个 suite 配置了 `timeout: 0`, **When** 执行该 suite 的测试, **Then** 使用全局 `--timeout` 作为回退超时（与省略 timeout 行为一致）
 
 ---
 
@@ -80,7 +80,7 @@
 - **FR-005**: 系统（`guitar run`）必须支持 `--suite` 命令行参数，参数值为 suite 名称，仅执行匹配名称的 suite
 - **FR-006**: 当 `--suite` 指定的名称在测试计划中不存在时，系统必须报错并显示所有可用的 suite 名称
 - **FR-007**: 当未指定 `--suite` 参数时，系统必须按原有行为执行所有 suite
-- **FR-008**: 系统必须支持在 YAML 配置的 suite 级别新增 `timeout` 字段，值为正整数（单位：秒）
+- **FR-008**: 系统必须支持在 YAML 配置的 suite 级别新增 `timeout` 字段，值为非负整数，0 表示使用全局超时
 - **FR-009**: 当 suite 配置了 `timeout` 时，系统必须在执行该 suite 的测试命令时使用该超时值
 - **FR-010**: 当 suite 未配置 `timeout` 时，系统必须使用命令行全局 `--timeout` 参数的值
 - **FR-011**: `guitar validate` 必须校验 `timeout` 字段为非负整数，负数或非数值应在校验阶段报错
@@ -106,5 +106,4 @@
 - `--suite` 参数仅支持精确匹配 suite 名称，不支持通配符或正则表达式
 - suite 级别的 `timeout` 仅作用于测试执行阶段（`bazel test`），不覆盖部署和清理阶段
 - suite 的 `timeout` 字段是可选的，省略时回退到全局超时
-- 当全局超时和 suite 超时同时存在时，取两者中较短的作为实际超时上限
 - 示例 YAML 配置文件（`example.guitar.yaml`）需要更新以展示新增的 `timeout` 字段

@@ -21,8 +21,7 @@ suites:
 
 | Value | Valid | Meaning |
 |-------|-------|---------|
-| omitted | yes | Use CLI global `--timeout` as test timeout fallback. |
-| `0` | yes | Do not set a suite-level test timeout. |
+| omitted or `0` | yes | Use CLI global `--timeout` as test timeout fallback. |
 | positive integer | yes | Use that many seconds as the suite test timeout. |
 | negative integer | no | `guitar validate` fails. |
 | non-integer/non-number | no | YAML parse or validation fails. |
