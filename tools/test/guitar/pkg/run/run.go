@@ -40,7 +40,8 @@ var (
 
 // options configures Run behavior.
 type options struct {
-	timeout time.Duration
+	timeout     time.Duration
+	suiteFilter string
 }
 
 // Option configures Run behavior.
@@ -50,6 +51,13 @@ type Option func(*options)
 func WithTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.timeout = d
+	}
+}
+
+// WithSuite filters execution to the suite with the given exact name.
+func WithSuite(name string) Option {
+	return func(o *options) {
+		o.suiteFilter = name
 	}
 }
 

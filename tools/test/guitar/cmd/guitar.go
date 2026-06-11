@@ -20,15 +20,17 @@ const (
 	commandRun      = "run"
 
 	flagTimeout = "timeout"
+	flagSuite   = "suite"
 
 	defaultTimeout = 10 * time.Minute
 )
 
 type options struct {
-	command string
-	target  string
-	timeout time.Duration
-	verbose bool
+	command   string
+	target    string
+	timeout   time.Duration
+	verbose   bool
+	suiteName string
 }
 
 type commandExecFunc func(opts *options) error
@@ -84,6 +86,11 @@ func parseOptions(args []string) (*options, error) {
 	fs.DurationVar(&timeout, flagTimeout, defaultTimeout, "overall execution timeout")
 	fs.BoolVarP(&verbose, "verbose", "v", false, "show hidden information such as trace ID")
 
+	var suiteName string
+	if command == commandRun {
+		fs.StringVar(&suiteName, flagSuite, "", "run only the suite with this exact name")
+	}
+
 	if err := fs.Parse(args[1:]); err != nil {
 		return nil, err
 	}
@@ -102,6 +109,16 @@ func parseOptions(args []string) (*options, error) {
 
 	if opts.target == "" {
 		return nil, fmt.Errorf("target must not be empty")
+	}
+
+	if command == commandRun {
+		if suiteFlag := fs.Lookup(flagSuite); suiteFlag != nil && suiteFlag.Changed {
+			trimmed := strings.TrimSpace(suiteName)
+			if trimmed == "" {
+				return nil, fmt.Errorf("suite name must not be empty")
+			}
+			opts.suiteName = trimmed
+		}
 	}
 
 	return opts, nil
@@ -131,7 +148,11 @@ func runCommand(opts *options) error {
 	if opts.verbose {
 		fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
 	}
-	return run.Run(ctx, cfg, run.WithTimeout(opts.timeout))
+	runOpts := []run.Option{run.WithTimeout(opts.timeout)}
+	if opts.suiteName != "" {
+		runOpts = append(runOpts, run.WithSuite(opts.suiteName))
+	}
+	return run.Run(ctx, cfg, runOpts...)
 }
 
 func isHelpArgs(args []string) bool {
@@ -153,9 +174,10 @@ func usageText() string {
 		"",
 		"Commands:",
 		"  validate [--timeout=10m] <plan.yaml>",
-		"  run [--timeout=10m] <plan.yaml>",
+		"  run [--timeout=10m] [--suite <name>] <plan.yaml>",
 		"",
 		"Flags:",
-		"  -v, --verbose   show hidden information such as trace ID",
+		"  --suite <name>   run only the suite with this exact name",
+		"  -v, --verbose    show hidden information such as trace ID",
 	}, "\n") + "\n"
 }
