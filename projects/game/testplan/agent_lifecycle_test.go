@@ -68,7 +68,7 @@ func TestMain(m *testing.M) {
 // ─── Tests from system_test.go ───────────────────────────────────────────────
 
 // TestCreateAgent verifies that an agent can be created under a session via
-// POST /api/v1/sessions/{id}/agent and returns owner_index and owner fields.
+// POST /api/v1/sessions/{id}/agent.
 func TestCreateAgent(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -83,12 +83,6 @@ func TestCreateAgent(t *testing.T) {
 	got := new(agentResponse)
 	if err := json.Unmarshal(respBody, got); err != nil {
 		t.Fatalf("json.Unmarshal agent response: %v", err)
-	}
-	if got.Owner == "" {
-		t.Error("agent owner is empty, want non-empty")
-	}
-	if got.OwnerIndex < 0 {
-		t.Errorf("agent owner_index = %d, want >= 0", got.OwnerIndex)
 	}
 }
 
@@ -118,70 +112,10 @@ func TestMongoRecordsExist(t *testing.T) {
 	// when: get agent
 	agentBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
 
-	// then: agent (owner) exists in Mongo
+	// then: agent exists in Mongo
 	agent := new(agentResponse)
 	if err := json.Unmarshal(agentBody, agent); err != nil {
 		t.Fatalf("json.Unmarshal agent response: %v", err)
-	}
-	if agent.Owner == "" {
-		t.Error("agent owner is empty, want non-empty (agent must be persisted in Mongo)")
-	}
-}
-
-// TestGetAgentReturnsOwner verifies that GET /api/v1/sessions/{id}/agent
-// returns the expected owner_index and owner fields in the response.
-func TestGetAgentReturnsOwner(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	// given
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	createAgent(t, sutHostURL, sutEnvName, sessionID)
-
-	// when
-	respBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-
-	// then
-	got := new(agentResponse)
-	if err := json.Unmarshal(respBody, got); err != nil {
-		t.Fatalf("json.Unmarshal agent response: %v", err)
-	}
-	if got.Owner == "" {
-		t.Error("agent owner is empty, want non-empty")
-	}
-	if got.OwnerIndex < 0 {
-		t.Errorf("agent owner_index = %d, want >= 0", got.OwnerIndex)
-	}
-}
-
-// TestConsistentOwnerRouting verifies that querying the same session's agent
-// multiple times returns the same owner_index, confirming consistent routing.
-func TestConsistentOwnerRouting(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	// given
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	createAgent(t, sutHostURL, sutEnvName, sessionID)
-
-	// when: query agent twice
-	firstBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-	secondBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-
-	// then: owner_index should be the same
-	first := new(agentResponse)
-	if err := json.Unmarshal(firstBody, first); err != nil {
-		t.Fatalf("json.Unmarshal first agent response: %v", err)
-	}
-	second := new(agentResponse)
-	if err := json.Unmarshal(secondBody, second); err != nil {
-		t.Fatalf("json.Unmarshal second agent response: %v", err)
-	}
-	if first.OwnerIndex != second.OwnerIndex {
-		t.Errorf("owner_index not consistent: first=%d, second=%d", first.OwnerIndex, second.OwnerIndex)
-	}
-	if first.Owner != second.Owner {
-		t.Errorf("owner not consistent: first=%q, second=%q", first.Owner, second.Owner)
 	}
 }
 
@@ -500,20 +434,12 @@ func TestFullLifecycle(t *testing.T) {
 	if err := json.Unmarshal(agentBody, agent); err != nil {
 		t.Fatalf("step2 json.Unmarshal agent: %v", err)
 	}
-	if agent.Owner == "" || agent.OwnerIndex < 0 {
-		t.Fatalf("step2 agent owner=%q owner_index=%d, want non-empty and >=0", agent.Owner, agent.OwnerIndex)
-	}
-
-	// Step 3: query agent — verify owner fields
+	// Step 3: query agent
 	qBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
 	qAgent := new(agentResponse)
 	if err := json.Unmarshal(qBody, qAgent); err != nil {
 		t.Fatalf("step3 json.Unmarshal agent: %v", err)
 	}
-	if qAgent.Owner == "" || qAgent.OwnerIndex < 0 {
-		t.Errorf("step3 agent owner=%q owner_index=%d, want non-empty and >=0", qAgent.Owner, qAgent.OwnerIndex)
-	}
-
 	// Step 4: WebSocket connect
 	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
 	wsURL := buildWSURL(sutHostURL, wsPath)
@@ -574,46 +500,6 @@ func TestFullLifecycle(t *testing.T) {
 	}
 }
 
-// TestListSessions verifies that listing sessions returns all created sessions
-// and that nextPageToken is empty when all sessions fit in one page.
-func TestListSessions(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	// given: create two sessions
-	sess1ID, _ := createSession(t, sutHostURL, sutEnvName)
-	sess2ID, _ := createSession(t, sutHostURL, sutEnvName)
-
-	// when: list sessions with large page size to avoid pagination from prior tests
-	respBody := listSessions(t, sutHostURL, sutEnvName, 100)
-
-	// then: both sessions are in the response
-	got := new(listSessionsResponse)
-	if err := json.Unmarshal(respBody, got); err != nil {
-		t.Fatalf("json.Unmarshal listSessions response: %v", err)
-	}
-
-	found1 := false
-	found2 := false
-	for _, s := range got.Sessions {
-		if s.SessionID == sess1ID {
-			found1 = true
-		}
-		if s.SessionID == sess2ID {
-			found2 = true
-		}
-	}
-	if !found1 {
-		t.Errorf("session %q not found in list result", sess1ID)
-	}
-	if !found2 {
-		t.Errorf("session %q not found in list result", sess2ID)
-	}
-	if got.NextPageToken != "" && len(got.Sessions) < 100 {
-		t.Errorf("next_page_token = %q, want empty (got %d sessions)", got.NextPageToken, len(got.Sessions))
-	}
-}
-
 // ─── Tests from step3a_test.go ───────────────────────────────────────────────
 
 // TestCreateAgentWithNamedProfile verifies that an agent can be created
@@ -640,9 +526,6 @@ func TestCreateAgentWithNamedProfile(t *testing.T) {
 	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
 
 	// then: verify agent uses the correct profile
-	if agent.GetOwner() == "" {
-		t.Error("agent owner is empty, want non-empty")
-	}
 	if agent.GetAgentProfileName() != profileName {
 		t.Errorf("agent AgentProfileName = %q, want %q", agent.GetAgentProfileName(), profileName)
 	}

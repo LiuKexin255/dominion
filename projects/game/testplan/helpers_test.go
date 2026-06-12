@@ -39,11 +39,10 @@ type sessionResponse struct {
 // agentResponse mirrors the Agent proto message returned via gRPC-gateway
 // with protojson camelCase field names.
 type agentResponse struct {
-	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
-	OwnerIndex int32  `json:"ownerIndex"`
-	Owner      string `json:"owner"`
-	CreateTime string `json:"createTime"`
+	Name            string `json:"name"`
+	SessionID       string `json:"sessionId"`
+	AgentProfileName string `json:"agentProfileName,omitempty"`
+	CreateTime      string `json:"createTime"`
 }
 
 // listSessionsResponse mirrors the ListSessionsResponse proto message.

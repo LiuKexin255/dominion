@@ -202,8 +202,7 @@ func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent
 // CreateAgentWithProfile creates a new agent for a session with an agent profile via POST to /api/v1/sessions/{sessionID}/agent.
 func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, profileName string) (*game.Agent, error) {
 	body, err := protojson.Marshal(&game.CreateAgentRequest{
-		Agent:            new(game.Agent),
-		AgentProfileName: profileName,
+		Agent: &game.Agent{AgentProfileName: profileName},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create agent with profile: %w", err)

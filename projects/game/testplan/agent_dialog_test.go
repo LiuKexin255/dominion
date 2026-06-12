@@ -44,9 +44,6 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 	if agent.GetAgentProfileName() != profileName {
 		t.Errorf("agent profile name = %q, want %q", agent.GetAgentProfileName(), profileName)
 	}
-	if agent.GetOwner() == "" {
-		t.Error("agent owner is empty")
-	}
 
 	// Connect WebSocket
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -360,10 +357,7 @@ func TestAgentDialogCleanup(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-	if agent.GetOwner() == "" {
-		t.Fatal("agent owner is empty, want non-empty")
-	}
+	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
 
 	// Step 1: verify agent exists immediately after creation
 	status, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)

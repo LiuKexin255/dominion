@@ -231,12 +231,28 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
+      // --- echo payload: echo back ---
+      if (frame.payload === "echo" || frame.echo) {
+        const echoData =
+          frame.echo && typeof frame.echo === "object" && "data" in frame.echo
+            ? (frame.echo as { data?: string }).data ?? ""
+            : "";
+        const echoFrame: AgentFrame = buildFrame(
+          sessionId,
+          invokeId,
+          FrameSender.FRAME_SENDER_SYSTEM,
+          {
+            echo: { data: echoData },
+          },
+        );
+        stream.write(echoFrame);
+        return;
+      }
+
       // --- deprecated payloads: silently ignore ---
       if (
         frame.payload === "screenshot" ||
         frame.screenshot ||
-        frame.payload === "echo" ||
-        frame.echo ||
         frame.payload === "operation" ||
         frame.operation
       ) {

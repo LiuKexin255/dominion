@@ -171,8 +171,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	proto := &game.Agent{
 		Name:       "sessions/sess-agent-1/agent",
 		SessionId:  "sess-agent-1",
-		OwnerIndex: 0,
-		Owner:      "user",
 		CreateTime: timestamppb.New(createTime),
 	}
 
@@ -185,12 +183,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	}
 	if view.SessionID != "sess-agent-1" {
 		t.Fatalf("expected SessionID %q, got %q", "sess-agent-1", view.SessionID)
-	}
-	if view.OwnerIndex != 0 {
-		t.Fatalf("expected OwnerIndex 0, got %d", view.OwnerIndex)
-	}
-	if view.Owner != "user" {
-		t.Fatalf("expected Owner %q, got %q", "user", view.Owner)
 	}
 	if view.CreateTime != "2024-06-15T10:30:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-06-15T10:30:00Z", view.CreateTime)
@@ -207,9 +199,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	}
 	if strings.Contains(jsonStr, `"session_id"`) {
 		t.Fatalf("expected JSON to NOT contain 'session_id', got: %s", jsonStr)
-	}
-	if !strings.Contains(jsonStr, `"ownerIndex"`) {
-		t.Fatalf("expected JSON to contain 'ownerIndex', got: %s", jsonStr)
 	}
 	if !strings.Contains(jsonStr, `"name"`) {
 		t.Fatalf("expected JSON to contain 'name', got: %s", jsonStr)

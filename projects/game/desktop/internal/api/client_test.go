@@ -399,7 +399,7 @@ func TestClient_CreateAgent(t *testing.T) {
 			name:       "success",
 			sessionID:  "sess-1",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","ownerIndex":0,"owner":"user","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -458,9 +458,6 @@ func TestClient_CreateAgent(t *testing.T) {
 			if agent.GetSessionId() != tt.sessionID {
 				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.GetSessionId())
 			}
-			if agent.GetOwner() != "user" {
-				t.Errorf("expected owner %q, got %q", "user", agent.GetOwner())
-			}
 		})
 	}
 }
@@ -481,7 +478,7 @@ func TestClient_GetAgent(t *testing.T) {
 			name:       "success",
 			sessionID:  "sess-1",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","ownerIndex":0,"owner":"user","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{

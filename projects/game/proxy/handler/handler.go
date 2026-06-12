@@ -79,10 +79,7 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	}
 	client := agentclient.NewAgentClient(connRef.Conn)
 
-	agentProfileName := req.GetAgentProfileName()
-	if agentProfileName == "" {
-		agentProfileName = req.GetAgent().GetAgentProfileName()
-	}
+	agentProfileName := req.GetAgent().GetAgentProfileName()
 
 	agent, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID, AgentProfileName: agentProfileName})
 	if err != nil {

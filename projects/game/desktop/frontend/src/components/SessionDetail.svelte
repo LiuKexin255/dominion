@@ -100,10 +100,6 @@
           <div class="info-grid">
             <span class="info-key">Name</span>
             <span class="info-value">{agent.name}</span>
-            <span class="info-key">Owner</span>
-            <span class="info-value">{agent.owner}</span>
-            <span class="info-key">Owner Index</span>
-            <span class="info-value">{agent.ownerIndex}</span>
           </div>
         </div>
       {/if}

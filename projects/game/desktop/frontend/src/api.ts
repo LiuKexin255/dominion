@@ -29,8 +29,6 @@ export interface Session {
 export interface Agent {
   name: string
   sessionId: string
-  ownerIndex: number
-  owner: string
   createTime: string
 }
 

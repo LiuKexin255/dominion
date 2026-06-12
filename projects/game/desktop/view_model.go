@@ -24,8 +24,6 @@ type ListSessionsView struct {
 type AgentView struct {
 	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
-	OwnerIndex int32  `json:"ownerIndex"`
-	Owner      string `json:"owner,omitempty"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -65,8 +63,6 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	return &AgentView{
 		Name:       a.GetName(),
 		SessionID:  a.GetSessionId(),
-		OwnerIndex: a.GetOwnerIndex(),
-		Owner:      a.GetOwner(),
 		CreateTime: timestampString(a.GetCreateTime()),
 	}
 }
