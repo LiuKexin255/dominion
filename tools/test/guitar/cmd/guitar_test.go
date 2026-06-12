@@ -87,12 +87,12 @@ func TestParseOptions_Run(t *testing.T) {
 		{
 			name:    "run with empty suite flag",
 			args:    []string{"run", "--suite", "", "plan.yaml"},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "run with whitespace suite flag",
 			args:    []string{"run", "--suite", "  ", "plan.yaml"},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 

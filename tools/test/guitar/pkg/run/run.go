@@ -81,15 +81,17 @@ func Run(ctx context.Context, cfg *guitarconfig.Config, opts ...Option) error {
 	r := NewReporter(stdout)
 
 	if o.suiteFilter != "" {
-		var names []string
 		for _, s := range cfg.Suites {
-			names = append(names, s.Name)
 			if s.Name == o.suiteFilter {
 				cfg.Suites = []*guitarconfig.Suite{s}
 				break
 			}
 		}
-		if len(cfg.Suites) == 0 || cfg.Suites[0].Name != o.suiteFilter {
+		if len(cfg.Suites) != 1 || cfg.Suites[0].Name != o.suiteFilter {
+			names := make([]string, len(cfg.Suites))
+			for i, s := range cfg.Suites {
+				names[i] = s.Name
+			}
 			return fmt.Errorf("suite %q not found. Available suites: %s", o.suiteFilter, strings.Join(names, ", "))
 		}
 	}
@@ -97,10 +99,10 @@ func Run(ctx context.Context, cfg *guitarconfig.Config, opts ...Option) error {
 	for _, suite := range cfg.Suites {
 		err := runSuite(ctx, suite, r)
 		if err != nil {
-			r.SuiteStatus(suite.Name, "failure", err)
+			r.SuiteStatus(suite.Name, statusFailure, err)
 			return err
 		}
-		r.SuiteStatus(suite.Name, "success", nil)
+		r.SuiteStatus(suite.Name, statusSuccess, nil)
 	}
 
 	return nil

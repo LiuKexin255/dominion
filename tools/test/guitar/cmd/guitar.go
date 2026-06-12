@@ -112,13 +112,7 @@ func parseOptions(args []string) (*options, error) {
 	}
 
 	if command == commandRun {
-		if suiteFlag := fs.Lookup(flagSuite); suiteFlag != nil && suiteFlag.Changed {
-			trimmed := strings.TrimSpace(suiteName)
-			if trimmed == "" {
-				return nil, fmt.Errorf("suite name must not be empty")
-			}
-			opts.suiteName = trimmed
-		}
+		opts.suiteName = strings.TrimSpace(suiteName)
 	}
 
 	return opts, nil
@@ -148,11 +142,7 @@ func runCommand(opts *options) error {
 	if opts.verbose {
 		fmt.Fprintf(stdout, "trace ID: %s\n", tracecontext.ID(ctx))
 	}
-	runOpts := []run.Option{run.WithTimeout(opts.timeout)}
-	if opts.suiteName != "" {
-		runOpts = append(runOpts, run.WithSuite(opts.suiteName))
-	}
-	return run.Run(ctx, cfg, runOpts...)
+	return run.Run(ctx, cfg, run.WithTimeout(opts.timeout), run.WithSuite(opts.suiteName))
 }
 
 func isHelpArgs(args []string) bool {

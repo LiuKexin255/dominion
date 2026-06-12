@@ -11,6 +11,12 @@ const (
 	colorRed    = "\x1b[31m"
 	colorYellow = "\x1b[33m"
 	colorReset  = "\x1b[0m"
+
+	statusSuccess = "success"
+	statusFailure = "failure"
+	statusRunning = "running"
+
+	termDumb = "dumb"
 )
 
 // checkTerminal reports whether the writer is attached to a terminal that
@@ -49,11 +55,11 @@ func (r *Reporter) SuiteStatus(name string, status string, err error) {
 	s := status
 	if r.useColor {
 		switch status {
-		case "success":
+		case statusSuccess:
 			s = colorGreen + status + colorReset
-		case "failure":
+		case statusFailure:
 			s = colorRed + status + colorReset
-		case "running":
+		case statusRunning:
 			s = colorYellow + status + colorReset
 		}
 	}
@@ -85,5 +91,5 @@ func defaultCheckTerminal(w io.Writer) bool {
 		return false
 	}
 	term := os.Getenv("TERM")
-	return term != "" && term != "dumb"
+	return term != "" && term != termDumb
 }
