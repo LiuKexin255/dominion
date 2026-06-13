@@ -78,15 +78,15 @@ type CreateAgentProfileView struct {
 
 // AgentProfileView is the Wails view model for game.AgentProfile.
 type AgentProfileView struct {
-	Name              string   `json:"name"`
-	AgentProfileName  string   `json:"agentProfileName"`
-	Model             string   `json:"model"`
-	SystemPrompt      string   `json:"systemPrompt"`
-	SkillNames        []string `json:"skillNames"`
-	McpNames          []string `json:"mcpNames"`
-	Enabled           bool     `json:"enabled"`
-	CreateTime        string   `json:"createTime,omitempty"`
-	UpdateTime        string   `json:"updateTime,omitempty"`
+	Name             string   `json:"name"`
+	AgentProfileName string   `json:"agentProfileName"`
+	Model            string   `json:"model"`
+	SystemPrompt     string   `json:"systemPrompt"`
+	SkillNames       []string `json:"skillNames"`
+	McpNames         []string `json:"mcpNames"`
+	Enabled          bool     `json:"enabled"`
+	CreateTime       string   `json:"createTime,omitempty"`
+	UpdateTime       string   `json:"updateTime,omitempty"`
 }
 
 // ListAgentProfilesView is the Wails view model for game.ListAgentProfilesResponse.

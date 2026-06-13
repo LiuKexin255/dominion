@@ -792,11 +792,11 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 
 func TestClient_GetAgentProfile(t *testing.T) {
 	tests := []struct {
-		name              string
-		agentProfileName  string
-		statusCode        int
-		respBody          string
-		wantErr           bool
+		name             string
+		agentProfileName string
+		statusCode       int
+		respBody         string
+		wantErr          bool
 	}{
 		{
 			name:             "success",
@@ -870,11 +870,11 @@ func TestClient_GetAgentProfile(t *testing.T) {
 
 func TestClient_DeleteAgentProfile(t *testing.T) {
 	tests := []struct {
-		name              string
-		agentProfileName  string
-		statusCode        int
-		respBody          string
-		wantErr           bool
+		name             string
+		agentProfileName string
+		statusCode       int
+		respBody         string
+		wantErr          bool
 	}{
 		{
 			name:             "success",

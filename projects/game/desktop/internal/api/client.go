@@ -394,4 +394,3 @@ func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string
 	}
 	return nil
 }
-
