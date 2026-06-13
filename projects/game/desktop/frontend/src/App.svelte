@@ -284,12 +284,20 @@
         timestamp: frame.createTime || new Date().toISOString(),
       }]
     } else if (frame.text) {
-      chatMessages = [...chatMessages, {
-        sender: FrameSender.AGENT,
-        type: 'text',
-        content: frame.text.content,
-        timestamp: frame.createTime || new Date().toISOString(),
-      }]
+      const textContent = frame.text.content || ''
+      if (!textContent) return
+      const last = chatMessages[chatMessages.length - 1]
+      if (last && last.type === 'text' && last.sender === FrameSender.AGENT) {
+        last.content += textContent
+        chatMessages = [...chatMessages]
+      } else {
+        chatMessages = [...chatMessages, {
+          sender: FrameSender.AGENT,
+          type: 'text',
+          content: textContent,
+          timestamp: frame.createTime || new Date().toISOString(),
+        }]
+      }
     } else if (frame.warn) {
       chatMessages = [...chatMessages, {
         sender: FrameSender.SYSTEM,
@@ -305,7 +313,6 @@
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
     try {
-      // Add user message to chat
       chatMessages = [...chatMessages, {
         sender: FrameSender.USER,
         type: 'text',

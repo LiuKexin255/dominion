@@ -226,7 +226,7 @@ interface WailsApp {
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendAgentText(sessionId: string, text: string): Promise<AgentFrame>
+  SendAgentText(sessionId: string, text: string): Promise<void>
   /** @deprecated Use chat-based interfaces instead. */
   ExecuteOperation(
     operationID: string, screenshotID: string, sequence: number,
@@ -358,7 +358,7 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
-export async function sendAgentText(sessionId: string, text: string): Promise<AgentFrame> {
+export async function sendAgentText(sessionId: string, text: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SendAgentText(sessionId, text)

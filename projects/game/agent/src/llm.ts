@@ -16,6 +16,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { createDeepAgent } from "deepagents";
 import { initChatModel } from "langchain/chat_models/universal";
 import { randomUUID } from "node:crypto";
+import { info, error as logError } from "@dominion/common-js-logs";
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
@@ -113,11 +114,29 @@ export class RealLLMAdapter implements LLMAdapter {
     userMessage: string,
     providerSecret: string,
   ): AsyncIterable<ContentBlock> {
-    const model = await initChatModel(this.provider, {
+    info("initializing LLM model", {
       model: this.modelName,
+      provider: this.provider,
       baseUrl: this.baseUrl,
-      apiKey: providerSecret,
     });
+
+    let model: Awaited<ReturnType<typeof initChatModel>>;
+    try {
+      model = await initChatModel(this.modelName, {
+        modelProvider: this.provider,
+        apiKey: providerSecret,
+        ...(this.provider === "openai"
+          ? { configuration: { baseURL: this.baseUrl } }
+          : { anthropicApiUrl: this.baseUrl }),
+      });
+    } catch (err) {
+      logError("LLM model initialization failed", {
+        model: this.modelName,
+        provider: this.provider,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
 
     yield* this.streamFromModel(model, systemPrompt, history, userMessage);
   }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"dominion/projects/game/desktop/internal/operation"
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -378,14 +381,16 @@ func (a *App) DeleteAgentProfile(agentProfileName string) error {
 	return nil
 }
 
-// SendAgentText sends a text frame to the agent via WebSocket and returns the response frame.
-func (a *App) SendAgentText(sessionID string, text string) (*game.AgentFrame, error) {
+// SendAgentText sends a text frame to the agent via WebSocket and streams
+// back all response frames as Wails "game:frame" events. The loop terminates
+// when a wait frame is received (signalling the agent is done) or an error occurs.
+func (a *App) SendAgentText(sessionID string, text string) error {
 	if a.ws == nil {
-		return nil, fmt.Errorf("send agent text: not connected")
+		return fmt.Errorf("send agent text: not connected")
 	}
 	frameID, err := randomHex(8)
 	if err != nil {
-		return nil, fmt.Errorf("send agent text: %w", err)
+		return fmt.Errorf("send agent text: %w", err)
 	}
 
 	frame := &game.AgentFrame{
@@ -398,15 +403,49 @@ func (a *App) SendAgentText(sessionID string, text string) (*game.AgentFrame, er
 		},
 	}
 
+	a.logger.Info("backend", "SendAgentText: sending text frame", map[string]any{
+		"session_id": sessionID,
+		"frame_id":   frameID,
+		"text_len":   len(text),
+	})
+
 	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		return nil, fmt.Errorf("send agent text: %w", err)
+		a.logger.Error("backend", "SendAgentText: send failed", map[string]any{
+			"session_id": sessionID,
+			"error":      err.Error(),
+		})
+		return fmt.Errorf("send agent text: %w", err)
 	}
 
-	resp, err := a.ws.RecvFrame(a.ctx)
-	if err != nil {
-		return nil, fmt.Errorf("send agent text: receive: %w", err)
+	frameCount := 0
+	for {
+		resp, err := a.ws.RecvFrame(a.ctx)
+		if err != nil {
+			a.logger.Error("backend", "SendAgentText: recv error", map[string]any{
+				"session_id":  sessionID,
+				"frame_count": frameCount,
+				"error":       err.Error(),
+			})
+			runtime.EventsEmit(a.ctx, "game:frame", frameToMap(&game.AgentFrame{
+				SessionId: sessionID,
+				FrameId:   frameID,
+				Payload: &game.AgentFrame_Wait{
+					Wait: &game.AgentWaitFrame{},
+				},
+			}))
+			return fmt.Errorf("send agent text: receive: %w", err)
+		}
+		frameCount++
+
+		runtime.EventsEmit(a.ctx, "game:frame", frameToMap(resp))
+		if resp.GetWait() != nil {
+			a.logger.Info("backend", "SendAgentText: done", map[string]any{
+				"session_id":  sessionID,
+				"frame_count": frameCount,
+			})
+			return nil
+		}
 	}
-	return resp, nil
 }
 
 // GetAgent retrieves the agent for a session.
@@ -955,4 +994,20 @@ func randomHex(n int) (string, error) {
 		return "", fmt.Errorf("random hex: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// frameToMap serializes a proto AgentFrame to a map[string]any using protojson,
+// so that Wails EventsEmit (which uses encoding/json) produces the correct
+// camelCase field names and flattens oneof payload fields (e.g. "text", "wait")
+// to the top level — matching what the frontend expects.
+func frameToMap(frame *game.AgentFrame) map[string]any {
+	jsonBytes, err := protojson.Marshal(frame)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(jsonBytes, &m); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	return m
 }

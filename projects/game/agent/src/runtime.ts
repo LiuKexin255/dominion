@@ -9,6 +9,7 @@
 
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import { error } from "@dominion/common-js-logs";
 
 import type { ContentBlock, LLMAdapter } from "./llm";
 
@@ -182,6 +183,7 @@ export class DialogRuntime {
     } catch (err: unknown) {
       const errorMsg =
         err instanceof Error ? err.message : "Unknown error";
+      error("LLM generateTurn failed", { sessionId: this.sessionId, turnId, error: errorMsg });
       const warningBlock: ContentBlock = {
         type: "text",
         text: `Warning: ${errorMsg}`,

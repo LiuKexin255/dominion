@@ -167,10 +167,9 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 }
 
 // CreateAgent creates a new agent for a session via POST to /api/v1/sessions/{sessionID}/agent.
+// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
 func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent, error) {
-	body, err := protojson.Marshal(&game.CreateAgentRequest{
-		Agent: new(game.Agent),
-	})
+	body, err := protojson.Marshal(new(game.Agent))
 	if err != nil {
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
@@ -200,10 +199,9 @@ func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent
 }
 
 // CreateAgentWithProfile creates a new agent for a session with an agent profile via POST to /api/v1/sessions/{sessionID}/agent.
+// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
 func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, profileName string) (*game.Agent, error) {
-	body, err := protojson.Marshal(&game.CreateAgentRequest{
-		Agent: &game.Agent{AgentProfileName: profileName},
-	})
+	body, err := protojson.Marshal(&game.Agent{AgentProfileName: profileName})
 	if err != nil {
 		return nil, fmt.Errorf("create agent with profile: %w", err)
 	}

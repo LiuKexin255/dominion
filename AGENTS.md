@@ -30,7 +30,7 @@ at specs/007-dialog-agent/plan.md
   `gazelle`，或者指定目录：`bazel run //:gazelle some/subdir`。
 * `BUILD.bazel` 文件通常只由 `gazelle` 生成/更新；如需添加 `target`（如
   `oci_image`）应在 `gazelle` 生成后添加。
-* 使用 `bazel mod tidy` 更新 Bazel 依赖。
+* 使用 `bazel mod tidy` 更新 Bazel 依赖。xiu
 
 ### Golang
 

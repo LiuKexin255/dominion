@@ -7,6 +7,7 @@
 
 import * as grpc from "@grpc/grpc-js";
 import { randomUUID } from "node:crypto";
+import { info, warn, error } from "@dominion/common-js-logs";
 
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
@@ -95,6 +96,9 @@ export class Handler implements AgentServiceHandlers {
 
       callback(null, agent);
     } catch (err: unknown) {
+      const details =
+        err instanceof Error ? err.message : "Failed to create agent";
+      error("create agent failed", { sessionId, profileName, error: details });
       const code =
         err instanceof Error && "code" in err
           ? (err as grpc.ServiceError).code
@@ -272,6 +276,7 @@ export class Handler implements AgentServiceHandlers {
         const runtime = this.instances.get(sessionId);
 
         if (!runtime) {
+          warn("runtime not found for text frame", { sessionId, invokeId });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -294,8 +299,11 @@ export class Handler implements AgentServiceHandlers {
             this.providerSecret,
           );
 
+          let blockCount = 0;
           for await (const block of contentIter) {
+            blockCount++;
             if (block.type === "reasoning") {
+              info("writing thinking frame", { sessionId, invokeId, length: block.reasoning.length });
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -306,6 +314,7 @@ export class Handler implements AgentServiceHandlers {
               );
               stream.write(thinkFrame);
             } else if (block.type === "text") {
+              info("writing text frame", { sessionId, invokeId, length: block.text.length, preview: block.text.slice(0, 100) });
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -319,6 +328,7 @@ export class Handler implements AgentServiceHandlers {
           }
 
           // Emit wait frame after all response frames.
+          info("text processing completed", { sessionId, invokeId, blockCount });
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -329,9 +339,10 @@ export class Handler implements AgentServiceHandlers {
           );
           stream.write(waitFrame);
         } catch (err: unknown) {
-          // LLM error: emit warn frame, keep stream open.
+          // LLM error: emit warn frame then wait frame to unblock the client.
           const message =
             err instanceof Error ? err.message : "Processing error";
+          error("LLM processing failed", { sessionId, invokeId, error: message });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -341,17 +352,26 @@ export class Handler implements AgentServiceHandlers {
             },
           );
           stream.write(warnFrame);
+
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            invokeId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            { wait: {} },
+          );
+          stream.write(waitFrame);
         }
       }
     });
 
     stream.on("error", (err: Error) => {
+      error("connect stream error", { error: err.message });
       // Unrecoverable: end the stream.
       stream.end();
     });
 
     stream.on("end", () => {
-      // Client closed their side.
+      info("connect stream ended");
     });
   };
 }

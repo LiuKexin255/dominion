@@ -424,12 +424,9 @@ func TestClient_CreateAgent(t *testing.T) {
 				}
 
 				body, _ := io.ReadAll(r.Body)
-				req := new(game.CreateAgentRequest)
+				req := new(game.Agent)
 				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
-					t.Fatalf("failed to parse request body as CreateAgentRequest: %v", err)
-				}
-				if req.GetAgent() == nil {
-					t.Errorf("expected body to contain 'agent' field, got nil agent in CreateAgentRequest")
+					t.Fatalf("failed to parse request body as Agent: %v", err)
 				}
 
 				w.WriteHeader(tt.statusCode)
