@@ -123,7 +123,7 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 
 	createReq := &game.CreateAgentProfileRequest{
 		AgentProfileName: "test-profile",
-		Model:            "gpt-4",
+		Model:            "opencode-go/deepseek-v4-pro",
 		SystemPrompt:     "You are a helpful assistant.",
 		SkillNames:       []string{"skill-a"},
 		McpNames:         []string{"mcp-server-1"},
@@ -141,8 +141,8 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	if created.GetAgentProfileName() != "test-profile" {
 		t.Fatalf("CreateAgentProfile() agent_profile_name = %q, want %q", created.GetAgentProfileName(), "test-profile")
 	}
-	if created.GetModel() != "gpt-4" {
-		t.Fatalf("CreateAgentProfile() model = %q, want %q", created.GetModel(), "gpt-4")
+	if created.GetModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("CreateAgentProfile() model = %q, want %q", created.GetModel(), "opencode-go/deepseek-v4-pro")
 	}
 	if created.GetSystemPrompt() != "You are a helpful assistant." {
 		t.Fatalf("CreateAgentProfile() system_prompt = %q, want %q", created.GetSystemPrompt(), "You are a helpful assistant.")
@@ -242,7 +242,7 @@ func TestPromptService_DeleteSuccess(t *testing.T) {
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
 		AgentProfileName: "to-delete",
-		Model:            "gpt-4",
+		Model:            "opencode-go/deepseek-v4-pro",
 		Enabled:          true,
 	})
 	assertStatusCode(t, err, codes.OK)
@@ -316,7 +316,7 @@ func Test_agentProfileToProto(t *testing.T) {
 			name: "profile with fields",
 			profile: &domain.AgentProfile{
 				AgentProfileName: "test",
-				Model:            "gpt-4",
+				Model:            "opencode-go/deepseek-v4-pro",
 				Enabled:          true,
 				CreateTime:       time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 				UpdateTime:       time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),

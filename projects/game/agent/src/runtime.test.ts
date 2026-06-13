@@ -126,13 +126,13 @@ describe("createWithProfile", () => {
     const runtime = DialogRuntime.createWithProfile(
       "sess-1",
       "helpful-assistant",
-      "deepseek-v4",
+      "opencode-go/deepseek-v4",
       "You are a helpful assistant.",
     );
 
     expect(runtime.sessionId).toBe("sess-1");
     expect(runtime.profileName).toBe("helpful-assistant");
-    expect(runtime.copiedModel).toBe("deepseek-v4");
+    expect(runtime.copiedModel).toBe("opencode-go/deepseek-v4");
     expect(runtime.copiedSystemPrompt).toBe("You are a helpful assistant.");
     expect(runtime.status).toBe("idle");
     expect(runtime.createdAt).toBeGreaterThan(0);
@@ -380,13 +380,13 @@ describe("Profile data independence", () => {
     const runtime = DialogRuntime.createWithProfile(
       "sess-7",
       "original-profile",
-      "original-model",
+      "opencode-go/original-model",
       "original system prompt",
     );
 
     // Simulate: profile was deleted or changed externally.
     // The runtime still holds the original copied data.
-    expect(runtime.copiedModel).toBe("original-model");
+    expect(runtime.copiedModel).toBe("opencode-go/original-model");
     expect(runtime.copiedSystemPrompt).toBe("original system prompt");
     expect(runtime.profileName).toBe("original-profile");
 
@@ -405,21 +405,21 @@ describe("Profile data independence", () => {
     const a = DialogRuntime.createWithProfile(
       "same-session",
       "profile-A",
-      "model-A",
+      "opencode-go/model-A",
       "prompt-A",
     );
     const b = DialogRuntime.createWithProfile(
       "same-session",
       "profile-B",
-      "model-B",
+      "opencode-go/model-B",
       "prompt-B",
     );
 
     // Each instance has its own copied data.
     expect(a.sessionId).toBe("same-session");
     expect(b.sessionId).toBe("same-session");
-    expect(a.copiedModel).toBe("model-A");
-    expect(b.copiedModel).toBe("model-B");
+    expect(a.copiedModel).toBe("opencode-go/model-A");
+    expect(b.copiedModel).toBe("opencode-go/model-B");
     expect(a.copiedSystemPrompt).toBe("prompt-A");
     expect(b.copiedSystemPrompt).toBe("prompt-B");
 
@@ -497,7 +497,7 @@ describe("Concurrent create with same sessionId", () => {
     const first = DialogRuntime.createWithProfile(
       "same-id",
       "first-profile",
-      "first-model",
+      "opencode-go/first-model",
       "first-prompt",
     );
 
@@ -505,13 +505,13 @@ describe("Concurrent create with same sessionId", () => {
     const second = DialogRuntime.createWithProfile(
       "same-id",
       "second-profile",
-      "second-model",
+      "opencode-go/second-model",
       "second-prompt",
     );
 
     // Second instance has new profile data (overwritten).
     expect(second.profileName).toBe("second-profile");
-    expect(second.copiedModel).toBe("second-model");
+    expect(second.copiedModel).toBe("opencode-go/second-model");
     expect(second.copiedSystemPrompt).toBe("second-prompt");
     expect(second.status).toBe("idle");
     expect(second.history).toHaveLength(0);
@@ -519,7 +519,7 @@ describe("Concurrent create with same sessionId", () => {
 
     // First instance is unchanged.
     expect(first.profileName).toBe("first-profile");
-    expect(first.copiedModel).toBe("first-model");
+    expect(first.copiedModel).toBe("opencode-go/first-model");
     expect(first.copiedSystemPrompt).toBe("first-prompt");
   });
 });

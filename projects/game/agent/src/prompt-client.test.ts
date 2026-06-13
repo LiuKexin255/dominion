@@ -80,7 +80,7 @@ describe("PromptClient", () => {
   describe("getProfile", () => {
     it("returns model and systemPrompt for a valid profile", async () => {
       const profileName = "my-profile";
-      const expectedModel = "gpt-4";
+      const expectedModel = "opencode-go/deepseek-v4-pro";
       const expectedSystemPrompt = "You are a helpful assistant.";
 
       mockClient.getAgentProfile.mockImplementation(
@@ -130,7 +130,7 @@ describe("PromptClient", () => {
 
     it("correctly extracts model and systemPrompt from the response", async () => {
       const profileName = "data-profile";
-      const model = "deepseek-v4";
+      const model = "opencode-go/deepseek-v4";
       const systemPrompt = "You are a code assistant.";
 
       mockClient.getAgentProfile.mockImplementation(

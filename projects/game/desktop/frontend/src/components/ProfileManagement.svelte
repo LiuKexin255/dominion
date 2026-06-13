@@ -145,7 +145,7 @@
               id="profile-model"
               type="text"
               bind:value={formModel}
-              placeholder="e.g., gpt-4o (optional)"
+              placeholder="e.g., opencode-go/deepseek-v4-pro (optional)"
             />
           </div>
 

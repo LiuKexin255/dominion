@@ -36,7 +36,7 @@ A form at the top of the page (or toggled by a "New Profile" button) collects:
 | Field | Required | Validation |
 |---|---|---|
 | Agent profile name | Yes | Non-empty string; no whitespace-only; uniqueness enforced by backend (409 AlreadyExists). |
-| Model | No | Free-text model identifier (e.g., `gpt-4o`). Defaults to empty string. |
+| Model | No | Model spec in `{provider}/{model}` format (e.g., `opencode-go/deepseek-v4-pro`). Defaults to empty string. |
 | System prompt | No | Multi-line text area. Defaults to empty string. |
 | Enabled | No | Checkbox, defaults to `true`. |
 

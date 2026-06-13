@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { AIMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 
-import { type ContentBlock, inferProvider, RealLLMAdapter } from "./llm";
+import { type ContentBlock, inferProvider, parseModelSpec, RealLLMAdapter } from "./llm";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,23 +121,41 @@ describe("Error response", () => {
 describe("Custom baseUrl", () => {
   it("stores the baseUrl property from the constructor", () => {
     const baseUrl = "https://custom-opencode.example.com/v1";
-    const adapter = new RealLLMAdapter("my-model", baseUrl);
+    const adapter = new RealLLMAdapter("opencode-go/my-model", baseUrl);
 
     expect(adapter.baseUrl).toBe(baseUrl);
   });
 
-  it("stores the modelName property from the constructor", () => {
-    const modelName = "deepseek-v4-pro";
-    const adapter = new RealLLMAdapter(modelName, "https://test.example.com/v1");
+  it("stores the parsed modelName property from the constructor", () => {
+    const adapter = new RealLLMAdapter("opencode-go/deepseek-v4-pro", "https://test.example.com/v1");
 
-    expect(adapter.modelName).toBe(modelName);
+    expect(adapter.modelName).toBe("deepseek-v4-pro");
   });
 
   it("implements the LLMAdapter interface", () => {
-    const adapter = new RealLLMAdapter("model", "https://example.com/v1");
+    const adapter = new RealLLMAdapter("opencode-go/model", "https://example.com/v1");
 
     expect(typeof adapter.generateTurn).toBe("function");
     expect(typeof adapter.streamFromModel).toBe("function");
+  });
+});
+
+describe("parseModelSpec", () => {
+  it("strips the provider prefix from a {provider}/{model} spec", () => {
+    expect(parseModelSpec("opencode-go/deepseek-v4-pro")).toBe("deepseek-v4-pro");
+    expect(parseModelSpec("opencode-go/qwen3.7-max")).toBe("qwen3.7-max");
+  });
+
+  it("preserves slashes in the model name after the provider prefix", () => {
+    expect(parseModelSpec("opencode-go/meta/llama-3")).toBe("meta/llama-3");
+  });
+
+  it("returns the input as-is when no provider prefix is present", () => {
+    expect(parseModelSpec("deepseek-v4-pro")).toBe("deepseek-v4-pro");
+  });
+
+  it("returns empty string for provider-only spec", () => {
+    expect(parseModelSpec("opencode-go/")).toBe("");
   });
 });
 
@@ -172,13 +190,13 @@ describe("inferProvider", () => {
 describe("RealLLMAdapter provider selection", () => {
   it("infers the provider from the model name by default", () => {
     const openaiAdapter = new RealLLMAdapter(
-      "deepseek-v4-pro",
+      "opencode-go/deepseek-v4-pro",
       "https://opencode.ai/zen/go/v1",
     );
     expect(openaiAdapter.provider).toBe("openai");
 
     const anthropicAdapter = new RealLLMAdapter(
-      "qwen3.7-max",
+      "opencode-go/qwen3.7-max",
       "https://opencode.ai/zen/go/v1",
     );
     expect(anthropicAdapter.provider).toBe("anthropic");
@@ -186,7 +204,7 @@ describe("RealLLMAdapter provider selection", () => {
 
   it("allows an explicit provider to override model-name inference", () => {
     const adapter = new RealLLMAdapter(
-      "deepseek-v4-pro",
+      "opencode-go/deepseek-v4-pro",
       "https://opencode.ai/zen/go/v1",
       "anthropic",
     );

@@ -7,7 +7,7 @@ Existing prompt-service resource used as the blueprint for an agent instance.
 | Field | Type | Rules |
 |---|---|---|
 | `agentProfileName` | string | Unique business identifier; required for agent creation. |
-| `model` | string | Provider/model selector copied into the agent instance at creation time. |
+| `model` | string | Model spec in `{provider}/{model}` format (e.g., `opencode-go/deepseek-v4-pro`). Copied into the agent instance at creation time. |
 | `systemPrompt` | string | Descriptive prompt copied into the agent instance at creation time. |
 | `enabled` | boolean | Disabled profiles cannot be used for new agent creation. |
 | `skillNames`, `mcpNames` | string[] | Existing fields may remain stored, but this feature does not enable tools/MCP/skills at runtime. |

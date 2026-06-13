@@ -34,6 +34,22 @@ export type LLMProvider = "openai" | "anthropic";
 const ANTHROPIC_MODEL_PREFIXES = ["minimax-", "qwen3."];
 
 /**
+ * Extract the bare model name from a `{provider}/{model}` spec.
+ *
+ * Profile model fields use the format `opencode-go/{model-name}`. This
+ * function strips the provider prefix so the bare name can be passed to
+ * LangChain's `initChatModel`. If no `/` is present, the input is returned
+ * as-is for backward compatibility.
+ */
+export function parseModelSpec(modelSpec: string): string {
+  const slashIndex = modelSpec.indexOf("/");
+  if (slashIndex === -1) {
+    return modelSpec;
+  }
+  return modelSpec.slice(slashIndex + 1);
+}
+
+/**
  * Infer the provider wire format from the model ID.
  *
  * OpenCode Go exposes most models through an OpenAI-compatible endpoint, but
@@ -79,18 +95,16 @@ export interface LLMAdapter {
 // ---------------------------------------------------------------------------
 
 export class RealLLMAdapter implements LLMAdapter {
-  /** Model name requested from the profile (e.g., "deepseek-v4-pro"). */
   readonly modelName: string;
 
-  /** Base URL for the opencode-go provider proxy endpoint. */
   readonly baseUrl: string;
 
   readonly provider: LLMProvider;
 
-  constructor(modelName: string, baseUrl: string, provider?: LLMProvider) {
-    this.modelName = modelName;
+  constructor(modelSpec: string, baseUrl: string, provider?: LLMProvider) {
+    this.modelName = parseModelSpec(modelSpec);
     this.baseUrl = baseUrl;
-    this.provider = provider ?? inferProvider(modelName);
+    this.provider = provider ?? inferProvider(this.modelName);
   }
 
   async *generateTurn(

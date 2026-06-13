@@ -108,7 +108,7 @@ export async function startServer(llmAdapterOverride?: LLMAdapter): Promise<grpc
 
 	// 3. Create LLM adapter (fake for test, real for production).
 	const llmAdapter: LLMAdapter = llmAdapterOverride ?? (() => {
-		const modelName = process.env.MODEL_NAME || "deepseek-v4-pro";
+		const modelName = process.env.MODEL_NAME || "opencode-go/deepseek-v4-pro";
 		const baseUrl = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
 		const providerEnv = process.env.LLM_PROVIDER;
 		const provider: LLMProvider | undefined =

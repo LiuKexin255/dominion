@@ -342,7 +342,7 @@ func TestAgentProfileCreateGet(t *testing.T) {
 	repo := newTestRepo()
 	profile := &domain.AgentProfile{
 		AgentProfileName: "test-profile",
-		Model:            "gpt-4",
+		Model:            "opencode-go/deepseek-v4-pro",
 		SystemPrompt:     "You are a helpful assistant.",
 		SkillNames:       []string{"skill-a"},
 		MCPNames:         []string{"mcp-b"},
@@ -367,8 +367,8 @@ func TestAgentProfileCreateGet(t *testing.T) {
 	if got.AgentProfileName != "test-profile" {
 		t.Fatalf("GetAgentProfile() name = %q, want %q", got.AgentProfileName, "test-profile")
 	}
-	if got.Model != "gpt-4" {
-		t.Fatalf("GetAgentProfile() model = %q, want %q", got.Model, "gpt-4")
+	if got.Model != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("GetAgentProfile() model = %q, want %q", got.Model, "opencode-go/deepseek-v4-pro")
 	}
 	if got.SystemPrompt != "You are a helpful assistant." {
 		t.Fatalf("GetAgentProfile() system_prompt = %q, want %q", got.SystemPrompt, "You are a helpful assistant.")
@@ -425,7 +425,7 @@ func TestAgentProfileCreateDuplicate(t *testing.T) {
 	repo := newTestRepo()
 	profile := &domain.AgentProfile{
 		AgentProfileName: "test-profile",
-		Model:            "gpt-4",
+		Model:            "opencode-go/deepseek-v4-pro",
 	}
 	err := repo.CreateAgentProfile(ctx, profile)
 	if err != nil {
@@ -468,9 +468,9 @@ func TestAgentProfileList(t *testing.T) {
 	// given - seed 3 profiles
 	repo := newTestRepo()
 	profiles := []*domain.AgentProfile{
-		{AgentProfileName: "alpha", Model: "gpt-4"},
-		{AgentProfileName: "bravo", Model: "gpt-4"},
-		{AgentProfileName: "charlie", Model: "gpt-4"},
+		{AgentProfileName: "alpha", Model: "opencode-go/deepseek-v4-pro"},
+		{AgentProfileName: "bravo", Model: "opencode-go/deepseek-v4-pro"},
+		{AgentProfileName: "charlie", Model: "opencode-go/deepseek-v4-pro"},
 	}
 	for _, p := range profiles {
 		err := repo.CreateAgentProfile(ctx, p)
@@ -524,7 +524,7 @@ func TestAgentProfileDelete(t *testing.T) {
 	repo := newTestRepo()
 	profile := &domain.AgentProfile{
 		AgentProfileName: "to-delete",
-		Model:            "gpt-4",
+		Model:            "opencode-go/deepseek-v4-pro",
 	}
 	err := repo.CreateAgentProfile(ctx, profile)
 	if err != nil {

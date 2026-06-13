@@ -135,7 +135,7 @@ describe("Handler.CreateAgent", () => {
     const instances = new Map<string, DialogRuntime>();
     const promptClient = createMockPromptClient();
     promptClient.getProfile.mockResolvedValue({
-      model: "deepseek-v4",
+      model: "opencode-go/deepseek-v4",
       systemPrompt: "You are helpful.",
     });
     const llmAdapter = createMockLLMAdapter([]);
@@ -165,7 +165,7 @@ describe("Handler.CreateAgent", () => {
     const runtime = instances.get("sess-1");
     expect(runtime).toBeDefined();
     expect(runtime!.profileName).toBe("helpful-assistant");
-    expect(runtime!.copiedModel).toBe("deepseek-v4");
+    expect(runtime!.copiedModel).toBe("opencode-go/deepseek-v4");
     expect(runtime!.copiedSystemPrompt).toBe("You are helpful.");
   });
 
