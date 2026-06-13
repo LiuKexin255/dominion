@@ -1,12 +1,14 @@
 # Implementation Plan: Dialog Agent with Chat Interface
 
-**Branch**: `007-dialog-agent` | **Date**: 2026-06-09 | **Spec**: `specs/007-dialog-agent/spec.md`
+**Branch**: `007-dialog-agent` | **Date**: 2026-06-09 | **Supplemented**: 2026-06-13 | **Spec**: `specs/007-dialog-agent/spec.md`
 
-**Input**: Feature specification from `specs/007-dialog-agent/spec.md` plus planning constraints: remove the current Go agent service and related agent-only dependencies first; add a grpc-js/TypeScript agent service; use a test LLM substitute for large tests without sending real provider messages; do not add a new production service config for the substitute; tolerate missing provider secret files by using an empty secret; rewrite large tests into one YAML testplan with multiple minimal-deploy suites.
+**Input**: Feature specification from `specs/007-dialog-agent/spec.md` plus planning constraints: remove the current Go agent service and related agent-only dependencies first; add a grpc-js/TypeScript agent service; use a test LLM substitute for large tests without sending real provider messages; do not add a new production service config for the substitute; tolerate missing provider secret files by using an empty secret; rewrite large tests into one YAML testplan with multiple minimal-deploy suites. **Supplement (2026-06-13)**: The original plan omitted User Story 3 (Agent Profile Management desktop UI). The backend gateway REST endpoints and prompt service gRPC implementation for profile CRUD are already complete; only the desktop Go client methods, Wails bindings, and Svelte UI components are missing.
 
 ## Summary
 
 Replace the existing Go `projects/game/agent/` service with a Node.js/CommonJS TypeScript grpc-js implementation that preserves the current `AgentService` surface used by proxy/gateway while adding pure text dialog behavior backed by a LangChain agent abstraction. The new agent service copies profile prompt data at agent creation time, keeps per-session conversation history in memory, queues messages while processing, emits thinking and final response frames through the existing `AgentFrame` stream, and reads provider credentials from an optional mounted secret file. Large-test acceptance remains through the desktop/gateway/proxy/agent surface but uses a deterministic LLM substitute wired at the LLM module boundary, and the testplan is reorganized into one YAML with multiple suites that deploy only the services each suite needs.
+
+**Supplement scope**: Add agent profile management to the desktop (User Story 3). The gateway REST surface (`POST/GET/DELETE /api/v1/prompts/agentProfiles[/{name}]`) and prompt service gRPC implementation are already complete. The work covers three layers: (1) Go HTTP client methods in `projects/game/desktop/internal/api/client.go` for `CreateAgentProfile`, `GetAgentProfile`, and `DeleteAgentProfile`; (2) Wails `App` method bindings in `projects/game/desktop/app.go` exposing those methods to the frontend; (3) new Svelte components — `ProfileManagement.svelte` — and a new `'profiles'` page state in `App.svelte` providing create, list, and delete UI.
 
 ## Technical Context
 
@@ -26,7 +28,7 @@ Replace the existing Go `projects/game/agent/` service with a Node.js/CommonJS T
 
 **Constraints**: Use Bazel for build/test and Bazel-managed PNPM only; dependency versions must live in root `pnpm-workspace.yaml` catalog; do not commit generated proto/grpc source; TypeScript BUILD targets are manual where Gazelle cannot express them; generated Go BUILD files remain Gazelle-owned; do not send large-test traffic to a real provider; missing provider secret file is allowed and yields an empty provider secret; the fake LLM/provider test substitute is added as an artifact to an existing test deploy composition, not as a new production service config.
 
-**Scale/Scope**: Replace one agent service implementation and its packaging, update proto/type generation as needed, add dialog runtime modules, update desktop chat UI, preserve existing session/proxy/gateway/prompt services, and rewrite one game testplan YAML into multiple suites with minimal deploy configs.
+**Scale/Scope**: Replace one agent service implementation and its packaging, update proto/type generation as needed, add dialog runtime modules, update desktop chat UI, preserve existing session/proxy/gateway/prompt services, and rewrite one game testplan YAML into multiple suites with minimal deploy configs. Supplement: add 3 Go client methods, 3 Wails bindings, 1 new Svelte component, and 1 page-state addition to the desktop for agent profile management (User Story 3).
 
 ## Constitution Check
 
@@ -42,6 +44,19 @@ Replace the existing Go `projects/game/agent/` service with a Node.js/CommonJS T
 - **Testplan Execution**: PASS. The feature changes service code, so large-test execution is required through the `testplan` skill. Skips are allowed only for deployment infrastructure blockers and must document residual risk.
 
 **Post-Design Re-check**: PASS. Phase 0 and Phase 1 artifacts preserve Bazel-first JS packaging, optional secret behavior, fake LLM large-test isolation, real-surface acceptance, and one multi-suite testplan YAML with minimal suite deployments.
+
+**Supplement Re-check (2026-06-13)**:
+
+- **Authority & Style**: PASS. Supplement tasks require executors to re-read `style/README.md`, existing `app.go` and `client.go` patterns, and `contracts/desktop-profile-management.md` before code changes. New Go methods follow the existing `ListAgentProfiles` pattern in `client.go` and `app.go`. New Svelte components follow the existing `SessionDetail.svelte` pattern.
+- **Bazel Integrity**: PASS. No new dependencies. Go methods use existing `net/http`, `protojson`, and `game` proto packages already in `BUILD.bazel`. Svelte components use existing frontend toolchain. `bazel run //:gazelle` handles any `BUILD.bazel` updates for new Go files.
+- **Generated Files & Dependencies**: PASS. No new dependencies, no generated files, no proto changes. Reuses existing generated Go proto types and existing frontend packages.
+- **Testing Strategy**: PASS. Unit tests for new Go client methods (`client_test.go` or `app_test.go` additions) following existing test patterns. Svelte component tests if the frontend test runner supports them. Large-test coverage for profile CRUD via the existing prompt/profile suite in `system_test.yaml`.
+- **Behavioral Acceptance**: PASS. Profile management acceptance is through the desktop UI: create a profile, verify it appears in the list, delete it, verify it disappears. The large-test prompt/profile suite covers backend CRUD through the gateway.
+- **Review Scope**: PASS. Tasks include code quality review for Go method consistency and Svelte component style review.
+- **Repository Verification**: PASS. Final validation includes `bazel build //...` and `bazel test //...`.
+- **Testplan Execution**: PASS. The existing prompt/profile suite in `system_test.yaml` already covers profile CRUD. Supplement does not change service code, but if profile management desktop testing is needed, the existing testplan suite applies.
+- **Test Impact Assessment**: PASS. New Go client methods require new unit tests in `app_test.go` or `client_test.go`. Existing tests are not modified. The `view_model_test.go` may need new test cases for profile-related converters if not already covered. No existing large tests need modification.
+- **Change Classification**: PASS. Changes are classified as: **new** (3 Go client methods, 3 Wails bindings, `ProfileManagement.svelte`, profile page state and handlers in `App.svelte`) and **modify** (extend `App.svelte` page-state machine and navigation to include the profiles page). The modification is a refactoring of the page router: scope is the `page` state variable and its conditional rendering; goal is to add a fourth page without disrupting existing flows; invariants preserved are the sessions/detail/chat page transitions and their handlers.
 
 ## Project Structure
 
@@ -83,11 +98,18 @@ projects/game/
 │       ├── secrets.ts                 # optional provider secret file reader
 │       └── *.test.ts
 ├── desktop/
-│   ├── app.go                         # preserve Wails backend, expose chat helpers as needed
+│   ├── app.go                         # preserve Wails backend, expose chat helpers as needed;
+│   │                                  # SUPPLEMENT: add CreateAgentProfile, GetAgentProfile,
+│   │                                  # DeleteAgentProfile Wails bindings
+│   ├── internal/api/client.go         # SUPPLEMENT: add CreateAgentProfile, GetAgentProfile,
+│   │                                  # DeleteAgentProfile Go HTTP client methods
 │   └── frontend/src/
-│       ├── App.svelte
+│       ├── App.svelte                 # SUPPLEMENT: add 'profiles' page state, navigation,
+│       │                              # profile management handlers
 │       ├── api.ts
-│       └── components/                # add chat dialog/sidebar components
+│       └── components/                # add chat dialog/sidebar components;
+│           ├── ProfileManagement.svelte  # SUPPLEMENT: profile list + create form + delete
+│           └── ...                     # existing chat components
 └── testplan/
     ├── system_test.yaml               # one YAML, multiple suites
     ├── deploy_session.yaml            # session/proxy/gateway regression subset as needed
@@ -105,6 +127,8 @@ projects/game/session/, proxy/, gateway/, prompt/
 ```
 
 **Structure Decision**: Keep the deploy service name and path `projects/game/agent/service.yaml` so proxy/deploy references remain stable, but replace the Go implementation below `projects/game/agent/` with a TypeScript grpc-js package following `experimental/ts/grpc_hello_world` and `common/js/*` patterns. This satisfies the user instruction to remove the old agent service first while avoiding a new service identity. Test-only fake behavior belongs in testplan/deploy wiring or an agent artifact mode, not in a new production service config.
+
+**Supplement Structure Decision**: The profile management supplement adds code only within `projects/game/desktop/` — no new service, no proto changes, no new external dependencies. The Go client methods and Wails bindings extend existing files (`client.go`, `app.go`) following the `ListAgentProfiles` pattern already established there. The new `ProfileManagement.svelte` component follows the prop-driven pattern of `SessionDetail.svelte` and `AgentSidebar.svelte`, receiving data and callbacks from `App.svelte`. The page-state machine in `App.svelte` gains one new value (`'profiles'`) alongside the existing `'sessions' | 'detail' | 'chat'` states.
 
 ## Complexity Tracking
 

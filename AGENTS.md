@@ -17,7 +17,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/008-guitar-cli-enhancements/plan.md
+at specs/007-dialog-agent/plan.md
 <!-- SPECKIT END -->
 
 ## 操作命令参考
@@ -73,3 +73,8 @@ Python 依赖更新步骤：
 
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
 * 需要执行大型测试计划时，使用 `testplan` skill。
+
+
+## 注释
+
+Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 

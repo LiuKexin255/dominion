@@ -93,3 +93,49 @@
 **Alternatives considered**:
 - Let desktop call the agent service directly: rejected because it bypasses session ownership and proxy routing.
 - Merge proxy and agent: rejected because it changes established architecture and increases blast radius.
+
+---
+
+## Supplement: User Story 3 — Agent Profile Management Desktop UI
+
+The original plan omitted the profile management desktop page (User Story 3). The following decisions resolve the gap.
+
+## Decision: Add a dedicated profile management page in the desktop navigation
+
+**Rationale**: The spec (US-3, FR-005, FR-006, SC-003) requires users to create, list, and delete agent profiles "through the desktop interface." The existing desktop has a page-state machine (`'sessions' | 'detail' | 'chat'`). Adding a `'profiles'` page is the minimal structural change that satisfies all four US-3 acceptance scenarios without disrupting existing flows. Users reach it via a navigation button on the sessions page.
+
+**Alternatives considered**:
+- Modal/dialog overlay from the session detail page: rejected because profile management is a standalone activity, not session-scoped. A modal over session detail conflates concerns.
+- Separate Wails window: rejected because the desktop is a single-window app; adding multi-window complexity is unjustified for P2 scope.
+- Profile management only within the chat sidebar: rejected because the sidebar is agent-instance-scoped and too small for a create form with multiple fields.
+
+## Decision: Reuse the existing Go HTTP client pattern for new profile CRUD methods
+
+**Rationale**: `projects/game/desktop/internal/api/client.go` already has `ListAgentProfiles` following a consistent pattern: build HTTP request with context, set common headers, execute, check status, unmarshal via `protojson`. Adding `CreateAgentProfile`, `GetAgentProfile`, and `DeleteAgentProfile` follows the same pattern against the already-implemented gateway REST endpoints (`POST/GET/DELETE /api/v1/prompts/agentProfiles[/{name}]`). No new HTTP infrastructure, middleware, or service connections are needed.
+
+**Alternatives considered**:
+- Call the prompt gRPC service directly from the desktop: rejected because the desktop already uses the gateway REST surface for all other operations. Adding gRPC to the desktop would introduce a new transport and defeat the gateway abstraction.
+- Use the Wails runtime to make raw fetch calls from TypeScript: rejected because all other operations go through Go app methods for logging, tracing, and error handling consistency.
+
+## Decision: Reuse existing view models and proto converters — no new view model types needed
+
+**Rationale**: `projects/game/desktop/view_model.go` already defines `AgentProfileView`, `ListAgentProfilesView`, `agentProfileViewFromProto`, and `listAgentProfilesViewFromProto`. The `CreateAgentProfile` and `GetAgentProfile` operations return a single `*game.AgentProfile`, which `agentProfileViewFromProto` already converts. No new types or converters are required.
+
+**Alternatives considered**:
+- None needed — the existing view models already cover all CRUD response shapes.
+
+## Decision: Profile management UI uses Svelte 5 runes for state, matching existing components
+
+**Rationale**: The desktop frontend already uses Svelte 5 with `$state`, `$derived`, and `$props` runes (see `App.svelte`, `SessionDetail.svelte`, `AgentSidebar.svelte`). New profile management components follow the same pattern for consistency. The new `ProfileManagement.svelte` component receives profiles and callbacks as props, matching the existing parent-child data flow.
+
+**Alternatives considered**:
+- Use a Svelte store for global profile state: rejected because profiles are already managed at the App.svelte level via `$state` and passed down as props. Introducing a store for a single page is inconsistent.
+- Use a form library (sveltekit-superforms, etc.): rejected because the create form has three fields (name, model, system prompt). Native Svelte bindings are sufficient and add no dependency.
+
+## Decision: Delete confirmation uses a simple inline confirm, not a modal dialog
+
+**Rationale**: The spec (US-3 acceptance scenario 4) requires that deleting a profile used by an active agent instance preserves the existing instance. A confirmation step prevents accidental deletion. A lightweight inline confirm (two-click pattern: Delete → "Are you sure?" → Confirm) avoids modal complexity and matches the existing danger-zone pattern in `SessionDetail.svelte`.
+
+**Alternatives considered**:
+- Modal dialog with backdrop: rejected as heavyweight for a two-field confirmation.
+- No confirmation: rejected because accidental profile deletion is irreversible.

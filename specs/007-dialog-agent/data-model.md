@@ -14,6 +14,8 @@ Existing prompt-service resource used as the blueprint for an agent instance.
 
 **Lifecycle rule**: Profiles are loosely coupled from active agent instances after creation. Deleting or editing a profile affects future agent creation only.
 
+**Management surface**: User Story 3 requires create, list, and delete operations for profiles through the desktop interface. The existing `AgentProfile` entity and its fields are sufficient — no new data model is needed. The desktop Go client and Wails bindings for `CreateAgentProfile` and `DeleteAgentProfile` are the missing implementation gap. See `contracts/desktop-profile-management.md` for the UI surface contract.
+
 ## Agent Instance
 
 Stateful runtime object bound to one session and one agent service instance.

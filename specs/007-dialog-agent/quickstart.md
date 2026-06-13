@@ -78,3 +78,37 @@ bazel test //...
 ```
 
 Expected outcome: whole repository build and tests pass, or any pre-existing unrelated blocker is documented with exact failing target and residual risk.
+
+## 8. Profile management desktop UI (User Story 3 supplement)
+
+### Prerequisites
+
+- The prompt service and gateway are deployed (the prompt/profile large-test suite or a local gateway is sufficient).
+- The desktop builds with the supplement changes.
+
+### Go unit tests for new client methods and Wails bindings
+
+```bash
+bazel test //projects/game/desktop:all
+```
+
+Expected outcomes:
+
+- `CreateAgentProfile` client method sends `POST /api/v1/prompts/agentProfiles` and returns an `AgentProfileView`.
+- `GetAgentProfile` client method sends `GET /api/v1/prompts/agentProfiles/{name}` and returns an `AgentProfileView`.
+- `DeleteAgentProfile` client method sends `DELETE /api/v1/prompts/agentProfiles/{name}` and returns nil on success.
+- Wails bindings log, trace, and convert proto responses to view models consistent with `ListAgentProfiles`.
+
+### Desktop UI acceptance (manual or test)
+
+1. Open the desktop app, navigate from sessions page to the profile management page.
+2. Create a new profile (name + model + system prompt) via the form; verify it appears in the list.
+3. Verify the list shows all profiles with their names, models, and prompt previews.
+4. Delete a profile; verify it disappears from the list.
+5. Create an agent instance using a profile, then delete that profile; verify the agent instance continues running (covered by existing backend behavior and the large-test prompt/profile suite).
+
+Expected outcome: all four US-3 acceptance scenarios pass through the desktop interface.
+
+### Large-test prompt/profile suite
+
+The existing prompt/profile suite in `system_test.yaml` already covers backend profile CRUD through the gateway. No new large-test suite is needed for the supplement unless desktop-level E2E testing is explicitly required.

@@ -672,3 +672,259 @@ func TestClient_EnvHeader(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestClient_CreateAgentProfile
+// ---------------------------------------------------------------------------
+
+func TestClient_CreateAgentProfile(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        *game.CreateAgentProfileRequest
+		statusCode int
+		respBody   string
+		wantErr    bool
+		wantName   string
+	}{
+		{
+			name: "success",
+			req: &game.CreateAgentProfileRequest{
+				AgentProfileName: "my-agent",
+				Model:            "gpt-4",
+				SystemPrompt:     "You are a helpful assistant.",
+			},
+			statusCode: http.StatusOK,
+			respBody:   `{"name":"agentProfiles/my-agent","agentProfileName":"my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","skillNames":["skill1"],"mcpNames":["mcp1"],"enabled":true}`,
+			wantErr:    false,
+			wantName:   "my-agent",
+		},
+		{
+			name: "conflict",
+			req: &game.CreateAgentProfileRequest{
+				AgentProfileName: "existing",
+			},
+			statusCode: http.StatusConflict,
+			respBody:   `{"error":"already exists"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				if r.URL.Path != "/api/v1/prompts/agentProfiles" {
+					t.Errorf("expected /api/v1/prompts/agentProfiles, got %s", r.URL.Path)
+				}
+				if r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
+				}
+
+				body, _ := io.ReadAll(r.Body)
+				req := new(game.CreateAgentProfileRequest)
+				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+					t.Fatalf("failed to parse request body: %v", err)
+				}
+				if req.GetAgentProfileName() != tt.req.GetAgentProfileName() {
+					t.Errorf("expected agent_profile_name %q, got %q", tt.req.GetAgentProfileName(), req.GetAgentProfileName())
+				}
+				if req.GetModel() != tt.req.GetModel() {
+					t.Errorf("expected model %q, got %q", tt.req.GetModel(), req.GetModel())
+				}
+				if req.GetSystemPrompt() != tt.req.GetSystemPrompt() {
+					t.Errorf("expected system_prompt %q, got %q", tt.req.GetSystemPrompt(), req.GetSystemPrompt())
+				}
+
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			profile, err := client.CreateAgentProfile(context.Background(), tt.req)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "create agent profile") {
+					t.Errorf("error should contain 'create agent profile', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if profile == nil {
+				t.Fatal("expected profile, got nil")
+			}
+			if profile.GetAgentProfileName() != tt.wantName {
+				t.Errorf("expected agent_profile_name %q, got %q", tt.wantName, profile.GetAgentProfileName())
+			}
+			if profile.GetModel() != "gpt-4" {
+				t.Errorf("expected model %q, got %q", "gpt-4", profile.GetModel())
+			}
+			if profile.GetSystemPrompt() != "You are a helpful assistant." {
+				t.Errorf("expected system_prompt %q, got %q", "You are a helpful assistant.", profile.GetSystemPrompt())
+			}
+			if len(profile.GetSkillNames()) != 1 || profile.GetSkillNames()[0] != "skill1" {
+				t.Errorf("expected skill_names [skill1], got %v", profile.GetSkillNames())
+			}
+			if len(profile.GetMcpNames()) != 1 || profile.GetMcpNames()[0] != "mcp1" {
+				t.Errorf("expected mcp_names [mcp1], got %v", profile.GetMcpNames())
+			}
+			if !profile.GetEnabled() {
+				t.Errorf("expected enabled true, got false")
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_GetAgentProfile
+// ---------------------------------------------------------------------------
+
+func TestClient_GetAgentProfile(t *testing.T) {
+	tests := []struct {
+		name              string
+		agentProfileName  string
+		statusCode        int
+		respBody          string
+		wantErr           bool
+	}{
+		{
+			name:             "success",
+			agentProfileName: "my-agent",
+			statusCode:       http.StatusOK,
+			respBody:         `{"name":"agentProfiles/my-agent","agentProfileName":"my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","enabled":true}`,
+			wantErr:          false,
+		},
+		{
+			name:             "not found",
+			agentProfileName: "nonexistent",
+			statusCode:       http.StatusNotFound,
+			respBody:         `{"error":"not found"}`,
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				wantPath := "/api/v1/prompts/agentProfiles/" + tt.agentProfileName
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			profile, err := client.GetAgentProfile(context.Background(), tt.agentProfileName)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "get agent profile") {
+					t.Errorf("error should contain 'get agent profile', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if profile == nil {
+				t.Fatal("expected profile, got nil")
+			}
+			if profile.GetAgentProfileName() != tt.agentProfileName {
+				t.Errorf("expected agent_profile_name %q, got %q", tt.agentProfileName, profile.GetAgentProfileName())
+			}
+			if profile.GetModel() != "gpt-4" {
+				t.Errorf("expected model %q, got %q", "gpt-4", profile.GetModel())
+			}
+			if profile.GetSystemPrompt() != "You are a helpful assistant." {
+				t.Errorf("expected system_prompt %q, got %q", "You are a helpful assistant.", profile.GetSystemPrompt())
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_DeleteAgentProfile
+// ---------------------------------------------------------------------------
+
+func TestClient_DeleteAgentProfile(t *testing.T) {
+	tests := []struct {
+		name              string
+		agentProfileName  string
+		statusCode        int
+		respBody          string
+		wantErr           bool
+	}{
+		{
+			name:             "success",
+			agentProfileName: "del-me",
+			statusCode:       http.StatusOK,
+			wantErr:          false,
+		},
+		{
+			name:             "not found",
+			agentProfileName: "nonexistent",
+			statusCode:       http.StatusNotFound,
+			respBody:         `{"error":"not found"}`,
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("expected DELETE, got %s", r.Method)
+				}
+				wantPath := "/api/v1/prompts/agentProfiles/" + tt.agentProfileName
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			err := client.DeleteAgentProfile(context.Background(), tt.agentProfileName)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "delete agent profile") {
+					t.Errorf("error should contain 'delete agent profile', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
