@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -13,6 +13,8 @@
     connectAgent,
     closeAgent,
     listAgentProfiles,
+    createAgentProfile,
+    deleteAgentProfile,
     sendAgentText,
   } from './api'
   import { log, setLogSink } from './logger'
@@ -20,11 +22,12 @@
   import SessionList from './components/SessionList.svelte'
   import SessionDetail from './components/SessionDetail.svelte'
   import ChatView from './components/ChatView.svelte'
+  import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
 
   // --- Page state ---
-  let page = $state<'sessions' | 'detail' | 'chat'>('sessions')
+  let page = $state<'sessions' | 'detail' | 'chat' | 'profiles'>('sessions')
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -55,6 +58,11 @@
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
   let selectedProfile = $state('')
+
+  // --- Profile management state ---
+  let managedProfiles: AgentProfile[] = $state([])
+  let profileMgmtLoading = $state(false)
+  let profileMgmtError: string | null = $state(null)
 
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
@@ -327,6 +335,8 @@
     connectionState = 'disconnected'
     agentLoadState = 'idle'
     error = null
+    managedProfiles = []
+    profileMgmtError = null
     page = 'sessions'
   }
 
@@ -374,6 +384,44 @@
   function handleClearLogs() {
     logEntries = []
   }
+
+  // --- Profile management handlers ---
+  async function handleEnterProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listAgentProfiles(100, '')
+      managedProfiles = resp.agentProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+    page = 'profiles'
+  }
+
+  async function handleRefreshProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listAgentProfiles(100, '')
+      managedProfiles = resp.agentProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+  }
+
+  async function handleCreateProfile(req: CreateAgentProfileRequest) {
+    await createAgentProfile(req)
+    await handleRefreshProfiles()
+  }
+
+  async function handleDeleteProfile(agentProfileName: string) {
+    await deleteAgentProfile(agentProfileName)
+    await handleRefreshProfiles()
+  }
 </script>
 
 <div class="app-container">
@@ -388,6 +436,7 @@
       <input id="env" type="text" bind:value={env} placeholder="environment" />
     </div>
     <button class="btn btn-primary" onclick={handleApplyConfig} disabled={loading}>Apply Config</button>
+    <button class="btn" onclick={handleEnterProfiles} disabled={loading}>Agent Profiles</button>
   </div>
 
   <!-- Page Content (middle) -->
@@ -447,6 +496,16 @@
         />
       </div>
     </div>
+  {:else if page === 'profiles'}
+    <ProfileManagement
+      profiles={managedProfiles}
+      loading={profileMgmtLoading}
+      error={profileMgmtError}
+      onCreate={handleCreateProfile}
+      onDelete={handleDeleteProfile}
+      onRefresh={handleRefreshProfiles}
+      onBack={handleBackToSessions}
+    />
   {/if}
 
   <!-- Log Panel (bottom, always visible) -->
