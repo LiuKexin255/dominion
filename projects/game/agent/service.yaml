@@ -10,6 +10,8 @@ artifacts:
   - name: agent
     target: :cmd_image
     tls: true
+    secrets:
+      - provider
   - name: agent_test
     target: :cmd_image_test
     tls: true

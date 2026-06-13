@@ -4,6 +4,7 @@
     "dependencies": {
         "@grpc/grpc-js": "catalog:",
         "@grpc/proto-loader": "catalog:",
+        "@langchain/anthropic": "catalog:",
         "@langchain/core": "catalog:",
         "@langchain/langgraph": "catalog:",
         "@langchain/openai": "catalog:",

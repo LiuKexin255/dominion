@@ -279,6 +279,36 @@ func TestCreateAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("agent grpc error propagates", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
+		agentMock := &mockAgentClient{initErr: status.Error(codes.NotFound, "profile not found")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		mgr.connRefs = twoConnRefs()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.CreateAgentRequest{
+			Parent: "sessions/test-session-grpc",
+		}
+
+		// when
+		_, err := h.CreateAgent(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("CreateAgent() expected error, got nil")
+		}
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("CreateAgent() status = %v, want NotFound, err=%v", status.Code(err), err)
+		}
+	})
+
 	t.Run("owner already exists", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
@@ -427,6 +457,43 @@ func TestGetAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("agent grpc not found propagates", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		owner := &domain.AgentOwner{
+			SessionID:  "session-get-grpc-notfound",
+			OwnerIndex: 0,
+			Owner:      "agent-0",
+			CreateTime: time.Now(),
+		}
+		store.records["session-get-grpc-notfound"] = owner
+
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := &mockAgentClient{getStatusErr: status.Error(codes.NotFound, "agent not found")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.GetAgentRequest{
+			Name: "sessions/session-get-grpc-notfound/agent",
+		}
+
+		// when
+		_, err := h.GetAgent(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("GetAgent() expected error, got nil")
+		}
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("GetAgent() status = %v, want NotFound, err=%v", status.Code(err), err)
+		}
+	})
+
 	t.Run("invalid name", func(t *testing.T) {
 		// given
 		store := newMockOwnerStore()
@@ -546,6 +613,43 @@ func TestDeleteAgent(t *testing.T) {
 		}
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("DeleteAgent() status = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+
+	t.Run("agent grpc error propagates", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		owner := &domain.AgentOwner{
+			SessionID:  "session-del-grpc",
+			OwnerIndex: 0,
+			Owner:      "agent-0",
+			CreateTime: time.Now(),
+		}
+		store.records["session-del-grpc"] = owner
+
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := &mockAgentClient{deleteErr: status.Error(codes.Unavailable, "agent unavailable")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.DeleteAgentRequest{
+			Name: "sessions/session-del-grpc/agent",
+		}
+
+		// when
+		_, err := h.DeleteAgent(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("DeleteAgent() expected error, got nil")
+		}
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("DeleteAgent() status = %v, want Unavailable, err=%v", status.Code(err), err)
 		}
 	})
 }

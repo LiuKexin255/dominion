@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { AIMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 
-import { type ContentBlock, RealLLMAdapter } from "./llm";
+import { type ContentBlock, inferProvider, RealLLMAdapter } from "./llm";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -138,5 +138,58 @@ describe("Custom baseUrl", () => {
 
     expect(typeof adapter.generateTurn).toBe("function");
     expect(typeof adapter.streamFromModel).toBe("function");
+  });
+});
+
+describe("inferProvider", () => {
+  it("routes DeepSeek models through the OpenAI-compatible endpoint", () => {
+    expect(inferProvider("deepseek-v4-pro")).toBe("openai");
+    expect(inferProvider("deepseek-v4-flash")).toBe("openai");
+  });
+
+  it("routes Kimi and GLM models through the OpenAI-compatible endpoint", () => {
+    expect(inferProvider("kimi-k2.7-code")).toBe("openai");
+    expect(inferProvider("glm-5.1")).toBe("openai");
+  });
+
+  it("routes Qwen models through the Anthropic-compatible endpoint", () => {
+    expect(inferProvider("qwen3.7-max")).toBe("anthropic");
+    expect(inferProvider("qwen3.7-plus")).toBe("anthropic");
+    expect(inferProvider("qwen3.6-plus")).toBe("anthropic");
+  });
+
+  it("routes MiniMax models through the Anthropic-compatible endpoint", () => {
+    expect(inferProvider("minimax-m3")).toBe("anthropic");
+    expect(inferProvider("minimax-m2.7")).toBe("anthropic");
+  });
+
+  it("is case-insensitive", () => {
+    expect(inferProvider("Qwen3.7-Max")).toBe("anthropic");
+    expect(inferProvider("DeepSeek-V4-Pro")).toBe("openai");
+  });
+});
+
+describe("RealLLMAdapter provider selection", () => {
+  it("infers the provider from the model name by default", () => {
+    const openaiAdapter = new RealLLMAdapter(
+      "deepseek-v4-pro",
+      "https://opencode.ai/zen/go/v1",
+    );
+    expect(openaiAdapter.provider).toBe("openai");
+
+    const anthropicAdapter = new RealLLMAdapter(
+      "qwen3.7-max",
+      "https://opencode.ai/zen/go/v1",
+    );
+    expect(anthropicAdapter.provider).toBe("anthropic");
+  });
+
+  it("allows an explicit provider to override model-name inference", () => {
+    const adapter = new RealLLMAdapter(
+      "deepseek-v4-pro",
+      "https://opencode.ai/zen/go/v1",
+      "anthropic",
+    );
+    expect(adapter.provider).toBe("anthropic");
   });
 });

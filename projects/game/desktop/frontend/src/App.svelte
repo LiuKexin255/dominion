@@ -7,7 +7,7 @@
     createSession,
     listSessions,
     deleteSession,
-    createAgent,
+    createAgentWithProfile,
     getAgent,
     deleteAgent,
     connectAgent,
@@ -142,15 +142,28 @@
     }
   }
 
-  function handleSelectSession(session: Session) {
+  async function handleSelectSession(session: Session) {
     selectedSession = session
     agent = null
     error = null
     agentLoadState = 'idle'
     connectionState = 'disconnected'
     page = 'detail'
+    // Load profiles for the create-agent dropdown
+    await loadProfiles()
     // Auto-load agent when entering detail
-    handleAutoGetAgent(session.sessionId)
+    await handleAutoGetAgent(session.sessionId)
+  }
+
+  async function loadProfiles() {
+    try {
+      const resp = await listAgentProfiles(50, '')
+      profiles = resp.agentProfiles
+      log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
+    } catch (e: unknown) {
+      log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
+      profiles = []
+    }
   }
 
   async function handleAutoGetAgent(sessionId: string) {
@@ -175,11 +188,15 @@
   // --- SessionDetail handlers ---
   async function handleCreateAgent(profileName: string) {
     if (!selectedSession) return
-    if (!profileName) return
+    if (!profileName) {
+      error = 'Please select an agent profile first'
+      log('warn', 'agent', 'Create agent aborted: no profile selected')
+      return
+    }
     try {
       loading = true
       error = null
-      agent = await createAgent(selectedSession.sessionId)
+      agent = await createAgentWithProfile(selectedSession.sessionId, profileName)
       log('info', 'agent', `Agent created with profile "${profileName}": ${agent.sessionId}`)
     } catch (e: unknown) {
       error = String(e)
@@ -245,14 +262,7 @@
     error = null
 
     // Load profiles for the sidebar
-    try {
-      const resp = await listAgentProfiles(50, '')
-      profiles = resp.agentProfiles
-      log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
-    } catch (e: unknown) {
-      log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
-      profiles = []
-    }
+    await loadProfiles()
 
     page = 'chat'
   }
@@ -398,6 +408,8 @@
       {agent}
       {connectionState}
       {agentLoadState}
+      {profiles}
+      {selectedProfile}
       {loading}
       {error}
       onCreateAgent={() => handleCreateAgent(selectedProfile)}
@@ -407,6 +419,7 @@
       onRefresh={handleRefreshFromDetail}
       onEnterPlay={handleEnterChat}
       onBack={handleBackToSessions}
+      onSelectProfile={handleSelectProfile}
     />
   {:else if page === 'chat'}
     <div class="chat-layout">

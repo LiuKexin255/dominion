@@ -212,6 +212,7 @@ interface WailsApp {
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
   CreateAgent(sessionID: string): Promise<Agent>
+  CreateAgentWithProfile(sessionID: string, profileName: string): Promise<Agent>
   GetAgent(sessionID: string): Promise<Agent>
   DeleteAgent(sessionID: string): Promise<void>
   /** @deprecated Use chat-based interfaces instead. */
@@ -291,6 +292,12 @@ export async function createAgent(sessionID: string): Promise<Agent> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.CreateAgent(sessionID)
+}
+
+export async function createAgentWithProfile(sessionID: string, profileName: string): Promise<Agent> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CreateAgentWithProfile(sessionID, profileName)
 }
 
 export async function getAgent(sessionID: string): Promise<Agent> {

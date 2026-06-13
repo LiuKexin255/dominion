@@ -17,8 +17,15 @@ services:
       path: //projects/game/proxy/service.yaml
       name: proxy
   - artifact:
+      path: //projects/game/prompt/service.yaml
+      name: prompt
+  - artifact:
       path: //projects/game/agent/service.yaml
       name: agent
+      secrets:
+        provider:
+          secret: llm-secrets
+          key: opencode-go
   - artifact:
       path: //projects/game/gateway/service.yaml
       name: gateway

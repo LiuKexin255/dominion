@@ -5,9 +5,10 @@
  *   - reasoning → { type: "reasoning", reasoning: string }
  *   - text      → { type: "text", text: string }
  *
- * The RealLLMAdapter uses initChatModel (provider="openai") pointed at
- * opencode-go's proxy endpoint, wraps it in createDeepAgent with built-in
- * defaults, and streams contentBlocks via agent.streamEvents().
+ * The RealLLMAdapter uses initChatModel pointed at opencode-go's proxy
+ * endpoint, selects the OpenAI or Anthropic wire format by model ID, wraps the
+ * model in createDeepAgent with built-in defaults, and streams contentBlocks via
+ * agent.streamEvents().
  */
 
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
@@ -23,6 +24,31 @@ import { randomUUID } from "node:crypto";
 export type ContentBlock =
   | { type: "reasoning"; reasoning: string }
   | { type: "text"; text: string };
+
+// ---------------------------------------------------------------------------
+// Provider selection
+// ---------------------------------------------------------------------------
+
+export type LLMProvider = "openai" | "anthropic";
+
+const ANTHROPIC_MODEL_PREFIXES = ["minimax-", "qwen3."];
+
+/**
+ * Infer the provider wire format from the model ID.
+ *
+ * OpenCode Go exposes most models through an OpenAI-compatible endpoint, but
+ * MiniMax and Qwen models use an Anthropic-compatible `/messages` endpoint.
+ * See: https://opencode.ai/docs/zh-cn/go/
+ */
+export function inferProvider(modelName: string): LLMProvider {
+  const lower = modelName.toLowerCase();
+  for (const prefix of ANTHROPIC_MODEL_PREFIXES) {
+    if (lower.startsWith(prefix)) {
+      return "anthropic";
+    }
+  }
+  return "openai";
+}
 
 // ---------------------------------------------------------------------------
 // LLMAdapter interface
@@ -59,9 +85,12 @@ export class RealLLMAdapter implements LLMAdapter {
   /** Base URL for the opencode-go provider proxy endpoint. */
   readonly baseUrl: string;
 
-  constructor(modelName: string, baseUrl: string) {
+  readonly provider: LLMProvider;
+
+  constructor(modelName: string, baseUrl: string, provider?: LLMProvider) {
     this.modelName = modelName;
     this.baseUrl = baseUrl;
+    this.provider = provider ?? inferProvider(modelName);
   }
 
   async *generateTurn(
@@ -70,7 +99,7 @@ export class RealLLMAdapter implements LLMAdapter {
     userMessage: string,
     providerSecret: string,
   ): AsyncIterable<ContentBlock> {
-    const model = await initChatModel("openai", {
+    const model = await initChatModel(this.provider, {
       model: this.modelName,
       baseUrl: this.baseUrl,
       apiKey: providerSecret,

@@ -84,7 +84,7 @@ func (h *ProxyHandler) CreateAgent(ctx context.Context, req *game.CreateAgentReq
 	agent, err := client.CreateAgent(ctx, &game.AgentCreateRequest{SessionId: sessionID, AgentProfileName: agentProfileName})
 	if err != nil {
 		logs.Error(ctx, "create agent failed", event.String("session_id", sessionID), event.Int("agent_index", pickedRef.OwnerIndex), event.Err(err))
-		return nil, status.Errorf(codes.Internal, "create agent: %v", err)
+		return nil, propagateAgentError(err, "create agent")
 	}
 
 	now := time.Now()
@@ -131,7 +131,7 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	agent, err := client.GetAgent(ctx, &game.AgentGetRequest{SessionId: sessionID})
 	if err != nil {
 		logs.Error(ctx, "get agent failed", event.String("session_id", sessionID), event.Err(err))
-		return nil, status.Errorf(codes.Internal, "get agent: %v", err)
+		return nil, propagateAgentError(err, "get agent")
 	}
 
 	return agent, nil
@@ -176,7 +176,7 @@ func (h *ProxyHandler) DeleteAgent(ctx context.Context, req *game.DeleteAgentReq
 				event.Int("agent_index", owner.OwnerIndex),
 				event.Err(err),
 			)
-			return nil, status.Errorf(codes.Internal, "delete agent: %v", err)
+			return nil, propagateAgentError(err, "delete agent")
 		}
 	}
 
@@ -200,6 +200,19 @@ func extractSessionID(name string, pattern *regexp.Regexp) (string, error) {
 		return "", fmt.Errorf("invalid resource name %q: expected %s", name, pattern)
 	}
 	return matches[1], nil
+}
+
+// propagateAgentError returns a downstream gRPC status error unchanged,
+// or wraps a non-status error as Internal so the proxy does not mask
+// agent-level status codes.
+func propagateAgentError(err error, msg string) error {
+	if err == nil {
+		return nil
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Err()
+	}
+	return status.Errorf(codes.Internal, "%s: %v", msg, err)
 }
 
 // mapDomainError converts domain errors to gRPC status errors.
