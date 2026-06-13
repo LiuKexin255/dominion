@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -186,4 +188,225 @@ func TestConnectAgent_ProbeTimeout(t *testing.T) {
 		t.Errorf("timeout took too long: %v, expected ~10s", elapsed)
 	}
 	t.Logf("timeout occurred after: %v", elapsed)
+}
+
+// TestCreateAgentProfile_Success verifies CreateAgentProfile delegates to client
+// and returns the converted view model.
+func TestCreateAgentProfile_Success(t *testing.T) {
+	// given: mock server that responds to POST /api/v1/prompts/agentProfiles
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/prompts/agentProfiles" {
+			t.Errorf("expected /api/v1/prompts/agentProfiles, got %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		req := new(game.CreateAgentProfileRequest)
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+		if req.GetAgentProfileName() != "test-agent" {
+			t.Errorf("expected agent_profile_name %q, got %q", "test-agent", req.GetAgentProfileName())
+		}
+		if req.GetModel() != "gpt-4" {
+			t.Errorf("expected model %q, got %q", "gpt-4", req.GetModel())
+		}
+		if req.GetSystemPrompt() != "You are a test assistant." {
+			t.Errorf("expected system_prompt %q, got %q", "You are a test assistant.", req.GetSystemPrompt())
+		}
+		if req.GetEnabled() != true {
+			t.Errorf("expected enabled true, got %v", req.GetEnabled())
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	view, err := app.CreateAgentProfile(CreateAgentProfileView{
+		AgentProfileName: "test-agent",
+		Model:            "gpt-4",
+		SystemPrompt:     "You are a test assistant.",
+		Enabled:          true,
+	})
+
+	// then
+	if err != nil {
+		t.Fatalf("CreateAgentProfile() unexpected error: %v", err)
+	}
+	if view == nil {
+		t.Fatal("CreateAgentProfile() returned nil view")
+	}
+	if view.AgentProfileName != "test-agent" {
+		t.Errorf("expected AgentProfileName %q, got %q", "test-agent", view.AgentProfileName)
+	}
+	if view.Model != "gpt-4" {
+		t.Errorf("expected Model %q, got %q", "gpt-4", view.Model)
+	}
+	if view.SystemPrompt != "You are a test assistant." {
+		t.Errorf("expected SystemPrompt %q, got %q", "You are a test assistant.", view.SystemPrompt)
+	}
+	if view.Enabled != true {
+		t.Errorf("expected Enabled true, got %v", view.Enabled)
+	}
+}
+
+// TestCreateAgentProfile_Error verifies CreateAgentProfile propagates client error.
+func TestCreateAgentProfile_Error(t *testing.T) {
+	// given: mock server returning 409 Conflict
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, `{"error":"already exists"}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	view, err := app.CreateAgentProfile(CreateAgentProfileView{
+		AgentProfileName: "test-agent",
+	})
+
+	// then
+	if err == nil {
+		t.Fatal("CreateAgentProfile() expected error, got nil")
+	}
+	if view != nil {
+		t.Fatal("CreateAgentProfile() expected nil view on error")
+	}
+	if !strings.Contains(err.Error(), "create agent profile") {
+		t.Errorf("error should contain 'create agent profile', got %q", err.Error())
+	}
+}
+
+// TestGetAgentProfile_Success verifies GetAgentProfile delegates to client and returns view.
+func TestGetAgentProfile_Success(t *testing.T) {
+	// given: mock server responding to GET /api/v1/prompts/agentProfiles/test-agent
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		wantPath := "/api/v1/prompts/agentProfiles/test-agent"
+		if r.URL.Path != wantPath {
+			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	view, err := app.GetAgentProfile("test-agent")
+
+	// then
+	if err != nil {
+		t.Fatalf("GetAgentProfile() unexpected error: %v", err)
+	}
+	if view == nil {
+		t.Fatal("GetAgentProfile() returned nil view")
+	}
+	if view.AgentProfileName != "test-agent" {
+		t.Errorf("expected AgentProfileName %q, got %q", "test-agent", view.AgentProfileName)
+	}
+	if view.Model != "gpt-4" {
+		t.Errorf("expected Model %q, got %q", "gpt-4", view.Model)
+	}
+}
+
+// TestGetAgentProfile_NotFound verifies GetAgentProfile propagates not found error.
+func TestGetAgentProfile_NotFound(t *testing.T) {
+	// given: mock server returning 404
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"not found"}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	view, err := app.GetAgentProfile("nonexistent")
+
+	// then
+	if err == nil {
+		t.Fatal("GetAgentProfile() expected error, got nil")
+	}
+	if view != nil {
+		t.Fatal("GetAgentProfile() expected nil view on error")
+	}
+	if !strings.Contains(err.Error(), "get agent profile") {
+		t.Errorf("error should contain 'get agent profile', got %q", err.Error())
+	}
+}
+
+// TestDeleteAgentProfile_Success verifies DeleteAgentProfile returns nil on success.
+func TestDeleteAgentProfile_Success(t *testing.T) {
+	// given: mock server responding to DELETE /api/v1/prompts/agentProfiles/del-me
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		wantPath := "/api/v1/prompts/agentProfiles/del-me"
+		if r.URL.Path != wantPath {
+			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	err := app.DeleteAgentProfile("del-me")
+
+	// then
+	if err != nil {
+		t.Fatalf("DeleteAgentProfile() unexpected error: %v", err)
+	}
+}
+
+// TestDeleteAgentProfile_NotFound verifies DeleteAgentProfile propagates 404 error.
+func TestDeleteAgentProfile_NotFound(t *testing.T) {
+	// given: mock server returning 404
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"not found"}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	err := app.DeleteAgentProfile("nonexistent")
+
+	// then
+	if err == nil {
+		t.Fatal("DeleteAgentProfile() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "delete agent profile") {
+		t.Errorf("error should contain 'delete agent profile', got %q", err.Error())
+	}
 }

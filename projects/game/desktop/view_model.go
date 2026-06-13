@@ -67,6 +67,15 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	}
 }
 
+// CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
+// Per UI contract FR-004, SkillNames and McpNames are omitted in this version.
+type CreateAgentProfileView struct {
+	AgentProfileName string `json:"agentProfileName"`
+	Model            string `json:"model"`
+	SystemPrompt     string `json:"systemPrompt"`
+	Enabled          bool   `json:"enabled"`
+}
+
 // AgentProfileView is the Wails view model for game.AgentProfile.
 type AgentProfileView struct {
 	Name              string   `json:"name"`

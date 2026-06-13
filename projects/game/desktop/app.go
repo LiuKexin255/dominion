@@ -282,6 +282,102 @@ func (a *App) ListAgentProfiles(pageSize int, pageToken string) (*ListAgentProfi
 	return listAgentProfilesViewFromProto(resp), nil
 }
 
+// CreateAgentProfile creates a new agent profile via the gateway REST API.
+func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating agent profile", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": req.AgentProfileName,
+	})
+	protoReq := &game.CreateAgentProfileRequest{
+		AgentProfileName: req.AgentProfileName,
+		Model:            req.Model,
+		SystemPrompt:     req.SystemPrompt,
+		Enabled:          req.Enabled,
+	}
+	profile, err := a.client.CreateAgentProfile(ctx, protoReq)
+	if err != nil {
+		a.logger.Error("backend", "Create agent profile failed", map[string]any{
+			"trace_id":          traceID,
+			"correlation_id":    corrID,
+			"agent_profile_name": req.AgentProfileName,
+			"error":             err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent profile created", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": profile.GetAgentProfileName(),
+	})
+	return agentProfileViewFromProto(profile), nil
+}
+
+// GetAgentProfile retrieves an agent profile by name via the gateway REST API.
+func (a *App) GetAgentProfile(agentProfileName string) (*AgentProfileView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Getting agent profile", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": agentProfileName,
+	})
+	profile, err := a.client.GetAgentProfile(ctx, agentProfileName)
+	if err != nil {
+		a.logger.Error("backend", "Get agent profile failed", map[string]any{
+			"trace_id":          traceID,
+			"correlation_id":    corrID,
+			"agent_profile_name": agentProfileName,
+			"error":             err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent profile retrieved", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": profile.GetAgentProfileName(),
+	})
+	return agentProfileViewFromProto(profile), nil
+}
+
+// DeleteAgentProfile deletes an agent profile by name via the gateway REST API.
+func (a *App) DeleteAgentProfile(agentProfileName string) error {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Deleting agent profile", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": agentProfileName,
+	})
+	err := a.client.DeleteAgentProfile(ctx, agentProfileName)
+	if err != nil {
+		a.logger.Error("backend", "Delete agent profile failed", map[string]any{
+			"trace_id":          traceID,
+			"correlation_id":    corrID,
+			"agent_profile_name": agentProfileName,
+			"error":             err.Error(),
+		})
+		return err
+	}
+	a.logger.Info("backend", "Agent profile deleted", map[string]any{
+		"trace_id":          traceID,
+		"correlation_id":    corrID,
+		"agent_profile_name": agentProfileName,
+	})
+	return nil
+}
+
 // SendAgentText sends a text frame to the agent via WebSocket and returns the response frame.
 func (a *App) SendAgentText(sessionID string, text string) (*game.AgentFrame, error) {
 	if a.ws == nil {
