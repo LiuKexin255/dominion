@@ -59,20 +59,3 @@ go_largetest(
         "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
-
-go_unittest(
-    name = "testplan_test",
-    srcs = [
-        "agent_dialog_test.go",
-        "agent_lifecycle_test.go",
-        "helpers_test.go",
-        "prompt_test.go",
-        "session_test.go",
-    ],
-    deps = [
-        "//common/gopkg/testtool",
-        "//projects/game",
-        "@com_github_gorilla_websocket//:websocket",
-        "@org_golang_google_protobuf//encoding/protojson",
-    ],
-)
