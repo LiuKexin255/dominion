@@ -139,7 +139,7 @@ describe("buildResourceName", () => {
     const target: Target = {
       app: "api",
       service: "grpc",
-      port: { kind: "name", name: "grpc" },
+      port: { kind: "number", port: 50051 },
     };
     const result = buildResourceName(env, target);
     expect(result).toBe(

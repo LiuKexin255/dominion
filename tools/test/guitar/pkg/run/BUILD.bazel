@@ -3,7 +3,10 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "run",
-    srcs = ["run.go"],
+    srcs = [
+        "reporter.go",
+        "run.go",
+    ],
     importpath = "dominion/tools/test/guitar/pkg/run",
     visibility = ["//visibility:public"],
     deps = [

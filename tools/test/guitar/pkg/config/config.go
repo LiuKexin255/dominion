@@ -24,6 +24,7 @@ type Suite struct {
 	Deploy   string               `yaml:"deploy"`
 	Endpoint map[string]Endpoints `yaml:"endpoint"` // protocol -> Endpoints
 	Cases    []string             `yaml:"cases"`
+	Timeout  int                  `yaml:"timeout"`
 }
 
 // Endpoints maps endpoint names to URLs for a single protocol.

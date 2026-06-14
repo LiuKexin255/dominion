@@ -1,0 +1,12 @@
+version: "3.0"
+name: backend
+app: grpc-chain
+kind: stateless
+desc: grpc-chain backend (Go gRPC server)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: backend
+    target: :cmd_image
+    tls: true

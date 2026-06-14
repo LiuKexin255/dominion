@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+go_library(
+    name = "backend_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/experimental/grpc_chain/backend",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/grpc",
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
+        "//common/gopkg/otel",
+        "//experimental/grpc_chain",
+        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//reflection",
+    ],
+)
+
+go_binary(
+    name = "backend",
+    embed = [":backend_lib"],
+    visibility = ["//visibility:public"],
+)
+
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "grpc-chain",
+    binary = ":backend",
+    service = "backend",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "grpc-chain",
+    pkg = ":service_pkg",
+    service = "backend",
+)

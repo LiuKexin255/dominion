@@ -17,7 +17,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/006-grpc-js-service-discovery/plan.md
+at specs/007-dialog-agent/plan.md
 <!-- SPECKIT END -->
 
 ## 操作命令参考
@@ -30,7 +30,7 @@ at specs/006-grpc-js-service-discovery/plan.md
   `gazelle`，或者指定目录：`bazel run //:gazelle some/subdir`。
 * `BUILD.bazel` 文件通常只由 `gazelle` 生成/更新；如需添加 `target`（如
   `oci_image`）应在 `gazelle` 生成后添加。
-* 使用 `bazel mod tidy` 更新 Bazel 依赖。
+* 使用 `bazel mod tidy` 更新 Bazel 依赖。xiu
 
 ### Golang
 
@@ -73,3 +73,8 @@ Python 依赖更新步骤：
 
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
 * 需要执行大型测试计划时，使用 `testplan` skill。
+
+
+## 注释
+
+Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 

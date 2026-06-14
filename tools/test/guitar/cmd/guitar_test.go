@@ -25,6 +25,11 @@ func TestParseOptions_Validate(t *testing.T) {
 			args:    []string{"validate", "--timeout=10m", "plan.yaml"},
 			wantCmd: "validate",
 		},
+		{
+			name:    "validate rejects suite flag",
+			args:    []string{"validate", "--suite", "suite-b", "plan.yaml"},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -49,6 +54,7 @@ func TestParseOptions_Run(t *testing.T) {
 		args        []string
 		wantErr     bool
 		wantVerbose bool
+		wantSuite   string
 	}{
 		{
 			name: "run with target",
@@ -73,6 +79,21 @@ func TestParseOptions_Run(t *testing.T) {
 			args:    []string{"run"},
 			wantErr: true,
 		},
+		{
+			name:      "run with suite flag",
+			args:      []string{"run", "--suite", "suite-b", "plan.yaml"},
+			wantSuite: "suite-b",
+		},
+		{
+			name:    "run with empty suite flag",
+			args:    []string{"run", "--suite", "", "plan.yaml"},
+			wantErr: false,
+		},
+		{
+			name:    "run with whitespace suite flag",
+			args:    []string{"run", "--suite", "  ", "plan.yaml"},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -86,6 +107,9 @@ func TestParseOptions_Run(t *testing.T) {
 			}
 			if !tt.wantErr && opts.verbose != tt.wantVerbose {
 				t.Fatalf("parseOptions(%v) verbose = %v, want %v", tt.args, opts.verbose, tt.wantVerbose)
+			}
+			if !tt.wantErr && opts.suiteName != tt.wantSuite {
+				t.Fatalf("parseOptions(%v) suiteName = %q, want %q", tt.args, opts.suiteName, tt.wantSuite)
 			}
 		})
 	}
@@ -149,6 +173,9 @@ func TestRunCLI_Help(t *testing.T) {
 			}
 			if !strings.Contains(output, "--verbose") {
 				t.Fatalf("help output should list verbose flag, got: %q", output)
+			}
+			if !strings.Contains(output, "--suite") {
+				t.Fatalf("help output should list suite flag, got: %q", output)
 			}
 		})
 	}

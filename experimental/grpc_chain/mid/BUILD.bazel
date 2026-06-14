@@ -1,0 +1,75 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_proto_library(
+    name = "echo_types",
+    proto = "//experimental/grpc_chain:echo_proto",
+    visibility = ["//visibility:public"],
+)
+
+ts_project(
+    name = "server",
+    srcs = [
+        "src/bootstrap.ts",
+        "src/server.ts",
+    ],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    deps = [
+        ":echo_types_lib",
+        ":node_modules/@dominion/common-js-grpc-otel",
+        ":node_modules/@dominion/common-js-grpc-resolver",
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+        ":node_modules/@types/node",
+        "//common/js/grpc/otel:lib",
+        "//common/js/grpc/resolver:lib",
+        "//common/js/logs:lib",
+        "//common/js/otel:lib",
+    ],
+)
+
+js_library(
+    name = "echo_types_lib",
+    srcs = [":echo_types"],
+)
+
+# Package JS service files into a tar layer
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "grpc-chain",
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        ":node_modules/@grpc/grpc-js",
+        ":node_modules/@grpc/proto-loader",
+    ],
+    runtime_protos = [
+        "//experimental/grpc_chain:echo_proto",
+    ],
+    service = "mid",
+    ts_project = ":server",
+    runtime_deps = [
+        "//common/js/grpc/otel:runtime_pkg",
+        "//common/js/grpc/resolver:runtime_pkg",
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+    ],
+)
+
+# OCI image for the TypeScript mid service
+artifact_image(
+    name = "cmd_image",
+    app = "grpc-chain",
+    pkg = ":server_pkg",
+    service = "mid",
+    visibility = ["//visibility:public"],
+)

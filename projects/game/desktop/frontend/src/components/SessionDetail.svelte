@@ -1,11 +1,13 @@
 <script lang="ts">
-  import type { Session, Agent } from '../api'
+  import type { Session, Agent, AgentProfile } from '../api'
 
   let {
     session,
     agent,
     connectionState,
     agentLoadState,
+    profiles,
+    selectedProfile,
     loading,
     error,
     onCreateAgent,
@@ -14,12 +16,15 @@
     onDeleteSession,
     onRefresh,
     onEnterPlay,
-    onBack
+    onBack,
+    onSelectProfile,
   }: {
     session: Session | null
     agent: Agent | null
     connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
     agentLoadState: 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+    profiles: AgentProfile[]
+    selectedProfile: string
     loading: boolean
     error: string | null
     onCreateAgent: () => void
@@ -29,7 +34,10 @@
     onRefresh: () => void
     onEnterPlay: () => void
     onBack: () => void
+    onSelectProfile: (profileName: string) => void
   } = $props()
+
+  let canCreateAgent = $derived(selectedProfile !== '' && !loading)
 
   function formatTime(t: string): string {
     return new Date(t).toLocaleString()
@@ -73,8 +81,21 @@
       <!-- Agent Operations -->
       <div class="detail-section">
         <div class="section-label">Agent Operations</div>
+        <div class="profile-row">
+          <select
+            class="profile-select"
+            value={selectedProfile}
+            onchange={(e) => onSelectProfile((e.target as HTMLSelectElement).value)}
+            disabled={loading}
+          >
+            <option value="" disabled>Select a profile...</option>
+            {#each profiles as profile}
+              <option value={profile.agentProfileName}>{profile.name || profile.agentProfileName}</option>
+            {/each}
+          </select>
+        </div>
         <div class="ops-buttons">
-          <button class="btn" onclick={onCreateAgent} disabled={loading}>Create Agent</button>
+          <button class="btn" onclick={onCreateAgent} disabled={!canCreateAgent}>Create Agent</button>
           <button class="btn" onclick={onDeleteAgent} disabled={loading}>Delete Agent</button>
           <button class="btn" onclick={onConnectAgent} disabled={loading || connectionState === 'connected' || connectionState === 'connecting'}>Connect Agent</button>
           <button class="btn" onclick={onRefresh} disabled={loading}>Refresh</button>
@@ -100,10 +121,6 @@
           <div class="info-grid">
             <span class="info-key">Name</span>
             <span class="info-value">{agent.name}</span>
-            <span class="info-key">Owner</span>
-            <span class="info-value">{agent.owner}</span>
-            <span class="info-key">Owner Index</span>
-            <span class="info-value">{agent.ownerIndex}</span>
           </div>
         </div>
       {/if}
@@ -241,6 +258,33 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+  }
+
+  .profile-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .profile-select {
+    flex: 1;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    background: #0f3460;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+    cursor: pointer;
+  }
+
+  .profile-select:focus {
+    outline: none;
+    border-color: #4a9eff;
+  }
+
+  .profile-select option {
+    background: #1a1a2e;
+    color: #e0e0e0;
   }
 
   .enter-play-btn {

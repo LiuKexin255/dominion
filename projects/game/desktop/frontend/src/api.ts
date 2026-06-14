@@ -29,8 +29,6 @@ export interface Session {
 export interface Agent {
   name: string
   sessionId: string
-  ownerIndex: number
-  owner: string
   createTime: string
 }
 
@@ -44,6 +42,13 @@ export enum AgentMouseButton {
 export enum AgentMouseClickType {
   SINGLE = 1,
   DOUBLE = 2,
+}
+
+export enum FrameSender {
+  UNSPECIFIED = 0,
+  USER = 1,
+  AGENT = 2,
+  SYSTEM = 3,
 }
 
 // ─── Frame Types ───────────────────────────────────────────────────────────
@@ -139,6 +144,7 @@ export interface AgentFrame {
   thinking?: AgentThinkingFrame
   operation?: AgentOperationFrame
   warn?: AgentWarnFrame
+  sender: FrameSender
 }
 
 export interface ListSessionsResponse {
@@ -206,21 +212,29 @@ interface WailsApp {
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
   CreateAgent(sessionID: string): Promise<Agent>
+  CreateAgentWithProfile(sessionID: string, profileName: string): Promise<Agent>
   GetAgent(sessionID: string): Promise<Agent>
   DeleteAgent(sessionID: string): Promise<void>
+  /** @deprecated Use chat-based interfaces instead. */
   ListWindows(): Promise<WindowRef[]>
+  /** @deprecated Use chat-based interfaces instead. */
   BindWindow(hwnd: number): Promise<void>
+  /** @deprecated Use chat-based interfaces instead. */
   CaptureScreenshot(): Promise<CapturedImage>
+  /** @deprecated Use chat-based interfaces instead. */
   SendScreenshot(hwnd: number): Promise<AgentAckFrame>
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
+  SendAgentText(sessionId: string, text: string): Promise<void>
+  /** @deprecated Use chat-based interfaces instead. */
   ExecuteOperation(
     operationID: string, screenshotID: string, sequence: number,
     button: number, clickType: number, xPx: number, yPx: number,
     isMouse: boolean, keyCodes: string,
     windowLeft: number, windowTop: number
   ): Promise<OperationResultView>
+  /** @deprecated Use chat-based interfaces instead. */
   SendNextScreenshot(): Promise<void>
 
   // Prompt Service
@@ -280,6 +294,12 @@ export async function createAgent(sessionID: string): Promise<Agent> {
   return a.CreateAgent(sessionID)
 }
 
+export async function createAgentWithProfile(sessionID: string, profileName: string): Promise<Agent> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CreateAgentWithProfile(sessionID, profileName)
+}
+
 export async function getAgent(sessionID: string): Promise<Agent> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
@@ -292,24 +312,28 @@ export async function deleteAgent(sessionID: string): Promise<void> {
   return a.DeleteAgent(sessionID)
 }
 
+/** @deprecated Use chat-based interfaces instead. */
 export async function listWindows(): Promise<WindowRef[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ListWindows()
 }
 
+/** @deprecated Use chat-based interfaces instead. */
 export async function bindWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.BindWindow(hwnd)
 }
 
+/** @deprecated Use chat-based interfaces instead. */
 export async function captureScreenshot(): Promise<CapturedImage> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.CaptureScreenshot()
 }
 
+/** @deprecated Use chat-based interfaces instead. */
 export async function sendScreenshot(hwnd: number): Promise<AgentAckFrame> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
@@ -334,6 +358,13 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
+export async function sendAgentText(sessionId: string, text: string): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.SendAgentText(sessionId, text)
+}
+
+/** @deprecated Use chat-based interfaces instead. */
 export async function executeOperation(
   operationID: string, screenshotID: string, sequence: number,
   button: number, clickType: number, xPx: number, yPx: number,
@@ -345,6 +376,7 @@ export async function executeOperation(
   return a.ExecuteOperation(operationID, screenshotID, sequence, button, clickType, xPx, yPx, isMouse, keyCodes, windowLeft, windowTop)
 }
 
+/** @deprecated Use chat-based interfaces instead. */
 export async function sendNextScreenshot(): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')

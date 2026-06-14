@@ -15,7 +15,10 @@ description: "Task list template for feature implementation"
 Include repository-specific verification tasks for formatting, Gazelle/dependency
 synchronization, pnpm catalog updates for TypeScript/JavaScript dependency
 versions, unit tests, large tests for service code, testplan execution when a plan
-exists, and full-repository Bazel build/test validation.
+exists, and full-repository Bazel build/test validation. Each task MUST classify
+its change type as **new**, **modify**, or **delete**. Modification tasks MUST
+describe the refactoring scope and goal. Existing tests affected by the changes
+MUST be listed as explicit tasks.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 

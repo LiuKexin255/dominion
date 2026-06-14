@@ -51,12 +51,15 @@ suites:
 * 测试用例需要根据实际情况设置 `size`。
 * 使用 `guitar run <plan.yaml>` 执行测试计划，自动完成部署、测试、清理闭环。
 * 测试代码通过 `pkg/testtool` 读取环境变量获取 SUT 信息。
+* 根据被测对象和测试用例合理拆分 `suite`，避免“大而全”。每次变更代码都应考虑测试用例是否需要变更，需要变更的应当随需求变更一起修改。切勿堆砌测试用例，保证测试可信可靠。
+* 测试用例中发送 HTTP 请求，需要用 `common/gopkg/otel/tracecontext` 设置并打印 `trace_id` 便于日志排查。
 
 > FOR Agent: 使用 `testplan` SKILL 来执行大型测试。
 
 ## SUT
 
 * 被测系统默认不进行持久化（`deploy` 配置里不设置 `persistence`）
+* 根据模块合理拆分 SUT，避免将整个系统堆在一个 SUT 当中。
 
 ### GRPC & HTTP
 

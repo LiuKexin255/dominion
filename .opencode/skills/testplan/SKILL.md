@@ -106,24 +106,9 @@ guitar run <plan.yaml>
 
 #### 使用 SigNoz MCP 辅助排障
 
-当大型测试失败且本地 OpenCode 已配置 SigNoz MCP 时，加载仓库级 `signoz` skill，用该 skill 中允许的 MCP 工具查询被测服务的日志和链路，帮助完成“定位 → 修复 → 验证”闭环。
+当大型测试失败且本地 OpenCode 已配置 SigNoz MCP 时，加载仓库级 `signoz` skill，用该 skill 中允许的 MCP 工具查询被测服务的日志和链路，帮助完成"定位 → 修复 → 验证"闭环。
 
 具体 MCP 工具、字段映射、默认时间窗口和查询流程由 `.opencode/skills/signoz/SKILL.md` 维护，本 skill 只传递大型测试上下文，不重复维护 SigNoz 查询规则。个人 MCP 连接配置模板见 `tools/templates/signoz-mcp-opencode/`。
-
-加载 `signoz` skill 后，将以下大型测试上下文用于查询条件或结果说明：
-
-- 失败阶段：部署 / 测试执行 / 清理。
-- `service`：被测服务标识，通常为 `app/service`。
-- `env`：测试计划中的 `suites[].env`。
-- `trace_id`：测试输出、错误日志或服务响应中出现的 trace id（如果有）。
-- 时间窗口：失败发生前后的时间范围。
-
-按失败阶段选择排查方向：
-
-1. 部署失败：按 `signoz` skill 的规则查询部署服务、目标服务和依赖服务的 ERROR/WARN logs。
-2. 测试 case 失败：按失败时间窗口查询 logs/traces，定位 HTTP/gRPC 状态码、异常、超时或下游错误。
-3. 清理失败：查询 deploy/reconcile 相关 logs，确认残留资源和删除错误。
-4. 修复后验证：重新执行 `guitar run`，并按相同上下文再次使用 `signoz` skill 的查询规则确认错误日志/失败 trace 不再出现。
 
 ### 4. 查看结果
 

@@ -167,10 +167,9 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 }
 
 // CreateAgent creates a new agent for a session via POST to /api/v1/sessions/{sessionID}/agent.
+// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
 func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent, error) {
-	body, err := protojson.Marshal(&game.CreateAgentRequest{
-		Agent: new(game.Agent),
-	})
+	body, err := protojson.Marshal(new(game.Agent))
 	if err != nil {
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
@@ -197,6 +196,76 @@ func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 	return agent, nil
+}
+
+// CreateAgentWithProfile creates a new agent for a session with an agent profile via POST to /api/v1/sessions/{sessionID}/agent.
+// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
+func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, profileName string) (*game.Agent, error) {
+	body, err := protojson.Marshal(&game.Agent{AgentProfileName: profileName})
+	if err != nil {
+		return nil, fmt.Errorf("create agent with profile: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/sessions/"+sessionID+"/agent"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create agent with profile: %w", err)
+	}
+	c.setCommonHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create agent with profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("create agent with profile: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	agent := new(game.Agent)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, agent); err != nil {
+		return nil, fmt.Errorf("create agent with profile: %w", err)
+	}
+	return agent, nil
+}
+
+// ListAgentProfiles lists agent profiles via GET to /api/v1/prompts/agentProfiles.
+func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToken string) (*game.ListAgentProfilesResponse, error) {
+	path := c.url("/api/v1/prompts/agentProfiles")
+	params := []string{}
+	if pageSize > 0 {
+		params = append(params, fmt.Sprintf("page_size=%d", pageSize))
+	}
+	if pageToken != "" {
+		params = append(params, fmt.Sprintf("page_token=%s", pageToken))
+	}
+	if len(params) > 0 {
+		path += "?" + strings.Join(params, "&")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list agent profiles: %w", err)
+	}
+	c.setCommonHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list agent profiles: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("list agent profiles: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	result := new(game.ListAgentProfilesResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, result); err != nil {
+		return nil, fmt.Errorf("list agent profiles: %w", err)
+	}
+	return result, nil
 }
 
 // GetAgent retrieves the agent for a session via GET to /api/v1/sessions/{sessionID}/agent.
@@ -246,3 +315,80 @@ func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// CreateAgentProfile creates an agent profile via POST to /api/v1/prompts/agentProfiles.
+func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
+	body, err := protojson.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("create agent profile: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/prompts/agentProfiles"), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create agent profile: %w", err)
+	}
+	c.setCommonHeaders(httpReq)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("create agent profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("create agent profile: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	profile := new(game.AgentProfile)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, profile); err != nil {
+		return nil, fmt.Errorf("create agent profile: %w", err)
+	}
+	return profile, nil
+}
+
+// GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileName}.
+func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (*game.AgentProfile, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/prompts/agentProfiles/"+agentProfileName), nil)
+	if err != nil {
+		return nil, fmt.Errorf("get agent profile: %w", err)
+	}
+	c.setCommonHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get agent profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("get agent profile: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	profile := new(game.AgentProfile)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, profile); err != nil {
+		return nil, fmt.Errorf("get agent profile: %w", err)
+	}
+	return profile, nil
+}
+
+// DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileName}.
+func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url("/api/v1/prompts/agentProfiles/"+agentProfileName), nil)
+	if err != nil {
+		return fmt.Errorf("delete agent profile: %w", err)
+	}
+	c.setCommonHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete agent profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete agent profile: status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

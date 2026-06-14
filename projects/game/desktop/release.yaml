@@ -1,5 +1,5 @@
 name: game-desktop
-version: 0.1.0
+version: 0.1.1
 artifacts:
   - target: //projects/game/desktop:desktop
     filename: game-desktop-windows-amd64.exe

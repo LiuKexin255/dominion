@@ -87,6 +87,9 @@ func validateSuiteFields(index int, s *guitarconfig.Suite) error {
 	if len(s.Cases) == 0 {
 		return fmt.Errorf("suite[%d]: cases must not be empty", index)
 	}
+	if s.Timeout < 0 {
+		return fmt.Errorf("suite[%d]: timeout must be non-negative, got %d", index, s.Timeout)
+	}
 	for protocol, endpoints := range s.Endpoint {
 		for name := range endpoints {
 			if !endpointNamePattern.MatchString(name) {

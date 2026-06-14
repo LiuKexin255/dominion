@@ -23,6 +23,23 @@ let registered = false;
 let storedConfig: ResolverConfig | undefined;
 
 /**
+ * Extracts a valid HTTP/2 authority from a dominion target path.
+ *
+ * The path has the form `app/service:port`. We return `service:port`
+ * (the segment after the last `/`) so that `grpc-js` can construct a
+ * valid `http2.connect("https://service:port")` URL.
+ *
+ * Falls back to the full path if no `/` is found.
+ */
+function authorityFromPath(path: string): string {
+  const lastSlash = path.lastIndexOf("/");
+  if (lastSlash !== -1) {
+    return path.slice(lastSlash + 1);
+  }
+  return path;
+}
+
+/**
  * Registers `dominion` and `dominion-stateful` URI schemes with
  * `@grpc/grpc-js` so that gRPC channels can resolve dominion service
  * targets like `dominion:///app/service:50051`.
@@ -202,7 +219,7 @@ class _DominionResolver {
   }
 
   static getDefaultAuthority(target: GrpcUri): string {
-    return target.authority ?? "";
+    return authorityFromPath(target.path);
   }
 
   updateResolution(): void {
@@ -311,7 +328,7 @@ class _DominionStatefulResolver {
   }
 
   static getDefaultAuthority(target: GrpcUri): string {
-    return target.authority ?? "";
+    return authorityFromPath(target.path);
   }
 
   updateResolution(): void {

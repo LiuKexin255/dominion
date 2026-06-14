@@ -24,8 +24,6 @@ type ListSessionsView struct {
 type AgentView struct {
 	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
-	OwnerIndex int32  `json:"ownerIndex"`
-	Owner      string `json:"owner,omitempty"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -65,10 +63,36 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	return &AgentView{
 		Name:       a.GetName(),
 		SessionID:  a.GetSessionId(),
-		OwnerIndex: a.GetOwnerIndex(),
-		Owner:      a.GetOwner(),
 		CreateTime: timestampString(a.GetCreateTime()),
 	}
+}
+
+// CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
+// Per UI contract FR-004, SkillNames and McpNames are omitted in this version.
+type CreateAgentProfileView struct {
+	AgentProfileName string `json:"agentProfileName"`
+	Model            string `json:"model"`
+	SystemPrompt     string `json:"systemPrompt"`
+	Enabled          bool   `json:"enabled"`
+}
+
+// AgentProfileView is the Wails view model for game.AgentProfile.
+type AgentProfileView struct {
+	Name             string   `json:"name"`
+	AgentProfileName string   `json:"agentProfileName"`
+	Model            string   `json:"model"`
+	SystemPrompt     string   `json:"systemPrompt"`
+	SkillNames       []string `json:"skillNames"`
+	McpNames         []string `json:"mcpNames"`
+	Enabled          bool     `json:"enabled"`
+	CreateTime       string   `json:"createTime,omitempty"`
+	UpdateTime       string   `json:"updateTime,omitempty"`
+}
+
+// ListAgentProfilesView is the Wails view model for game.ListAgentProfilesResponse.
+type ListAgentProfilesView struct {
+	AgentProfiles []AgentProfileView `json:"agentProfiles"`
+	NextPageToken string             `json:"nextPageToken,omitempty"`
 }
 
 // OperationResultView is the Wails view model for an operation execution result.
@@ -86,4 +110,36 @@ func timestampString(t *timestamppb.Timestamp) string {
 		return ""
 	}
 	return t.AsTime().Format(time.RFC3339)
+}
+
+func agentProfileViewFromProto(p *game.AgentProfile) *AgentProfileView {
+	if p == nil {
+		return nil
+	}
+	return &AgentProfileView{
+		Name:             p.GetName(),
+		AgentProfileName: p.GetAgentProfileName(),
+		Model:            p.GetModel(),
+		SystemPrompt:     p.GetSystemPrompt(),
+		SkillNames:       p.GetSkillNames(),
+		McpNames:         p.GetMcpNames(),
+		Enabled:          p.GetEnabled(),
+		CreateTime:       timestampString(p.GetCreateTime()),
+		UpdateTime:       timestampString(p.GetUpdateTime()),
+	}
+}
+
+func listAgentProfilesViewFromProto(r *game.ListAgentProfilesResponse) *ListAgentProfilesView {
+	if r == nil {
+		return nil
+	}
+	profiles := r.GetAgentProfiles()
+	views := make([]AgentProfileView, len(profiles))
+	for i, p := range profiles {
+		views[i] = *agentProfileViewFromProto(p)
+	}
+	return &ListAgentProfilesView{
+		AgentProfiles: views,
+		NextPageToken: r.GetNextPageToken(),
+	}
 }

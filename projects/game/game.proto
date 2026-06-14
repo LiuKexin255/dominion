@@ -192,8 +192,7 @@ message Session {
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
-// Agent represents an agent within a game session, including ownership
-// information.
+// Agent represents an agent within a game session.
 message Agent {
   option (google.api.resource) = {
     type: "game.liukexin.com/Agent"
@@ -208,17 +207,19 @@ message Agent {
   // The session this agent belongs to.
   string session_id = 2 [(google.api.field_behavior) = REQUIRED];
 
-  // The index of the owner within the session.
-  int32 owner_index = 3 [(google.api.field_behavior) = REQUIRED];
-
-  // The identifier of the owner.
-  string owner = 4 [(google.api.field_behavior) = REQUIRED];
-
   // The timestamp when this agent was created.
-  google.protobuf.Timestamp create_time = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   // The agent profile name used to configure this agent's behavior.
-  string agent_profile_name = 6;
+  string agent_profile_name = 4;
+}
+
+// FrameSender identifies the originator of an AgentFrame.
+enum FrameSender {
+  FRAME_SENDER_UNSPECIFIED = 0;
+  FRAME_SENDER_USER = 1;
+  FRAME_SENDER_AGENT = 2;
+  FRAME_SENDER_SYSTEM = 3;
 }
 
 // AgentFrame is the minimal transport unit exchanged over WebSocket and gRPC
@@ -261,6 +262,9 @@ message AgentFrame {
     // Agent is requesting a screenshot from desktop.
     AgentScreenshotRequestFrame screenshot_request = 19;
   }
+
+  // The originator of this frame (user, agent, or system).
+  FrameSender sender = 20;
 }
 
 // AgentStatusFrame reports the current status string of an agent.
@@ -474,9 +478,6 @@ message CreateAgentRequest {
 
   // The Agent resource to create.
   Agent agent = 2 [(google.api.field_behavior) = REQUIRED];
-
-  // The agent profile name to use for creating the agent.
-  string agent_profile_name = 3;
 }
 
 // GetAgentRequest is the request to retrieve an Agent by name.

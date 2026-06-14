@@ -1,36 +1,44 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, WindowRef, AgentAckFrame, Config, AgentFrame, OperationResultView } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest } from './api'
+  import { FrameSender } from './api'
   import {
     setConfig,
     createSession,
     listSessions,
     deleteSession,
-    createAgent,
+    createAgentWithProfile,
     getAgent,
     deleteAgent,
     connectAgent,
     closeAgent,
-    listWindows,
-    bindWindow,
-    captureScreenshot,
-    sendScreenshot,
-    executeOperation,
-    sendNextScreenshot
+    listAgentProfiles,
+    createAgentProfile,
+    deleteAgentProfile,
+    sendAgentText,
   } from './api'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
   import SessionDetail from './components/SessionDetail.svelte'
-  import PlayView from './components/PlayView.svelte'
+  import ChatView from './components/ChatView.svelte'
+  import ProfileManagement from './components/ProfileManagement.svelte'
+  import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
 
   // --- Page state ---
-  let page = $state<'sessions' | 'detail' | 'play'>('sessions')
+  let page = $state<'sessions' | 'detail' | 'chat' | 'profiles'>('sessions')
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
   type AgentLoadState = 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+
+  type ChatEntry = {
+    sender: FrameSender
+    type: 'thinking' | 'text' | 'warn'
+    content: string
+    timestamp: string
+  }
 
   // --- App-level state ---
   let selectedSession: Session | null = $state(null)
@@ -38,30 +46,23 @@
   let agent: Agent | null = $state(null)
   let connectionState: ConnectionState = $state('disconnected')
   let agentLoadState: AgentLoadState = $state('idle')
-  let windows: WindowRef[] = $state([])
-  let boundWindow: WindowRef | null = $state(null)
-  let screenshotData: string | null = $state(null)
-  let screenshotMeta: { width: number; height: number; encoding: string } | null = $state(null)
-  let ackResult: AgentAckFrame | null = $state(null)
-  let playState = $state('idle')
   let logEntries: LogEntry[] = $state([])
   let loading = $state(false)
   let error: string | null = $state(null)
 
-  type AgentFrameItem = {
-    type: 'text' | 'thinking' | 'operation' | 'warn'
-    content?: string
-    mouse?: { button: number; clickType: number; xPx: number; yPx: number }
-    keyboard?: { keyCodes: string }
-    operationId?: string
-    screenshotId?: string
-    sequence?: number
-    message?: string
-    code?: string
-  }
+  // --- Chat state ---
+  let chatMessages: ChatEntry[] = $state([])
+  let processing = $state(false)
+  let queueCount = $state(0)
 
-  let agentFrames: AgentFrameItem[] = $state([])
-  let operationResult: OperationResultView | null = $state(null)
+  // --- Profile state ---
+  let profiles: AgentProfile[] = $state([])
+  let selectedProfile = $state('')
+
+  // --- Profile management state ---
+  let managedProfiles: AgentProfile[] = $state([])
+  let profileMgmtLoading = $state(false)
+  let profileMgmtError: string | null = $state(null)
 
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
@@ -83,8 +84,7 @@
     const runtime = window.runtime
     if (runtime?.EventsOn) {
       runtime.EventsOn('game:frame', (data: unknown) => {
-        const frame = data as AgentFrame
-        handleAgentFrame(frame)
+        handleAgentFrame(data as AgentFrame & { wait?: { reason?: string } })
       })
     }
   })
@@ -150,15 +150,28 @@
     }
   }
 
-  function handleSelectSession(session: Session) {
+  async function handleSelectSession(session: Session) {
     selectedSession = session
     agent = null
     error = null
     agentLoadState = 'idle'
     connectionState = 'disconnected'
     page = 'detail'
+    // Load profiles for the create-agent dropdown
+    await loadProfiles()
     // Auto-load agent when entering detail
-    handleAutoGetAgent(session.sessionId)
+    await handleAutoGetAgent(session.sessionId)
+  }
+
+  async function loadProfiles() {
+    try {
+      const resp = await listAgentProfiles(50, '')
+      profiles = resp.agentProfiles
+      log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
+    } catch (e: unknown) {
+      log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
+      profiles = []
+    }
   }
 
   async function handleAutoGetAgent(sessionId: string) {
@@ -181,13 +194,18 @@
   }
 
   // --- SessionDetail handlers ---
-  async function handleCreateAgent() {
+  async function handleCreateAgent(profileName: string) {
     if (!selectedSession) return
+    if (!profileName) {
+      error = 'Please select an agent profile first'
+      log('warn', 'agent', 'Create agent aborted: no profile selected')
+      return
+    }
     try {
       loading = true
       error = null
-      agent = await createAgent(selectedSession.sessionId)
-      log('info', 'agent', `Agent created: ${agent.sessionId}`)
+      agent = await createAgentWithProfile(selectedSession.sessionId, profileName)
+      log('info', 'agent', `Agent created with profile "${profileName}": ${agent.sessionId}`)
     } catch (e: unknown) {
       error = String(e)
       log('error', 'agent', `Create agent failed: ${String(e)}`)
@@ -245,66 +263,77 @@
     }
   }
 
-  function handleEnterPlay() {
-    playState = 'idle'
-    windows = []
-    boundWindow = null
-    screenshotData = null
-    screenshotMeta = null
-    ackResult = null
-    agentFrames = []
-    operationResult = null
+  async function handleEnterChat() {
+    chatMessages = []
+    processing = false
+    queueCount = 0
     error = null
-    page = 'play'
+
+    // Load profiles for the sidebar
+    await loadProfiles()
+
+    page = 'chat'
   }
 
-  function handleAgentFrame(frame: AgentFrame) {
-    if (frame.text) {
-      agentFrames = [...agentFrames, { type: 'text', content: frame.text.content }]
-    } else if (frame.thinking) {
-      agentFrames = [...agentFrames, { type: 'thinking', content: frame.thinking.content }]
-    } else if (frame.operation) {
-      const op = frame.operation
-      agentFrames = [...agentFrames, {
-        type: 'operation',
-        operationId: op.operationId,
-        screenshotId: op.screenshotId,
-        sequence: op.sequence,
-        mouse: op.mouse ? { button: op.mouse.button, clickType: op.mouse.clickType, xPx: op.mouse.xPx, yPx: op.mouse.yPx } : undefined,
-        keyboard: op.keyboard ? { keyCodes: op.keyboard.keyCodes } : undefined,
+  function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
+    if (frame.thinking) {
+      chatMessages = [...chatMessages, {
+        sender: FrameSender.AGENT,
+        type: 'thinking',
+        content: frame.thinking.content,
+        timestamp: frame.createTime || new Date().toISOString(),
       }]
+    } else if (frame.text) {
+      const textContent = frame.text.content || ''
+      if (!textContent) return
+      const last = chatMessages[chatMessages.length - 1]
+      if (last && last.type === 'text' && last.sender === FrameSender.AGENT) {
+        last.content += textContent
+        chatMessages = [...chatMessages]
+      } else {
+        chatMessages = [...chatMessages, {
+          sender: FrameSender.AGENT,
+          type: 'text',
+          content: textContent,
+          timestamp: frame.createTime || new Date().toISOString(),
+        }]
+      }
     } else if (frame.warn) {
-      agentFrames = [...agentFrames, { type: 'warn', message: frame.warn.message, code: frame.warn.code }]
-    } else if (frame.operationResult) {
-      operationResult = frame.operationResult
+      chatMessages = [...chatMessages, {
+        sender: FrameSender.SYSTEM,
+        type: 'warn',
+        content: frame.warn.message,
+        timestamp: frame.createTime || new Date().toISOString(),
+      }]
+    } else if (frame.wait) {
+      processing = false
     }
   }
 
-  async function handleExecuteOperation(frame: AgentFrameItem) {
+  async function handleSendChatText(text: string) {
+    if (!selectedSession) return
     try {
-      loading = true
-      error = null
-      const result = await executeOperation(
-        frame.operationId || '',
-        frame.screenshotId || '',
-        frame.sequence || 0,
-        frame.mouse?.button || 1,
-        frame.mouse?.clickType || 1,
-        frame.mouse?.xPx || 0,
-        frame.mouse?.yPx || 0,
-        !!frame.mouse,
-        frame.keyboard?.keyCodes || '',
-        0,
-        0,
-      )
-      operationResult = result
-      log('info', 'play', `Operation executed: ${result.operationId} status=${result.status}`)
+      chatMessages = [...chatMessages, {
+        sender: FrameSender.USER,
+        type: 'text',
+        content: text,
+        timestamp: new Date().toISOString(),
+      }]
+      processing = true
+      queueCount++
+      await sendAgentText(selectedSession.sessionId, text)
+      queueCount = Math.max(0, queueCount - 1)
+      log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
       error = String(e)
-      log('error', 'play', `Execute operation failed: ${String(e)}`)
-    } finally {
-      loading = false
+      processing = false
+      queueCount = Math.max(0, queueCount - 1)
+      log('error', 'chat', `Send text failed: ${String(e)}`)
     }
+  }
+
+  function handleSelectProfile(profileName: string) {
+    selectedProfile = profileName
   }
 
   function handleBackToSessions() {
@@ -313,6 +342,8 @@
     connectionState = 'disconnected'
     agentLoadState = 'idle'
     error = null
+    managedProfiles = []
+    profileMgmtError = null
     page = 'sessions'
   }
 
@@ -356,93 +387,47 @@
     log('info', 'agent', 'Agent refreshed')
   }
 
-  // --- PlayView handlers ---
-  async function handleListWindows() {
-    try {
-      loading = true
-      error = null
-      windows = await listWindows()
-      log('info', 'play', `Listed ${windows.length} windows`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'play', `List windows failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
-  async function handleBindWindow(hwnd: number) {
-    try {
-      loading = true
-      error = null
-      await bindWindow(hwnd)
-      const found = windows.find(w => w.handle === hwnd)
-      if (found) {
-        boundWindow = found
-      }
-      playState = 'window_bound'
-      log('info', 'play', `Bound window: ${found?.title || String(hwnd)}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'play', `Bind window failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
-  async function handleCaptureScreenshot() {
-    try {
-      loading = true
-      error = null
-      const img = await captureScreenshot()
-      // img.data is already a base64-encoded PNG string (Wails serializes Go []byte as base64)
-      screenshotData = img.data
-      screenshotMeta = { width: img.widthPx, height: img.heightPx, encoding: img.encoding }
-      playState = 'screenshot_captured'
-      log('info', 'play', `Screenshot captured: ${img.widthPx}x${img.heightPx} ${img.encoding}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'play', `Capture screenshot failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
-  async function handleSendScreenshot(hwnd: number) {
-    try {
-      loading = true
-      error = null
-      ackResult = await sendScreenshot(hwnd)
-      playState = 'screenshot_sent'
-      log('info', 'play', `Screenshot sent, ack: ${ackResult.ackFrameId}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'play', `Send screenshot failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
-  async function handleCaptureNext() {
-    try {
-      loading = true
-      error = null
-      await sendNextScreenshot()
-      operationResult = null
-      agentFrames = []
-      playState = 'next_screenshot_sent'
-      log('info', 'play', 'Next screenshot sent, waiting for agent response')
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'play', `Capture next screenshot failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
   // --- Log handler ---
   function handleClearLogs() {
     logEntries = []
+  }
+
+  // --- Profile management handlers ---
+  async function handleEnterProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listAgentProfiles(100, '')
+      managedProfiles = resp.agentProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+    page = 'profiles'
+  }
+
+  async function handleRefreshProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listAgentProfiles(100, '')
+      managedProfiles = resp.agentProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+  }
+
+  async function handleCreateProfile(req: CreateAgentProfileRequest) {
+    await createAgentProfile(req)
+    await handleRefreshProfiles()
+  }
+
+  async function handleDeleteProfile(agentProfileName: string) {
+    await deleteAgentProfile(agentProfileName)
+    await handleRefreshProfiles()
   }
 </script>
 
@@ -458,6 +443,7 @@
       <input id="env" type="text" bind:value={env} placeholder="environment" />
     </div>
     <button class="btn btn-primary" onclick={handleApplyConfig} disabled={loading}>Apply Config</button>
+    <button class="btn" onclick={handleEnterProfiles} disabled={loading}>Agent Profiles</button>
   </div>
 
   <!-- Page Content (middle) -->
@@ -478,40 +464,103 @@
       {agent}
       {connectionState}
       {agentLoadState}
+      {profiles}
+      {selectedProfile}
       {loading}
       {error}
-      onCreateAgent={handleCreateAgent}
+      onCreateAgent={() => handleCreateAgent(selectedProfile)}
       onDeleteAgent={handleDeleteAgent}
       onConnectAgent={handleConnectAgent}
       onDeleteSession={handleDeleteSessionFromDetail}
       onRefresh={handleRefreshFromDetail}
-      onEnterPlay={handleEnterPlay}
+      onEnterPlay={handleEnterChat}
       onBack={handleBackToSessions}
+      onSelectProfile={handleSelectProfile}
     />
-  {:else if page === 'play'}
-    <PlayView
-      sessionId={selectedSession?.sessionId ?? ''}
-      {windows}
-      {boundWindow}
-      {screenshotData}
-      {screenshotMeta}
-      {ackResult}
-      {agentFrames}
-      {operationResult}
-      {playState}
-      wsConnected={connectionState === 'connected'}
-      {loading}
-      {error}
-      onListWindows={handleListWindows}
-      onBindWindow={handleBindWindow}
-      onCaptureScreenshot={handleCaptureScreenshot}
-      onSendScreenshot={handleSendScreenshot}
-      onExecuteOperation={handleExecuteOperation}
-      onCaptureNext={handleCaptureNext}
-      onBack={handleBackToDetail}
+  {:else if page === 'chat'}
+    <div class="chat-layout">
+      <AgentSidebar
+        sessionId={selectedSession?.sessionId ?? ''}
+        {profiles}
+        {selectedProfile}
+        agentStatus={connectionState}
+        onCreateAgent={handleCreateAgent}
+        onSelectProfile={handleSelectProfile}
+      />
+      <div class="chat-main">
+        <div class="chat-top-bar">
+          <button class="btn" onclick={handleBackToDetail} disabled={loading}>Back</button>
+          <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
+          {#if error}
+            <span class="chat-error">{error}</span>
+          {/if}
+        </div>
+        <ChatView
+          messages={chatMessages}
+          {processing}
+          {queueCount}
+          onSend={handleSendChatText}
+        />
+      </div>
+    </div>
+  {:else if page === 'profiles'}
+    <ProfileManagement
+      profiles={managedProfiles}
+      loading={profileMgmtLoading}
+      error={profileMgmtError}
+      onCreate={handleCreateProfile}
+      onDelete={handleDeleteProfile}
+      onRefresh={handleRefreshProfiles}
+      onBack={handleBackToSessions}
     />
   {/if}
 
   <!-- Log Panel (bottom, always visible) -->
   <LogPanel logs={logEntries} onclear={handleClearLogs} />
 </div>
+
+<style>
+  .chat-layout {
+    display: flex;
+    gap: 8px;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .chat-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .chat-top-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: #16213e;
+    border-radius: 6px;
+    border: 1px solid #0f3460;
+  }
+
+  .session-label {
+    font-size: 12px;
+    color: #a0a0b0;
+  }
+
+  .session-label strong {
+    color: #e0e0e0;
+  }
+
+  .chat-error {
+    margin-left: auto;
+    font-size: 12px;
+    color: #ff6b6b;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+</style>

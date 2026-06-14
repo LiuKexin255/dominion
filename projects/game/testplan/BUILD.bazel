@@ -1,20 +1,57 @@
-load("//tools/dev/go:defs.bzl", "go_largetest")
+load("//tools/dev/go:defs.bzl", "go_largetest", "go_unittest")
 
 go_largetest(
-    name = "testplan_test",
+    name = "prompt_test",
     size = "small",
-    srcs = ["system_test.go"],
-    data = ["testdata/test_screenshot.png"],
+    srcs = [
+        "helpers_test.go",
+        "prompt_test.go",
+    ],
     deps = [
         "//common/gopkg/testtool",
+        "//projects/game",
         "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
 
 go_largetest(
-    name = "step3a_testplan_test",
-    srcs = ["step3a_test.go"],
-    data = ["testdata/test_screenshot.png"],
+    name = "session_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "session_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_largetest(
+    name = "agent_lifecycle_test",
+    size = "small",
+    srcs = [
+        "agent_lifecycle_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_largetest(
+    name = "agent_dialog_test",
+    size = "small",
+    srcs = [
+        "agent_dialog_test.go",
+        "helpers_test.go",
+    ],
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",

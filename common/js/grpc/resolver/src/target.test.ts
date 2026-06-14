@@ -29,32 +29,6 @@ describe("parseTarget", () => {
     });
   });
 
-  describe("valid named port", () => {
-    it("parses app/service:name into a named port target", () => {
-      const result = parseTarget("myapp/myservice:grpc");
-      expect(result).toEqual<Target>({
-        app: "myapp",
-        service: "myservice",
-        port: { kind: "name", name: "grpc" },
-      });
-    });
-
-    it("accepts DNS-label port with hyphens", () => {
-      const result = parseTarget("a/b:my-port");
-      expect(result.port).toEqual({ kind: "name", name: "my-port" });
-    });
-
-    it("accepts DNS-label port with digits", () => {
-      const result = parseTarget("a/b:port2");
-      expect(result.port).toEqual({ kind: "name", name: "port2" });
-    });
-
-    it("accepts single-letter DNS-label port", () => {
-      const result = parseTarget("a/b:x");
-      expect(result.port).toEqual({ kind: "name", name: "x" });
-    });
-  });
-
   describe("dominion:/// scheme prefix", () => {
     it("strips the scheme and parses correctly", () => {
       const result = parseTarget("dominion:///myapp/myservice:50051");
@@ -63,11 +37,6 @@ describe("parseTarget", () => {
         service: "myservice",
         port: { kind: "number", port: 50051 },
       });
-    });
-
-    it("strips the scheme with named port", () => {
-      const result = parseTarget("dominion:///myapp/myservice:grpc");
-      expect(result.port).toEqual({ kind: "name", name: "grpc" });
     });
   });
 
@@ -88,6 +57,28 @@ describe("parseTarget", () => {
         service: "myservice",
         port: { kind: "number", port: 50051 },
       });
+    });
+  });
+
+  describe("reject non-numeric port", () => {
+    it("throws InvalidTargetError for named port (grpc)", () => {
+      expect(() => parseTarget("app/service:grpc")).toThrow(InvalidTargetError);
+    });
+
+    it("throws InvalidTargetError for named port with hyphens", () => {
+      expect(() => parseTarget("app/service:my-port")).toThrow(InvalidTargetError);
+    });
+
+    it("throws InvalidTargetError for mixed alphanumeric port", () => {
+      expect(() => parseTarget("app/service:0abc")).toThrow(InvalidTargetError);
+    });
+
+    it("throws InvalidTargetError for port with underscore", () => {
+      expect(() => parseTarget("app/service:my_port")).toThrow(InvalidTargetError);
+    });
+
+    it("throws InvalidTargetError for port with uppercase letter", () => {
+      expect(() => parseTarget("app/service:Grpc")).toThrow(InvalidTargetError);
     });
   });
 
@@ -136,27 +127,13 @@ describe("parseTarget", () => {
       expect(() => parseTarget("app/service:65536")).toThrow(InvalidTargetError);
     });
 
-    it("throws InvalidTargetError for named port starting with digit", () => {
-      expect(() => parseTarget("app/service:0abc")).toThrow(InvalidTargetError);
-    });
-
-    it("throws InvalidTargetError for named port with underscore", () => {
-      expect(() => parseTarget("app/service:my_port")).toThrow(
-        InvalidTargetError,
-      );
-    });
-
-    it("throws InvalidTargetError for named port with uppercase letter", () => {
-      expect(() => parseTarget("app/service:Grpc")).toThrow(InvalidTargetError);
-    });
-
     it("throws InvalidTargetError when service contains slash", () => {
       expect(() => parseTarget("app/sub/service:50051")).toThrow(
         InvalidTargetError,
       );
     });
 
-    it("throws InvalidTargetError for named port with only digits but leading sign", () => {
+    it("throws InvalidTargetError for port with leading sign", () => {
       expect(() => parseTarget("app/service:+1")).toThrow(InvalidTargetError);
     });
   });

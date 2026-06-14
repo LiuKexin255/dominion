@@ -1,16 +1,9 @@
 import { InvalidTargetError } from "./errors";
 
 /**
- * Discriminated union for endpoint port selection.
- *
- * - `{ kind: "number"; port: number }` — port is in `0..65535` and matches
- *   endpoint port exactly.
- * - `{ kind: "name"; name: string }` — name uses DNS‑label syntax and
- *   resolves through `ServiceEndpoints.ports`.
+ * Numeric port selector — port must be an integer in `0..65535`.
  */
-export type PortSelector =
-  | { kind: "number"; port: number }
-  | { kind: "name"; name: string };
+export type PortSelector = { kind: "number"; port: number };
 
 /**
  * Parsed dominion service target.
@@ -23,7 +16,6 @@ export interface Target {
 
 const DOMINION_SCHEME_PREFIX = "dominion:///";
 const MAX_PORT = 65535;
-const DNS_LABEL_PATTERN = /^[a-z][a-z0-9-]*$/;
 
 /**
  * Parses a dominion target string of the form `app/service:port`.
@@ -32,12 +24,11 @@ const DNS_LABEL_PATTERN = /^[a-z][a-z0-9-]*$/;
  * - Direct format: `app/service:port`
  * - Dominion scheme: `dominion:///app/service:port`
  *
- * Whitespace around each segment is trimmed.
+ * The port must be a non-negative integer in the range 0–65535.
+ * Named ports (e.g. `:grpc`) are not supported — callers must
+ * resolve the port number themselves before constructing the target.
  *
- * Throws `InvalidTargetError` for invalid formats, missing segments,
- * unsupported URI schemes, out-of-range numeric ports (0–65535),
- * or invalid named port syntax (must be a DNS label: lowercase letter
- * followed by lowercase letters, digits, or hyphens).
+ * Throws `InvalidTargetError` for invalid formats.
  */
 export function parseTarget(raw: string): Target {
   let trimmed = raw.trim();
@@ -88,7 +79,7 @@ export function parseTarget(raw: string): Target {
   if (trimmedPortPart === "") {
     if (hasPort) {
       throw new InvalidTargetError(
-        `invalid target ${JSON.stringify(raw)}: port must be numeric or a valid DNS label`,
+        `invalid target ${JSON.stringify(raw)}: port must be numeric`,
       );
     }
     throw new InvalidTargetError(
@@ -96,29 +87,22 @@ export function parseTarget(raw: string): Target {
     );
   }
 
-  if (/^-?\d+$/.test(trimmedPortPart)) {
-    const numericPort = parseInt(trimmedPortPart, 10);
-    if (numericPort < 0 || numericPort > MAX_PORT) {
-      throw new InvalidTargetError(
-        `invalid target ${JSON.stringify(raw)}: port out of range`,
-      );
-    }
-    return {
-      app: appPart,
-      service: servicePart,
-      port: { kind: "number", port: numericPort },
-    };
+  if (!/^\d+$/.test(trimmedPortPart)) {
+    throw new InvalidTargetError(
+      `invalid target ${JSON.stringify(raw)}: port must be numeric, got ${JSON.stringify(trimmedPortPart)}`,
+    );
   }
 
-  if (!DNS_LABEL_PATTERN.test(trimmedPortPart)) {
+  const numericPort = parseInt(trimmedPortPart, 10);
+  if (numericPort < 0 || numericPort > MAX_PORT) {
     throw new InvalidTargetError(
-      `invalid target ${JSON.stringify(raw)}: port must be numeric or a valid DNS label`,
+      `invalid target ${JSON.stringify(raw)}: port out of range`,
     );
   }
 
   return {
     app: appPart,
     service: servicePart,
-    port: { kind: "name", name: trimmedPortPart },
+    port: { kind: "number", port: numericPort },
   };
 }

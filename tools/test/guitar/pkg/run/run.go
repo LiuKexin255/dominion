@@ -40,7 +40,8 @@ var (
 
 // options configures Run behavior.
 type options struct {
-	timeout time.Duration
+	timeout     time.Duration
+	suiteFilter string
 }
 
 // Option configures Run behavior.
@@ -50,6 +51,13 @@ type Option func(*options)
 func WithTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.timeout = d
+	}
+}
+
+// WithSuite filters execution to the suite with the given exact name.
+func WithSuite(name string) Option {
+	return func(o *options) {
+		o.suiteFilter = name
 	}
 }
 
@@ -70,16 +78,37 @@ func Run(ctx context.Context, cfg *guitarconfig.Config, opts ...Option) error {
 		return fmt.Errorf("validation failed: %w", err)
 	}
 
+	r := NewReporter(stdout)
+
+	if o.suiteFilter != "" {
+		for _, s := range cfg.Suites {
+			if s.Name == o.suiteFilter {
+				cfg.Suites = []*guitarconfig.Suite{s}
+				break
+			}
+		}
+		if len(cfg.Suites) != 1 || cfg.Suites[0].Name != o.suiteFilter {
+			names := make([]string, len(cfg.Suites))
+			for i, s := range cfg.Suites {
+				names[i] = s.Name
+			}
+			return fmt.Errorf("suite %q not found. Available suites: %s", o.suiteFilter, strings.Join(names, ", "))
+		}
+	}
+
 	for _, suite := range cfg.Suites {
-		if err := runSuite(ctx, suite); err != nil {
+		err := runSuite(ctx, suite, r)
+		if err != nil {
+			r.SuiteStatus(suite.Name, statusFailure, err)
 			return err
 		}
+		r.SuiteStatus(suite.Name, statusSuccess, nil)
 	}
 
 	return nil
 }
 
-func runSuite(ctx context.Context, suite *guitarconfig.Suite) (err error) {
+func runSuite(ctx context.Context, suite *guitarconfig.Suite, r *Reporter) (err error) {
 	deployPath := workspace.ResolvePath(suite.Deploy)
 	runID, genErr := generateRunID()
 	if genErr != nil {
@@ -95,9 +124,10 @@ func runSuite(ctx context.Context, suite *guitarconfig.Suite) (err error) {
 		return fmt.Errorf("deploy name %q must contain scope", deployCfg.Name)
 	}
 	fullEnvName := fmt.Sprintf("%s.%s", scope, runID)
-	fmt.Fprintf(stdout, "suite %s: run=%s env=%s deploy=%s\n", suite.Name, runID, fullEnvName, suite.Deploy)
+	r.SuiteHeader(suite.Name, runID, fullEnvName, suite.Deploy)
 
 	defer func() {
+		r.Step("Cleanup")
 		cleanupErr := runCommand(context.WithoutCancel(ctx), deployBinary, deployDeleteCommand, fullEnvName)
 		if err != nil {
 			if cleanupErr != nil {
@@ -110,10 +140,12 @@ func runSuite(ctx context.Context, suite *guitarconfig.Suite) (err error) {
 		}
 	}()
 
+	r.Step("Deploy")
 	if applyErr := runCommand(ctx, deployBinary, deployApplyCommand, "--run", runID, deployPath); applyErr != nil {
 		return fmt.Errorf("deploy apply %s: %w", suite.Deploy, applyErr)
 	}
 
+	r.Step("Test")
 	if testErr := runTests(ctx, suite, fullEnvName); testErr != nil {
 		return testErr
 	}
@@ -126,7 +158,14 @@ func runTests(ctx context.Context, suite *guitarconfig.Suite, envName string) er
 	args = append(args, env.BuildTestEnvFlags(suite, envName)...)
 	args = append(args, suite.Cases...)
 
-	if err := runCommand(ctx, bazelBinary, args...); err != nil {
+	testCtx := ctx
+	if suite.Timeout > 0 {
+		var cancel context.CancelFunc
+		testCtx, cancel = context.WithTimeout(ctx, time.Duration(suite.Timeout)*time.Second)
+		defer cancel()
+	}
+
+	if err := runCommand(testCtx, bazelBinary, args...); err != nil {
 		return fmt.Errorf("bazel test failed for suite %q: %w", suite.Name, err)
 	}
 

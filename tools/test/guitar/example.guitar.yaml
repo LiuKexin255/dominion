@@ -3,7 +3,8 @@ description: 测试说明
 suites: # 测试套件
   - name: 测试套件名称
     deploy: 部署配置，相对目录或 // 开头的项目完整路径
-    case: # 大型测试用例 target
+    timeout: 60 # 套件级别超时（秒），覆盖全局 --timeout
+    cases: # 大型测试用例 target
       - foo:foo_test
       - //abc/aaa:aaa_test
     endpoint:
@@ -11,5 +12,6 @@ suites: # 测试套件
         abc: host.com
   - name: 测试套件名称
     deploy: 部署配置，相对目录或 // 开头的项目完整路径
+    timeout: 0 # 0 表示未设置，回退到全局 --timeout
     cases: # 大型测试用例 target
       - xyz:xyz_test

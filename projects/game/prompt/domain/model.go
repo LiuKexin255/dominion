@@ -7,7 +7,7 @@ import "time"
 type AgentProfile struct {
 	// AgentProfileName is the business identifier for this profile.
 	AgentProfileName string
-	// Model is the model name to use.
+	// Model is the model spec in {provider}/{model} format (e.g., "opencode-go/deepseek-v4-pro").
 	Model string
 	// SystemPrompt is the system prompt for the agent.
 	SystemPrompt string

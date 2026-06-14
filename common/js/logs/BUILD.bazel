@@ -24,9 +24,15 @@ ts_project(
 )
 
 # Workspace package target required by npm_link_all_packages for workspace:* deps.
+# package.json is required here so that the npm linker populates the virtual
+# store entry with the package manifest — without it, downstream js_test
+# targets cannot resolve this package via require().
 js_library(
     name = "pkg",
-    srcs = [":lib"],
+    srcs = [
+        "package.json",
+        ":lib",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -36,7 +42,6 @@ js_library(
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/common-js-logs",
-    runtime_deps = [],
     lib = ":lib",
     npm_deps = [
         ":node_modules/@opentelemetry/api",
@@ -44,6 +49,7 @@ js_runtime_library(
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
+    runtime_deps = [],
 )
 
 # Small bootstrap script that invokes vitest programmatically.

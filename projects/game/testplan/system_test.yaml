@@ -1,42 +1,52 @@
-name: game-agent-step2-system-test
+name: game-system-test
 description: |
-  Game agent step2 system integration test
+  Game system integration test — 4 suites organized by tested object.
 
-  Services: session, proxy, agent, gateway + MongoDB
-  Interface: HTTP REST API + WebSocket
-  Base path: /api/v1/
-  Step2 features: server-generated session IDs, oneof AgentFrame format,
-  ListSessions pagination, screenshot frame with ack
-  Test cases:
-    1. Create session (empty body, server-generated ID)
-    2. Create agent
-    3. MongoDB records exist
-    4. Get agent returns owner
-    5. Consistent owner routing
-    6. WebSocket connect
-    7. WebSocket status + echo (oneof format)
-    8. WebSocket unknown fields (DiscardUnknown)
-    9. WebSocket invalid JSON (connection close)
-    10. Delete agent and session (NotFound verification)
-    11. Delete session cascade (cleans up agent/owner)
-    12. Delete agent cascade (cleans up owner, session persists)
-    13. Full lifecycle (create→status WS→delete→verify NotFound)
-    14. List sessions (pagination, nextPageToken)
-    15. Screenshot frame (PNG upload, ack receipt)
+  Suite 1 (prompt): prompt service + gateway.
+    - Agent profile CRUD
+    - Skill CRUD
+  Suite 2 (session): session + proxy + agent(test) + prompt + gateway.
+    - Session CRUD + ListSessions pagination
+  Suite 3 (session-agent lifecycle): session + proxy + agent(test) + prompt + gateway.
+    - Agent CRUD with profile, owner routing
+    - WebSocket connect, status/echo probes, unknown fields, invalid JSON
+    - Delete cascade (session→agent, agent→owner)
+    - Full lifecycle (create→WS status→delete→verify NotFound)
+    - Create agent with missing/empty profile error
+    - Delete agent idempotent
+  Suite 4 (agent dialog): session + proxy + agent(test) + prompt + gateway.
+    - Agent dialog with fake LLM: create agent with profile, connect chat,
+      thinking + text response, queue behavior, profile loose coupling, cleanup
 
 suites:
-  - name: step2-regression
-    deploy: //projects/game/testplan/deploy.yaml
+  - name: prompt
+    deploy: //projects/game/testplan/deploy_prompt.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:testplan_test
+      - //projects/game/testplan:prompt_test
 
-  - name: step3a
-    deploy: //projects/game/testplan/deploy_step3a.yaml
+  - name: session
+    deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:step3a_testplan_test
+      - //projects/game/testplan:session_test
+
+  - name: session-agent
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_lifecycle_test
+
+  - name: agent-dialog
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_dialog_test

@@ -1,0 +1,12 @@
+version: "3.0"
+name: mid
+app: grpc-chain
+kind: stateless
+desc: grpc-chain mid service (TypeScript grpc-js)
+ports:
+  - name: grpc
+    port: 50051
+artifacts:
+  - name: mid
+    target: :cmd_image
+    tls: true

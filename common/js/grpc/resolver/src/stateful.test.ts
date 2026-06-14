@@ -199,7 +199,7 @@ describe("createStatefulResolver", () => {
     });
 
     const endpoints = await resolver.resolveInstance(
-      { app: "myapp", service: "myservice", port: { kind: "name", name: "grpc" } },
+      { app: "myapp", service: "myservice", port: { kind: "number", port: 50051 } },
       2,
     );
 
