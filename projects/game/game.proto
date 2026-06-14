@@ -83,6 +83,15 @@ service ProxyService {
     option (google.api.method_signature) = "name";
   }
 
+  // ListMessages lists all Messages for the agent.
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/{parent=sessions/*/agent}/messages"
+    };
+
+    option (google.api.method_signature) = "parent";
+  }
+
   // ConnectAgent establishes a bidirectional streaming channel for agent
   // communication. Messages are exchanged as AgentFrame units.
   rpc ConnectAgent(stream AgentFrame) returns (stream AgentFrame);
@@ -101,6 +110,9 @@ service AgentService {
 
   // DeleteAgent deletes the agent for a given session.
   rpc DeleteAgent(AgentDeleteRequest) returns (google.protobuf.Empty);
+
+  // ListMessages lists all Messages for the agent.
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
 
   // Connect establishes a bidirectional streaming channel for agent-to-agent
   // communication. Messages are exchanged as AgentFrame units.
@@ -387,6 +399,42 @@ message AgentWaitFrame {
 message AgentScreenshotRequestFrame {
   // The reason for requesting the screenshot.
   string reason = 1;
+}
+
+// Message is one normalized conversation entry reconstructed from checkpoint
+// state.
+message Message {
+  // The full resource name of the message, e.g.
+  // "sessions/abc123/agent/messages/msg-xyz".
+  string name = 1;
+
+  // The native LangChain BaseMessage.id carried inside checkpoint state.
+  string message_id = 2;
+
+  // The originator of this message (USER, AGENT, or SYSTEM).
+  FrameSender sender = 3;
+
+  // The type of message: "text", "thinking", or "warn".
+  string type = 4;
+
+  // The visible display content of the message.
+  string content = 5;
+
+  // Best-effort message timestamp sourced from the checkpoint that introduced
+  // the message.
+  google.protobuf.Timestamp create_time = 6;
+}
+
+// ListMessagesRequest is the request to list Messages for an agent.
+message ListMessagesRequest {
+  // The parent agent resource name, e.g. "sessions/abc123/agent".
+  string parent = 1;
+}
+
+// ListMessagesResponse is the response for listing Messages.
+message ListMessagesResponse {
+  // The list of messages in chronological order.
+  repeated Message messages = 1;
 }
 
 // AgentProfile describes the configuration for creating an agent.

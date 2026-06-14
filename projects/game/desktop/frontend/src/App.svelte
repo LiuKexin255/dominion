@@ -32,6 +32,14 @@
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
   type AgentLoadState = 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+  type SessionDetailState = 'checking' | 'setup_required' | 'agent_ready' | 'error'
+  type PlayState =
+    | 'connecting'
+    | 'loading_messages'
+    | 'chat_ready'
+    | 'processing'
+    | 'connection_error'
+    | 'agent_lost'
 
   type ChatEntry = {
     sender: FrameSender
@@ -45,7 +53,7 @@
   let sessions: Session[] = $state([])
   let agent: Agent | null = $state(null)
   let connectionState: ConnectionState = $state('disconnected')
-  let agentLoadState: AgentLoadState = $state('idle')
+  let agentLoadState = $state<AgentLoadState>('idle')
   let logEntries: LogEntry[] = $state([])
   let loading = $state(false)
   let error: string | null = $state(null)
@@ -54,6 +62,17 @@
   let chatMessages: ChatEntry[] = $state([])
   let processing = $state(false)
   let queueCount = $state(0)
+  let playState = $state<PlayState>('connecting')
+  let messagesError = $state<string | null>(null)
+
+  // --- Detail state (derived from agent metadata only; no WS dependency per FR-002) ---
+  let sessionDetailState = $derived.by<SessionDetailState>(() => {
+    const loadState: AgentLoadState = agentLoadState
+    if (loadState === 'loaded' && agent !== null) return 'agent_ready'
+    if (loadState === 'not_found') return 'setup_required'
+    if (loadState === 'error') return 'error'
+    return 'checking'
+  })
 
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
@@ -248,8 +267,6 @@
   async function handleConnectAgent() {
     if (!selectedSession) return
     try {
-      loading = true
-      error = null
       connectionState = 'connecting'
       await connectAgent(selectedSession.sessionId)
       connectionState = 'connected'
@@ -258,21 +275,41 @@
       connectionState = 'error'
       error = String(e)
       log('error', 'agent', `Connect agent failed: ${String(e)}`)
-    } finally {
-      loading = false
     }
   }
 
-  async function handleEnterChat() {
+  async function handleLoadMessages() {
+    playState = 'loading_messages'
+    messagesError = null
+    // TODO(Task 8): replace with ListMessages API call to hydrate chatMessages
+    // from the checkpoint-backed message history keyed by sessionId.
     chatMessages = []
+    playState = 'chat_ready'
+  }
+
+  async function handleEnterChat() {
+    if (!selectedSession) return
     processing = false
     queueCount = 0
     error = null
 
-    // Load profiles for the sidebar
+    // Load profiles for the sidebar (profile/model lookup is Task 8)
     await loadProfiles()
 
+    // Navigate to play page immediately — sidebar shows agent metadata while connecting
     page = 'chat'
+
+    // Auto-connect on play entry (FR: connection establishes automatically)
+    playState = 'connecting'
+    if (connectionState !== 'connected') {
+      await handleConnectAgent()
+    }
+
+    if (connectionState === 'connected') {
+      await handleLoadMessages()
+    } else {
+      playState = 'connection_error'
+    }
   }
 
   function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
@@ -307,11 +344,26 @@
       }]
     } else if (frame.wait) {
       processing = false
+      if (playState === 'processing') playState = 'chat_ready'
     }
   }
 
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
+    // Auto-connect fallback if WS dropped (sendAgentText relies on the backend connection)
+    const wasConnected = connectionState === 'connected'
+    if (!wasConnected) {
+      playState = 'connecting'
+      await handleConnectAgent()
+    }
+    const nowConnected = connectionState === 'connected'
+    if (!wasConnected && nowConnected) {
+      await handleLoadMessages()
+    } else if (!nowConnected) {
+      playState = 'connection_error'
+      messagesError = 'Connection failed. Retry to send your message.'
+      return
+    }
     try {
       chatMessages = [...chatMessages, {
         sender: FrameSender.USER,
@@ -320,6 +372,7 @@
         timestamp: new Date().toISOString(),
       }]
       processing = true
+      playState = 'processing'
       queueCount++
       await sendAgentText(selectedSession.sessionId, text)
       queueCount = Math.max(0, queueCount - 1)
@@ -328,6 +381,7 @@
       error = String(e)
       processing = false
       queueCount = Math.max(0, queueCount - 1)
+      if (playState === 'processing') playState = 'chat_ready'
       log('error', 'chat', `Send text failed: ${String(e)}`)
     }
   }
@@ -347,8 +401,19 @@
     page = 'sessions'
   }
 
-  function handleBackToDetail() {
+  async function handleBackToDetail() {
     error = null
+    messagesError = null
+    // Tear down WS on play exit (contract: WebSocket closes when leaving play)
+    if (connectionState === 'connected' || connectionState === 'connecting') {
+      try {
+        await closeAgent()
+      } catch {
+        // ignore close errors on teardown
+      }
+      connectionState = 'disconnected'
+    }
+    playState = 'connecting'
     page = 'detail'
   }
 
@@ -462,15 +527,13 @@
     <SessionDetail
       session={selectedSession}
       {agent}
-      {connectionState}
-      {agentLoadState}
+      {sessionDetailState}
       {profiles}
       {selectedProfile}
       {loading}
       {error}
       onCreateAgent={() => handleCreateAgent(selectedProfile)}
       onDeleteAgent={handleDeleteAgent}
-      onConnectAgent={handleConnectAgent}
       onDeleteSession={handleDeleteSessionFromDetail}
       onRefresh={handleRefreshFromDetail}
       onEnterPlay={handleEnterChat}
@@ -480,18 +543,18 @@
   {:else if page === 'chat'}
     <div class="chat-layout">
       <AgentSidebar
-        sessionId={selectedSession?.sessionId ?? ''}
+        {agent}
+        {connectionState}
         {profiles}
-        {selectedProfile}
-        agentStatus={connectionState}
-        onCreateAgent={handleCreateAgent}
-        onSelectProfile={handleSelectProfile}
+        {playState}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
           <button class="btn" onclick={handleBackToDetail} disabled={loading}>Back</button>
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
-          {#if error}
+          {#if playState === 'connection_error'}
+            <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>
+          {:else if error}
             <span class="chat-error">{error}</span>
           {/if}
         </div>
@@ -499,6 +562,8 @@
           messages={chatMessages}
           {processing}
           {queueCount}
+          loadingMessages={playState === 'loading_messages'}
+          messagesError={messagesError}
           onSend={handleSendChatText}
         />
       </div>

@@ -2,11 +2,11 @@
  * fake-llm.test.ts — Tests for FakeLlmAdapter.
  *
  * Validates deterministic behavior: no randomness, no real API calls,
- * same input always produces same output.
+ * same input always produces same output. Updated for 6-param contract.
  */
 
 import { describe, expect, it } from "vitest";
-import { HumanMessage } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
 
 import type { ContentBlock } from "./llm";
 import { FakeLlmAdapter } from "./fake-llm";
@@ -33,8 +33,9 @@ async function collect(
 describe("ContentBlock structure", () => {
   it("yields exactly 2 blocks: reasoning then text", async () => {
     const adapter = new FakeLlmAdapter();
+    const checkpointer = new MemorySaver();
     const blocks = await collect(
-      adapter.generateTurn("You are helpful.", [], "Hello", ""),
+      adapter.generateTurn("test-model", "You are helpful.", "thread-1", "Hello", checkpointer, ""),
     );
 
     expect(blocks).toHaveLength(2);
@@ -56,10 +57,11 @@ describe("ContentBlock structure", () => {
 describe("User message echo", () => {
   it("includes the user message in the text block", async () => {
     const adapter = new FakeLlmAdapter();
+    const checkpointer = new MemorySaver();
     const userMessage = "What is the capital of France?";
 
     const blocks = await collect(
-      adapter.generateTurn("You are helpful.", [], userMessage, ""),
+      adapter.generateTurn("test-model", "You are helpful.", "thread-2", userMessage, checkpointer, ""),
     );
 
     const textBlock = blocks.find(
@@ -71,10 +73,11 @@ describe("User message echo", () => {
 
   it("preserves special characters in the echo", async () => {
     const adapter = new FakeLlmAdapter();
+    const checkpointer = new MemorySaver();
     const userMessage = "a <b>bold</b> & \"quoted\"";
 
     const blocks = await collect(
-      adapter.generateTurn("You are helpful.", [], userMessage, ""),
+      adapter.generateTurn("test-model", "You are helpful.", "thread-3", userMessage, checkpointer, ""),
     );
 
     const textBlock = blocks.find(
@@ -93,14 +96,14 @@ describe("Idempotent output", () => {
   it("produces identical output for the same input", async () => {
     const adapter = new FakeLlmAdapter();
     const systemPrompt = "You are a test assistant.";
-    const history = [new HumanMessage("Previous message")];
     const userMessage = "Test message";
+    const checkpointer = new MemorySaver();
 
     const blocks1 = await collect(
-      adapter.generateTurn(systemPrompt, history, userMessage, "secret-1"),
+      adapter.generateTurn("model-a", systemPrompt, "thread-4", userMessage, checkpointer, "secret-1"),
     );
     const blocks2 = await collect(
-      adapter.generateTurn(systemPrompt, history, userMessage, "secret-2"),
+      adapter.generateTurn("model-a", systemPrompt, "thread-4", userMessage, checkpointer, "secret-2"),
     );
 
     expect(blocks1).toEqual(blocks2);
@@ -109,14 +112,14 @@ describe("Idempotent output", () => {
   it("is unaffected by providerSecret value", async () => {
     const adapter = new FakeLlmAdapter();
     const systemPrompt = "You are helpful.";
-    const history: [] = [];
     const userMessage = "Hi";
+    const checkpointer = new MemorySaver();
 
     const blocksA = await collect(
-      adapter.generateTurn(systemPrompt, history, userMessage, ""),
+      adapter.generateTurn("m", systemPrompt, "t", userMessage, checkpointer, ""),
     );
     const blocksB = await collect(
-      adapter.generateTurn(systemPrompt, history, userMessage, "some-api-key"),
+      adapter.generateTurn("m", systemPrompt, "t", userMessage, checkpointer, "some-api-key"),
     );
 
     expect(blocksA).toEqual(blocksB);
@@ -135,13 +138,14 @@ describe("LLMAdapter interface conformance", () => {
 
   it("generateTurn returns an AsyncIterable", () => {
     const adapter = new FakeLlmAdapter();
-    const result = adapter.generateTurn("", [], "", "");
+    const checkpointer = new MemorySaver();
+    const result = adapter.generateTurn("", "", "", "", checkpointer, "");
     expect(result).toBeDefined();
     expect(typeof result[Symbol.asyncIterator]).toBe("function");
   });
 
   it("accepts all parameters matching the LLMAdapter interface", () => {
     const adapter = new FakeLlmAdapter();
-    expect(adapter.generateTurn.length).toBe(4);
+    expect(adapter.generateTurn.length).toBe(6);
   });
 });

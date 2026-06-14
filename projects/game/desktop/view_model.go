@@ -22,8 +22,19 @@ type ListSessionsView struct {
 
 // AgentView is the Wails view model for game.Agent.
 type AgentView struct {
+	Name             string `json:"name"`
+	SessionID        string `json:"sessionId"`
+	CreateTime       string `json:"createTime,omitempty"`
+	AgentProfileName string `json:"agentProfileName"`
+}
+
+// MessageViewModel is the Wails view model for game.Message.
+type MessageViewModel struct {
 	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
+	MessageID  string `json:"messageId"`
+	Sender     string `json:"sender"`
+	Type       string `json:"type"`
+	Content    string `json:"content"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -61,10 +72,30 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 		return nil
 	}
 	return &AgentView{
-		Name:       a.GetName(),
-		SessionID:  a.GetSessionId(),
-		CreateTime: timestampString(a.GetCreateTime()),
+		Name:             a.GetName(),
+		SessionID:        a.GetSessionId(),
+		CreateTime:       timestampString(a.GetCreateTime()),
+		AgentProfileName: a.GetAgentProfileName(),
 	}
+}
+
+// ToMessageViewModels converts a slice of proto Message to view models.
+func ToMessageViewModels(messages []*game.Message) []MessageViewModel {
+	if messages == nil {
+		return nil
+	}
+	views := make([]MessageViewModel, len(messages))
+	for i, m := range messages {
+		views[i] = MessageViewModel{
+			Name:       m.GetName(),
+			MessageID:  m.GetMessageId(),
+			Sender:     m.GetSender().String(),
+			Type:       m.GetType(),
+			Content:    m.GetContent(),
+			CreateTime: timestampString(m.GetCreateTime()),
+		}
+	}
+	return views
 }
 
 // CreateAgentProfileView is the Wails input struct for creating an AgentProfile.

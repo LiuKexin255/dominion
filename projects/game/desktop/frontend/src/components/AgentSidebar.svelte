@@ -1,31 +1,61 @@
 <script lang="ts">
-  import type { AgentProfile } from '../api'
+  import type { Agent, AgentProfile } from '../api'
 
   let {
-    sessionId,
+    agent,
+    connectionState,
     profiles,
-    selectedProfile,
-    agentStatus,
-    onCreateAgent,
-    onSelectProfile,
+    playState,
   }: {
-    sessionId: string
+    agent: Agent | null
+    connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
     profiles: AgentProfile[]
-    selectedProfile: string
-    agentStatus: string
-    onCreateAgent: (profileName: string) => void
-    onSelectProfile: (profileName: string) => void
+    playState: 'connecting' | 'loading_messages' | 'chat_ready' | 'processing' | 'connection_error' | 'agent_lost'
   } = $props()
 
-  let connected = $derived(agentStatus === 'connected')
-  let canCreate = $derived(selectedProfile !== '' && agentStatus !== 'connected')
+  let showProfileDetails = $state(false)
+
+  // TODO(Task 8): once Agent carries agentProfileName, look up the matching profile
+  // for model/system prompt/skill names/mcp names. For now, no reliable match is
+  // possible since Agent only has name/sessionId/createTime.
+  let matchedProfile = $derived<AgentProfile | null>(null)
+
+  let connected = $derived(connectionState === 'connected')
+
+  function toggleProfileDetails() {
+    showProfileDetails = !showProfileDetails
+  }
+
+  function formatTime(t: string | undefined): string {
+    if (!t) return '—'
+    return new Date(t).toLocaleString()
+  }
 </script>
 
-<div class="agent-sidebar">
-  <!-- Session Info -->
+<div class="agent-sidebar" data-testid="agent-sidebar">
+  <!-- Agent metadata -->
   <div class="sidebar-section">
-    <div class="section-label">Session</div>
-    <div class="session-id">{sessionId || '—'}</div>
+    <div class="section-label">Agent</div>
+    <div class="info-row">
+      <span class="info-key">Name</span>
+      <span class="info-value" data-testid="agent-name">{agent?.name ?? '—'}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Profile</span>
+      <!-- TODO(Task 8): display agent.agentProfileName once the field exists -->
+      <span class="info-value" data-testid="agent-profile-name">{matchedProfile?.name ?? '—'}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-key">Model</span>
+      <!-- TODO(Task 8): look up model from matched profile -->
+      <span class="info-value" data-testid="agent-model">{matchedProfile?.model ?? '—'}</span>
+    </div>
+    {#if agent}
+      <div class="info-row">
+        <span class="info-key">Created</span>
+        <span class="info-value">{formatTime(agent.createTime)}</span>
+      </div>
+    {/if}
   </div>
 
   <!-- Connection Status -->
@@ -33,34 +63,38 @@
     <div class="section-label">Connection</div>
     <div class="status-row">
       <span class="status-dot" class:connected class:disconnected={!connected}></span>
-      <span class="status-text">{connected ? 'Connected' : 'Disconnected'}</span>
+      <span class="status-text" data-testid="connection-status">
+        {#if connected}Connected{:else}{connectionState}{/if}
+      </span>
     </div>
   </div>
 
-  <!-- Profile Selection -->
+  <!-- View Profile (expandable read-only details per FR-005) -->
   <div class="sidebar-section">
-    <div class="section-label">Agent Profile</div>
-    <select
-      class="profile-select"
-      value={selectedProfile}
-      onchange={(e) => onSelectProfile((e.target as HTMLSelectElement).value)}
-    >
-      <option value="" disabled>Select a profile...</option>
-      {#each profiles as profile}
-        <option value={profile.agentProfileName}>{profile.name || profile.agentProfileName}</option>
-      {/each}
-    </select>
-  </div>
-
-  <!-- Create Agent -->
-  <div class="sidebar-section">
-    <button
-      class="btn btn-primary create-btn"
-      onclick={() => onCreateAgent(selectedProfile)}
-      disabled={!canCreate}
-    >
-      Create Agent
+    <button class="btn view-profile-btn" onclick={toggleProfileDetails}>
+      {showProfileDetails ? 'Hide Profile' : 'View Profile'}
     </button>
+    {#if showProfileDetails}
+      <div class="profile-details" data-testid="profile-details">
+        <!-- TODO(Task 8): populate with real profile data via GetAgentProfile -->
+        <div class="info-row">
+          <span class="info-key">Enabled</span>
+          <span class="info-value">{matchedProfile ? (matchedProfile.enabled ? 'Yes' : 'No') : '—'}</span>
+        </div>
+        <div class="profile-field">
+          <span class="info-key">System Prompt</span>
+          <pre class="profile-text">{matchedProfile?.systemPrompt ?? '—'}</pre>
+        </div>
+        <div class="info-row">
+          <span class="info-key">Skills</span>
+          <span class="info-value">{matchedProfile?.skillNames?.join(', ') ?? '—'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-key">MCPs</span>
+          <span class="info-value">{matchedProfile?.mcpNames?.join(', ') ?? '—'}</span>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -74,7 +108,7 @@
     border-radius: 6px;
     border: 1px solid #0f3460;
     min-width: 200px;
-    max-width: 240px;
+    max-width: 260px;
   }
 
   .sidebar-section {
@@ -91,12 +125,25 @@
     letter-spacing: 0.5px;
   }
 
-  .session-id {
-    font-size: 11px;
-    color: #606080;
-    word-break: break-all;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12px;
     line-height: 1.4;
+  }
+
+  .info-key {
+    color: #606080;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .info-value {
+    color: #e0e0e0;
+    word-break: break-all;
+    text-align: right;
   }
 
   /* Status */
@@ -127,31 +174,39 @@
     color: #e0e0e0;
   }
 
-  /* Profile Select */
-  .profile-select {
-    padding: 6px 8px;
-    font-size: 12px;
-    font-family: inherit;
+  /* View Profile button */
+  .view-profile-btn {
+    width: 100%;
+  }
+
+  /* Profile details expandable */
+  .profile-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
     background: #0f3460;
     border: 1px solid #1a3a6e;
     border-radius: 4px;
+  }
+
+  .profile-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .profile-text {
+    margin: 0;
+    padding: 4px;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
     color: #e0e0e0;
-    cursor: pointer;
-    width: 100%;
-  }
-
-  .profile-select:focus {
-    outline: none;
-    border-color: #4a9eff;
-  }
-
-  .profile-select option {
     background: #1a1a2e;
-    color: #e0e0e0;
-  }
-
-  /* Create Button */
-  .create-btn {
-    width: 100%;
+    border-radius: 3px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 120px;
+    overflow-y: auto;
   }
 </style>

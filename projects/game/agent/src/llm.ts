@@ -11,11 +11,10 @@
  * agent.streamEvents().
  */
 
-import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
+import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { createDeepAgent } from "deepagents";
 import { initChatModel } from "langchain/chat_models/universal";
-import { randomUUID } from "node:crypto";
 import { info, error as logError } from "@dominion/common-js-logs";
 
 // ---------------------------------------------------------------------------
@@ -75,18 +74,22 @@ export interface LLMAdapter {
   /**
    * Generate a single conversational turn.
    *
-   * @param systemPrompt  - System prompt text for agent personality/instructions.
-   * @param history       - Previous conversation messages in order.
-   * @param userMessage   - The user's message for this turn.
+   * @param model          - Model ID to use for this turn (per-profile).
+   * @param systemPrompt   - System prompt text for agent personality/instructions.
+   * @param threadId       - Stable checkpoint thread identifier (sessionId).
+   * @param userMessage    - The user's message for this turn.
+   * @param checkpointer   - Shared in-memory checkpointer (injected, NOT created per-call).
    * @param providerSecret - API key for the model provider.
    *
    * @returns Async iterable of ContentBlock objects in streaming order
    *          (reasoning blocks before text blocks).
    */
   generateTurn(
+    model: string,
     systemPrompt: string,
-    history: BaseMessage[],
+    threadId: string,
     userMessage: string,
+    checkpointer: MemorySaver,
     providerSecret: string,
   ): AsyncIterable<ContentBlock>;
 }
@@ -96,49 +99,51 @@ export interface LLMAdapter {
 // ---------------------------------------------------------------------------
 
 export class RealLLMAdapter implements LLMAdapter {
-  readonly modelName: string;
-
   readonly baseUrl: string;
 
-  readonly provider: LLMProvider;
+  readonly provider?: LLMProvider;
 
-  constructor(modelSpec: string, baseUrl: string, provider?: LLMProvider) {
-    this.modelName = parseModelSpec(modelSpec);
+  constructor(baseUrl: string, provider?: LLMProvider) {
     this.baseUrl = baseUrl;
-    this.provider = provider ?? inferProvider(this.modelName);
+    this.provider = provider;
   }
 
   async *generateTurn(
+    model: string,
     systemPrompt: string,
-    history: BaseMessage[],
+    threadId: string,
     userMessage: string,
+    checkpointer: MemorySaver,
     providerSecret: string,
   ): AsyncIterable<ContentBlock> {
+    const bareModel = parseModelSpec(model);
+    const provider = this.provider ?? inferProvider(bareModel);
+
     info("initializing LLM model", {
-      model: this.modelName,
-      provider: this.provider,
+      model: bareModel,
+      provider,
       baseUrl: this.baseUrl,
     });
 
-    let model: Awaited<ReturnType<typeof initChatModel>>;
+    let chatModel: Awaited<ReturnType<typeof initChatModel>>;
     try {
-      model = await initChatModel(this.modelName, {
-        modelProvider: this.provider,
+      chatModel = await initChatModel(bareModel, {
+        modelProvider: provider,
         apiKey: providerSecret,
-        ...(this.provider === "openai"
+        ...(provider === "openai"
           ? { configuration: { baseURL: this.baseUrl } }
           : { anthropicApiUrl: this.baseUrl }),
       });
     } catch (err) {
       logError("LLM model initialization failed", {
-        model: this.modelName,
-        provider: this.provider,
+        model: bareModel,
+        provider,
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
     }
 
-    yield* this.streamFromModel(model, systemPrompt, history, userMessage);
+    yield* this.streamFromModel(chatModel, systemPrompt, userMessage, threadId, checkpointer);
   }
 
   /**
@@ -152,25 +157,26 @@ export class RealLLMAdapter implements LLMAdapter {
    * instances and fakeModel test doubles.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamFromModel(
+  private async *streamFromModel(
     model: any,
     systemPrompt: string,
-    history: BaseMessage[],
     userMessage: string,
+    threadId: string,
+    checkpointer: MemorySaver,
   ): AsyncIterable<ContentBlock> {
     // createDeepAgent is synchronous in TypeScript (confirmed by spike).
     const agent = createDeepAgent({
       model,
       systemPrompt,
-      checkpointer: new MemorySaver(),
+      checkpointer,
     });
 
     const stream = agent.streamEvents(
       {
-        messages: [...history, new HumanMessage(userMessage)],
+        messages: [new HumanMessage(userMessage)],
       },
       {
-        configurable: { thread_id: randomUUID() },
+        configurable: { thread_id: threadId },
         streamMode: "messages",
         version: "v2",
       },

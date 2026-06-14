@@ -4,15 +4,13 @@
   let {
     session,
     agent,
-    connectionState,
-    agentLoadState,
+    sessionDetailState,
     profiles,
     selectedProfile,
     loading,
     error,
     onCreateAgent,
     onDeleteAgent,
-    onConnectAgent,
     onDeleteSession,
     onRefresh,
     onEnterPlay,
@@ -21,15 +19,13 @@
   }: {
     session: Session | null
     agent: Agent | null
-    connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
-    agentLoadState: 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+    sessionDetailState: 'checking' | 'setup_required' | 'agent_ready' | 'error'
     profiles: AgentProfile[]
     selectedProfile: string
     loading: boolean
     error: string | null
     onCreateAgent: () => void
     onDeleteAgent: () => void
-    onConnectAgent: () => void
     onDeleteSession: () => void
     onRefresh: () => void
     onEnterPlay: () => void
@@ -38,6 +34,7 @@
   } = $props()
 
   let canCreateAgent = $derived(selectedProfile !== '' && !loading)
+  let canEnterPlay = $derived(sessionDetailState === 'agent_ready' && !loading)
 
   function formatTime(t: string): string {
     return new Date(t).toLocaleString()
@@ -48,22 +45,13 @@
   <div class="detail-header">
     <button class="btn btn-small" onclick={onBack}>Back</button>
     <span class="detail-title">Session Detail</span>
-    <span class="ws-status">
-      <span class="ws-dot" class:connected={connectionState === 'connected'} class:connecting={connectionState === 'connecting'} class:disconnected={connectionState === 'disconnected' || connectionState === 'error'}></span>
-      <span class="ws-text">
-        {#if connectionState === 'connected'}Connected
-        {:else if connectionState === 'connecting'}Connecting...
-        {:else if connectionState === 'error'}Error
-        {:else}Disconnected{/if}
-      </span>
-    </span>
   </div>
 
   <div class="detail-body">
     {#if !session}
       <div class="detail-empty">No session selected</div>
     {:else}
-      <!-- Session Info -->
+      <!-- Session Info (always visible) -->
       <div class="detail-section">
         <div class="section-label">Session</div>
         <div class="info-grid">
@@ -78,61 +66,70 @@
         <div class="detail-error">{error}</div>
       {/if}
 
-      <!-- Agent Operations -->
-      <div class="detail-section">
-        <div class="section-label">Agent Operations</div>
-        <div class="profile-row">
-          <select
-            class="profile-select"
-            value={selectedProfile}
-            onchange={(e) => onSelectProfile((e.target as HTMLSelectElement).value)}
-            disabled={loading}
-          >
-            <option value="" disabled>Select a profile...</option>
-            {#each profiles as profile}
-              <option value={profile.agentProfileName}>{profile.name || profile.agentProfileName}</option>
-            {/each}
-          </select>
+      {#if sessionDetailState === 'checking'}
+        <!-- Checking Agent: loading state, no profile selector, no WS connection (FR-002) -->
+        <div class="detail-section" data-testid="detail-checking">
+          <div class="detail-empty">Checking agent...</div>
         </div>
-        <div class="ops-buttons">
-          <button class="btn" onclick={onCreateAgent} disabled={!canCreateAgent}>Create Agent</button>
-          <button class="btn" onclick={onDeleteAgent} disabled={loading}>Delete Agent</button>
-          <button class="btn" onclick={onConnectAgent} disabled={loading || connectionState === 'connected' || connectionState === 'connecting'}>Connect Agent</button>
-          <button class="btn" onclick={onRefresh} disabled={loading}>Refresh</button>
+      {:else if sessionDetailState === 'setup_required'}
+        <!-- Setup Required: profile selector + Create Agent only -->
+        <div class="detail-section" data-testid="detail-setup-required">
+          <div class="section-label">Create Agent</div>
+          <div class="profile-row">
+            <select
+              class="profile-select"
+              value={selectedProfile}
+              onchange={(e) => onSelectProfile((e.target as HTMLSelectElement).value)}
+              disabled={loading}
+            >
+              <option value="" disabled>Select a profile...</option>
+              {#each profiles as profile}
+                <option value={profile.agentProfileName}>{profile.name || profile.agentProfileName}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="ops-buttons">
+            <button class="btn" onclick={onCreateAgent} disabled={!canCreateAgent}>Create Agent</button>
+          </div>
         </div>
-      </div>
-
-      <!-- Agent Info -->
-      {#if agentLoadState === 'loading'}
-        <div class="detail-section">
-          <div class="detail-empty">Loading agent...</div>
-        </div>
-      {:else if agentLoadState === 'not_found'}
-        <div class="detail-section">
-          <div class="detail-empty">No agent created yet for this session. Click "Create Agent" above.</div>
-        </div>
-      {:else if agentLoadState === 'error' && !agent}
-        <div class="detail-section">
-          <div class="detail-empty">Failed to load agent. Click Refresh to retry.</div>
-        </div>
-      {:else if agent}
-        <div class="detail-section">
+      {:else if sessionDetailState === 'agent_ready'}
+        <!-- Agent Ready: agent summary + Enter Play only -->
+        <div class="detail-section" data-testid="agent-summary">
           <div class="section-label">Agent</div>
           <div class="info-grid">
             <span class="info-key">Name</span>
-            <span class="info-value">{agent.name}</span>
+            <span class="info-value">{agent?.name ?? '—'}</span>
+            <!-- TODO(Task 8): display agent.agentProfileName once the field exists on Agent -->
+            <span class="info-key">Profile</span>
+            <span class="info-value">—</span>
+            <span class="info-key">Created</span>
+            <span class="info-value">{agent ? formatTime(agent.createTime) : '—'}</span>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <button class="btn btn-primary enter-play-btn" onclick={onEnterPlay} disabled={!canEnterPlay}>
+            Enter Play
+          </button>
+        </div>
+
+        <div class="detail-section">
+          <div class="ops-buttons">
+            <button class="btn" onclick={onRefresh} disabled={loading}>Refresh</button>
+            <button class="btn" onclick={onDeleteAgent} disabled={loading}>Delete Agent</button>
+          </div>
+        </div>
+      {:else if sessionDetailState === 'error'}
+        <!-- Error: actionable error + retry -->
+        <div class="detail-section" data-testid="detail-error-state">
+          <div class="detail-empty">Failed to load agent metadata.</div>
+          <div class="ops-buttons">
+            <button class="btn" onclick={onRefresh} disabled={loading}>Retry</button>
           </div>
         </div>
       {/if}
 
-      <!-- Play -->
-      <div class="detail-section">
-        <button class="btn btn-primary enter-play-btn" onclick={onEnterPlay} disabled={loading || connectionState !== 'connected'}>
-          Enter Play
-        </button>
-      </div>
-
-      <!-- Danger Zone -->
+      <!-- Danger Zone (always visible when session selected) -->
       <div class="detail-section">
         <div class="section-label">Danger Zone</div>
         <button class="btn btn-danger" onclick={onDeleteSession} disabled={loading}>
@@ -167,35 +164,6 @@
   .detail-title {
     font-weight: 600;
     flex: 1;
-  }
-
-  .ws-status {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .ws-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
-
-  .ws-dot.connected {
-    background: #4caf50;
-  }
-
-  .ws-dot.disconnected {
-    background: #ff6b6b;
-  }
-
-  .ws-dot.connecting {
-    background: #ffc107;
-  }
-
-  .ws-text {
-    font-size: 11px;
-    color: #a0a0b0;
   }
 
   .detail-body {

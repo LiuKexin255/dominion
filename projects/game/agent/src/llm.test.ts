@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { AIMessage } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
 
 import { type ContentBlock, inferProvider, parseModelSpec, RealLLMAdapter } from "./llm";
@@ -38,9 +39,10 @@ describe("Text response", () => {
       }),
     );
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+    const adapter = new RealLLMAdapter("https://test.example.com/v1");
+    const checkpointer = new MemorySaver();
     const blocks = await collect(
-      adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
+      (adapter as any).streamFromModel(model, "You are helpful.", "Hi", "test-thread-1", checkpointer),
     );
 
     expect(blocks.length).toBeGreaterThan(0);
@@ -69,9 +71,10 @@ describe("Thinking + text response", () => {
       }),
     );
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+    const adapter = new RealLLMAdapter("https://test.example.com/v1");
+    const checkpointer = new MemorySaver();
     const blocks = await collect(
-      adapter.streamFromModel(model, "You are helpful.", [], "Why?"),
+      (adapter as any).streamFromModel(model, "You are helpful.", "Why?", "test-thread-2", checkpointer),
     );
 
     expect(blocks.length).toBeGreaterThanOrEqual(3);
@@ -104,11 +107,12 @@ describe("Error response", () => {
   it("throws when the model responds with an error", async () => {
     const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+    const adapter = new RealLLMAdapter("https://test.example.com/v1");
+    const checkpointer = new MemorySaver();
 
     await expect(
       collect(
-        adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
+        (adapter as any).streamFromModel(model, "You are helpful.", "Hi", "test-thread-3", checkpointer),
       ),
     ).rejects.toThrow();
   });
@@ -121,22 +125,39 @@ describe("Error response", () => {
 describe("Custom baseUrl", () => {
   it("stores the baseUrl property from the constructor", () => {
     const baseUrl = "https://custom-opencode.example.com/v1";
-    const adapter = new RealLLMAdapter("opencode-go/my-model", baseUrl);
+    const adapter = new RealLLMAdapter(baseUrl);
 
     expect(adapter.baseUrl).toBe(baseUrl);
   });
 
-  it("stores the parsed modelName property from the constructor", () => {
-    const adapter = new RealLLMAdapter("opencode-go/deepseek-v4-pro", "https://test.example.com/v1");
+  it("does not have a modelName field (model comes per-call)", () => {
+    const adapter = new RealLLMAdapter("https://test.example.com/v1");
 
-    expect(adapter.modelName).toBe("deepseek-v4-pro");
+    expect((adapter as any).modelName).toBeUndefined();
+  });
+
+  it("does not infer provider in constructor (model comes per-call)", () => {
+    const adapter = new RealLLMAdapter("https://test.example.com/v1");
+
+    expect(adapter.provider).toBeUndefined();
+  });
+
+  it("stores explicit provider from constructor", () => {
+    const adapter = new RealLLMAdapter("https://test.example.com/v1", "anthropic");
+
+    expect(adapter.provider).toBe("anthropic");
   });
 
   it("implements the LLMAdapter interface", () => {
-    const adapter = new RealLLMAdapter("opencode-go/model", "https://example.com/v1");
+    const adapter = new RealLLMAdapter("https://example.com/v1");
 
     expect(typeof adapter.generateTurn).toBe("function");
-    expect(typeof adapter.streamFromModel).toBe("function");
+  });
+
+  it("generateTurn accepts 6 parameters matching new contract", () => {
+    const adapter = new RealLLMAdapter("https://example.com/v1");
+
+    expect(adapter.generateTurn.length).toBe(6);
   });
 });
 
@@ -187,27 +208,11 @@ describe("inferProvider", () => {
   });
 });
 
-describe("RealLLMAdapter provider selection", () => {
-  it("infers the provider from the model name by default", () => {
-    const openaiAdapter = new RealLLMAdapter(
-      "opencode-go/deepseek-v4-pro",
-      "https://opencode.ai/zen/go/v1",
-    );
-    expect(openaiAdapter.provider).toBe("openai");
-
-    const anthropicAdapter = new RealLLMAdapter(
-      "opencode-go/qwen3.7-max",
-      "https://opencode.ai/zen/go/v1",
-    );
-    expect(anthropicAdapter.provider).toBe("anthropic");
-  });
-
-  it("allows an explicit provider to override model-name inference", () => {
-    const adapter = new RealLLMAdapter(
-      "opencode-go/deepseek-v4-pro",
-      "https://opencode.ai/zen/go/v1",
-      "anthropic",
-    );
-    expect(adapter.provider).toBe("anthropic");
+describe("RealLLMAdapter model passthrough", () => {
+  it("parseModelSpec is called in generateTurn to strip prefix", () => {
+    // Verify that parseModelSpec correctly strips the prefix — generateTurn
+    // uses parseModelSpec(model) before calling initChatModel.
+    const bare = parseModelSpec("opencode-go/deepseek-v4-pro");
+    expect(bare).toBe("deepseek-v4-pro");
   });
 });

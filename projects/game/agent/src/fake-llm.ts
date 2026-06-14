@@ -6,7 +6,7 @@
  * Used as a BUILD-level replacement for RealLLMAdapter in tests.
  */
 
-import type { BaseMessage } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
 
 import type { ContentBlock, LLMAdapter } from "./llm";
 
@@ -16,9 +16,11 @@ import type { ContentBlock, LLMAdapter } from "./llm";
 
 export class FakeLlmAdapter implements LLMAdapter {
   async *generateTurn(
+    _model: string,
     _systemPrompt: string,
-    _history: BaseMessage[],
+    _threadId: string,
     userMessage: string,
+    _checkpointer: MemorySaver,
     _providerSecret: string,
   ): AsyncIterable<ContentBlock> {
     yield { type: "reasoning", reasoning: "Processing your message..." };
