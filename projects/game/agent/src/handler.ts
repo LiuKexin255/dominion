@@ -495,7 +495,7 @@ export class Handler implements AgentServiceHandlers {
         }
 
         // Determine sender.
-        let sender: string;
+        let sender: typeof FrameSender[keyof typeof FrameSender];
         if (msg instanceof HumanMessage) {
           sender = FrameSender.FRAME_SENDER_USER;
         } else if (msg instanceof AIMessage) {
@@ -547,11 +547,11 @@ export class Handler implements AgentServiceHandlers {
 
         result.push({
           name: `sessions/${sessionId}/agent/messages/${msg.id}`,
-          message_id: msg.id,
+          messageId: msg.id,
           sender,
           type,
           content,
-          create_time: createTime,
+          createTime,
         });
       }
 

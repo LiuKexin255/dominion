@@ -68,6 +68,10 @@ func (m *mockProxyClient) GetAgent(_ context.Context, _ *game.GetAgentRequest, _
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
+func (m *mockProxyClient) ListMessages(_ context.Context, _ *game.ListMessagesRequest, _ ...grpc.CallOption) (*game.ListMessagesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
 func (m *mockProxyClient) ConnectAgent(_ context.Context, _ ...grpc.CallOption) (game.ProxyService_ConnectAgentClient, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }

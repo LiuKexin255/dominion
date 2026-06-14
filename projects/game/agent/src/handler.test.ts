@@ -1112,21 +1112,21 @@ describe("Handler.ListMessages", () => {
     expect(response.messages).toHaveLength(2);
 
     // First message: human
-    expect(response.messages[0].message_id).toBe("msg-aaa");
+    expect(response.messages[0].messageId).toBe("msg-aaa");
     expect(response.messages[0].name).toBe("sessions/sess-msgs/agent/messages/msg-aaa");
     expect(response.messages[0].sender).toBe(FRAME_SENDER_USER);
     expect(response.messages[0].type).toBe("text");
     expect(response.messages[0].content).toBe("Hello");
 
     // Second message: ai
-    expect(response.messages[1].message_id).toBe("msg-bbb");
+    expect(response.messages[1].messageId).toBe("msg-bbb");
     expect(response.messages[1].name).toBe("sessions/sess-msgs/agent/messages/msg-bbb");
     expect(response.messages[1].sender).toBe(FRAME_SENDER_AGENT);
     expect(response.messages[1].type).toBe("text");
     expect(response.messages[1].content).toBe("Hi there!");
 
     // create_time populated from snapshot.
-    expect(response.messages[0].create_time).toBeDefined();
+    expect(response.messages[0].createTime).toBeDefined();
   });
 
   it("handles thinking content blocks from checkpoint", async () => {
