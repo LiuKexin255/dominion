@@ -410,3 +410,135 @@ func TestDeleteAgentProfile_NotFound(t *testing.T) {
 		t.Errorf("error should contain 'delete agent profile', got %q", err.Error())
 	}
 }
+
+// TestListMessages_Success verifies ListMessages delegates to client and
+// converts proto messages to MessageViewModels.
+func TestListMessages_Success(t *testing.T) {
+	// given: mock server responding to GET /api/v1/sessions/test-session/agent/messages
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		wantPath := "/api/v1/sessions/test-session/agent/messages"
+		if r.URL.Path != wantPath {
+			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/agent/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/agent/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	views, err := app.ListMessages("test-session")
+
+	// then
+	if err != nil {
+		t.Fatalf("ListMessages() unexpected error: %v", err)
+	}
+	if views == nil {
+		t.Fatal("ListMessages() returned nil views")
+	}
+	if len(views) != 2 {
+		t.Fatalf("expected 2 view models, got %d", len(views))
+	}
+	if views[0].MessageID != "msg-1" {
+		t.Errorf("expected first MessageID %q, got %q", "msg-1", views[0].MessageID)
+	}
+	if views[0].Content != "hello" {
+		t.Errorf("expected first Content %q, got %q", "hello", views[0].Content)
+	}
+	if views[0].Sender != "FRAME_SENDER_USER" {
+		t.Errorf("expected first Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
+	}
+	if views[0].Type != "text" {
+		t.Errorf("expected first Type %q, got %q", "text", views[0].Type)
+	}
+	if views[1].MessageID != "msg-2" {
+		t.Errorf("expected second MessageID %q, got %q", "msg-2", views[1].MessageID)
+	}
+	if views[1].Type != "thinking" {
+		t.Errorf("expected second Type %q, got %q", "thinking", views[1].Type)
+	}
+}
+
+// TestListMessages_Empty verifies ListMessages returns no view models for empty list.
+func TestListMessages_Empty(t *testing.T) {
+	// given: mock server returning empty messages list
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"messages":[]}`)
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	views, err := app.ListMessages("empty-session")
+
+	// then
+	if err != nil {
+		t.Fatalf("ListMessages() unexpected error: %v", err)
+	}
+	if len(views) != 0 {
+		t.Errorf("expected 0 view models, got %d", len(views))
+	}
+}
+
+// TestListMessages_EmptySessionID verifies empty sessionID returns error immediately.
+func TestListMessages_EmptySessionID(t *testing.T) {
+	// given: App with no client needed
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when
+	views, err := app.ListMessages("")
+
+	// then
+	if err == nil {
+		t.Fatal("ListMessages() expected error for empty session_id, got nil")
+	}
+	if views != nil {
+		t.Fatal("ListMessages() expected nil views on error")
+	}
+	if !strings.Contains(err.Error(), "session_id") {
+		t.Errorf("error should mention session_id, got: %s", err.Error())
+	}
+}
+
+// TestListMessages_Error verifies ListMessages propagates client error.
+func TestListMessages_Error(t *testing.T) {
+	// given: mock server returning 500
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "internal error")
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when
+	views, err := app.ListMessages("bad-session")
+
+	// then
+	if err == nil {
+		t.Fatal("ListMessages() expected error, got nil")
+	}
+	if views != nil {
+		t.Fatal("ListMessages() expected nil views on error")
+	}
+	if !strings.Contains(err.Error(), "list messages") {
+		t.Errorf("error should contain 'list messages', got %q", err.Error())
+	}
+}

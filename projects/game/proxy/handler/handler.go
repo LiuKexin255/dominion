@@ -137,6 +137,41 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 	return agent, nil
 }
 
+// ListMessages lists messages for an agent.
+func (h *ProxyHandler) ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error) {
+	sessionID, err := extractSessionID(req.GetParent(), agentPattern)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := h.ownerStore.Get(ctx, sessionID)
+	if err != nil {
+		return nil, mapDomainError(err)
+	}
+
+	connRef, err := h.manager.Get(ctx, owner.OwnerIndex)
+	if err != nil {
+		logs.Error(ctx, "list messages: get agent connection failed",
+			event.String("session_id", sessionID),
+			event.Int("agent_index", owner.OwnerIndex),
+			event.Err(err),
+		)
+		return nil, status.Errorf(codes.Internal, "get agent connection: %v", err)
+	}
+	client := agentclient.NewAgentClient(connRef.Conn)
+
+	resp, err := client.ListMessages(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "list messages failed",
+			event.String("session_id", sessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "list messages")
+	}
+
+	return resp, nil
+}
+
 // DeleteAgent deletes the Agent resource identified by name.
 func (h *ProxyHandler) DeleteAgent(ctx context.Context, req *game.DeleteAgentRequest) (*emptypb.Empty, error) {
 	sessionID, err := extractSessionID(req.GetName(), agentPattern)

@@ -315,6 +315,33 @@ func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// ListMessages lists all messages for a session's agent via GET to
+// /api/v1/sessions/{sessionID}/agent/messages.
+func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.ListMessagesResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/sessions/"+sessionID+"/agent/messages"), nil)
+	if err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+	c.setCommonHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("list messages: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	result := new(game.ListMessagesResponse)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, result); err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+	return result, nil
+}
+
 // CreateAgentProfile creates an agent profile via POST to /api/v1/prompts/agentProfiles.
 func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
 	body, err := protojson.Marshal(req)

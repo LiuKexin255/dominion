@@ -591,6 +591,100 @@ func TestClient_DeleteAgent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestClient_ListMessages
+// ---------------------------------------------------------------------------
+
+func TestClient_ListMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionID  string
+		statusCode int
+		respBody   string
+		wantErr    bool
+		wantCount  int
+	}{
+		{
+			name:       "success with messages",
+			sessionID:  "test-session",
+			statusCode: http.StatusOK,
+			respBody:   `{"messages":[{"name":"sessions/test-session/agent/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/agent/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"text","content":"hi there","createTime":"2024-01-01T00:00:01Z"}]}`,
+			wantErr:    false,
+			wantCount:  2,
+		},
+		{
+			name:       "success with empty list",
+			sessionID:  "empty-session",
+			statusCode: http.StatusOK,
+			respBody:   `{"messages":[]}`,
+			wantErr:    false,
+			wantCount:  0,
+		},
+		{
+			name:       "server error",
+			sessionID:  "bad-session",
+			statusCode: http.StatusInternalServerError,
+			respBody:   "internal error",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				wantPath := "/api/v1/sessions/" + tt.sessionID + "/agent/messages"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			resp, err := client.ListMessages(context.Background(), tt.sessionID)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "list messages") {
+					t.Errorf("error should contain 'list messages', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("expected response, got nil")
+			}
+			if len(resp.GetMessages()) != tt.wantCount {
+				t.Errorf("expected %d messages, got %d", tt.wantCount, len(resp.GetMessages()))
+			}
+			if tt.wantCount > 0 {
+				first := resp.GetMessages()[0]
+				if first.GetMessageId() != "msg-1" {
+					t.Errorf("expected message_id %q, got %q", "msg-1", first.GetMessageId())
+				}
+				if first.GetContent() != "hello" {
+					t.Errorf("expected content %q, got %q", "hello", first.GetContent())
+				}
+				if first.GetSender() != game.FrameSender_FRAME_SENDER_USER {
+					t.Errorf("expected sender FRAME_SENDER_USER, got %v", first.GetSender())
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestClient_URLTrailingSlash
 // ---------------------------------------------------------------------------
 

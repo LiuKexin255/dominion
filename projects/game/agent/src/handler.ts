@@ -1,21 +1,27 @@
 /**
  * handler.ts — AgentServiceServer gRPC handler implementations.
  *
- * Implements CreateAgent, GetAgent, DeleteAgent, and Connect RPCs
- * for the AgentService defined in game.proto.
+ * Implements CreateAgent, GetAgent, DeleteAgent, ListMessages, and Connect
+ * RPCs for the AgentService defined in game.proto using a checkpoint-native
+ * lifecycle: metadata replaces DialogRuntime, and all conversation state
+ * lives in a shared MemorySaver keyed by sessionId.
  */
 
 import * as grpc from "@grpc/grpc-js";
 import { randomUUID } from "node:crypto";
 import { info, warn, error } from "@dominion/common-js-logs";
 
+import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
+
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
 import type { LLMAdapter } from "./llm";
 import type { PromptClient } from "./prompt-client";
-import { DialogRuntime } from "./runtime";
 
 // FrameSender enum values duplicated from proto because generated game_types/
 // only provides .ts type files (not compiled .js); importing a runtime value
@@ -28,6 +34,19 @@ const FrameSender = {
 } as const;
 
 // ---------------------------------------------------------------------------
+// AgentMetadata — lightweight snapshot of agent profile at creation time
+// ---------------------------------------------------------------------------
+
+interface AgentMetadata {
+  sessionId: string;
+  name: string;
+  agentProfileName: string;
+  model: string;
+  systemPrompt: string;
+  createTime: number;
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -35,28 +54,61 @@ export class Handler implements AgentServiceHandlers {
   /** Index signature required by grpc.UntypedServiceImplementation. */
   [name: string]: any;
 
-  /** Active runtime instances keyed by session ID. */
-  private instances: Map<string, DialogRuntime>;
-
   /** Prompt service client for fetching agent profiles. */
   private promptClient: PromptClient;
 
   /** LLM adapter for generating agent responses. */
   private llmAdapter: LLMAdapter;
 
+  /** Shared in-memory checkpointer. One instance for all sessions. */
+  private checkpointer: MemorySaver;
+
+  /** Compiled StateGraph for reading checkpoint state (ListMessages). */
+  private graph: any;
+
   /** Provider API key / secret. */
   private providerSecret: string;
 
+  /** Lightweight agent metadata keyed by session ID. */
+  private metadata: Map<string, AgentMetadata>;
+
+  /** Same-session execution mutexes (FIFO promise chains). */
+  private mutexes: Map<string, Promise<void>>;
+
   constructor(
-    instances: Map<string, DialogRuntime>,
     promptClient: PromptClient,
     llmAdapter: LLMAdapter,
+    checkpointer: MemorySaver,
+    graph: any,
     providerSecret: string,
   ) {
-    this.instances = instances;
     this.promptClient = promptClient;
     this.llmAdapter = llmAdapter;
+    this.checkpointer = checkpointer;
+    this.graph = graph;
     this.providerSecret = providerSecret;
+    this.metadata = new Map();
+    this.mutexes = new Map();
+  }
+
+  // -----------------------------------------------------------------------
+  // Same-session mutex helpers (FIFO, non-reentrant)
+  // -----------------------------------------------------------------------
+
+  private async acquireMutex(sessionId: string): Promise<void> {
+    const prev = this.mutexes.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((r) => {
+      release = r;
+    });
+    this.mutexes.set(sessionId, prev.then(() => next));
+    await prev;
+    (this.mutexes as any)[`_release_${sessionId}`] = release;
+  }
+
+  private releaseMutex(sessionId: string): void {
+    const release = (this.mutexes as any)[`_release_${sessionId}`];
+    if (release) release();
   }
 
   // -----------------------------------------------------------------------
@@ -79,19 +131,22 @@ export class Handler implements AgentServiceHandlers {
 
     try {
       const profile = await this.promptClient.getProfile(profileName);
-      const runtime = DialogRuntime.createWithProfile(
+
+      const meta: AgentMetadata = {
         sessionId,
-        profileName,
-        profile.model,
-        profile.systemPrompt,
-      );
-      this.instances.set(sessionId, runtime);
+        name: `sessions/${sessionId}/agent`,
+        agentProfileName: profileName,
+        model: profile.model,
+        systemPrompt: profile.systemPrompt,
+        createTime: Date.now(),
+      };
+      this.metadata.set(sessionId, meta);
 
       const agent: AgentMessage = {
-        name: `sessions/${sessionId}/agent`,
+        name: meta.name,
         sessionId,
         agentProfileName: profileName,
-        createTime: timestampNow(),
+        createTime: timestampFromMs(meta.createTime),
       };
 
       callback(null, agent);
@@ -123,9 +178,9 @@ export class Handler implements AgentServiceHandlers {
     callback,
   ) => {
     const sessionId = call.request.sessionId ?? "";
-    const runtime = this.instances.get(sessionId);
+    const meta = this.metadata.get(sessionId);
 
-    if (!runtime) {
+    if (!meta) {
       return callback({
         code: grpc.status.NOT_FOUND,
         details: `Agent not found for session: ${sessionId}`,
@@ -133,13 +188,10 @@ export class Handler implements AgentServiceHandlers {
     }
 
     const agent: AgentMessage = {
-      name: `sessions/${sessionId}/agent`,
+      name: meta.name,
       sessionId,
-      agentProfileName: runtime.profileName,
-      createTime: {
-        seconds: Math.floor(runtime.createdAt / 1000),
-        nanos: (runtime.createdAt % 1000) * 1_000_000,
-      },
+      agentProfileName: meta.agentProfileName,
+      createTime: timestampFromMs(meta.createTime),
     };
 
     callback(null, agent);
@@ -149,20 +201,31 @@ export class Handler implements AgentServiceHandlers {
   // DeleteAgent
   // -----------------------------------------------------------------------
 
-  DeleteAgent: grpc.handleUnaryCall<{ sessionId?: string }, {}> = (
+  DeleteAgent: grpc.handleUnaryCall<{ sessionId?: string }, {}> = async (
     call,
     callback,
   ) => {
     const sessionId = call.request.sessionId ?? "";
-    const runtime = this.instances.get(sessionId);
 
-    if (runtime) {
-      runtime.delete();
-      this.instances.delete(sessionId);
+    await this.acquireMutex(sessionId);
+    try {
+      if (this.metadata.has(sessionId)) {
+        this.metadata.delete(sessionId);
+        await this.checkpointer.deleteThread(sessionId);
+      }
+      // Idempotent: missing metadata = success.
+      callback(null, {});
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to delete agent";
+      error("delete agent failed", { sessionId, error: message });
+      callback({
+        code: grpc.status.INTERNAL,
+        details: message,
+      } as grpc.ServiceError);
+    } finally {
+      this.releaseMutex(sessionId);
     }
-
-    // Idempotent: missing instance = success.
-    callback(null, {});
   };
 
   // -----------------------------------------------------------------------
@@ -220,14 +283,14 @@ export class Handler implements AgentServiceHandlers {
 
       // --- status payload: connection probe ---
       if (frame.payload === "status" || frame.status) {
-        const runtime = this.instances.get(sessionId);
+        const meta = this.metadata.get(sessionId);
         const statusFrame: AgentFrame = buildFrame(
           sessionId,
           invokeId,
           FrameSender.FRAME_SENDER_SYSTEM,
           {
             status: {
-              status: runtime ? runtime.getStatus() : "unknown",
+              status: meta ? "idle" : "unknown",
             },
           },
         );
@@ -273,10 +336,10 @@ export class Handler implements AgentServiceHandlers {
         senderValue === FrameSender.FRAME_SENDER_USER
       ) {
         const userText = frame.text?.content ?? "";
-        const runtime = this.instances.get(sessionId);
+        const meta = this.metadata.get(sessionId);
 
-        if (!runtime) {
-          warn("runtime not found for text frame", { sessionId, invokeId });
+        if (!meta) {
+          warn("metadata not found for text frame", { sessionId, invokeId });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -291,11 +354,14 @@ export class Handler implements AgentServiceHandlers {
           return;
         }
 
+        await this.acquireMutex(sessionId);
         try {
-          const contentIter = runtime.processMessage(
+          const contentIter = this.llmAdapter.generateTurn(
+            meta.model,
+            meta.systemPrompt,
+            sessionId,
             userText,
-            invokeId,
-            this.llmAdapter,
+            this.checkpointer,
             this.providerSecret,
           );
 
@@ -303,7 +369,11 @@ export class Handler implements AgentServiceHandlers {
           for await (const block of contentIter) {
             blockCount++;
             if (block.type === "reasoning") {
-              info("writing thinking frame", { sessionId, invokeId, length: block.reasoning.length });
+              info("writing thinking frame", {
+                sessionId,
+                invokeId,
+                length: block.reasoning.length,
+              });
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -314,7 +384,12 @@ export class Handler implements AgentServiceHandlers {
               );
               stream.write(thinkFrame);
             } else if (block.type === "text") {
-              info("writing text frame", { sessionId, invokeId, length: block.text.length, preview: block.text.slice(0, 100) });
+              info("writing text frame", {
+                sessionId,
+                invokeId,
+                length: block.text.length,
+                preview: block.text.slice(0, 100),
+              });
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -328,7 +403,11 @@ export class Handler implements AgentServiceHandlers {
           }
 
           // Emit wait frame after all response frames.
-          info("text processing completed", { sessionId, invokeId, blockCount });
+          info("text processing completed", {
+            sessionId,
+            invokeId,
+            blockCount,
+          });
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -339,10 +418,13 @@ export class Handler implements AgentServiceHandlers {
           );
           stream.write(waitFrame);
         } catch (err: unknown) {
-          // LLM error: emit warn frame then wait frame to unblock the client.
           const message =
             err instanceof Error ? err.message : "Processing error";
-          error("LLM processing failed", { sessionId, invokeId, error: message });
+          error("LLM processing failed", {
+            sessionId,
+            invokeId,
+            error: message,
+          });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
@@ -360,6 +442,8 @@ export class Handler implements AgentServiceHandlers {
             { wait: {} },
           );
           stream.write(waitFrame);
+        } finally {
+          this.releaseMutex(sessionId);
         }
       }
     });
@@ -374,6 +458,114 @@ export class Handler implements AgentServiceHandlers {
       info("connect stream ended");
     });
   };
+
+  // -----------------------------------------------------------------------
+  // ListMessages
+  // -----------------------------------------------------------------------
+
+  ListMessages: grpc.handleUnaryCall<
+    { parent?: string },
+    { messages?: MessageProto[] }
+  > = async (call, callback) => {
+    const parent = call.request.parent ?? "";
+
+    // Extract sessionId from parent resource name "sessions/{id}/agent".
+    const sessionId = extractSessionId(parent);
+    const meta = this.metadata.get(sessionId);
+
+    if (!meta) {
+      return callback({
+        code: grpc.status.NOT_FOUND,
+        details: `Agent not found for session: ${sessionId}`,
+      } as grpc.ServiceError);
+    }
+
+    try {
+      const state = await this.graph.getState({
+        configurable: { thread_id: sessionId },
+      });
+
+      const rawMessages: BaseMessage[] = state?.values?.messages ?? [];
+      const result: MessageProto[] = [];
+
+      for (const msg of rawMessages) {
+        // Skip system control messages (empty content, tool results, etc.)
+        if (!msg.content && !(msg instanceof HumanMessage || msg instanceof AIMessage)) {
+          continue;
+        }
+
+        // Determine sender.
+        let sender: string;
+        if (msg instanceof HumanMessage) {
+          sender = FrameSender.FRAME_SENDER_USER;
+        } else if (msg instanceof AIMessage) {
+          sender = FrameSender.FRAME_SENDER_AGENT;
+        } else if (msg instanceof SystemMessage) {
+          sender = FrameSender.FRAME_SENDER_SYSTEM;
+        } else {
+          sender = FrameSender.FRAME_SENDER_SYSTEM;
+        }
+
+        // Determine type and content.
+        let type = "text";
+        let content = "";
+
+        if (typeof msg.content === "string") {
+          content = msg.content;
+          // System messages that look like errors are "warn" type.
+          if (msg instanceof SystemMessage || sender === FrameSender.FRAME_SENDER_SYSTEM) {
+            type = "warn";
+          }
+        } else if (Array.isArray(msg.content)) {
+          const reasoningBlocks = msg.content.filter(
+            (b: any) => b.type === "reasoning",
+          );
+          const textBlocks = msg.content.filter(
+            (b: any) => b.type === "text",
+          );
+
+          if (reasoningBlocks.length > 0 && textBlocks.length === 0) {
+            type = "thinking";
+            content = reasoningBlocks
+              .map((b: any) => b.reasoning ?? "")
+              .join("\n");
+          } else {
+            type = "text";
+            content = msg.content
+              .map((b: any) => b.text ?? b.reasoning ?? "")
+              .join("");
+          }
+        }
+
+        // Skip empty messages.
+        if (!content && type !== "text") continue;
+
+        // Best-effort timestamp from checkpoint snapshot.
+        const createTime = state?.createdAt
+          ? timestampFromMs(state.createdAt)
+          : undefined;
+
+        result.push({
+          name: `sessions/${sessionId}/agent/messages/${msg.id}`,
+          message_id: msg.id,
+          sender,
+          type,
+          content,
+          create_time: createTime,
+        });
+      }
+
+      callback(null, { messages: result });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to list messages";
+      error("list messages failed", { sessionId, error: message });
+      callback({
+        code: grpc.status.INTERNAL,
+        details: message,
+      } as grpc.ServiceError);
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -386,4 +578,20 @@ function timestampNow(): { seconds: number; nanos: number } {
     seconds: Math.floor(ms / 1000),
     nanos: (ms % 1000) * 1_000_000,
   };
+}
+
+function timestampFromMs(ms: number): { seconds: number; nanos: number } {
+  return {
+    seconds: Math.floor(ms / 1000),
+    nanos: (ms % 1000) * 1_000_000,
+  };
+}
+
+/**
+ * Extract sessionId from a parent resource name like "sessions/{id}/agent".
+ * Returns the {id} portion, or the full string if it doesn't match the pattern.
+ */
+function extractSessionId(parent: string): string {
+  const match = parent.match(/^sessions\/(.+?)\/agent$/);
+  return match ? match[1] : parent;
 }

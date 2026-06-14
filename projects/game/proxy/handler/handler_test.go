@@ -93,6 +93,17 @@ func (c *mockAgentClient) GetAgent(_ context.Context, req *game.AgentGetRequest)
 	}, c.getStatusErr
 }
 
+func (c *mockAgentClient) ListMessages(_ context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error) {
+	if c.getStatusErr != nil {
+		return nil, c.getStatusErr
+	}
+	return &game.ListMessagesResponse{
+		Messages: []*game.Message{
+			{Name: req.GetParent() + "/messages/msg-001"},
+		},
+	}, nil
+}
+
 func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
 	return nil, nil
 }
@@ -520,6 +531,142 @@ func TestGetAgent(t *testing.T) {
 		}
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("GetAgent() status = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+}
+
+func TestListMessages(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		owner := &domain.AgentOwner{
+			SessionID:  "session-list",
+			OwnerIndex: 0,
+			Owner:      "agent-0",
+			CreateTime: time.Now(),
+		}
+		store.records["session-list"] = owner
+
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.ListMessagesRequest{
+			Parent: "sessions/session-list/agent",
+		}
+
+		// when
+		resp, err := h.ListMessages(ctx, req)
+
+		// then
+		if err != nil {
+			t.Fatalf("ListMessages() unexpected error: %v", err)
+		}
+		if len(resp.GetMessages()) != 1 {
+			t.Fatalf("ListMessages() got %d messages, want 1", len(resp.GetMessages()))
+		}
+	})
+
+	t.Run("invalid parent", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.ListMessagesRequest{
+			Parent: "invalid-format",
+		}
+
+		// when
+		_, err := h.ListMessages(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("ListMessages() expected error, got nil")
+		}
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("ListMessages() status = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := new(mockAgentClient)
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.ListMessagesRequest{
+			Parent: "sessions/nonexistent/agent",
+		}
+
+		// when
+		_, err := h.ListMessages(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("ListMessages() expected error, got nil")
+		}
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("ListMessages() status = %v, want NotFound", status.Code(err))
+		}
+	})
+
+	t.Run("agent error propagates", func(t *testing.T) {
+		// given
+		store := newMockOwnerStore()
+		owner := &domain.AgentOwner{
+			SessionID:  "session-list-err",
+			OwnerIndex: 0,
+			Owner:      "agent-0",
+			CreateTime: time.Now(),
+		}
+		store.records["session-list-err"] = owner
+
+		picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 0, Owner: "agent-0"}}
+		agentMock := &mockAgentClient{getStatusErr: status.Error(codes.Internal, "agent error")}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		mgr := newMockManager()
+		connectAgenter := new(mockConnectAgenter)
+
+		h := NewProxyHandler(store, picker, mgr, connectAgenter)
+
+		req := &game.ListMessagesRequest{
+			Parent: "sessions/session-list-err/agent",
+		}
+
+		// when
+		_, err := h.ListMessages(ctx, req)
+
+		// then
+		if err == nil {
+			t.Fatalf("ListMessages() expected error, got nil")
+		}
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("ListMessages() status = %v, want Internal", status.Code(err))
 		}
 	})
 }

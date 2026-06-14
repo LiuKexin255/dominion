@@ -96,6 +96,10 @@ func (c *mockAgentClient) GetAgent(_ context.Context, _ *game.AgentGetRequest) (
 	return &game.Agent{}, nil
 }
 
+func (c *mockAgentClient) ListMessages(_ context.Context, _ *game.ListMessagesRequest) (*game.ListMessagesResponse, error) {
+	return &game.ListMessagesResponse{}, nil
+}
+
 func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
 	if c.connectErr != nil {
 		return nil, c.connectErr

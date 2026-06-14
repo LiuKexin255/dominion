@@ -2,8 +2,8 @@
  * server.ts — Game agent gRPC server.
  *
  * Loads game.proto, wires service dependencies (secret, prompt client,
- * LLM adapter, runtime instances, handler), registers AgentService on
- * a gRPC server, and starts a periodic cleanup loop for idle runtimes.
+ * LLM adapter, shared MemorySaver, compiled StateGraph, handler),
+ * registers AgentService on a gRPC server, and starts listening.
  *
  * Exports startServer() invoked by bootstrap.ts after OTel init.
  */
@@ -14,12 +14,16 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
+import {
+  MemorySaver,
+  StateGraph,
+  MessagesAnnotation,
+} from "@langchain/langgraph";
 import type { ProtoGrpcType } from "../game_types/game";
 
 import { readSecret } from "./secrets";
 import { PromptClient } from "./prompt-client";
 import { RealLLMAdapter, type LLMAdapter, type LLMProvider } from "./llm";
-import { DialogRuntime } from "./runtime";
 import { Handler } from "./handler";
 
 // ---------------------------------------------------------------------------
@@ -39,25 +43,25 @@ const protoPath = path.join(protoRoot, "projects/game/game.proto");
 const protoIncludeDirs = [protoRoot];
 
 function loadProto(): ProtoGrpcType {
-	if (!fs.existsSync(protoPath)) {
-		throw new Error(`game.proto not found at ${protoPath}`);
-	}
+  if (!fs.existsSync(protoPath)) {
+    throw new Error(`game.proto not found at ${protoPath}`);
+  }
 
-	// Load proto definition.
-	// Options MUST match the ts_proto_library generation options:
-	//   longs=String, enums=String, defaults=true, oneofs=true, keep_case=False
-	const packageDefinition = protoLoader.loadSync(protoPath, {
-		longs: String,
-		enums: String,
-		defaults: true,
-		oneofs: true,
-		includeDirs: protoIncludeDirs,
-		// keepCase omitted (keep_case=False in the rule)
-	});
+  // Load proto definition.
+  // Options MUST match the ts_proto_library generation options:
+  //   longs=String, enums=String, defaults=true, oneofs=true, keep_case=False
+  const packageDefinition = protoLoader.loadSync(protoPath, {
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+    includeDirs: protoIncludeDirs,
+    // keepCase omitted (keep_case=False in the rule)
+  });
 
-	return grpc.loadPackageDefinition(
-		packageDefinition,
-	) as unknown as ProtoGrpcType;
+  return grpc.loadPackageDefinition(
+    packageDefinition,
+  ) as unknown as ProtoGrpcType;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,18 +69,18 @@ function loadProto(): ProtoGrpcType {
 // ---------------------------------------------------------------------------
 
 function buildCredentials(): grpc.ServerCredentials {
-	const tlsCert = "/etc/tls/tls.crt";
-	const tlsKey = "/etc/tls/tls.key";
-	const useTLS = fs.existsSync(tlsCert) && fs.existsSync(tlsKey);
+  const tlsCert = "/etc/tls/tls.crt";
+  const tlsKey = "/etc/tls/tls.key";
+  const useTLS = fs.existsSync(tlsCert) && fs.existsSync(tlsKey);
 
-	if (useTLS) {
-		return grpc.ServerCredentials.createSsl(
-			null,
-			[{ cert_chain: fs.readFileSync(tlsCert), private_key: fs.readFileSync(tlsKey) }],
-			false,
-		);
-	}
-	return grpc.ServerCredentials.createInsecure();
+  if (useTLS) {
+    return grpc.ServerCredentials.createSsl(
+      null,
+      [{ cert_chain: fs.readFileSync(tlsCert), private_key: fs.readFileSync(tlsKey) }],
+      false,
+    );
+  }
+  return grpc.ServerCredentials.createInsecure();
 }
 
 // ---------------------------------------------------------------------------
@@ -87,78 +91,71 @@ function buildCredentials(): grpc.ServerCredentials {
  * Creates and starts the gRPC server.
  *
  * Reads the provider secret, creates the prompt client and LLM adapter,
- * wires the Handler with a shared runtime instances map, loads the proto
- * definition, registers the AgentService, and binds to port 50051 on all
- * interfaces. A 1-minute cleanup interval periodically prunes idle
- * runtime instances (inactivity > 15 minutes).
+ * creates a shared MemorySaver checkpointer and a minimal StateGraph
+ * compiled with MessagesAnnotation for checkpoint state reads, wires
+ * the Handler, loads the proto definition, registers the AgentService,
+ * and binds to port 50051 on all interfaces.
  *
  * @returns A promise that resolves to the started gRPC Server instance.
  */
 export async function startServer(llmAdapterOverride?: LLMAdapter): Promise<grpc.Server> {
-	// Register dominion URI resolver for service discovery.
-	registerDominionResolver();
+  // Register dominion URI resolver for service discovery.
+  registerDominionResolver();
 
-	// 1. Read provider secret (empty string if file is missing).
-	const providerSecret = readSecret(
-		path.join(process.env.DOMINION_SECRET_DIR || "/etc/secrets", "provider"),
-	);
+  // 1. Read provider secret (empty string if file is missing).
+  const providerSecret = readSecret(
+    path.join(process.env.DOMINION_SECRET_DIR || "/etc/secrets", "provider"),
+  );
 
-	// 2. Create PromptClient (connects to prompt service via dominion).
-	const promptClient = new PromptClient();
+  // 2. Create PromptClient (connects to prompt service via dominion).
+  const promptClient = new PromptClient();
 
-	// 3. Create LLM adapter (fake for test, real for production).
-	const llmAdapter: LLMAdapter = llmAdapterOverride ?? (() => {
-		const modelName = process.env.MODEL_NAME || "opencode-go/deepseek-v4-pro";
-		const baseUrl = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
-		const providerEnv = process.env.LLM_PROVIDER;
-		const provider: LLMProvider | undefined =
-			providerEnv === "openai" || providerEnv === "anthropic" ? providerEnv : undefined;
-		return new RealLLMAdapter(modelName, baseUrl, provider);
-	})();
+  // 3. Create LLM adapter (fake for test, real for production).
+  // RealLLMAdapter constructor is (baseUrl, provider?) — model is per-call from profile.
+  const llmAdapter: LLMAdapter = llmAdapterOverride ?? (() => {
+    const baseUrl = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
+    const providerEnv = process.env.LLM_PROVIDER;
+    const provider: LLMProvider | undefined =
+      providerEnv === "openai" || providerEnv === "anthropic" ? providerEnv : undefined;
+    return new RealLLMAdapter(baseUrl, provider);
+  })();
 
-	// 4. Create shared runtime instances map.
-	const instances = new Map<string, DialogRuntime>();
+  // 4. Create ONE shared MemorySaver for all sessions.
+  const checkpointer = new MemorySaver();
 
-	// 5. Create Handler with all dependencies.
-	const handler = new Handler(instances, promptClient, llmAdapter, providerSecret);
+  // 5. Create minimal StateGraph compiled with MessagesAnnotation for checkpoint reads.
+  //    createDeepAgent writes to the same checkpointer using thread_id=sessionId.
+  const graph = new StateGraph(MessagesAnnotation).compile({ checkpointer });
 
-	// Load proto and build credentials.
-	const proto = loadProto();
-	const credentials = buildCredentials();
-	const tlsEnabled = fs.existsSync("/etc/tls/tls.crt") && fs.existsSync("/etc/tls/tls.key");
+  // 6. Create Handler with all dependencies.
+  const handler = new Handler(promptClient, llmAdapter, checkpointer, graph, providerSecret);
 
-	// Create gRPC server and register AgentService.
-	const server = new grpc.Server();
-	server.addService(
-		proto.projects.game.AgentService.service,
-		handler as any,
-	);
+  // Load proto and build credentials.
+  const proto = loadProto();
+  const credentials = buildCredentials();
+  const tlsEnabled = fs.existsSync("/etc/tls/tls.crt") && fs.existsSync("/etc/tls/tls.key");
 
-	// 6. Start 1-minute cleanup interval for idle instances (>15 min).
-	const cleanupInterval = setInterval(() => {
-		for (const [sessionId, instance] of instances) {
-			if (instance.cleanup(15 * 60 * 1000)) {
-				instances.delete(sessionId);
-				info("cleaned idle runtime instance", { sessionId });
-			}
-		}
-	}, 60000);
+  // Create gRPC server and register AgentService.
+  const server = new grpc.Server();
+  server.addService(
+    proto.projects.game.AgentService.service,
+    handler as any,
+  );
 
-	// Bind and start server.
-	return new Promise((resolve, reject) => {
-		server.bindAsync(
-			"0.0.0.0:50051",
-			credentials,
-			(err, port) => {
-				if (err) {
-					clearInterval(cleanupInterval);
-					reject(err);
-					return;
-				}
-				server.start();
-				info("gRPC server listening on 0.0.0.0:50051", { port, tls: tlsEnabled });
-				resolve(server);
-			},
-		);
-	});
+  // Bind and start server.
+  return new Promise((resolve, reject) => {
+    server.bindAsync(
+      "0.0.0.0:50051",
+      credentials,
+      (err, port) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        server.start();
+        info("gRPC server listening on 0.0.0.0:50051", { port, tls: tlsEnabled });
+        resolve(server);
+      },
+    );
+  });
 }

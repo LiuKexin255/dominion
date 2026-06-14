@@ -510,6 +510,39 @@ func (a *App) DeleteAgent(sessionID string) error {
 	return nil
 }
 
+// ListMessages lists all messages for a session's agent.
+func (a *App) ListMessages(sessionID string) ([]MessageViewModel, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, _ := randomHex(8)
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Listing messages", map[string]any{
+		"trace_id":       traceID,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	resp, err := a.client.ListMessages(ctx, sessionID)
+	if err != nil {
+		a.logger.Error("backend", "List messages failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Messages listed", map[string]any{
+		"session_id":     sessionID,
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+		"count":          len(resp.GetMessages()),
+	})
+	return ToMessageViewModels(resp.GetMessages()), nil
+}
+
 // ListWindows enumerates visible top-level windows (Windows only).
 // Returns a not-supported error on other platforms.
 func (a *App) ListWindows() ([]capture.WindowRef, error) {
