@@ -16,6 +16,7 @@
     createAgentProfile,
     deleteAgentProfile,
     sendAgentText,
+    listMessages,
   } from './api'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
@@ -278,13 +279,39 @@
     }
   }
 
+  function senderFromString(raw: string): FrameSender {
+    if (raw === 'FRAME_SENDER_USER') return FrameSender.USER
+    if (raw === 'FRAME_SENDER_AGENT') return FrameSender.AGENT
+    if (raw === 'FRAME_SENDER_SYSTEM') return FrameSender.SYSTEM
+    return FrameSender.SYSTEM
+  }
+
+  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' {
+    if (raw === 'thinking' || raw === 'text' || raw === 'warn') return raw
+    return 'text'
+  }
+
   async function handleLoadMessages() {
+    if (!selectedSession) return
     playState = 'loading_messages'
     messagesError = null
-    // TODO(Task 8): replace with ListMessages API call to hydrate chatMessages
-    // from the checkpoint-backed message history keyed by sessionId.
-    chatMessages = []
-    playState = 'chat_ready'
+    try {
+      const entries = await listMessages(selectedSession.sessionId)
+      chatMessages = entries.map(entry => ({
+        sender: senderFromString(entry.sender),
+        type: typeFromString(entry.type),
+        content: entry.content,
+        timestamp: entry.createTime || new Date().toISOString(),
+      }))
+      playState = 'chat_ready'
+      log('info', 'chat', `Loaded ${entries.length} messages from history`)
+    } catch (e: unknown) {
+      const errStr = String(e)
+      messagesError = errStr
+      playState = 'chat_ready'
+      chatMessages = []
+      log('warn', 'chat', `Failed to load messages: ${errStr}`)
+    }
   }
 
   async function handleEnterChat() {

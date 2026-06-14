@@ -30,6 +30,16 @@ export interface Agent {
   name: string
   sessionId: string
   createTime: string
+  agentProfileName: string
+}
+
+export interface MessageEntry {
+  name: string
+  messageId: string
+  sender: string
+  type: string
+  content: string
+  createTime?: string
 }
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
@@ -227,6 +237,7 @@ interface WailsApp {
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
   SendAgentText(sessionId: string, text: string): Promise<void>
+  ListMessages(sessionID: string): Promise<MessageEntry[]>
   /** @deprecated Use chat-based interfaces instead. */
   ExecuteOperation(
     operationID: string, screenshotID: string, sequence: number,
@@ -362,6 +373,12 @@ export async function sendAgentText(sessionId: string, text: string): Promise<vo
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SendAgentText(sessionId, text)
+}
+
+export async function listMessages(sessionId: string): Promise<MessageEntry[]> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.ListMessages(sessionId)
 }
 
 /** @deprecated Use chat-based interfaces instead. */

@@ -15,10 +15,11 @@
 
   let showProfileDetails = $state(false)
 
-  // TODO(Task 8): once Agent carries agentProfileName, look up the matching profile
-  // for model/system prompt/skill names/mcp names. For now, no reliable match is
-  // possible since Agent only has name/sessionId/createTime.
-  let matchedProfile = $derived<AgentProfile | null>(null)
+  let matchedProfile = $derived<AgentProfile | null>(
+    agent?.agentProfileName
+      ? profiles.find(p => p.agentProfileName === agent.agentProfileName) ?? null
+      : null
+  )
 
   let connected = $derived(connectionState === 'connected')
 
@@ -42,12 +43,10 @@
     </div>
     <div class="info-row">
       <span class="info-key">Profile</span>
-      <!-- TODO(Task 8): display agent.agentProfileName once the field exists -->
-      <span class="info-value" data-testid="agent-profile-name">{matchedProfile?.name ?? '—'}</span>
+      <span class="info-value" data-testid="agent-profile-name">{agent?.agentProfileName ?? '—'}</span>
     </div>
     <div class="info-row">
       <span class="info-key">Model</span>
-      <!-- TODO(Task 8): look up model from matched profile -->
       <span class="info-value" data-testid="agent-model">{matchedProfile?.model ?? '—'}</span>
     </div>
     {#if agent}
@@ -76,22 +75,21 @@
     </button>
     {#if showProfileDetails}
       <div class="profile-details" data-testid="profile-details">
-        <!-- TODO(Task 8): populate with real profile data via GetAgentProfile -->
         <div class="info-row">
           <span class="info-key">Enabled</span>
           <span class="info-value">{matchedProfile ? (matchedProfile.enabled ? 'Yes' : 'No') : '—'}</span>
         </div>
         <div class="profile-field">
           <span class="info-key">System Prompt</span>
-          <pre class="profile-text">{matchedProfile?.systemPrompt ?? '—'}</pre>
+          <pre class="profile-text">{matchedProfile?.systemPrompt || '—'}</pre>
         </div>
         <div class="info-row">
           <span class="info-key">Skills</span>
-          <span class="info-value">{matchedProfile?.skillNames?.join(', ') ?? '—'}</span>
+          <span class="info-value">{matchedProfile?.skillNames?.join(', ') || '—'}</span>
         </div>
         <div class="info-row">
           <span class="info-key">MCPs</span>
-          <span class="info-value">{matchedProfile?.mcpNames?.join(', ') ?? '—'}</span>
+          <span class="info-value">{matchedProfile?.mcpNames?.join(', ') || '—'}</span>
         </div>
       </div>
     {/if}
