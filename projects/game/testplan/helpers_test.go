@@ -39,10 +39,10 @@ type sessionResponse struct {
 // agentResponse mirrors the Agent proto message returned via gRPC-gateway
 // with protojson camelCase field names.
 type agentResponse struct {
-	Name            string `json:"name"`
-	SessionID       string `json:"sessionId"`
+	Name             string `json:"name"`
+	SessionID        string `json:"sessionId"`
 	AgentProfileName string `json:"agentProfileName,omitempty"`
-	CreateTime      string `json:"createTime"`
+	CreateTime       string `json:"createTime"`
 }
 
 // listSessionsResponse mirrors the ListSessionsResponse proto message.
@@ -385,6 +385,43 @@ func getSkill(t *testing.T, sutHostURL, sutEnvName, skillName string) *game.Skil
 		t.Fatalf("Unmarshal Skill: %v (raw: %s)", err, string(respBody))
 	}
 	return skill
+}
+
+// ─── Message Helpers (proto-based) ────────────────────────────────────────
+
+// listMessages sends a GET request to list messages for an agent and returns
+// the parsed ListMessagesResponse. Calls t.Fatal on non-200 responses.
+func listMessages(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.ListMessagesResponse {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions/%s/agent/messages", sutHostURL, pathPrefix, sessionID)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET listMessages status=%d, body=%s", resp.StatusCode, respBody)
+	}
+
+	lmr := new(game.ListMessagesResponse)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, lmr); err != nil {
+		t.Fatalf("Unmarshal ListMessagesResponse: %v (raw: %s)", err, string(respBody))
+	}
+	return lmr
+}
+
+// getAgentProto sends a GET request for an agent and returns the parsed Agent
+// proto. Calls t.Fatal on non-200 responses or unmarshal errors.
+func getAgentProto(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.Agent {
+	t.Helper()
+
+	respBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	agent := new(game.Agent)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, agent); err != nil {
+		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
+	}
+	return agent
 }
 
 // ─── WebSocket Helpers (proto-based) ────────────────────────────────────────

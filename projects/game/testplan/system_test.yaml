@@ -1,7 +1,7 @@
 name: game-system-test
 description: |
-  Game system integration test — 4 suites organized by tested object.
-
+  Game system integration test — 8 suites organized by tested object.
+ 
   Suite 1 (prompt): prompt service + gateway.
     - Agent profile CRUD
     - Skill CRUD
@@ -17,6 +17,17 @@ description: |
   Suite 4 (agent dialog): session + proxy + agent(test) + prompt + gateway.
     - Agent dialog with fake LLM: create agent with profile, connect chat,
       thinking + text response, queue behavior, profile loose coupling, cleanup
+  Suite 5 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
+    - Create agent, send messages, leave, re-enter, verify ListMessages
+    - Verify agent remains functional after re-enter
+  Suite 6 (delete-recreate-no-leak): session + proxy + agent(test) + prompt + gateway.
+    - Delete agent, recreate, verify ListMessages empty
+    - Verify new agent has no memory of deleted conversation
+  Suite 7 (per-profile-model): session + proxy + agent(test) + prompt + gateway.
+    - Create two agents with different profile models
+    - Verify each profile's model is configured correctly
+  Suite 8 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
+    - Send two messages rapidly, verify FIFO processing order
 
 suites:
   - name: prompt
@@ -50,3 +61,39 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_dialog_test
+
+  - name: checkpoint-resume
+    description: "Verify agent resumes conversation context via checkpoint after leave/re-enter"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
+
+  - name: delete-recreate-no-leak
+    description: "Verify deleted agent's conversation does not leak into recreated agent"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
+
+  - name: per-profile-model
+    description: "Verify agents each use their configured profile model"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
+
+  - name: concurrent-serialization
+    description: "Verify rapid messages are processed in FIFO send order"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
