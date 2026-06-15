@@ -17,7 +17,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/009-agent-checkpoint-redesign/plan.md
+at specs/010-langchain-agent-downgrade/plan.md
 <!-- SPECKIT END -->
 
 ## 操作命令参考

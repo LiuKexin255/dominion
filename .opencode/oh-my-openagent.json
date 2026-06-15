@@ -73,5 +73,6 @@
       "model": "opencode-go/deepseek-v4-flash",
       "variant": "medium"
     }
-  }
+  },
+  "disabled_hooks": ["prometheus-md-only"]
 }
