@@ -36,7 +36,7 @@ suites:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:prompt_test
+      - //projects/game/testplan:testplan_test
 
   - name: session
     deploy: //projects/game/testplan/deploy_agent.yaml

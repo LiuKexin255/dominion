@@ -40,12 +40,18 @@ func (c *Client) url(path string) string {
 	return strings.TrimSuffix(c.cfg.GatewayURL, "/") + path
 }
 
-// setCommonHeaders sets headers common to all requests.
-func (c *Client) setCommonHeaders(req *http.Request) {
+// newRequest builds an http.Request with context, method, path, and body,
+// setting common headers (Content-Type, and env if configured).
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.url(path), body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.Env != "" {
 		req.Header.Set("env", c.cfg.Env)
 	}
+	return req, nil
 }
 
 // CreateSession creates a new game session via POST to /api/v1/sessions.
@@ -56,11 +62,10 @@ func (c *Client) CreateSession(ctx context.Context) (*game.Session, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/sessions"), bytes.NewReader(body))
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -69,7 +74,7 @@ func (c *Client) CreateSession(ctx context.Context) (*game.Session, error) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("create session: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -83,7 +88,7 @@ func (c *Client) CreateSession(ctx context.Context) (*game.Session, error) {
 // ListSessions lists all sessions via GET to /api/v1/sessions.
 // Query parameters page_size and page_token control pagination.
 func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken string) (*game.ListSessionsResponse, error) {
-	path := c.url("/api/v1/sessions")
+	path := "/api/v1/sessions"
 	params := []string{}
 	if pageSize > 0 {
 		params = append(params, fmt.Sprintf("page_size=%d", pageSize))
@@ -95,11 +100,10 @@ func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken str
 		path += "?" + strings.Join(params, "&")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -108,7 +112,7 @@ func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken str
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("list sessions: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -121,11 +125,10 @@ func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken str
 
 // GetSession retrieves a session by ID via GET to /api/v1/sessions/{sessionID}.
 func (c *Client) GetSession(ctx context.Context, sessionID string) (*game.Session, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/sessions/"+sessionID), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -134,7 +137,7 @@ func (c *Client) GetSession(ctx context.Context, sessionID string) (*game.Sessio
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("get session: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -147,11 +150,10 @@ func (c *Client) GetSession(ctx context.Context, sessionID string) (*game.Sessio
 
 // DeleteSession deletes a session by ID via DELETE to /api/v1/sessions/{sessionID}.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url("/api/v1/sessions/"+sessionID), nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/sessions/"+sessionID, nil)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -159,7 +161,7 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete session: status %d: %s", resp.StatusCode, string(respBody))
 	}
@@ -174,11 +176,10 @@ func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/sessions/"+sessionID+"/agent"), bytes.NewReader(body))
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -187,7 +188,7 @@ func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("create agent: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -206,11 +207,10 @@ func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, p
 		return nil, fmt.Errorf("create agent with profile: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/sessions/"+sessionID+"/agent"), bytes.NewReader(body))
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create agent with profile: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -219,7 +219,7 @@ func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, p
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("create agent with profile: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -232,7 +232,7 @@ func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, p
 
 // ListAgentProfiles lists agent profiles via GET to /api/v1/prompts/agentProfiles.
 func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToken string) (*game.ListAgentProfilesResponse, error) {
-	path := c.url("/api/v1/prompts/agentProfiles")
+	path := "/api/v1/prompts/agentProfiles"
 	params := []string{}
 	if pageSize > 0 {
 		params = append(params, fmt.Sprintf("page_size=%d", pageSize))
@@ -244,11 +244,10 @@ func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToke
 		path += "?" + strings.Join(params, "&")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list agent profiles: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -257,7 +256,7 @@ func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToke
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("list agent profiles: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -270,11 +269,10 @@ func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToke
 
 // GetAgent retrieves the agent for a session via GET to /api/v1/sessions/{sessionID}/agent.
 func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/sessions/"+sessionID+"/agent"), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/agent", nil)
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -283,7 +281,7 @@ func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, e
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("get agent: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -296,11 +294,10 @@ func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, e
 
 // DeleteAgent deletes the agent for a session via DELETE to /api/v1/sessions/{sessionID}/agent.
 func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url("/api/v1/sessions/"+sessionID+"/agent"), nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/sessions/"+sessionID+"/agent", nil)
 	if err != nil {
 		return fmt.Errorf("delete agent: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -308,7 +305,7 @@ func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete agent: status %d: %s", resp.StatusCode, string(respBody))
 	}
@@ -318,11 +315,10 @@ func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
 // ListMessages lists all messages for a session's agent via GET to
 // /api/v1/sessions/{sessionID}/agent/messages.
 func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.ListMessagesResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/sessions/"+sessionID+"/agent/messages"), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/agent/messages", nil)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -331,7 +327,7 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.List
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("list messages: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -349,11 +345,10 @@ func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentPr
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/api/v1/prompts/agentProfiles"), bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/api/v1/prompts/agentProfiles", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
-	c.setCommonHeaders(httpReq)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -362,7 +357,7 @@ func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentPr
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("create agent profile: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -375,11 +370,10 @@ func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentPr
 
 // GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileName}.
 func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (*game.AgentProfile, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/api/v1/prompts/agentProfiles/"+agentProfileName), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get agent profile: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -388,7 +382,7 @@ func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("get agent profile: status %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -401,11 +395,10 @@ func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (
 
 // DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileName}.
 func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url("/api/v1/prompts/agentProfiles/"+agentProfileName), nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
 	if err != nil {
 		return fmt.Errorf("delete agent profile: %w", err)
 	}
-	c.setCommonHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -413,7 +406,7 @@ func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete agent profile: status %d: %s", resp.StatusCode, string(respBody))
 	}

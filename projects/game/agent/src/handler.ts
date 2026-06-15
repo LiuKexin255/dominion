@@ -481,11 +481,22 @@ export class Handler implements AgentServiceHandlers {
     }
 
     try {
-      const state = await this.graph.getState({
-        configurable: { thread_id: sessionId },
-      });
+      // Read the latest checkpoint for this thread across all namespaces.
+      // createDeepAgent writes checkpoints under its own graph namespace, which
+      // differs from the standalone StateGraph(MessagesAnnotation) previously
+      // used here, so graph.getState() returned empty. list() without a
+      // checkpoint_ns scans every namespace for the thread.
+      const tuples: any[] = [];
+      for await (const tuple of this.checkpointer.list(
+        { configurable: { thread_id: sessionId } },
+        { limit: 1 },
+      )) {
+        tuples.push(tuple);
+      }
 
-      const rawMessages: BaseMessage[] = state?.values?.messages ?? [];
+      const rawMessages: BaseMessage[] =
+        tuples[0]?.checkpoint?.channel_values?.messages ?? [];
+      const checkpointTs = tuples[0]?.checkpoint?.ts as string | undefined;
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
@@ -541,8 +552,8 @@ export class Handler implements AgentServiceHandlers {
         if (!content && type !== "text") continue;
 
         // Best-effort timestamp from checkpoint snapshot.
-        const createTime = state?.createdAt
-          ? timestampFromMs(state.createdAt)
+        const createTime = checkpointTs
+          ? timestampFromMs(new Date(checkpointTs).getTime())
           : undefined;
 
         result.push({

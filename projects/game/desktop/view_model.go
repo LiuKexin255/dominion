@@ -16,8 +16,8 @@ type SessionView struct {
 
 // ListSessionsView is the Wails view model for game.ListSessionsResponse.
 type ListSessionsView struct {
-	Sessions      []SessionView `json:"sessions"`
-	NextPageToken string        `json:"nextPageToken,omitempty"`
+	Sessions      []*SessionView `json:"sessions"`
+	NextPageToken string         `json:"nextPageToken,omitempty"`
 }
 
 // AgentView is the Wails view model for game.Agent.
@@ -56,9 +56,9 @@ func listSessionsViewFromProto(r *game.ListSessionsResponse) *ListSessionsView {
 		return nil
 	}
 	sessions := r.GetSessions()
-	views := make([]SessionView, len(sessions))
+	views := make([]*SessionView, len(sessions))
 	for i, s := range sessions {
-		views[i] = *sessionViewFromProto(s)
+		views[i] = sessionViewFromProto(s)
 	}
 	return &ListSessionsView{
 		Sessions:      views,
@@ -80,13 +80,13 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 }
 
 // ToMessageViewModels converts a slice of proto Message to view models.
-func ToMessageViewModels(messages []*game.Message) []MessageViewModel {
+func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 	if messages == nil {
 		return nil
 	}
-	views := make([]MessageViewModel, len(messages))
+	views := make([]*MessageViewModel, len(messages))
 	for i, m := range messages {
-		views[i] = MessageViewModel{
+		views[i] = &MessageViewModel{
 			Name:       m.GetName(),
 			MessageID:  m.GetMessageId(),
 			Sender:     m.GetSender().String(),
@@ -122,8 +122,8 @@ type AgentProfileView struct {
 
 // ListAgentProfilesView is the Wails view model for game.ListAgentProfilesResponse.
 type ListAgentProfilesView struct {
-	AgentProfiles []AgentProfileView `json:"agentProfiles"`
-	NextPageToken string             `json:"nextPageToken,omitempty"`
+	AgentProfiles []*AgentProfileView `json:"agentProfiles"`
+	NextPageToken string              `json:"nextPageToken,omitempty"`
 }
 
 // OperationResultView is the Wails view model for an operation execution result.
@@ -165,9 +165,9 @@ func listAgentProfilesViewFromProto(r *game.ListAgentProfilesResponse) *ListAgen
 		return nil
 	}
 	profiles := r.GetAgentProfiles()
-	views := make([]AgentProfileView, len(profiles))
+	views := make([]*AgentProfileView, len(profiles))
 	for i, p := range profiles {
-		views[i] = *agentProfileViewFromProto(p)
+		views[i] = agentProfileViewFromProto(p)
 	}
 	return &ListAgentProfilesView{
 		AgentProfiles: views,
