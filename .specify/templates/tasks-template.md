@@ -174,6 +174,9 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX Run required large-test/testplan validation for service changes, or document approved skip reason
 - [ ] TXXX Run `bazel build //...` and `bazel test //...` for full-repository verification
 - [ ] TXXX Confirm Code Quality Review covers test-code review and style review
+- [ ] TXXX Verify that all external references in plans, specs, research notes,
+  and design documents include citation links (URL, permalink, or stable
+  identifier) per the project constitution
 
 ---
 

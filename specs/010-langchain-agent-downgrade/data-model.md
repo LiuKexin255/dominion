@@ -93,7 +93,7 @@ One context-bearing or visible message in a session conversation.
 
 ## Context Preparation
 
-Service-owned boundary that prepares model input from stored conversation data. In this design it is implemented as one or more `createAgent` middleware functions running at the `beforeModel` stage.
+Service-owned boundary that prepares model input from stored conversation data. In this design it is implemented as one or more `createAgent` middleware functions running at the `beforeModel` stage ([Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory), [Middleware overview](https://docs.langchain.com/oss/javascript/langchain/middleware)).
 
 ### Fields / Inputs
 
@@ -105,7 +105,7 @@ Service-owned boundary that prepares model input from stored conversation data. 
 
 ### Middleware Components
 
-- **`dynamicSystemPromptMiddleware`**: LangChain-provided middleware that injects the session's system prompt before each model call. It reads `config.context.systemPrompt` (supplied by the handler) and produces a `SystemMessage`.
+- **`dynamicSystemPromptMiddleware`**: LangChain-provided middleware ([Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory)) that injects the session's system prompt before each model call. It reads `config.context.systemPrompt` (supplied by the handler) and produces a `SystemMessage`.
 - **Service-owned `beforeModel` middleware** (the future customization point): receives the current `state`, applies the fixed format policy (e.g., prepend system prompt, keep all prior messages, append current user turn), and returns the updated state. In the current release this middleware is a no-op or identity transform beyond what `dynamicSystemPromptMiddleware` already does; in the future it can be replaced with summarization, trimming, or custom formatting.
 
 ### Relationships

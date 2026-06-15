@@ -2,9 +2,9 @@
 
 ## Decision: Replace deepagents with the LangChain `createAgent` harness
 
-**Rationale**: The requested future capability is explicit control over conversation-history format and content. Deep Agents is a batteries-included harness with built-in context compression, virtual filesystem, task planning, subagent spawning, and smart defaults. Those defaults are useful for complex autonomous tasks, but they are not part of the current game operator contract and make the history-construction point opaque.
+**Rationale**: The requested future capability is explicit control over conversation-history format and content. Deep Agents is a batteries-included harness with built-in context compression, virtual filesystem, task planning, subagent spawning, and smart defaults ([Deep Agents overview](https://docs.langchain.com/oss/javascript/deepagents/overview)). Those defaults are useful for complex autonomous tasks, but they are not part of the current game operator contract and make the history-construction point opaque.
 
-LangChain's `createAgent` is the official next layer below Deep Agents: it provides the same model + harness loop (including LangGraph checkpointing and resume) without the Deep Agents batteries. Crucially, `createAgent` exposes middleware hooks—especially `beforeModel`—that let service code explicitly inspect and reshape the message history before every model call. This gives the service the controllable "context preparation boundary" the future feature needs while preserving automatic thread-scoped state management.
+LangChain's `createAgent` is the official next layer below Deep Agents ([LangChain overview](https://docs.langchain.com/oss/javascript/langchain/overview)): it provides the same model + harness loop (including LangGraph checkpointing and resume) without the Deep Agents batteries ([Agents / `createAgent`](https://docs.langchain.com/oss/javascript/langchain/agents)). Crucially, `createAgent` exposes middleware hooks—especially `beforeModel` ([Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory), [Middleware overview](https://docs.langchain.com/oss/javascript/langchain/middleware))—that let service code explicitly inspect and reshape the message history before every model call. This gives the service the controllable "context preparation boundary" the future feature needs while preserving automatic thread-scoped state management.
 
 **Alternatives considered**:
 
@@ -33,9 +33,9 @@ LangChain's `createAgent` is the official next layer below Deep Agents: it provi
 
 ## Decision: Inject per-session system prompts via `dynamicSystemPromptMiddleware`
 
-**Rationale**: The agent profile provides a `systemPrompt` that is fixed at agent creation time but varies per session/profile. `createAgent` accepts a static `systemPrompt` parameter, but rebuilding the agent on every turn to change the prompt would be wasteful and complicate state management.
+**Rationale**: The agent profile provides a `systemPrompt` that is fixed at agent creation time but varies per session/profile. `createAgent` accepts a static `systemPrompt` parameter ([Agents / `createAgent`](https://docs.langchain.com/oss/javascript/langchain/agents)), but rebuilding the agent on every turn to change the prompt would be wasteful and complicate state management.
 
-`dynamicSystemPromptMiddleware` (exported from `langchain`) is the official mechanism for per-invocation system prompts. It accepts a function `(state, config) => string | SystemMessage` and can read per-run context (via `config.context`) to inject the correct system prompt before the model call. This lets the service construct one `createAgent` harness and supply the session-specific system prompt at invocation time, matching the existing "profile snapshot copied at CreateAgent" semantics.
+`dynamicSystemPromptMiddleware` (exported from `langchain`; documented in the [Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory) "Prompt" section) is the official mechanism for per-invocation system prompts. It accepts a function `(state, config) => string | SystemMessage` and can read per-run context (via `config.context`) to inject the correct system prompt before the model call. This lets the service construct one `createAgent` harness and supply the session-specific system prompt at invocation time, matching the existing "profile snapshot copied at CreateAgent" semantics.
 
 **Alternatives considered**:
 
@@ -56,7 +56,7 @@ LangChain's `createAgent` is the official next layer below Deep Agents: it provi
 
 **Rationale**: Future customization requires one identifiable point where the service reads stored conversation messages, applies system/profile instructions, chooses which messages are included, formats them, appends the current user turn, and sends them to the model. The current implementation hides this behind `createDeepAgent`.
 
-With `createAgent`, the official hook for this is the `beforeModel` middleware stage. A service-owned middleware receives the LangGraph `state` (including `state.messages`), can inspect or rewrite the message list, inject the current turn, apply formatting policy, and return the updated state. This is the "Context Preparation Boundary": a single, testable, replaceable function inside the agent service that controls what the model sees. Future custom-history work can replace or parameterize this middleware without changing public APIs.
+With `createAgent`, the official hook for this is the `beforeModel` middleware stage ([Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory), [Middleware overview](https://docs.langchain.com/oss/javascript/langchain/middleware)). A service-owned middleware receives the LangGraph `state` (including `state.messages`), can inspect or rewrite the message list, inject the current turn, apply formatting policy, and return the updated state. This is the "Context Preparation Boundary": a single, testable, replaceable function inside the agent service that controls what the model sees. Future custom-history work can replace or parameterize this middleware without changing public APIs (e.g. swapping in [`summarizationMiddleware`](https://docs.langchain.com/oss/javascript/langchain/middleware/built-in)).
 
 **Alternatives considered**:
 

@@ -6,7 +6,7 @@ This contract defines the internal service boundary required to support future c
 
 ## Context Preparation Boundary
 
-The agent service must have one identifiable boundary that prepares model input for each turn. This boundary is implemented as `createAgent` middleware running at the `beforeModel` stage, plus `dynamicSystemPromptMiddleware` for system-prompt injection.
+The agent service must have one identifiable boundary that prepares model input for each turn. This boundary is implemented as `createAgent` middleware running at the `beforeModel` stage ([Short-term memory](https://docs.langchain.com/oss/javascript/langchain/short-term-memory), [Middleware overview](https://docs.langchain.com/oss/javascript/langchain/middleware)), plus `dynamicSystemPromptMiddleware` for system-prompt injection.
 
 ### Inputs
 

@@ -30,6 +30,8 @@ No public API, proto, gateway/proxy route, desktop binding, or operator workflow
 
 **Scale/Scope**: Source changes are expected to stay primarily in `projects/game/agent/src/llm.ts` (wrap `createAgent` with `dynamicSystemPromptMiddleware` and a service-owned `beforeModel` middleware), a new or updated middleware module for the context-preparation boundary, `fake-llm.ts` to align with the `createAgent`/`fakeModel` path, `server.ts` to remove the now-redundant external `StateGraph(MessagesAnnotation)` and wire the shared checkpointer, `handler.ts` to simplify `ListMessages` (replace the deepagent namespace-scan hack with standard `agent.getState()`), TypeScript tests, `projects/game/agent/package.json`, `projects/game/agent/BUILD.bazel`, root dependency metadata once `deepagents` is unused, and existing testplan cases if assertions need behavior-preserving adjustments. Gateway/proxy/desktop/proto files are validation surfaces, not planned change targets.
 
+**References**: Official LangChain documentation underpins every design decision below. See the [References](#references) appendix for the full linked index (LangChain overview, agents/`createAgent`, short-term memory, middleware, prebuilt middleware, Deep Agents overview, and API reference).
+
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
@@ -137,3 +139,36 @@ See `data-model.md` for service-owned context entities/state transitions; `contr
 - **Testplan Execution**: PASS. Game large-test execution through `testplan` skill is required unless environment blockers are documented.
 - **Test Impact Assessment**: PASS. Affected unit and large-test files are explicitly listed.
 - **Change Classification**: PASS. Modify/delete/no-change scopes and preserved invariants are documented.
+
+## References
+
+Official documentation that grounds the design decisions in this plan. Cited inline where relevant; collected here for quick lookup.
+
+### LangChain (the downgrade target layer)
+
+- **LangChain overview** — https://docs.langchain.com/oss/javascript/langchain/overview
+  Defines the three-layer model (Deep Agents → LangChain `createAgent` → LangGraph) and confirms `createAgent` is the official "highly configurable harness" below Deep Agents. Basis for the [Summary](#summary) downgrade target.
+- **Agents (`createAgent`)** — https://docs.langchain.com/oss/javascript/langchain/agents
+  Documents `createAgent({ model, tools, systemPrompt, middleware, checkpointer, contextSchema })`, the model/tools/system-prompt/structured-output core components, invocation with `thread_id`, and streaming. Confirms `createAgent` does NOT include filesystem/planning/subagent by default (those are opt-in Deep Agents middleware), which makes the migration behavior-preserving by construction.
+- **Short-term memory** — https://docs.langchain.com/oss/javascript/langchain/short-term-memory
+  Documents thread-scoped checkpoint persistence, state extension via `StateSchema` + middleware, and the `beforeModel`/`afterModel` hooks. The `beforeModel` hook is the official "Context Preparation Boundary" used by this plan. Also documents `dynamicSystemPromptMiddleware` for per-invocation system prompts.
+- **Middleware overview** — https://docs.langchain.com/oss/javascript/langchain/middleware
+  Confirms middleware runs inside the compiled LangGraph that `createAgent` returns (so checkpoint/resume and hooks travel together), and lists the hook lifecycle (`beforeModel` / `afterModel`).
+- **Prebuilt middleware** — https://docs.langchain.com/oss/javascript/langchain/middleware/built-in
+  Catalog of production-ready middleware. Relevant future options: `summarizationMiddleware` (history compression), `toolCallLimitMiddleware`, `modelRetryMiddleware`. Confirms `FilesystemMiddleware`, `createSubAgentMiddleware`, `MemoryMiddleware`, `SkillsMiddleware` come from the `deepagents` package and are therefore excluded by removing `deepagents`.
+- **`createAgent` API reference** — https://reference.langchain.com/javascript/langchain/index/createAgent
+  Authoritative signature and parameter reference for implementation.
+- **`initChatModel` API reference** — https://reference.langchain.com/javascript/langchain/index/initChatModel
+  Provider-routing model initializer retained from the current implementation.
+
+### Deep Agents (the layer being removed)
+
+- **Deep Agents overview** — https://docs.langchain.com/oss/javascript/deepagents/overview
+  Documents the batteries-included harness (context compression, virtual filesystem, task planning, subagent spawning) that this feature removes because it is not part of the game operator contract.
+
+### Repository-internal references
+
+- **Constitution** — `.specify/memory/constitution.md` (v1.3.0): authority order, Bazel integrity, TDD/observable delivery, Spec Kit workflow, test impact assessment, and change-classification gates.
+- **Baseline spec** — `specs/009-agent-checkpoint-redesign/`: the behavioral baseline this refactor must preserve.
+- **Style guides** — `style/README.md`, `style/api.md`, `style/golang.md`, `style/large_test.md`.
+- **Current implementation** — `projects/game/agent/src/llm.ts` (`createDeepAgent` usage to replace), `server.ts` (redundant external `StateGraph`), `handler.ts` (`ListMessages` namespace-scan hack at the `checkpointer.list()` call).

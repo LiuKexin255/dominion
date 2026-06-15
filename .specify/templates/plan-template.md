@@ -74,6 +74,10 @@ violation is documented in Complexity Tracking with user-approved rationale.
   delete. Modifications to existing code are described as refactorings with
   explicit scope, goal, and preserved invariants — additive patching without
   structural justification is forbidden.
+- **Citation Links**: Plan cites every external source — official documentation,
+  code repositories, standards, issues, articles — with a URL, permalink, or
+  stable identifier. Code repository references use permalinks when exact lines
+  or files matter.
 
 ## Project Structure
 

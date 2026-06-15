@@ -87,3 +87,15 @@ Expected outcomes:
 - Delete/recreate isolation succeeds.
 - Same-session rapid sends remain ordered.
 - The implementation exposes one service-owned `beforeModel` middleware as the context preparation boundary for future custom-history work.
+
+## Reference Documentation
+
+Authoritative sources for the APIs this feature depends on. See `plan.md` [References](plan.md#references) for the full annotated index.
+
+- LangChain overview: https://docs.langchain.com/oss/javascript/langchain/overview
+- Agents (`createAgent`): https://docs.langchain.com/oss/javascript/langchain/agents
+- Short-term memory (`beforeModel`, `dynamicSystemPromptMiddleware`): https://docs.langchain.com/oss/javascript/langchain/short-term-memory
+- Middleware overview: https://docs.langchain.com/oss/javascript/langchain/middleware
+- Prebuilt middleware (`summarizationMiddleware` etc.): https://docs.langchain.com/oss/javascript/langchain/middleware/built-in
+- Deep Agents overview (the layer being removed): https://docs.langchain.com/oss/javascript/deepagents/overview
+- `createAgent` API reference: https://reference.langchain.com/javascript/langchain/index/createAgent

@@ -1,14 +1,15 @@
 <!--
 Sync Impact Report
-Version change: 1.2.0 → 1.3.0
+Version change: 1.3.0 → 1.4.0
 Modified principles: none
 Added sections:
-- VI. Test Impact Assessment
-- VII. Change Classification and Refactoring Discipline
+- VIII. Citation and Reference Links
 Removed sections: none
 Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — Constitution Check section updated with new gates for test impact assessment and change classification
-- ✅ .specify/templates/tasks-template.md — Constitution note updated to require change-type classification and refactoring scope
+- ✅ .specify/templates/plan-template.md — Constitution Check section updated with citation-link gate
+- ✅ .specify/templates/tasks-template.md — Polish phase updated with citation-link verification task
+- ⚠ .specify/templates/spec-template.md — no mandatory reference section exists; consider adding a References section in future spec work
+- ✅ .specify/templates/commands/ — directory does not exist; nothing to update
 Follow-up TODOs: none
 -->
 
@@ -100,6 +101,27 @@ structural improvement is achieved), and the invariants preserved. Plans MUST NO
 accumulate additive patches on existing code without declaring the refactoring
 intent — code piling without structural justification is forbidden.
 
+### VIII. Citation and Reference Links
+
+Every plan, specification, task list, research note, or design document that
+quotes, paraphrases, or relies on external content MUST include a citation link.
+A citation link is a URL, permalink, or stable identifier that points to the
+exact official documentation, code repository, standard, issue, or article being
+referenced.
+
+- Inline references to official documentation, source code, issues, or standards
+  MUST include the link directly in the text or as a footnote on the same page.
+- References to code repositories MUST use permalinks (commit-specific or tag
+  URLs) when the exact line or file matters.
+- Aggregated references MAY be listed in a dedicated **References** section, but
+  each entry MUST still contain a working link or stable identifier.
+- Internal repository files, style guides, or specifications do not require
+  external links, but SHOULD be referenced by relative path when useful.
+
+Rationale: citation links make decisions verifiable, make maintenance easier when
+external sources change, and prevent drift between the project’s reasoning and
+the actual source material.
+
 ## Technology Stack and Build System
 
 This repository primarily contains Go source files and may also contain
@@ -177,4 +199,4 @@ Plans and reviews MUST verify compliance with the active constitution. Any
 intentional violation MUST be documented in the plan's Complexity Tracking section
 with the reason and rejected simpler alternative.
 
-**Version**: 1.3.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-10
+**Version**: 1.4.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-15
