@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Agent Engine Context Control Foundation
+# Specification Quality Checklist: Agent Adapter Decoupling and LangChain Foundation
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-06-15
@@ -6,7 +6,7 @@
 
 ## Content Quality
 
-- [x] No implementation details (languages, frameworks, APIs)
+- [x] No implementation details (languages, frameworks, APIs) — framework names (LangChain, deepagent) appear only because the feature explicitly replaces one with the other; no code structure or API design leaks
 - [x] Focused on user value and business needs
 - [x] Written for non-technical stakeholders
 - [x] All mandatory sections completed
@@ -25,10 +25,13 @@
 ## Feature Readiness
 
 - [x] All functional requirements have clear acceptance criteria
-- [x] User scenarios cover primary flows
+- [x] User scenarios cover primary flows (connect, chat, switch profile, reconnect, connection exclusivity, adapter lifecycle)
 - [x] Feature meets measurable outcomes defined in Success Criteria
 - [x] No implementation details leak into specification
 
 ## Notes
 
-- Validation passed. The specification avoids naming the replacement framework in normative requirements and describes the requested migration as a behavior-preserving foundation refactor so planning can choose the implementation details while preserving the user's stated goal.
+- All items pass on first validation iteration.
+- This spec replaces `specs/010-langchain-agent-downgrade/`; the superseded directory should be removed after this spec is adopted.
+- Framework names (LangChain, deepagent) are intentional and inherent to the feature scope, not implementation leakage.
+- Ready for `/speckit.clarify` or `/speckit.plan`.

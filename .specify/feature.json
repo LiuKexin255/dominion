@@ -1,3 +1,3 @@
 {
-  "feature_directory": "specs/010-langchain-agent-downgrade"
+  "feature_directory": "specs/011-agent-adapter-decouple"
 }
