@@ -7,18 +7,24 @@
     profiles,
     playState,
     selectedProfile = '',
+    onSelectProfile,
+    onDeleteSession,
+    onBack,
+    loading = false,
   }: {
     agent: Agent | null
     connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
     profiles: AgentProfile[]
     playState: 'connecting' | 'loading_messages' | 'chat_ready' | 'processing' | 'connection_error' | 'agent_lost'
     selectedProfile?: string
+    onSelectProfile: (profileName: string) => void
+    onDeleteSession: () => void
+    onBack: () => void
+    loading?: boolean
   } = $props()
 
   let showProfileDetails = $state(false)
 
-  // Active profile: prefer agent state (post-message source of truth), fall back
-  // to the user-selected profile before the first response arrives.
   let activeProfileName = $derived(agent?.agentProfileName || selectedProfile)
 
   let matchedProfile = $derived<AgentProfile | null>(
@@ -32,21 +38,15 @@
   function toggleProfileDetails() {
     showProfileDetails = !showProfileDetails
   }
-
-  function formatTime(t: string | undefined): string {
-    if (!t) return '—'
-    return new Date(t).toLocaleString()
-  }
 </script>
 
 <div class="agent-sidebar" data-testid="agent-sidebar">
-  <!-- Agent metadata -->
+  <div class="sidebar-section">
+    <button class="btn back-btn" onclick={onBack} disabled={loading}>← Back to Sessions</button>
+  </div>
+
   <div class="sidebar-section">
     <div class="section-label">Agent</div>
-    <div class="info-row">
-      <span class="info-key">Name</span>
-      <span class="info-value" data-testid="agent-name">{agent?.name ?? '—'}</span>
-    </div>
     <div class="info-row">
       <span class="info-key">Profile</span>
       <span class="info-value" data-testid="agent-profile-name">{activeProfileName || '—'}</span>
@@ -55,15 +55,23 @@
       <span class="info-key">Model</span>
       <span class="info-value" data-testid="agent-model">{matchedProfile?.model ?? '—'}</span>
     </div>
-    {#if agent}
-      <div class="info-row">
-        <span class="info-key">Created</span>
-        <span class="info-value">{formatTime(agent.createTime)}</span>
-      </div>
-    {/if}
   </div>
 
-  <!-- Connection Status -->
+  <div class="sidebar-section">
+    <div class="section-label">Profile Selector</div>
+    <select
+      class="profile-select"
+      value={selectedProfile}
+      onchange={(e) => onSelectProfile((e.target as HTMLSelectElement).value)}
+      disabled={loading}
+    >
+      <option value="" disabled>Select a profile...</option>
+      {#each profiles as profile}
+        <option value={profile.agentProfileName}>{profile.name || profile.agentProfileName}</option>
+      {/each}
+    </select>
+  </div>
+
   <div class="sidebar-section">
     <div class="section-label">Connection</div>
     <div class="status-row">
@@ -74,7 +82,6 @@
     </div>
   </div>
 
-  <!-- View Profile (expandable read-only details per FR-005) -->
   <div class="sidebar-section">
     <button class="btn view-profile-btn" onclick={toggleProfileDetails}>
       {showProfileDetails ? 'Hide Profile' : 'View Profile'}
@@ -99,6 +106,10 @@
         </div>
       </div>
     {/if}
+  </div>
+
+  <div class="sidebar-section danger-zone">
+    <button class="btn delete-session-btn" onclick={onDeleteSession} disabled={loading}>Delete Session</button>
   </div>
 </div>
 
@@ -150,7 +161,21 @@
     text-align: right;
   }
 
-  /* Status */
+  .profile-select {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 12px;
+    background: #0f3460;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+  }
+
+  .profile-select:focus {
+    outline: none;
+    border-color: #4a9eff;
+  }
+
   .status-row {
     display: flex;
     align-items: center;
@@ -178,12 +203,36 @@
     color: #e0e0e0;
   }
 
-  /* View Profile button */
+  .btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    background: #0f3460;
+    border: 1px solid #1a4a80;
+    border-radius: 4px;
+    color: #ffffff;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: #1a4a80;
+    border-color: #4a9eff;
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .back-btn {
+    width: 100%;
+    text-align: center;
+  }
+
   .view-profile-btn {
     width: 100%;
   }
 
-  /* Profile details expandable */
   .profile-details {
     display: flex;
     flex-direction: column;
@@ -212,5 +261,21 @@
     word-break: break-word;
     max-height: 120px;
     overflow-y: auto;
+  }
+
+  .danger-zone {
+    margin-top: auto;
+  }
+
+  .delete-session-btn {
+    width: 100%;
+    background: #3a1520;
+    border-color: #6a2540;
+    color: #ff6b6b;
+  }
+
+  .delete-session-btn:hover:not(:disabled) {
+    background: #5a2030;
+    border-color: #ff6b6b;
   }
 </style>

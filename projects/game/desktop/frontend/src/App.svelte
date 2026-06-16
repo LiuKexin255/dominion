@@ -19,14 +19,13 @@
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
-  import SessionDetail from './components/SessionDetail.svelte'
   import ChatView from './components/ChatView.svelte'
   import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
 
   // --- Page state ---
-  let page = $state<'sessions' | 'detail' | 'chat' | 'profiles'>('sessions')
+  let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -161,10 +160,27 @@
     selectedSession = session
     agent = null
     error = null
+    messagesError = null
     connectionState = 'disconnected'
-    page = 'detail'
-    // Load profiles for the chat selector
+    chatMessages = []
+
     await loadProfiles()
+
+    if (profiles.length > 0 && !selectedProfile) {
+      selectedProfile = profiles[0].agentProfileName
+    }
+
+    page = 'chat'
+    playState = 'connecting'
+    if (connectionState !== 'connected') {
+      await handleConnectAgent()
+    }
+
+    if (connectionState === 'connected') {
+      await handleLoadMessages()
+    } else {
+      playState = 'connection_error'
+    }
   }
 
   async function loadProfiles() {
@@ -174,7 +190,6 @@
       log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
     } catch (e: unknown) {
       log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
-      profiles = []
     }
   }
 
@@ -239,31 +254,6 @@
       playState = 'chat_ready'
       chatMessages = []
       log('warn', 'chat', `Failed to load messages: ${errStr}`)
-    }
-  }
-
-  async function handleEnterChat() {
-    if (!selectedSession) return
-    processing = false
-    queueCount = 0
-    error = null
-
-    // Load profiles for the sidebar (profile/model lookup is Task 8)
-    await loadProfiles()
-
-    // Navigate to play page immediately — sidebar shows agent metadata while connecting
-    page = 'chat'
-
-    // Auto-connect on play entry (FR: connection establishes automatically)
-    playState = 'connecting'
-    if (connectionState !== 'connected') {
-      await handleConnectAgent()
-    }
-
-    if (connectionState === 'connected') {
-      await handleLoadMessages()
-    } else {
-      playState = 'connection_error'
     }
   }
 
@@ -348,20 +338,9 @@
     selectedProfile = profileName
   }
 
-  function handleBackToSessions() {
-    selectedSession = null
-    agent = null
-    connectionState = 'disconnected'
-    error = null
-    managedProfiles = []
-    profileMgmtError = null
-    page = 'sessions'
-  }
-
-  async function handleBackToDetail() {
+  async function handleBackToSessions() {
     error = null
     messagesError = null
-    // Tear down WS on play exit (contract: WebSocket closes when leaving play)
     if (connectionState === 'connected' || connectionState === 'connecting') {
       try {
         await closeAgent()
@@ -370,16 +349,18 @@
       }
       connectionState = 'disconnected'
     }
+    selectedSession = null
+    agent = null
+    chatMessages = []
     playState = 'connecting'
-    page = 'detail'
+    page = 'sessions'
   }
 
-  async function handleDeleteSessionFromDetail() {
+  async function handleDeleteSession() {
     if (!selectedSession) return
     try {
       loading = true
       error = null
-      // Close WS if connected
       if (connectionState === 'connected') {
         try {
           await closeAgent()
@@ -392,6 +373,7 @@
       log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
       selectedSession = null
       agent = null
+      chatMessages = []
       page = 'sessions'
       await handleRefresh()
     } catch (e: unknown) {
@@ -400,12 +382,6 @@
     } finally {
       loading = false
     }
-  }
-
-  async function handleRefreshFromDetail() {
-    if (!selectedSession) return
-    await handleGetAgent()
-    log('info', 'agent', 'Agent refreshed')
   }
 
   // --- Log handler ---
@@ -479,20 +455,6 @@
       onCreate={handleCreate}
       onDelete={handleDelete}
     />
-  {:else if page === 'detail'}
-    <SessionDetail
-      session={selectedSession}
-      {agent}
-      {profiles}
-      {selectedProfile}
-      {loading}
-      {error}
-      onDeleteSession={handleDeleteSessionFromDetail}
-      onRefresh={handleRefreshFromDetail}
-      onEnterPlay={handleEnterChat}
-      onBack={handleBackToSessions}
-      onSelectProfile={handleSelectProfile}
-    />
   {:else if page === 'chat'}
     <div class="chat-layout">
       <AgentSidebar
@@ -501,10 +463,13 @@
         {profiles}
         {playState}
         selectedProfile={selectedProfile}
+        onSelectProfile={handleSelectProfile}
+        onDeleteSession={handleDeleteSession}
+        onBack={handleBackToSessions}
+        {loading}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
-          <button class="btn" onclick={handleBackToDetail} disabled={loading}>Back</button>
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
           {#if playState === 'connection_error'}
             <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>

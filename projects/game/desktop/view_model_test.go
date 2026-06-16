@@ -179,9 +179,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	view := agentViewFromProto(proto)
 
 	// then: verify fields match
-	if view.Name != "sessions/sess-agent-1/agent" {
-		t.Fatalf("expected Name %q, got %q", "sessions/sess-agent-1/agent", view.Name)
-	}
 	if view.SessionID != "sess-agent-1" {
 		t.Fatalf("expected SessionID %q, got %q", "sess-agent-1", view.SessionID)
 	}
@@ -200,9 +197,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	}
 	if strings.Contains(jsonStr, `"session_id"`) {
 		t.Fatalf("expected JSON to NOT contain 'session_id', got: %s", jsonStr)
-	}
-	if !strings.Contains(jsonStr, `"name"`) {
-		t.Fatalf("expected JSON to contain 'name', got: %s", jsonStr)
 	}
 	if !strings.Contains(jsonStr, `"agentProfileName"`) {
 		t.Fatalf("expected JSON to contain 'agentProfileName', got: %s", jsonStr)

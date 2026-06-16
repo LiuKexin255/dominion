@@ -27,7 +27,6 @@ export interface Session {
 }
 
 export interface Agent {
-  name: string
   sessionId: string
   createTime?: string
   agentProfileName: string

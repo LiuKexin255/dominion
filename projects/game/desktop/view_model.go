@@ -24,7 +24,6 @@ type ListSessionsView struct {
 // AgentProfileName represents the active profile (may be empty initially,
 // set after the first message).
 type AgentView struct {
-	Name             string `json:"name"`
 	SessionID        string `json:"sessionId"`
 	AgentProfileName string `json:"agentProfileName"`
 }
@@ -73,7 +72,6 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 		return nil
 	}
 	return &AgentView{
-		Name:             a.GetName(),
 		SessionID:        a.GetSessionId(),
 		AgentProfileName: a.GetAgentProfileName(),
 	}

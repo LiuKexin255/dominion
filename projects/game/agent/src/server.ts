@@ -15,8 +15,6 @@ import { info } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
 import {
   MemorySaver,
-  StateGraph,
-  MessagesAnnotation,
 } from "@langchain/langgraph";
 import type { ProtoGrpcType } from "../game_types/game";
 
@@ -90,8 +88,6 @@ export async function startServer(
 
   const checkpointer = new MemorySaver();
 
-  const graph = new StateGraph(MessagesAnnotation).compile({ checkpointer });
-
   const baseUrl =
     process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
   const providerCache = new ModelProviderCache(baseUrl, providerSecret);
@@ -112,7 +108,6 @@ export async function startServer(
   const handler = new Handler(
     promptClient,
     sessionAgentStore,
-    graph,
   );
 
   const proto = loadProto();

@@ -35,17 +35,14 @@ export class Handler implements AgentServiceHandlers {
 
   private promptClient: PromptClient;
   private sessionAgentStore: SessionAgentStore;
-  private graph: any;
   private mutexes: Map<string, Promise<void>>;
 
   constructor(
     promptClient: PromptClient,
     sessionAgentStore: SessionAgentStore,
-    graph: any,
   ) {
     this.promptClient = promptClient;
     this.sessionAgentStore = sessionAgentStore;
-    this.graph = graph;
     this.mutexes = new Map();
   }
 
@@ -349,9 +346,15 @@ export class Handler implements AgentServiceHandlers {
     const sessionId = extractSessionId(parent);
 
     try {
-      const state: any = await this.graph.getState({
-        configurable: { thread_id: sessionId },
-      });
+      const sessionAgent = this.sessionAgentStore.get(sessionId);
+      const adapter = sessionAgent?.getAdapter();
+
+      if (!adapter) {
+        callback(null, { messages: [] });
+        return;
+      }
+
+      const state = await adapter.getState(sessionId);
 
       const rawMessages: BaseMessage[] = state?.values?.messages ?? [];
       const checkpointTs: string | undefined = state?.createdAt as

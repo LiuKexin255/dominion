@@ -13,10 +13,18 @@ import {
   StateGraph,
 } from "@langchain/langgraph";
 
-import type { ContentBlock, AgentAdapter } from "./llm";
+import type { ContentBlock, AgentAdapter, AdapterStateSnapshot } from "./llm";
 
 export class FakeLlmAdapter implements AgentAdapter {
-  constructor(private checkpointer: MemorySaver) {}
+  private readonly graph;
+
+  constructor(checkpointer: MemorySaver) {
+    this.graph = new StateGraph(MessagesAnnotation)
+      .addNode("pass", async () => ({}))
+      .addEdge("__start__", "pass")
+      .addEdge("pass", "__end__")
+      .compile({ checkpointer });
+  }
 
   async *generateTurn(
     threadId: string,
@@ -25,36 +33,37 @@ export class FakeLlmAdapter implements AgentAdapter {
     const reasoning = "Processing your message...";
     const text = `Hello! This is a simulated response. You said: ${userMessage}`;
 
-    await saveMessages(this.checkpointer, threadId, [
-      new HumanMessage(userMessage),
-    ]);
+    await this.graph.invoke(
+      { messages: [new HumanMessage(userMessage)] },
+      { configurable: { thread_id: threadId } },
+    );
 
     yield { type: "reasoning", reasoning };
     yield { type: "text", text };
 
-    await saveMessages(this.checkpointer, threadId, [
-      new AIMessage({
-        content: [
-          { type: "reasoning", reasoning },
-          { type: "text", text },
+    await this.graph.invoke(
+      {
+        messages: [
+          new AIMessage({
+            content: [
+              { type: "reasoning", reasoning },
+              { type: "text", text },
+            ],
+          }),
         ],
-      }),
-    ]);
+      },
+      { configurable: { thread_id: threadId } },
+    );
   }
-}
 
-async function saveMessages(
-  checkpointer: MemorySaver,
-  threadId: string,
-  messages: Array<HumanMessage | AIMessage>,
-): Promise<void> {
-  const graph = new StateGraph(MessagesAnnotation)
-    .addNode("pass", async () => ({}))
-    .addEdge("__start__", "pass")
-    .addEdge("pass", "__end__")
-    .compile({ checkpointer });
-  await graph.invoke(
-    { messages },
-    { configurable: { thread_id: threadId } },
-  );
+  async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
+    const snapshot = await this.graph.getState({
+      configurable: { thread_id: threadId },
+    });
+    if (!snapshot) return null;
+    return {
+      values: snapshot.values ?? {},
+      createdAt: snapshot.createdAt,
+    };
+  }
 }

@@ -74,7 +74,10 @@ Python 依赖更新步骤：
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
 * 需要执行大型测试计划时，使用 `testplan` skill。
 
-
 ## 注释
 
 Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
+
+## 其他
+
+* 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。

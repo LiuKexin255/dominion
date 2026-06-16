@@ -16,7 +16,7 @@ import {
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
-import type { AgentAdapter, ContentBlock } from "./llm";
+import type { AgentAdapter, ContentBlock, AdapterStateSnapshot } from "./llm";
 import { Handler } from "./handler";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
@@ -47,6 +47,7 @@ function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
     async *generateTurn(): AsyncIterable<ContentBlock> {
       for (const block of blocks) yield block;
     },
+    async getState() { return null; },
   };
 }
 
@@ -60,6 +61,7 @@ function createRecordingAdapter(blocks: ContentBlock[]): {
       calls.push({ threadId, userMessage });
       for (const block of blocks) yield block;
     },
+    async getState() { return null; },
   };
   return { adapter, calls };
 }
@@ -67,10 +69,12 @@ function createRecordingAdapter(blocks: ContentBlock[]): {
 interface MockSessionAgent {
   getOrCreateAdapter: ReturnType<typeof vi.fn>;
   getAdapterState: ReturnType<typeof vi.fn>;
+  getAdapter: ReturnType<typeof vi.fn>;
 }
 
 interface MockSessionAgentStore {
   getOrCreate: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
   _getAgent(sessionId: string): MockSessionAgent;
   _setBinding(sessionId: string, profileName: string, adapter: AgentAdapter): void;
   _clear(): void;
@@ -87,6 +91,7 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
           activeProfileName: null,
           isBound: false,
         })),
+        getAdapter: vi.fn(() => null),
       });
     }
     return agents.get(sessionId)!;
@@ -94,10 +99,12 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
 
   return {
     getOrCreate: vi.fn((sessionId: string) => getAgent(sessionId)),
+    get: vi.fn((sessionId: string) => getAgent(sessionId)),
     _getAgent: getAgent,
     _setBinding(sessionId, profileName, adapter) {
       const agent = getAgent(sessionId);
       agent.getOrCreateAdapter.mockResolvedValue(adapter);
+      agent.getAdapter.mockReturnValue(adapter);
       agent.getAdapterState.mockReturnValue({
         activeProfileName: profileName,
         isBound: true,
@@ -107,16 +114,6 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
       agents.clear();
     },
   };
-}
-
-function createRealGraph() {
-  const checkpointer = new MemorySaver();
-  const graph = new StateGraph(MessagesAnnotation)
-    .addNode("pass", async () => ({}))
-    .addEdge("__start__", "pass")
-    .addEdge("pass", "__end__")
-    .compile({ checkpointer });
-  return { graph, checkpointer };
 }
 
 function createUnaryCall<T>(request: T) {
@@ -207,7 +204,6 @@ function flush(ms = 50): Promise<void> {
 interface HandlerDeps {
   promptClient: ReturnType<typeof createMockPromptClient>;
   sessionAgentStore: MockSessionAgentStore;
-  graph: unknown;
 }
 
 function createHandler(deps: HandlerDeps): Handler {
@@ -215,7 +211,6 @@ function createHandler(deps: HandlerDeps): Handler {
   return new HandlerCtor(
     deps.promptClient,
     deps.sessionAgentStore,
-    deps.graph,
   );
 }
 
@@ -226,8 +221,6 @@ function createHandler(deps: HandlerDeps): Handler {
 describe("Handler.Connect text frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient({
@@ -237,9 +230,6 @@ describe("Handler.Connect text frame", () => {
       },
     });
     sessionAgentStore = createMockSessionAgentStore();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   it("produces thinking + text + wait frames for profile-bound text frame", async () => {
@@ -253,7 +243,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter(blocks),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -286,7 +276,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter([{ type: "text", text: "Direct answer" }]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -307,7 +297,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter([{ type: "text", text: "reply" }]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -333,7 +323,7 @@ describe("Handler.Connect text frame", () => {
       ]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -354,19 +344,14 @@ describe("Handler.Connect text frame", () => {
 describe("Handler.Connect missing profile name", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
     sessionAgentStore = createMockSessionAgentStore();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   it("returns warn frame when profile name is missing and no adapter is bound", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -389,7 +374,7 @@ describe("Handler.Connect missing profile name", () => {
     ]);
     sessionAgentStore._setBinding("sess-no-profile", "some-profile", adapter);
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -407,8 +392,6 @@ describe("Handler.Connect missing profile name", () => {
 describe("Handler.Connect profile switch", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient({
@@ -416,9 +399,6 @@ describe("Handler.Connect profile switch", () => {
       "profile-b": { model: "model-b", systemPrompt: "Prompt B" },
     });
     sessionAgentStore = createMockSessionAgentStore();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   it("second message with different profile uses new adapter from getOrCreateAdapter", async () => {
@@ -433,7 +413,7 @@ describe("Handler.Connect profile switch", () => {
     });
     agent.getAdapterState.mockReturnValue({ activeProfileName: null, isBound: false });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -465,15 +445,6 @@ describe("Handler.Connect profile switch", () => {
 // ===========================================================================
 
 describe("Handler.Connect failed profile switch", () => {
-  let checkpointer: MemorySaver;
-  let graph: unknown;
-
-  beforeEach(() => {
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
-  });
-
   it("emits warn frame and does not call generateTurn when profile not found", async () => {
     const promptClient = createMockPromptClient({
       "valid-profile": {
@@ -494,7 +465,7 @@ describe("Handler.Connect failed profile switch", () => {
 
     agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -525,19 +496,14 @@ describe("Handler.Connect failed profile switch", () => {
 describe("Handler.Connect deprecated payloads", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
     sessionAgentStore = createMockSessionAgentStore();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   function setupStream() {
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
     return stream;
@@ -575,19 +541,14 @@ describe("Handler.Connect deprecated payloads", () => {
 describe("Handler.Connect probes", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
     sessionAgentStore = createMockSessionAgentStore();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   it("responds to status probe with 'unknown' for unbound session", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -612,7 +573,7 @@ describe("Handler.Connect probes", () => {
       createMockAdapter([]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -630,7 +591,7 @@ describe("Handler.Connect probes", () => {
   });
 
   it("echoes echo payload back", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -667,15 +628,14 @@ describe("Handler.Connect LLM error", () => {
         };
         return { [Symbol.asyncIterator]: () => it };
       },
+      async getState() { return null; },
     };
     const sessionAgentStore = createMockSessionAgentStore();
     sessionAgentStore._setBinding("sess-err", "error-profile", throwingAdapter);
 
-    const real = createRealGraph();
     const handler = createHandler({
       promptClient,
       sessionAgentStore,
-      graph: real.graph,
     });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -716,16 +676,15 @@ describe("Handler.Connect same-session serialization", () => {
         yield { type: "text", text: `Reply to: ${userMessage}` };
         concurrentCount--;
       },
+      async getState() { return null; },
     };
 
     const sessionAgentStore = createMockSessionAgentStore();
     sessionAgentStore._setBinding("sess-conc", "test-profile", adapter);
 
-    const real = createRealGraph();
     const handler = createHandler({
       promptClient,
       sessionAgentStore,
-      graph: real.graph,
     });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -746,14 +705,9 @@ describe("Handler.Connect same-session serialization", () => {
 
 describe("Handler.GetAgent", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
   });
 
   it("returns adapter state with active profile when bound", async () => {
@@ -764,7 +718,7 @@ describe("Handler.GetAgent", () => {
       createMockAdapter([]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
     const call = createUnaryCall({ sessionId: "sess-bound" });
     const { callback, promise } = createCallback<{
@@ -787,7 +741,7 @@ describe("Handler.GetAgent", () => {
   it("returns empty profile for never-connected session (200 OK)", async () => {
     const sessionAgentStore = createMockSessionAgentStore();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
     const call = createUnaryCall({ sessionId: "never-connected" });
     const { callback, promise } = createCallback<{
@@ -815,12 +769,41 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
+  function createStateAdapter(): {
+    adapter: AgentAdapter;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    graph: any;
+  } {
+    const checkpointer = new MemorySaver();
+    const graph = new StateGraph(MessagesAnnotation)
+      .addNode("pass", async () => ({}))
+      .addEdge("__start__", "pass")
+      .addEdge("pass", "__end__")
+      .compile({ checkpointer });
+
+    const adapter: AgentAdapter = {
+      async *generateTurn() {},
+      async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
+        const snapshot = await graph.getState({
+          configurable: { thread_id: threadId },
+        });
+        if (!snapshot) return null;
+        return {
+          values: snapshot.values ?? {},
+          createdAt: snapshot.createdAt,
+        };
+      },
+    };
+    return { adapter, graph };
+  }
+
   async function writeMessages(
-    graph: unknown,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    graph: any,
     sessionId: string,
     messages: Array<HumanMessage | AIMessage | SystemMessage>,
   ) {
-    await (graph as any).invoke(
+    await graph.invoke(
       { messages },
       { configurable: { thread_id: sessionId } },
     );
@@ -838,17 +821,16 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   }
 
   it("round-trips text messages (human + ai) in chronological order", async () => {
-    const { graph } = createRealGraph();
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-text-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
-
-    const sessionId = "sess-text-rt";
-    await writeMessages(graph, sessionId, [
+    await writeMessages(graph, "sess-text-rt", [
       new HumanMessage("Hello"),
       new AIMessage("Hi there!"),
     ]);
 
-    const { error, response } = await listMessages(handler, sessionId);
+    const { error, response } = await listMessages(handler, "sess-text-rt");
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
@@ -863,19 +845,18 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
-    const { graph } = createRealGraph();
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-think-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
-
-    const sessionId = "sess-think-rt";
-    await writeMessages(graph, sessionId, [
+    await writeMessages(graph, "sess-think-rt", [
       new HumanMessage("Question"),
       new AIMessage({
         content: [{ type: "reasoning", reasoning: "Let me analyze..." }],
       }),
     ]);
 
-    const { error, response } = await listMessages(handler, sessionId);
+    const { error, response } = await listMessages(handler, "sess-think-rt");
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
@@ -886,12 +867,11 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
-    const { graph } = createRealGraph();
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-mixed-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
-
-    const sessionId = "sess-mixed-rt";
-    await writeMessages(graph, sessionId, [
+    await writeMessages(graph, "sess-mixed-rt", [
       new HumanMessage("Why?"),
       new AIMessage({
         content: [
@@ -901,7 +881,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
       }),
     ]);
 
-    const { error, response } = await listMessages(handler, sessionId);
+    const { error, response } = await listMessages(handler, "sess-mixed-rt");
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
@@ -909,19 +889,18 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("filters out SystemMessages from the result", async () => {
-    const { graph } = createRealGraph();
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-sys-filter", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
-
-    const sessionId = "sess-sys-filter";
-    await writeMessages(graph, sessionId, [
+    await writeMessages(graph, "sess-sys-filter", [
       new SystemMessage("You are a system prompt."),
       new HumanMessage("Hello"),
       new AIMessage("Hi!"),
       new SystemMessage("Another system message."),
     ]);
 
-    const { error, response } = await listMessages(handler, sessionId);
+    const { error, response } = await listMessages(handler, "sess-sys-filter");
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
@@ -932,29 +911,26 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
   });
 
-  it("returns empty messages for session with no checkpoint state", async () => {
-    const { graph } = createRealGraph();
+  it("returns empty messages for session with no adapter bound", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
-
-    const { error, response } = await listMessages(handler, "never-written");
+    const { error, response } = await listMessages(handler, "never-bound");
 
     expect(error).toBeNull();
     expect(response!.messages ?? []).toHaveLength(0);
   });
 
   it("preserves chronological ordering across multiple turns", async () => {
-    const { graph } = createRealGraph();
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-chrono", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, graph });
+    await writeMessages(graph, "sess-chrono", [new HumanMessage("first")]);
+    await writeMessages(graph, "sess-chrono", [new AIMessage("second")]);
+    await writeMessages(graph, "sess-chrono", [new HumanMessage("third")]);
+    await writeMessages(graph, "sess-chrono", [new AIMessage("fourth")]);
 
-    const sessionId = "sess-chrono";
-    await writeMessages(graph, sessionId, [new HumanMessage("first")]);
-    await writeMessages(graph, sessionId, [new AIMessage("second")]);
-    await writeMessages(graph, sessionId, [new HumanMessage("third")]);
-    await writeMessages(graph, sessionId, [new AIMessage("fourth")]);
-
-    const { error, response } = await listMessages(handler, sessionId);
+    const { error, response } = await listMessages(handler, "sess-chrono");
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(4);

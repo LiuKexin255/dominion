@@ -8,6 +8,7 @@
  */
 
 import { HumanMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { createAgent, createMiddleware } from "langchain";
 import { info } from "@dominion/common-js-logs";
@@ -53,6 +54,11 @@ const wrapModelCallMiddleware = createMiddleware({
 // AgentAdapter interface
 // ---------------------------------------------------------------------------
 
+export interface AdapterStateSnapshot {
+  values: { messages?: BaseMessage[] };
+  createdAt?: string;
+}
+
 export interface AgentAdapter {
   /**
    * Generate a single conversational turn.
@@ -69,6 +75,15 @@ export interface AgentAdapter {
     threadId: string,
     userMessage: string,
   ): AsyncIterable<ContentBlock>;
+
+  /**
+   * Read the checkpoint state for a thread.
+   *
+   * Uses the adapter's own compiled graph so the checkpoint — which was
+   * written by the same graph — is correctly deserialised.  Returns null
+   * when no checkpoint exists for the thread.
+   */
+  getState(threadId: string): Promise<AdapterStateSnapshot | null>;
 
   /** Optional cleanup hook called when the adapter is unbound. */
   cleanup?(): void;
@@ -118,6 +133,17 @@ export class AgentAdapterImpl implements AgentAdapter {
     userMessage: string,
   ): AsyncIterable<ContentBlock> {
     yield* this.streamFromAgent(threadId, userMessage);
+  }
+
+  async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
+    const snapshot = await this.agent.getState({
+      configurable: { thread_id: threadId },
+    });
+    if (!snapshot) return null;
+    return {
+      values: snapshot.values ?? {},
+      createdAt: snapshot.createdAt,
+    };
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
