@@ -8,7 +8,7 @@ import {
   DominionResolver,
   DominionStatefulResolver,
 } from "./grpc-js-resolver";
-import type { Scheduler, ResolverConfig } from "./types";
+import type { Scheduler, ResolverConfig } from "@dominion/common-js-resolver";
 
 const TEST_ENV = {
   DOMINION_ENVIRONMENT: "dev.alpha",

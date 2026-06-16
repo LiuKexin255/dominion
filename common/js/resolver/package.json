@@ -1,5 +1,5 @@
 {
-    "name": "@dominion/common-js-grpc-resolver",
+    "name": "@dominion/common-js-resolver",
     "private": true,
     "main": "./src/index.js",
     "types": "./src/index.d.ts",
@@ -8,10 +8,6 @@
             "types": "./src/index.d.ts",
             "default": "./src/index.js"
         }
-    },
-    "dependencies": {
-        "@dominion/common-js-resolver": "workspace:*",
-        "@grpc/grpc-js": "catalog:"
     },
     "devDependencies": {
         "@types/node": "catalog:",

@@ -1,5 +1,4 @@
 import type { Target, PortSelector } from "./target";
-import type { Endpoint } from "@grpc/grpc-js/build/src/subchannel-address";
 
 export type { Target, PortSelector };
 
@@ -63,24 +62,6 @@ export interface DominionEnvironment {
   scope: string;
   environment: string;
 }
-
-/**
- * Internal resolver state machine.
- *
- * - `unresolved` → `ready` after first successful deploy resolution.
- * - `ready` stays `ready` on refresh (identical or updated addresses)
- *    or on failure (last addresses retained, error reported).
- * - Any state → `closed` when the resolver is destroyed.
- */
-export type ResolverState =
-  | { status: "unresolved" }
-  | {
-      status: "ready";
-      addresses: string[];
-      endpoints: Endpoint[];
-      lastUpdatedAt: Date;
-    }
-  | { status: "closed" };
 
 /**
  * Direct endpoint resolver.

@@ -17,9 +17,7 @@ ts_project(
     tsconfig = ":tsconfig.json",
     visibility = ["//visibility:public"],
     deps = [
-        ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
-        ":node_modules/@dominion/common-js-resolver",
     ],
 )
 
@@ -41,16 +39,12 @@ js_library(
 # requires JsInfo provider which only js_library provides.
 js_runtime_library(
     name = "runtime_pkg",
-    package_name = "@dominion/common-js-grpc-resolver",
+    package_name = "@dominion/common-js-resolver",
     lib = ":lib",
-    npm_deps = [
-        ":node_modules/@grpc/grpc-js",
-    ],
+    npm_deps = [],
     package_json = "package.json",
     visibility = ["//visibility:public"],
-    runtime_deps = [
-        "//common/js/resolver:runtime_pkg",
-    ],
+    runtime_deps = [],
 )
 
 js_test(
@@ -62,8 +56,6 @@ js_test(
     ],
     data = [
         ":lib",
-        ":node_modules/@dominion/common-js-resolver",
-        ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
         ":node_modules/vitest",
     ] + glob(
