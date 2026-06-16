@@ -264,15 +264,15 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 }
 
 // TestAgentDialogDeleteProfileStillResponds verifies the loose coupling
-// design: after deleting the agent profile, an already-created agent still
-// responds because it copied profile data at creation time.
+// design: after the adapter is bound, deleting the agent profile does not
+// prevent subsequent messages from being processed, because profile data
+// was copied at adapter creation time.
 func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profileName := fmt.Sprintf("ad-delp-%s", uniqueSuffix())
 
-	// Setup: create profile, session
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profileName,
 		Model:            "gpt-4",
@@ -284,25 +284,21 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Delete the profile
+	sendTextWithProfile(t, conn, sessionID, profileName, "Before delete")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
+	firstResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	if firstResp == nil {
+		t.Fatal("no response before profile deletion")
+	}
+
 	delStatus := deleteAgentProfile(t, sutHostURL, sutEnvName, profileName)
 	if delStatus != http.StatusOK && delStatus != http.StatusNoContent {
 		t.Fatalf("DELETE profile status = %d, want 200 or 204", delStatus)
 	}
 
-	// Send text — agent should still respond using bound adapter data
 	userMessage := "Still works after profile deleted?"
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: userMessage},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
-	writeWSFrame(t, conn, textFrame)
+	sendTextWithProfile(t, conn, sessionID, profileName, userMessage)
 
-	// Read text response
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return f.GetText() != nil
 	})

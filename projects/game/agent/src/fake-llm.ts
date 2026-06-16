@@ -1,32 +1,60 @@
 /**
- * fake-llm.ts — Deterministic fake LLM adapter for testing.
+ * fake-llm.ts — Deterministic fake AgentAdapter for testing.
  *
- * Implements the same LLMAdapter interface as llm.ts but returns
- * hardcoded responses without any real API calls or randomness.
- * Used as a BUILD-level replacement for RealLLMAdapter in tests.
+ * Returns hardcoded responses without any real API calls.  Persists
+ * exchanged messages to the supplied MemorySaver so that ListMessages
+ * and reconnect history work in large tests.
  */
 
-import { MemorySaver } from "@langchain/langgraph";
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
+import {
+  MemorySaver,
+  MessagesAnnotation,
+  StateGraph,
+} from "@langchain/langgraph";
 
-import type { ContentBlock, LLMAdapter } from "./llm";
+import type { ContentBlock, AgentAdapter } from "./llm";
 
-// ---------------------------------------------------------------------------
-// FakeLlmAdapter — deterministic, no-network implementation
-// ---------------------------------------------------------------------------
+export class FakeLlmAdapter implements AgentAdapter {
+  constructor(private checkpointer: MemorySaver) {}
 
-export class FakeLlmAdapter implements LLMAdapter {
   async *generateTurn(
-    _model: string,
-    _systemPrompt: string,
-    _threadId: string,
+    threadId: string,
     userMessage: string,
-    _checkpointer: MemorySaver,
-    _providerSecret: string,
   ): AsyncIterable<ContentBlock> {
-    yield { type: "reasoning", reasoning: "Processing your message..." };
-    yield {
-      type: "text",
-      text: `Hello! This is a simulated response. You said: ${userMessage}`,
-    };
+    const reasoning = "Processing your message...";
+    const text = `Hello! This is a simulated response. You said: ${userMessage}`;
+
+    await saveMessages(this.checkpointer, threadId, [
+      new HumanMessage(userMessage),
+    ]);
+
+    yield { type: "reasoning", reasoning };
+    yield { type: "text", text };
+
+    await saveMessages(this.checkpointer, threadId, [
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning },
+          { type: "text", text },
+        ],
+      }),
+    ]);
   }
+}
+
+async function saveMessages(
+  checkpointer: MemorySaver,
+  threadId: string,
+  messages: Array<HumanMessage | AIMessage>,
+): Promise<void> {
+  const graph = new StateGraph(MessagesAnnotation)
+    .addNode("pass", async () => ({}))
+    .addEdge("__start__", "pass")
+    .addEdge("pass", "__end__")
+    .compile({ checkpointer });
+  await graph.invoke(
+    { messages },
+    { configurable: { thread_id: threadId } },
+  );
 }

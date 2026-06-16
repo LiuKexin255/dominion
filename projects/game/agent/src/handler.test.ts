@@ -1,10 +1,8 @@
 /**
  * handler.test.ts — Tests for AgentServiceServer handler implementations.
  *
- * Uses mocked PromptClient + AdapterManager, real ConnectionRegistry,
- * and REAL MemorySaver + StateGraph for ListMessages round-trip tests.
- *
- * No CreateAgent/DeleteAgent — agent binding is on-demand via Connect.
+ * Uses mocked PromptClient + SessionAgentStore, and REAL MemorySaver +
+ * StateGraph for ListMessages round-trip tests.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -18,15 +16,8 @@ import {
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
-import type { LLMAdapter, ContentBlock } from "./llm";
-import type { AgentAdapter } from "./llm";
+import type { AgentAdapter, ContentBlock } from "./llm";
 import { Handler } from "./handler";
-import { ConnectionRegistry } from "./connection-registry";
-import type { Connection } from "./connection-registry";
-
-// ---------------------------------------------------------------------------
-// FrameSender values (matching generated proto enum)
-// ---------------------------------------------------------------------------
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -36,19 +27,14 @@ const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
 // Mock helpers
 // ---------------------------------------------------------------------------
 
-interface MockProfile {
-  model: string;
-  systemPrompt: string;
-}
-
 function createMockPromptClient(
-  profiles: Record<string, MockProfile> = {},
+  profiles: Record<string, { model: string; systemPrompt: string }> = {},
 ) {
   return {
-    getProfile: vi.fn(async (name: string): Promise<MockProfile> => {
+    getProfile: vi.fn(async (name: string) => {
       const profile = profiles[name];
       if (!profile) {
-        throw new Error(`Profile not found: ${name}`);
+        throw new Error(`Agent profile not found: ${name}`);
       }
       return profile;
     }),
@@ -56,100 +42,73 @@ function createMockPromptClient(
   };
 }
 
-function createMockLLMAdapter(blocks: ContentBlock[]): LLMAdapter {
+function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
   return {
-    async *generateTurn(
-      _model: string,
-      _systemPrompt: string,
-      _threadId: string,
-      _userMessage: string,
-      _checkpointer: unknown,
-      _providerSecret: string,
-    ): AsyncIterable<ContentBlock> {
-      for (const block of blocks) {
-        yield block;
-      }
+    async *generateTurn(): AsyncIterable<ContentBlock> {
+      for (const block of blocks) yield block;
     },
   };
 }
 
-function createRecordingMockLLMAdapter(blocks: ContentBlock[]): {
-  adapter: LLMAdapter;
-  calls: Array<{
-    model: string;
-    systemPrompt: string;
-    threadId: string;
-    userMessage: string;
-  }>;
+function createRecordingAdapter(blocks: ContentBlock[]): {
+  adapter: AgentAdapter;
+  calls: Array<{ threadId: string; userMessage: string }>;
 } {
-  const calls: Array<{
-    model: string;
-    systemPrompt: string;
-    threadId: string;
-    userMessage: string;
-  }> = [];
-  const adapter: LLMAdapter = {
-    async *generateTurn(
-      model: string,
-      systemPrompt: string,
-      threadId: string,
-      userMessage: string,
-    ) {
-      calls.push({ model, systemPrompt, threadId, userMessage });
-      for (const block of blocks) {
-        yield block;
-      }
+  const calls: Array<{ threadId: string; userMessage: string }> = [];
+  const adapter: AgentAdapter = {
+    async *generateTurn(threadId, userMessage) {
+      calls.push({ threadId, userMessage });
+      for (const block of blocks) yield block;
     },
   };
   return { adapter, calls };
 }
 
-interface MockAdapterManager {
+interface MockSessionAgent {
   getOrCreateAdapter: ReturnType<typeof vi.fn>;
   getAdapterState: ReturnType<typeof vi.fn>;
-  _setBinding(sessionId: string, profileName: string, adapter: LLMAdapter): void;
-  _clearBindings(): void;
 }
 
-function createMockAdapterManager(
-  defaultAdapter?: LLMAdapter,
-): MockAdapterManager {
-  const bindings = new Map<
-    string,
-    { adapter: LLMAdapter; profileName: string }
-  >();
+interface MockSessionAgentStore {
+  getOrCreate: ReturnType<typeof vi.fn>;
+  _getAgent(sessionId: string): MockSessionAgent;
+  _setBinding(sessionId: string, profileName: string, adapter: AgentAdapter): void;
+  _clear(): void;
+}
+
+function createMockSessionAgentStore(): MockSessionAgentStore {
+  const agents = new Map<string, MockSessionAgent>();
+
+  function getAgent(sessionId: string): MockSessionAgent {
+    if (!agents.has(sessionId)) {
+      agents.set(sessionId, {
+        getOrCreateAdapter: vi.fn(),
+        getAdapterState: vi.fn(() => ({
+          activeProfileName: null,
+          isBound: false,
+        })),
+      });
+    }
+    return agents.get(sessionId)!;
+  }
 
   return {
-    getOrCreateAdapter: vi.fn(
-      async (
-        sessionId: string,
-        profileName: string,
-      ): Promise<LLMAdapter> => {
-        const existing = bindings.get(sessionId);
-        if (existing && existing.profileName === profileName) {
-          return existing.adapter;
-        }
-        const adapter = defaultAdapter ?? createMockLLMAdapter([]);
-        bindings.set(sessionId, { adapter, profileName });
-        return adapter;
-      },
-    ),
-    getAdapterState: vi.fn((sessionId: string) => {
-      const binding = bindings.get(sessionId);
-      return binding
-        ? { activeProfileName: binding.profileName, isBound: true }
-        : { activeProfileName: null, isBound: false };
-    }),
+    getOrCreate: vi.fn((sessionId: string) => getAgent(sessionId)),
+    _getAgent: getAgent,
     _setBinding(sessionId, profileName, adapter) {
-      bindings.set(sessionId, { adapter, profileName });
+      const agent = getAgent(sessionId);
+      agent.getOrCreateAdapter.mockResolvedValue(adapter);
+      agent.getAdapterState.mockReturnValue({
+        activeProfileName: profileName,
+        isBound: true,
+      });
     },
-    _clearBindings() {
-      bindings.clear();
+    _clear() {
+      agents.clear();
     },
   };
 }
 
-/** Build a real MemorySaver + compiled StateGraph (MessagesAnnotation). */
 function createRealGraph() {
   const checkpointer = new MemorySaver();
   const graph = new StateGraph(MessagesAnnotation)
@@ -225,7 +184,6 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-/** Standard text frame emitted by the client. */
 function textFrame(
   sessionId: string,
   invokeId: string,
@@ -246,32 +204,20 @@ function flush(ms = 50): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ---------------------------------------------------------------------------
-// Handler factory
-// ---------------------------------------------------------------------------
-
 interface HandlerDeps {
   promptClient: ReturnType<typeof createMockPromptClient>;
-  adapterManager: MockAdapterManager;
-  connectionRegistry: ConnectionRegistry;
+  sessionAgentStore: MockSessionAgentStore;
   checkpointer: MemorySaver;
   graph: unknown;
-  providerSecret: string;
 }
 
-// Handler has an index signature `[name: string]: any` which prevents
-// TypeScript from infusing constructor/method parameter types, so we
-// cast loosely here.
 function createHandler(deps: HandlerDeps): Handler {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const HandlerCtor = Handler as any;
   return new HandlerCtor(
     deps.promptClient,
-    deps.adapterManager,
-    deps.connectionRegistry,
+    deps.sessionAgentStore,
     deps.checkpointer,
     deps.graph,
-    deps.providerSecret,
   );
 }
 
@@ -281,8 +227,7 @@ function createHandler(deps: HandlerDeps): Handler {
 
 describe("Handler.Connect text frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
@@ -293,8 +238,7 @@ describe("Handler.Connect text frame", () => {
         systemPrompt: "You are helpful.",
       },
     });
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
@@ -305,20 +249,13 @@ describe("Handler.Connect text frame", () => {
       { type: "reasoning", reasoning: "Let me think..." },
       { type: "text", text: "The answer is 42." },
     ];
-    adapterManager._setBinding(
+    sessionAgentStore._setBinding(
       "sess-1",
       "helpful-assistant",
-      createMockLLMAdapter(blocks),
+      createMockAdapter(blocks),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -345,20 +282,13 @@ describe("Handler.Connect text frame", () => {
   });
 
   it("produces text + wait for response with no thinking", async () => {
-    adapterManager._setBinding(
+    sessionAgentStore._setBinding(
       "sess-nt",
       "helpful-assistant",
-      createMockLLMAdapter([{ type: "text", text: "Direct answer" }]),
+      createMockAdapter([{ type: "text", text: "Direct answer" }]),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -373,20 +303,13 @@ describe("Handler.Connect text frame", () => {
   });
 
   it("resets sequence on new invokeId within same connection", async () => {
-    adapterManager._setBinding(
+    sessionAgentStore._setBinding(
       "sess-seq",
       "helpful-assistant",
-      createMockLLMAdapter([{ type: "text", text: "reply" }]),
+      createMockAdapter([{ type: "text", text: "reply" }]),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -403,23 +326,16 @@ describe("Handler.Connect text frame", () => {
   });
 
   it("generates unique frameId per frame", async () => {
-    adapterManager._setBinding(
+    sessionAgentStore._setBinding(
       "sess-uuid",
       "helpful-assistant",
-      createMockLLMAdapter([
+      createMockAdapter([
         { type: "reasoning", reasoning: "hmm" },
         { type: "text", text: "ok" },
       ]),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -439,29 +355,20 @@ describe("Handler.Connect text frame", () => {
 
 describe("Handler.Connect missing profile name", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
   });
 
   it("returns warn frame when profile name is missing and no adapter is bound", async () => {
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -478,20 +385,13 @@ describe("Handler.Connect missing profile name", () => {
     expect(f0.invokeId).toBe("inv-x");
   });
 
-  it("does NOT call getOrCreateAdapter or generateTurn when profile is missing", async () => {
-    const { adapter, calls } = createRecordingMockLLMAdapter([
+  it("does NOT call getOrCreateAdapter when profile is missing", async () => {
+    const { adapter, calls } = createRecordingAdapter([
       { type: "text", text: "should not happen" },
     ]);
-    adapterManager._setBinding("sess-no-profile", "some-profile", adapter);
+    sessionAgentStore._setBinding("sess-no-profile", "some-profile", adapter);
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -508,8 +408,7 @@ describe("Handler.Connect missing profile name", () => {
 
 describe("Handler.Connect profile switch", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
@@ -518,40 +417,25 @@ describe("Handler.Connect profile switch", () => {
       "profile-a": { model: "model-a", systemPrompt: "Prompt A" },
       "profile-b": { model: "model-b", systemPrompt: "Prompt B" },
     });
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
   });
 
   it("second message with different profile uses new adapter from getOrCreateAdapter", async () => {
-    const adapterA = createMockLLMAdapter([
-      { type: "text", text: "Response from A" },
-    ]);
-    const adapterB = createMockLLMAdapter([
-      { type: "text", text: "Response from B" },
-    ]);
+    const adapterA = createMockAdapter([{ type: "text", text: "Response from A" }]);
+    const adapterB = createMockAdapter([{ type: "text", text: "Response from B" }]);
 
     const calls: string[] = [];
-    let currentProfile = "profile-a";
-
-    adapterManager.getOrCreateAdapter.mockImplementation(
-      async (_sessionId: string, profileName: string) => {
-        calls.push(profileName);
-        currentProfile = profileName;
-        return profileName === "profile-a" ? adapterA : adapterB;
-      },
-    );
-
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
+    const agent = sessionAgentStore._getAgent("sess-switch");
+    agent.getOrCreateAdapter.mockImplementation(async (profileName: string) => {
+      calls.push(profileName);
+      return profileName === "profile-a" ? adapterA : adapterB;
     });
+    agent.getAdapterState.mockReturnValue({ activeProfileName: null, isBound: false });
+
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -583,12 +467,10 @@ describe("Handler.Connect profile switch", () => {
 // ===========================================================================
 
 describe("Handler.Connect failed profile switch", () => {
-  let connectionRegistry: ConnectionRegistry;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
   beforeEach(() => {
-    connectionRegistry = new ConnectionRegistry();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
@@ -602,20 +484,19 @@ describe("Handler.Connect failed profile switch", () => {
       },
     });
 
-    const { adapter, calls } = createRecordingMockLLMAdapter([
+    const { adapter, calls } = createRecordingAdapter([
       { type: "text", text: "OK" },
     ]);
-    const adapterManager = createMockAdapterManager();
-    adapterManager._setBinding("sess-fail", "valid-profile", adapter);
+    const sessionAgentStore = createMockSessionAgentStore();
+    const agent = sessionAgentStore._getAgent("sess-fail");
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    agent.getOrCreateAdapter
+      .mockResolvedValueOnce(adapter)
+      .mockRejectedValueOnce(new Error("Agent profile not found: nonexistent-profile"));
+
+    agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
+
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -636,131 +517,6 @@ describe("Handler.Connect failed profile switch", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].userMessage).toBe("hello");
-
-    expect(adapterManager.getAdapterState("sess-fail").activeProfileName).toBe(
-      "valid-profile",
-    );
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — connection kick
-// ===========================================================================
-
-describe("Handler.Connect connection kick", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
-  let checkpointer: MemorySaver;
-  let graph: unknown;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient({
-      "helpful-assistant": {
-        model: "model-x",
-        systemPrompt: "prompt-x",
-      },
-    });
-    adapterManager = createMockAdapterManager(
-      createMockLLMAdapter([{ type: "text", text: "reply" }]),
-    );
-    connectionRegistry = new ConnectionRegistry();
-    const real = createRealGraph();
-    checkpointer = real.checkpointer;
-    graph = real.graph;
-  });
-
-  it("second connection for same session kicks the first (ends its stream)", async () => {
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
-
-    const stream1 = createFakeStream();
-    handler.Connect(
-      stream1 as unknown as Parameters<typeof handler.Connect>[0],
-    );
-
-    stream1.emit(
-      "data",
-      textFrame("sess-kick", "turn-1", "first", "helpful-assistant"),
-    );
-    await flush();
-
-    expect(stream1.ended).toBe(false);
-
-    const stream2 = createFakeStream();
-    handler.Connect(
-      stream2 as unknown as Parameters<typeof handler.Connect>[0],
-    );
-
-    stream2.emit(
-      "data",
-      textFrame("sess-kick", "turn-2", "second", "helpful-assistant"),
-    );
-    await flush();
-
-    expect(stream1.ended).toBe(true);
-    expect(stream2.ended).toBe(false);
-  });
-
-  it("kicked connection stops receiving frames mid-stream", async () => {
-    const slowBlocks: ContentBlock[] = [
-      { type: "reasoning", reasoning: "thinking 1" },
-      { type: "reasoning", reasoning: "thinking 2" },
-      { type: "text", text: "final answer" },
-    ];
-    const slowAdapter: LLMAdapter = {
-      async *generateTurn() {
-        for (const b of slowBlocks) {
-          await new Promise((r) => setTimeout(r, 20));
-          yield b;
-        }
-      },
-    };
-    adapterManager._setBinding("sess-mid", "helpful-assistant", slowAdapter);
-
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
-
-    const stream1 = createFakeStream();
-    handler.Connect(
-      stream1 as unknown as Parameters<typeof handler.Connect>[0],
-    );
-
-    stream1.emit(
-      "data",
-      textFrame("sess-mid", "turn-slow", "long message", "helpful-assistant"),
-    );
-    await new Promise((r) => setTimeout(r, 30));
-
-    const stream2 = createFakeStream();
-    handler.Connect(
-      stream2 as unknown as Parameters<typeof handler.Connect>[0],
-    );
-    stream2.emit(
-      "data",
-      textFrame("sess-mid", "turn-kick", "kick", "helpful-assistant"),
-    );
-
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(stream1.ended).toBe(true);
-
-    const agentFramesStream1 = stream1.written.filter(
-      (f) => (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT,
-    );
-    expect(agentFramesStream1.length).toBeLessThan(slowBlocks.length);
   });
 });
 
@@ -770,29 +526,20 @@ describe("Handler.Connect connection kick", () => {
 
 describe("Handler.Connect deprecated payloads", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
   });
 
   function setupStream() {
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
     return stream;
@@ -829,29 +576,20 @@ describe("Handler.Connect deprecated payloads", () => {
 
 describe("Handler.Connect probes", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
   });
 
   it("responds to status probe with 'unknown' for unbound session", async () => {
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -870,20 +608,13 @@ describe("Handler.Connect probes", () => {
   });
 
   it("responds to status probe with 'idle' for bound session", async () => {
-    adapterManager._setBinding(
+    sessionAgentStore._setBinding(
       "sess-bound",
       "some-profile",
-      createMockLLMAdapter([]),
+      createMockAdapter([]),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -901,14 +632,7 @@ describe("Handler.Connect probes", () => {
   });
 
   it("echoes echo payload back", async () => {
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -936,7 +660,7 @@ describe("Handler.Connect LLM error", () => {
     const promptClient = createMockPromptClient({
       "error-profile": { model: "m", systemPrompt: "s" },
     });
-    const throwingAdapter: LLMAdapter = {
+    const throwingAdapter: AgentAdapter = {
       generateTurn(): AsyncIterable<ContentBlock> {
         const it: AsyncIterator<ContentBlock> = {
           async next() {
@@ -946,18 +670,15 @@ describe("Handler.Connect LLM error", () => {
         return { [Symbol.asyncIterator]: () => it };
       },
     };
-    const adapterManager = createMockAdapterManager();
-    adapterManager._setBinding("sess-err", "error-profile", throwingAdapter);
-    const connectionRegistry = new ConnectionRegistry();
-    const real = createRealGraph();
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding("sess-err", "error-profile", throwingAdapter);
 
+    const real = createRealGraph();
     const handler = createHandler({
       promptClient,
-      adapterManager,
-      connectionRegistry,
+      sessionAgentStore,
       checkpointer: real.checkpointer,
       graph: real.graph,
-      providerSecret: "secret",
     });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -989,13 +710,8 @@ describe("Handler.Connect same-session serialization", () => {
     let maxConcurrent = 0;
     const processedMessages: string[] = [];
 
-    const adapter: LLMAdapter = {
-      async *generateTurn(
-        _model: string,
-        _systemPrompt: string,
-        _threadId: string,
-        userMessage: string,
-      ) {
+    const adapter: AgentAdapter = {
+      async *generateTurn(_threadId: string, userMessage: string) {
         concurrentCount++;
         maxConcurrent = Math.max(maxConcurrent, concurrentCount);
         processedMessages.push(userMessage);
@@ -1005,18 +721,15 @@ describe("Handler.Connect same-session serialization", () => {
       },
     };
 
-    const adapterManager = createMockAdapterManager();
-    adapterManager._setBinding("sess-conc", "test-profile", adapter);
-    const connectionRegistry = new ConnectionRegistry();
-    const real = createRealGraph();
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding("sess-conc", "test-profile", adapter);
 
+    const real = createRealGraph();
     const handler = createHandler({
       promptClient,
-      adapterManager,
-      connectionRegistry,
+      sessionAgentStore,
       checkpointer: real.checkpointer,
       graph: real.graph,
-      providerSecret: "secret",
     });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -1037,34 +750,25 @@ describe("Handler.Connect same-session serialization", () => {
 
 describe("Handler.GetAgent", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let connectionRegistry: ConnectionRegistry;
   let checkpointer: MemorySaver;
   let graph: unknown;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    connectionRegistry = new ConnectionRegistry();
     const real = createRealGraph();
     checkpointer = real.checkpointer;
     graph = real.graph;
   });
 
   it("returns adapter state with active profile when bound", async () => {
-    const adapterManager = createMockAdapterManager();
-    adapterManager._setBinding(
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding(
       "sess-bound",
       "my-profile",
-      createMockLLMAdapter([]),
+      createMockAdapter([]),
     );
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const call = createUnaryCall({ sessionId: "sess-bound" });
     const { callback, promise } = createCallback<{
@@ -1085,16 +789,9 @@ describe("Handler.GetAgent", () => {
   });
 
   it("returns empty profile for never-connected session (200 OK)", async () => {
-    const adapterManager = createMockAdapterManager();
+    const sessionAgentStore = createMockSessionAgentStore();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const call = createUnaryCall({ sessionId: "never-connected" });
     const { callback, promise } = createCallback<{
@@ -1115,13 +812,11 @@ describe("Handler.GetAgent", () => {
 
 describe("Handler.ListMessages (real MemorySaver)", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
-  let adapterManager: MockAdapterManager;
-  let connectionRegistry: ConnectionRegistry;
+  let sessionAgentStore: MockSessionAgentStore;
 
   beforeEach(() => {
     promptClient = createMockPromptClient();
-    adapterManager = createMockAdapterManager();
-    connectionRegistry = new ConnectionRegistry();
+    sessionAgentStore = createMockSessionAgentStore();
   });
 
   async function writeMessages(
@@ -1129,7 +824,6 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     sessionId: string,
     messages: Array<HumanMessage | AIMessage | SystemMessage>,
   ) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (graph as any).invoke(
       { messages },
       { configurable: { thread_id: sessionId } },
@@ -1150,14 +844,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("round-trips text messages (human + ai) in chronological order", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const sessionId = "sess-text-rt";
     await writeMessages(graph, sessionId, [
@@ -1182,14 +869,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const sessionId = "sess-think-rt";
     await writeMessages(graph, sessionId, [
@@ -1212,14 +892,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const sessionId = "sess-mixed-rt";
     await writeMessages(graph, sessionId, [
@@ -1242,14 +915,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("filters out SystemMessages from the result", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const sessionId = "sess-sys-filter";
     await writeMessages(graph, sessionId, [
@@ -1273,14 +939,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("returns empty messages for session with no checkpoint state", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const { error, response } = await listMessages(handler, "never-written");
 
@@ -1291,14 +950,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   it("preserves chronological ordering across multiple turns", async () => {
     const { graph, checkpointer } = createRealGraph();
 
-    const handler = createHandler({
-      promptClient,
-      adapterManager,
-      connectionRegistry,
-      checkpointer,
-      graph,
-      providerSecret: "secret",
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
 
     const sessionId = "sess-chrono";
     await writeMessages(graph, sessionId, [new HumanMessage("first")]);

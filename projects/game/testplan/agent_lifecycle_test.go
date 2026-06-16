@@ -7,7 +7,6 @@ package testplan
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
@@ -126,14 +125,16 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	}
 }
 
-// TestConnectionExclusivity verifies that when a second WebSocket connects to
-// the same session, the first connection is kicked (closed). Only one
-// connection per session is permitted.
-func TestConnectionExclusivity(t *testing.T) {
+// TestConnectionConcurrentSerialization verifies that when two WebSocket
+// connections send frames to the same session concurrently, the per-session
+// mutex serializes processing so both responses are delivered without
+// corruption. Kick-on-connect is intentionally not implemented — the mutex
+// serves as a fallback guard against concurrent processing.
+func TestConnectionConcurrentSerialization(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	profileName := fmt.Sprintf("life-excl-%s", uniqueSuffix())
+	profileName := fmt.Sprintf("life-serial-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profileName,
@@ -144,32 +145,30 @@ func TestConnectionExclusivity(t *testing.T) {
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// Connect first WS and start a message (triggers streaming).
 	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	sendTextWithProfile(t, conn1, sessionID, profileName, "First connection message")
+	defer conn1.Close()
 
-	// Connect second WS — this should kick conn1.
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn2.Close()
 
-	// conn1 should be closed (kicked) — read should return error.
-	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, _, err := conn1.ReadMessage()
-	if err == nil {
-		conn1.Close()
-		t.Fatal("conn1 was not kicked after conn2 connected")
-	}
-	conn1.Close()
-	t.Logf("conn1 kicked as expected: %v", err)
+	sendTextWithProfile(t, conn1, sessionID, profileName, "From conn1")
+	sendTextWithProfile(t, conn2, sessionID, profileName, "From conn2")
 
-	// conn2 should still be functional.
-	sendTextWithProfile(t, conn2, sessionID, profileName, "Second connection message")
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
-	textResp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetText() != nil })
-	if textResp == nil {
-		t.Fatal("conn2: no text response after kicking conn1")
+	conn1Resp := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool {
+		return f.GetText() != nil
+	})
+	conn2Resp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+		return f.GetText() != nil
+	})
+
+	if conn1Resp == nil {
+		t.Fatal("conn1: no text response")
 	}
-	t.Logf("conn2 response: %q", textResp.GetText().GetContent())
+	if conn2Resp == nil {
+		t.Fatal("conn2: no text response")
+	}
+	t.Logf("conn1 response: %q", conn1Resp.GetText().GetContent())
+	t.Logf("conn2 response: %q", conn2Resp.GetText().GetContent())
 }
 
 // TestGetAgentNeverConnected verifies that GetAgent returns a 200 response

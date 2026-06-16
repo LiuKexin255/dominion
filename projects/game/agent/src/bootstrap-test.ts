@@ -1,14 +1,19 @@
 /**
  * Test bootstrap entry point for the game agent gRPC server.
  *
- * Identical to bootstrap.ts. Uses AdapterManager (which creates
- * AgentAdapterImpl instances on demand) — deterministic, no-network test
- * behavior is configured via adapterManagerOverride in startServer().
+ * Passes a FakeLlmAdapter factory to startServer — deterministic,
+ * no-network test behavior.  The shared checkpointer is created inside
+ * startServer so ListMessages and FakeLlmAdapter use the same instance.
  */
 
 import { init, shutdown } from "@dominion/common-js-otel";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
 import { info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
+import { MemorySaver } from "@langchain/langgraph";
+
+import type { ChatModel } from "./model-provider";
+import type { AdapterFactory } from "./llm";
+import { FakeLlmAdapter } from "./fake-llm";
 
 async function main() {
   await init({ instrumentations: [createGrpcInstrumentation()] });
@@ -18,7 +23,14 @@ async function main() {
   info("OTel initialized", { service: "game-agent" });
 
   const { startServer } = await import("./server.js");
-  const server = await startServer();
+
+  const adapterFactory: AdapterFactory = async (
+    _getProvider: () => Promise<ChatModel>,
+    _systemPrompt: string,
+    cp: MemorySaver,
+  ) => new FakeLlmAdapter(cp);
+
+  const server = await startServer(adapterFactory);
 
   info("gRPC server listening on 0.0.0.0:50051", { service: "game-agent" });
 

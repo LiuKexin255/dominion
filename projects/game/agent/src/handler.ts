@@ -2,12 +2,10 @@
  * handler.ts — AgentServiceServer gRPC handler implementations.
  *
  * Implements GetAgent, ListMessages, and Connect RPCs for the AgentService
- * defined in game.proto using a SessionAgent/AgentAdapter model.
+ * defined in game.proto.
  *
- * CreateAgent and DeleteAgent have been removed — agent binding is managed
- * on-demand by AdapterManager during Connect, and adapter state is queried
- * via GetAgent.  All conversation state lives in a shared MemorySaver
- * keyed by sessionId.
+ * The handler delegates adapter lifecycle to SessionAgentStore.  Each
+ * SessionAgent owns its adapter and manages profile binding/switching.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -24,13 +22,8 @@ import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
 import type { PromptClient } from "./prompt-client";
-import type { Connection } from "./connection-registry";
-import { ConnectionRegistry } from "./connection-registry";
-import { AdapterManager } from "./adapter-manager";
+import type { SessionAgentStore } from "./session-agent";
 
-// FrameSender enum values duplicated from proto because generated game_types/
-// only provides .ts type files (not compiled .js); importing a runtime value
-// would fail at require() time.
 const FrameSender = {
   FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
   FRAME_SENDER_USER: "FRAME_SENDER_USER",
@@ -38,49 +31,25 @@ const FrameSender = {
   FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
 } as const;
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-
 export class Handler implements AgentServiceHandlers {
-  /** Index signature required by grpc.UntypedServiceImplementation. */
   [name: string]: any;
 
-  /** Prompt service client for fetching agent profiles. */
   private promptClient: PromptClient;
-
-  /** Per-session connection registry (kick + alive checks). */
-  private connectionRegistry: ConnectionRegistry;
-
-  /** Adapter lifecycle manager (bind/unbind on profile switch). */
-  private adapterManager: AdapterManager;
-
-  /** Shared in-memory checkpointer. One instance for all sessions. */
+  private sessionAgentStore: SessionAgentStore;
   private checkpointer: MemorySaver;
-
-  /** Compiled StateGraph for reading checkpoint state (ListMessages). */
   private graph: any;
-
-  /** Provider API key / secret. */
-  private providerSecret: string;
-
-  /** Same-session execution mutexes (FIFO promise chains). */
   private mutexes: Map<string, Promise<void>>;
 
   constructor(
     promptClient: PromptClient,
-    adapterManager: AdapterManager,
-    connectionRegistry: ConnectionRegistry,
+    sessionAgentStore: SessionAgentStore,
     checkpointer: MemorySaver,
     graph: any,
-    providerSecret: string,
   ) {
     this.promptClient = promptClient;
-    this.adapterManager = adapterManager;
-    this.connectionRegistry = connectionRegistry;
+    this.sessionAgentStore = sessionAgentStore;
     this.checkpointer = checkpointer;
     this.graph = graph;
-    this.providerSecret = providerSecret;
     this.mutexes = new Map();
   }
 
@@ -113,7 +82,8 @@ export class Handler implements AgentServiceHandlers {
     callback,
   ) => {
     const sessionId = call.request.sessionId ?? "";
-    const state = this.adapterManager.getAdapterState(sessionId);
+    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+    const state = sessionAgent.getAdapterState();
 
     const agent: AgentMessage = {
       name: `sessions/${sessionId}/agent`,
@@ -146,25 +116,9 @@ export class Handler implements AgentServiceHandlers {
     },
     AgentFrame
   > = (stream) => {
-    /** Tracks sequence number per invoke (turnId). */
     let currentInvokeId = "";
     let sequence = 0;
 
-    /** Registered sessionId for this stream (set on first frame). */
-    let registeredSessionId: string | null = null;
-
-    /** Wraps the gRPC stream duplex as a Connection for the registry. */
-    const connection: Connection = {
-      close() {
-        try {
-          (stream as any).end();
-        } catch {
-          // Stream may already be closed.
-        }
-      },
-    };
-
-    /** Ensure sequence increments per frame within the same invoke. */
     const nextSequence = (invokeId: string): number => {
       if (invokeId !== currentInvokeId) {
         currentInvokeId = invokeId;
@@ -173,7 +127,6 @@ export class Handler implements AgentServiceHandlers {
       return sequence++;
     };
 
-    /** Build an AgentFrame with standard metadata. */
     const buildFrame = (
       sessionId: string,
       invokeId: string,
@@ -193,15 +146,9 @@ export class Handler implements AgentServiceHandlers {
       const sessionId = frame.sessionId ?? "";
       const invokeId = frame.invokeId ?? "";
 
-      // Register this stream with the session on first frame.
-      if (registeredSessionId === null && sessionId) {
-        registeredSessionId = sessionId;
-        await this.connectionRegistry.register(sessionId, connection);
-      }
-
-      // --- status payload: connection probe ---
       if (frame.payload === "status" || frame.status) {
-        const state = this.adapterManager.getAdapterState(sessionId);
+        const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+        const state = sessionAgent.getAdapterState();
         const statusFrame: AgentFrame = buildFrame(
           sessionId,
           invokeId,
@@ -216,7 +163,6 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      // --- echo payload: echo back ---
       if (frame.payload === "echo" || frame.echo) {
         const echoData =
           frame.echo && typeof frame.echo === "object" && "data" in frame.echo
@@ -234,7 +180,6 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      // --- deprecated payloads: silently ignore ---
       if (
         frame.payload === "screenshot" ||
         frame.screenshot ||
@@ -244,7 +189,6 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      // --- text payload from user ---
       const senderValue =
         typeof frame.sender === "string"
           ? frame.sender
@@ -255,10 +199,10 @@ export class Handler implements AgentServiceHandlers {
       ) {
         const userText = frame.text?.content ?? "";
 
-        // Determine effective profile name for this turn.
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
-          const state = this.adapterManager.getAdapterState(sessionId);
+          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+          const state = sessionAgent.getAdapterState();
           if (state.isBound && state.activeProfileName) {
             effectiveProfileName = state.activeProfileName;
           }
@@ -285,62 +229,18 @@ export class Handler implements AgentServiceHandlers {
 
         await this.acquireMutex(sessionId);
         try {
-          // Validate profile exists before creating adapter.
-          let profile: { model: string; systemPrompt: string };
-          try {
-            profile = await this.promptClient.getProfile(effectiveProfileName);
-          } catch (err: unknown) {
-            const details =
-              err instanceof Error ? err.message : "Profile not found";
-            warn("agent profile not found, discarding user text", {
-              sessionId,
-              invokeId,
-              profileName: effectiveProfileName,
-              error: details,
-            });
-            const warnFrame: AgentFrame = buildFrame(
-              sessionId,
-              invokeId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                warn: {
-                  message: `Agent profile not found: ${effectiveProfileName}`,
-                },
-              },
-            );
-            stream.write(warnFrame);
-            // Do NOT write to history — return without calling generateTurn.
-            return;
-          }
+          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
 
-          // Get or create adapter for this session+profile.
-          const adapter = await this.adapterManager.getOrCreateAdapter(
-            sessionId,
+          const adapter = await sessionAgent.getOrCreateAdapter(
             effectiveProfileName,
-            this.promptClient,
-            this.checkpointer,
+            () => this.promptClient.getProfile(effectiveProfileName),
           );
 
-          // Stream content blocks from the adapter.
           let blockCount = 0;
           for await (const block of adapter.generateTurn(
-            profile.model,
-            profile.systemPrompt,
             sessionId,
             userText,
-            this.checkpointer,
-            this.providerSecret,
           )) {
-            // Check if this connection has been kicked mid-stream.
-            if (!this.connectionRegistry.isAlive(sessionId, connection)) {
-              info("connection kicked mid-stream", {
-                sessionId,
-                invokeId,
-                blockCount,
-              });
-              break;
-            }
-
             blockCount++;
             if (block.type === "reasoning") {
               info("writing thinking frame", {
@@ -378,8 +278,7 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          // Emit wait frame after all response frames (if still alive).
-          if (this.connectionRegistry.isAlive(sessionId, connection)) {
+          {
             info("text processing completed", {
               sessionId,
               invokeId,
@@ -429,9 +328,6 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
-      if (registeredSessionId) {
-        this.connectionRegistry.unregister(registeredSessionId, connection);
-      }
       try {
         stream.end();
       } catch {
@@ -441,9 +337,6 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
-      if (registeredSessionId) {
-        this.connectionRegistry.unregister(registeredSessionId, connection);
-      }
     });
   };
 
@@ -457,11 +350,9 @@ export class Handler implements AgentServiceHandlers {
   > = async (call, callback) => {
     const parent = call.request.parent ?? "";
 
-    // Extract sessionId from parent resource name "sessions/{id}/agent".
     const sessionId = extractSessionId(parent);
 
     try {
-      // Read checkpoint state for this thread via the compiled graph.
       const state: any = await this.graph.getState({
         configurable: { thread_id: sessionId },
       });
@@ -473,23 +364,19 @@ export class Handler implements AgentServiceHandlers {
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
-        // Skip system messages.
         if (msg instanceof SystemMessage) {
           continue;
         }
 
-        // Only include HumanMessage and AIMessage.
         if (!(msg instanceof HumanMessage) && !(msg instanceof AIMessage)) {
           continue;
         }
 
-        // Determine sender.
         const sender =
           msg instanceof HumanMessage
             ? FrameSender.FRAME_SENDER_USER
             : FrameSender.FRAME_SENDER_AGENT;
 
-        // Determine type and content.
         let type = "text";
         let content = "";
 
@@ -516,10 +403,8 @@ export class Handler implements AgentServiceHandlers {
           }
         }
 
-        // Skip empty messages.
         if (!content && type !== "text") continue;
 
-        // Best-effort timestamp from checkpoint snapshot.
         const createTime = checkpointTs
           ? timestampFromMs(new Date(checkpointTs).getTime())
           : undefined;
@@ -566,10 +451,6 @@ function timestampFromMs(ms: number): { seconds: number; nanos: number } {
   };
 }
 
-/**
- * Extract sessionId from a parent resource name like "sessions/{id}" or "sessions/{id}/agent".
- * Returns the {id} portion, or the full string if it doesn't match the pattern.
- */
 function extractSessionId(parent: string): string {
   const match = parent.match(/^sessions\/([^/]+?)(?:\/agent)?$/);
   return match ? match[1] : parent;

@@ -6,6 +6,9 @@ load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
 
+# test_service.proto is test fixture data for the JS tests, not a Go proto package.
+# gazelle:exclude src/test_service.proto
+
 ts_project(
     name = "lib",
     srcs = glob(
