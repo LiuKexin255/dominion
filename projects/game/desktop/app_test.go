@@ -414,17 +414,17 @@ func TestDeleteAgentProfile_NotFound(t *testing.T) {
 // TestListMessages_Success verifies ListMessages delegates to client and
 // converts proto messages to MessageViewModels.
 func TestListMessages_Success(t *testing.T) {
-	// given: mock server responding to GET /api/v1/sessions/test-session/agent/messages
+	// given: mock server responding to GET /api/v1/sessions/test-session/messages
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", r.Method)
 		}
-		wantPath := "/api/v1/sessions/test-session/agent/messages"
+		wantPath := "/api/v1/sessions/test-session/messages"
 		if r.URL.Path != wantPath {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/agent/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/agent/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
+		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
 	}))
 	defer srv.Close()
 

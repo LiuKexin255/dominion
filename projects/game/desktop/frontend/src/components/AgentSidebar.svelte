@@ -6,18 +6,24 @@
     connectionState,
     profiles,
     playState,
+    selectedProfile = '',
   }: {
     agent: Agent | null
     connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
     profiles: AgentProfile[]
     playState: 'connecting' | 'loading_messages' | 'chat_ready' | 'processing' | 'connection_error' | 'agent_lost'
+    selectedProfile?: string
   } = $props()
 
   let showProfileDetails = $state(false)
 
+  // Active profile: prefer agent state (post-message source of truth), fall back
+  // to the user-selected profile before the first response arrives.
+  let activeProfileName = $derived(agent?.agentProfileName || selectedProfile)
+
   let matchedProfile = $derived<AgentProfile | null>(
-    agent?.agentProfileName
-      ? profiles.find(p => p.agentProfileName === agent.agentProfileName) ?? null
+    activeProfileName
+      ? profiles.find(p => p.agentProfileName === activeProfileName) ?? null
       : null
   )
 
@@ -43,7 +49,7 @@
     </div>
     <div class="info-row">
       <span class="info-key">Profile</span>
-      <span class="info-value" data-testid="agent-profile-name">{agent?.agentProfileName ?? '—'}</span>
+      <span class="info-value" data-testid="agent-profile-name">{activeProfileName || '—'}</span>
     </div>
     <div class="info-row">
       <span class="info-key">Model</span>

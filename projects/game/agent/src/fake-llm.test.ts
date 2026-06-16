@@ -1,21 +1,16 @@
 /**
- * fake-llm.test.ts — Tests for FakeLlmAdapter.
+ * fake-llm.test.ts — Tests for FakeLlmAdapter under the AgentAdapter contract.
  *
- * Validates deterministic behavior: no randomness, no real API calls,
- * same input always produces same output. Updated for 6-param contract.
+ * Validates deterministic behavior: reasoning block before text block,
+ * same input always produces same output, ContentBlock type conformance.
  */
 
 import { describe, expect, it } from "vitest";
 import { MemorySaver } from "@langchain/langgraph";
 
-import type { ContentBlock } from "./llm";
+import type { AgentAdapter, ContentBlock } from "./llm";
 import { FakeLlmAdapter } from "./fake-llm";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Collect every ContentBlock from an async iterable. */
 async function collect(
   iter: AsyncIterable<ContentBlock>,
 ): Promise<ContentBlock[]> {
@@ -26,126 +21,113 @@ async function collect(
   return blocks;
 }
 
-// ---------------------------------------------------------------------------
-// Test 1: Returns deterministic thinking + text contentBlocks
-// ---------------------------------------------------------------------------
-
-describe("ContentBlock structure", () => {
-  it("yields exactly 2 blocks: reasoning then text", async () => {
+describe("FakeLlmAdapter ContentBlock ordering", () => {
+  it("yields reasoning block before text block", async () => {
     const adapter = new FakeLlmAdapter();
-    const checkpointer = new MemorySaver();
+    const cp = new MemorySaver();
     const blocks = await collect(
-      adapter.generateTurn("test-model", "You are helpful.", "thread-1", "Hello", checkpointer, ""),
+      adapter.generateTurn("m", "sys", "t-order", "Hello", cp, ""),
     );
 
     expect(blocks).toHaveLength(2);
+    expect(blocks[0].type).toBe("reasoning");
+    expect(blocks[1].type).toBe("text");
+  });
+
+  it("reasoning block contains processing message", async () => {
+    const adapter = new FakeLlmAdapter();
+    const cp = new MemorySaver();
+    const blocks = await collect(
+      adapter.generateTurn("m", "sys", "t-r", "Hello", cp, ""),
+    );
+
     expect(blocks[0]).toEqual({
       type: "reasoning",
       reasoning: "Processing your message...",
     });
+  });
+
+  it("text block echoes user message", async () => {
+    const adapter = new FakeLlmAdapter();
+    const cp = new MemorySaver();
+    const userMessage = "What is the capital of France?";
+    const blocks = await collect(
+      adapter.generateTurn("m", "sys", "t-text", userMessage, cp, ""),
+    );
+
     expect(blocks[1]).toEqual({
       type: "text",
-      text: "Hello! This is a simulated response. You said: Hello",
+      text: `Hello! This is a simulated response. You said: ${userMessage}`,
     });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Test 2: Response includes echo of input message
-// ---------------------------------------------------------------------------
-
-describe("User message echo", () => {
-  it("includes the user message in the text block", async () => {
+describe("FakeLlmAdapter deterministic output", () => {
+  it("same input produces identical output across calls", async () => {
     const adapter = new FakeLlmAdapter();
-    const checkpointer = new MemorySaver();
-    const userMessage = "What is the capital of France?";
-
-    const blocks = await collect(
-      adapter.generateTurn("test-model", "You are helpful.", "thread-2", userMessage, checkpointer, ""),
-    );
-
-    const textBlock = blocks.find(
-      (b): b is { type: "text"; text: string } => b.type === "text",
-    );
-    expect(textBlock).toBeDefined();
-    expect(textBlock?.text).toContain(userMessage);
-  });
-
-  it("preserves special characters in the echo", async () => {
-    const adapter = new FakeLlmAdapter();
-    const checkpointer = new MemorySaver();
-    const userMessage = "a <b>bold</b> & \"quoted\"";
-
-    const blocks = await collect(
-      adapter.generateTurn("test-model", "You are helpful.", "thread-3", userMessage, checkpointer, ""),
-    );
-
-    const textBlock = blocks.find(
-      (b): b is { type: "text"; text: string } => b.type === "text",
-    );
-    expect(textBlock).toBeDefined();
-    expect(textBlock?.text).toContain(userMessage);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 3: Same input always produces same output (idempotent)
-// ---------------------------------------------------------------------------
-
-describe("Idempotent output", () => {
-  it("produces identical output for the same input", async () => {
-    const adapter = new FakeLlmAdapter();
-    const systemPrompt = "You are a test assistant.";
-    const userMessage = "Test message";
-    const checkpointer = new MemorySaver();
+    const cp = new MemorySaver();
 
     const blocks1 = await collect(
-      adapter.generateTurn("model-a", systemPrompt, "thread-4", userMessage, checkpointer, "secret-1"),
+      adapter.generateTurn("model-a", "prompt", "t-det-1", "Test", cp, "key-1"),
     );
     const blocks2 = await collect(
-      adapter.generateTurn("model-a", systemPrompt, "thread-4", userMessage, checkpointer, "secret-2"),
+      adapter.generateTurn("model-a", "prompt", "t-det-1", "Test", cp, "key-1"),
     );
 
     expect(blocks1).toEqual(blocks2);
   });
 
-  it("is unaffected by providerSecret value", async () => {
+  it("output is unaffected by providerSecret value", async () => {
     const adapter = new FakeLlmAdapter();
-    const systemPrompt = "You are helpful.";
-    const userMessage = "Hi";
-    const checkpointer = new MemorySaver();
+    const cp = new MemorySaver();
 
     const blocksA = await collect(
-      adapter.generateTurn("m", systemPrompt, "t", userMessage, checkpointer, ""),
+      adapter.generateTurn("m", "p", "t-secret-1", "Hi", cp, ""),
     );
     const blocksB = await collect(
-      adapter.generateTurn("m", systemPrompt, "t", userMessage, checkpointer, "some-api-key"),
+      adapter.generateTurn("m", "p", "t-secret-1", "Hi", cp, "some-api-key"),
     );
 
     expect(blocksA).toEqual(blocksB);
   });
+
+  it("different user messages produce different text blocks", async () => {
+    const adapter = new FakeLlmAdapter();
+    const cp = new MemorySaver();
+
+    const blocks1 = await collect(
+      adapter.generateTurn("m", "p", "t-diff-1", "message-one", cp, ""),
+    );
+    const blocks2 = await collect(
+      adapter.generateTurn("m", "p", "t-diff-2", "message-two", cp, ""),
+    );
+
+    const text1 = blocks1.find((b) => b.type === "text");
+    const text2 = blocks2.find((b) => b.type === "text");
+    expect(text1).not.toEqual(text2);
+  });
 });
 
-// ---------------------------------------------------------------------------
-// Test 4: Implements LLMAdapter interface correctly
-// ---------------------------------------------------------------------------
-
-describe("LLMAdapter interface conformance", () => {
-  it("has a generateTurn method", () => {
-    const adapter = new FakeLlmAdapter();
+describe("FakeLlmAdapter AgentAdapter contract", () => {
+  it("satisfies the AgentAdapter interface", () => {
+    const adapter: AgentAdapter = new FakeLlmAdapter();
     expect(typeof adapter.generateTurn).toBe("function");
   });
 
-  it("generateTurn returns an AsyncIterable", () => {
-    const adapter = new FakeLlmAdapter();
-    const checkpointer = new MemorySaver();
-    const result = adapter.generateTurn("", "", "", "", checkpointer, "");
-    expect(result).toBeDefined();
-    expect(typeof result[Symbol.asyncIterator]).toBe("function");
-  });
-
-  it("accepts all parameters matching the LLMAdapter interface", () => {
+  it("generateTurn accepts 6 parameters", () => {
     const adapter = new FakeLlmAdapter();
     expect(adapter.generateTurn.length).toBe(6);
+  });
+
+  it("generateTurn returns an AsyncIterable<ContentBlock>", async () => {
+    const adapter = new FakeLlmAdapter();
+    const cp = new MemorySaver();
+    const result = adapter.generateTurn("", "", "", "", cp, "");
+    expect(typeof result[Symbol.asyncIterator]).toBe("function");
+
+    const blocks = await collect(result);
+    for (const block of blocks) {
+      expect(["reasoning", "text"]).toContain(block.type);
+    }
   });
 });

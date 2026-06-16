@@ -36,15 +36,6 @@ type sessionResponse struct {
 	CreateTime string `json:"createTime"`
 }
 
-// agentResponse mirrors the Agent proto message returned via gRPC-gateway
-// with protojson camelCase field names.
-type agentResponse struct {
-	Name             string `json:"name"`
-	SessionID        string `json:"sessionId"`
-	AgentProfileName string `json:"agentProfileName,omitempty"`
-	CreateTime       string `json:"createTime"`
-}
-
 // listSessionsResponse mirrors the ListSessionsResponse proto message.
 type listSessionsResponse struct {
 	Sessions      []sessionResponse `json:"sessions"`
@@ -184,106 +175,6 @@ func deleteSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http
 	return resp
 }
 
-// ─── Agent Helpers (JSON-based) ─────────────────────────────────────────────
-
-// createAgent sends a POST request to create an agent under the given session
-// with agentProfileName set to "default", and returns the raw response body.
-// Calls t.Fatal on non-200 responses.
-// The "default" profile must be seeded by TestMain.
-func createAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
-	t.Helper()
-
-	reqBody := []byte(`{"agentProfileName":"default"}`)
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, reqBody)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createAgent status=%d, body=%s", resp.StatusCode, respBody)
-	}
-	return respBody
-}
-
-// getAgent sends a GET request for an agent and returns the raw response body.
-// Calls t.Fatal on non-200 responses.
-func getAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET agent status=%d, body=%s", resp.StatusCode, respBody)
-	}
-	return respBody
-}
-
-// getAgentWithStatus sends a GET request for an agent and returns the HTTP
-// status code and response body. Does NOT fatal on non-200 responses.
-func getAgentWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
-
-	return resp.StatusCode, respBody
-}
-
-// deleteAgent sends a DELETE request for an agent. Does NOT fatal on non-200
-// responses.
-func deleteAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http.Response {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, _ := doHTTP(t, http.MethodDelete, reqURL, sutEnvName, nil)
-
-	return resp
-}
-
-// ─── Agent Helpers (proto-based) ────────────────────────────────────────────
-
-// createAgentWithProfile creates an agent under the given session with the
-// specified profile name. Returns the parsed Agent proto. Calls t.Fatal on
-// non-200 responses.
-func createAgentWithProfile(t *testing.T, sutHostURL, sutEnvName, sessionID, profileName string) *game.Agent {
-	t.Helper()
-
-	body := []byte(fmt.Sprintf(`{"agentProfileName":"%s"}`, profileName))
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createAgentWithProfile status=%d, body=%s", resp.StatusCode, respBody)
-	}
-
-	agent := new(game.Agent)
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, agent); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
-	}
-	return agent
-}
-
-// createAgentWithBody creates an agent under the given session with an
-// arbitrary JSON body. Returns the parsed Agent (nil on non-200), the HTTP
-// status code, and the raw response body. Does NOT fatal on non-200 responses.
-func createAgentWithBody(t *testing.T, sutHostURL, sutEnvName, sessionID string, body []byte) (*game.Agent, int, []byte) {
-	t.Helper()
-
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
-	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, respBody
-	}
-
-	agent := new(game.Agent)
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, agent); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
-	}
-	return agent, resp.StatusCode, respBody
-}
-
 // ─── Profile/Skill Helpers (proto-based) ────────────────────────────────────
 
 // createAgentProfile creates an agent profile via HTTP POST and returns the
@@ -387,14 +278,36 @@ func getSkill(t *testing.T, sutHostURL, sutEnvName, skillName string) *game.Skil
 	return skill
 }
 
+// ─── Agent Helpers (proto-based) ────────────────────────────────────────────
+
+// getAgent sends a GET request to retrieve the agent for a session.
+// Calls t.Fatal on non-200 responses.
+func getAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.Agent {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET agent status=%d, body=%s", resp.StatusCode, respBody)
+	}
+
+	agent := new(game.Agent)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, agent); err != nil {
+		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
+	}
+	return agent
+}
+
 // ─── Message Helpers (proto-based) ────────────────────────────────────────
 
-// listMessages sends a GET request to list messages for an agent and returns
+// listMessages sends a GET request to list messages for a session and returns
 // the parsed ListMessagesResponse. Calls t.Fatal on non-200 responses.
 func listMessages(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.ListMessagesResponse {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent/messages", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%ssessions/%s/messages", sutHostURL, pathPrefix, sessionID)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
@@ -409,29 +322,14 @@ func listMessages(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.
 	return lmr
 }
 
-// getAgentProto sends a GET request for an agent and returns the parsed Agent
-// proto. Calls t.Fatal on non-200 responses or unmarshal errors.
-func getAgentProto(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.Agent {
-	t.Helper()
-
-	respBody := getAgent(t, sutHostURL, sutEnvName, sessionID)
-
-	agent := new(game.Agent)
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, agent); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
-	}
-	return agent
-}
-
 // ─── WebSocket Helpers (proto-based) ────────────────────────────────────────
 
-// connectAgentWS connects to the agent WebSocket endpoint and returns the
+// connectAgentWS connects to the session WebSocket endpoint and returns the
 // connection. Calls t.Fatal on any error.
 func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, sessionID string) *websocket.Conn {
 	t.Helper()
 
-	wsPath := fmt.Sprintf("/api/v1/sessions/%s/agent/connect", sessionID)
+	wsPath := fmt.Sprintf("/api/v1/sessions/%s/connect", sessionID)
 	wsURL := buildWSURL(sutHostURL, wsPath)
 
 	header := http.Header{}
@@ -480,6 +378,27 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 		t.Fatalf("Unmarshal AgentFrame: %v (raw: %s)", err, string(data))
 	}
 	return frame
+}
+
+// buildTextFrame constructs an AgentFrame with a text payload, setting the
+// session ID, agent profile name, and sender.
+func buildTextFrame(sessionID, agentProfileName, content string, sender game.FrameSender) *game.AgentFrame {
+	return &game.AgentFrame{
+		SessionId:        sessionID,
+		AgentProfileName: agentProfileName,
+		Payload: &game.AgentFrame_Text{
+			Text: &game.AgentTextFrame{Content: content},
+		},
+		Sender: sender,
+	}
+}
+
+// sendTextWithProfile builds a user-text frame with the given profile and
+// sends it over the WebSocket connection. Calls t.Fatal on write errors.
+func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentProfileName, text string) {
+	t.Helper()
+	frame := buildTextFrame(sessionID, agentProfileName, text, game.FrameSender_FRAME_SENDER_USER)
+	writeWSFrame(t, conn, frame)
 }
 
 // drainWSFrame reads and discards frames until a frame matches the predicate,

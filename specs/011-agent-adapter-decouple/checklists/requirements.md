@@ -32,6 +32,6 @@
 ## Notes
 
 - All items pass on first validation iteration.
-- This spec replaces `specs/010-langchain-agent-downgrade/`; the superseded directory should be removed after this spec is adopted.
+- This spec replaces `specs/010-langchain-agent-downgrade/`; the superseded directory has been removed.
 - Framework names (LangChain, deepagent) are intentional and inherent to the feature scope, not implementation leakage.
 - Ready for `/speckit.clarify` or `/speckit.plan`.

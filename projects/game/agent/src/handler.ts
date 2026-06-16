@@ -1,10 +1,13 @@
 /**
  * handler.ts — AgentServiceServer gRPC handler implementations.
  *
- * Implements CreateAgent, GetAgent, DeleteAgent, ListMessages, and Connect
- * RPCs for the AgentService defined in game.proto using a checkpoint-native
- * lifecycle: metadata replaces DialogRuntime, and all conversation state
- * lives in a shared MemorySaver keyed by sessionId.
+ * Implements GetAgent, ListMessages, and Connect RPCs for the AgentService
+ * defined in game.proto using a SessionAgent/AgentAdapter model.
+ *
+ * CreateAgent and DeleteAgent have been removed — agent binding is managed
+ * on-demand by AdapterManager during Connect, and adapter state is queried
+ * via GetAgent.  All conversation state lives in a shared MemorySaver
+ * keyed by sessionId.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -20,8 +23,10 @@ import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
-import type { LLMAdapter } from "./llm";
 import type { PromptClient } from "./prompt-client";
+import type { Connection } from "./connection-registry";
+import { ConnectionRegistry } from "./connection-registry";
+import { AdapterManager } from "./adapter-manager";
 
 // FrameSender enum values duplicated from proto because generated game_types/
 // only provides .ts type files (not compiled .js); importing a runtime value
@@ -34,19 +39,6 @@ const FrameSender = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// AgentMetadata — lightweight snapshot of agent profile at creation time
-// ---------------------------------------------------------------------------
-
-interface AgentMetadata {
-  sessionId: string;
-  name: string;
-  agentProfileName: string;
-  model: string;
-  systemPrompt: string;
-  createTime: number;
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -57,8 +49,11 @@ export class Handler implements AgentServiceHandlers {
   /** Prompt service client for fetching agent profiles. */
   private promptClient: PromptClient;
 
-  /** LLM adapter for generating agent responses. */
-  private llmAdapter: LLMAdapter;
+  /** Per-session connection registry (kick + alive checks). */
+  private connectionRegistry: ConnectionRegistry;
+
+  /** Adapter lifecycle manager (bind/unbind on profile switch). */
+  private adapterManager: AdapterManager;
 
   /** Shared in-memory checkpointer. One instance for all sessions. */
   private checkpointer: MemorySaver;
@@ -69,25 +64,23 @@ export class Handler implements AgentServiceHandlers {
   /** Provider API key / secret. */
   private providerSecret: string;
 
-  /** Lightweight agent metadata keyed by session ID. */
-  private metadata: Map<string, AgentMetadata>;
-
   /** Same-session execution mutexes (FIFO promise chains). */
   private mutexes: Map<string, Promise<void>>;
 
   constructor(
     promptClient: PromptClient,
-    llmAdapter: LLMAdapter,
+    adapterManager: AdapterManager,
+    connectionRegistry: ConnectionRegistry,
     checkpointer: MemorySaver,
     graph: any,
     providerSecret: string,
   ) {
     this.promptClient = promptClient;
-    this.llmAdapter = llmAdapter;
+    this.adapterManager = adapterManager;
+    this.connectionRegistry = connectionRegistry;
     this.checkpointer = checkpointer;
     this.graph = graph;
     this.providerSecret = providerSecret;
-    this.metadata = new Map();
     this.mutexes = new Map();
   }
 
@@ -112,64 +105,6 @@ export class Handler implements AgentServiceHandlers {
   }
 
   // -----------------------------------------------------------------------
-  // CreateAgent
-  // -----------------------------------------------------------------------
-
-  CreateAgent: grpc.handleUnaryCall<
-    { sessionId?: string; agentProfileName?: string },
-    AgentMessage
-  > = async (call, callback) => {
-    const sessionId = call.request.sessionId ?? "";
-    const profileName = call.request.agentProfileName ?? "";
-
-    if (!profileName) {
-      return callback({
-        code: grpc.status.NOT_FOUND,
-        details: "agent_profile_name is required",
-      } as grpc.ServiceError);
-    }
-
-    try {
-      const profile = await this.promptClient.getProfile(profileName);
-
-      const meta: AgentMetadata = {
-        sessionId,
-        name: `sessions/${sessionId}/agent`,
-        agentProfileName: profileName,
-        model: profile.model,
-        systemPrompt: profile.systemPrompt,
-        createTime: Date.now(),
-      };
-      this.metadata.set(sessionId, meta);
-
-      const agent: AgentMessage = {
-        name: meta.name,
-        sessionId,
-        agentProfileName: profileName,
-        createTime: timestampFromMs(meta.createTime),
-      };
-
-      callback(null, agent);
-    } catch (err: unknown) {
-      const details =
-        err instanceof Error ? err.message : "Failed to create agent";
-      error("create agent failed", { sessionId, profileName, error: details });
-      const code =
-        err instanceof Error && "code" in err
-          ? (err as grpc.ServiceError).code
-          : grpc.status.INTERNAL;
-      callback({
-        code:
-          code === grpc.status.NOT_FOUND
-            ? grpc.status.NOT_FOUND
-            : grpc.status.INTERNAL,
-        details:
-          err instanceof Error ? err.message : "Failed to create agent",
-      } as grpc.ServiceError);
-    }
-  };
-
-  // -----------------------------------------------------------------------
   // GetAgent
   // -----------------------------------------------------------------------
 
@@ -178,54 +113,16 @@ export class Handler implements AgentServiceHandlers {
     callback,
   ) => {
     const sessionId = call.request.sessionId ?? "";
-    const meta = this.metadata.get(sessionId);
-
-    if (!meta) {
-      return callback({
-        code: grpc.status.NOT_FOUND,
-        details: `Agent not found for session: ${sessionId}`,
-      } as grpc.ServiceError);
-    }
+    const state = this.adapterManager.getAdapterState(sessionId);
 
     const agent: AgentMessage = {
-      name: meta.name,
+      name: `sessions/${sessionId}/agent`,
       sessionId,
-      agentProfileName: meta.agentProfileName,
-      createTime: timestampFromMs(meta.createTime),
+      agentProfileName: state.activeProfileName ?? "",
+      createTime: timestampNow(),
     };
 
     callback(null, agent);
-  };
-
-  // -----------------------------------------------------------------------
-  // DeleteAgent
-  // -----------------------------------------------------------------------
-
-  DeleteAgent: grpc.handleUnaryCall<{ sessionId?: string }, {}> = async (
-    call,
-    callback,
-  ) => {
-    const sessionId = call.request.sessionId ?? "";
-
-    await this.acquireMutex(sessionId);
-    try {
-      if (this.metadata.has(sessionId)) {
-        this.metadata.delete(sessionId);
-        await this.checkpointer.deleteThread(sessionId);
-      }
-      // Idempotent: missing metadata = success.
-      callback(null, {});
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to delete agent";
-      error("delete agent failed", { sessionId, error: message });
-      callback({
-        code: grpc.status.INTERNAL,
-        details: message,
-      } as grpc.ServiceError);
-    } finally {
-      this.releaseMutex(sessionId);
-    }
   };
 
   // -----------------------------------------------------------------------
@@ -245,12 +142,27 @@ export class Handler implements AgentServiceHandlers {
       screenshot?: unknown;
       echo?: unknown;
       operation?: unknown;
+      agentProfileName?: string;
     },
     AgentFrame
   > = (stream) => {
     /** Tracks sequence number per invoke (turnId). */
     let currentInvokeId = "";
     let sequence = 0;
+
+    /** Registered sessionId for this stream (set on first frame). */
+    let registeredSessionId: string | null = null;
+
+    /** Wraps the gRPC stream duplex as a Connection for the registry. */
+    const connection: Connection = {
+      close() {
+        try {
+          (stream as any).end();
+        } catch {
+          // Stream may already be closed.
+        }
+      },
+    };
 
     /** Ensure sequence increments per frame within the same invoke. */
     const nextSequence = (invokeId: string): number => {
@@ -281,16 +193,22 @@ export class Handler implements AgentServiceHandlers {
       const sessionId = frame.sessionId ?? "";
       const invokeId = frame.invokeId ?? "";
 
+      // Register this stream with the session on first frame.
+      if (registeredSessionId === null && sessionId) {
+        registeredSessionId = sessionId;
+        await this.connectionRegistry.register(sessionId, connection);
+      }
+
       // --- status payload: connection probe ---
       if (frame.payload === "status" || frame.status) {
-        const meta = this.metadata.get(sessionId);
+        const state = this.adapterManager.getAdapterState(sessionId);
         const statusFrame: AgentFrame = buildFrame(
           sessionId,
           invokeId,
           FrameSender.FRAME_SENDER_SYSTEM,
           {
             status: {
-              status: meta ? "idle" : "unknown",
+              status: state.isBound ? "idle" : "unknown",
             },
           },
         );
@@ -336,17 +254,28 @@ export class Handler implements AgentServiceHandlers {
         senderValue === FrameSender.FRAME_SENDER_USER
       ) {
         const userText = frame.text?.content ?? "";
-        const meta = this.metadata.get(sessionId);
 
-        if (!meta) {
-          warn("metadata not found for text frame", { sessionId, invokeId });
+        // Determine effective profile name for this turn.
+        let effectiveProfileName = frame.agentProfileName ?? "";
+        if (!effectiveProfileName) {
+          const state = this.adapterManager.getAdapterState(sessionId);
+          if (state.isBound && state.activeProfileName) {
+            effectiveProfileName = state.activeProfileName;
+          }
+        }
+
+        if (!effectiveProfileName) {
+          warn("no agent profile name for text frame", {
+            sessionId,
+            invokeId,
+          });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
             invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               warn: {
-                message: `No agent found for session: ${sessionId}`,
+                message: "agent_profile_name required",
               },
             },
           );
@@ -356,17 +285,62 @@ export class Handler implements AgentServiceHandlers {
 
         await this.acquireMutex(sessionId);
         try {
-          const contentIter = this.llmAdapter.generateTurn(
-            meta.model,
-            meta.systemPrompt,
+          // Validate profile exists before creating adapter.
+          let profile: { model: string; systemPrompt: string };
+          try {
+            profile = await this.promptClient.getProfile(effectiveProfileName);
+          } catch (err: unknown) {
+            const details =
+              err instanceof Error ? err.message : "Profile not found";
+            warn("agent profile not found, discarding user text", {
+              sessionId,
+              invokeId,
+              profileName: effectiveProfileName,
+              error: details,
+            });
+            const warnFrame: AgentFrame = buildFrame(
+              sessionId,
+              invokeId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                warn: {
+                  message: `Agent profile not found: ${effectiveProfileName}`,
+                },
+              },
+            );
+            stream.write(warnFrame);
+            // Do NOT write to history — return without calling generateTurn.
+            return;
+          }
+
+          // Get or create adapter for this session+profile.
+          const adapter = await this.adapterManager.getOrCreateAdapter(
+            sessionId,
+            effectiveProfileName,
+            this.promptClient,
+            this.checkpointer,
+          );
+
+          // Stream content blocks from the adapter.
+          let blockCount = 0;
+          for await (const block of adapter.generateTurn(
+            profile.model,
+            profile.systemPrompt,
             sessionId,
             userText,
             this.checkpointer,
             this.providerSecret,
-          );
+          )) {
+            // Check if this connection has been kicked mid-stream.
+            if (!this.connectionRegistry.isAlive(sessionId, connection)) {
+              info("connection kicked mid-stream", {
+                sessionId,
+                invokeId,
+                blockCount,
+              });
+              break;
+            }
 
-          let blockCount = 0;
-          for await (const block of contentIter) {
             blockCount++;
             if (block.type === "reasoning") {
               info("writing thinking frame", {
@@ -379,6 +353,7 @@ export class Handler implements AgentServiceHandlers {
                 invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
+                  agentProfileName: effectiveProfileName,
                   thinking: { content: block.reasoning },
                 },
               );
@@ -395,6 +370,7 @@ export class Handler implements AgentServiceHandlers {
                 invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
+                  agentProfileName: effectiveProfileName,
                   text: { content: block.text },
                 },
               );
@@ -402,21 +378,24 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          // Emit wait frame after all response frames.
-          info("text processing completed", {
-            sessionId,
-            invokeId,
-            blockCount,
-          });
-          const waitFrame: AgentFrame = buildFrame(
-            sessionId,
-            invokeId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            {
-              wait: {},
-            },
-          );
-          stream.write(waitFrame);
+          // Emit wait frame after all response frames (if still alive).
+          if (this.connectionRegistry.isAlive(sessionId, connection)) {
+            info("text processing completed", {
+              sessionId,
+              invokeId,
+              blockCount,
+            });
+            const waitFrame: AgentFrame = buildFrame(
+              sessionId,
+              invokeId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                agentProfileName: effectiveProfileName,
+                wait: {},
+              },
+            );
+            stream.write(waitFrame);
+          }
         } catch (err: unknown) {
           const message =
             err instanceof Error ? err.message : "Processing error";
@@ -439,7 +418,7 @@ export class Handler implements AgentServiceHandlers {
             sessionId,
             invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
-            { wait: {} },
+            { agentProfileName: effectiveProfileName, wait: {} },
           );
           stream.write(waitFrame);
         } finally {
@@ -450,12 +429,21 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
-      // Unrecoverable: end the stream.
-      stream.end();
+      if (registeredSessionId) {
+        this.connectionRegistry.unregister(registeredSessionId, connection);
+      }
+      try {
+        stream.end();
+      } catch {
+        // Already closed.
+      }
     });
 
     stream.on("end", () => {
       info("connect stream ended");
+      if (registeredSessionId) {
+        this.connectionRegistry.unregister(registeredSessionId, connection);
+      }
     });
   };
 
@@ -471,51 +459,35 @@ export class Handler implements AgentServiceHandlers {
 
     // Extract sessionId from parent resource name "sessions/{id}/agent".
     const sessionId = extractSessionId(parent);
-    const meta = this.metadata.get(sessionId);
-
-    if (!meta) {
-      return callback({
-        code: grpc.status.NOT_FOUND,
-        details: `Agent not found for session: ${sessionId}`,
-      } as grpc.ServiceError);
-    }
 
     try {
-      // Read the latest checkpoint for this thread across all namespaces.
-      // createDeepAgent writes checkpoints under its own graph namespace, which
-      // differs from the standalone StateGraph(MessagesAnnotation) previously
-      // used here, so graph.getState() returned empty. list() without a
-      // checkpoint_ns scans every namespace for the thread.
-      const tuples: any[] = [];
-      for await (const tuple of this.checkpointer.list(
-        { configurable: { thread_id: sessionId } },
-        { limit: 1 },
-      )) {
-        tuples.push(tuple);
-      }
+      // Read checkpoint state for this thread via the compiled graph.
+      const state: any = await this.graph.getState({
+        configurable: { thread_id: sessionId },
+      });
 
-      const rawMessages: BaseMessage[] =
-        tuples[0]?.checkpoint?.channel_values?.messages ?? [];
-      const checkpointTs = tuples[0]?.checkpoint?.ts as string | undefined;
+      const rawMessages: BaseMessage[] = state?.values?.messages ?? [];
+      const checkpointTs: string | undefined = state?.createdAt as
+        | string
+        | undefined;
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
-        // Skip system control messages (empty content, tool results, etc.)
-        if (!msg.content && !(msg instanceof HumanMessage || msg instanceof AIMessage)) {
+        // Skip system messages.
+        if (msg instanceof SystemMessage) {
+          continue;
+        }
+
+        // Only include HumanMessage and AIMessage.
+        if (!(msg instanceof HumanMessage) && !(msg instanceof AIMessage)) {
           continue;
         }
 
         // Determine sender.
-        let sender: typeof FrameSender[keyof typeof FrameSender];
-        if (msg instanceof HumanMessage) {
-          sender = FrameSender.FRAME_SENDER_USER;
-        } else if (msg instanceof AIMessage) {
-          sender = FrameSender.FRAME_SENDER_AGENT;
-        } else if (msg instanceof SystemMessage) {
-          sender = FrameSender.FRAME_SENDER_SYSTEM;
-        } else {
-          sender = FrameSender.FRAME_SENDER_SYSTEM;
-        }
+        const sender =
+          msg instanceof HumanMessage
+            ? FrameSender.FRAME_SENDER_USER
+            : FrameSender.FRAME_SENDER_AGENT;
 
         // Determine type and content.
         let type = "text";
@@ -523,10 +495,6 @@ export class Handler implements AgentServiceHandlers {
 
         if (typeof msg.content === "string") {
           content = msg.content;
-          // System messages that look like errors are "warn" type.
-          if (msg instanceof SystemMessage || sender === FrameSender.FRAME_SENDER_SYSTEM) {
-            type = "warn";
-          }
         } else if (Array.isArray(msg.content)) {
           const reasoningBlocks = msg.content.filter(
             (b: any) => b.type === "reasoning",
@@ -599,10 +567,10 @@ function timestampFromMs(ms: number): { seconds: number; nanos: number } {
 }
 
 /**
- * Extract sessionId from a parent resource name like "sessions/{id}/agent".
+ * Extract sessionId from a parent resource name like "sessions/{id}" or "sessions/{id}/agent".
  * Returns the {id} portion, or the full string if it doesn't match the pattern.
  */
 function extractSessionId(parent: string): string {
-  const match = parent.match(/^sessions\/(.+?)\/agent$/);
+  const match = parent.match(/^sessions\/([^/]+?)(?:\/agent)?$/);
   return match ? match[1] : parent;
 }

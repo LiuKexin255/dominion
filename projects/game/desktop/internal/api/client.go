@@ -168,68 +168,6 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// CreateAgent creates a new agent for a session via POST to /api/v1/sessions/{sessionID}/agent.
-// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
-func (c *Client) CreateAgent(ctx context.Context, sessionID string) (*game.Agent, error) {
-	body, err := protojson.Marshal(new(game.Agent))
-	if err != nil {
-		return nil, fmt.Errorf("create agent: %w", err)
-	}
-
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create agent: %w", err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("create agent: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("create agent: status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	agent := new(game.Agent)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, agent); err != nil {
-		return nil, fmt.Errorf("create agent: %w", err)
-	}
-	return agent, nil
-}
-
-// CreateAgentWithProfile creates a new agent for a session with an agent profile via POST to /api/v1/sessions/{sessionID}/agent.
-// The HTTP body is the Agent message (mapped by the body:"agent" annotation in the proto).
-func (c *Client) CreateAgentWithProfile(ctx context.Context, sessionID string, profileName string) (*game.Agent, error) {
-	body, err := protojson.Marshal(&game.Agent{AgentProfileName: profileName})
-	if err != nil {
-		return nil, fmt.Errorf("create agent with profile: %w", err)
-	}
-
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create agent with profile: %w", err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("create agent with profile: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("create agent with profile: status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	agent := new(game.Agent)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, agent); err != nil {
-		return nil, fmt.Errorf("create agent with profile: %w", err)
-	}
-	return agent, nil
-}
-
 // ListAgentProfiles lists agent profiles via GET to /api/v1/prompts/agentProfiles.
 func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToken string) (*game.ListAgentProfilesResponse, error) {
 	path := "/api/v1/prompts/agentProfiles"
@@ -292,30 +230,10 @@ func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, e
 	return agent, nil
 }
 
-// DeleteAgent deletes the agent for a session via DELETE to /api/v1/sessions/{sessionID}/agent.
-func (c *Client) DeleteAgent(ctx context.Context, sessionID string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/sessions/"+sessionID+"/agent", nil)
-	if err != nil {
-		return fmt.Errorf("delete agent: %w", err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("delete agent: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delete agent: status %d: %s", resp.StatusCode, string(respBody))
-	}
-	return nil
-}
-
-// ListMessages lists all messages for a session's agent via GET to
-// /api/v1/sessions/{sessionID}/agent/messages.
+// ListMessages lists all messages for a session via GET to
+// /api/v1/sessions/{sessionID}/messages.
 func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.ListMessagesResponse, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/agent/messages", nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/messages", nil)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}

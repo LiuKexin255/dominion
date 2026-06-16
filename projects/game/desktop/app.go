@@ -29,7 +29,7 @@ type App struct {
 	cfg       api.Config
 	ctx       context.Context
 	boundWin  capture.WindowRef
-	sessionID string // active session from ConnectAgent
+	sessionID string // active session set on WebSocket connect
 }
 
 // NewApp creates a new App with default configuration.
@@ -199,81 +199,6 @@ func (a *App) DeleteSession(sessionID string) error {
 	return nil
 }
 
-// CreateAgent creates an agent for a session.
-func (a *App) CreateAgent(sessionID string) (*AgentView, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("create agent: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating agent", map[string]any{
-		"trace_id":       traceID,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	agent, err := a.client.CreateAgent(ctx, sessionID)
-	if err != nil {
-		a.logger.Error("backend", "Create agent failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Agent created", map[string]any{
-		"session_id":     sessionID,
-		"trace_id":       traceID,
-		"correlation_id": corrID,
-	})
-	return agentViewFromProto(agent), nil
-}
-
-// CreateAgentWithProfile creates an agent for a session using the specified agent profile.
-func (a *App) CreateAgentWithProfile(sessionID string, profileName string) (*AgentView, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	if profileName == "" {
-		return nil, fmt.Errorf("profile_name is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("create agent with profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating agent with profile", map[string]any{
-		"trace_id":       traceID,
-		"session_id":     sessionID,
-		"profile_name":   profileName,
-		"correlation_id": corrID,
-	})
-	agent, err := a.client.CreateAgentWithProfile(ctx, sessionID, profileName)
-	if err != nil {
-		a.logger.Error("backend", "Create agent with profile failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Agent created with profile", map[string]any{
-		"session_id":     sessionID,
-		"profile_name":   profileName,
-		"trace_id":       traceID,
-		"correlation_id": corrID,
-	})
-	return agentViewFromProto(agent), nil
-}
-
 // ListAgentProfiles lists agent profiles from the prompt service via the gateway REST API.
 func (a *App) ListAgentProfiles(pageSize int, pageToken string) (*ListAgentProfilesView, error) {
 	a.ensureClient()
@@ -414,7 +339,8 @@ func (a *App) DeleteAgentProfile(agentProfileName string) error {
 // SendAgentText sends a text frame to the agent via WebSocket and streams
 // back all response frames as Wails "game:frame" events. The loop terminates
 // when a wait frame is received (signalling the agent is done) or an error occurs.
-func (a *App) SendAgentText(sessionID string, text string) error {
+// The agentProfileName selects which agent profile to use for this session.
+func (a *App) SendAgentText(sessionID string, text string, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send agent text: not connected")
 	}
@@ -424,10 +350,11 @@ func (a *App) SendAgentText(sessionID string, text string) error {
 	}
 
 	frame := &game.AgentFrame{
-		SessionId:  sessionID,
-		FrameId:    frameID,
-		CreateTime: timestamppb.Now(),
-		Sender:     game.FrameSender_FRAME_SENDER_USER,
+		SessionId:        sessionID,
+		FrameId:          frameID,
+		CreateTime:       timestamppb.Now(),
+		Sender:           game.FrameSender_FRAME_SENDER_USER,
+		AgentProfileName: agentProfileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: text},
 		},
@@ -511,39 +438,6 @@ func (a *App) GetAgent(sessionID string) (*AgentView, error) {
 		"correlation_id": corrID,
 	})
 	return agentViewFromProto(agent), nil
-}
-
-// DeleteAgent deletes the agent for a session.
-func (a *App) DeleteAgent(sessionID string) error {
-	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
-	}
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("delete agent: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Deleting agent", map[string]any{
-		"trace_id":       traceID,
-		"session_id":     sessionID,
-		"correlation_id": corrID,
-	})
-	if err := a.client.DeleteAgent(ctx, sessionID); err != nil {
-		a.logger.Error("backend", "Delete agent failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Agent deleted", map[string]any{
-		"trace_id":       traceID,
-		"correlation_id": corrID,
-	})
-	return nil
 }
 
 // ListMessages lists all messages for a session's agent.
@@ -760,9 +654,11 @@ func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
 	return ack, nil
 }
 
-// ConnectAgent establishes a WebSocket connection for the agent.
+// ConnectAgent establishes a WebSocket connection for the session.
+// Connects directly without prior agent creation — the agent profile is
+// specified on first SendAgentText instead.
 // After the WebSocket handshake, it performs an application-level probe
-// (round-trip ping) to verify the full path: desktop → gateway → proxy → agent.
+// (round-trip ping) to verify the full path: desktop → gateway → proxy.
 // The probe has a 10-second timeout. On failure, the WebSocket is closed
 // and no state is stored.
 func (a *App) ConnectAgent(sessionID string) error {
@@ -780,7 +676,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 		corrID = "corr-" + corrID
 	}
 
-	a.logger.Info("backend", "Connecting agent via WebSocket", map[string]any{
+	a.logger.Info("backend", "Connecting session via WebSocket", map[string]any{
 		"trace_id":       traceID,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
@@ -793,7 +689,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 
 	ws := &api.WSClient{}
 	if err := ws.Connect(ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
-		a.logger.Error("backend", "Connect agent failed", map[string]any{
+		a.logger.Error("backend", "Connect session failed", map[string]any{
 			"trace_id":       traceID,
 			"session_id":     sessionID,
 			"correlation_id": corrID,
@@ -833,7 +729,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 			"error":          err.Error(),
 		})
 		ws.Close()
-		return fmt.Errorf("connect agent: probe send failed: %w", err)
+		return fmt.Errorf("connect session: probe send failed: %w", err)
 	}
 
 	resp, err := ws.RecvFrame(probeCtx)
@@ -846,7 +742,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 			"error":          err.Error(),
 		})
 		ws.Close()
-		return fmt.Errorf("connect agent: probe receive failed: %w", err)
+		return fmt.Errorf("connect session: probe receive failed: %w", err)
 	}
 
 	// Accept any response frame — the round-trip itself proves the path is alive.
@@ -860,7 +756,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 
 	a.ws = ws
 	a.sessionID = sessionID
-	a.logger.Info("backend", "Agent connected via WebSocket", map[string]any{
+	a.logger.Info("backend", "Session connected via WebSocket", map[string]any{
 		"trace_id":       traceID,
 		"session_id":     sessionID,
 		"correlation_id": corrID,

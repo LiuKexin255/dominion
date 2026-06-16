@@ -8,25 +8,24 @@ description: |
   Suite 2 (session): session + proxy + agent(test) + prompt + gateway.
     - Session CRUD + ListSessions pagination
   Suite 3 (session-agent lifecycle): session + proxy + agent(test) + prompt + gateway.
-    - Agent CRUD with profile, owner routing
-    - WebSocket connect, status/echo probes, unknown fields, invalid JSON
-    - Delete cascade (session→agent, agent→owner)
-    - Full lifecycle (create→WS status→delete→verify NotFound)
-    - Create agent with missing/empty profile error
-    - Delete agent idempotent
+    - WebSocket connect without prior agent creation (on-demand adapter)
+    - Profile switching mid-connection
+    - Connection exclusivity (second connect kicks first)
+    - GetAgent for never-connected sessions
+    - Disconnect/reconnect history persistence
+    - WebSocket status/echo probes, unknown fields, invalid JSON
   Suite 4 (agent dialog): session + proxy + agent(test) + prompt + gateway.
-    - Agent dialog with fake LLM: create agent with profile, connect chat,
-      thinking + text response, queue behavior, profile loose coupling, cleanup
+    - Agent dialog with fake LLM: connect chat with profile,
+      thinking + text response, FIFO queue behavior,
+      deterministic content, profile loose coupling
   Suite 5 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
-    - Create agent, send messages, leave, re-enter, verify ListMessages
+    - Send messages, leave, re-enter, verify ListMessages
     - Verify agent remains functional after re-enter
-  Suite 6 (delete-recreate-no-leak): session + proxy + agent(test) + prompt + gateway.
-    - Delete agent, recreate, verify ListMessages empty
-    - Verify new agent has no memory of deleted conversation
-  Suite 7 (per-profile-model): session + proxy + agent(test) + prompt + gateway.
-    - Create two agents with different profile models
+    - Cross-profile history persistence
+  Suite 6 (per-profile-model): session + proxy + agent(test) + prompt + gateway.
+    - Two profiles with different models
     - Verify each profile's model is configured correctly
-  Suite 8 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
+  Suite 7 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
     - Send two messages rapidly, verify FIFO processing order
 
 suites:
@@ -63,16 +62,7 @@ suites:
       - //projects/game/testplan:agent_dialog_test
 
   - name: checkpoint-resume
-    description: "Verify agent resumes conversation context via checkpoint after leave/re-enter"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_checkpoint_test
-
-  - name: delete-recreate-no-leak
-    description: "Verify deleted agent's conversation does not leak into recreated agent"
+    description: "Verify agent resumes conversation context via checkpoint after leave/re-enter, including cross-profile history persistence"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -81,7 +71,7 @@ suites:
       - //projects/game/testplan:agent_checkpoint_test
 
   - name: per-profile-model
-    description: "Verify agents each use their configured profile model"
+    description: "Verify profiles reference their correctly configured models"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:

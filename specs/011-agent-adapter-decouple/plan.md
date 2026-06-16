@@ -264,7 +264,7 @@ See `data-model.md` for SessionAgent and AgentAdapter entity definitions, state 
 ### Repository-internal references
 
 - **Constitution** — `.specify/memory/constitution.md` (v1.4.0).
-- **Superseded spec** — `specs/010-langchain-agent-downgrade/` (to be removed after adoption).
+- **Superseded spec** — `specs/010-langchain-agent-downgrade/` (removed).
 - **Baseline spec** — `specs/009-agent-checkpoint-redesign/` (behavioral baseline for session/checkpoint concepts).
 - **Style guides** — `style/README.md`, `style/api.md`, `style/golang.md`, `style/large_test.md`.
 - **Current implementation** — `projects/game/agent/src/llm.ts` (`createDeepAgent` usage), `handler.ts` (Create/Delete/Connect handlers), `server.ts` (StateGraph wiring).

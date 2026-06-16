@@ -23,8 +23,10 @@ import type { ProtoGrpcType } from "../game_types/game";
 
 import { readSecret } from "./secrets";
 import { PromptClient } from "./prompt-client";
-import { RealLLMAdapter, type LLMAdapter, type LLMProvider } from "./llm";
+import { type LLMProvider } from "./llm";
 import { Handler } from "./handler";
+import { ConnectionRegistry } from "./connection-registry";
+import { AdapterManager } from "./adapter-manager";
 
 // ---------------------------------------------------------------------------
 // Proto loading
@@ -90,15 +92,20 @@ function buildCredentials(): grpc.ServerCredentials {
 /**
  * Creates and starts the gRPC server.
  *
- * Reads the provider secret, creates the prompt client and LLM adapter,
- * creates a shared MemorySaver checkpointer and a minimal StateGraph
- * compiled with MessagesAnnotation for checkpoint state reads, wires
- * the Handler, loads the proto definition, registers the AgentService,
- * and binds to port 50051 on all interfaces.
+ * Reads the provider secret, creates the prompt client, AdapterManager
+ * (which creates AgentAdapterImpl instances on demand), and
+ * ConnectionRegistry, plus a shared MemorySaver checkpointer and a
+ * minimal StateGraph compiled with MessagesAnnotation for checkpoint
+ * state reads, wires the Handler, loads the proto definition, registers
+ * the AgentService, and binds to port 50051 on all interfaces.
  *
+ * @param adapterManagerOverride Optional pre-configured AdapterManager
+ *   for testing (defaults to production config via env vars).
  * @returns A promise that resolves to the started gRPC Server instance.
  */
-export async function startServer(llmAdapterOverride?: LLMAdapter): Promise<grpc.Server> {
+export async function startServer(
+  adapterManagerOverride?: AdapterManager,
+): Promise<grpc.Server> {
   // Register dominion URI resolver for service discovery.
   registerDominionResolver();
 
@@ -110,25 +117,36 @@ export async function startServer(llmAdapterOverride?: LLMAdapter): Promise<grpc
   // 2. Create PromptClient (connects to prompt service via dominion).
   const promptClient = new PromptClient();
 
-  // 3. Create LLM adapter (fake for test, real for production).
-  // RealLLMAdapter constructor is (baseUrl, provider?) — model is per-call from profile.
-  const llmAdapter: LLMAdapter = llmAdapterOverride ?? (() => {
-    const baseUrl = process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
+  // 3. Create AdapterManager (creates AgentAdapterImpl instances on demand).
+  const adapterManager: AdapterManager = adapterManagerOverride ?? (() => {
+    const baseUrl =
+      process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
     const providerEnv = process.env.LLM_PROVIDER;
     const provider: LLMProvider | undefined =
-      providerEnv === "openai" || providerEnv === "anthropic" ? providerEnv : undefined;
-    return new RealLLMAdapter(baseUrl, provider);
+      providerEnv === "openai" || providerEnv === "anthropic"
+        ? providerEnv
+        : undefined;
+    return new AdapterManager(baseUrl, provider);
   })();
 
-  // 4. Create ONE shared MemorySaver for all sessions.
+  // 4. Create ConnectionRegistry (per-session connection tracking).
+  const connectionRegistry = new ConnectionRegistry();
+
+  // 5. Create ONE shared MemorySaver for all sessions.
   const checkpointer = new MemorySaver();
 
-  // 5. Create minimal StateGraph compiled with MessagesAnnotation for checkpoint reads.
-  //    createDeepAgent writes to the same checkpointer using thread_id=sessionId.
+  // 6. Create minimal StateGraph compiled with MessagesAnnotation for checkpoint reads.
   const graph = new StateGraph(MessagesAnnotation).compile({ checkpointer });
 
-  // 6. Create Handler with all dependencies.
-  const handler = new Handler(promptClient, llmAdapter, checkpointer, graph, providerSecret);
+  // 7. Create Handler with all dependencies.
+  const handler = new Handler(
+    promptClient,
+    adapterManager,
+    connectionRegistry,
+    checkpointer,
+    graph,
+    providerSecret,
+  );
 
   // Load proto and build credentials.
   const proto = loadProto();

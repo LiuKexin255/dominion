@@ -149,7 +149,7 @@ When a WebSocket connection disconnects, the system synchronously unbinds the ac
 - The existing PromptService (agent profile and skill management) and SessionService (session CRUD) remain unchanged.
 - Profile configuration is fetched from the prompt service at adapter creation time; no local profile caching or daemon-based synchronization is needed.
 - The existing agent frame payload types (text, thinking, status, echo, warn, wait, etc.) remain unchanged; only a new optional top-level field is added.
-- This spec supersedes and replaces `specs/010-langchain-agent-downgrade/`; the directory and all its contents will be removed once this spec is adopted.
+- This spec supersedes and replaces `specs/010-langchain-agent-downgrade/`; the directory and all its contents have been removed.
 
 ### Out of Scope (Explicit)
 

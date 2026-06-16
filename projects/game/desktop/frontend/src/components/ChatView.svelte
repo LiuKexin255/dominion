@@ -7,6 +7,7 @@
     type: 'thinking' | 'text' | 'warn'
     content: string
     timestamp: string
+    agentProfileName?: string
   }
 
   let {
@@ -42,6 +43,10 @@
     }
   }
 
+  function isAgentEntry(msg: ChatEntry): boolean {
+    return msg.sender === FrameSender.AGENT
+  }
+
   $effect(() => {
     // reactively scroll when messages change
     messages
@@ -67,6 +72,9 @@
       <div class="chat-empty" data-testid="chat-empty">No messages yet. Start a conversation below.</div>
     {:else}
       {#each messages as msg (msg.timestamp)}
+        {#if isAgentEntry(msg) && msg.agentProfileName}
+          <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
+        {/if}
         <div data-testid="chat-message">
           <ChatMessage message={msg} />
         </div>
@@ -139,6 +147,14 @@
     text-align: center;
     color: #606080;
     font-size: 12px;
+  }
+
+  .msg-profile-label {
+    padding: 2px 12px 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: #50fa7b;
+    opacity: 0.7;
   }
 
   .chat-loading {

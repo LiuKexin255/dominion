@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
@@ -16,15 +15,15 @@ import (
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-// TestAgentDialogCreateAndConnect verifies the complete setup flow:
-// create session → create agent with test profile → connect WebSocket.
+// TestAgentDialogCreateAndConnect verifies the setup flow:
+// create profile → create session → connect WebSocket.
 func TestAgentDialogCreateAndConnect(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profileName := fmt.Sprintf("ad-cc-%s", uniqueSuffix())
 
-	// Create profile, session, agent
+	// Create profile, session
 	profile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profileName,
 		Model:            "gpt-4",
@@ -38,11 +37,6 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	if sessionID == "" {
 		t.Fatal("sessionID is empty")
-	}
-
-	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-	if agent.GetAgentProfileName() != profileName {
-		t.Errorf("agent profile name = %q, want %q", agent.GetAgentProfileName(), profileName)
 	}
 
 	// Connect WebSocket
@@ -67,15 +61,14 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
 	// Send text frame with sender=USER
 	sendText := "Hello, agent!"
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: sendText},
 		},
@@ -130,14 +123,13 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
 	// Send text
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: "Ordering test"},
 		},
@@ -176,8 +168,6 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
@@ -185,7 +175,8 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 
 	// Send text
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: userMessage},
 		},
@@ -235,8 +226,6 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
@@ -247,14 +236,7 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 		"Third message",
 	}
 	for _, msg := range messages {
-		textFrame := &game.AgentFrame{
-			SessionId: sessionID,
-			Payload: &game.AgentFrame_Text{
-				Text: &game.AgentTextFrame{Content: msg},
-			},
-			Sender: game.FrameSender_FRAME_SENDER_USER,
-		}
-		writeWSFrame(t, conn, textFrame)
+		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 	}
 
 	// Collect all text response frames — they should match the messages in FIFO order
@@ -290,7 +272,7 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 
 	profileName := fmt.Sprintf("ad-delp-%s", uniqueSuffix())
 
-	// Setup: create profile, session, agent
+	// Setup: create profile, session
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profileName,
 		Model:            "gpt-4",
@@ -298,10 +280,6 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-	if agent.GetAgentProfileName() != profileName {
-		t.Fatalf("setup: agent profile = %q, want %q", agent.GetAgentProfileName(), profileName)
-	}
 
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
@@ -312,10 +290,11 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 		t.Fatalf("DELETE profile status = %d, want 200 or 204", delStatus)
 	}
 
-	// Send text — agent should still respond using copied profile data
+	// Send text — agent should still respond using bound adapter data
 	userMessage := "Still works after profile deleted?"
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: userMessage},
 		},
@@ -336,52 +315,5 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	expectedText := fmt.Sprintf("Hello! This is a simulated response. You said: %s", userMessage)
 	if textRespFrame.GetText().GetContent() != expectedText {
 		t.Errorf("response text = %q, want %q", textRespFrame.GetText().GetContent(), expectedText)
-	}
-}
-
-// TestAgentDialogCleanup verifies agent cleanup behavior:
-// 1. After creation, the agent exists (GET returns 200).
-// 2. After a brief idle period (< 15 min), the agent still exists (no premature cleanup).
-// 3. After explicit DELETE, the agent is removed (GET returns 404).
-func TestAgentDialogCleanup(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("ad-clean-%s", uniqueSuffix())
-
-	// Setup
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
-	// Step 1: verify agent exists immediately after creation
-	status, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
-	if status != http.StatusOK {
-		t.Fatalf("GET agent after creation: status=%d, want %d", status, http.StatusOK)
-	}
-
-	// Step 2: brief idle period — verify agent is NOT prematurely cleaned up
-	time.Sleep(2 * time.Second)
-	status2, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
-	if status2 != http.StatusOK {
-		t.Errorf("GET agent after brief idle: status=%d, want %d (should not be cleaned up yet)", status2, http.StatusOK)
-	}
-	t.Logf("agent still exists after 2s idle (cleanup threshold is 15 min)")
-
-	// Step 3: delete agent via API — verify removal
-	delResp := deleteAgent(t, sutHostURL, sutEnvName, sessionID)
-	defer delResp.Body.Close()
-	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
-		t.Errorf("DELETE agent status = %d, want 200 or 204", delResp.StatusCode)
-	}
-
-	delGetStatus, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
-	if delGetStatus != http.StatusNotFound {
-		t.Errorf("GET agent after delete: status=%d, want %d", delGetStatus, http.StatusNotFound)
 	}
 }

@@ -185,9 +185,6 @@ func TestAgentViewFromProto(t *testing.T) {
 	if view.SessionID != "sess-agent-1" {
 		t.Fatalf("expected SessionID %q, got %q", "sess-agent-1", view.SessionID)
 	}
-	if view.CreateTime != "2024-06-15T10:30:00Z" {
-		t.Fatalf("expected CreateTime %q, got %q", "2024-06-15T10:30:00Z", view.CreateTime)
-	}
 	if view.AgentProfileName != "test-profile" {
 		t.Fatalf("expected AgentProfileName %q, got %q", "test-profile", view.AgentProfileName)
 	}

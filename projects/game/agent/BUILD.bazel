@@ -36,7 +36,6 @@ ts_project(
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
         ":node_modules/@types/node",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
         "//common/js/grpc/otel:lib",
         "//common/js/grpc/resolver:lib",
@@ -62,7 +61,6 @@ artifact_pkg_js(
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
     ],
     runtime_protos = [
@@ -101,7 +99,6 @@ artifact_pkg_js(
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
     ],
     runtime_protos = [

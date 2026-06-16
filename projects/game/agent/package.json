@@ -8,7 +8,6 @@
         "@langchain/core": "catalog:",
         "@langchain/langgraph": "catalog:",
         "@langchain/openai": "catalog:",
-        "deepagents": "catalog:",
         "langchain": "catalog:",
         "@dominion/common-js-logs": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",

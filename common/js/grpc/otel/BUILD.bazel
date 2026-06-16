@@ -36,7 +36,6 @@ js_library(
 js_runtime_library(
     name = "runtime_pkg",
     package_name = "@dominion/common-js-grpc-otel",
-    runtime_deps = [],
     lib = ":lib",
     npm_deps = [
         ":node_modules/@opentelemetry/api",
@@ -44,6 +43,7 @@ js_runtime_library(
     ],
     package_json = "package.json",
     visibility = ["//visibility:public"],
+    runtime_deps = [],
 )
 
 # Small bootstrap script that invokes vitest programmatically.

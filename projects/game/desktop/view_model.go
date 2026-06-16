@@ -20,11 +20,12 @@ type ListSessionsView struct {
 	NextPageToken string         `json:"nextPageToken,omitempty"`
 }
 
-// AgentView is the Wails view model for game.Agent.
+// AgentView is the Wails view model for the active session agent.
+// AgentProfileName represents the active profile (may be empty initially,
+// set after the first message).
 type AgentView struct {
 	Name             string `json:"name"`
 	SessionID        string `json:"sessionId"`
-	CreateTime       string `json:"createTime,omitempty"`
 	AgentProfileName string `json:"agentProfileName"`
 }
 
@@ -74,7 +75,6 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	return &AgentView{
 		Name:             a.GetName(),
 		SessionID:        a.GetSessionId(),
-		CreateTime:       timestampString(a.GetCreateTime()),
 		AgentProfileName: a.GetAgentProfileName(),
 	}
 }

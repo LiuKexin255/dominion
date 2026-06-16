@@ -384,82 +384,6 @@ func TestClient_DeleteSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_CreateAgent
-// ---------------------------------------------------------------------------
-
-func TestClient_CreateAgent(t *testing.T) {
-	tests := []struct {
-		name       string
-		sessionID  string
-		statusCode int
-		respBody   string
-		wantErr    bool
-	}{
-		{
-			name:       "success",
-			sessionID:  "sess-1",
-			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","createTime":"2024-01-01T00:00:00Z"}`,
-			wantErr:    false,
-		},
-		{
-			name:       "server error",
-			sessionID:  "sess-bad",
-			statusCode: http.StatusInternalServerError,
-			respBody:   "failed",
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost {
-					t.Errorf("expected POST, got %s", r.Method)
-				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID + "/agent"
-				if r.URL.Path != wantPath {
-					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
-				}
-
-				body, _ := io.ReadAll(r.Body)
-				req := new(game.Agent)
-				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
-					t.Fatalf("failed to parse request body as Agent: %v", err)
-				}
-
-				w.WriteHeader(tt.statusCode)
-				w.Write([]byte(tt.respBody))
-			}))
-			defer srv.Close()
-
-			client := NewClient(Config{GatewayURL: srv.URL})
-
-			// when
-			agent, err := client.CreateAgent(context.Background(), tt.sessionID)
-
-			// then
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if agent == nil {
-				t.Fatal("expected agent, got nil")
-			}
-			if agent.GetSessionId() != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.GetSessionId())
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // TestClient_GetAgent
 // ---------------------------------------------------------------------------
 
@@ -529,68 +453,6 @@ func TestClient_GetAgent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_DeleteAgent
-// ---------------------------------------------------------------------------
-
-func TestClient_DeleteAgent(t *testing.T) {
-	tests := []struct {
-		name       string
-		sessionID  string
-		statusCode int
-		respBody   string
-		wantErr    bool
-	}{
-		{
-			name:       "success",
-			sessionID:  "sess-1",
-			statusCode: http.StatusOK,
-			wantErr:    false,
-		},
-		{
-			name:       "server error",
-			sessionID:  "sess-bad",
-			statusCode: http.StatusInternalServerError,
-			respBody:   "failed",
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodDelete {
-					t.Errorf("expected DELETE, got %s", r.Method)
-				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID + "/agent"
-				if r.URL.Path != wantPath {
-					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
-				}
-				w.WriteHeader(tt.statusCode)
-				w.Write([]byte(tt.respBody))
-			}))
-			defer srv.Close()
-
-			client := NewClient(Config{GatewayURL: srv.URL})
-
-			// when
-			err := client.DeleteAgent(context.Background(), tt.sessionID)
-
-			// then
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // TestClient_ListMessages
 // ---------------------------------------------------------------------------
 
@@ -607,7 +469,7 @@ func TestClient_ListMessages(t *testing.T) {
 			name:       "success with messages",
 			sessionID:  "test-session",
 			statusCode: http.StatusOK,
-			respBody:   `{"messages":[{"name":"sessions/test-session/agent/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/agent/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"text","content":"hi there","createTime":"2024-01-01T00:00:01Z"}]}`,
+			respBody:   `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"text","content":"hi there","createTime":"2024-01-01T00:00:01Z"}]}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
@@ -635,7 +497,7 @@ func TestClient_ListMessages(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID + "/agent/messages"
+				wantPath := "/api/v1/sessions/" + tt.sessionID + "/messages"
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}

@@ -4,7 +4,7 @@
 //
 // Routes:
 //   - /api/v1/* → grpc-gateway (SessionService + ProxyService unary RPCs)
-//   - /api/v1/sessions/{session_id}/agent/connect → WebSocket (ProxyService.ConnectAgent stream)
+//   - /api/v1/sessions/{session_id}/connect → WebSocket (ProxyService.ConnectAgent stream)
 package main
 
 import (
@@ -104,16 +104,16 @@ func main() {
 }
 
 // isWebSocketConnectPath reports whether the request path matches the
-// WebSocket agent connect pattern: /api/v1/sessions/{session_id}/agent/connect
+// WebSocket connect pattern: /api/v1/sessions/{session_id}/connect
 func isWebSocketConnectPath(path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return len(parts) >= 6 &&
+	return len(parts) >= 5 &&
 		parts[0] == "api" && parts[1] == "v1" && parts[2] == "sessions" &&
-		parts[3] != "" && parts[4] == "agent" && parts[5] == "connect"
+		parts[3] != "" && parts[4] == "connect"
 }
 
 // extractSessionID extracts the session_id segment from a path matching
-// /api/v1/sessions/{session_id}/agent/connect
+// /api/v1/sessions/{session_id}/connect
 func extractSessionID(path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) >= 4 && parts[2] == "sessions" {

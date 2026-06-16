@@ -25,9 +25,14 @@ type OwnerPicker interface {
 	Pick(ctx context.Context, sessionID string, conns []*agentclient.ConnRef) (*agentclient.ConnRef, error)
 }
 
-// ConnectAgenter handles agent connection streams by reading the first frame,
-// resolving ownership, and establishing bidirectional forwarding.
-type ConnectAgenter interface {
-	// Connect handles a ConnectAgent gRPC stream.
-	Connect(stream game.ProxyService_ConnectAgentServer) error
+// ProxyService orchestrates proxy operations between the gRPC handler and
+// downstream agent instances.
+type ProxyService interface {
+	// GetAgent returns the Agent resource for the given session.
+	GetAgent(ctx context.Context, sessionID string) (*game.Agent, error)
+	// ListMessages lists messages for the given session.
+	ListMessages(ctx context.Context, sessionID string, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
+	// Connect establishes a bidirectional stream to the agent for the given session.
+	// The handler supplies the first frame it has already read and validated.
+	Connect(ctx context.Context, sessionID string, firstFrame *game.AgentFrame, stream game.ProxyService_ConnectAgentServer) error
 }

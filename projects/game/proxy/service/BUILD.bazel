@@ -3,10 +3,7 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "service",
-    srcs = [
-        "connect_agenter.go",
-        "service.go",
-    ],
+    srcs = ["service.go"],
     importpath = "dominion/projects/game/proxy/service",
     visibility = ["//visibility:public"],
     deps = [
@@ -23,7 +20,7 @@ go_library(
 
 go_unittest(
     name = "service_test",
-    srcs = ["connect_agenter_test.go"],
+    srcs = ["service_test.go"],
     embed = [":service"],
     deps = [
         "//projects/game",
@@ -34,6 +31,5 @@ go_unittest(
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//metadata",
         "@org_golang_google_grpc//status",
-        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )

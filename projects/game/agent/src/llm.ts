@@ -1,21 +1,26 @@
 /**
- * llm.ts — LLM adapter wrapping LangChain createDeepAgent for text dialog.
+ * llm.ts — Agent Adapter wrapping LangChain createAgent for text dialog.
  *
  * ContentBlock types match LangChain's block structure:
  *   - reasoning → { type: "reasoning", reasoning: string }
  *   - text      → { type: "text", text: string }
  *
- * The RealLLMAdapter uses initChatModel pointed at opencode-go's proxy
+ * The AgentAdapter uses initChatModel pointed at opencode-go's proxy
  * endpoint, selects the OpenAI or Anthropic wire format by model ID, wraps the
- * model in createDeepAgent with built-in defaults, and streams contentBlocks via
+ * model in createAgent with middleware (beforeModel placeholder +
+ * wrapModelCall stripping SystemMessages), and streams contentBlocks via
  * agent.streamEvents().
+ *
+ * The agent is created once per binding (not per turn) and cached internally
+ * until the model, systemPrompt, or checkpointer changes.
  */
 
 import { HumanMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
-import { createDeepAgent } from "deepagents";
+import { createAgent, createMiddleware } from "langchain";
 import { initChatModel } from "langchain/chat_models/universal";
 import { info, error as logError } from "@dominion/common-js-logs";
+import { beforeModelMiddleware } from "./context-middleware";
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
@@ -67,12 +72,44 @@ export function inferProvider(modelName: string): LLMProvider {
 }
 
 // ---------------------------------------------------------------------------
-// LLMAdapter interface
+// Middleware
 // ---------------------------------------------------------------------------
 
-export interface LLMAdapter {
+/**
+ * Strips all SystemMessage entries from state.messages before the model
+ * invocation. This prevents profile-switch contamination when the same
+ * thread_id is used across different systemPrompts (per the systemPrompt
+ * PERSISTS assumption confirmed by the spike test).
+ */
+const wrapModelCallMiddleware = createMiddleware({
+  name: "StripSystemMessages",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wrapModelCall: async (request: any, handler: any) => {
+    const state = request?.state;
+    if (state?.messages && Array.isArray(state.messages)) {
+      const filtered = state.messages.filter(
+        (m: any) => m._getType?.() !== "system",
+      );
+      return handler({
+        ...request,
+        state: { ...state, messages: filtered },
+      });
+    }
+    return handler(request);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// AgentAdapter interface — backward compatibility re-export below
+// ---------------------------------------------------------------------------
+
+export interface AgentAdapter {
   /**
    * Generate a single conversational turn.
+   *
+   * The first invocation (or when model / systemPrompt / checkpointer
+   * changes) compiles a new agent via createAgent.  Subsequent turns
+   * reuse the bound agent.
    *
    * @param model          - Model ID to use for this turn (per-profile).
    * @param systemPrompt   - System prompt text for agent personality/instructions.
@@ -95,13 +132,23 @@ export interface LLMAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// RealLLMAdapter — production implementation
+// AgentAdapter — production implementation  (was RealLLMAdapter)
 // ---------------------------------------------------------------------------
 
-export class RealLLMAdapter implements LLMAdapter {
+export class AgentAdapterImpl implements AgentAdapter {
   readonly baseUrl: string;
 
   readonly provider?: LLMProvider;
+
+  /** Cached compiled agent from createAgent.  Re-created on profile switch. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private boundAgent: any = null;
+
+  private boundModelSpec = "";
+
+  private boundSystemPrompt = "";
+
+  private boundCheckpointer: MemorySaver | null = null;
 
   constructor(baseUrl: string, provider?: LLMProvider) {
     this.baseUrl = baseUrl;
@@ -116,62 +163,61 @@ export class RealLLMAdapter implements LLMAdapter {
     checkpointer: MemorySaver,
     providerSecret: string,
   ): AsyncIterable<ContentBlock> {
-    const bareModel = parseModelSpec(model);
-    const provider = this.provider ?? inferProvider(bareModel);
+    const modelSpecChanged =
+      model !== this.boundModelSpec ||
+      systemPrompt !== this.boundSystemPrompt ||
+      checkpointer !== this.boundCheckpointer;
 
-    info("initializing LLM model", {
-      model: bareModel,
-      provider,
-      baseUrl: this.baseUrl,
-    });
+    if (!this.boundAgent || modelSpecChanged) {
+      const bareModel = parseModelSpec(model);
+      const provider = this.provider ?? inferProvider(bareModel);
 
-    let chatModel: Awaited<ReturnType<typeof initChatModel>>;
-    try {
-      chatModel = await initChatModel(bareModel, {
-        modelProvider: provider,
-        apiKey: providerSecret,
-        ...(provider === "openai"
-          ? { configuration: { baseURL: this.baseUrl } }
-          : { anthropicApiUrl: this.baseUrl }),
-      });
-    } catch (err) {
-      logError("LLM model initialization failed", {
+      info("binding agent adapter", {
         model: bareModel,
         provider,
-        error: err instanceof Error ? err.message : String(err),
+        systemPromptLength: systemPrompt.length,
       });
-      throw err;
+
+      let chatModel: Awaited<ReturnType<typeof initChatModel>>;
+      try {
+        chatModel = await initChatModel(bareModel, {
+          modelProvider: provider,
+          apiKey: providerSecret,
+          ...(provider === "openai"
+            ? { configuration: { baseURL: this.baseUrl } }
+            : { anthropicApiUrl: this.baseUrl }),
+        });
+      } catch (err) {
+        logError("LLM model initialization failed", {
+          model: bareModel,
+          provider,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+
+      this.boundAgent = createAgent({
+        model: chatModel,
+        systemPrompt,
+        middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
+        checkpointer,
+      });
+
+      this.boundModelSpec = model;
+      this.boundSystemPrompt = systemPrompt;
+      this.boundCheckpointer = checkpointer;
     }
 
-    yield* this.streamFromModel(chatModel, systemPrompt, userMessage, threadId, checkpointer);
+    yield* this.streamFromBoundAgent(threadId, userMessage);
   }
 
-  /**
-   * Core streaming logic separated for testability.
-   *
-   * Accepts any model supporting the BaseChatModel protocol (including
-   * fakeModel from @langchain/core/testing) so tests can inject determinism
-   * without hitting a real provider.
-   *
-   * The model parameter is typed loosely to accept both real ChatOpenAI
-   * instances and fakeModel test doubles.
-   */
+  /** Stream contentBlocks from the pre-bound agent. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private async *streamFromModel(
-    model: any,
-    systemPrompt: string,
-    userMessage: string,
+  private async *streamFromBoundAgent(
     threadId: string,
-    checkpointer: MemorySaver,
+    userMessage: string,
   ): AsyncIterable<ContentBlock> {
-    // createDeepAgent is synchronous in TypeScript (confirmed by spike).
-    const agent = createDeepAgent({
-      model,
-      systemPrompt,
-      checkpointer,
-    });
-
-    const stream = agent.streamEvents(
+    const stream = this.boundAgent.streamEvents(
       {
         messages: [new HumanMessage(userMessage)],
       },
@@ -199,3 +245,16 @@ export class RealLLMAdapter implements LLMAdapter {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Backward-compatible exports (remove after downstream callers migrate)
+// ---------------------------------------------------------------------------
+
+/** @deprecated Use AgentAdapterImpl directly. */
+export const AgentAdapter = AgentAdapterImpl;
+
+/** @deprecated Use AgentAdapterImpl. */
+export const RealLLMAdapter = AgentAdapterImpl;
+
+/** @deprecated Use AgentAdapter or AgentAdapterImpl. */
+export type LLMAdapter = AgentAdapter;

@@ -1,11 +1,10 @@
 // Package testplan contains agent checkpoint integration tests covering
-// checkpoint resume, delete-recreate isolation, per-profile model usage,
-// and concurrent message serialization.
+// checkpoint resume, cross-profile history persistence, per-profile model
+// usage, and concurrent message serialization.
 package testplan
 
 import (
 	"fmt"
-	"net/http"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -29,7 +28,6 @@ func TestAgentCheckpointResume(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
 
 	// Enter play — connect WebSocket
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -41,14 +39,7 @@ func TestAgentCheckpointResume(t *testing.T) {
 	}
 	var responseTexts []string
 	for _, msg := range messages {
-		textFrame := &game.AgentFrame{
-			SessionId: sessionID,
-			Payload: &game.AgentFrame_Text{
-				Text: &game.AgentTextFrame{Content: msg},
-			},
-			Sender: game.FrameSender_FRAME_SENDER_USER,
-		}
-		writeWSFrame(t, conn, textFrame)
+		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
@@ -99,7 +90,8 @@ func TestAgentCheckpointResume(t *testing.T) {
 	// Send follow-up referencing turn 1
 	followUp := "What is my name and what do I do for work?"
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: followUp},
 		},
@@ -144,20 +136,12 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
 
 	// Send 2 messages
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	userMessages := []string{"Turn one: hello", "Turn two: world"}
 	for _, msg := range userMessages {
-		textFrame := &game.AgentFrame{
-			SessionId: sessionID,
-			Payload: &game.AgentFrame_Text{
-				Text: &game.AgentTextFrame{Content: msg},
-			},
-			Sender: game.FrameSender_FRAME_SENDER_USER,
-		}
-		writeWSFrame(t, conn, textFrame)
+		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
@@ -190,7 +174,8 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 
 	thirdMsg := "Turn three: continuing"
 	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
 			Text: &game.AgentTextFrame{Content: thirdMsg},
 		},
@@ -214,190 +199,6 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 		t.Errorf("ListMessages after 3rd turn returned %d messages, want at least 6", len(lmr2.GetMessages()))
 	}
 	t.Logf("total messages after 3 turns: %d", len(lmr2.GetMessages()))
-}
-
-// TestAgentDeleteRecreateNoLeak verifies the delete-recreate isolation:
-// create agent → send messages → delete → recreate → ListMessages empty →
-// send message → verify agent has no memory of deleted conversation.
-func TestAgentDeleteRecreateNoLeak(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("del-noleak-%s", uniqueSuffix())
-
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
-	// Send messages to first agent
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	firstMessages := []string{"Secret: the passcode is 42.", "Remember this."}
-	for _, msg := range firstMessages {
-		textFrame := &game.AgentFrame{
-			SessionId: sessionID,
-			Payload: &game.AgentFrame_Text{
-				Text: &game.AgentTextFrame{Content: msg},
-			},
-			Sender: game.FrameSender_FRAME_SENDER_USER,
-		}
-		writeWSFrame(t, conn, textFrame)
-
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
-		})
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
-		})
-	}
-	conn.Close()
-
-	// Verify messages exist before deletion
-	lmrBefore := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if len(lmrBefore.GetMessages()) == 0 {
-		t.Fatal("expected messages before deletion, got none")
-	}
-	t.Logf("messages before delete: %d", len(lmrBefore.GetMessages()))
-
-	// Delete agent
-	delResp := deleteAgent(t, sutHostURL, sutEnvName, sessionID)
-	delResp.Body.Close()
-
-	// Recreate agent (same session, same profile)
-	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-	if agent.GetAgentProfileName() != profileName {
-		t.Errorf("recreated agent profile = %q, want %q", agent.GetAgentProfileName(), profileName)
-	}
-
-	// ListMessages — verify empty (no leak from deleted agent)
-	lmrAfter := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if len(lmrAfter.GetMessages()) != 0 {
-		t.Errorf("ListMessages after delete+recreate returned %d messages, want 0 (no leak)", len(lmrAfter.GetMessages()))
-		for i, msg := range lmrAfter.GetMessages() {
-			t.Logf("  leaked message[%d]: type=%s content=%q", i, msg.GetType(), msg.GetContent())
-		}
-	}
-
-	// Connect new agent and send a message — verify it responds fresh
-	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn2.Close()
-
-	pokeMsg := "What is the passcode?"
-	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: pokeMsg},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
-	writeWSFrame(t, conn2, textFrame)
-
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
-	})
-	textR := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
-	})
-	if textR == nil {
-		t.Fatal("no text response from recreated agent")
-	}
-	t.Logf("recreated agent response: %s", textR.GetText().GetContent())
-
-	// Verify the response does NOT contain the deleted data ("42")
-	responseContent := textR.GetText().GetContent()
-	if len(firstMessages) > 0 {
-		for _, secret := range firstMessages {
-			if containsString(responseContent, secret) {
-				t.Errorf("recreated agent response leaked deleted data %q: %s", secret, responseContent)
-			}
-		}
-	}
-
-	// Verify message count — should only have messages from the new agent
-	lmrFinal := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if len(lmrFinal.GetMessages()) == 0 {
-		t.Fatal("expected messages from recreated agent, got none")
-	}
-	if len(lmrFinal.GetMessages()) >= len(lmrBefore.GetMessages()) {
-		t.Logf("final message count %d (before delete was %d) — no leak confirmed", len(lmrFinal.GetMessages()), len(lmrBefore.GetMessages()))
-	}
-}
-
-// TestAgentDeleteRecreateVerifyClean verifies that after deleting and
-// recreating an agent, the message list is empty and the new agent starts
-// with a clean state.
-func TestAgentDeleteRecreateVerifyClean(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("del-clean-%s", uniqueSuffix())
-
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-
-	// Create agent
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
-	// Delete agent
-	delResp := deleteAgent(t, sutHostURL, sutEnvName, sessionID)
-	delResp.Body.Close()
-
-	// Verify agent is gone
-	status, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
-	if status != http.StatusNotFound {
-		t.Errorf("GET agent after delete status=%d, want %d", status, http.StatusNotFound)
-	}
-
-	// Recreate agent
-	agent := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-	if agent.GetAgentProfileName() != profileName {
-		t.Errorf("recreated agent profile = %q, want %q", agent.GetAgentProfileName(), profileName)
-	}
-
-	// Verify agent exists after recreate
-	status2, _ := getAgentWithStatus(t, sutHostURL, sutEnvName, sessionID)
-	if status2 != http.StatusOK {
-		t.Errorf("GET agent after recreate status=%d, want %d", status2, http.StatusOK)
-	}
-
-	// ListMessages — must be empty
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if len(lmr.GetMessages()) != 0 {
-		t.Errorf("ListMessages after delete+recreate returned %d messages, want 0", len(lmr.GetMessages()))
-	}
-
-	// Send a message and verify it works
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn.Close()
-
-	textFrame := &game.AgentFrame{
-		SessionId: sessionID,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: "Hello, new agent!"},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
-	writeWSFrame(t, conn, textFrame)
-
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
-	})
-	textR := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
-	})
-	if textR == nil {
-		t.Fatal("no text response from recreated agent")
-	}
-	t.Logf("recreated agent responded: %s", textR.GetText().GetContent())
 }
 
 // TestAgentPerProfileModel verifies that agents created from different
@@ -430,18 +231,9 @@ func TestAgentPerProfileModel(t *testing.T) {
 		t.Errorf("profile2 Model = %q, want %q", profile2.GetModel(), "claude-3-opus")
 	}
 
-	// Create two sessions and agents — each with a different profile
+	// Create two sessions — each with a different profile
 	sessionID1, _ := createSession(t, sutHostURL, sutEnvName)
-	agent1 := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID1, profile1Name)
-	if agent1.GetAgentProfileName() != profile1Name {
-		t.Errorf("agent1 profile = %q, want %q", agent1.GetAgentProfileName(), profile1Name)
-	}
-
 	sessionID2, _ := createSession(t, sutHostURL, sutEnvName)
-	agent2 := createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID2, profile2Name)
-	if agent2.GetAgentProfileName() != profile2Name {
-		t.Errorf("agent2 profile = %q, want %q", agent2.GetAgentProfileName(), profile2Name)
-	}
 
 	// Verify profile models via GetAgentProfile (the source of truth for model)
 	fetched1 := getAgentProfile(t, sutHostURL, sutEnvName, profile1Name)
@@ -459,8 +251,9 @@ func TestAgentPerProfileModel(t *testing.T) {
 	defer conn1.Close()
 
 	textFrame1 := &game.AgentFrame{
-		SessionId: sessionID1,
-		Payload:   &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello GPT"}},
+		SessionId:        sessionID1,
+		AgentProfileName: profile1Name,
+		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello GPT"}},
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn1, textFrame1)
@@ -475,8 +268,9 @@ func TestAgentPerProfileModel(t *testing.T) {
 	defer conn2.Close()
 
 	textFrame2 := &game.AgentFrame{
-		SessionId: sessionID2,
-		Payload:   &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello Claude"}},
+		SessionId:        sessionID2,
+		AgentProfileName: profile2Name,
+		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello Claude"}},
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn2, textFrame2)
@@ -507,21 +301,12 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 		Enabled:          true,
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	_ = createAgentWithProfile(t, sutHostURL, sutEnvName, sessionID, profileName)
-
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
 	messages := []string{"Rapid message A", "Rapid message B"}
 	for _, msg := range messages {
-		textFrame := &game.AgentFrame{
-			SessionId: sessionID,
-			Payload: &game.AgentFrame_Text{
-				Text: &game.AgentTextFrame{Content: msg},
-			},
-			Sender: game.FrameSender_FRAME_SENDER_USER,
-		}
-		writeWSFrame(t, conn, textFrame)
+		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 	}
 
 	// Collect text responses in order — must match send order
@@ -564,15 +349,88 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 	}
 }
 
-// containsString returns true when whole is a substring of s.
-func containsString(s, whole string) bool {
-	if len(whole) > len(s) {
-		return false
+// TestCrossProfileHistoryPersistence verifies that messages exchanged with
+// profile A are visible to profile B via ListMessages. When switching
+// profiles mid-connection (or via a new connect), the shared session
+// history persists across adapter profiles.
+func TestCrossProfileHistoryPersistence(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileAName := fmt.Sprintf("ckpt-xprof-a-%s", uniqueSuffix())
+	profileBName := fmt.Sprintf("ckpt-xprof-b-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		AgentProfileName: profileAName,
+		Model:            "gpt-4",
+		SystemPrompt:     "You are profile A.",
+		Enabled:          true,
+	})
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		AgentProfileName: profileBName,
+		Model:            "gpt-4",
+		SystemPrompt:     "You are profile B.",
+		Enabled:          true,
+	})
+
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// Connect with profile A and exchange 2 turns.
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+
+	userMessages := []string{"Profile A turn one", "Profile A turn two"}
+	for _, msg := range userMessages {
+		sendTextWithProfile(t, conn, sessionID, profileAName, msg)
+		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+			return f.GetThinking() != nil
+		})
+		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+			return f.GetText() != nil
+		})
+		if textResp == nil {
+			t.Fatalf("profile A, message %q: no text response", msg)
+		}
+		t.Logf("profile A exchange: %q → %q", msg, textResp.GetText().GetContent())
 	}
-	for i := 0; i <= len(s)-len(whole); i++ {
-		if s[i:i+len(whole)] == whole {
-			return true
+
+	// Switch to profile B mid-connection.
+	sendTextWithProfile(t, conn, sessionID, profileBName, "Profile B turn one")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
+	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	if textRespB == nil {
+		t.Fatal("profile B: no text response after switch")
+	}
+	t.Logf("profile B response: %q", textRespB.GetText().GetContent())
+
+	conn.Close()
+
+	// ListMessages — both profiles' messages should be visible.
+	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
+	gotCount := len(lmr.GetMessages())
+	if gotCount < 6 {
+		t.Errorf("ListMessages returned %d messages, want at least 6 (3 user + 3 agent)", gotCount)
+	}
+	for i, msg := range lmr.GetMessages() {
+		t.Logf("message[%d]: type=%s sender=%s content=%q",
+			i, msg.GetType(), senderString(msg.GetSender()), msg.GetContent())
+	}
+
+	// Verify profile A's messages are present.
+	for _, um := range userMessages {
+		found := false
+		for _, msg := range lmr.GetMessages() {
+			if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetContent() == um {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("profile A user message %q not found in cross-profile history", um)
 		}
 	}
-	return false
+
+	// Verify profile B sees the full history — not just its own turn.
+	if gotCount < 6 {
+		t.Errorf("profile B should see all %d prior messages, but only got %d", 6, gotCount)
+	}
 }

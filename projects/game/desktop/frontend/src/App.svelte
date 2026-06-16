@@ -7,9 +7,7 @@
     createSession,
     listSessions,
     deleteSession,
-    createAgentWithProfile,
     getAgent,
-    deleteAgent,
     connectAgent,
     closeAgent,
     listAgentProfiles,
@@ -32,8 +30,6 @@
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
-  type AgentLoadState = 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
-  type SessionDetailState = 'checking' | 'setup_required' | 'agent_ready' | 'error'
   type PlayState =
     | 'connecting'
     | 'loading_messages'
@@ -47,6 +43,7 @@
     type: 'thinking' | 'text' | 'warn'
     content: string
     timestamp: string
+    agentProfileName?: string
   }
 
   // --- App-level state ---
@@ -54,7 +51,6 @@
   let sessions: Session[] = $state([])
   let agent: Agent | null = $state(null)
   let connectionState: ConnectionState = $state('disconnected')
-  let agentLoadState = $state<AgentLoadState>('idle')
   let logEntries: LogEntry[] = $state([])
   let loading = $state(false)
   let error: string | null = $state(null)
@@ -65,15 +61,6 @@
   let queueCount = $state(0)
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
-
-  // --- Detail state (derived from agent metadata only; no WS dependency per FR-002) ---
-  let sessionDetailState = $derived.by<SessionDetailState>(() => {
-    const loadState: AgentLoadState = agentLoadState
-    if (loadState === 'loaded' && agent !== null) return 'agent_ready'
-    if (loadState === 'not_found') return 'setup_required'
-    if (loadState === 'error') return 'error'
-    return 'checking'
-  })
 
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
@@ -174,13 +161,10 @@
     selectedSession = session
     agent = null
     error = null
-    agentLoadState = 'idle'
     connectionState = 'disconnected'
     page = 'detail'
-    // Load profiles for the create-agent dropdown
+    // Load profiles for the chat selector
     await loadProfiles()
-    // Auto-load agent when entering detail
-    await handleAutoGetAgent(session.sessionId)
   }
 
   async function loadProfiles() {
@@ -194,46 +178,6 @@
     }
   }
 
-  async function handleAutoGetAgent(sessionId: string) {
-    try {
-      agentLoadState = 'loading'
-      error = null
-      agent = await getAgent(sessionId)
-      agentLoadState = 'loaded'
-      log('info', 'agent', `Agent loaded: ${agent.name || agent.sessionId}`)
-    } catch (e: unknown) {
-      const errStr = String(e)
-      if (errStr.includes('not found') || errStr.includes('NotFound') || errStr.includes('NOT_FOUND')) {
-        agentLoadState = 'not_found'
-      } else {
-        agentLoadState = 'error'
-        error = errStr
-      }
-      log('info', 'agent', `Get agent failed: ${errStr}`)
-    }
-  }
-
-  // --- SessionDetail handlers ---
-  async function handleCreateAgent(profileName: string) {
-    if (!selectedSession) return
-    if (!profileName) {
-      error = 'Please select an agent profile first'
-      log('warn', 'agent', 'Create agent aborted: no profile selected')
-      return
-    }
-    try {
-      loading = true
-      error = null
-      agent = await createAgentWithProfile(selectedSession.sessionId, profileName)
-      log('info', 'agent', `Agent created with profile "${profileName}": ${agent.sessionId}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'agent', `Create agent failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
   async function handleGetAgent() {
     if (!selectedSession) return
     try {
@@ -244,22 +188,6 @@
     } catch (e: unknown) {
       error = String(e)
       log('error', 'agent', `Get agent failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
-  async function handleDeleteAgent() {
-    if (!selectedSession) return
-    try {
-      loading = true
-      error = null
-      await deleteAgent(selectedSession.sessionId)
-      agent = null
-      log('info', 'agent', `Agent deleted: ${selectedSession.sessionId}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'agent', `Delete agent failed: ${String(e)}`)
     } finally {
       loading = false
     }
@@ -346,12 +274,14 @@
         type: 'thinking',
         content: frame.thinking.content,
         timestamp: frame.createTime || new Date().toISOString(),
+        agentProfileName: frame.agentProfileName,
       }]
     } else if (frame.text) {
       const textContent = frame.text.content || ''
       if (!textContent) return
       const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'text' && last.sender === FrameSender.AGENT) {
+      if (last && last.type === 'text' && last.sender === FrameSender.AGENT
+          && last.agentProfileName === frame.agentProfileName) {
         last.content += textContent
         chatMessages = [...chatMessages]
       } else {
@@ -360,6 +290,7 @@
           type: 'text',
           content: textContent,
           timestamp: frame.createTime || new Date().toISOString(),
+          agentProfileName: frame.agentProfileName,
         }]
       }
     } else if (frame.warn) {
@@ -401,7 +332,7 @@
       processing = true
       playState = 'processing'
       queueCount++
-      await sendAgentText(selectedSession.sessionId, text)
+      await sendAgentText(selectedSession.sessionId, text, selectedProfile)
       queueCount = Math.max(0, queueCount - 1)
       log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
@@ -421,7 +352,6 @@
     selectedSession = null
     agent = null
     connectionState = 'disconnected'
-    agentLoadState = 'idle'
     error = null
     managedProfiles = []
     profileMgmtError = null
@@ -462,7 +392,6 @@
       log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
       selectedSession = null
       agent = null
-      agentLoadState = 'idle'
       page = 'sessions'
       await handleRefresh()
     } catch (e: unknown) {
@@ -475,7 +404,7 @@
 
   async function handleRefreshFromDetail() {
     if (!selectedSession) return
-    await handleAutoGetAgent(selectedSession.sessionId)
+    await handleGetAgent()
     log('info', 'agent', 'Agent refreshed')
   }
 
@@ -554,13 +483,10 @@
     <SessionDetail
       session={selectedSession}
       {agent}
-      {sessionDetailState}
       {profiles}
       {selectedProfile}
       {loading}
       {error}
-      onCreateAgent={() => handleCreateAgent(selectedProfile)}
-      onDeleteAgent={handleDeleteAgent}
       onDeleteSession={handleDeleteSessionFromDetail}
       onRefresh={handleRefreshFromDetail}
       onEnterPlay={handleEnterChat}
@@ -574,6 +500,7 @@
         {connectionState}
         {profiles}
         {playState}
+        selectedProfile={selectedProfile}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
