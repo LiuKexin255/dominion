@@ -14,7 +14,6 @@ import { info, warn, error } from "@dominion/common-js-logs";
 
 import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
 
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
@@ -36,19 +35,16 @@ export class Handler implements AgentServiceHandlers {
 
   private promptClient: PromptClient;
   private sessionAgentStore: SessionAgentStore;
-  private checkpointer: MemorySaver;
   private graph: any;
   private mutexes: Map<string, Promise<void>>;
 
   constructor(
     promptClient: PromptClient,
     sessionAgentStore: SessionAgentStore,
-    checkpointer: MemorySaver,
     graph: any,
   ) {
     this.promptClient = promptClient;
     this.sessionAgentStore = sessionAgentStore;
-    this.checkpointer = checkpointer;
     this.graph = graph;
     this.mutexes = new Map();
   }

@@ -207,7 +207,6 @@ function flush(ms = 50): Promise<void> {
 interface HandlerDeps {
   promptClient: ReturnType<typeof createMockPromptClient>;
   sessionAgentStore: MockSessionAgentStore;
-  checkpointer: MemorySaver;
   graph: unknown;
 }
 
@@ -216,7 +215,6 @@ function createHandler(deps: HandlerDeps): Handler {
   return new HandlerCtor(
     deps.promptClient,
     deps.sessionAgentStore,
-    deps.checkpointer,
     deps.graph,
   );
 }
@@ -255,7 +253,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter(blocks),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -288,7 +286,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter([{ type: "text", text: "Direct answer" }]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -309,7 +307,7 @@ describe("Handler.Connect text frame", () => {
       createMockAdapter([{ type: "text", text: "reply" }]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -335,7 +333,7 @@ describe("Handler.Connect text frame", () => {
       ]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -368,7 +366,7 @@ describe("Handler.Connect missing profile name", () => {
   });
 
   it("returns warn frame when profile name is missing and no adapter is bound", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -391,7 +389,7 @@ describe("Handler.Connect missing profile name", () => {
     ]);
     sessionAgentStore._setBinding("sess-no-profile", "some-profile", adapter);
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -435,7 +433,7 @@ describe("Handler.Connect profile switch", () => {
     });
     agent.getAdapterState.mockReturnValue({ activeProfileName: null, isBound: false });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -496,7 +494,7 @@ describe("Handler.Connect failed profile switch", () => {
 
     agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -539,7 +537,7 @@ describe("Handler.Connect deprecated payloads", () => {
   });
 
   function setupStream() {
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
     return stream;
@@ -589,7 +587,7 @@ describe("Handler.Connect probes", () => {
   });
 
   it("responds to status probe with 'unknown' for unbound session", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -614,7 +612,7 @@ describe("Handler.Connect probes", () => {
       createMockAdapter([]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -632,7 +630,7 @@ describe("Handler.Connect probes", () => {
   });
 
   it("echoes echo payload back", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
@@ -677,7 +675,6 @@ describe("Handler.Connect LLM error", () => {
     const handler = createHandler({
       promptClient,
       sessionAgentStore,
-      checkpointer: real.checkpointer,
       graph: real.graph,
     });
     const stream = createFakeStream();
@@ -728,7 +725,6 @@ describe("Handler.Connect same-session serialization", () => {
     const handler = createHandler({
       promptClient,
       sessionAgentStore,
-      checkpointer: real.checkpointer,
       graph: real.graph,
     });
     const stream = createFakeStream();
@@ -768,7 +764,7 @@ describe("Handler.GetAgent", () => {
       createMockAdapter([]),
     );
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const call = createUnaryCall({ sessionId: "sess-bound" });
     const { callback, promise } = createCallback<{
@@ -791,7 +787,7 @@ describe("Handler.GetAgent", () => {
   it("returns empty profile for never-connected session (200 OK)", async () => {
     const sessionAgentStore = createMockSessionAgentStore();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const call = createUnaryCall({ sessionId: "never-connected" });
     const { callback, promise } = createCallback<{
@@ -842,9 +838,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   }
 
   it("round-trips text messages (human + ai) in chronological order", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const sessionId = "sess-text-rt";
     await writeMessages(graph, sessionId, [
@@ -867,9 +863,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const sessionId = "sess-think-rt";
     await writeMessages(graph, sessionId, [
@@ -890,9 +886,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const sessionId = "sess-mixed-rt";
     await writeMessages(graph, sessionId, [
@@ -913,9 +909,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("filters out SystemMessages from the result", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const sessionId = "sess-sys-filter";
     await writeMessages(graph, sessionId, [
@@ -937,9 +933,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("returns empty messages for session with no checkpoint state", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const { error, response } = await listMessages(handler, "never-written");
 
@@ -948,9 +944,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
   });
 
   it("preserves chronological ordering across multiple turns", async () => {
-    const { graph, checkpointer } = createRealGraph();
+    const { graph } = createRealGraph();
 
-    const handler = createHandler({ promptClient, sessionAgentStore, checkpointer, graph });
+    const handler = createHandler({ promptClient, sessionAgentStore, graph });
 
     const sessionId = "sess-chrono";
     await writeMessages(graph, sessionId, [new HumanMessage("first")]);

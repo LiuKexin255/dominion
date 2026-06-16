@@ -112,7 +112,6 @@ export async function startServer(
   const handler = new Handler(
     promptClient,
     sessionAgentStore,
-    checkpointer,
     graph,
   );
 
