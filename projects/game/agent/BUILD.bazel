@@ -37,10 +37,6 @@ ts_project(
         ":node_modules/@langchain/openai",
         ":node_modules/@types/node",
         ":node_modules/langchain",
-        "//common/js/grpc/otel:lib",
-        "//common/js/grpc/resolver:lib",
-        "//common/js/logs:lib",
-        "//common/js/otel:lib",
     ],
 )
 
