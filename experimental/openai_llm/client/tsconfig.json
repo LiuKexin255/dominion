@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+      "@dominion/common-js-logs": ["../../../common/js/logs/src"],
+      "@dominion/common-js-otel": ["../../../common/js/otel/src"],
+      "@dominion/common-js-resolver": ["../../../common/js/resolver/src"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

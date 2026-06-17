@@ -1,0 +1,11 @@
+version: "3.0"
+name: client
+app: openllm
+kind: stateless
+desc: Experimental OpenAI LLM client using @langchain/openai
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: client
+    target: :cmd_image

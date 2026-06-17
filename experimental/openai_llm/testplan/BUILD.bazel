@@ -1,0 +1,8 @@
+load("//tools/dev/go:defs.bzl", "go_largetest")
+
+go_largetest(
+    name = "interface_test",
+    size = "small",
+    srcs = ["interface_test.go"],
+    deps = ["//common/gopkg/testtool"],
+)

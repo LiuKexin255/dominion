@@ -1,6 +1,7 @@
 packages:
   - experimental/ts/*
   - experimental/grpc_chain/mid
+  - experimental/openai_llm/client
   - common/js/**
   - projects/game/desktop/frontend
   - projects/game/agent

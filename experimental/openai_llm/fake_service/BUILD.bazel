@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+go_library(
+    name = "fake_service_lib",
+    srcs = ["main.go"],
+    importpath = "dominion/experimental/openai_llm/fake_service",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//common/gopkg/bootstrap",
+        "//common/gopkg/http",
+        "//common/gopkg/otel",
+    ],
+)
+
+go_binary(
+    name = "fake_service",
+    embed = [":fake_service_lib"],
+    visibility = ["//visibility:public"],
+)
+
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "openllm",
+    binary = ":fake_service",
+    service = "fake-service",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "openllm",
+    pkg = ":service_pkg",
+    service = "fake-service",
+)

@@ -1,0 +1,11 @@
+version: "3.0"
+name: fake-service
+app: openllm
+kind: stateless
+desc: Experimental fake OpenAI Chat Completions service
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: fake-service
+    target: :cmd_image
