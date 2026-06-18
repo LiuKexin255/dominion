@@ -40,7 +40,14 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- **Citation Provenance (§I)**: Every external fact, dependency choice,
+  API reference, or design decision in this plan MUST carry an inline
+  `[description](URL)` link and a matching entry in the `## References`
+  section below. Statements without a citation are assumptions and MUST
+  move to the spec's `## Assumptions` section.
+- Version pins or commit SHAs MUST accompany any citation whose
+  referenced state matters.
+- All cited links MUST resolve to publicly accessible resources.
 
 ## Project Structure
 
@@ -111,3 +118,26 @@ directories captured above]
 |-----------|------------|-------------------------------------|
 | [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
 | [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+
+## References *(mandatory per Constitution §I — Citation Provenance)*
+
+<!--
+  ACTION REQUIRED: Every external source cited in this plan MUST appear
+  here with a traceable link. If no external material is cited, keep the
+  section and write "No external references."
+
+  Group links by category and pin versions/commits where the cited state
+  matters. Inline citations use [description](URL) at the point of use.
+-->
+
+### Official Documentation
+
+- [Title or description](URL) — version/section if applicable
+
+### Repositories
+
+- [org/repo — file or commit description](URL)
+
+### Articles & RFCs
+
+- [Article or RFC title](URL)

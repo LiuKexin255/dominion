@@ -7,12 +7,9 @@
 ### Bazel / Gazelle
 
 * 使用 `bazel` 作为编译与测试入口。
-* 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 生成/更新
-  `BUILD.bazel` 文件。由于设置了 `-lazy` 参数，最好在需要更新的目录下执行
-  `gazelle`，或者指定目录：`bazel run //:gazelle some/subdir`。
-* `BUILD.bazel` 文件通常只由 `gazelle` 生成/更新；如需添加 `target`（如
-  `oci_image`）应在 `gazelle` 生成后添加。
-* 使用 `bazel mod tidy` 更新 Bazel 依赖。xiu
+* 在代码中引用新的依赖后，使用 `bazel run //:gazelle` 生成/更新 `BUILD.bazel` 文件。由于设置了 `-lazy` 参数，最好在需要更新的目录下执行 `gazelle`，或者指定目录：`bazel run //:gazelle some/subdir`。
+* `BUILD.bazel` 文件通常只由 `gazelle` 生成/更新；如需添加 `target`（如 `oci_image`）应在 gazelle` 生成后添加。
+* 使用 `bazel mod tidy` 更新 Bazel 依赖。
 
 ### Golang
 
