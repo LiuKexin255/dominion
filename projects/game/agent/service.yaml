@@ -15,3 +15,5 @@ artifacts:
   - name: agent_test
     target: :cmd_image_test
     tls: true
+    secrets:
+      - provider
