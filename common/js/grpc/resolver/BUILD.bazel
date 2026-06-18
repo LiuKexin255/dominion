@@ -17,9 +17,9 @@ ts_project(
     tsconfig = ":tsconfig.json",
     visibility = ["//visibility:public"],
     deps = [
+        ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
-        ":node_modules/@dominion/common-js-resolver",
     ],
 )
 
