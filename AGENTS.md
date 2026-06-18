@@ -54,8 +54,9 @@ Python 依赖更新步骤：
 
 ## 调试与大型测试
 
+* 要求为服务编写大型测试的测试计划，大型测试保存在 `testplan` 目录下。使用 `testplan` SKILL 执行大型测试的测试计划。
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
-* 需要执行大型测试计划时，使用 `testplan` skill。
+* 编写/执行大型测试的测试计划之前，要求阅读 `style/large_test.md`。
 
 ## 注释
 

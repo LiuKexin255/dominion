@@ -1,14 +1,8 @@
 load("//tools/dev/go:defs.bzl", "go_largetest", "go_unittest")
 
 go_largetest(
-    name = "interface_test",
-    size = "small",
-    srcs = ["interface_test.go"],
-    deps = ["//common/gopkg/testtool"],
-)
-
-go_unittest(
     name = "testplan_test",
+    size = "small",
     srcs = ["interface_test.go"],
     deps = ["//common/gopkg/testtool"],
 )
