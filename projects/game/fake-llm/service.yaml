@@ -1,0 +1,11 @@
+version: "3.0"
+name: fake-llm
+app: game
+kind: stateless
+desc: game fake llm service
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: fake-llm
+    target: :cmd_image

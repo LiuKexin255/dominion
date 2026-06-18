@@ -1,0 +1,16 @@
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_go")
+
+artifact_pkg_go(
+    name = "service_pkg",
+    app = "game",
+    binary = "//projects/game/fake-llm/cmd:cmd",
+    service = "fake-llm",
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    pkg = ":service_pkg",
+    service = "fake-llm",
+    visibility = ["//visibility:public"],
+)

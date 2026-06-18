@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "service",
+    srcs = [
+        "message_store.go",
+        "message_types.go",
+        "startup.go",
+    ],
+    embedsrcs = [
+        "testdata/sample_farewell.json",
+        "testdata/sample_greeting.yaml",
+    ],
+    importpath = "dominion/projects/game/fake-llm/service",
+    visibility = ["//visibility:public"],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+)
+
+go_unittest(
+    name = "service_test",
+    srcs = ["message_store_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":service"],
+)

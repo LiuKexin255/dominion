@@ -1,0 +1,7 @@
+name: greeting
+keywords:
+  - hello
+  - hi
+  - greetings
+reasoning: "The user is greeting me, I should respond warmly."
+text: "Hello! How can I help you today?"
