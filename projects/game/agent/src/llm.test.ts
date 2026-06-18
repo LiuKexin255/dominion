@@ -6,47 +6,59 @@
  * only takes threadId and userMessage.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
-
 import { AIMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
 import { fakeModel } from "@langchain/core/testing";
+import { MemorySaver } from "@langchain/langgraph";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ContentBlock, AgentAdapterImpl } from "./llm";
+import { AgentAdapterImpl, type ContentBlock } from "./llm";
 
 // Helpers
 
+type FakeStreamAgent = {
+	agent: {
+		streamEvents: () => AsyncGenerator<{
+			data: {
+				chunk: {
+					additional_kwargs?: Record<string, unknown>;
+					contentBlocks?: ContentBlock[];
+				};
+			};
+		}>;
+	};
+};
+
 async function collect(
-  iter: AsyncIterable<ContentBlock>,
+	iter: AsyncIterable<ContentBlock>,
 ): Promise<ContentBlock[]> {
-  const blocks: ContentBlock[] = [];
-  for await (const block of iter) {
-    blocks.push(block);
-  }
-  return blocks;
+	const blocks: ContentBlock[] = [];
+	for await (const block of iter) {
+		blocks.push(block);
+	}
+	return blocks;
 }
 
 function fakeTextModel(text: string) {
-  return fakeModel().respond(
-    new AIMessage({
-      content: [{ type: "text", text }],
-    }),
-  );
+	return fakeModel().respond(
+		new AIMessage({
+			content: [{ type: "text", text }],
+		}),
+	);
 }
 
 function fakeThinkingModel(reasoning: string, text: string) {
-  return fakeModel().respond(
-    new AIMessage({
-      content: [
-        { type: "reasoning", reasoning },
-        { type: "text", text },
-      ],
-    }),
-  );
+	return fakeModel().respond(
+		new AIMessage({
+			content: [
+				{ type: "reasoning", reasoning },
+				{ type: "text", text },
+			],
+		}),
+	);
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+	vi.clearAllMocks();
 });
 
 // ===========================================================================
@@ -54,23 +66,23 @@ beforeEach(() => {
 // ===========================================================================
 
 describe("AgentAdapterImpl constructor", () => {
-  it("implements the AgentAdapter interface", () => {
-    const adapter = new AgentAdapterImpl(
-      fakeTextModel("hi"),
-      "prompt",
-      new MemorySaver(),
-    );
-    expect(typeof adapter.generateTurn).toBe("function");
-  });
+	it("implements the AgentAdapter interface", () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("hi"),
+			"prompt",
+			new MemorySaver(),
+		);
+		expect(typeof adapter.generateTurn).toBe("function");
+	});
 
-  it("generateTurn accepts 2 parameters (threadId, userMessage)", () => {
-    const adapter = new AgentAdapterImpl(
-      fakeTextModel("hi"),
-      "prompt",
-      new MemorySaver(),
-    );
-    expect(adapter.generateTurn.length).toBe(2);
-  });
+	it("generateTurn accepts 2 parameters (threadId, userMessage)", () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("hi"),
+			"prompt",
+			new MemorySaver(),
+		);
+		expect(adapter.generateTurn.length).toBe(2);
+	});
 });
 
 // ===========================================================================
@@ -78,48 +90,109 @@ describe("AgentAdapterImpl constructor", () => {
 // ===========================================================================
 
 describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
-  it("yields text ContentBlock for text-only response", async () => {
-    const model = fakeTextModel("The answer is 42.");
-    const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-    const blocks = await collect(adapter.generateTurn("t-text", "Hi"));
+	it("yields text ContentBlock for text-only response", async () => {
+		const model = fakeTextModel("The answer is 42.");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-text", "Hi"));
 
-    expect(blocks.length).toBeGreaterThan(0);
-    const textBlocks = blocks.filter((b) => b.type === "text");
-    expect(textBlocks.length).toBeGreaterThanOrEqual(1);
-    expect(textBlocks[0].text).toBe("The answer is 42.");
-  });
+		expect(blocks.length).toBeGreaterThan(0);
+		const textBlocks = blocks.filter((b) => b.type === "text");
+		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
+		expect(textBlocks[0].text).toBe("The answer is 42.");
+	});
 
-  it("yields reasoning ContentBlock before text ContentBlock", async () => {
-    const model = fakeThinkingModel("Let me think...", "Done.");
-    const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-    const blocks = await collect(adapter.generateTurn("t-think", "Why?"));
+	it("yields reasoning ContentBlock before text ContentBlock", async () => {
+		const model = fakeThinkingModel("Let me think...", "Done.");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-think", "Why?"));
 
-    const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
-    const textBlocks = blocks.filter((b) => b.type === "text");
+		const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
+		const textBlocks = blocks.filter((b) => b.type === "text");
 
-    expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
-    expect(textBlocks.length).toBeGreaterThanOrEqual(1);
+		expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
+		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
 
-    let lastReasoningIdx = -1;
-    let firstTextIdx = -1;
-    for (let i = 0; i < blocks.length; i++) {
-      if (blocks[i].type === "reasoning") lastReasoningIdx = i;
-      if (blocks[i].type === "text" && firstTextIdx === -1) firstTextIdx = i;
-    }
-    if (lastReasoningIdx >= 0 && firstTextIdx >= 0) {
-      expect(lastReasoningIdx).toBeLessThan(firstTextIdx);
-    }
-  });
+		let lastReasoningIdx = -1;
+		let firstTextIdx = -1;
+		for (let i = 0; i < blocks.length; i++) {
+			if (blocks[i].type === "reasoning") lastReasoningIdx = i;
+			if (blocks[i].type === "text" && firstTextIdx === -1) firstTextIdx = i;
+		}
+		if (lastReasoningIdx >= 0 && firstTextIdx >= 0) {
+			expect(lastReasoningIdx).toBeLessThan(firstTextIdx);
+		}
+	});
 
-  it("all yielded blocks have type 'reasoning' or 'text'", async () => {
-    const model = fakeThinkingModel("Thinking", "Text");
-    const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-    const blocks = await collect(adapter.generateTurn("t-types", "go"));
+	it("all yielded blocks have type 'reasoning' or 'text'", async () => {
+		const model = fakeThinkingModel("Thinking", "Text");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-types", "go"));
 
-    for (const block of blocks) {
-      expect(["reasoning", "text"]).toContain(block.type);
-    }
-  });
+		for (const block of blocks) {
+			expect(["reasoning", "text"]).toContain(block.type);
+		}
+	});
+
+	it("yields reasoning from additional_kwargs before text blocks", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			new MemorySaver(),
+		);
+
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async function* () {
+				yield {
+					data: {
+						chunk: {
+							additional_kwargs: {
+								reasoning_content: "I should greet the user",
+							},
+							contentBlocks: [{ type: "text", text: "Hello" }],
+						},
+					},
+				};
+			},
+		};
+
+		const blocks = await collect(
+			adapter.generateTurn("t-additional-kwargs", "Hi"),
+		);
+
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0]).toEqual({
+			type: "reasoning",
+			reasoning: "I should greet the user",
+		});
+		expect(blocks[1]).toEqual({ type: "text", text: "Hello" });
+	});
+
+	it("yields text blocks when additional_kwargs is absent", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			new MemorySaver(),
+		);
+
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async function* () {
+				yield {
+					data: {
+						chunk: {
+							contentBlocks: [{ type: "text", text: "Just text" }],
+						},
+					},
+				};
+			},
+		};
+
+		const blocks = await collect(
+			adapter.generateTurn("t-no-additional-kwargs", "Hi"),
+		);
+
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
 });
 
 // ===========================================================================
@@ -127,24 +200,24 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 // ===========================================================================
 
 describe("AgentAdapterImpl WrapModelCall middleware", () => {
-  it("strips SystemMessages from state before model invocation", async () => {
-    const model = fakeModel().respond(
-      new AIMessage({ content: [{ type: "text", text: "OK" }] }),
-    );
-    const cp = new MemorySaver();
+	it("strips SystemMessages from state before model invocation", async () => {
+		const model = fakeModel().respond(
+			new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+		);
+		const cp = new MemorySaver();
 
-    const adapter = new AgentAdapterImpl(model, "system-prompt-1", cp);
+		const adapter = new AgentAdapterImpl(model, "system-prompt-1", cp);
 
-    await collect(adapter.generateTurn("t-mw", "msg1"));
-    await collect(adapter.generateTurn("t-mw", "msg2"));
+		await collect(adapter.generateTurn("t-mw", "msg1"));
+		await collect(adapter.generateTurn("t-mw", "msg2"));
 
-    for (const call of model.calls) {
-      const systemMsgs = call.messages.filter(
-        (m: any) => m._getType?.() === "system",
-      );
-      expect(systemMsgs).toHaveLength(0);
-    }
-  });
+		for (const call of model.calls) {
+			const systemMsgs = call.messages.filter(
+				(m: any) => m._getType?.() === "system",
+			);
+			expect(systemMsgs).toHaveLength(0);
+		}
+	});
 });
 
 // ===========================================================================
@@ -152,12 +225,12 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 // ===========================================================================
 
 describe("AgentAdapterImpl.generateTurn error propagation", () => {
-  it("propagates error when the model responds with an error", async () => {
-    const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
-    const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+	it("propagates error when the model responds with an error", async () => {
+		const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
 
-    await expect(
-      collect(adapter.generateTurn("t-err2", "hi")),
-    ).rejects.toThrow();
-  });
+		await expect(
+			collect(adapter.generateTurn("t-err2", "hi")),
+		).rejects.toThrow();
+	});
 });
