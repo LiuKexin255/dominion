@@ -19,6 +19,19 @@ description: "Task list template for feature implementation"
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
 - Include exact file paths in descriptions
 
+## Constitution Check
+
+*GATE: Must pass before implementation begins.*
+
+- **Citation Provenance (§I)**: every task that references an external
+  library, tool, command, pattern, or inherited design decision MUST
+  include an inline `[description](URL)` link or explicitly cite the
+  parent `spec.md`/`plan.md` source. A matching entry MUST appear in the
+  `## References` section at the end of this file.
+- **Code Style Precedence (§II)**: every code-related task MUST reference
+  the applicable `style/` documents and confirm they were reviewed before
+  any source file is created or modified.
+
 ## Path Conventions
 
 - **Single project**: `src/`, `tests/` at repository root
@@ -250,3 +263,26 @@ With multiple developers:
 - Commit after each task or logical group
 - Stop at any checkpoint to validate story independently
 - Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence
+
+## References *(mandatory per Constitution §I — Citation Provenance)*
+
+<!--
+  ACTION REQUIRED: Every external source cited in any task description
+  MUST appear here with a traceable link. If no external material is cited,
+  keep the section and write "No external references."
+
+  Group links by category and pin versions/commits where the cited state
+  matters. Inline citations use [description](URL) at the point of use.
+-->
+
+### Official Documentation
+
+- [Title or description](URL) — version/section if applicable
+
+### Repositories
+
+- [org/repo — file or commit description](URL)
+
+### Articles & RFCs
+
+- [Article or RFC title](URL)

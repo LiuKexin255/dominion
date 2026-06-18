@@ -44,10 +44,14 @@
   API reference, or design decision in this plan MUST carry an inline
   `[description](URL)` link and a matching entry in the `## References`
   section below. Statements without a citation are assumptions and MUST
-  move to the spec's `## Assumptions` section.
+  move to the spec's `## Assumptions` section. Any design decision
+  restated in `tasks.md` MUST carry or explicitly inherit a citation.
 - Version pins or commit SHAs MUST accompany any citation whose
   referenced state matters.
 - All cited links MUST resolve to publicly accessible resources.
+- **Code Style Precedence (§II)**: every implementation task exported to
+  `tasks.md` MUST reference the applicable `style/` documents and confirm
+  they are reviewed before code changes begin.
 
 ## Project Structure
 

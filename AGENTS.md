@@ -2,6 +2,11 @@
 
 本文档面向在本仓库内工作的智能体编码代理（agentic coding agents）。
 
+## 需求&方案规范
+
+* 本仓库开发采用 `SDD` 架构，使用 `speckit` 作为 `SDD` 框架。
+* 所有 Agent 在进行开发方案和计划设计时，应当遵守 `.specify/memory/constitution.md` 规范。
+
 ## 操作命令参考
 
 ### Bazel / Gazelle
