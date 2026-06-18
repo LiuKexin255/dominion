@@ -6,6 +6,7 @@ package testplan
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -44,8 +45,13 @@ func TestConnectWithoutCreate(t *testing.T) {
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame")
 	}
+	// "Hello without create" carries the greeting keyword so the on-demand
+	// adapter returns a deterministic response.
 	if thinkingFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("thinking sender = %s, want AGENT", senderString(thinkingFrame.GetSender()))
+	}
+	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
+		t.Errorf("thinking = %q, want to contain %q", thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
 	}
 	t.Logf("thinking: %q", thinkingFrame.GetThinking().GetContent())
 
@@ -58,6 +64,9 @@ func TestConnectWithoutCreate(t *testing.T) {
 	}
 	if textFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("text sender = %s, want AGENT", senderString(textFrame.GetSender()))
+	}
+	if !strings.Contains(textFrame.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("text = %q, want to contain %q", textFrame.GetText().GetContent(), expectedGreetingText)
 	}
 	t.Logf("text: %q", textFrame.GetText().GetContent())
 

@@ -5,6 +5,7 @@ package testplan
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -32,23 +33,33 @@ func TestAgentCheckpointResume(t *testing.T) {
 	// Enter play — connect WebSocket
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 
+	// Each turn carries the greeting keyword so responses are deterministic.
 	messages := []string{
-		"My name is Alice and I work as a software engineer.",
-		"How are you today?",
-		"What is 2+2?",
+		"Hello, my name is Alice and I work as a software engineer.",
+		"Hello, how are you today?",
+		"Hello, what is 2+2?",
 	}
 	var responseTexts []string
 	for _, msg := range messages {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
 		})
+		if thinkingResp == nil {
+			t.Fatalf("message %q: did not receive thinking response", msg)
+		}
+		if !strings.Contains(thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning) {
+			t.Errorf("message %q: thinking = %q, want to contain %q", msg, thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning)
+		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetText() != nil
 		})
 		if textResp == nil {
 			t.Fatalf("message %q: did not receive text response", msg)
+		}
+		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
+			t.Errorf("message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
 		}
 		responseTexts = append(responseTexts, textResp.GetText().GetContent())
 		t.Logf("turn %d: user=%q → agent=%q", len(responseTexts), msg, textResp.GetText().GetContent())
@@ -87,8 +98,8 @@ func TestAgentCheckpointResume(t *testing.T) {
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn2.Close()
 
-	// Send follow-up referencing turn 1
-	followUp := "What is my name and what do I do for work?"
+	// Send follow-up referencing turn 1, carrying the greeting keyword.
+	followUp := "Hello, what is my name and what do I do for work?"
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
@@ -99,9 +110,12 @@ func TestAgentCheckpointResume(t *testing.T) {
 	}
 	writeWSFrame(t, conn2, textFrame)
 
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	followThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
 		return f.GetThinking() != nil
 	})
+	if followThinking == nil {
+		t.Fatal("did not receive thinking response for follow-up after re-enter")
+	}
 	textResp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
 		return f.GetText() != nil
 	})
@@ -110,6 +124,9 @@ func TestAgentCheckpointResume(t *testing.T) {
 	}
 	if textResp.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("follow-up sender = %s, want AGENT", senderString(textResp.GetSender()))
+	}
+	if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("follow-up text = %q, want to contain %q", textResp.GetText().GetContent(), expectedGreetingText)
 	}
 	t.Logf("follow-up response: %s", textResp.GetText().GetContent())
 
@@ -137,20 +154,29 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// Send 2 messages
+	// Send 2 messages, each carrying the greeting keyword.
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	userMessages := []string{"Turn one: hello", "Turn two: world"}
+	userMessages := []string{"Hello, turn one", "Hello, turn two"}
 	for _, msg := range userMessages {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
 		})
+		if thinkingResp == nil {
+			t.Fatalf("message %q: no thinking response", msg)
+		}
+		if !strings.Contains(thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning) {
+			t.Errorf("message %q: thinking = %q, want to contain %q", msg, thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning)
+		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetText() != nil
 		})
 		if textResp == nil {
 			t.Fatalf("message %q: no text response", msg)
+		}
+		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
+			t.Errorf("message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
 		}
 	}
 	conn.Close()
@@ -168,11 +194,11 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 		}
 	}
 
-	// Re-connect and send a third message
+	// Re-connect and send a third message carrying the greeting keyword.
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn2.Close()
 
-	thirdMsg := "Turn three: continuing"
+	thirdMsg := "Hello, turn three continuing"
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
@@ -183,14 +209,20 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	}
 	writeWSFrame(t, conn2, textFrame)
 
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	thirdThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
 		return f.GetThinking() != nil
 	})
+	if thirdThinking == nil {
+		t.Fatal("third message: no thinking response after re-enter")
+	}
 	textR := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
 		return f.GetText() != nil
 	})
 	if textR == nil {
 		t.Fatal("third message: no text response after re-enter")
+	}
+	if !strings.Contains(textR.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("third message text = %q, want to contain %q", textR.GetText().GetContent(), expectedGreetingText)
 	}
 
 	// Verify message count increased by 2 (1 user + 1 agent)
@@ -203,14 +235,17 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 
 // TestAgentPerProfileModel verifies that agents created from different
 // profiles each reference the correct model configured in their profile.
+// Both profiles use non-Anthropic model names so the resolver-aware
+// ChatOpenAI provider serves them via fake-llm; fake-llm itself ignores the
+// model field, so both respond with the same template-matched content.
 func TestAgentPerProfileModel(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profile1Name := fmt.Sprintf("model-gpt4-%s", uniqueSuffix())
-	profile2Name := fmt.Sprintf("model-claude-%s", uniqueSuffix())
+	profile2Name := fmt.Sprintf("model-gpt4turbo-%s", uniqueSuffix())
 
-	// Create two profiles with different models
+	// Create two profiles with different non-Anthropic models.
 	profile1 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profile1Name,
 		Model:            "gpt-4",
@@ -223,44 +258,49 @@ func TestAgentPerProfileModel(t *testing.T) {
 
 	profile2 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
 		AgentProfileName: profile2Name,
-		Model:            "claude-3-opus",
-		SystemPrompt:     "Claude test agent.",
+		Model:            "gpt-4-turbo",
+		SystemPrompt:     "GPT-4 Turbo test agent.",
 		Enabled:          true,
 	})
-	if profile2.GetModel() != "claude-3-opus" {
-		t.Errorf("profile2 Model = %q, want %q", profile2.GetModel(), "claude-3-opus")
+	if profile2.GetModel() != "gpt-4-turbo" {
+		t.Errorf("profile2 Model = %q, want %q", profile2.GetModel(), "gpt-4-turbo")
 	}
 
-	// Create two sessions — each with a different profile
+	// Create two sessions — each with a different profile.
 	sessionID1, _ := createSession(t, sutHostURL, sutEnvName)
 	sessionID2, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// Verify profile models via GetAgentProfile (the source of truth for model)
+	// Verify profile models via GetAgentProfile (the source of truth for model).
 	fetched1 := getAgentProfile(t, sutHostURL, sutEnvName, profile1Name)
 	if fetched1.GetModel() != "gpt-4" {
 		t.Errorf("fetched profile1 Model = %q, want %q", fetched1.GetModel(), "gpt-4")
 	}
 
 	fetched2 := getAgentProfile(t, sutHostURL, sutEnvName, profile2Name)
-	if fetched2.GetModel() != "claude-3-opus" {
-		t.Errorf("fetched profile2 Model = %q, want %q", fetched2.GetModel(), "claude-3-opus")
+	if fetched2.GetModel() != "gpt-4-turbo" {
+		t.Errorf("fetched profile2 Model = %q, want %q", fetched2.GetModel(), "gpt-4-turbo")
 	}
 
-	// Send messages to both agents — verify both respond (functional check)
+	// Send messages to both agents — both carry the greeting keyword so the
+	// response content is deterministic. fake-llm ignores the model field, so
+	// both respond with the greeting template.
 	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID1)
 	defer conn1.Close()
 
 	textFrame1 := &game.AgentFrame{
 		SessionId:        sessionID1,
 		AgentProfileName: profile1Name,
-		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello GPT"}},
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello from profile one"}},
+		Sender:           game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn1, textFrame1)
 	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
 	resp1 := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return f.GetText() != nil })
 	if resp1 == nil {
 		t.Fatal("agent1 (gpt-4 profile): no text response")
+	}
+	if !strings.Contains(resp1.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("agent1 (gpt-4) text = %q, want to contain %q", resp1.GetText().GetContent(), expectedGreetingText)
 	}
 	t.Logf("agent1 (gpt-4) responded: %s", resp1.GetText().GetContent())
 
@@ -270,24 +310,28 @@ func TestAgentPerProfileModel(t *testing.T) {
 	textFrame2 := &game.AgentFrame{
 		SessionId:        sessionID2,
 		AgentProfileName: profile2Name,
-		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello Claude"}},
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello from profile two"}},
+		Sender:           game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn2, textFrame2)
 	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
 	resp2 := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetText() != nil })
 	if resp2 == nil {
-		t.Fatal("agent2 (claude-3-opus profile): no text response")
+		t.Fatal("agent2 (gpt-4-turbo profile): no text response")
 	}
-	t.Logf("agent2 (claude-3-opus) responded: %s", resp2.GetText().GetContent())
+	if !strings.Contains(resp2.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("agent2 (gpt-4-turbo) text = %q, want to contain %q", resp2.GetText().GetContent(), expectedGreetingText)
+	}
+	t.Logf("agent2 (gpt-4-turbo) responded: %s", resp2.GetText().GetContent())
 
-	// Both agents' profiles match their configured models
+	// Both agents' profiles match their configured models.
 	t.Logf("profile1=%s model=%s, profile2=%s model=%s", profile1Name, fetched1.GetModel(), profile2Name, fetched2.GetModel())
 }
 
 // TestAgentConcurrentSerialization verifies that sending two messages
 // rapidly to the same agent yields responses in FIFO send order without
-// interleaving.
+// interleaving. Each turn carries a DISTINCT keyword backed by a DISTINCT
+// template (greeting then farewell) so the response identity proves order.
 func TestAgentConcurrentSerialization(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -304,14 +348,15 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	messages := []string{"Rapid message A", "Rapid message B"}
+	// Distinct keywords → distinct templates, so response text proves FIFO order.
+	messages := []string{"hello first", "goodbye second"}
 	for _, msg := range messages {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 	}
 
-	// Collect text responses in order — must match send order
-	var responseTexts []string
-	for i := 0; i < len(messages); i++ {
+	wantTexts := []string{expectedGreetingText, expectedFarewellText}
+
+	for i, want := range wantTexts {
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
 		})
@@ -321,30 +366,8 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 		if textFrame == nil {
 			t.Fatalf("message %d: did not receive text response", i)
 		}
-		responseTexts = append(responseTexts, textFrame.GetText().GetContent())
-	}
-
-	if len(responseTexts) != len(messages) {
-		t.Fatalf("got %d responses, want %d", len(responseTexts), len(messages))
-	}
-
-	for i, msg := range messages {
-		expectedText := fmt.Sprintf("Hello! This is a simulated response. You said: %s", msg)
-		if responseTexts[i] != expectedText {
-			t.Errorf("response %d = %q, want %q (FIFO order violated)", i, responseTexts[i], expectedText)
-		}
-	}
-
-	// Extra verification: no response should match a different send index
-	for i := 0; i < len(messages); i++ {
-		for j := 0; j < len(messages); j++ {
-			if i == j {
-				continue
-			}
-			expectedForJ := fmt.Sprintf("Hello! This is a simulated response. You said: %s", messages[j])
-			if responseTexts[i] == expectedForJ {
-				t.Errorf("response[%d] matches send[%d] — out of order", i, j)
-			}
+		if !strings.Contains(textFrame.GetText().GetContent(), want) {
+			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, textFrame.GetText().GetContent(), want)
 		}
 	}
 }
@@ -375,30 +398,42 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// Connect with profile A and exchange 2 turns.
+	// Connect with profile A and exchange 2 turns. Each carries the greeting
+	// keyword so responses are deterministic.
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 
-	userMessages := []string{"Profile A turn one", "Profile A turn two"}
+	userMessages := []string{"Hello, profile A turn one", "Hello, profile A turn two"}
 	for _, msg := range userMessages {
 		sendTextWithProfile(t, conn, sessionID, profileAName, msg)
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetThinking() != nil
 		})
+		if thinkingResp == nil {
+			t.Fatalf("profile A, message %q: no thinking response", msg)
+		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetText() != nil
 		})
 		if textResp == nil {
 			t.Fatalf("profile A, message %q: no text response", msg)
 		}
+		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
+			t.Errorf("profile A, message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
+		}
 		t.Logf("profile A exchange: %q → %q", msg, textResp.GetText().GetContent())
 	}
 
-	// Switch to profile B mid-connection.
-	sendTextWithProfile(t, conn, sessionID, profileBName, "Profile B turn one")
+	// Switch to profile B mid-connection. The farewell keyword yields a
+	// distinct template, confirming profile B's adapter also reaches fake-llm.
+	profileBMsg := "Goodbye, profile B turn one"
+	sendTextWithProfile(t, conn, sessionID, profileBName, profileBMsg)
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
 	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
 	if textRespB == nil {
 		t.Fatal("profile B: no text response after switch")
+	}
+	if !strings.Contains(textRespB.GetText().GetContent(), expectedFarewellText) {
+		t.Errorf("profile B text = %q, want to contain %q", textRespB.GetText().GetContent(), expectedFarewellText)
 	}
 	t.Logf("profile B response: %q", textRespB.GetText().GetContent())
 
@@ -427,6 +462,18 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 		if !found {
 			t.Errorf("profile A user message %q not found in cross-profile history", um)
 		}
+	}
+
+	// Verify profile B's user message is present too.
+	profileBFound := false
+	for _, msg := range lmr.GetMessages() {
+		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetContent() == profileBMsg {
+			profileBFound = true
+			break
+		}
+	}
+	if !profileBFound {
+		t.Errorf("profile B user message %q not found in cross-profile history", profileBMsg)
 	}
 
 	// Verify profile B sees the full history — not just its own turn.

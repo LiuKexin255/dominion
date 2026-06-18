@@ -7,6 +7,7 @@ package testplan
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -83,11 +84,13 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame")
 	}
+	// "Hello, agent!" carries the greeting keyword "hello" so fake-llm
+	// deterministically returns the greeting template (see README §4).
 	if thinkingFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("thinking sender = %s, want AGENT", senderString(thinkingFrame.GetSender()))
 	}
-	if thinkingFrame.GetThinking().GetContent() == "" {
-		t.Error("thinking content is empty")
+	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
+		t.Errorf("thinking = %q, want to contain %q", thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
 	}
 	t.Logf("thinking: %q (sender=%s)", thinkingFrame.GetThinking().GetContent(), senderString(thinkingFrame.GetSender()))
 
@@ -101,8 +104,8 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	if textRespFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("text sender = %s, want AGENT", senderString(textRespFrame.GetSender()))
 	}
-	if textRespFrame.GetText().GetContent() == "" {
-		t.Error("text content is empty")
+	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedGreetingText)
 	}
 	t.Logf("text: %q (sender=%s)", textRespFrame.GetText().GetContent(), senderString(textRespFrame.GetSender()))
 }
@@ -126,12 +129,12 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Send text
+	// Send text carrying the greeting keyword so the response is deterministic.
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: "Ordering test"},
+			Text: &game.AgentTextFrame{Content: "Hello ordering test"},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -142,18 +145,24 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	if frame1.GetThinking() == nil {
 		t.Fatal("frame 1: expected thinking, got something else")
 	}
+	if !strings.Contains(frame1.GetThinking().GetContent(), expectedGreetingReasoning) {
+		t.Errorf("frame 1 thinking = %q, want to contain %q", frame1.GetThinking().GetContent(), expectedGreetingReasoning)
+	}
 	frame2 := readWSFrame(t, conn)
 	if frame2.GetText() == nil {
 		t.Fatal("frame 2: expected text, got something else")
+	}
+	if !strings.Contains(frame2.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("frame 2 text = %q, want to contain %q", frame2.GetText().GetContent(), expectedGreetingText)
 	}
 
 	t.Logf("frame 1 thinking: %q", frame1.GetThinking().GetContent())
 	t.Logf("frame 2 text: %q", frame2.GetText().GetContent())
 }
 
-// TestAgentDialogDeterministicContent verifies the fake LLM response content
-// is deterministic: thinking is always "Processing your message..." and text
-// follows the pattern "Hello! This is a simulated response. You said: ...".
+// TestAgentDialogDeterministicContent verifies that fake-llm returns the
+// template-matched content deterministically: a prompt carrying the greeting
+// keyword yields the greeting reasoning + text from the embedded testdata.
 func TestAgentDialogDeterministicContent(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -171,14 +180,12 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	userMessage := "Hello world"
-
-	// Send text
+	// "Hello world" carries the greeting keyword "hello".
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
 		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: userMessage},
+			Text: &game.AgentTextFrame{Content: "Hello world"},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -191,9 +198,8 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame")
 	}
-	expectedThinking := "Processing your message..."
-	if thinkingFrame.GetThinking().GetContent() != expectedThinking {
-		t.Errorf("thinking = %q, want %q", thinkingFrame.GetThinking().GetContent(), expectedThinking)
+	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
+		t.Errorf("thinking = %q, want to contain %q", thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
 	}
 
 	// Read and verify text content
@@ -203,15 +209,16 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	if textRespFrame == nil {
 		t.Fatal("did not receive text frame")
 	}
-	expectedText := fmt.Sprintf("Hello! This is a simulated response. You said: %s", userMessage)
-	if textRespFrame.GetText().GetContent() != expectedText {
-		t.Errorf("text = %q, want %q", textRespFrame.GetText().GetContent(), expectedText)
+	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedGreetingText) {
+		t.Errorf("text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedGreetingText)
 	}
 }
 
 // TestAgentDialogFIFOQueue verifies that sending 3 messages in rapid
-// succession yields responses in FIFO order — each message gets its own
-// thinking+text pair, in the order they were sent.
+// succession yields responses in FIFO order. Because fake-llm matches by
+// keyword, each turn is made to carry a DISTINCT keyword backed by a DISTINCT
+// template so the response identity proves the processing order: greeting,
+// farewell, greeting.
 func TestAgentDialogFIFOQueue(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -229,36 +236,31 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Send 3 messages rapidly
+	// Each message triggers a different template via a distinct keyword so the
+	// response text proves which input was processed.
 	messages := []string{
-		"First message",
-		"Second message",
-		"Third message",
+		"hello world",   // greeting
+		"goodbye world", // farewell
+		"hi friend",     // greeting again (hi is a greeting keyword)
 	}
 	for _, msg := range messages {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 	}
 
-	// Collect all text response frames — they should match the messages in FIFO order
-	var responseTexts []string
-	for i := 0; i < len(messages); i++ {
+	wantTexts := []string{expectedGreetingText, expectedFarewellText, expectedGreetingText}
+
+	for i, want := range wantTexts {
+		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+			return f.GetThinking() != nil
+		})
 		textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return f.GetText() != nil
 		})
 		if textFrame == nil {
-			t.Fatalf("message %d: did not receive text response frame", i)
+			t.Fatalf("turn %d: did not receive text response frame", i)
 		}
-		responseTexts = append(responseTexts, textFrame.GetText().GetContent())
-	}
-
-	if len(responseTexts) != len(messages) {
-		t.Fatalf("got %d text responses, want %d", len(responseTexts), len(messages))
-	}
-
-	for i, msg := range messages {
-		expectedText := fmt.Sprintf("Hello! This is a simulated response. You said: %s", msg)
-		if responseTexts[i] != expectedText {
-			t.Errorf("response %d = %q, want %q", i, responseTexts[i], expectedText)
+		if !strings.Contains(textFrame.GetText().GetContent(), want) {
+			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, textFrame.GetText().GetContent(), want)
 		}
 	}
 }
@@ -284,7 +286,8 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	sendTextWithProfile(t, conn, sessionID, profileName, "Before delete")
+	// Turn before deletion carries the greeting keyword.
+	sendTextWithProfile(t, conn, sessionID, profileName, "Hello before delete")
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
 	firstResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
 	if firstResp == nil {
@@ -296,8 +299,9 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 		t.Fatalf("DELETE profile status = %d, want 200 or 204", delStatus)
 	}
 
-	userMessage := "Still works after profile deleted?"
-	sendTextWithProfile(t, conn, sessionID, profileName, userMessage)
+	// Turn after deletion carries the farewell keyword so the content assertion
+	// is deterministic (no random fallback).
+	sendTextWithProfile(t, conn, sessionID, profileName, "Goodbye after delete")
 
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return f.GetText() != nil
@@ -308,8 +312,7 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	if textRespFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("response sender = %s, want AGENT", senderString(textRespFrame.GetSender()))
 	}
-	expectedText := fmt.Sprintf("Hello! This is a simulated response. You said: %s", userMessage)
-	if textRespFrame.GetText().GetContent() != expectedText {
-		t.Errorf("response text = %q, want %q", textRespFrame.GetText().GetContent(), expectedText)
+	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedFarewellText) {
+		t.Errorf("response text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedFarewellText)
 	}
 }

@@ -26,6 +26,19 @@ const (
 	wsReadTimeout = 30 * time.Second
 )
 
+// Expected fake-llm response content. These MUST be kept in sync with
+// projects/game/fake-llm/service/testdata/. The T1 unit test
+// TestNewMessageStore_LoadsEmbeddedSamples pins the embedded testdata as the
+// single source of truth — if testdata changes, that test fails first and
+// reminds you to update the constants below in lockstep. See
+// projects/game/testplan/README.md §5 for the full workflow.
+const (
+	expectedGreetingReasoning = "The user is greeting me, I should respond warmly."
+	expectedGreetingText      = "Hello! How can I help you today?"
+	expectedFarewellReasoning = "The user is saying goodbye."
+	expectedFarewellText      = "Goodbye! Have a great day!"
+)
+
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
 
 // sessionResponse mirrors the Session proto message returned via gRPC-gateway
