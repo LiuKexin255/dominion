@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"log"
+	"math/rand/v2"
 	"net/http"
+	"time"
 
 	"dominion/common/gopkg/bootstrap"
 	phttp "dominion/common/gopkg/http"
@@ -23,8 +25,14 @@ func main() {
 	}
 	log.Printf("fake-llm loaded %d messages", len(store.Messages()))
 
+	// Shared *rand.Rand backs the no-match fallback for every request.
+	// *rand.Rand is not concurrency-safe; the worst-case outcome of a
+	// race is a degraded distribution on simultaneous fallbacks, never
+	// an invalid response, so we deliberately accept it over a mutex.
+	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	mux.Handle("/v1/chat/completions", service.NewChatHandler(store, rng))
 	mux.HandleFunc("/health", handleHealth)
 
 	srv := &http.Server{
@@ -44,13 +52,4 @@ func main() {
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
-}
-
-// handleChatCompletions is a stub for the OpenAI-compatible endpoint.
-// It always returns 200 with {"status":"ok"}; the keyword-matching
-// implementation backed by the MessageStore arrives in T2.
-func handleChatCompletions(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

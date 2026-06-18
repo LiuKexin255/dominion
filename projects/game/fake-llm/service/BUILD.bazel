@@ -4,6 +4,8 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 go_library(
     name = "service",
     srcs = [
+        "handler.go",
+        "matcher.go",
         "message_store.go",
         "message_types.go",
         "startup.go",
@@ -19,7 +21,11 @@ go_library(
 
 go_unittest(
     name = "service_test",
-    srcs = ["message_store_test.go"],
+    srcs = [
+        "handler_test.go",
+        "matcher_test.go",
+        "message_store_test.go",
+    ],
     data = glob(["testdata/**"]),
     embed = [":service"],
 )
