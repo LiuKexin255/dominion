@@ -32,7 +32,114 @@ m := make(map[string]string, 0, len(...))
 
 ## 变量
 
-* 对于**无初始化**的指针对象创建，使用关键字 `new`。
+* 文件名、目录、环境变量等字面量，应当定义常量避免魔术字。
+* 枚举值应当定义自己的类型。
+
+## 指针
+
+### 基本原则：对象语义与元组语义
+
+结构体是否使用指针类型，首先取决于语义：
+
+* **对象语义**：结构体代表一个具有身份的"实例"（如 `Customer`、`Order`、`Message`），某个具体对象不同于另一个。优先使用**指针**。
+* **元组语义**：结构体仅是一组值的聚合，值本身即含义（如 `Point{X, Y}`、`Range{Start, End}`），不存在"实例"概念。优先使用**值类型**。
+
+在此基础上，根据结构体所处的上下文（容器元素、函数签名、结构体字段）适用以下具体规则。
+
+### 容器元素（slice / map）
+
+强制使用指针类型 `[]*T`、`map[K]*T`。
+
+* slice 和 map 的元素在 `append`、`range`、按 key 读取时都会发生值拷贝。
+* 将 `nil` 放入 slice 或 map 属于反模式——迭代容器本身应当等价于"元素全部有效"，因此使用指针不会引入额外的 nil 检查负担。
+* 基本类型（`int`、`string`、`bool` 等）的容器不受此限。
+
+```golang
+// good
+type Foo struct {
+	Items []*Bar
+	Index map[string]*Bar
+}
+messages := []*Message{}
+
+// bad
+type Foo struct {
+	Items []Bar
+	Index map[string]Bar
+}
+```
+
+### 函数参数与返回值
+
+优先使用指针类型。
+
+* 值传递会触发完整结构体拷贝；当结构体包含指针字段时，值传递仅产生浅拷贝，无法保证调用方隔离。
+* 若调用方需要快照或隔离，应由**函数内部显式深拷贝**，而非依赖返回值的值语义。
+* 元组语义的结构体（如坐标 `Point`）使用值类型——指针不符合语义。
+
+```golang
+// good
+func parseMessage(data []byte, path string) (*Message, error) {}
+
+// good — 元组语义，值类型符合语义
+func center() Point {}
+
+// bad
+func parseMessage(data []byte, path string) (Message, error) {}
+```
+
+### 结构体属性字段
+
+按语义和空值频率区分：
+
+**优先值类型**：配置对象、DTO 等**空值/零值是常态**且**不涉及频繁拷贝**的字段。使用指针会导致大量 nil 检查，而数据本身很少被复制到其他对象。
+
+```golang
+// good — config 字段，空值是常态，不频繁拷贝
+type ServerConfig struct {
+	Logging  LoggingConfig
+	Tracing  TracingConfig
+}
+
+// bad — config 字段用指针，到处需要 nil 检查
+type ServerConfig struct {
+	Logging  *LoggingConfig
+	Tracing  *TracingConfig
+}
+```
+
+**优先指针类型**：领域模型等**需要共享同一实例**、**会被频繁传递**、或**零值无业务意义**的字段。
+
+```golang
+// good
+type Order struct {
+	Customer *Customer
+	Items    []*Item
+}
+
+// bad — Customer 是领域对象，按值拷贝会导致别名问题
+type Order struct {
+	Customer Customer
+}
+```
+
+### 深拷贝
+
+仅在**有需要**时，才对结构体、数组和字典进行深拷贝。不要对无修改影响的对象进行深拷贝。
+
+```golang
+// bad case
+func foo() []string {
+	var a []string
+	a = otherFunc()
+	// deep copy is unnecessary
+	return deepcopy(a)
+}
+```
+
+### 指针对象的构造
+
+对于**无初始化**的指针对象创建，使用关键字 `new`。
 
 ```golang
 // good case
@@ -42,7 +149,7 @@ a := new(A)
 a := &A{}
 ```
 
-* 对于带有初始值的初始化，使用字面量创建
+对于带有初始值的初始化，使用字面量创建。
 
 ```golang
 // good case
@@ -62,34 +169,17 @@ aPtr.Foo = "value"
 aPtr.Bar = 123
 ```
 
-* 当需要将值类型赋给指针类型时，使用 `&` 或 `toPtr` 操作。
+当需要将值类型赋给指针类型时，使用 `&` 或 `toPtr` 操作。
 
 ```golang
 // good case
-var a A 
+var a A
 var need *A
 
 need = &a
-// or 定义一个转换指针方法 toPtr 
+// or 定义一个转换指针方法 toPtr
 need = toPtr(a)
 ```
-
-* 文件名、目录、环境变量等字面量，应当定义常量避免魔术字。
-* 枚举值应当定义自己的类型。
-* 仅在**有需要**时，才对结构体、数组和字典进行深拷贝。不要对无修改影响的对象进行深拷贝。
-
-```golang
-// bad case 
-func foo() []string {
-	var a []string 
-	a = otherFunc() 
-	// deep copy is unnecessary
-	return deepcopy(a)
-}
-
-```
-
-* 结构体作为参数、数组元素以及属性字段时，应使用优先使用**指针**类型，避免结构体直接赋值。
 
 ## 注释
 

@@ -148,17 +148,17 @@ func TestLoadFromFS_Failure(t *testing.T) {
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
-		msgs    []Message
+		msgs    []*Message
 		wantErr string
 	}{
 		{
 			name:    "valid single message",
-			msgs:    []Message{{Name: "a", Keywords: []string{"x"}}},
+			msgs:    []*Message{{Name: "a", Keywords: []string{"x"}}},
 			wantErr: "",
 		},
 		{
 			name:    "valid multiple distinct messages",
-			msgs:    []Message{{Name: "a", Keywords: []string{"x"}}, {Name: "b", Keywords: []string{"y"}}},
+			msgs:    []*Message{{Name: "a", Keywords: []string{"x"}}, {Name: "b", Keywords: []string{"y"}}},
 			wantErr: "",
 		},
 		{
@@ -168,22 +168,22 @@ func TestValidate(t *testing.T) {
 		},
 		{
 			name:    "empty keywords rejected",
-			msgs:    []Message{{Name: "a", Keywords: []string{}}},
+			msgs:    []*Message{{Name: "a", Keywords: []string{}}},
 			wantErr: "no keywords",
 		},
 		{
 			name:    "nil keywords rejected",
-			msgs:    []Message{{Name: "a"}},
+			msgs:    []*Message{{Name: "a"}},
 			wantErr: "no keywords",
 		},
 		{
 			name:    "empty-string keyword element rejected",
-			msgs:    []Message{{Name: "a", Keywords: []string{"", "x"}}},
+			msgs:    []*Message{{Name: "a", Keywords: []string{"", "x"}}},
 			wantErr: "empty keyword",
 		},
 		{
 			name:    "duplicate name rejected",
-			msgs:    []Message{{Name: "a", Keywords: []string{"x"}}, {Name: "a", Keywords: []string{"y"}}},
+			msgs:    []*Message{{Name: "a", Keywords: []string{"x"}}, {Name: "a", Keywords: []string{"y"}}},
 			wantErr: "duplicate",
 		},
 	}

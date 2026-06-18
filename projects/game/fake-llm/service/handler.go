@@ -32,9 +32,9 @@ const FakeResponseID = "fake-1"
 // The model field is decoded but ignored; only stream + messages
 // drive behaviour.
 type chatCompletionRequest struct {
-	Model    string         `json:"model"`
-	Stream   bool           `json:"stream"`
-	Messages []messageParam `json:"messages"`
+	Model    string          `json:"model"`
+	Stream   bool            `json:"stream"`
+	Messages []*messageParam `json:"messages"`
 }
 
 // messageParam mirrors one entry of the request's messages array.
@@ -77,11 +77,11 @@ type choice struct {
 
 // completionResponse is the top-level non-streaming response body.
 type completionResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model"`
-	Choices []choice `json:"choices"`
+	ID      string    `json:"id"`
+	Object  string    `json:"object"`
+	Created int64     `json:"created"`
+	Model   string    `json:"model"`
+	Choices []*choice `json:"choices"`
 }
 
 // ChatHandler serves POST /v1/chat/completions. It is stateless across
@@ -131,7 +131,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // {type:"text"} entry are joined with a single space. Returns the
 // empty string when no user message is present — Match will then
 // deterministically fall through to the random fallback.
-func lastUserText(messages []messageParam) string {
+func lastUserText(messages []*messageParam) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		if !strings.EqualFold(m.Role, "user") {
@@ -184,7 +184,7 @@ func decodeContent(raw json.RawMessage) string {
 // carrying BOTH reasoning_content and content in the assistant message.
 // Created is captured once and reused; the finish_reason is the literal
 // "stop".
-func serveNonStreaming(w http.ResponseWriter, msg Message) {
+func serveNonStreaming(w http.ResponseWriter, msg *Message) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -194,7 +194,7 @@ func serveNonStreaming(w http.ResponseWriter, msg Message) {
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   FakeModel,
-		Choices: []choice{
+		Choices: []*choice{
 			{
 				Index: 0,
 				Message: &assistantMessage{
@@ -226,7 +226,7 @@ func serveNonStreaming(w http.ResponseWriter, msg Message) {
 // observes progressive output. If the ResponseWriter does not implement
 // http.Flusher we surface a 500 once, before any chunk is emitted, so
 // the client does not receive a half-finished stream.
-func serveStreaming(w http.ResponseWriter, msg Message) {
+func serveStreaming(w http.ResponseWriter, msg *Message) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -239,11 +239,11 @@ func serveStreaming(w http.ResponseWriter, msg Message) {
 	}
 
 	now := time.Now().Unix()
-	chunks := []completionResponse{
+	chunks := []*completionResponse{
 		{
 			ID: FakeResponseID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
-			Choices: []choice{{
+			Choices: []*choice{{
 				Index: 0,
 				Delta: &assistantMessage{
 					Role:             "assistant",
@@ -255,7 +255,7 @@ func serveStreaming(w http.ResponseWriter, msg Message) {
 		{
 			ID: FakeResponseID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
-			Choices: []choice{{
+			Choices: []*choice{{
 				Index: 0,
 				Delta: &assistantMessage{
 					Content: msg.Text,
@@ -266,9 +266,9 @@ func serveStreaming(w http.ResponseWriter, msg Message) {
 		{
 			ID: FakeResponseID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
-			Choices: []choice{{
+			Choices: []*choice{{
 				Index:        0,
-				Delta:        &assistantMessage{},
+				Delta:        new(assistantMessage),
 				FinishReason: strPtr("stop"),
 			}},
 		},

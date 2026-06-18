@@ -278,12 +278,12 @@ func TestServeHTTP_MethodAndAuth(t *testing.T) {
 func TestLastUserText(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []messageParam
+		messages []*messageParam
 		want     string
 	}{
 		{
 			name: "single user string content",
-			messages: []messageParam{
+			messages: []*messageParam{
 				{Role: "system", Content: rawJSON(`"sys"`)},
 				{Role: "user", Content: rawJSON(`"hello"`)},
 			},
@@ -291,7 +291,7 @@ func TestLastUserText(t *testing.T) {
 		},
 		{
 			name: "last user wins when multiple present",
-			messages: []messageParam{
+			messages: []*messageParam{
 				{Role: "user", Content: rawJSON(`"first"`)},
 				{Role: "assistant", Content: rawJSON(`"ack"`)},
 				{Role: "user", Content: rawJSON(`"second"`)},
@@ -300,21 +300,21 @@ func TestLastUserText(t *testing.T) {
 		},
 		{
 			name: "role case-insensitive (User)",
-			messages: []messageParam{
+			messages: []*messageParam{
 				{Role: "User", Content: rawJSON(`"cased"`)},
 			},
 			want: "cased",
 		},
 		{
 			name: "array-form text parts joined with space",
-			messages: []messageParam{
+			messages: []*messageParam{
 				{Role: "user", Content: rawJSON(`[{"type":"text","text":"a"},{"type":"image_url"},{"type":"text","text":"b"}]`)},
 			},
 			want: "a b",
 		},
 		{
 			name: "no user message returns empty",
-			messages: []messageParam{
+			messages: []*messageParam{
 				{Role: "system", Content: rawJSON(`"sys"`)},
 				{Role: "assistant", Content: rawJSON(`"ack"`)},
 			},

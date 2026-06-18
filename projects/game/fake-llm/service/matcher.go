@@ -23,7 +23,7 @@ const maxSnippetRunes = 50
 //
 // rng must be non-nil and is consumed only on the fallback path so
 // deterministic keyword matches never advance the RNG state.
-func Match(messages []Message, userText string, rng *rand.Rand) (Message, bool) {
+func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool) {
 	lowered := strings.ToLower(userText)
 
 	// Iterate messages alphabetically by Name: the caller (MessageStore)
@@ -36,11 +36,11 @@ func Match(messages []Message, userText string, rng *rand.Rand) (Message, bool) 
 			continue
 		}
 		if best == nil || messages[i].Name < best.Name {
-			best = &messages[i]
+			best = messages[i]
 		}
 	}
 	if best != nil {
-		return *best, true
+		return best, true
 	}
 
 	pick := messages[rng.IntN(len(messages))]

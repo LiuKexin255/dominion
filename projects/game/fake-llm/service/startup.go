@@ -15,7 +15,7 @@ import "fmt"
 //
 // It is called by LoadFromFS once all embedded files have been parsed
 // and merged, so a non-nil error aborts startup (see cmd/main.go).
-func Validate(messages []Message) error {
+func Validate(messages []*Message) error {
 	if len(messages) == 0 {
 		return fmt.Errorf("validate: no messages loaded")
 	}

@@ -23,7 +23,7 @@ var embeddedFiles embed.FS
 // MessageStore holds the message templates loaded from the embedded
 // testdata directory, validated and ready to serve.
 type MessageStore struct {
-	messages []Message
+	messages []*Message
 }
 
 // NewMessageStore loads every JSON/YAML message template embedded under
@@ -41,7 +41,7 @@ func NewMessageStore() (*MessageStore, error) {
 // Messages returns the loaded, validated templates sorted alphabetically
 // by Name. The returned slice shares the store's backing array and must
 // not be mutated.
-func (s *MessageStore) Messages() []Message {
+func (s *MessageStore) Messages() []*Message {
 	return s.messages
 }
 
@@ -50,7 +50,7 @@ func (s *MessageStore) Messages() []Message {
 // slice, sorts the slice alphabetically by Name, then validates the
 // result. It is the shared loader used by both the embedded store and
 // the tests.
-func LoadFromFS(fsys fs.FS, rootDir string) ([]Message, error) {
+func LoadFromFS(fsys fs.FS, rootDir string) ([]*Message, error) {
 	var paths []string
 	walkErr := fs.WalkDir(fsys, rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -70,7 +70,7 @@ func LoadFromFS(fsys fs.FS, rootDir string) ([]Message, error) {
 
 	sort.Strings(paths)
 
-	var messages []Message
+	var messages []*Message
 	for _, p := range paths {
 		data, readErr := fs.ReadFile(fsys, p)
 		if readErr != nil {
@@ -101,19 +101,19 @@ func hasMessageExt(path string) bool {
 	return false
 }
 
-func parseMessage(data []byte, path string) (Message, error) {
-	var msg Message
+func parseMessage(data []byte, path string) (*Message, error) {
+	msg := new(Message)
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return Message{}, fmt.Errorf("unmarshal json: %w", err)
+		if err := json.Unmarshal(data, msg); err != nil {
+			return nil, fmt.Errorf("unmarshal json: %w", err)
 		}
 	case ".yaml", ".yml":
-		if err := yaml.Unmarshal(data, &msg); err != nil {
-			return Message{}, fmt.Errorf("unmarshal yaml: %w", err)
+		if err := yaml.Unmarshal(data, msg); err != nil {
+			return nil, fmt.Errorf("unmarshal yaml: %w", err)
 		}
 	default:
-		return Message{}, fmt.Errorf("unsupported extension: %s", path)
+		return nil, fmt.Errorf("unsupported extension: %s", path)
 	}
 	return msg, nil
 }

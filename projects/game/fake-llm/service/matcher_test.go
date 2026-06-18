@@ -16,7 +16,7 @@ import (
 func TestMatch(t *testing.T) {
 	// given: a fixed catalogue shared across cases, intentionally NOT
 	// pre-sorted by Name so Match's own alphabetical pick is exercised.
-	messages := []Message{
+	messages := []*Message{
 		{
 			Name:      "zeta",
 			Keywords:  []string{"unique-zeta"},
@@ -93,7 +93,7 @@ func TestMatch(t *testing.T) {
 // messages via the deterministic RNG. The exact pick is pinned by the
 // PCG seed so any drift in RNG wiring or iteration order surfaces here.
 func TestMatch_NoMatchRandom(t *testing.T) {
-	messages := []Message{
+	messages := []*Message{
 		{Name: "alpha", Keywords: []string{"only-alpha"}, Text: "alpha-text"},
 		{Name: "beta", Keywords: []string{"only-beta"}, Text: "beta-text"},
 		{Name: "gamma", Keywords: []string{"only-gamma"}, Text: "gamma-text"},
@@ -130,7 +130,7 @@ func TestMatch_NoMatchRandom(t *testing.T) {
 func TestMatch_NoMatchLogsWarning(t *testing.T) {
 	// given: a long user prompt exercises the 50-rune snippet cap; the
 	// catalogue has one entry so the RNG pick is fully deterministic.
-	messages := []Message{
+	messages := []*Message{
 		{Name: "only", Keywords: []string{"never"}, Text: "only-text"},
 	}
 	longPrompt := strings.Repeat("abcdefghij", 20) // 200 runes, no "never"
