@@ -54,6 +54,7 @@ suites:
       - //projects/game/testplan:agent_lifecycle_test
 
   - name: agent-dialog
+    description: "Agent dialog with fake-llm service: connect, chat, verify thinking + text response with FIFO ordering"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -62,7 +63,7 @@ suites:
       - //projects/game/testplan:agent_dialog_test
 
   - name: checkpoint-resume
-    description: "Verify agent resumes conversation context via checkpoint after leave/re-enter, including cross-profile history persistence"
+    description: "Agent checkpoint-resume with fake-llm service: send messages, leave/re-enter, verify history and cross-profile persistence"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -71,7 +72,7 @@ suites:
       - //projects/game/testplan:agent_checkpoint_test
 
   - name: per-profile-model
-    description: "Verify profiles reference their correctly configured models"
+    description: "Per-profile model configuration with fake-llm service: verify each profile resolves the correct model"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -80,7 +81,7 @@ suites:
       - //projects/game/testplan:agent_checkpoint_test
 
   - name: concurrent-serialization
-    description: "Verify rapid messages are processed in FIFO send order"
+    description: "Concurrent message serialization with fake-llm service: rapid sends processed in strict FIFO order"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:

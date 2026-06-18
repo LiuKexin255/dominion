@@ -17,8 +17,15 @@ services:
       path: //projects/game/proxy/service.yaml
       name: proxy
   - artifact:
+      path: //projects/game/fake-llm/service.yaml
+      name: fake-llm
+  - artifact:
       path: //projects/game/agent/service.yaml
       name: agent_test
+      secrets:
+        provider:
+          secret: llm-secrets
+          key: dummydummydummy
   - artifact:
       path: //projects/game/prompt/service.yaml
       name: prompt
