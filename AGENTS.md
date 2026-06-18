@@ -68,6 +68,10 @@ Python 依赖更新步骤：
 3. 使用 `bazel run //:gazelle` 生成/更新 Python 相关 `BUILD.bazel` 文件。
 4. 使用 `bazel build //...` 和 `bazel test //...` 验证仓库构建与测试。
 
+## 代码规范 
+
+参阅 `style` 目录下的文档，**任何**编辑代码前应当先阅读代码规范要求。
+
 ## 调试与大型测试
 
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
