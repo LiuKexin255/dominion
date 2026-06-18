@@ -52,8 +52,7 @@
       "variant": "xhigh"
     },
     "deep": {
-      "model": "opencode-go/deepseek-v4-pro",
-      "variant": "max"
+      "model": "zhipuai-coding-plan/glm-5.2"
     },
     "artistry": {
       "model": "zhipuai-coding-plan/glm-5.2"
@@ -67,12 +66,15 @@
       "variant": "max"
     },
     "unspecified-high": {
-      "model": "zhipuai-coding-plan/glm-5.2"
+      "model": "opencode-go/deepseek-v4-pro",
+      "variant": "max"
     },
     "writing": {
       "model": "opencode-go/deepseek-v4-flash",
       "variant": "medium"
     }
   },
-  "disabled_hooks": ["prometheus-md-only"]
+  "disabled_hooks": [
+    "prometheus-md-only"
+  ]
 }
