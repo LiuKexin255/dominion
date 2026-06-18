@@ -22,10 +22,6 @@ services:
   - artifact:
       path: //projects/game/agent/service.yaml
       name: agent_test
-      secrets:
-        provider:
-          secret: llm-secrets
-          key: dummydummydummy
   - artifact:
       path: //projects/game/prompt/service.yaml
       name: prompt
