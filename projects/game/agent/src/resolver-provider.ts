@@ -20,6 +20,7 @@ export async function buildResolverAwareChatModel(
 	});
 	return new ChatOpenAI({
 		model: "gpt-4", // model name is ignored by fake-llm
+		apiKey: "sk-test",
 		configuration: { baseURL },
 	});
 }
