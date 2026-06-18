@@ -151,43 +151,25 @@ export class AgentAdapterImpl implements AgentAdapter {
 		threadId: string,
 		userMessage: string,
 	): AsyncIterable<ContentBlock> {
-		const stream = this.agent.streamEvents(
+		const stream = await this.agent.streamEvents(
 			{
 				messages: [new HumanMessage(userMessage)],
 			},
 			{
 				configurable: { thread_id: threadId },
-				streamMode: "messages",
-				version: "v2",
+				version: "v3",
 			},
 		);
 
-		for await (const event of stream) {
-			const data = (event as Record<string, unknown>).data as
-				| Record<string, unknown>
-				| undefined;
-			const chunk = data?.chunk as
-				| {
-						contentBlocks?: ContentBlock[];
-						additional_kwargs?: Record<string, unknown>;
-				  }
-				| undefined;
-			if (!chunk) {
-				continue;
+		for await (const message of stream.messages) {
+			for await (const reasoning of message.reasoning) {
+				yield { type: "reasoning", reasoning };
 			}
-
-			const reasoningContent = chunk.additional_kwargs?.reasoning_content;
-			if (typeof reasoningContent === "string") {
-				yield { type: "reasoning", reasoning: reasoningContent };
-			}
-
-			if (Array.isArray(chunk.contentBlocks)) {
-				for (const block of chunk.contentBlocks) {
-					if (block.type === "reasoning" || block.type === "text") {
-						yield block as ContentBlock;
-					}
-				}
+			for await (const text of message.text) {
+				yield { type: "text", text };
 			}
 		}
+
+		await stream.output;
 	}
 }

@@ -3,6 +3,7 @@
   import { FrameSender } from '../api'
 
   type ChatEntry = {
+    messageId: string
     sender: FrameSender
     type: 'thinking' | 'text' | 'warn'
     content: string
@@ -71,7 +72,7 @@
     {:else if messages.length === 0}
       <div class="chat-empty" data-testid="chat-empty">No messages yet. Start a conversation below.</div>
     {:else}
-      {#each messages as msg (msg.timestamp)}
+      {#each messages as msg (msg.messageId)}
         {#if isAgentEntry(msg) && msg.agentProfileName}
           <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
         {/if}

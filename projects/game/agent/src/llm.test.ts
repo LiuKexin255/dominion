@@ -6,7 +6,7 @@
  * only takes threadId and userMessage.
  */
 
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,13 +17,11 @@ import { AgentAdapterImpl, type ContentBlock } from "./llm";
 
 type FakeStreamAgent = {
 	agent: {
-		streamEvents: () => AsyncGenerator<{
-			data: {
-				chunk: {
-					additional_kwargs?: Record<string, unknown>;
-					contentBlocks?: ContentBlock[];
-				};
-			};
+		streamEvents: () => Promise<{
+			messages: AsyncGenerator<{
+				reasoning: AsyncGenerator<string>;
+				text: AsyncGenerator<string>;
+			}>;
 		}>;
 	};
 };
@@ -141,18 +139,18 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		);
 
 		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async function* () {
-				yield {
-					data: {
-						chunk: {
-							additional_kwargs: {
-								reasoning_content: "I should greet the user",
-							},
-							contentBlocks: [{ type: "text", text: "Hello" }],
-						},
-					},
-				};
-			},
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {
+							yield "I should greet the user";
+						})(),
+						text: (async function* () {
+							yield "Hello";
+						})(),
+					};
+				})(),
+			}),
 		};
 
 		const blocks = await collect(
@@ -175,15 +173,16 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		);
 
 		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async function* () {
-				yield {
-					data: {
-						chunk: {
-							contentBlocks: [{ type: "text", text: "Just text" }],
-						},
-					},
-				};
-			},
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {})(),
+						text: (async function* () {
+							yield "Just text";
+						})(),
+					};
+				})(),
+			}),
 		};
 
 		const blocks = await collect(
@@ -192,6 +191,48 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 
 		expect(blocks).toHaveLength(1);
 		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
+});
+
+// ===========================================================================
+// AgentAdapterImpl — Checkpoint persistence
+// ===========================================================================
+
+describe("AgentAdapterImpl checkpoint persistence", () => {
+	it("getState returns both HumanMessage and AIMessage after generateTurn", async () => {
+		const model = fakeThinkingModel("Let me think...", "Done.");
+		const cp = new MemorySaver();
+		const adapter = new AgentAdapterImpl(model, "prompt", cp);
+
+		await collect(adapter.generateTurn("ckpt-1", "Hello"));
+
+		const state = await adapter.getState("ckpt-1");
+		expect(state).not.toBeNull();
+		const messages = state!.values.messages ?? [];
+		expect(messages.length).toBeGreaterThanOrEqual(2);
+
+		const hasHuman = messages.some(
+			(m: BaseMessage) => (m as any)._getType?.() === "human",
+		);
+		const hasAI = messages.some(
+			(m: BaseMessage) => (m as any)._getType?.() === "ai",
+		);
+		expect(hasHuman).toBe(true);
+		expect(hasAI).toBe(true);
+	});
+
+	it("getState returns accumulated messages after multiple turns", async () => {
+		const model = fakeTextModel("response");
+		const cp = new MemorySaver();
+		const adapter = new AgentAdapterImpl(model, "prompt", cp);
+
+		await collect(adapter.generateTurn("ckpt-2", "first"));
+		await collect(adapter.generateTurn("ckpt-2", "second"));
+
+		const state = await adapter.getState("ckpt-2");
+		expect(state).not.toBeNull();
+		const messages = state!.values.messages ?? [];
+		expect(messages.length).toBeGreaterThanOrEqual(4);
 	});
 });
 

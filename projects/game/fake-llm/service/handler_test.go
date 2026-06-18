@@ -49,8 +49,8 @@ func TestServeHTTP_NonStreaming(t *testing.T) {
 	if resp.Model != FakeModel {
 		t.Errorf("model = %q, want %q", resp.Model, FakeModel)
 	}
-	if resp.ID != FakeResponseID {
-		t.Errorf("id = %q, want %q", resp.ID, FakeResponseID)
+	if !strings.HasPrefix(resp.ID, "fake-") {
+		t.Errorf("id = %q, want prefix \"fake-\"", resp.ID)
 	}
 	if len(resp.Choices) != 1 {
 		t.Fatalf("choices len = %d, want 1", len(resp.Choices))
@@ -159,8 +159,8 @@ func TestServeHTTP_Streaming(t *testing.T) {
 	// created timestamp so the client treats them as one completion.
 	for i, f := range frames[:3] {
 		ch := decodeChunk(t, f)
-		if ch.ID != FakeResponseID {
-			t.Errorf("frame%d id = %q, want %q", i, ch.ID, FakeResponseID)
+		if !strings.HasPrefix(ch.ID, "fake-") {
+			t.Errorf("frame%d id = %q, want prefix \"fake-\"", i, ch.ID)
 		}
 		if ch.Object != "chat.completion.chunk" {
 			t.Errorf("frame%d object = %q, want chat.completion.chunk", i, ch.Object)

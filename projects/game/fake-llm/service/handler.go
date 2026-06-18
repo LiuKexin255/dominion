@@ -21,12 +21,6 @@ import (
 // we ignore the request's model field entirely.
 const FakeModel = "fake-model"
 
-// FakeResponseID is the chat completion id reused for every chunk of a
-// single response. It is constant because there is no per-request
-// state and clients only need it as a correlation key within one
-// completion, not across calls.
-const FakeResponseID = "fake-1"
-
 // chatCompletionRequest is the subset of the OpenAI
 // /v1/chat/completions request schema the handler actually consumes.
 // The model field is decoded but ignored; only stream + messages
@@ -84,6 +78,14 @@ type completionResponse struct {
 	Choices []*choice `json:"choices"`
 }
 
+// generateResponseID returns a unique chat completion ID. Each call
+// produces a different value so that LangGraph's addMessages reducer
+// treats AIMessages from separate turns as distinct entries rather than
+// replacements.
+func generateResponseID() string {
+	return fmt.Sprintf("fake-%d-%04d", time.Now().UnixNano(), rand.IntN(10000))
+}
+
 // ChatHandler serves POST /v1/chat/completions. It is stateless across
 // requests: every request goes through Match against the same store
 // snapshot, and the RNG is shared only for fallback randomisation.
@@ -118,11 +120,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	userText := lastUserText(req.Messages)
 	msg, _ := Match(h.store.Messages(), userText, h.rng)
 
+	respID := generateResponseID()
 	if req.Stream {
-		serveStreaming(w, msg)
+		serveStreaming(w, msg, respID)
 		return
 	}
-	serveNonStreaming(w, msg)
+	serveNonStreaming(w, msg, respID)
 }
 
 // lastUserText extracts the text of the LAST message whose role equals
@@ -184,13 +187,13 @@ func decodeContent(raw json.RawMessage) string {
 // carrying BOTH reasoning_content and content in the assistant message.
 // Created is captured once and reused; the finish_reason is the literal
 // "stop".
-func serveNonStreaming(w http.ResponseWriter, msg *Message) {
+func serveNonStreaming(w http.ResponseWriter, msg *Message, respID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
 	stop := "stop"
 	resp := completionResponse{
-		ID:      FakeResponseID,
+		ID:      respID,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   FakeModel,
@@ -226,7 +229,7 @@ func serveNonStreaming(w http.ResponseWriter, msg *Message) {
 // observes progressive output. If the ResponseWriter does not implement
 // http.Flusher we surface a 500 once, before any chunk is emitted, so
 // the client does not receive a half-finished stream.
-func serveStreaming(w http.ResponseWriter, msg *Message) {
+func serveStreaming(w http.ResponseWriter, msg *Message, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -241,7 +244,7 @@ func serveStreaming(w http.ResponseWriter, msg *Message) {
 	now := time.Now().Unix()
 	chunks := []*completionResponse{
 		{
-			ID: FakeResponseID, Object: "chat.completion.chunk",
+			ID: respID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
 			Choices: []*choice{{
 				Index: 0,
@@ -253,7 +256,7 @@ func serveStreaming(w http.ResponseWriter, msg *Message) {
 			}},
 		},
 		{
-			ID: FakeResponseID, Object: "chat.completion.chunk",
+			ID: respID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
 			Choices: []*choice{{
 				Index: 0,
@@ -264,7 +267,7 @@ func serveStreaming(w http.ResponseWriter, msg *Message) {
 			}},
 		},
 		{
-			ID: FakeResponseID, Object: "chat.completion.chunk",
+			ID: respID, Object: "chat.completion.chunk",
 			Created: now, Model: FakeModel,
 			Choices: []*choice{{
 				Index:        0,

@@ -38,6 +38,7 @@
     | 'agent_lost'
 
   type ChatEntry = {
+    messageId: string
     sender: FrameSender
     type: 'thinking' | 'text' | 'warn'
     content: string
@@ -239,8 +240,9 @@
     playState = 'loading_messages'
     messagesError = null
     try {
-      const entries = await listMessages(selectedSession.sessionId)
+      const entries = (await listMessages(selectedSession.sessionId)) ?? []
       chatMessages = entries.map(entry => ({
+        messageId: entry.messageId,
         sender: senderFromString(entry.sender),
         type: typeFromString(entry.type),
         content: entry.content,
@@ -259,13 +261,23 @@
 
   function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
     if (frame.thinking) {
-      chatMessages = [...chatMessages, {
-        sender: FrameSender.AGENT,
-        type: 'thinking',
-        content: frame.thinking.content,
-        timestamp: frame.createTime || new Date().toISOString(),
-        agentProfileName: frame.agentProfileName,
-      }]
+      const thinkingContent = frame.thinking.content || ''
+      if (!thinkingContent) return
+      const last = chatMessages[chatMessages.length - 1]
+      if (last && last.type === 'thinking' && last.sender === FrameSender.AGENT
+          && last.agentProfileName === frame.agentProfileName) {
+        last.content += thinkingContent
+        chatMessages = [...chatMessages]
+      } else {
+        chatMessages = [...chatMessages, {
+          messageId: frame.frameId,
+          sender: FrameSender.AGENT,
+          type: 'thinking',
+          content: thinkingContent,
+          timestamp: frame.createTime || new Date().toISOString(),
+          agentProfileName: frame.agentProfileName,
+        }]
+      }
     } else if (frame.text) {
       const textContent = frame.text.content || ''
       if (!textContent) return
@@ -276,6 +288,7 @@
         chatMessages = [...chatMessages]
       } else {
         chatMessages = [...chatMessages, {
+          messageId: frame.frameId,
           sender: FrameSender.AGENT,
           type: 'text',
           content: textContent,
@@ -285,6 +298,7 @@
       }
     } else if (frame.warn) {
       chatMessages = [...chatMessages, {
+        messageId: frame.frameId,
         sender: FrameSender.SYSTEM,
         type: 'warn',
         content: frame.warn.message,
@@ -314,6 +328,7 @@
     }
     try {
       chatMessages = [...chatMessages, {
+        messageId: crypto.randomUUID(),
         sender: FrameSender.USER,
         type: 'text',
         content: text,

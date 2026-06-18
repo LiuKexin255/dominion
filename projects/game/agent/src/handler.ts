@@ -12,7 +12,6 @@ import * as grpc from "@grpc/grpc-js";
 import { randomUUID } from "node:crypto";
 import { info, warn, error } from "@dominion/common-js-logs";
 
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
@@ -363,24 +362,25 @@ export class Handler implements AgentServiceHandlers {
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
-        if (msg instanceof SystemMessage) {
+        const msgType = msg._getType?.() ?? "";
+
+        if (msgType === "system") {
           continue;
         }
 
-        if (!(msg instanceof HumanMessage) && !(msg instanceof AIMessage)) {
+        if (msgType !== "human" && msgType !== "ai") {
           continue;
         }
 
         const sender =
-          msg instanceof HumanMessage
+          msgType === "human"
             ? FrameSender.FRAME_SENDER_USER
             : FrameSender.FRAME_SENDER_AGENT;
 
-        let type = "text";
-        let content = "";
+        const segments: { type: string; content: string }[] = [];
 
         if (typeof msg.content === "string") {
-          content = msg.content;
+          segments.push({ type: "text", content: msg.content });
         } else if (Array.isArray(msg.content)) {
           const reasoningBlocks = msg.content.filter(
             (b: any) => b.type === "reasoning",
@@ -389,33 +389,49 @@ export class Handler implements AgentServiceHandlers {
             (b: any) => b.type === "text",
           );
 
-          if (reasoningBlocks.length > 0 && textBlocks.length === 0) {
-            type = "thinking";
-            content = reasoningBlocks
-              .map((b: any) => b.reasoning ?? "")
-              .join("\n");
-          } else {
-            type = "text";
-            content = msg.content
+          const reasoning = reasoningBlocks
+            .map((b: any) => b.reasoning ?? "")
+            .join("\n");
+          if (reasoning) {
+            segments.push({ type: "thinking", content: reasoning });
+          }
+
+          const text = textBlocks
+            .map((b: any) => b.text ?? "")
+            .join("");
+          if (text) {
+            segments.push({ type: "text", content: text });
+          }
+
+          if (segments.length === 0) {
+            const fallback = msg.content
               .map((b: any) => b.text ?? b.reasoning ?? "")
               .join("");
+            if (fallback) {
+              segments.push({ type: "text", content: fallback });
+            }
           }
         }
 
-        if (!content && type !== "text") continue;
+        for (const seg of segments) {
+          if (!seg.content && seg.type !== "text") continue;
 
-        const createTime = checkpointTs
-          ? timestampFromMs(new Date(checkpointTs).getTime())
-          : undefined;
+          const multi = segments.length > 1;
+          const segId = multi ? `${msg.id}-${seg.type}` : msg.id;
 
-        result.push({
-          name: `sessions/${sessionId}/agent/messages/${msg.id}`,
-          messageId: msg.id,
-          sender,
-          type,
-          content,
-          createTime,
-        });
+          const createTime = checkpointTs
+            ? timestampFromMs(new Date(checkpointTs).getTime())
+            : undefined;
+
+          result.push({
+            name: `sessions/${sessionId}/agent/messages/${segId}`,
+            messageId: segId,
+            sender,
+            type: seg.type,
+            content: seg.content,
+            createTime,
+          });
+        }
       }
 
       callback(null, { messages: result });
