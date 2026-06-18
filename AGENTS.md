@@ -2,23 +2,6 @@
 
 本文档面向在本仓库内工作的智能体编码代理（agentic coding agents）。
 
-本仓库的持久项目约束以 `.specify/memory/constitution.md` 为准。不要在本文件中
-新增或复制持久治理规则；需要修改项目约束时，使用 Spec Kit constitution 工作流。
-
-## 运行时入口
-
-执行开发任务前：
-
-1. 阅读 `.specify/memory/constitution.md`。
-2. 阅读当前目录下的 `README.md`（如存在）。
-3. 阅读相关 `style/` 规范文件。
-4. 如存在当前 Spec Kit plan，阅读下方 SPECKIT 管理区块指向的计划。
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-<!-- SPECKIT END -->
-
 ## 操作命令参考
 
 ### Bazel / Gazelle
@@ -46,14 +29,9 @@ Golang 代码格式化与依赖更新步骤：
 
 ### TypeScript / JavaScript
 
-* 执行 `pnpm` 命令时使用：
-  `bazel run @pnpm -- --dir {project_path}`。
-* `--dir` 参数必须使用绝对路径。
-* TypeScript/JavaScript 依赖版本必须统一在根目录 `pnpm-workspace.yaml`
-  的 catalog 中管理；只有明确记录为特殊例外的依赖才可以在 package
-  manifest 中声明直接版本。
-* 修改 `package.json` 后，使用 `pnpm up` 更新依赖；不要手动修改
-  `pnpm-lock.yaml`。
+* 执行 `pnpm` 命令时使用：`bazel run @pnpm -- --dir {project_path}`，`--dir` 参数必须使用绝对路径。
+* TypeScript/JavaScript 依赖版本必须统一在根目录 `pnpm-workspace.yaml`的 catalog 中管理；只有明确记录为特殊例外的依赖才可以在 package manifest 中声明直接版本。
+* 修改 `package.json` 后，使用 `pnpm up` 更新依赖；不要手动修改 `pnpm-lock.yaml`。
 
 ### Python
 
@@ -84,3 +62,8 @@ Do not add comments that restate what the code already expresses. Only add comme
 ## 其他
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

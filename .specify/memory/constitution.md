@@ -1,202 +1,50 @@
-<!--
-Sync Impact Report
-Version change: 1.3.0 → 1.4.0
-Modified principles: none
-Added sections:
-- VIII. Citation and Reference Links
-Removed sections: none
-Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — Constitution Check section updated with citation-link gate
-- ✅ .specify/templates/tasks-template.md — Polish phase updated with citation-link verification task
-- ⚠ .specify/templates/spec-template.md — no mandatory reference section exists; consider adding a References section in future spec work
-- ✅ .specify/templates/commands/ — directory does not exist; nothing to update
-Follow-up TODOs: none
--->
-
-# Dominion Constitution
+# [PROJECT_NAME] Constitution
+<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
 
 ## Core Principles
 
-### I. Authority and Rule Priority
+### [PRINCIPLE_1_NAME]
+<!-- Example: I. Library-First -->
+[PRINCIPLE_1_DESCRIPTION]
+<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
 
-Work in this repository MUST resolve conflicting instructions in this order:
+### [PRINCIPLE_2_NAME]
+<!-- Example: II. CLI Interface -->
+[PRINCIPLE_2_DESCRIPTION]
+<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
 
-1. Direct user instructions in the current session.
-2. The nearest directory-scoped `README.md`.
-3. The root `AGENTS.md` runtime guidance.
-4. The style guides under `style/`.
-5. General best practices for the relevant language or ecosystem.
+### [PRINCIPLE_3_NAME]
+<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
+[PRINCIPLE_3_DESCRIPTION]
+<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
 
-This constitution is the durable project-governance source for Spec Kit workflows.
-`AGENTS.md` is the runtime agent entrypoint and MUST point agents back to this file.
+### [PRINCIPLE_4_NAME]
+<!-- Example: IV. Integration Testing -->
+[PRINCIPLE_4_DESCRIPTION]
+<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
 
-### II. Bazel-First Repository Integrity
+### [PRINCIPLE_5_NAME]
+<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
+[PRINCIPLE_5_DESCRIPTION]
+<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
 
-All build, test, and dependency workflows MUST be mediated through Bazel and the
-repository-provided Bazel wrappers. Plans and implementation tasks MUST preserve a
-green whole-repository build and test state. JavaScript and TypeScript dependency
-version changes MUST be made through the root `pnpm-workspace.yaml` catalog unless
-the dependency is explicitly documented as a special direct-version exception.
+## [SECTION_2_NAME]
+<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
 
-`BUILD.bazel` files MUST be generated or updated through Gazelle unless Gazelle
-cannot express the required target, such as a manually added deployment target.
-Generated proto or grpc source files MUST NOT be committed to the repository.
+[SECTION_2_CONTENT]
+<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
 
-### III. Test-Driven and Observable Delivery
+## [SECTION_3_NAME]
+<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
 
-Every implementation plan MUST define goals, acceptance criteria, expected change
-scope, and an independently observable way to prove the delivered behavior works.
-Plans MUST be TDD-driven: tests are written first when practical; when red tests
-are not practical, the plan MUST include a concrete test plan and test cases before
-implementation begins.
-
-Service code MUST include large-test acceptance unless the nearest service
-`README.md` explicitly exempts it. Test failures and runtime failures SHOULD be
-investigated with the repository observability tools, including SigNoz logs and
-traces when applicable.
-
-### IV. Spec Kit SDD Workflow
-
-Feature work MUST follow the Spec Kit SDD flow: specify, clarify when needed,
-plan, generate tasks, analyze consistency when useful, implement, and verify. The
-plan is the execution contract: it MUST describe not only what code changes, but
-what user-visible capability the delivered artifact provides.
-
-Prometheus is the plan builder and Atlas is the plan executor. Plans prepared for
-Atlas MUST make acceptance observable: validation checks must verify implemented
-behavior, not only file existence or code delivery.
-
-When a large-test plan or feature test plan exists, Spec Kit plans and tasks MUST
-execute it unless deployment failure or a documented out-of-scope pre-existing
-issue blocks execution. Any skipped execution MUST record the blocker and the
-remaining validation risk.
-
-### V. Quality Review and Remediation
-
-Code Quality Review MUST include test-code review and style review. Test-code
-review verifies that tests match the development goal and test plan. Style review
-verifies that changed code follows the repository style guides.
-
-Acceptance findings discovered during planned validation MUST be fixed even when
-they were not introduced by the current change, unless the plan explicitly scopes
-them out with a documented reason approved by the user.
-
-### VI. Test Impact Assessment
-
-Every implementation plan MUST evaluate whether existing test cases — both unit
-tests and large tests — need modification as a result of the planned changes. The
-evaluation MUST be explicit: the plan MUST list each affected test file, describe
-the required change, and record it alongside the implementation tasks. Plans MUST
-NOT silently break or disable existing tests without documenting the reason and
-the residual risk.
-
-### VII. Change Classification and Refactoring Discipline
-
-Every implementation plan MUST classify each change as one of: **new** (adding a
-file, function, or module), **modify** (changing existing code), or **delete**
-(removing code or files). When existing code is modified, the change MUST be
-carried out as a **refactoring**: the plan MUST state the refactoring scope (which
-files, functions, or interfaces are affected), the refactoring goal (what
-structural improvement is achieved), and the invariants preserved. Plans MUST NOT
-accumulate additive patches on existing code without declaring the refactoring
-intent — code piling without structural justification is forbidden.
-
-### VIII. Citation and Reference Links
-
-Every plan, specification, task list, research note, or design document that
-quotes, paraphrases, or relies on external content MUST include a citation link.
-A citation link is a URL, permalink, or stable identifier that points to the
-exact official documentation, code repository, standard, issue, or article being
-referenced.
-
-- Inline references to official documentation, source code, issues, or standards
-  MUST include the link directly in the text or as a footnote on the same page.
-- References to code repositories MUST use permalinks (commit-specific or tag
-  URLs) when the exact line or file matters.
-- Aggregated references MAY be listed in a dedicated **References** section, but
-  each entry MUST still contain a working link or stable identifier.
-- Internal repository files, style guides, or specifications do not require
-  external links, but SHOULD be referenced by relative path when useful.
-
-Rationale: citation links make decisions verifiable, make maintenance easier when
-external sources change, and prevent drift between the project’s reasoning and
-the actual source material.
-
-## Technology Stack and Build System
-
-This repository primarily contains Go source files and may also contain
-TypeScript, JavaScript, Python, protobuf, and supporting build or test assets.
-
-### Go
-
-- Go builds MUST use `rules_go` through Bazel.
-- Go commands MUST be executed through the repository Bazel Go wrapper.
-- Go code MUST be formatted before validation.
-- Go dependency updates MUST keep `go.mod`, Gazelle-generated build files, and
-  Bazel module state synchronized.
-- Go unit tests MUST use the repository unit-test rule generated by Gazelle.
-- Go large tests MUST use the repository large-test rule.
-
-### TypeScript and JavaScript
-
-- TypeScript and JavaScript projects MUST be built through Bazel.
-- PNPM commands MUST use the Bazel-managed PNPM entrypoint with an absolute
-  project directory.
-- The repository root package files own monorepo dependency state; subpackages
-  MUST NOT commit their own `pnpm-lock.yaml` files.
-- Dependency versions MUST be centralized in the root `pnpm-workspace.yaml`
-  catalog. Package manifests SHOULD reference catalog entries instead of inline
-  versions.
-- A package MAY declare an inline dependency version only when the dependency is a
-  documented special exception that cannot use the catalog. The exception MUST be
-  recorded near the dependency change and reviewed during planning and tasks.
-- Protobuf dependencies MUST be managed and compiled through Bazel protobuf rules.
-
-### Python
-
-- Python builds MUST use `rules_python` through Bazel.
-- Python commands MUST be executed through the repository Bazel Python wrapper.
-- Python dependencies MUST be managed through the root `requirements_lock.txt`
-  and Bazel module configuration, not through ad-hoc local `pip install` state.
-- Python `BUILD.bazel` files MUST be generated or updated through Gazelle.
-
-## Development Workflow and Quality Gates
-
-Before any agent, sub-agent, or executor modifies code, the plan MUST require it
-to read the relevant repository style and convention files. The `style/` directory
-is the source of code style, API, MongoDB, Go, and large-test guidance.
-
-Every feature plan MUST pass a Constitution Check before Phase 0 research and
-again after Phase 1 design. The check MUST cover:
-
-- Whether the selected implementation follows the authority order and style docs.
-- Whether Bazel, Gazelle, dependency, pnpm catalog, and generated-code rules are
-  respected.
-- Whether unit tests, large tests, or test-plan alternatives match the feature.
-- Whether full-repository build and test validation is planned.
-- Whether acceptance validates behavior through the artifact's real surface.
-
-Tasks generated from plans MUST include explicit verification tasks for formatting,
-Gazelle or dependency synchronization when relevant, pnpm catalog synchronization
-when JavaScript or TypeScript package manifests change, unit tests, large tests
-when service code changes, and full-repository build and test checks.
+[SECTION_3_CONTENT]
+<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
 
 ## Governance
+<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-This constitution supersedes duplicated project rules in runtime agent guidance.
-`AGENTS.md` MAY contain operational commands, agent role notes, and the managed
-Spec Kit context block, but durable project constraints belong here.
+[GOVERNANCE_RULES]
+<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
 
-Amendments MUST be made through the Spec Kit constitution workflow when practical.
-Every amendment MUST include a Sync Impact Report, update dependent templates when
-the new rule changes planning or task generation, and use semantic versioning:
-
-- MAJOR for incompatible governance or principle changes.
-- MINOR for new principles or materially expanded guidance.
-- PATCH for wording, clarification, or non-semantic fixes.
-
-Plans and reviews MUST verify compliance with the active constitution. Any
-intentional violation MUST be documented in the plan's Complexity Tracking section
-with the reason and rejected simpler alternative.
-
-**Version**: 1.4.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-15
+**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
+<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->

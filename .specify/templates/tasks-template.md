@@ -11,15 +11,6 @@ description: "Task list template for feature implementation"
 
 **Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
 
-**Constitution**: Generated tasks MUST satisfy `.specify/memory/constitution.md`.
-Include repository-specific verification tasks for formatting, Gazelle/dependency
-synchronization, pnpm catalog updates for TypeScript/JavaScript dependency
-versions, unit tests, large tests for service code, testplan execution when a plan
-exists, and full-repository Bazel build/test validation. Each task MUST classify
-its change type as **new**, **modify**, or **delete**. Modification tasks MUST
-describe the refactoring scope and goal. Existing tests affected by the changes
-MUST be listed as explicit tasks.
-
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -166,17 +157,6 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] TXXX [P] Additional unit tests (if requested) in tests/unit/
 - [ ] TXXX Security hardening
 - [ ] TXXX Run quickstart.md validation
-- [ ] TXXX Run language formatting through repository Bazel wrappers for changed code
-- [ ] TXXX Run Gazelle and dependency synchronization when BUILD/dependency inputs changed
-- [ ] TXXX Confirm TypeScript/JavaScript dependency versions are centralized in the root
-  `pnpm-workspace.yaml` catalog, or document the special direct-version exception
-- [ ] TXXX Run `bazel test` for affected unit-test targets
-- [ ] TXXX Run required large-test/testplan validation for service changes, or document approved skip reason
-- [ ] TXXX Run `bazel build //...` and `bazel test //...` for full-repository verification
-- [ ] TXXX Confirm Code Quality Review covers test-code review and style review
-- [ ] TXXX Verify that all external references in plans, specs, research notes,
-  and design documents include citation links (URL, permalink, or stable
-  identifier) per the project constitution
 
 ---
 
@@ -269,6 +249,4 @@ With multiple developers:
 - Verify tests fail before implementing
 - Commit after each task or logical group
 - Stop at any checkpoint to validate story independently
-- Final validation must prove delivered behavior through the artifact's real surface
-- Do not mark large-test/testplan tasks skipped unless the blocker and residual risk are documented
 - Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence
