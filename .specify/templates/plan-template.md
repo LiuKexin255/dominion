@@ -52,6 +52,15 @@
 - **Code Style Precedence (§II)**: every implementation task exported to
   `tasks.md` MUST reference the applicable `style/` documents and confirm
   they are reviewed before code changes begin.
+- **External Dependency Research (§III)**: every external dependency,
+  library, framework, service, or component referenced in this plan MUST
+  be researched against its official documentation and source repository
+  BEFORE the plan is finalized. Research MUST cover purpose, supported
+  versions, the relevant public API surface, known constraints or
+  deprecations, and licensing terms. The plan MUST record the
+  documentation URLs consulted as inline citations (per §I) with a
+  one-line summary of the finding, and pin the version or version range
+  researched. Relying on memory or prior assumptions is a violation.
 
 ## Project Structure
 

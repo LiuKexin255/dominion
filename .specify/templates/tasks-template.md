@@ -31,6 +31,13 @@ description: "Task list template for feature implementation"
 - **Code Style Precedence (§II)**: every code-related task MUST reference
   the applicable `style/` documents and confirm they were reviewed before
   any source file is created or modified.
+- **External Dependency Research (§III)**: any task that introduces a NEW
+  dependency, library, framework, service, or component not already
+  researched in `plan.md` MUST perform the same documentation research
+  (official docs + source repository) and cite the findings inline (per
+  §I) before implementation begins. Dependencies inherited from
+  `plan.md` MUST explicitly reference the plan's research rather than
+  restating decisions without provenance.
 
 ## Path Conventions
 

@@ -1,6 +1,36 @@
 <!--
 Sync Impact Report
 =====================================================================
+Version change: 1.1.0 → 1.2.0
+
+Modified principles:
+  - None (existing §I and §II unchanged)
+
+Added principles:
+  - III. External Dependency Research (外部依赖研读): when authoring
+    plan.md (and tasks that introduce new dependencies), every external
+    dependency or component MUST be researched against its official
+    documentation and source repository BEFORE the plan is finalized.
+
+Added sections:
+  - Core Principles → III. External Dependency Research
+
+Removed sections:
+  - None
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
+    now references §III research-before-plan obligation)
+  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
+    now references §III inheritance for tasks introducing new dependencies)
+  - .specify/templates/spec-template.md — ✅ verified (spec authoring
+    precedes planning; §III applies at plan/tasks stage, no change needed)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (directory does not exist)
+
+Follow-up TODOs: none
+=====================================================================
+
 Version change: 1.0.0 → 1.1.0
 
 Modified principles:
@@ -106,6 +136,45 @@ redundant conventions, and rework; it ensures the codebase evolves coherently
 and that each contributor understands the project's engineering expectations
 before writing code.
 
+### III. External Dependency Research (外部依赖研读)
+
+When authoring `plan.md`, every external dependency, library, framework,
+service, or component referenced in the design MUST be researched against its
+official documentation and source repository BEFORE the plan is finalized.
+
+**Mandatory rules**:
+
+- **Research-before-plan rule**: before a technical decision involving an
+  external dependency or component is recorded in `plan.md`, the author MUST
+  retrieve and read the dependency's official documentation and source
+  repository (README, documentation site, API reference, CHANGELOG) to a depth
+  sufficient to justify the decision. Relying on memory or prior assumptions
+  about the dependency is a violation.
+- **Scope of research**: research MUST cover, at minimum, the dependency's
+  purpose, supported versions, the public API surface relevant to the plan,
+  known constraints or deprecations, and licensing terms.
+- **Evidence in plan**: the plan MUST record the documentation URLs consulted
+  as inline citations (per §I) alongside a one-line summary of the finding
+  that informed the decision. A bare dependency name without supporting
+  documentation evidence is a violation.
+- **Version grounding**: the specific version or version range researched MUST
+  be pinned in the plan. If the latest released version differs from what the
+  plan targets, the plan MUST note the delta and the reason for the choice.
+- **Conflicting signals**: when official documentation and observed repository
+  behavior diverge, the plan MUST flag the discrepancy and record which source
+  was trusted and why.
+- **Inheritance to tasks**: tasks in `tasks.md` that introduce NEW dependencies
+  not already researched in `plan.md` MUST perform the same research and cite
+  the findings before implementation begins.
+
+**Rationale**: planning against stale memory or unverified assumptions about
+external dependencies produces designs that break on implementation — APIs
+change, versions deprecate, and constraints shift. Reading authoritative
+sources before committing to a design ensures plans are grounded in current
+reality, complements §I (which obligates citing sources) by obligating the
+actual reading of them, and gives reviewers verifiable evidence rather than
+trust.
+
 ## Spec Artifact Scope
 
 This constitution applies to the following Spec Kit artifacts:
@@ -138,5 +207,9 @@ This constitution applies to the following Spec Kit artifacts:
   material is cited, and that every inline claim has a matching link.
   Implementation tasks in `tasks.md` MUST reference the applicable `style/`
   documents and confirm they were reviewed before code changes begin.
+  Every external dependency or component referenced in `plan.md` (and any
+  new dependency introduced in `tasks.md`) MUST show evidence of
+  documentation research per §III, with inline citations to the official
+  sources consulted.
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-18
+**Version**: 1.2.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-21
