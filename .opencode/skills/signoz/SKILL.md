@@ -43,9 +43,11 @@ Do not use dashboard, alert, notification, view, metric, or write tools.
 
 ## Useful request forms
 
-- `service=<app/service> env=<environment> recent errors`
-- `service=<app/service> env=<environment> trace errors last 1h`
-- `trace_id=<trace_id> explain request path and related logs`
+以下为用户向 agent 提问的自然语言示例。其中 `service`/`env`/`trace_id` 是用户提供的逻辑参数名，并非 SigNoz 查询字段；其对应的 SigNoz 字段见上方 Parameter mapping。
+
+- "recent errors for service `<app/service>` in env `<environment>`"
+- "trace errors in the last 1h for service `<app/service>` in env `<environment>`"
+- "explain the request path and related logs for trace_id `<trace_id>`"
 
 ## 日志查询方式
 
@@ -60,7 +62,7 @@ Do not use dashboard, alert, notification, view, metric, or write tools.
 使用 `obs_signoz_search_logs`，通过环境和 service 过滤：
 
 - `deployment.environment.name`：测试计划中的 `suites[].env`（如 `game.lt`）
-- `service.name`：被测服务标识（如 `game-agent`）
+- `service.name`：被测服务标识（如 `game/agent`）
 
 **3. 查询容器控制台输出**
 
@@ -68,7 +70,7 @@ Do not use dashboard, alert, notification, view, metric, or write tools.
 
 - **过滤条件**：`k8s.pod.name CONTAINS '<env-scope>-<env-name>-<service-name>'`
 - **字段来源**：
-  - `<env-scope>` 和 `<env-name>`：`guitar run` 输出中部署环境的 scope 和 name 部分（例如环境 `game-ltkyfwdx`，scope 为 `game`，name 为 `ltkkyfwdx`）。
+  - `<env-scope>` 和 `<env-name>`：`guitar run` 输出中部署环境的 scope 和 name 部分（例如环境 `game-ltkyfwdx`，scope 为 `game`，name 为 `ltkyfwdx`）。
   - `<service-name>`：测试计划中部署的目标服务标识（如 `agent`、`gateway`）。
 - **示例**：环境为 `game-ltkyfwdx`，服务为 `agent`：
   ```

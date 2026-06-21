@@ -1,195 +1,175 @@
 /**
- * llm.ts — LLM adapter wrapping LangChain createDeepAgent for text dialog.
+ * llm.ts — AgentAdapter wrapping LangChain createAgent for text dialog.
  *
- * ContentBlock types match LangChain's block structure:
- *   - reasoning → { type: "reasoning", reasoning: string }
- *   - text      → { type: "text", text: string }
- *
- * The RealLLMAdapter uses initChatModel pointed at opencode-go's proxy
- * endpoint, selects the OpenAI or Anthropic wire format by model ID, wraps the
- * model in createDeepAgent with built-in defaults, and streams contentBlocks via
- * agent.streamEvents().
+ * The adapter receives a pre-created ChatModel (from ModelProviderCache),
+ * a systemPrompt, and a checkpointer at construction time.  The compiled
+ * agent is created eagerly in the constructor.  generateTurn only needs
+ * the threadId and userMessage.
  */
 
-import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
-import { MemorySaver } from "@langchain/langgraph";
-import { createDeepAgent } from "deepagents";
-import { initChatModel } from "langchain/chat_models/universal";
-import { randomUUID } from "node:crypto";
-import { info, error as logError } from "@dominion/common-js-logs";
+import { info } from "@dominion/common-js-logs";
+import type { BaseMessage } from "@langchain/core/messages";
+import { HumanMessage } from "@langchain/core/messages";
+import type { MemorySaver } from "@langchain/langgraph";
+import { createAgent, createMiddleware } from "langchain";
+import { beforeModelMiddleware } from "./context-middleware";
+import type { ChatModel } from "./model-provider";
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
 // ---------------------------------------------------------------------------
 
 export type ContentBlock =
-  | { type: "reasoning"; reasoning: string }
-  | { type: "text"; text: string };
+	| { type: "reasoning"; reasoning: string }
+	| { type: "text"; text: string };
 
 // ---------------------------------------------------------------------------
-// Provider selection
+// Middleware
 // ---------------------------------------------------------------------------
-
-export type LLMProvider = "openai" | "anthropic";
-
-const ANTHROPIC_MODEL_PREFIXES = ["minimax-", "qwen3."];
 
 /**
- * Extract the bare model name from a `{provider}/{model}` spec.
- *
- * Profile model fields use the format `opencode-go/{model-name}`. This
- * function strips the provider prefix so the bare name can be passed to
- * LangChain's `initChatModel`. If no `/` is present, the input is returned
- * as-is for backward compatibility.
+ * Strips all SystemMessage entries from state.messages before the model
+ * invocation.  This prevents profile-switch contamination when the same
+ * thread_id is used across different systemPrompts.
  */
-export function parseModelSpec(modelSpec: string): string {
-  const slashIndex = modelSpec.indexOf("/");
-  if (slashIndex === -1) {
-    return modelSpec;
-  }
-  return modelSpec.slice(slashIndex + 1);
+const wrapModelCallMiddleware = createMiddleware({
+	name: "StripSystemMessages",
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	wrapModelCall: async (request: any, handler: any) => {
+		const state = request?.state;
+		if (state?.messages && Array.isArray(state.messages)) {
+			const filtered = state.messages.filter(
+				(m: any) => m._getType?.() !== "system",
+			);
+			return handler({
+				...request,
+				state: { ...state, messages: filtered },
+			});
+		}
+		return handler(request);
+	},
+});
+
+// ---------------------------------------------------------------------------
+// AgentAdapter interface
+// ---------------------------------------------------------------------------
+
+export interface AdapterStateSnapshot {
+	values: { messages?: BaseMessage[] };
+	createdAt?: string;
 }
 
-/**
- * Infer the provider wire format from the model ID.
- *
- * OpenCode Go exposes most models through an OpenAI-compatible endpoint, but
- * MiniMax and Qwen models use an Anthropic-compatible `/messages` endpoint.
- * See: https://opencode.ai/docs/zh-cn/go/
- */
-export function inferProvider(modelName: string): LLMProvider {
-  const lower = modelName.toLowerCase();
-  for (const prefix of ANTHROPIC_MODEL_PREFIXES) {
-    if (lower.startsWith(prefix)) {
-      return "anthropic";
-    }
-  }
-  return "openai";
+export interface AgentAdapter {
+	/**
+	 * Generate a single conversational turn.
+	 *
+	 * The adapter was compiled at construction time with a specific model,
+	 * systemPrompt, and checkpointer.  Only the threadId and userMessage
+	 * vary per turn.
+	 *
+	 * @param threadId    - Stable checkpoint thread identifier (sessionId).
+	 * @param userMessage - The user's message for this turn.
+	 * @returns Async iterable of ContentBlock in streaming order.
+	 */
+	generateTurn(
+		threadId: string,
+		userMessage: string,
+	): AsyncIterable<ContentBlock>;
+
+	/**
+	 * Read the checkpoint state for a thread.
+	 *
+	 * Uses the adapter's own compiled graph so the checkpoint — which was
+	 * written by the same graph — is correctly deserialised.  Returns null
+	 * when no checkpoint exists for the thread.
+	 */
+	getState(threadId: string): Promise<AdapterStateSnapshot | null>;
+
+	/** Optional cleanup hook called when the adapter is unbound. */
+	cleanup?(): void;
 }
 
 // ---------------------------------------------------------------------------
-// LLMAdapter interface
+// AdapterFactory — used by SessionAgent to create adapter instances
+//
+// The factory receives a lazy getProvider callback rather than a pre-fetched
+// ChatModel.  The production factory calls getProvider() to obtain the shared
+// model; the test factory ignores it entirely.
 // ---------------------------------------------------------------------------
 
-export interface LLMAdapter {
-  /**
-   * Generate a single conversational turn.
-   *
-   * @param systemPrompt  - System prompt text for agent personality/instructions.
-   * @param history       - Previous conversation messages in order.
-   * @param userMessage   - The user's message for this turn.
-   * @param providerSecret - API key for the model provider.
-   *
-   * @returns Async iterable of ContentBlock objects in streaming order
-   *          (reasoning blocks before text blocks).
-   */
-  generateTurn(
-    systemPrompt: string,
-    history: BaseMessage[],
-    userMessage: string,
-    providerSecret: string,
-  ): AsyncIterable<ContentBlock>;
-}
+export type AdapterFactory = (
+	getProvider: () => Promise<ChatModel>,
+	systemPrompt: string,
+	checkpointer: MemorySaver,
+) => Promise<AgentAdapter>;
 
 // ---------------------------------------------------------------------------
-// RealLLMAdapter — production implementation
+// AgentAdapterImpl — production implementation
 // ---------------------------------------------------------------------------
 
-export class RealLLMAdapter implements LLMAdapter {
-  readonly modelName: string;
+export class AgentAdapterImpl implements AgentAdapter {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private readonly agent: any;
 
-  readonly baseUrl: string;
+	constructor(
+		chatModel: ChatModel,
+		systemPrompt: string,
+		checkpointer: MemorySaver,
+	) {
+		info("compiling agent adapter", {
+			systemPromptLength: systemPrompt.length,
+		});
 
-  readonly provider: LLMProvider;
+		this.agent = createAgent({
+			model: chatModel,
+			systemPrompt,
+			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
+			checkpointer,
+		});
+	}
 
-  constructor(modelSpec: string, baseUrl: string, provider?: LLMProvider) {
-    this.modelName = parseModelSpec(modelSpec);
-    this.baseUrl = baseUrl;
-    this.provider = provider ?? inferProvider(this.modelName);
-  }
+	async *generateTurn(
+		threadId: string,
+		userMessage: string,
+	): AsyncIterable<ContentBlock> {
+		yield* this.streamFromAgent(threadId, userMessage);
+	}
 
-  async *generateTurn(
-    systemPrompt: string,
-    history: BaseMessage[],
-    userMessage: string,
-    providerSecret: string,
-  ): AsyncIterable<ContentBlock> {
-    info("initializing LLM model", {
-      model: this.modelName,
-      provider: this.provider,
-      baseUrl: this.baseUrl,
-    });
+	async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
+		const snapshot = await this.agent.getState({
+			configurable: { thread_id: threadId },
+		});
+		if (!snapshot) return null;
+		return {
+			values: snapshot.values ?? {},
+			createdAt: snapshot.createdAt,
+		};
+	}
 
-    let model: Awaited<ReturnType<typeof initChatModel>>;
-    try {
-      model = await initChatModel(this.modelName, {
-        modelProvider: this.provider,
-        apiKey: providerSecret,
-        ...(this.provider === "openai"
-          ? { configuration: { baseURL: this.baseUrl } }
-          : { anthropicApiUrl: this.baseUrl }),
-      });
-    } catch (err) {
-      logError("LLM model initialization failed", {
-        model: this.modelName,
-        provider: this.provider,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
-    }
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private async *streamFromAgent(
+		threadId: string,
+		userMessage: string,
+	): AsyncIterable<ContentBlock> {
+		const stream = await this.agent.streamEvents(
+			{
+				messages: [new HumanMessage(userMessage)],
+			},
+			{
+				configurable: { thread_id: threadId },
+				version: "v3",
+			},
+		);
 
-    yield* this.streamFromModel(model, systemPrompt, history, userMessage);
-  }
+		for await (const message of stream.messages) {
+			for await (const reasoning of message.reasoning) {
+				yield { type: "reasoning", reasoning };
+			}
+			for await (const text of message.text) {
+				yield { type: "text", text };
+			}
+		}
 
-  /**
-   * Core streaming logic separated for testability.
-   *
-   * Accepts any model supporting the BaseChatModel protocol (including
-   * fakeModel from @langchain/core/testing) so tests can inject determinism
-   * without hitting a real provider.
-   *
-   * The model parameter is typed loosely to accept both real ChatOpenAI
-   * instances and fakeModel test doubles.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async *streamFromModel(
-    model: any,
-    systemPrompt: string,
-    history: BaseMessage[],
-    userMessage: string,
-  ): AsyncIterable<ContentBlock> {
-    // createDeepAgent is synchronous in TypeScript (confirmed by spike).
-    const agent = createDeepAgent({
-      model,
-      systemPrompt,
-      checkpointer: new MemorySaver(),
-    });
-
-    const stream = agent.streamEvents(
-      {
-        messages: [...history, new HumanMessage(userMessage)],
-      },
-      {
-        configurable: { thread_id: randomUUID() },
-        streamMode: "messages",
-        version: "v2",
-      },
-    );
-
-    for await (const event of stream) {
-      const data = (event as Record<string, unknown>).data as
-        | Record<string, unknown>
-        | undefined;
-      const chunk = data?.chunk as
-        | { contentBlocks?: ContentBlock[] }
-        | undefined;
-      if (chunk && Array.isArray(chunk.contentBlocks)) {
-        for (const block of chunk.contentBlocks) {
-          if (block.type === "reasoning" || block.type === "text") {
-            yield block as ContentBlock;
-          }
-        }
-      }
-    }
-  }
+		await stream.output;
+	}
 }

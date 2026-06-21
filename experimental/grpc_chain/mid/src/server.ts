@@ -19,10 +19,10 @@ import type { ProtoGrpcType } from "../echo_types/echo";
 // Service root: parent of src/ directory.
 const protoRoot = path.join(__dirname, "..");
 
+const protoIncludeDirs = [protoRoot];
+
 // Proto path at canonical import location under service root.
 const protoPath = path.join(protoRoot, "experimental/grpc_chain/echo.proto");
-
-const protoIncludeDirs = [protoRoot];
 
 // Dominion resolver target for the Go backend service.
 const BACKEND_TARGET = "dominion:///grpc-chain/backend:50051";

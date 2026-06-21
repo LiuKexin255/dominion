@@ -1,0 +1,19 @@
+version: "3.0"
+name: openllm.{{run}}
+type: test
+desc: "Experimental OpenAI LLM prototype (fake service + langchain client)"
+services:
+  - artifact:
+      path: //experimental/openai_llm/fake_service/service.yaml
+      name: fake-service
+  - artifact:
+      path: //experimental/openai_llm/client/service.yaml
+      name: client
+    http:
+      hostnames:
+        - apitest.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /experimental/openai-llm

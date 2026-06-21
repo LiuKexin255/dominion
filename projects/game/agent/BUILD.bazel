@@ -29,6 +29,7 @@ ts_project(
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@langchain/anthropic",
@@ -36,12 +37,7 @@ ts_project(
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
         ":node_modules/@types/node",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
-        "//common/js/grpc/otel:lib",
-        "//common/js/grpc/resolver:lib",
-        "//common/js/logs:lib",
-        "//common/js/otel:lib",
     ],
 )
 
@@ -62,7 +58,6 @@ artifact_pkg_js(
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
     ],
     runtime_protos = [
@@ -101,7 +96,6 @@ artifact_pkg_js(
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
         ":node_modules/@langchain/openai",
-        ":node_modules/deepagents",
         ":node_modules/langchain",
     ],
     runtime_protos = [
@@ -114,6 +108,7 @@ artifact_pkg_js(
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
         "//common/js/otel:runtime_pkg",
+        "//common/js/resolver:runtime_pkg",
     ],
 )
 
@@ -139,6 +134,7 @@ js_test(
         ":lib",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",

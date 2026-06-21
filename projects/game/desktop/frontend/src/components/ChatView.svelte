@@ -3,21 +3,27 @@
   import { FrameSender } from '../api'
 
   type ChatEntry = {
+    messageId: string
     sender: FrameSender
     type: 'thinking' | 'text' | 'warn'
     content: string
     timestamp: string
+    agentProfileName?: string
   }
 
   let {
     messages,
     processing = false,
     queueCount = 0,
+    loadingMessages = false,
+    messagesError = null,
     onSend,
   }: {
     messages: ChatEntry[]
     processing?: boolean
     queueCount?: number
+    loadingMessages?: boolean
+    messagesError?: string | null
     onSend: (text: string) => void
   } = $props()
 
@@ -38,6 +44,10 @@
     }
   }
 
+  function isAgentEntry(msg: ChatEntry): boolean {
+    return msg.sender === FrameSender.AGENT
+  }
+
   $effect(() => {
     // reactively scroll when messages change
     messages
@@ -51,13 +61,24 @@
 </script>
 
 <div class="chat-view">
+  {#if messagesError}
+    <div class="chat-warning" data-testid="chat-warning">{messagesError}</div>
+  {/if}
+
   <!-- Message Thread -->
   <div class="chat-thread" bind:this={scrollContainer}>
-    {#if messages.length === 0}
-      <div class="chat-empty">No messages yet. Start a conversation below.</div>
+    {#if loadingMessages}
+      <div class="chat-loading" data-testid="messages-loading">Loading messages...</div>
+    {:else if messages.length === 0}
+      <div class="chat-empty" data-testid="chat-empty">No messages yet. Start a conversation below.</div>
     {:else}
-      {#each messages as msg (msg.timestamp)}
-        <ChatMessage message={msg} />
+      {#each messages as msg (msg.messageId)}
+        {#if isAgentEntry(msg) && msg.agentProfileName}
+          <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
+        {/if}
+        <div data-testid="chat-message">
+          <ChatMessage message={msg} />
+        </div>
       {/each}
     {/if}
 
@@ -83,6 +104,7 @@
   <div class="chat-input-area">
     <textarea
       class="chat-input"
+      data-testid="chat-input"
       placeholder="Type a message…"
       bind:value={inputText}
       onkeydown={handleKeydown}
@@ -91,6 +113,7 @@
     ></textarea>
     <button
       class="send-btn"
+      data-testid="chat-send-btn"
       onclick={handleSend}
       disabled={processing || !inputText.trim()}
     >
@@ -125,6 +148,30 @@
     text-align: center;
     color: #606080;
     font-size: 12px;
+  }
+
+  .msg-profile-label {
+    padding: 2px 12px 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: #50fa7b;
+    opacity: 0.7;
+  }
+
+  .chat-loading {
+    padding: 40px 16px;
+    text-align: center;
+    color: #a0a0b0;
+    font-size: 12px;
+    font-style: italic;
+  }
+
+  .chat-warning {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #ffb86c;
+    background: rgba(255, 184, 108, 0.08);
+    border-bottom: 1px solid rgba(255, 184, 108, 0.2);
   }
 
   /* ── Typing Indicator ── */

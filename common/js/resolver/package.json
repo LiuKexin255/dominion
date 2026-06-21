@@ -1,0 +1,17 @@
+{
+    "name": "@dominion/common-js-resolver",
+    "private": true,
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "default": "./src/index.js"
+        }
+    },
+    "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:"
+    }
+}

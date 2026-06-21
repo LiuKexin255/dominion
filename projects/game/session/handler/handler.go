@@ -79,19 +79,10 @@ func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionReq
 }
 
 // DeleteSession deletes a Session by its resource name.
-// Before deleting the session, it propagates the deletion to the proxy service
-// to clean up the associated Agent resource. If the proxy returns NotFound,
-// deletion continues (idempotent). Other proxy errors block session deletion.
 func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSessionRequest) (*emptypb.Empty, error) {
 	sessionID, err := gameconst.SessionID(req.GetName())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid session name: %v", err)
-	}
-	agentName := gameconst.AgentName(sessionID)
-
-	_, err = h.proxyClient.DeleteAgent(ctx, &game.DeleteAgentRequest{Name: agentName})
-	if err != nil && status.Code(err) != codes.NotFound {
-		return nil, status.Errorf(codes.Internal, "delete agent failed: %v", err)
 	}
 
 	if err := h.sessionRepo.Delete(ctx, sessionID); err != nil {

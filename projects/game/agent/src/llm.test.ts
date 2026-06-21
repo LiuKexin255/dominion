@@ -1,213 +1,277 @@
 /**
- * llm.test.ts — Tests for RealLLMAdapter using fakeModel() only.
+ * llm.test.ts — Tests for AgentAdapterImpl.
  *
- * No real API calls. All model invocations go through fakeModel()
- * from @langchain/core/testing.
+ * The adapter receives a pre-created ChatModel (from ModelProviderCache)
+ * at construction time.  createAgent compiles eagerly.  generateTurn
+ * only takes threadId and userMessage.
  */
 
-import { describe, expect, it } from "vitest";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
+import { MemorySaver } from "@langchain/langgraph";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ContentBlock, inferProvider, parseModelSpec, RealLLMAdapter } from "./llm";
+import { AgentAdapterImpl, type ContentBlock } from "./llm";
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
-/** Collect every ContentBlock from an async iterable. */
+type FakeStreamAgent = {
+	agent: {
+		streamEvents: () => Promise<{
+			messages: AsyncGenerator<{
+				reasoning: AsyncGenerator<string>;
+				text: AsyncGenerator<string>;
+			}>;
+		}>;
+	};
+};
+
 async function collect(
-  iter: AsyncIterable<ContentBlock>,
+	iter: AsyncIterable<ContentBlock>,
 ): Promise<ContentBlock[]> {
-  const blocks: ContentBlock[] = [];
-  for await (const block of iter) {
-    blocks.push(block);
-  }
-  return blocks;
+	const blocks: ContentBlock[] = [];
+	for await (const block of iter) {
+		blocks.push(block);
+	}
+	return blocks;
 }
 
-// ---------------------------------------------------------------------------
-// Test 1: Text response → contentBlocks with type: "text"
-// ---------------------------------------------------------------------------
+function fakeTextModel(text: string) {
+	return fakeModel().respond(
+		new AIMessage({
+			content: [{ type: "text", text }],
+		}),
+	);
+}
 
-describe("Text response", () => {
-  it("produces contentBlocks with type: 'text'", async () => {
-    const model = fakeModel().respond(
-      new AIMessage({
-        content: [{ type: "text", text: "Hello, world!" }],
-      }),
-    );
+function fakeThinkingModel(reasoning: string, text: string) {
+	return fakeModel().respond(
+		new AIMessage({
+			content: [
+				{ type: "reasoning", reasoning },
+				{ type: "text", text },
+			],
+		}),
+	);
+}
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
-    const blocks = await collect(
-      adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
-    );
-
-    expect(blocks.length).toBeGreaterThan(0);
-    for (const block of blocks) {
-      if (block.type === "text") {
-        expect(block.text).toBeDefined();
-      }
-      expect(["reasoning", "text"]).toContain(block.type);
-    }
-  });
+beforeEach(() => {
+	vi.clearAllMocks();
 });
 
-// ---------------------------------------------------------------------------
-// Test 2: Thinking + text response → contentBlocks with reasoning then text
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// AgentAdapterImpl constructor
+// ===========================================================================
 
-describe("Thinking + text response", () => {
-  it("produces contentBlocks with reasoning before text", async () => {
-    const model = fakeModel().respond(
-      new AIMessage({
-        content: [
-          { type: "reasoning", reasoning: "Step 1: analyze input" },
-          { type: "reasoning", reasoning: "Step 2: formulate response" },
-          { type: "text", text: "The answer is 42." },
-        ],
-      }),
-    );
+describe("AgentAdapterImpl constructor", () => {
+	it("implements the AgentAdapter interface", () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("hi"),
+			"prompt",
+			new MemorySaver(),
+		);
+		expect(typeof adapter.generateTurn).toBe("function");
+	});
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
-    const blocks = await collect(
-      adapter.streamFromModel(model, "You are helpful.", [], "Why?"),
-    );
-
-    expect(blocks.length).toBeGreaterThanOrEqual(3);
-
-    // Reasoning blocks should come before text blocks.
-    const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
-    const textBlocks = blocks.filter((b) => b.type === "text");
-
-    expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
-    expect(textBlocks.length).toBeGreaterThanOrEqual(1);
-
-    // Verify ordering: reasoning blocks appear before text blocks
-    let lastReasoningIndex = -1;
-    let firstTextIndex = -1;
-    for (let i = 0; i < blocks.length; i++) {
-      if (blocks[i].type === "reasoning") lastReasoningIndex = i;
-      if (blocks[i].type === "text" && firstTextIndex === -1) firstTextIndex = i;
-    }
-    if (lastReasoningIndex >= 0 && firstTextIndex >= 0) {
-      expect(lastReasoningIndex).toBeLessThan(firstTextIndex);
-    }
-  });
+	it("generateTurn accepts 2 parameters (threadId, userMessage)", () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("hi"),
+			"prompt",
+			new MemorySaver(),
+		);
+		expect(adapter.generateTurn.length).toBe(2);
+	});
 });
 
-// ---------------------------------------------------------------------------
-// Test 3: Error response → error thrown
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// AgentAdapterImpl.generateTurn — ContentBlock streaming
+// ===========================================================================
 
-describe("Error response", () => {
-  it("throws when the model responds with an error", async () => {
-    const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
+describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
+	it("yields text ContentBlock for text-only response", async () => {
+		const model = fakeTextModel("The answer is 42.");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-text", "Hi"));
 
-    const adapter = new RealLLMAdapter("test-model", "https://test.example.com/v1");
+		expect(blocks.length).toBeGreaterThan(0);
+		const textBlocks = blocks.filter((b) => b.type === "text");
+		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
+		expect(textBlocks[0].text).toBe("The answer is 42.");
+	});
 
-    await expect(
-      collect(
-        adapter.streamFromModel(model, "You are helpful.", [], "Hi"),
-      ),
-    ).rejects.toThrow();
-  });
+	it("yields reasoning ContentBlock before text ContentBlock", async () => {
+		const model = fakeThinkingModel("Let me think...", "Done.");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-think", "Why?"));
+
+		const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
+		const textBlocks = blocks.filter((b) => b.type === "text");
+
+		expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
+		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
+
+		let lastReasoningIdx = -1;
+		let firstTextIdx = -1;
+		for (let i = 0; i < blocks.length; i++) {
+			if (blocks[i].type === "reasoning") lastReasoningIdx = i;
+			if (blocks[i].type === "text" && firstTextIdx === -1) firstTextIdx = i;
+		}
+		if (lastReasoningIdx >= 0 && firstTextIdx >= 0) {
+			expect(lastReasoningIdx).toBeLessThan(firstTextIdx);
+		}
+	});
+
+	it("all yielded blocks have type 'reasoning' or 'text'", async () => {
+		const model = fakeThinkingModel("Thinking", "Text");
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const blocks = await collect(adapter.generateTurn("t-types", "go"));
+
+		for (const block of blocks) {
+			expect(["reasoning", "text"]).toContain(block.type);
+		}
+	});
+
+	it("yields reasoning from additional_kwargs before text blocks", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			new MemorySaver(),
+		);
+
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {
+							yield "I should greet the user";
+						})(),
+						text: (async function* () {
+							yield "Hello";
+						})(),
+					};
+				})(),
+			}),
+		};
+
+		const blocks = await collect(
+			adapter.generateTurn("t-additional-kwargs", "Hi"),
+		);
+
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0]).toEqual({
+			type: "reasoning",
+			reasoning: "I should greet the user",
+		});
+		expect(blocks[1]).toEqual({ type: "text", text: "Hello" });
+	});
+
+	it("yields text blocks when additional_kwargs is absent", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			new MemorySaver(),
+		);
+
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {})(),
+						text: (async function* () {
+							yield "Just text";
+						})(),
+					};
+				})(),
+			}),
+		};
+
+		const blocks = await collect(
+			adapter.generateTurn("t-no-additional-kwargs", "Hi"),
+		);
+
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
 });
 
-// ---------------------------------------------------------------------------
-// Test 4: Custom baseUrl is passed through
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// AgentAdapterImpl — Checkpoint persistence
+// ===========================================================================
 
-describe("Custom baseUrl", () => {
-  it("stores the baseUrl property from the constructor", () => {
-    const baseUrl = "https://custom-opencode.example.com/v1";
-    const adapter = new RealLLMAdapter("opencode-go/my-model", baseUrl);
+describe("AgentAdapterImpl checkpoint persistence", () => {
+	it("getState returns both HumanMessage and AIMessage after generateTurn", async () => {
+		const model = fakeThinkingModel("Let me think...", "Done.");
+		const cp = new MemorySaver();
+		const adapter = new AgentAdapterImpl(model, "prompt", cp);
 
-    expect(adapter.baseUrl).toBe(baseUrl);
-  });
+		await collect(adapter.generateTurn("ckpt-1", "Hello"));
 
-  it("stores the parsed modelName property from the constructor", () => {
-    const adapter = new RealLLMAdapter("opencode-go/deepseek-v4-pro", "https://test.example.com/v1");
+		const state = await adapter.getState("ckpt-1");
+		expect(state).not.toBeNull();
+		const messages = state!.values.messages ?? [];
+		expect(messages.length).toBeGreaterThanOrEqual(2);
 
-    expect(adapter.modelName).toBe("deepseek-v4-pro");
-  });
+		const hasHuman = messages.some(
+			(m: BaseMessage) => (m as any)._getType?.() === "human",
+		);
+		const hasAI = messages.some(
+			(m: BaseMessage) => (m as any)._getType?.() === "ai",
+		);
+		expect(hasHuman).toBe(true);
+		expect(hasAI).toBe(true);
+	});
 
-  it("implements the LLMAdapter interface", () => {
-    const adapter = new RealLLMAdapter("opencode-go/model", "https://example.com/v1");
+	it("getState returns accumulated messages after multiple turns", async () => {
+		const model = fakeTextModel("response");
+		const cp = new MemorySaver();
+		const adapter = new AgentAdapterImpl(model, "prompt", cp);
 
-    expect(typeof adapter.generateTurn).toBe("function");
-    expect(typeof adapter.streamFromModel).toBe("function");
-  });
+		await collect(adapter.generateTurn("ckpt-2", "first"));
+		await collect(adapter.generateTurn("ckpt-2", "second"));
+
+		const state = await adapter.getState("ckpt-2");
+		expect(state).not.toBeNull();
+		const messages = state!.values.messages ?? [];
+		expect(messages.length).toBeGreaterThanOrEqual(4);
+	});
 });
 
-describe("parseModelSpec", () => {
-  it("strips the provider prefix from a {provider}/{model} spec", () => {
-    expect(parseModelSpec("opencode-go/deepseek-v4-pro")).toBe("deepseek-v4-pro");
-    expect(parseModelSpec("opencode-go/qwen3.7-max")).toBe("qwen3.7-max");
-  });
+// ===========================================================================
+// AgentAdapterImpl — WrapModelCall middleware (SystemMessage stripping)
+// ===========================================================================
 
-  it("preserves slashes in the model name after the provider prefix", () => {
-    expect(parseModelSpec("opencode-go/meta/llama-3")).toBe("meta/llama-3");
-  });
+describe("AgentAdapterImpl WrapModelCall middleware", () => {
+	it("strips SystemMessages from state before model invocation", async () => {
+		const model = fakeModel().respond(
+			new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+		);
+		const cp = new MemorySaver();
 
-  it("returns the input as-is when no provider prefix is present", () => {
-    expect(parseModelSpec("deepseek-v4-pro")).toBe("deepseek-v4-pro");
-  });
+		const adapter = new AgentAdapterImpl(model, "system-prompt-1", cp);
 
-  it("returns empty string for provider-only spec", () => {
-    expect(parseModelSpec("opencode-go/")).toBe("");
-  });
+		await collect(adapter.generateTurn("t-mw", "msg1"));
+		await collect(adapter.generateTurn("t-mw", "msg2"));
+
+		for (const call of model.calls) {
+			const systemMsgs = call.messages.filter(
+				(m: any) => m._getType?.() === "system",
+			);
+			expect(systemMsgs).toHaveLength(0);
+		}
+	});
 });
 
-describe("inferProvider", () => {
-  it("routes DeepSeek models through the OpenAI-compatible endpoint", () => {
-    expect(inferProvider("deepseek-v4-pro")).toBe("openai");
-    expect(inferProvider("deepseek-v4-flash")).toBe("openai");
-  });
+// ===========================================================================
+// AgentAdapterImpl.generateTurn — error propagation
+// ===========================================================================
 
-  it("routes Kimi and GLM models through the OpenAI-compatible endpoint", () => {
-    expect(inferProvider("kimi-k2.7-code")).toBe("openai");
-    expect(inferProvider("glm-5.1")).toBe("openai");
-  });
+describe("AgentAdapterImpl.generateTurn error propagation", () => {
+	it("propagates error when the model responds with an error", async () => {
+		const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
+		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
 
-  it("routes Qwen models through the Anthropic-compatible endpoint", () => {
-    expect(inferProvider("qwen3.7-max")).toBe("anthropic");
-    expect(inferProvider("qwen3.7-plus")).toBe("anthropic");
-    expect(inferProvider("qwen3.6-plus")).toBe("anthropic");
-  });
-
-  it("routes MiniMax models through the Anthropic-compatible endpoint", () => {
-    expect(inferProvider("minimax-m3")).toBe("anthropic");
-    expect(inferProvider("minimax-m2.7")).toBe("anthropic");
-  });
-
-  it("is case-insensitive", () => {
-    expect(inferProvider("Qwen3.7-Max")).toBe("anthropic");
-    expect(inferProvider("DeepSeek-V4-Pro")).toBe("openai");
-  });
-});
-
-describe("RealLLMAdapter provider selection", () => {
-  it("infers the provider from the model name by default", () => {
-    const openaiAdapter = new RealLLMAdapter(
-      "opencode-go/deepseek-v4-pro",
-      "https://opencode.ai/zen/go/v1",
-    );
-    expect(openaiAdapter.provider).toBe("openai");
-
-    const anthropicAdapter = new RealLLMAdapter(
-      "opencode-go/qwen3.7-max",
-      "https://opencode.ai/zen/go/v1",
-    );
-    expect(anthropicAdapter.provider).toBe("anthropic");
-  });
-
-  it("allows an explicit provider to override model-name inference", () => {
-    const adapter = new RealLLMAdapter(
-      "opencode-go/deepseek-v4-pro",
-      "https://opencode.ai/zen/go/v1",
-      "anthropic",
-    );
-    expect(adapter.provider).toBe("anthropic");
-  });
+		await expect(
+			collect(adapter.generateTurn("t-err2", "hi")),
+		).rejects.toThrow();
+	});
 });

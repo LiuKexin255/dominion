@@ -5,86 +5,13 @@
  * using only local/fake implementations (no real API calls).
  *
  * Validations:
- *   V1: createDeepAgent from "deepagents"
  *   V2: initChatModel from "langchain/chat_models/universal"
  *   V3: fakeModel from "@langchain/core/testing"
  *   V4: Streaming with streamMode via fakeModel
+ *   V5: systemPrompt persistence with createAgent
  */
 
 import { describe, it, expect } from "vitest";
-
-// ============================================================================
-// Validation 1: createDeepAgent from "deepagents"
-// ============================================================================
-describe("V1: createDeepAgent from deepagents", () => {
-  it("is importable and callable (sync)", async () => {
-    const { createDeepAgent } = await import("deepagents");
-    expect(typeof createDeepAgent).toBe("function");
-
-    // Verify it accepts minimal config without throwing
-    const agent = createDeepAgent({
-      model: "claude-sonnet-4-5-20250929",
-    });
-
-    expect(agent).toBeDefined();
-    expect(typeof agent.invoke).toBe("function");
-    expect(typeof agent.streamEvents).toBe("function");
-
-    // Document: createDeepAgent signature
-    //   function createDeepAgent(params?: CreateDeepAgentParams): DeepAgent
-    //   CreateDeepAgentParams includes:
-    //     model?: BaseLanguageModel | string
-    //     tools?: TTools
-    //     systemPrompt?: string | SystemMessage
-    //     middleware?: TMiddleware
-    //     subagents?: TSubagents
-    //     responseFormat?: TResponse
-    //     contextSchema?: ContextSchema
-    //     checkpointer?: BaseCheckpointSaver | boolean
-    //     store?: BaseStore
-    //     backend?: AnyBackendProtocol | Factory
-    //     interruptOn?: Record<string, boolean | InterruptOnConfig>
-    //     name?: string
-    //     memory?: string[]
-    //     skills?: string[]
-    //     permissions?: FilesystemPermission[]
-    //     streamTransformers?: TStreamTransformers
-    //
-    // Returns: DeepAgent (extends ReactAgent) with:
-    //   - invoke(state, config?) → Promise<State>
-    //   - streamEvents(state, config) → Promise<DeepAgentRunStream> (v3)
-    //   - stream(state, config?) → IterableReadableStream (legacy)
-    //
-    // NOTE: createDeepAgent is SYNCHRONOUS in TypeScript (unlike Python).
-    // The model parameter accepts both string names and BaseChatModel instances.
-    //
-    // NOTE: The built-in default model is "claude-sonnet-4-5-20250929".
-    // When no model is specified, it defaults to Anthropic Claude.
-    // For local testing, always pass a fake model explicitly.
-  });
-
-  it("accepts a BaseChatModel instance as model parameter", async () => {
-    const { fakeModel } = await import("@langchain/core/testing");
-
-    // Create a fake model that returns a specific response
-    const model = fakeModel().respond(
-      new (await import("@langchain/core/messages")).AIMessage("test response"),
-    );
-
-    const { createDeepAgent } = await import("deepagents");
-    const agent = createDeepAgent({
-      model,
-      systemPrompt: "You are a test assistant.",
-    });
-
-    expect(agent).toBeDefined();
-    expect(typeof agent.invoke).toBe("function");
-
-    // Document: createDeepAgent accepts a BaseChatModel instance directly.
-    // The `model` parameter is typed as `BaseLanguageModel | string`.
-    // This confirms that fakeModel() can be passed to createDeepAgent().
-  });
-});
 
 // ============================================================================
 // Validation 2: initChatModel from "langchain/chat_models/universal"
@@ -164,8 +91,7 @@ describe("V2: initChatModel from langchain/chat_models/universal", () => {
     // However, initChatModel lives in the `langchain` package
     // at "langchain/chat_models/universal".
     //
-    // Implication: The package.json must include "langchain" as a dependency
-    // (which deepagents already depends on transitively).
+    // Implication: The package.json must include "langchain" as a dependency.
     //
     // Alternative: Use ChatOpenAI directly from @langchain/openai:
     //   import { ChatOpenAI } from "@langchain/openai";
@@ -495,6 +421,95 @@ describe("V4: Streaming and contentBlocks structure", () => {
     //     if (block.type === "text") { /* accumulate → emit AgentTextFrame */ }
     //   }
   });
+
+// ============================================================================
+// Validation 5: systemPrompt persistence with createAgent
+// ============================================================================
+describe("V5: systemPrompt persistence with createAgent", () => {
+  it("determines whether systemPrompt persists in state across per-turn createAgent invocations", async () => {
+    const { createAgent } = await import("langchain");
+    const { fakeModel } = await import("@langchain/core/testing");
+    const { MemorySaver } = await import("@langchain/langgraph");
+    const { HumanMessage, AIMessage, SystemMessage } = await import(
+      "@langchain/core/messages"
+    );
+
+    // Step 1: Create shared MemorySaver (simulates per-turn adapter pattern)
+    const checkpointer = new MemorySaver();
+
+    // Step 2: Agent A — first turn with systemPrompt "Profile A"
+    const modelA = fakeModel().respond(
+      new AIMessage("Hello from Agent A"),
+    );
+    const agentA = createAgent({
+      model: modelA,
+      systemPrompt: "Profile A",
+      checkpointer,
+    });
+
+    await agentA.invoke(
+      { messages: [new HumanMessage("Hello")] },
+      { configurable: { thread_id: "t1" } },
+    );
+
+    // Step 3: Agent B — second turn, SAME checkpointer, SAME thread_id, DIFFERENT systemPrompt
+    const modelB = fakeModel().respond(
+      new AIMessage("Hello from Agent B"),
+    );
+    const agentB = createAgent({
+      model: modelB,
+      systemPrompt: "Profile B",
+      checkpointer,
+    });
+
+    await agentB.invoke(
+      { messages: [new HumanMessage("Second")] },
+      { configurable: { thread_id: "t1" } },
+    );
+
+    // Step 4: Read checkpoint state via agentB
+    // getState is typed as `never` but delegates to CompiledStateGraph.getState at runtime
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (agentB as any).getState({
+      configurable: { thread_id: "t1" },
+    }) as { values: { messages: Array<{ constructor?: { name: string }; _getType?: () => string; content: unknown }> } };
+    expect(state).toBeDefined();
+    expect(state.values).toBeDefined();
+    expect(Array.isArray(state.values.messages)).toBe(true);
+
+    const messages = state.values.messages;
+
+    // Inspect for SystemMessage entries
+    const systemMessages = messages.filter(
+      (m) => m.constructor?.name === "SystemMessage" || m._getType?.() === "system",
+    );
+
+    // Log message types found for diagnostic purposes
+    const messageTypes = messages.map((m) => m.constructor?.name ?? m._getType?.() ?? "unknown");
+    console.warn("[V5] Messages in state:", JSON.stringify(messageTypes));
+
+    const hasProfileA = systemMessages.some(
+      (m) => typeof m.content === "string" && m.content.includes("Profile A"),
+    );
+    const hasProfileB = systemMessages.some(
+      (m) => typeof m.content === "string" && m.content.includes("Profile B"),
+    );
+
+    if (hasProfileA) {
+      console.warn("[V5] FINDING: PERSISTS — SystemMessage from previous createAgent invocation persists in checkpoint state");
+      console.warn("[V5] Profile A found:", hasProfileA, "| Profile B found:", hasProfileB);
+      console.warn("[V5] Implications: Per-turn createAgent with shared checkpointer may accumulate SystemMessages");
+      console.warn("[V5] Mitigation: May need wrapModelCall middleware to strip prior SystemMessages, or use a single createAgent instance");
+    } else {
+      console.warn("[V5] FINDING: TRANSIENT — SystemMessage from previous createAgent invocation does NOT persist in checkpoint state");
+      console.warn("[V5] Profile A found:", hasProfileA, "| Profile B found:", hasProfileB);
+      console.warn("[V5] Implications: Each createAgent invocation independently injects its own systemPrompt");
+      console.warn("[V5] Safe to use per-turn createAgent without SystemMessage accumulation");
+    }
+
+    expect(hasProfileA !== undefined).toBe(true);
+  });
+});
 
   it("streamMode option is supported by BaseChatModel.stream()", async () => {
     const { fakeModel } = await import("@langchain/core/testing");

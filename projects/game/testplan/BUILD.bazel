@@ -1,7 +1,7 @@
-load("//tools/dev/go:defs.bzl", "go_largetest", "go_unittest")
+load("//tools/dev/go:defs.bzl", "go_largetest")
 
 go_largetest(
-    name = "prompt_test",
+    name = "testplan_test",
     size = "small",
     srcs = [
         "helpers_test.go",
@@ -35,6 +35,21 @@ go_largetest(
     size = "small",
     srcs = [
         "agent_lifecycle_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_largetest(
+    name = "agent_checkpoint_test",
+    size = "small",
+    srcs = [
+        "agent_checkpoint_test.go",
         "helpers_test.go",
     ],
     deps = [

@@ -27,9 +27,18 @@ export interface Session {
 }
 
 export interface Agent {
-  name: string
   sessionId: string
-  createTime: string
+  createTime?: string
+  agentProfileName: string
+}
+
+export interface MessageEntry {
+  name: string
+  messageId: string
+  sender: string
+  type: string
+  content: string
+  createTime?: string
 }
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
@@ -145,6 +154,7 @@ export interface AgentFrame {
   operation?: AgentOperationFrame
   warn?: AgentWarnFrame
   sender: FrameSender
+  agentProfileName?: string
 }
 
 export interface ListSessionsResponse {
@@ -211,10 +221,7 @@ interface WailsApp {
   ListSessions(pageSize: number, pageToken: string): Promise<ListSessionsResponse>
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
-  CreateAgent(sessionID: string): Promise<Agent>
-  CreateAgentWithProfile(sessionID: string, profileName: string): Promise<Agent>
   GetAgent(sessionID: string): Promise<Agent>
-  DeleteAgent(sessionID: string): Promise<void>
   /** @deprecated Use chat-based interfaces instead. */
   ListWindows(): Promise<WindowRef[]>
   /** @deprecated Use chat-based interfaces instead. */
@@ -226,7 +233,8 @@ interface WailsApp {
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendAgentText(sessionId: string, text: string): Promise<void>
+  SendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void>
+  ListMessages(sessionID: string): Promise<MessageEntry[]>
   /** @deprecated Use chat-based interfaces instead. */
   ExecuteOperation(
     operationID: string, screenshotID: string, sequence: number,
@@ -288,28 +296,10 @@ export async function deleteSession(sessionID: string): Promise<void> {
   return a.DeleteSession(sessionID)
 }
 
-export async function createAgent(sessionID: string): Promise<Agent> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.CreateAgent(sessionID)
-}
-
-export async function createAgentWithProfile(sessionID: string, profileName: string): Promise<Agent> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.CreateAgentWithProfile(sessionID, profileName)
-}
-
 export async function getAgent(sessionID: string): Promise<Agent> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.GetAgent(sessionID)
-}
-
-export async function deleteAgent(sessionID: string): Promise<void> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.DeleteAgent(sessionID)
 }
 
 /** @deprecated Use chat-based interfaces instead. */
@@ -358,10 +348,16 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
-export async function sendAgentText(sessionId: string, text: string): Promise<void> {
+export async function sendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.SendAgentText(sessionId, text)
+  return a.SendAgentText(sessionId, text, agentProfileName)
+}
+
+export async function listMessages(sessionId: string): Promise<MessageEntry[]> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.ListMessages(sessionId)
 }
 
 /** @deprecated Use chat-based interfaces instead. */

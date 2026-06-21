@@ -31,10 +31,6 @@ ts_project(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
-        "//common/js/grpc/otel:lib",
-        "//common/js/grpc/resolver:lib",
-        "//common/js/logs:lib",
-        "//common/js/otel:lib",
     ],
 )
 

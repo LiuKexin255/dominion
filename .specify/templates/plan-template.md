@@ -40,40 +40,18 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Complete every gate with PASS/FAIL and evidence. FAIL blocks planning unless the
-violation is documented in Complexity Tracking with user-approved rationale.
-
-- **Authority & Style**: Plan identifies applicable README/style files and
-  requires every agent/sub-agent/executor to read them before code changes.
-- **Bazel Integrity**: Plan uses Bazel-managed build, test, language, PNPM, and
-  Python/Go wrappers; direct ecosystem tools are not used when Bazel wrappers
-  exist.
-- **Generated Files & Dependencies**: Plan preserves Gazelle ownership of
-  `BUILD.bazel`, keeps Bazel module/dependency state synchronized, requires
-  TypeScript/JavaScript dependency versions to be added or changed through the
-  root `pnpm-workspace.yaml` catalog unless a documented special exception is
-  required, and forbids committed proto/grpc generated source.
-- **Testing Strategy**: Plan defines tests first when practical; otherwise it
-  records a concrete test plan and cases before implementation. Service changes
-  include large-test acceptance unless the nearest service README exempts them.
-- **Behavioral Acceptance**: Prometheus-authored plans for Atlas validate the
-  delivered behavior through the artifact's real surface, not only file
-  existence or code delivery.
-- **Review Scope**: Plan includes Code Quality Review covering test-code review
-  and style review.
-- **Repository Verification**: Plan includes `bazel build //...` and
-  `bazel test //...` as final verification, or documents why a narrower target
-  is user-approved.
-- **Testplan Execution**: When a large-test plan or feature test plan exists,
-  plan execution includes it; skipped execution records deployment blockers or
-  out-of-scope pre-existing issues and the remaining validation risk.
-- **Test Impact Assessment**: Plan evaluates existing unit tests and large tests
-  for required modifications and explicitly lists each affected test alongside
-  the implementation tasks.
-- **Change Classification**: Plan classifies every change as new, modify, or
-  delete. Modifications to existing code are described as refactorings with
-  explicit scope, goal, and preserved invariants — additive patching without
-  structural justification is forbidden.
+- **Citation Provenance (§I)**: Every external fact, dependency choice,
+  API reference, or design decision in this plan MUST carry an inline
+  `[description](URL)` link and a matching entry in the `## References`
+  section below. Statements without a citation are assumptions and MUST
+  move to the spec's `## Assumptions` section. Any design decision
+  restated in `tasks.md` MUST carry or explicitly inherit a citation.
+- Version pins or commit SHAs MUST accompany any citation whose
+  referenced state matters.
+- All cited links MUST resolve to publicly accessible resources.
+- **Code Style Precedence (§II)**: every implementation task exported to
+  `tasks.md` MUST reference the applicable `style/` documents and confirm
+  they are reviewed before code changes begin.
 
 ## Project Structure
 
@@ -144,3 +122,26 @@ directories captured above]
 |-----------|------------|-------------------------------------|
 | [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
 | [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+
+## References *(mandatory per Constitution §I — Citation Provenance)*
+
+<!--
+  ACTION REQUIRED: Every external source cited in this plan MUST appear
+  here with a traceable link. If no external material is cited, keep the
+  section and write "No external references."
+
+  Group links by category and pin versions/commits where the cited state
+  matters. Inline citations use [description](URL) at the point of use.
+-->
+
+### Official Documentation
+
+- [Title or description](URL) — version/section if applicable
+
+### Repositories
+
+- [org/repo — file or commit description](URL)
+
+### Articles & RFCs
+
+- [Article or RFC title](URL)

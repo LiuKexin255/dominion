@@ -58,11 +58,11 @@ func main() {
 	// Bidirectional stream binder.
 	binder := bind.NewBinder()
 
-	// ConnectAgenter handles bidirectional agent stream connections.
-	connectAgenter := service.NewConnectAgenter(mongoOwnerStore, manager, binder)
+	// ProxyService orchestrates owner resolution and agent downstream calls.
+	proxyService := service.NewProxyService(mongoOwnerStore, hashPicker, manager, binder)
 
 	// Proxy handler implements the ProxyService gRPC server interface.
-	handler := handler.NewProxyHandler(mongoOwnerStore, hashPicker, manager, connectAgenter)
+	handler := handler.NewProxyHandler(proxyService)
 
 	// gRPC server with default service options (OTel tracing, TLS).
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)

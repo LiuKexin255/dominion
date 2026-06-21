@@ -1,43 +1,56 @@
-/**
- * Test bootstrap entry point for the game agent gRPC server.
- *
- * Identical to bootstrap.ts except it creates a FakeLlmAdapter (deterministic,
- * no network) instead of RealLLMAdapter. All handler, runtime, server, and
- * proto handling code is shared with the production artifact -- only the LLM
- * module differs.
- */
-
-import { init, shutdown } from "@dominion/common-js-otel";
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
-import { info, installReporter, createOTelReporter } from "@dominion/common-js-logs";
-import { FakeLlmAdapter } from "./fake-llm";
+import {
+	createOTelReporter,
+	info,
+	installReporter,
+} from "@dominion/common-js-logs";
+import { init, shutdown } from "@dominion/common-js-otel";
+import { createResolver } from "@dominion/common-js-resolver";
+import type { MemorySaver } from "@langchain/langgraph";
+import type { AdapterFactory } from "./llm";
+import { AgentAdapterImpl } from "./llm";
+import type { ChatModel } from "./model-provider";
+import { buildResolverAwareChatModel } from "./resolver-provider";
 
 async function main() {
-  await init({ instrumentations: [createGrpcInstrumentation()] });
+	await init({ instrumentations: [createGrpcInstrumentation()] });
 
-  const uninstallReporter = installReporter(createOTelReporter("game-agent/service"));
+	const uninstallReporter = installReporter(
+		createOTelReporter("game-agent/service"),
+	);
 
-  info("OTel initialized", { service: "game-agent" });
+	info("OTel initialized", { service: "game-agent" });
 
-  const { startServer } = await import("./server.js");
-  const llmAdapter = new FakeLlmAdapter();
-  const server = await startServer(llmAdapter);
+	const resolver = createResolver();
 
-  info("gRPC server listening on 0.0.0.0:50051", { service: "game-agent" });
+	const { startServer } = await import("./server.js");
 
-  const shutdownHandler = async (signal: string) => {
-    info("shutting down", { signal });
-    uninstallReporter();
-    await shutdown();
-    server.forceShutdown();
-    process.exit(0);
-  };
+	const adapterFactory: AdapterFactory = async (
+		_getProvider: () => Promise<ChatModel>,
+		systemPrompt: string,
+		cp: MemorySaver,
+	) => {
+		const chatModel = await buildResolverAwareChatModel(resolver);
+		return new AgentAdapterImpl(chatModel, systemPrompt, cp);
+	};
 
-  process.on("SIGTERM", () => shutdownHandler("SIGTERM"));
-  process.on("SIGINT", () => shutdownHandler("SIGINT"));
+	const server = await startServer(adapterFactory);
+
+	info("gRPC server listening on 0.0.0.0:50051", { service: "game-agent" });
+
+	const shutdownHandler = async (signal: string) => {
+		info("shutting down", { signal });
+		uninstallReporter();
+		await shutdown();
+		server.forceShutdown();
+		process.exit(0);
+	};
+
+	process.on("SIGTERM", () => shutdownHandler("SIGTERM"));
+	process.on("SIGINT", () => shutdownHandler("SIGINT"));
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
+	console.error("Fatal error:", err);
+	process.exit(1);
 });

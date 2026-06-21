@@ -102,7 +102,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	// We check by reconstructing the expected URL the client would build.
 	// The httptest server URL is http://127.0.0.1:PORT, so convertToWS gives ws://127.0.0.1:PORT
 	wsURL, _ := convertToWS(srv.URL)
-	expectedPath := "/api/v1/sessions/sess-123/agent/connect"
+	expectedPath := "/api/v1/sessions/sess-123/connect"
 
 	// Make a direct request to verify path — use a second server for path capture
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -13,11 +13,14 @@ import type {
 import type { ChannelOptions } from "@grpc/grpc-js/build/src/channel-options";
 import type { StatusOr } from "@grpc/grpc-js/build/src/call-interface";
 
-import { parseTarget } from "./target";
-import { validateServiceApp } from "./environment";
-import { createResolver } from "./resolver";
-import { createStatefulResolver } from "./stateful";
-import type { ResolverConfig, ResolverState, Scheduler } from "./types";
+import {
+  parseTarget,
+  validateServiceApp,
+  createResolver,
+  createStatefulResolver,
+} from "@dominion/common-js-resolver";
+import type { ResolverConfig, Scheduler } from "@dominion/common-js-resolver";
+import type { ResolverState } from "./grpc-types";
 
 let registered = false;
 let storedConfig: ResolverConfig | undefined;

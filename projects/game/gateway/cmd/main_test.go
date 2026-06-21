@@ -32,12 +32,12 @@ func TestIsWebSocketConnectPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{path: "/api/v1/sessions/abc/agent/connect", want: true},
-		{path: "api/v1/sessions/abc/agent/connect", want: true},
-		{path: "/api/v1/sessions/abc/agent/connect/", want: true},
-		{path: "/api/v1/sessions//agent/connect", want: false},
-		{path: "/api/v1/sessions/abc/agent", want: false},
-		{path: "/api/v1/sessions/agent/connect", want: false},
+		{path: "/api/v1/sessions/abc/connect", want: true},
+		{path: "api/v1/sessions/abc/connect", want: true},
+		{path: "/api/v1/sessions/abc/connect/", want: true},
+		{path: "/api/v1/sessions//connect", want: false},
+		{path: "/api/v1/sessions/abc", want: false},
+		{path: "/api/v1/sessions/connect", want: false},
 		{path: "/api/v1/sessions/abc/foo/bar", want: false},
 		{path: "/api/v1/agents", want: false},
 	}
@@ -57,9 +57,9 @@ func TestExtractSessionID(t *testing.T) {
 		path string
 		want string
 	}{
-		{path: "/api/v1/sessions/abc123/agent/connect", want: "abc123"},
-		{path: "/api/v1/sessions/x-y-z/agent/connect", want: "x-y-z"},
-		{path: "/api/v1/sessions//agent/connect", want: ""},
+		{path: "/api/v1/sessions/abc123/connect", want: "abc123"},
+		{path: "/api/v1/sessions/x-y-z/connect", want: "x-y-z"},
+		{path: "/api/v1/sessions//connect", want: ""},
 		{path: "/api/v1/agents", want: ""},
 	}
 
@@ -200,7 +200,7 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/echo-session/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/echo-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestHandleWebSocketConnect_MissingSessionID(t *testing.T) {
 	defer httpSrv.Close()
 
 	// Use path without a valid session ID.
-	resp, err := http.Get(httpSrv.URL + "/api/v1/sessions//agent/connect")
+	resp, err := http.Get(httpSrv.URL + "/api/v1/sessions//connect")
 	if err != nil {
 		t.Fatalf("http get: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/err-session/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/err-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	defer cancel()
 
 	// Connect with session "from-url" in the URL path.
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/from-url/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/from-url/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/leak-test/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/leak-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -633,7 +633,7 @@ func TestScreenshotFrameRoundtrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/shot-session/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/shot-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestReadLimitSet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/limit-test/agent/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/limit-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}

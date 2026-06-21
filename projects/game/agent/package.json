@@ -8,12 +8,12 @@
         "@langchain/core": "catalog:",
         "@langchain/langgraph": "catalog:",
         "@langchain/openai": "catalog:",
-        "deepagents": "catalog:",
         "langchain": "catalog:",
         "@dominion/common-js-logs": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",
         "@dominion/common-js-grpc-otel": "workspace:*",
-        "@dominion/common-js-grpc-resolver": "workspace:*"
+        "@dominion/common-js-grpc-resolver": "workspace:*",
+        "@dominion/common-js-resolver": "workspace:*"
     },
     "devDependencies": {
         "@types/node": "catalog:",

@@ -1,180 +1,142 @@
 <!--
 Sync Impact Report
-Version change: 1.2.0 → 1.3.0
-Modified principles: none
+=====================================================================
+Version change: 1.0.0 → 1.1.0
+
+Modified principles:
+  - I. Citation Provenance (引用溯源): scope expanded from spec.md/plan.md
+    to include tasks.md; added task-level provenance rule.
+
+Added principles:
+  - II. Code Style Precedence (代码规范优先): implementation tasks MUST read
+    repository style guidelines before modifying code.
+
 Added sections:
-- VI. Test Impact Assessment
-- VII. Change Classification and Refactoring Discipline
-Removed sections: none
+  - Core Principles → II. Code Style Precedence
+
+Removed sections:
+  - None
+
 Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — Constitution Check section updated with new gates for test impact assessment and change classification
-- ✅ .specify/templates/tasks-template.md — Constitution note updated to require change-type classification and refactoring scope
+  - .specify/templates/spec-template.md — ✅ verified (References section already
+    covers spec.md; no change required because tasks.md inherits from parent docs)
+  - .specify/templates/plan-template.md — ✅ updated (Constitution Check now
+    references tasks.md citation and style review requirements)
+  - .specify/templates/tasks-template.md — ✅ updated (added Constitution Check
+    gate and References section placeholder)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (directory does not exist)
+
 Follow-up TODOs: none
+=====================================================================
 -->
 
-# Dominion Constitution
+# Dominion Spec Constitution
+
+This constitution governs the authoring and maintenance of specification,
+planning, and implementation task artifacts produced by Spec Kit (`spec.md`,
+`plan.md`, `tasks.md`, and related design documents). It does not duplicate
+engineering conventions already covered in `AGENTS.md`, which retains supremacy
+over runtime code and build practices.
 
 ## Core Principles
 
-### I. Authority and Rule Priority
+### I. Citation Provenance (引用溯源)
 
-Work in this repository MUST resolve conflicting instructions in this order:
+Every factual claim, design decision, API specification, or technical detail in
+`spec.md`, `plan.md`, or `tasks.md` that originates from external material MUST
+carry a traceable link to its source.
 
-1. Direct user instructions in the current session.
-2. The nearest directory-scoped `README.md`.
-3. The root `AGENTS.md` runtime guidance.
-4. The style guides under `style/`.
-5. General best practices for the relevant language or ecosystem.
+**Mandatory rules**:
 
-This constitution is the durable project-governance source for Spec Kit workflows.
-`AGENTS.md` is the runtime agent entrypoint and MUST point agents back to this file.
+- **Inline citation**: each referenced fact MUST use Markdown link syntax
+  inline at the point of use — `[description](URL)`.
+- **Acceptable source types**: official documentation, source code
+  repositories (e.g., GitHub/GitLab commit, file, or issue URLs),
+  published technical articles and blog posts, RFCs, and standards
+  documents.
+- **Version pinning**: when a citation depends on a specific version of
+  a document, package, or revision, the version number or commit SHA
+  MUST accompany the link so the referenced state is deterministic.
+- **Public accessibility**: cited links MUST resolve to publicly
+  reachable resources. Private or paywalled sources MUST be accompanied
+  by a publicly accessible alternative or an archived snapshot (e.g.,
+  `web.archive.org`).
+- **Consolidated References section**: every `spec.md`, `plan.md`, and
+  `tasks.md` MUST end with a `## References` section enumerating all cited URLs,
+  grouped by category (Official Documentation / Repositories / Articles
+  & RFCs). Documents that cite no external material MUST still include
+  the section with a note stating "No external references."
+- **Task-level provenance**: when a `tasks.md` item depends on an external
+  library, tool, command, or documented pattern, the task description MUST
+  include or link to the authoritative source. Inherited provenance from
+  `spec.md` or `plan.md` MUST be referenced explicitly when the task restates
+  a design decision.
+- **No bare claims**: statements presented as external fact without a
+  citation are treated as assumptions and MUST be relocated to the
+  `## Assumptions` section of the artifact.
 
-### II. Bazel-First Repository Integrity
+**Rationale**: traceable citations let reviewers verify design decisions
+against authoritative sources, prevent hallucinated or outdated claims
+from entering the spec pipeline, and give future maintainers a
+deterministic path back to the original source of truth.
 
-All build, test, and dependency workflows MUST be mediated through Bazel and the
-repository-provided Bazel wrappers. Plans and implementation tasks MUST preserve a
-green whole-repository build and test state. JavaScript and TypeScript dependency
-version changes MUST be made through the root `pnpm-workspace.yaml` catalog unless
-the dependency is explicitly documented as a special direct-version exception.
+### II. Code Style Precedence (代码规范优先)
 
-`BUILD.bazel` files MUST be generated or updated through Gazelle unless Gazelle
-cannot express the required target, such as a manually added deployment target.
-Generated proto or grpc source files MUST NOT be committed to the repository.
+Every code-related task in `tasks.md` MUST reference the repository's code style
+guidelines before any source file is created or modified.
 
-### III. Test-Driven and Observable Delivery
+**Mandatory rules**:
 
-Every implementation plan MUST define goals, acceptance criteria, expected change
-scope, and an independently observable way to prove the delivered behavior works.
-Plans MUST be TDD-driven: tests are written first when practical; when red tests
-are not practical, the plan MUST include a concrete test plan and test cases before
-implementation begins.
+- **Read-first rule**: an implementation task MUST NOT begin until the assignee
+  has read the style documents under `style/` (or the location designated by
+  `AGENTS.md`) for the relevant language and project area.
+- **Style gate in tasks**: every `tasks.md` implementation task that touches
+  code MUST include an acceptance criterion or inline note confirming the
+  relevant style guidelines were reviewed.
+- **Conflict resolution**: if a task's proposed approach conflicts with an
+  existing style rule, the style rule prevails unless the constitution itself
+  is amended.
+- **New conventions**: when a task introduces a pattern not covered by existing
+  style guidelines, the assignee MUST document the new convention in the
+  appropriate `style/` document or flag it for review before merging.
 
-Service code MUST include large-test acceptance unless the nearest service
-`README.md` explicitly exempts it. Test failures and runtime failures SHOULD be
-investigated with the repository observability tools, including SigNoz logs and
-traces when applicable.
+**Rationale**: reading style guidelines first prevents inconsistent formatting,
+redundant conventions, and rework; it ensures the codebase evolves coherently
+and that each contributor understands the project's engineering expectations
+before writing code.
 
-### IV. Spec Kit SDD Workflow
+## Spec Artifact Scope
 
-Feature work MUST follow the Spec Kit SDD flow: specify, clarify when needed,
-plan, generate tasks, analyze consistency when useful, implement, and verify. The
-plan is the execution contract: it MUST describe not only what code changes, but
-what user-visible capability the delivered artifact provides.
+This constitution applies to the following Spec Kit artifacts:
 
-Prometheus is the plan builder and Atlas is the plan executor. Plans prepared for
-Atlas MUST make acceptance observable: validation checks must verify implemented
-behavior, not only file existence or code delivery.
-
-When a large-test plan or feature test plan exists, Spec Kit plans and tasks MUST
-execute it unless deployment failure or a documented out-of-scope pre-existing
-issue blocks execution. Any skipped execution MUST record the blocker and the
-remaining validation risk.
-
-### V. Quality Review and Remediation
-
-Code Quality Review MUST include test-code review and style review. Test-code
-review verifies that tests match the development goal and test plan. Style review
-verifies that changed code follows the repository style guides.
-
-Acceptance findings discovered during planned validation MUST be fixed even when
-they were not introduced by the current change, unless the plan explicitly scopes
-them out with a documented reason approved by the user.
-
-### VI. Test Impact Assessment
-
-Every implementation plan MUST evaluate whether existing test cases — both unit
-tests and large tests — need modification as a result of the planned changes. The
-evaluation MUST be explicit: the plan MUST list each affected test file, describe
-the required change, and record it alongside the implementation tasks. Plans MUST
-NOT silently break or disable existing tests without documenting the reason and
-the residual risk.
-
-### VII. Change Classification and Refactoring Discipline
-
-Every implementation plan MUST classify each change as one of: **new** (adding a
-file, function, or module), **modify** (changing existing code), or **delete**
-(removing code or files). When existing code is modified, the change MUST be
-carried out as a **refactoring**: the plan MUST state the refactoring scope (which
-files, functions, or interfaces are affected), the refactoring goal (what
-structural improvement is achieved), and the invariants preserved. Plans MUST NOT
-accumulate additive patches on existing code without declaring the refactoring
-intent — code piling without structural justification is forbidden.
-
-## Technology Stack and Build System
-
-This repository primarily contains Go source files and may also contain
-TypeScript, JavaScript, Python, protobuf, and supporting build or test assets.
-
-### Go
-
-- Go builds MUST use `rules_go` through Bazel.
-- Go commands MUST be executed through the repository Bazel Go wrapper.
-- Go code MUST be formatted before validation.
-- Go dependency updates MUST keep `go.mod`, Gazelle-generated build files, and
-  Bazel module state synchronized.
-- Go unit tests MUST use the repository unit-test rule generated by Gazelle.
-- Go large tests MUST use the repository large-test rule.
-
-### TypeScript and JavaScript
-
-- TypeScript and JavaScript projects MUST be built through Bazel.
-- PNPM commands MUST use the Bazel-managed PNPM entrypoint with an absolute
-  project directory.
-- The repository root package files own monorepo dependency state; subpackages
-  MUST NOT commit their own `pnpm-lock.yaml` files.
-- Dependency versions MUST be centralized in the root `pnpm-workspace.yaml`
-  catalog. Package manifests SHOULD reference catalog entries instead of inline
-  versions.
-- A package MAY declare an inline dependency version only when the dependency is a
-  documented special exception that cannot use the catalog. The exception MUST be
-  recorded near the dependency change and reviewed during planning and tasks.
-- Protobuf dependencies MUST be managed and compiled through Bazel protobuf rules.
-
-### Python
-
-- Python builds MUST use `rules_python` through Bazel.
-- Python commands MUST be executed through the repository Bazel Python wrapper.
-- Python dependencies MUST be managed through the root `requirements_lock.txt`
-  and Bazel module configuration, not through ad-hoc local `pip install` state.
-- Python `BUILD.bazel` files MUST be generated or updated through Gazelle.
-
-## Development Workflow and Quality Gates
-
-Before any agent, sub-agent, or executor modifies code, the plan MUST require it
-to read the relevant repository style and convention files. The `style/` directory
-is the source of code style, API, MongoDB, Go, and large-test guidance.
-
-Every feature plan MUST pass a Constitution Check before Phase 0 research and
-again after Phase 1 design. The check MUST cover:
-
-- Whether the selected implementation follows the authority order and style docs.
-- Whether Bazel, Gazelle, dependency, pnpm catalog, and generated-code rules are
-  respected.
-- Whether unit tests, large tests, or test-plan alternatives match the feature.
-- Whether full-repository build and test validation is planned.
-- Whether acceptance validates behavior through the artifact's real surface.
-
-Tasks generated from plans MUST include explicit verification tasks for formatting,
-Gazelle or dependency synchronization when relevant, pnpm catalog synchronization
-when JavaScript or TypeScript package manifests change, unit tests, large tests
-when service code changes, and full-repository build and test checks.
+| Artifact | Citations Required |
+|----------|-------------------|
+| `spec.md` | YES — all external facts, requirement rationale, and domain context |
+| `plan.md` | YES — all technical decisions, dependency choices, and design references |
+| `research.md` | YES — inherently research-driven; every finding needs a source link |
+| `data-model.md` | YES — schema designs referencing standards or upstream contracts |
+| `contracts/` | WHEN APPLICABLE — cite the spec or RFC an API contract derives from |
+| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions |
+| `checklist.md` | NO — operational artifact, not a citation source |
 
 ## Governance
 
-This constitution supersedes duplicated project rules in runtime agent guidance.
-`AGENTS.md` MAY contain operational commands, agent role notes, and the managed
-Spec Kit context block, but durable project constraints belong here.
+- **Supremacy**: within the scope of Spec Kit artifact authoring, this
+  constitution supersedes ad-hoc practices. It does not override
+  `AGENTS.md`, which governs runtime engineering conventions.
+- **Amendment procedure**: any principle addition, removal, or
+  redefinition MUST be recorded as a Sync Impact Report prepended to
+  this file, accompanied by a semantic version increment and an ISO
+  8601-dated amendment entry.
+- **Versioning policy**: MAJOR for principle removals or incompatible
+  redefinitions; MINOR for new principles or materially expanded
+  guidance; PATCH for clarifications, wording, and typo fixes.
+- **Compliance review**: the `/speckit.analyze` command and the
+  plan-template "Constitution Check" gate MUST verify that `spec.md`,
+  `plan.md`, and `tasks.md` contain a `## References` section when external
+  material is cited, and that every inline claim has a matching link.
+  Implementation tasks in `tasks.md` MUST reference the applicable `style/`
+  documents and confirm they were reviewed before code changes begin.
 
-Amendments MUST be made through the Spec Kit constitution workflow when practical.
-Every amendment MUST include a Sync Impact Report, update dependent templates when
-the new rule changes planning or task generation, and use semantic versioning:
-
-- MAJOR for incompatible governance or principle changes.
-- MINOR for new principles or materially expanded guidance.
-- PATCH for wording, clarification, or non-semantic fixes.
-
-Plans and reviews MUST verify compliance with the active constitution. Any
-intentional violation MUST be documented in the plan's Complexity Tracking section
-with the reason and rejected simpler alternative.
-
-**Version**: 1.3.0 | **Ratified**: 2026-06-02 | **Last Amended**: 2026-06-10
+**Version**: 1.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-18

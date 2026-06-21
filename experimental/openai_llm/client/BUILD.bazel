@@ -1,0 +1,56 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "server",
+    srcs = [
+        "src/bootstrap.ts",
+        "src/server.ts",
+    ],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    deps = [
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/openai",
+        ":node_modules/@types/node",
+    ],
+)
+
+js_library(
+    name = "server_lib",
+    srcs = [":server"],
+)
+
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "openllm",
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/openai",
+    ],
+    service = "client",
+    ts_project = ":server",
+    runtime_deps = [
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+        "//common/js/resolver:runtime_pkg",
+    ],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "openllm",
+    pkg = ":server_pkg",
+    service = "client",
+    visibility = ["//visibility:public"],
+)

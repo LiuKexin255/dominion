@@ -1,21 +1,23 @@
 /**
  * handler.test.ts — Tests for AgentServiceServer handler implementations.
  *
- * Uses mocked PromptClient, DialogRuntime, and a duplex stream mock
- * to verify all RPC handler behaviors.
+ * Uses mocked PromptClient + SessionAgentStore, and REAL MemorySaver +
+ * StateGraph for ListMessages round-trip tests.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import * as grpc from "@grpc/grpc-js";
 
-import type { LLMAdapter, ContentBlock } from "./llm";
-import { DialogRuntime } from "./runtime";
-import { Handler } from "./handler";
+import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
+import {
+  MemorySaver,
+  StateGraph,
+  MessagesAnnotation,
+} from "@langchain/langgraph";
 
-// ---------------------------------------------------------------------------
-// FrameSender values (matching generated proto enum)
-// ---------------------------------------------------------------------------
+import type { AgentAdapter, ContentBlock, AdapterStateSnapshot } from "./llm";
+import { Handler } from "./handler";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -25,45 +27,99 @@ const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
 // Mock helpers
 // ---------------------------------------------------------------------------
 
-/** Create a mock PromptClient. */
-function createMockPromptClient() {
+function createMockPromptClient(
+  profiles: Record<string, { model: string; systemPrompt: string }> = {},
+) {
   return {
-    getProfile: vi.fn(),
+    getProfile: vi.fn(async (name: string) => {
+      const profile = profiles[name];
+      if (!profile) {
+        throw new Error(`Agent profile not found: ${name}`);
+      }
+      return profile;
+    }),
     close: vi.fn(),
   };
 }
 
-/** Create a mock LLMAdapter that yields given blocks. */
-function createMockLLMAdapter(blocks: ContentBlock[]): LLMAdapter {
+function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
   return {
     async *generateTurn(): AsyncIterable<ContentBlock> {
-      for (const block of blocks) {
-        yield block;
-      }
+      for (const block of blocks) yield block;
     },
+    async getState() { return null; },
   };
 }
 
-/** Create a mock LLMAdapter that throws. */
-function createThrowingLLMAdapter(error: Error): LLMAdapter {
+function createRecordingAdapter(blocks: ContentBlock[]): {
+  adapter: AgentAdapter;
+  calls: Array<{ threadId: string; userMessage: string }>;
+} {
+  const calls: Array<{ threadId: string; userMessage: string }> = [];
+  const adapter: AgentAdapter = {
+    async *generateTurn(threadId, userMessage) {
+      calls.push({ threadId, userMessage });
+      for (const block of blocks) yield block;
+    },
+    async getState() { return null; },
+  };
+  return { adapter, calls };
+}
+
+interface MockSessionAgent {
+  getOrCreateAdapter: ReturnType<typeof vi.fn>;
+  getAdapterState: ReturnType<typeof vi.fn>;
+  getAdapter: ReturnType<typeof vi.fn>;
+}
+
+interface MockSessionAgentStore {
+  getOrCreate: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
+  _getAgent(sessionId: string): MockSessionAgent;
+  _setBinding(sessionId: string, profileName: string, adapter: AgentAdapter): void;
+  _clear(): void;
+}
+
+function createMockSessionAgentStore(): MockSessionAgentStore {
+  const agents = new Map<string, MockSessionAgent>();
+
+  function getAgent(sessionId: string): MockSessionAgent {
+    if (!agents.has(sessionId)) {
+      agents.set(sessionId, {
+        getOrCreateAdapter: vi.fn(),
+        getAdapterState: vi.fn(() => ({
+          activeProfileName: null,
+          isBound: false,
+        })),
+        getAdapter: vi.fn(() => null),
+      });
+    }
+    return agents.get(sessionId)!;
+  }
+
   return {
-    generateTurn(): AsyncIterable<ContentBlock> {
-      const it: AsyncIterator<ContentBlock> = {
-        async next(): Promise<IteratorResult<ContentBlock>> {
-          throw error;
-        },
-      };
-      return { [Symbol.asyncIterator]: () => it };
+    getOrCreate: vi.fn((sessionId: string) => getAgent(sessionId)),
+    get: vi.fn((sessionId: string) => getAgent(sessionId)),
+    _getAgent: getAgent,
+    _setBinding(sessionId, profileName, adapter) {
+      const agent = getAgent(sessionId);
+      agent.getOrCreateAdapter.mockResolvedValue(adapter);
+      agent.getAdapter.mockReturnValue(adapter);
+      agent.getAdapterState.mockReturnValue({
+        activeProfileName: profileName,
+        isBound: true,
+      });
+    },
+    _clear() {
+      agents.clear();
     },
   };
 }
 
-/** Create a fake gRPC unary call. */
 function createUnaryCall<T>(request: T) {
   return { request } as grpc.ServerUnaryCall<T, unknown>;
 }
 
-/** Create a fake gRPC callback. */
 function createCallback<T>(): {
   callback: grpc.sendUnaryData<T>;
   promise: Promise<{ error: grpc.ServiceError | null; response: T | null }>;
@@ -78,575 +134,809 @@ function createCallback<T>(): {
   }>((res) => {
     resolve = res;
   });
-
-  const callback: grpc.sendUnaryData<T> = (
-    error: grpc.ServiceError | Partial<grpc.StatusObject> | grpc.ServerErrorResponse | null,
-    value?: T | null,
-  ) => {
+  const callback: grpc.sendUnaryData<T> = (error, value) => {
     const svcError =
       error && "code" in error ? (error as grpc.ServiceError) : null;
     resolve({ error: svcError, response: value ?? null });
   };
-
   return { callback, promise };
 }
 
-/** Create a fake bidirectional stream for Connect testing. */
-function createFakeStream() {
+interface FakeStream {
+  on(event: string, handler: (...args: unknown[]) => void): FakeStream;
+  write(data: unknown): void;
+  end(): void;
+  emit(event: string, ...args: unknown[]): void;
+  written: unknown[];
+  ended: boolean;
+}
+
+function createFakeStream(): FakeStream {
   const written: unknown[] = [];
   let ended = false;
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
-
-  const stream = {
-    on(event: string, handler: (...args: unknown[]) => void) {
+  const stream: FakeStream = {
+    on(event, handler) {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
       return stream;
     },
-    write(data: unknown) {
+    write(data) {
       written.push(data);
     },
     end() {
       ended = true;
     },
-    emit(event: string, ...args: unknown[]) {
+    emit(event, ...args) {
       const handlers = listeners[event] ?? [];
       for (const handler of handlers) {
         handler(...args);
       }
     },
-    get written() {
-      return written;
-    },
+    written,
     get ended() {
       return ended;
     },
   };
-
   return stream;
 }
 
-// ---------------------------------------------------------------------------
-// Tests: CreateAgent
-// ---------------------------------------------------------------------------
+function textFrame(
+  sessionId: string,
+  invokeId: string,
+  content: string,
+  profileName?: string,
+) {
+  return {
+    sessionId,
+    invokeId,
+    payload: "text",
+    text: { content },
+    sender: FRAME_SENDER_USER,
+    ...(profileName ? { agentProfileName: profileName } : {}),
+  };
+}
 
-describe("Handler.CreateAgent", () => {
-  it("creates agent with valid profile and returns Agent proto", async () => {
-    const instances = new Map<string, DialogRuntime>();
-    const promptClient = createMockPromptClient();
-    promptClient.getProfile.mockResolvedValue({
-      model: "opencode-go/deepseek-v4",
-      systemPrompt: "You are helpful.",
+function flush(ms = 50): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+interface HandlerDeps {
+  promptClient: ReturnType<typeof createMockPromptClient>;
+  sessionAgentStore: MockSessionAgentStore;
+}
+
+function createHandler(deps: HandlerDeps): Handler {
+  const HandlerCtor = Handler as any;
+  return new HandlerCtor(
+    deps.promptClient,
+    deps.sessionAgentStore,
+  );
+}
+
+// ===========================================================================
+// Tests: Connect — text frame produces thinking/text/wait frames
+// ===========================================================================
+
+describe("Handler.Connect text frame", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "helpful-assistant": {
+        model: "opencode-go/deepseek-v4",
+        systemPrompt: "You are helpful.",
+      },
     });
-    const llmAdapter = createMockLLMAdapter([]);
-    const handler = new Handler(
-      instances,
-      promptClient as any,
-      llmAdapter,
-      "secret",
-    );
-
-    const call = createUnaryCall({
-      sessionId: "sess-1",
-      agentProfileName: "helpful-assistant",
-    });
-    const { callback, promise } = createCallback<any>();
-
-    handler.CreateAgent(call, callback);
-    const { error, response } = await promise;
-
-    expect(error).toBeNull();
-    expect(response.sessionId).toBe("sess-1");
-    expect(response.agentProfileName).toBe("helpful-assistant");
-    expect(response.name).toBe("sessions/sess-1/agent");
-    expect(response.createTime).toBeDefined();
-
-    // Verify runtime was stored.
-    const runtime = instances.get("sess-1");
-    expect(runtime).toBeDefined();
-    expect(runtime!.profileName).toBe("helpful-assistant");
-    expect(runtime!.copiedModel).toBe("opencode-go/deepseek-v4");
-    expect(runtime!.copiedSystemPrompt).toBe("You are helpful.");
+    sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("returns NOT_FOUND when agent_profile_name is missing", async () => {
-    const instances = new Map<string, DialogRuntime>();
-    const promptClient = createMockPromptClient();
-    const llmAdapter = createMockLLMAdapter([]);
-    const handler = new Handler(
-      instances,
-      promptClient as any,
-      llmAdapter,
-      "secret",
-    );
-
-    const call = createUnaryCall({
-      sessionId: "sess-2",
-      agentProfileName: "",
-    });
-    const { callback, promise } = createCallback<any>();
-
-    handler.CreateAgent(call, callback);
-    const { error, response } = await promise;
-
-    expect(error).toBeDefined();
-    expect(error!.code).toBe(grpc.status.NOT_FOUND);
-    expect(response).toBeNull();
-  });
-
-  it("returns NOT_FOUND when profile does not exist", async () => {
-    const instances = new Map<string, DialogRuntime>();
-    const promptClient = createMockPromptClient();
-    const grpcError = new Error("Not found") as grpc.ServiceError;
-    grpcError.code = grpc.status.NOT_FOUND;
-    promptClient.getProfile.mockRejectedValue(grpcError);
-
-    const llmAdapter = createMockLLMAdapter([]);
-    const handler = new Handler(
-      instances,
-      promptClient as any,
-      llmAdapter,
-      "secret",
-    );
-
-    const call = createUnaryCall({
-      sessionId: "sess-3",
-      agentProfileName: "nonexistent",
-    });
-    const { callback, promise } = createCallback<any>();
-
-    handler.CreateAgent(call, callback);
-    const { error, response } = await promise;
-
-    expect(error).toBeDefined();
-    expect(error!.code).toBe(grpc.status.NOT_FOUND);
-    expect(response).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: GetAgent
-// ---------------------------------------------------------------------------
-
-describe("Handler.GetAgent", () => {
-  it("returns Agent proto for existing runtime", () => {
-    const instances = new Map<string, DialogRuntime>();
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-10",
-      "my-profile",
-      "model-x",
-      "prompt-y",
-    );
-    instances.set("sess-10", runtime);
-
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      createMockLLMAdapter([]),
-      "secret",
-    );
-
-    const call = createUnaryCall({ sessionId: "sess-10" });
-    const { callback, promise } = createCallback<any>();
-
-    handler.GetAgent(call, callback);
-    return promise.then(({ error, response }) => {
-      expect(error).toBeNull();
-      expect(response.sessionId).toBe("sess-10");
-      expect(response.agentProfileName).toBe("my-profile");
-      expect(response.name).toBe("sessions/sess-10/agent");
-    });
-  });
-
-  it("returns NOT_FOUND for missing runtime", () => {
-    const instances = new Map<string, DialogRuntime>();
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      createMockLLMAdapter([]),
-      "secret",
-    );
-
-    const call = createUnaryCall({ sessionId: "sess-11" });
-    const { callback, promise } = createCallback<any>();
-
-    handler.GetAgent(call, callback);
-    return promise.then(({ error, response }) => {
-      expect(error).toBeDefined();
-      expect(error!.code).toBe(grpc.status.NOT_FOUND);
-      expect(response).toBeNull();
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: DeleteAgent
-// ---------------------------------------------------------------------------
-
-describe("Handler.DeleteAgent", () => {
-  it("deletes existing runtime", () => {
-    const instances = new Map<string, DialogRuntime>();
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-20",
-      "profile",
-      "model",
-      "prompt",
-    );
-    instances.set("sess-20", runtime);
-
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      createMockLLMAdapter([]),
-      "secret",
-    );
-
-    const call = createUnaryCall({ sessionId: "sess-20" });
-    const { callback, promise } = createCallback<any>();
-
-    handler.DeleteAgent(call, callback);
-    return promise.then(({ error }) => {
-      expect(error).toBeNull();
-      expect(instances.has("sess-20")).toBe(false);
-      expect(runtime.isDeleted()).toBe(true);
-    });
-  });
-
-  it("succeeds idempotently for missing runtime", () => {
-    const instances = new Map<string, DialogRuntime>();
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      createMockLLMAdapter([]),
-      "secret",
-    );
-
-    const call = createUnaryCall({ sessionId: "sess-nonexistent" });
-    const { callback, promise } = createCallback<any>();
-
-    handler.DeleteAgent(call, callback);
-    return promise.then(({ error }) => {
-      expect(error).toBeNull();
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Connect
-// ---------------------------------------------------------------------------
-
-describe("Handler.Connect", () => {
-  function setupConnect(
-    blocks: ContentBlock[] = [],
-  ): {
-    handler: Handler;
-    instances: Map<string, DialogRuntime>;
-    stream: ReturnType<typeof createFakeStream>;
-  } {
-    const instances = new Map<string, DialogRuntime>();
-    const llmAdapter = createMockLLMAdapter(blocks);
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      llmAdapter,
-      "secret-key",
-    );
-    const stream = createFakeStream();
-
-    handler.Connect(stream as any);
-
-    return { handler, instances, stream };
-  }
-
-  it("responds to status probe with agent status", () => {
-    const { instances, stream } = setupConnect();
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-cs",
-      "p",
-      "m",
-      "s",
-    );
-    instances.set("sess-cs", runtime);
-
-    stream.emit("data", {
-      sessionId: "sess-cs",
-      invokeId: "inv-1",
-      payload: "status",
-      sender: FRAME_SENDER_USER,
-    });
-
-    expect(stream.written).toHaveLength(1);
-    const frame = stream.written[0] as any;
-    expect(frame.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(frame.status).toEqual({ status: "idle" });
-    expect(frame.sessionId).toBe("sess-cs");
-    expect(frame.invokeId).toBe("inv-1");
-    expect(frame.frameId).toBeDefined();
-    expect(frame.sequence).toBe(0);
-  });
-
-  it("processes text message: thinking + text + wait frames", async () => {
+  it("produces thinking + text + wait frames for profile-bound text frame", async () => {
     const blocks: ContentBlock[] = [
       { type: "reasoning", reasoning: "Let me think..." },
       { type: "text", text: "The answer is 42." },
     ];
-    const { instances, stream } = setupConnect(blocks);
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-ct",
-      "p",
-      "m",
-      "sys",
+    sessionAgentStore._setBinding(
+      "sess-1",
+      "helpful-assistant",
+      createMockAdapter(blocks),
     );
-    instances.set("sess-ct", runtime);
 
-    stream.emit("data", {
-      sessionId: "sess-ct",
-      invokeId: "turn-1",
-      payload: "text",
-      text: { content: "What is the answer?" },
-      sender: FRAME_SENDER_USER,
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    // Wait for async processing.
-    await new Promise((r) => setTimeout(r, 50));
+    stream.emit("data", textFrame("sess-1", "turn-1", "What is the answer?", "helpful-assistant"));
+    await flush();
 
-    // Expected: thinking frame, text frame, wait frame.
     expect(stream.written).toHaveLength(3);
 
-    // Frame 0: thinking
-    const f0 = stream.written[0] as any;
+    const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_AGENT);
     expect(f0.thinking).toEqual({ content: "Let me think..." });
     expect(f0.invokeId).toBe("turn-1");
     expect(f0.sequence).toBe(0);
 
-    // Frame 1: text
-    const f1 = stream.written[1] as any;
+    const f1 = stream.written[1] as Record<string, unknown>;
     expect(f1.sender).toBe(FRAME_SENDER_AGENT);
     expect(f1.text).toEqual({ content: "The answer is 42." });
-    expect(f1.invokeId).toBe("turn-1");
     expect(f1.sequence).toBe(1);
 
-    // Frame 2: wait
-    const f2 = stream.written[2] as any;
+    const f2 = stream.written[2] as Record<string, unknown>;
     expect(f2.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(f2.wait).toEqual({});
-    expect(f2.invokeId).toBe("turn-1");
     expect(f2.sequence).toBe(2);
   });
 
-  it("emits text + wait for response with no thinking", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "text", text: "Direct answer" },
-    ];
-    const { instances, stream } = setupConnect(blocks);
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-no-think",
-      "p",
-      "m",
-      "s",
+  it("produces text + wait for response with no thinking", async () => {
+    sessionAgentStore._setBinding(
+      "sess-nt",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "Direct answer" }]),
     );
-    instances.set("sess-no-think", runtime);
 
-    stream.emit("data", {
-      sessionId: "sess-no-think",
-      invokeId: "turn-2",
-      payload: "text",
-      text: { content: "hello" },
-      sender: FRAME_SENDER_USER,
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    await new Promise((r) => setTimeout(r, 50));
+    stream.emit("data", textFrame("sess-nt", "turn-2", "hello", "helpful-assistant"));
+    await flush();
 
     expect(stream.written).toHaveLength(2);
-    const f0 = stream.written[0] as any;
-    expect(f0.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f0.text).toEqual({ content: "Direct answer" });
-    expect(f0.sequence).toBe(0);
-
-    const f1 = stream.written[1] as any;
-    expect(f1.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f1.wait).toEqual({});
-    expect(f1.sequence).toBe(1);
+    expect((stream.written[0] as Record<string, unknown>).text).toEqual({
+      content: "Direct answer",
+    });
+    expect((stream.written[1] as Record<string, unknown>).wait).toEqual({});
   });
 
-  it("emits warn frame on LLM error, keeps stream open", async () => {
-    const instances = new Map<string, DialogRuntime>();
-    const llmAdapter = createThrowingLLMAdapter(new Error("Provider timeout"));
-    const handler = new Handler(
-      instances,
-      createMockPromptClient() as any,
-      llmAdapter,
-      "secret",
+  it("resets sequence on new invokeId within same connection", async () => {
+    sessionAgentStore._setBinding(
+      "sess-seq",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "reply" }]),
     );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    handler.Connect(stream as any);
+    stream.emit("data", textFrame("sess-seq", "turn-a", "msg-1", "helpful-assistant"));
+    await flush();
+    stream.emit("data", textFrame("sess-seq", "turn-b", "msg-2", "helpful-assistant"));
+    await flush();
 
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-err",
-      "p",
-      "m",
-      "s",
-    );
-    instances.set("sess-err", runtime);
-
-    stream.emit("data", {
-      sessionId: "sess-err",
-      invokeId: "turn-err",
-      payload: "text",
-      text: { content: "break me" },
-      sender: FRAME_SENDER_USER,
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Runtime.processMessage catches the error internally and yields a warning
-    // ContentBlock. The handler maps it to a text frame, then emits wait.
-    // Actually, the runtime catches LLM errors internally and yields
-    // { type: "text", text: "Warning: Provider timeout" }, so the handler
-    // will produce a text frame + wait frame.
-    expect(stream.written.length).toBeGreaterThanOrEqual(1);
-
-    // Check that at least one frame was written and stream is not ended.
-    expect(stream.ended).toBe(false);
+    expect(stream.written).toHaveLength(4);
+    expect((stream.written[0] as Record<string, unknown>).sequence).toBe(0);
+    expect((stream.written[0] as Record<string, unknown>).invokeId).toBe("turn-a");
+    expect((stream.written[2] as Record<string, unknown>).sequence).toBe(0);
+    expect((stream.written[2] as Record<string, unknown>).invokeId).toBe("turn-b");
   });
 
-  it("emits warn frame for missing runtime on text message", () => {
-    const { stream } = setupConnect([]);
+  it("generates unique frameId per frame", async () => {
+    sessionAgentStore._setBinding(
+      "sess-uuid",
+      "helpful-assistant",
+      createMockAdapter([
+        { type: "reasoning", reasoning: "hmm" },
+        { type: "text", text: "ok" },
+      ]),
+    );
 
-    stream.emit("data", {
-      sessionId: "missing-session",
-      invokeId: "inv-x",
-      payload: "text",
-      text: { content: "hello" },
-      sender: FRAME_SENDER_USER,
-    });
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-uuid", "turn-u", "go", "helpful-assistant"));
+    await flush();
+
+    const frameIds = stream.written.map(
+      (f) => (f as Record<string, unknown>).frameId,
+    );
+    expect(new Set(frameIds).size).toBe(frameIds.length);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — missing profile name
+// ===========================================================================
+
+describe("Handler.Connect missing profile name", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  it("returns warn frame when profile name is missing and no adapter is bound", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-missing", "inv-x", "hello"));
+    await flush();
 
     expect(stream.written).toHaveLength(1);
-    const f0 = stream.written[0] as any;
+    const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(f0.warn).toBeDefined();
-    expect(f0.warn.message).toContain("No agent found");
+    expect((f0.warn as Record<string, unknown>).message).toContain(
+      "agent_profile_name",
+    );
     expect(f0.invokeId).toBe("inv-x");
   });
 
-  it("silently ignores deprecated screenshot payload", () => {
-    const { stream } = setupConnect([]);
+  it("does NOT call getOrCreateAdapter when profile is missing", async () => {
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "should not happen" },
+    ]);
+    sessionAgentStore._setBinding("sess-no-profile", "some-profile", adapter);
 
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-fresh", "inv-x", "hello"));
+    await flush();
+
+    expect(calls).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — profile switch mid-connection
+// ===========================================================================
+
+describe("Handler.Connect profile switch", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "profile-a": { model: "model-a", systemPrompt: "Prompt A" },
+      "profile-b": { model: "model-b", systemPrompt: "Prompt B" },
+    });
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  it("second message with different profile uses new adapter from getOrCreateAdapter", async () => {
+    const adapterA = createMockAdapter([{ type: "text", text: "Response from A" }]);
+    const adapterB = createMockAdapter([{ type: "text", text: "Response from B" }]);
+
+    const calls: string[] = [];
+    const agent = sessionAgentStore._getAgent("sess-switch");
+    agent.getOrCreateAdapter.mockImplementation(async (profileName: string) => {
+      calls.push(profileName);
+      return profileName === "profile-a" ? adapterA : adapterB;
+    });
+    agent.getAdapterState.mockReturnValue({ activeProfileName: null, isBound: false });
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-switch", "turn-1", "msg1", "profile-a"));
+    await flush();
+
+    stream.emit("data", textFrame("sess-switch", "turn-2", "msg2", "profile-b"));
+    await flush();
+
+    expect(calls).toEqual(["profile-a", "profile-b"]);
+
+    const texts = stream.written
+      .filter(
+        (f) =>
+          (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
+          (f as Record<string, unknown>).text,
+      )
+      .map(
+        (f) =>
+          ((f as Record<string, unknown>).text as Record<string, unknown>)
+            .content,
+      );
+    expect(texts).toEqual(["Response from A", "Response from B"]);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — failed profile switch does not corrupt history
+// ===========================================================================
+
+describe("Handler.Connect failed profile switch", () => {
+  it("emits warn frame and does not call generateTurn when profile not found", async () => {
+    const promptClient = createMockPromptClient({
+      "valid-profile": {
+        model: "model-x",
+        systemPrompt: "prompt-x",
+      },
+    });
+
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "OK" },
+    ]);
+    const sessionAgentStore = createMockSessionAgentStore();
+    const agent = sessionAgentStore._getAgent("sess-fail");
+
+    agent.getOrCreateAdapter
+      .mockResolvedValueOnce(adapter)
+      .mockRejectedValueOnce(new Error("Agent profile not found: nonexistent-profile"));
+
+    agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-fail", "turn-ok", "hello", "valid-profile"));
+    await flush();
+
+    stream.emit("data", textFrame("sess-fail", "turn-fail", "switch me", "nonexistent-profile"));
+    await flush();
+
+    const warnFrames = stream.written.filter(
+      (f) => (f as Record<string, unknown>).warn,
+    );
+    expect(warnFrames).toHaveLength(1);
+    expect(
+      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
+        .message,
+    ).toContain("Agent profile not found");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].userMessage).toBe("hello");
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — deprecated payloads silently ignored
+// ===========================================================================
+
+describe("Handler.Connect deprecated payloads", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  function setupStream() {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    return stream;
+  }
+
+  it("silently ignores screenshot payload", async () => {
+    const stream = setupStream();
     stream.emit("data", {
-      sessionId: "sess-dep",
+      sessionId: "sess-d",
       invokeId: "inv-s",
       payload: "screenshot",
       sender: FRAME_SENDER_USER,
     });
-
+    await flush();
     expect(stream.written).toHaveLength(0);
   });
 
-  it("silently ignores deprecated echo payload", () => {
-    const { stream } = setupConnect([]);
-
+  it("silently ignores operation payload", async () => {
+    const stream = setupStream();
     stream.emit("data", {
-      sessionId: "sess-dep",
-      invokeId: "inv-e",
-      payload: "echo",
-      sender: FRAME_SENDER_USER,
-    });
-
-    expect(stream.written).toHaveLength(0);
-  });
-
-  it("silently ignores deprecated operation payload", () => {
-    const { stream } = setupConnect([]);
-
-    stream.emit("data", {
-      sessionId: "sess-dep",
+      sessionId: "sess-d",
       invokeId: "inv-o",
       payload: "operation",
       sender: FRAME_SENDER_USER,
     });
-
+    await flush();
     expect(stream.written).toHaveLength(0);
   });
+});
 
-  it("resets sequence on new invokeId", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "text", text: "reply" },
-    ];
-    const { instances, stream } = setupConnect(blocks);
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-seq",
-      "p",
-      "m",
-      "s",
-    );
-    instances.set("sess-seq", runtime);
+// ===========================================================================
+// Tests: Connect — status & echo probes
+// ===========================================================================
 
-    // First message.
-    stream.emit("data", {
-      sessionId: "sess-seq",
-      invokeId: "turn-a",
-      payload: "text",
-      text: { content: "msg-1" },
-      sender: FRAME_SENDER_USER,
-    });
+describe("Handler.Connect probes", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
 
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Second message with different invokeId.
-    stream.emit("data", {
-      sessionId: "sess-seq",
-      invokeId: "turn-b",
-      payload: "text",
-      text: { content: "msg-2" },
-      sender: FRAME_SENDER_USER,
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    // 2 turns × (1 text frame + 1 wait frame) = 4 frames.
-    expect(stream.written).toHaveLength(4);
-
-    // First turn: seq 0, 1
-    expect((stream.written[0] as any).sequence).toBe(0);
-    expect((stream.written[0] as any).invokeId).toBe("turn-a");
-    expect((stream.written[1] as any).sequence).toBe(1);
-    expect((stream.written[1] as any).invokeId).toBe("turn-a");
-
-    // Second turn: seq resets to 0, 1
-    expect((stream.written[2] as any).sequence).toBe(0);
-    expect((stream.written[2] as any).invokeId).toBe("turn-b");
-    expect((stream.written[3] as any).sequence).toBe(1);
-    expect((stream.written[3] as any).invokeId).toBe("turn-b");
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("generates unique frameId per frame", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "reasoning", reasoning: "hmm" },
-      { type: "text", text: "ok" },
-    ];
-    const { instances, stream } = setupConnect(blocks);
-    const runtime = DialogRuntime.createWithProfile(
-      "sess-uuid",
-      "p",
-      "m",
-      "s",
-    );
-    instances.set("sess-uuid", runtime);
+  it("responds to status probe with 'unknown' for unbound session", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     stream.emit("data", {
-      sessionId: "sess-uuid",
-      invokeId: "turn-uuid",
-      payload: "text",
-      text: { content: "go" },
+      sessionId: "sess-status",
+      invokeId: "inv-st",
+      payload: "status",
       sender: FRAME_SENDER_USER,
     });
+    await flush();
 
-    await new Promise((r) => setTimeout(r, 50));
+    expect(stream.written).toHaveLength(1);
+    const f = stream.written[0] as Record<string, unknown>;
+    expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f.status).toEqual({ status: "unknown" });
+  });
 
-    const frameIds = stream.written.map((f: any) => f.frameId);
-    const uniqueIds = new Set(frameIds);
-    expect(uniqueIds.size).toBe(frameIds.length);
+  it("responds to status probe with 'idle' for bound session", async () => {
+    sessionAgentStore._setBinding(
+      "sess-bound",
+      "some-profile",
+      createMockAdapter([]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", {
+      sessionId: "sess-bound",
+      invokeId: "inv-st",
+      payload: "status",
+      sender: FRAME_SENDER_USER,
+    });
+    await flush();
+
+    expect(stream.written).toHaveLength(1);
+    const f = stream.written[0] as Record<string, unknown>;
+    expect(f.status).toEqual({ status: "idle" });
+  });
+
+  it("echoes echo payload back", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", {
+      sessionId: "sess-echo",
+      invokeId: "inv-ec",
+      payload: "echo",
+      echo: { data: "hello-echo" },
+      sender: FRAME_SENDER_USER,
+    });
+    await flush();
+
+    expect(stream.written).toHaveLength(1);
+    const f = stream.written[0] as Record<string, unknown>;
+    expect(f.echo).toEqual({ data: "hello-echo" });
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — LLM error handling
+// ===========================================================================
+
+describe("Handler.Connect LLM error", () => {
+  it("emits warn frame on LLM error and keeps stream open", async () => {
+    const promptClient = createMockPromptClient({
+      "error-profile": { model: "m", systemPrompt: "s" },
+    });
+    const throwingAdapter: AgentAdapter = {
+      generateTurn(): AsyncIterable<ContentBlock> {
+        const it: AsyncIterator<ContentBlock> = {
+          async next() {
+            throw new Error("Provider timeout");
+          },
+        };
+        return { [Symbol.asyncIterator]: () => it };
+      },
+      async getState() { return null; },
+    };
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding("sess-err", "error-profile", throwingAdapter);
+
+    const handler = createHandler({
+      promptClient,
+      sessionAgentStore,
+    });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-err", "turn-err", "break me", "error-profile"));
+    await flush();
+
+    expect(stream.written.length).toBeGreaterThanOrEqual(1);
+    expect(stream.ended).toBe(false);
+
+    const warnFrames = stream.written.filter(
+      (f) => (f as Record<string, unknown>).warn,
+    );
+    expect(warnFrames.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — same-session serialization
+// ===========================================================================
+
+describe("Handler.Connect same-session serialization", () => {
+  it("serializes concurrent text frames on same session (FIFO)", async () => {
+    const promptClient = createMockPromptClient({
+      "test-profile": { model: "m", systemPrompt: "s" },
+    });
+
+    let concurrentCount = 0;
+    let maxConcurrent = 0;
+    const processedMessages: string[] = [];
+
+    const adapter: AgentAdapter = {
+      async *generateTurn(_threadId: string, userMessage: string) {
+        concurrentCount++;
+        maxConcurrent = Math.max(maxConcurrent, concurrentCount);
+        processedMessages.push(userMessage);
+        await new Promise((r) => setTimeout(r, 10));
+        yield { type: "text", text: `Reply to: ${userMessage}` };
+        concurrentCount--;
+      },
+      async getState() { return null; },
+    };
+
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding("sess-conc", "test-profile", adapter);
+
+    const handler = createHandler({
+      promptClient,
+      sessionAgentStore,
+    });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", textFrame("sess-conc", "turn-a", "msg-1", "test-profile"));
+    stream.emit("data", textFrame("sess-conc", "turn-b", "msg-2", "test-profile"));
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(maxConcurrent).toBe(1);
+    expect(processedMessages).toEqual(["msg-1", "msg-2"]);
+  });
+});
+
+// ===========================================================================
+// Tests: GetAgent
+// ===========================================================================
+
+describe("Handler.GetAgent", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+  });
+
+  it("returns adapter state with active profile when bound", async () => {
+    const sessionAgentStore = createMockSessionAgentStore();
+    sessionAgentStore._setBinding(
+      "sess-bound",
+      "my-profile",
+      createMockAdapter([]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const call = createUnaryCall({ sessionId: "sess-bound" });
+    const { callback, promise } = createCallback<{
+      name: string;
+      sessionId: string;
+      agentProfileName: string;
+      createTime?: unknown;
+    }>();
+
+    handler.GetAgent(call, callback);
+    const { error, response } = await promise;
+
+    expect(error).toBeNull();
+    expect(response!.sessionId).toBe("sess-bound");
+    expect(response!.agentProfileName).toBe("my-profile");
+    expect(response!.name).toBe("sessions/sess-bound/agent");
+    expect(response!.createTime).toBeDefined();
+  });
+
+  it("returns empty profile for never-connected session (200 OK)", async () => {
+    const sessionAgentStore = createMockSessionAgentStore();
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const call = createUnaryCall({ sessionId: "never-connected" });
+    const { callback, promise } = createCallback<{
+      agentProfileName: string;
+    }>();
+
+    handler.GetAgent(call, callback);
+    const { error, response } = await promise;
+
+    expect(error).toBeNull();
+    expect(response!.agentProfileName).toBe("");
+  });
+});
+
+// ===========================================================================
+// Tests: ListMessages — REAL MemorySaver round-trip
+// ===========================================================================
+
+describe("Handler.ListMessages (real MemorySaver)", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  function createStateAdapter(): {
+    adapter: AgentAdapter;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    graph: any;
+  } {
+    const checkpointer = new MemorySaver();
+    const graph = new StateGraph(MessagesAnnotation)
+      .addNode("pass", async () => ({}))
+      .addEdge("__start__", "pass")
+      .addEdge("pass", "__end__")
+      .compile({ checkpointer });
+
+    const adapter: AgentAdapter = {
+      async *generateTurn() {},
+      async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
+        const snapshot = await graph.getState({
+          configurable: { thread_id: threadId },
+        });
+        if (!snapshot) return null;
+        return {
+          values: snapshot.values ?? {},
+          createdAt: snapshot.createdAt,
+        };
+      },
+    };
+    return { adapter, graph };
+  }
+
+  async function writeMessages(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    graph: any,
+    sessionId: string,
+    messages: Array<HumanMessage | AIMessage | SystemMessage>,
+  ) {
+    await graph.invoke(
+      { messages },
+      { configurable: { thread_id: sessionId } },
+    );
+  }
+
+  async function listMessages(handler: Handler, sessionId: string) {
+    const call = createUnaryCall({
+      parent: `sessions/${sessionId}`,
+    });
+    const { callback, promise } = createCallback<{
+      messages?: Array<Record<string, unknown>>;
+    }>();
+    handler.ListMessages(call, callback);
+    return promise;
+  }
+
+  it("round-trips text messages (human + ai) in chronological order", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-text-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-text-rt", [
+      new HumanMessage("Hello"),
+      new AIMessage("Hi there!"),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-text-rt");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+
+    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
+    expect(response!.messages![0].type).toBe("text");
+    expect(response!.messages![0].content).toBe("Hello");
+
+    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
+    expect(response!.messages![1].type).toBe("text");
+    expect(response!.messages![1].content).toBe("Hi there!");
+  });
+
+  it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-think-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-think-rt", [
+      new HumanMessage("Question"),
+      new AIMessage({
+        content: [{ type: "reasoning", reasoning: "Let me analyze..." }],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-think-rt");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+
+    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
+    expect(response!.messages![1].type).toBe("thinking");
+    expect(response!.messages![1].content).toBe("Let me analyze...");
+  });
+
+  it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-mixed-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-mixed-rt", [
+      new HumanMessage("Why?"),
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "Step 1" },
+          { type: "text", text: "The answer is 42." },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-mixed-rt");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+    expect(response!.messages![1].type).toBe("text");
+  });
+
+  it("filters out SystemMessages from the result", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-sys-filter", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-sys-filter", [
+      new SystemMessage("You are a system prompt."),
+      new HumanMessage("Hello"),
+      new AIMessage("Hi!"),
+      new SystemMessage("Another system message."),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-sys-filter");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+    for (const msg of response!.messages!) {
+      expect(msg.type).not.toBe("warn");
+    }
+    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
+    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
+  });
+
+  it("returns empty messages for session with no adapter bound", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const { error, response } = await listMessages(handler, "never-bound");
+
+    expect(error).toBeNull();
+    expect(response!.messages ?? []).toHaveLength(0);
+  });
+
+  it("preserves chronological ordering across multiple turns", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-chrono", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-chrono", [new HumanMessage("first")]);
+    await writeMessages(graph, "sess-chrono", [new AIMessage("second")]);
+    await writeMessages(graph, "sess-chrono", [new HumanMessage("third")]);
+    await writeMessages(graph, "sess-chrono", [new AIMessage("fourth")]);
+
+    const { error, response } = await listMessages(handler, "sess-chrono");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(4);
+    expect(response!.messages![0].content).toBe("first");
+    expect(response!.messages![1].content).toBe("second");
+    expect(response!.messages![2].content).toBe("third");
+    expect(response!.messages![3].content).toBe("fourth");
   });
 });

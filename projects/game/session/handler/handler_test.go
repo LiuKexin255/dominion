@@ -15,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // mockIDGenerator implements domain.IDGenerator for handler testing.
@@ -53,18 +52,13 @@ func (m *mockSessionRepo) List(ctx context.Context, pageSize int, cursor *domain
 
 // mockProxyClient implements game.ProxyServiceClient for handler testing.
 type mockProxyClient struct {
-	deleteAgentFn func(ctx context.Context, req *game.DeleteAgentRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
-}
-
-func (m *mockProxyClient) DeleteAgent(ctx context.Context, req *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-	return m.deleteAgentFn(ctx, req)
-}
-
-func (m *mockProxyClient) CreateAgent(_ context.Context, _ *game.CreateAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
 func (m *mockProxyClient) GetAgent(_ context.Context, _ *game.GetAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockProxyClient) ListMessages(_ context.Context, _ *game.ListMessagesRequest, _ ...grpc.CallOption) (*game.ListMessagesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
@@ -72,13 +66,9 @@ func (m *mockProxyClient) ConnectAgent(_ context.Context, _ ...grpc.CallOption) 
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-// noopProxyClient returns a proxy client whose DeleteAgent always succeeds.
+// noopProxyClient returns a proxy client whose methods always succeed.
 func noopProxyClient() *mockProxyClient {
-	return &mockProxyClient{
-		deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-			return new(emptypb.Empty), nil
-		},
-	}
+	return &mockProxyClient{}
 }
 
 // fixedIDGenerator returns an ID generator that always returns the given id.
@@ -353,15 +343,13 @@ func TestDeleteSession(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name        string
-		req         *game.DeleteSessionRequest
-		mockRepo    *mockSessionRepo
-		mockProxy   *mockProxyClient
-		wantCode    codes.Code
-		wantDeleted bool
+		name     string
+		req      *game.DeleteSessionRequest
+		mockRepo *mockSessionRepo
+		wantCode codes.Code
 	}{
 		{
-			name: "success - proxy deletes agent then session deleted",
+			name: "success - session deleted",
 			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
 			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, sessionID string) error {
@@ -371,94 +359,42 @@ func TestDeleteSession(t *testing.T) {
 					return nil
 				},
 			},
-			mockProxy: &mockProxyClient{
-				deleteAgentFn: func(_ context.Context, req *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-					wantName := "sessions/abc123/agent"
-					if req.GetName() != wantName {
-						t.Fatalf("DeleteAgent() name = %q, want %q", req.GetName(), wantName)
-					}
-					return new(emptypb.Empty), nil
-				},
-			},
-			wantCode:    codes.OK,
-			wantDeleted: true,
+			wantCode: codes.OK,
 		},
 		{
-			name: "proxy NotFound - session still deleted (idempotent)",
-			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
-			mockRepo: &mockSessionRepo{
-				deleteFn: func(_ context.Context, _ string) error {
-					return nil
-				},
-			},
-			mockProxy: &mockProxyClient{
-				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-					return nil, status.Error(codes.NotFound, "agent not found")
-				},
-			},
-			wantCode:    codes.OK,
-			wantDeleted: true,
-		},
-		{
-			name: "proxy error - session NOT deleted",
-			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
-			mockRepo: &mockSessionRepo{
-				deleteFn: func(_ context.Context, _ string) error {
-					t.Fatal("repo.Delete() should not be called when proxy fails")
-					return nil
-				},
-			},
-			mockProxy: &mockProxyClient{
-				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-					return nil, status.Error(codes.Unavailable, "proxy unavailable")
-				},
-			},
-			wantCode:    codes.Internal,
-			wantDeleted: false,
-		},
-		{
-			name: "repo NotFound - returns NotFound after proxy succeeds",
+			name: "repo NotFound - returns NotFound",
 			req:  &game.DeleteSessionRequest{Name: "sessions/missing"},
 			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, _ string) error {
 					return domain.ErrNotFound
 				},
 			},
-			mockProxy: &mockProxyClient{
-				deleteAgentFn: func(_ context.Context, _ *game.DeleteAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-					return new(emptypb.Empty), nil
-				},
-			},
-			wantCode:    codes.NotFound,
-			wantDeleted: false,
+			wantCode: codes.NotFound,
 		},
 		{
-			name:      "invalid name - no prefix returns InvalidArgument",
-			req:       &game.DeleteSessionRequest{Name: "invalid"},
-			mockRepo:  &mockSessionRepo{},
-			mockProxy: &mockProxyClient{},
-			wantCode:  codes.InvalidArgument,
+			name:     "invalid name - no prefix returns InvalidArgument",
+			req:      &game.DeleteSessionRequest{Name: "invalid"},
+			mockRepo: &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:      "invalid name - empty ID returns InvalidArgument",
-			req:       &game.DeleteSessionRequest{Name: "sessions/"},
-			mockRepo:  &mockSessionRepo{},
-			mockProxy: &mockProxyClient{},
-			wantCode:  codes.InvalidArgument,
+			name:     "invalid name - empty ID returns InvalidArgument",
+			req:      &game.DeleteSessionRequest{Name: "sessions/"},
+			mockRepo: &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
 		},
 		{
-			name:      "invalid name - extra path separator returns InvalidArgument",
-			req:       &game.DeleteSessionRequest{Name: "sessions/a/b"},
-			mockRepo:  &mockSessionRepo{},
-			mockProxy: &mockProxyClient{},
-			wantCode:  codes.InvalidArgument,
+			name:     "invalid name - extra path separator returns InvalidArgument",
+			req:      &game.DeleteSessionRequest{Name: "sessions/a/b"},
+			mockRepo: &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mockRepo, fixedIDGenerator("unused"), tt.mockProxy)
+			handler := NewSessionHandler(tt.mockRepo, fixedIDGenerator("unused"), noopProxyClient())
 
 			// when
 			got, err := handler.DeleteSession(ctx, tt.req)

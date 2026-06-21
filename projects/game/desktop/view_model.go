@@ -16,14 +16,25 @@ type SessionView struct {
 
 // ListSessionsView is the Wails view model for game.ListSessionsResponse.
 type ListSessionsView struct {
-	Sessions      []SessionView `json:"sessions"`
-	NextPageToken string        `json:"nextPageToken,omitempty"`
+	Sessions      []*SessionView `json:"sessions"`
+	NextPageToken string         `json:"nextPageToken,omitempty"`
 }
 
-// AgentView is the Wails view model for game.Agent.
+// AgentView is the Wails view model for the active session agent.
+// AgentProfileName represents the active profile (may be empty initially,
+// set after the first message).
 type AgentView struct {
+	SessionID        string `json:"sessionId"`
+	AgentProfileName string `json:"agentProfileName"`
+}
+
+// MessageViewModel is the Wails view model for game.Message.
+type MessageViewModel struct {
 	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
+	MessageID  string `json:"messageId"`
+	Sender     string `json:"sender"`
+	Type       string `json:"type"`
+	Content    string `json:"content"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -45,9 +56,9 @@ func listSessionsViewFromProto(r *game.ListSessionsResponse) *ListSessionsView {
 		return nil
 	}
 	sessions := r.GetSessions()
-	views := make([]SessionView, len(sessions))
+	views := make([]*SessionView, len(sessions))
 	for i, s := range sessions {
-		views[i] = *sessionViewFromProto(s)
+		views[i] = sessionViewFromProto(s)
 	}
 	return &ListSessionsView{
 		Sessions:      views,
@@ -61,10 +72,28 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 		return nil
 	}
 	return &AgentView{
-		Name:       a.GetName(),
-		SessionID:  a.GetSessionId(),
-		CreateTime: timestampString(a.GetCreateTime()),
+		SessionID:        a.GetSessionId(),
+		AgentProfileName: a.GetAgentProfileName(),
 	}
+}
+
+// ToMessageViewModels converts a slice of proto Message to view models.
+func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
+	if messages == nil {
+		return nil
+	}
+	views := make([]*MessageViewModel, len(messages))
+	for i, m := range messages {
+		views[i] = &MessageViewModel{
+			Name:       m.GetName(),
+			MessageID:  m.GetMessageId(),
+			Sender:     m.GetSender().String(),
+			Type:       m.GetType(),
+			Content:    m.GetContent(),
+			CreateTime: timestampString(m.GetCreateTime()),
+		}
+	}
+	return views
 }
 
 // CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
@@ -91,8 +120,8 @@ type AgentProfileView struct {
 
 // ListAgentProfilesView is the Wails view model for game.ListAgentProfilesResponse.
 type ListAgentProfilesView struct {
-	AgentProfiles []AgentProfileView `json:"agentProfiles"`
-	NextPageToken string             `json:"nextPageToken,omitempty"`
+	AgentProfiles []*AgentProfileView `json:"agentProfiles"`
+	NextPageToken string              `json:"nextPageToken,omitempty"`
 }
 
 // OperationResultView is the Wails view model for an operation execution result.
@@ -134,9 +163,9 @@ func listAgentProfilesViewFromProto(r *game.ListAgentProfilesResponse) *ListAgen
 		return nil
 	}
 	profiles := r.GetAgentProfiles()
-	views := make([]AgentProfileView, len(profiles))
+	views := make([]*AgentProfileView, len(profiles))
 	for i, p := range profiles {
-		views[i] = *agentProfileViewFromProto(p)
+		views[i] = agentProfileViewFromProto(p)
 	}
 	return &ListAgentProfilesView{
 		AgentProfiles: views,

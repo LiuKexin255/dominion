@@ -7,37 +7,43 @@
     createSession,
     listSessions,
     deleteSession,
-    createAgentWithProfile,
     getAgent,
-    deleteAgent,
     connectAgent,
     closeAgent,
     listAgentProfiles,
     createAgentProfile,
     deleteAgentProfile,
     sendAgentText,
+    listMessages,
   } from './api'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
-  import SessionDetail from './components/SessionDetail.svelte'
   import ChatView from './components/ChatView.svelte'
   import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
 
   // --- Page state ---
-  let page = $state<'sessions' | 'detail' | 'chat' | 'profiles'>('sessions')
+  let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
-  type AgentLoadState = 'idle' | 'loading' | 'loaded' | 'not_found' | 'error'
+  type PlayState =
+    | 'connecting'
+    | 'loading_messages'
+    | 'chat_ready'
+    | 'processing'
+    | 'connection_error'
+    | 'agent_lost'
 
   type ChatEntry = {
+    messageId: string
     sender: FrameSender
     type: 'thinking' | 'text' | 'warn'
     content: string
     timestamp: string
+    agentProfileName?: string
   }
 
   // --- App-level state ---
@@ -45,7 +51,6 @@
   let sessions: Session[] = $state([])
   let agent: Agent | null = $state(null)
   let connectionState: ConnectionState = $state('disconnected')
-  let agentLoadState: AgentLoadState = $state('idle')
   let logEntries: LogEntry[] = $state([])
   let loading = $state(false)
   let error: string | null = $state(null)
@@ -54,6 +59,8 @@
   let chatMessages: ChatEntry[] = $state([])
   let processing = $state(false)
   let queueCount = $state(0)
+  let playState = $state<PlayState>('connecting')
+  let messagesError = $state<string | null>(null)
 
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
@@ -154,13 +161,27 @@
     selectedSession = session
     agent = null
     error = null
-    agentLoadState = 'idle'
+    messagesError = null
     connectionState = 'disconnected'
-    page = 'detail'
-    // Load profiles for the create-agent dropdown
+    chatMessages = []
+
     await loadProfiles()
-    // Auto-load agent when entering detail
-    await handleAutoGetAgent(session.sessionId)
+
+    if (profiles.length > 0 && !selectedProfile) {
+      selectedProfile = profiles[0].agentProfileName
+    }
+
+    page = 'chat'
+    playState = 'connecting'
+    if (connectionState !== 'connected') {
+      await handleConnectAgent()
+    }
+
+    if (connectionState === 'connected') {
+      await handleLoadMessages()
+    } else {
+      playState = 'connection_error'
+    }
   }
 
   async function loadProfiles() {
@@ -170,47 +191,6 @@
       log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
     } catch (e: unknown) {
       log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
-      profiles = []
-    }
-  }
-
-  async function handleAutoGetAgent(sessionId: string) {
-    try {
-      agentLoadState = 'loading'
-      error = null
-      agent = await getAgent(sessionId)
-      agentLoadState = 'loaded'
-      log('info', 'agent', `Agent loaded: ${agent.name || agent.sessionId}`)
-    } catch (e: unknown) {
-      const errStr = String(e)
-      if (errStr.includes('not found') || errStr.includes('NotFound') || errStr.includes('NOT_FOUND')) {
-        agentLoadState = 'not_found'
-      } else {
-        agentLoadState = 'error'
-        error = errStr
-      }
-      log('info', 'agent', `Get agent failed: ${errStr}`)
-    }
-  }
-
-  // --- SessionDetail handlers ---
-  async function handleCreateAgent(profileName: string) {
-    if (!selectedSession) return
-    if (!profileName) {
-      error = 'Please select an agent profile first'
-      log('warn', 'agent', 'Create agent aborted: no profile selected')
-      return
-    }
-    try {
-      loading = true
-      error = null
-      agent = await createAgentWithProfile(selectedSession.sessionId, profileName)
-      log('info', 'agent', `Agent created with profile "${profileName}": ${agent.sessionId}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'agent', `Create agent failed: ${String(e)}`)
-    } finally {
-      loading = false
     }
   }
 
@@ -229,27 +209,9 @@
     }
   }
 
-  async function handleDeleteAgent() {
-    if (!selectedSession) return
-    try {
-      loading = true
-      error = null
-      await deleteAgent(selectedSession.sessionId)
-      agent = null
-      log('info', 'agent', `Agent deleted: ${selectedSession.sessionId}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'agent', `Delete agent failed: ${String(e)}`)
-    } finally {
-      loading = false
-    }
-  }
-
   async function handleConnectAgent() {
     if (!selectedSession) return
     try {
-      loading = true
-      error = null
       connectionState = 'connecting'
       await connectAgent(selectedSession.sessionId)
       connectionState = 'connected'
@@ -258,48 +220,85 @@
       connectionState = 'error'
       error = String(e)
       log('error', 'agent', `Connect agent failed: ${String(e)}`)
-    } finally {
-      loading = false
     }
   }
 
-  async function handleEnterChat() {
-    chatMessages = []
-    processing = false
-    queueCount = 0
-    error = null
+  function senderFromString(raw: string): FrameSender {
+    if (raw === 'FRAME_SENDER_USER') return FrameSender.USER
+    if (raw === 'FRAME_SENDER_AGENT') return FrameSender.AGENT
+    if (raw === 'FRAME_SENDER_SYSTEM') return FrameSender.SYSTEM
+    return FrameSender.SYSTEM
+  }
 
-    // Load profiles for the sidebar
-    await loadProfiles()
+  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' {
+    if (raw === 'thinking' || raw === 'text' || raw === 'warn') return raw
+    return 'text'
+  }
 
-    page = 'chat'
+  async function handleLoadMessages() {
+    if (!selectedSession) return
+    playState = 'loading_messages'
+    messagesError = null
+    try {
+      const entries = (await listMessages(selectedSession.sessionId)) ?? []
+      chatMessages = entries.map(entry => ({
+        messageId: entry.messageId,
+        sender: senderFromString(entry.sender),
+        type: typeFromString(entry.type),
+        content: entry.content,
+        timestamp: entry.createTime || new Date().toISOString(),
+      }))
+      playState = 'chat_ready'
+      log('info', 'chat', `Loaded ${entries.length} messages from history`)
+    } catch (e: unknown) {
+      const errStr = String(e)
+      messagesError = errStr
+      playState = 'chat_ready'
+      chatMessages = []
+      log('warn', 'chat', `Failed to load messages: ${errStr}`)
+    }
   }
 
   function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
     if (frame.thinking) {
-      chatMessages = [...chatMessages, {
-        sender: FrameSender.AGENT,
-        type: 'thinking',
-        content: frame.thinking.content,
-        timestamp: frame.createTime || new Date().toISOString(),
-      }]
+      const thinkingContent = frame.thinking.content || ''
+      if (!thinkingContent) return
+      const last = chatMessages[chatMessages.length - 1]
+      if (last && last.type === 'thinking' && last.sender === FrameSender.AGENT
+          && last.agentProfileName === frame.agentProfileName) {
+        last.content += thinkingContent
+        chatMessages = [...chatMessages]
+      } else {
+        chatMessages = [...chatMessages, {
+          messageId: frame.frameId,
+          sender: FrameSender.AGENT,
+          type: 'thinking',
+          content: thinkingContent,
+          timestamp: frame.createTime || new Date().toISOString(),
+          agentProfileName: frame.agentProfileName,
+        }]
+      }
     } else if (frame.text) {
       const textContent = frame.text.content || ''
       if (!textContent) return
       const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'text' && last.sender === FrameSender.AGENT) {
+      if (last && last.type === 'text' && last.sender === FrameSender.AGENT
+          && last.agentProfileName === frame.agentProfileName) {
         last.content += textContent
         chatMessages = [...chatMessages]
       } else {
         chatMessages = [...chatMessages, {
+          messageId: frame.frameId,
           sender: FrameSender.AGENT,
           type: 'text',
           content: textContent,
           timestamp: frame.createTime || new Date().toISOString(),
+          agentProfileName: frame.agentProfileName,
         }]
       }
     } else if (frame.warn) {
       chatMessages = [...chatMessages, {
+        messageId: frame.frameId,
         sender: FrameSender.SYSTEM,
         type: 'warn',
         content: frame.warn.message,
@@ -307,27 +306,45 @@
       }]
     } else if (frame.wait) {
       processing = false
+      if (playState === 'processing') playState = 'chat_ready'
     }
   }
 
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
+    // Auto-connect fallback if WS dropped (sendAgentText relies on the backend connection)
+    const wasConnected = connectionState === 'connected'
+    if (!wasConnected) {
+      playState = 'connecting'
+      await handleConnectAgent()
+    }
+    const nowConnected = connectionState === 'connected'
+    if (!wasConnected && nowConnected) {
+      await handleLoadMessages()
+    } else if (!nowConnected) {
+      playState = 'connection_error'
+      messagesError = 'Connection failed. Retry to send your message.'
+      return
+    }
     try {
       chatMessages = [...chatMessages, {
+        messageId: crypto.randomUUID(),
         sender: FrameSender.USER,
         type: 'text',
         content: text,
         timestamp: new Date().toISOString(),
       }]
       processing = true
+      playState = 'processing'
       queueCount++
-      await sendAgentText(selectedSession.sessionId, text)
+      await sendAgentText(selectedSession.sessionId, text, selectedProfile)
       queueCount = Math.max(0, queueCount - 1)
       log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
       error = String(e)
       processing = false
       queueCount = Math.max(0, queueCount - 1)
+      if (playState === 'processing') playState = 'chat_ready'
       log('error', 'chat', `Send text failed: ${String(e)}`)
     }
   }
@@ -336,28 +353,29 @@
     selectedProfile = profileName
   }
 
-  function handleBackToSessions() {
+  async function handleBackToSessions() {
+    error = null
+    messagesError = null
+    if (connectionState === 'connected' || connectionState === 'connecting') {
+      try {
+        await closeAgent()
+      } catch {
+        // ignore close errors on teardown
+      }
+      connectionState = 'disconnected'
+    }
     selectedSession = null
     agent = null
-    connectionState = 'disconnected'
-    agentLoadState = 'idle'
-    error = null
-    managedProfiles = []
-    profileMgmtError = null
+    chatMessages = []
+    playState = 'connecting'
     page = 'sessions'
   }
 
-  function handleBackToDetail() {
-    error = null
-    page = 'detail'
-  }
-
-  async function handleDeleteSessionFromDetail() {
+  async function handleDeleteSession() {
     if (!selectedSession) return
     try {
       loading = true
       error = null
-      // Close WS if connected
       if (connectionState === 'connected') {
         try {
           await closeAgent()
@@ -370,7 +388,7 @@
       log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
       selectedSession = null
       agent = null
-      agentLoadState = 'idle'
+      chatMessages = []
       page = 'sessions'
       await handleRefresh()
     } catch (e: unknown) {
@@ -379,12 +397,6 @@
     } finally {
       loading = false
     }
-  }
-
-  async function handleRefreshFromDetail() {
-    if (!selectedSession) return
-    await handleAutoGetAgent(selectedSession.sessionId)
-    log('info', 'agent', 'Agent refreshed')
   }
 
   // --- Log handler ---
@@ -458,40 +470,25 @@
       onCreate={handleCreate}
       onDelete={handleDelete}
     />
-  {:else if page === 'detail'}
-    <SessionDetail
-      session={selectedSession}
-      {agent}
-      {connectionState}
-      {agentLoadState}
-      {profiles}
-      {selectedProfile}
-      {loading}
-      {error}
-      onCreateAgent={() => handleCreateAgent(selectedProfile)}
-      onDeleteAgent={handleDeleteAgent}
-      onConnectAgent={handleConnectAgent}
-      onDeleteSession={handleDeleteSessionFromDetail}
-      onRefresh={handleRefreshFromDetail}
-      onEnterPlay={handleEnterChat}
-      onBack={handleBackToSessions}
-      onSelectProfile={handleSelectProfile}
-    />
   {:else if page === 'chat'}
     <div class="chat-layout">
       <AgentSidebar
-        sessionId={selectedSession?.sessionId ?? ''}
+        {agent}
+        {connectionState}
         {profiles}
-        {selectedProfile}
-        agentStatus={connectionState}
-        onCreateAgent={handleCreateAgent}
+        {playState}
+        selectedProfile={selectedProfile}
         onSelectProfile={handleSelectProfile}
+        onDeleteSession={handleDeleteSession}
+        onBack={handleBackToSessions}
+        {loading}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
-          <button class="btn" onclick={handleBackToDetail} disabled={loading}>Back</button>
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
-          {#if error}
+          {#if playState === 'connection_error'}
+            <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>
+          {:else if error}
             <span class="chat-error">{error}</span>
           {/if}
         </div>
@@ -499,6 +496,8 @@
           messages={chatMessages}
           {processing}
           {queueCount}
+          loadingMessages={playState === 'loading_messages'}
+          messagesError={messagesError}
           onSend={handleSendChatText}
         />
       </div>

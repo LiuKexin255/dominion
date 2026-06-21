@@ -1,22 +1,32 @@
 name: game-system-test
 description: |
-  Game system integration test — 4 suites organized by tested object.
-
+  Game system integration test — 8 suites organized by tested object.
+ 
   Suite 1 (prompt): prompt service + gateway.
     - Agent profile CRUD
     - Skill CRUD
   Suite 2 (session): session + proxy + agent(test) + prompt + gateway.
     - Session CRUD + ListSessions pagination
   Suite 3 (session-agent lifecycle): session + proxy + agent(test) + prompt + gateway.
-    - Agent CRUD with profile, owner routing
-    - WebSocket connect, status/echo probes, unknown fields, invalid JSON
-    - Delete cascade (session→agent, agent→owner)
-    - Full lifecycle (create→WS status→delete→verify NotFound)
-    - Create agent with missing/empty profile error
-    - Delete agent idempotent
+    - WebSocket connect without prior agent creation (on-demand adapter)
+    - Profile switching mid-connection
+    - Connection exclusivity (second connect kicks first)
+    - GetAgent for never-connected sessions
+    - Disconnect/reconnect history persistence
+    - WebSocket status/echo probes, unknown fields, invalid JSON
   Suite 4 (agent dialog): session + proxy + agent(test) + prompt + gateway.
-    - Agent dialog with fake LLM: create agent with profile, connect chat,
-      thinking + text response, queue behavior, profile loose coupling, cleanup
+    - Agent dialog with fake LLM: connect chat with profile,
+      thinking + text response, FIFO queue behavior,
+      deterministic content, profile loose coupling
+  Suite 5 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
+    - Send messages, leave, re-enter, verify ListMessages
+    - Verify agent remains functional after re-enter
+    - Cross-profile history persistence
+  Suite 6 (per-profile-model): session + proxy + agent(test) + prompt + gateway.
+    - Two profiles with different models
+    - Verify each profile's model is configured correctly
+  Suite 7 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
+    - Send two messages rapidly, verify FIFO processing order
 
 suites:
   - name: prompt
@@ -25,7 +35,7 @@ suites:
       http:
         public: https://game.liukexin.com
     cases:
-      - //projects/game/testplan:prompt_test
+      - //projects/game/testplan:testplan_test
 
   - name: session
     deploy: //projects/game/testplan/deploy_agent.yaml
@@ -44,9 +54,37 @@ suites:
       - //projects/game/testplan:agent_lifecycle_test
 
   - name: agent-dialog
+    description: "Agent dialog with fake-llm service: connect, chat, verify thinking + text response with FIFO ordering"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_dialog_test
+
+  - name: checkpoint-resume
+    description: "Agent checkpoint-resume with fake-llm service: send messages, leave/re-enter, verify history and cross-profile persistence"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
+
+  - name: per-profile-model
+    description: "Per-profile model configuration with fake-llm service: verify each profile resolves the correct model"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test
+
+  - name: concurrent-serialization
+    description: "Concurrent message serialization with fake-llm service: rapid sends processed in strict FIFO order"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_checkpoint_test

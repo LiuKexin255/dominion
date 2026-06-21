@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// WSClient is a WebSocket client for the game gateway agent connect endpoint.
+// WSClient is a WebSocket client for the game gateway session connect endpoint.
 type WSClient struct {
 	mu        sync.Mutex
 	conn      *websocket.Conn
@@ -35,8 +35,8 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env strin
 		return fmt.Errorf("connect: %w", err)
 	}
 
-	// Build full connect URL: wss://host/api/v1/sessions/{id}/agent/connect
-	fullURL := fmt.Sprintf("%s/api/v1/sessions/%s/agent/connect", strings.TrimSuffix(wsURL, "/"), sessionID)
+	// Build full connect URL: wss://host/api/v1/sessions/{id}/connect
+	fullURL := fmt.Sprintf("%s/api/v1/sessions/%s/connect", strings.TrimSuffix(wsURL, "/"), sessionID)
 
 	// Set up headers
 	header := http.Header{}
