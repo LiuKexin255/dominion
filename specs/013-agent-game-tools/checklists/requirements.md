@@ -31,5 +31,7 @@
 
 ## Notes
 
-- Validation passed after initial review.
+- Validation passed after initial review. Re-validated after design decisions (Q1-Q17).
+- Q11: Per-turn operation limit removed. FR-011a updated to remove "at most one" constraint.
+- New FRs added: FR-025 (UpdateAgentProfile with FieldMask), FR-026 (RefreshAgent RPC), FR-027 (AgentUserTurnFrame multipart frame), FR-028 (Message proto oneof content for image replay).
 - `LangChain`, `tool_names`, and frame terminology are retained because the user explicitly defined them as externally visible feature constraints and existing product contract terms for this milestone.

@@ -14,7 +14,27 @@
 
 - Q: What maximum image payload should a user turn allow? → A: 5 MiB maximum image payload per user turn.
 - Q: What markdown safety policy should desktop use for agent text? → A: Render a safe markdown subset and strip raw HTML.
-- Q: Should desktop auto-execute or require confirmation for an agent-requested mouse operation? → A: Auto-execute one requested mouse operation per user-driven turn.
+- Q: Should desktop auto-execute or require confirmation for an agent-requested mouse operation? → A: Auto-execute requested mouse operations per user-driven turn.
+
+### Session 2026-06-21 (Round 2: Design Clarifications)
+
+Decisions from Q1-Q17 recorded in the decision matrix:
+
+- **Q1 (OperationBridge channel binding)**: Session-scoped, not WS-connection-scoped. Survives reconnect.
+- **Q2 (RefreshAgent routing)**: desktop → gateway → proxy → agent.
+- **Q3 (RefreshAgent during in-flight turn)**: Rejected with `FAILED_PRECONDITION`.
+- **Q4 (Multiparty frame deprecation)**: New `AgentUserTurnFrame` bundles text and screenshot. Standalone user→agent frames deprecated.
+- **Q5 (LLM screenshot_id)**: Not in tool schema; injected from turn context by agent.
+- **Q6 (Sink timeout)**: 5-second configurable timeout, failure result on timeout.
+- **Q7/Q9 (fake-llm config split)**: Two config sections (`messages`, `tools`) selected by last-message role.
+- **Q8 (5 MiB validation)**: Image bytes only, validated by desktop before sending.
+- **Q10 (UpdateAgentProfile)**: Uses `FieldMask`, `PATCH` route, on `PromptService`.
+- **Q11 (Operation limit)**: Removed entirely; no per-turn operation counter.
+- **Q12 (RefreshAgent shape)**: `rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty)`.
+- **Q14 (ListMessages image replay)**: Extend; checkpoint preserves images.
+- **Q15 (Deprecated desktop methods)**: Removed `ExecuteOperation`, `OperationResultView`, `SendNextScreenshot`, `SendScreenshot`. Retained `BindWindow`, `CaptureScreenshot`, `ListWindows`. Added `SendUserTurn`.
+- **Q16 (gRPC max message)**: 8 MiB uniform across 3 hops.
+- **Q17 (Message oneof)**: `oneof content { string text; bytes image_data; }`, not coupled to frame structs.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -104,7 +124,7 @@ Developers and testers can validate image turns, tool availability, tool-call be
 - What happens when a mouse operation references coordinates outside the screenshot dimensions? The desktop rejects the operation, reports a failed operation result, and does not click the screen.
 - What happens when an agent profile names an unknown tool? Unknown tool names are ignored for that profile and surfaced as a profile validation warning to operators or testers.
 - What happens when an image is larger than 5 MiB? The system rejects the send with a user-visible error before starting the turn.
-- What happens when an operation result arrives after the operator switches profile? The result remains associated with the operation and session turn that requested it; it does not enable tools on the new profile.
+- What happens when an operation result arrives after the operator switches profile? The result remains associated with the operation and session turn that requested it; it does not enable tools on the new profile. `RefreshAgent` handles mid-session tool changes by reloading the active profile's `tool_names` for the next turn.
 - What happens when the agent history cannot preserve image messages? Current live turns still support images; historical image replay is best effort and not required for this milestone.
 
 ## Requirements *(mandatory)*
@@ -123,7 +143,7 @@ Developers and testers can validate image turns, tool availability, tool-call be
 - **FR-009**: The mouse action set MUST include left single click, left double click, right single click, right double click, and simultaneous left-right press.
 - **FR-010**: The system MUST convert an agent-selected mouse operation into a desktop operation frame that includes operation identity, screenshot identity when available, action, and screenshot-relative coordinates.
 - **FR-011**: The desktop MUST convert screenshot-relative coordinates into the correct window-relative or screen-absolute operation target before execution.
-- **FR-011a**: The desktop MUST automatically execute at most one requested mouse operation per user-driven turn without requiring a separate operator confirmation.
+- **FR-011a**: The desktop MUST automatically execute requested mouse operations without requiring a separate operator confirmation.
 - **FR-012**: The desktop MUST return a dedicated operation result frame for every requested mouse operation, indicating success or failure and a human-readable result message.
 - **FR-013**: The system MUST NOT use acknowledgement frames as operation result frames.
 - **FR-014**: The system MUST NOT automatically capture or send a follow-up screenshot after an operation result in this milestone.
@@ -137,6 +157,10 @@ Developers and testers can validate image turns, tool availability, tool-call be
 - **FR-022**: The system MUST preserve session-scoped conversation continuity across profile switches, with tool availability recalculated from the active profile for each turn.
 - **FR-023**: The system MUST use the standard tool/function-calling behavior documented for LangChain agents ([LangChain agents documentation](https://docs.langchain.com/oss/javascript/langchain/agents)) for model-requested tool actions.
 - **FR-024**: The system MUST represent user text-plus-image input using a multimodal message shape compatible with LangChain content blocks ([LangChain multimodal message migration notes](https://docs.langchain.com/oss/javascript/migrate/langchain-v1)).
+- **FR-025**: The system MUST support an `UpdateAgentProfile` RPC on `PromptService` using `FieldMask` for partial updates, enabling mid-session editing of `tool_names` ([FieldMask convention reference](https://protobuf.dev/reference/protobuf/google.protobuf/#field-mask)).
+- **FR-026**: The system MUST support a `RefreshAgent` RPC on `AgentService` that reloads the active profile's `tool_names` for a session; the RPC MUST reject with `FAILED_PRECONDITION` if a turn is in-flight.
+- **FR-027**: The user-to-agent direction MUST use a single `AgentUserTurnFrame` that bundles optional text and optional screenshot; the agent MUST construct one multimodal `HumanMessage` from the frame.
+- **FR-028**: The `Message` proto MUST support image replay via a `oneof content` with `string text` and `bytes image_data` variants, verified against LangGraph checkpoint serialization.
 
 ### Key Entities *(include if feature involves data)*
 
