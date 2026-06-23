@@ -13,10 +13,16 @@ description: "Task list template for feature implementation"
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
-## Format: `[ID] [P?] [Story] Description`
+## Format: `[ID] [P?] [Story] [新增|修改|删除] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
+- **[新增|修改|删除]**: Change classification per Constitution §V —
+  新增 only for modules/files/types/design elements that did not
+  previously exist; 修改 for any change to an existing unit (including
+  adding a function to an existing class); 删除 for removal of an
+  existing unit. 修改 / 删除 tasks MUST record a design-applicability
+  review before implementation begins.
 - Include exact file paths in descriptions
 
 ## Constitution Check
@@ -49,6 +55,22 @@ description: "Task list template for feature implementation"
   checkpoint MUST be fixed BEFORE the next phase proceeds. Check tasks
   MUST be labeled distinctly (e.g., a `CHECK` prefix or "checkpoint"
   marker) so they are not mistaken for ordinary implementation tasks.
+- **Refactoring-Oriented Changes (§V)**: every implementation task MUST
+  carry the 新增 / 修改 / 删除 (Add / Modify / Delete) classification
+  inherited from `plan.md`, where 新增 applies ONLY to modules, files,
+  types, or design elements that did not previously exist (adding a
+  function to an existing class, a field to an existing struct, or a
+  branch to an existing function is 修改, not 新增). 修改 tasks MUST be
+  implemented as refactors of the existing unit, not as logic appended
+  on top. Every 修改 or 删除 task that touches an existing unit MUST,
+  before implementation begins, record a brief review of whether the
+  existing design, architecture, and layering of that unit still serve
+  the goal of the change; if they do not, the task MUST be expanded (or
+  split into a companion task) to bring the design back into coherence
+  in the same change set. "Out of scope" MUST NOT be used to leave an
+  outdated design in place. A task is not complete until the design
+  artifacts (`spec.md` / `plan.md` / `data-model.md` / `contracts/` /
+  `style/`) and the implementation agree.
 
 ## Path Conventions
 
