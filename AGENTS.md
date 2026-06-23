@@ -5,7 +5,7 @@
 ## 需求&方案规范
 
 * 本仓库开发采用 `SDD` 架构，使用 `speckit` 作为 `SDD` 框架。
-* 所有 Agent 在进行开发方案和计划设计时，应当遵守 `.specify/memory/constitution.md` 规范。
+* 所有 Agent 在进行需求**规划**、**方案**设计与**代码开发**时，应当遵守 `.specify/memory/constitution.md` 规范。
 
 ## 操作命令参考
 
@@ -69,5 +69,4 @@ Do not add comments that restate what the code already expresses. Only add comme
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/013-agent-game-tools/plan.md
 <!-- SPECKIT END -->
