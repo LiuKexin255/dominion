@@ -36,6 +36,7 @@ type cursorOps interface {
 type collectionOps interface {
 	InsertOne(ctx context.Context, document interface{}, opts ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error)
 	FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) singleResult
+	ReplaceOne(ctx context.Context, filter interface{}, replacement interface{}, opts ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error)
 	DeleteOne(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error)
 	Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error)
 	Indexes() mongodriver.IndexView
@@ -52,6 +53,10 @@ func (c *mongoCollection) InsertOne(ctx context.Context, document interface{}, o
 
 func (c *mongoCollection) FindOne(ctx context.Context, filter interface{}, opts ...*options.FindOneOptions) singleResult {
 	return c.Collection.FindOne(ctx, filter, opts...)
+}
+
+func (c *mongoCollection) ReplaceOne(ctx context.Context, filter interface{}, replacement interface{}, opts ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
+	return c.Collection.ReplaceOne(ctx, filter, replacement, opts...)
 }
 
 func (c *mongoCollection) DeleteOne(ctx context.Context, filter interface{}, opts ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
@@ -145,6 +150,29 @@ func (r *Repository) GetAgentProfile(ctx context.Context, profileName string) (*
 	}
 
 	return result.toDomain(), nil
+}
+
+// UpdateAgentProfile replaces the stored AgentProfile identified by profile.AgentProfileName.
+// The _id and create_time of the existing document are preserved.
+func (r *Repository) UpdateAgentProfile(ctx context.Context, profile *domain.AgentProfile) (*domain.AgentProfile, error) {
+	filter := agentProfileFilter{AgentProfileName: profile.AgentProfileName}
+	existing := new(agentProfileDocument)
+	if err := r.profiles.FindOne(ctx, filter).Decode(existing); err != nil {
+		if errors.Is(err, mongodriver.ErrNoDocuments) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	doc := agentProfileDocumentFromDomain(profile)
+	doc.ID = existing.ID
+	doc.CreateTime = existing.CreateTime
+
+	if _, err := r.profiles.ReplaceOne(ctx, filter, doc); err != nil {
+		return nil, err
+	}
+
+	return doc.toDomain(), nil
 }
 
 // ListAgentProfiles retrieves a page of AgentProfiles sorted by agent_profile_name ascending.

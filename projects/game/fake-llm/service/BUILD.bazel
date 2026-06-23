@@ -13,6 +13,8 @@ go_library(
     embedsrcs = [
         "testdata/sample_farewell.json",
         "testdata/sample_greeting.yaml",
+        "testdata/sample_tools.yaml",
+        "testdata/sample_chat.yaml",
     ],
     importpath = "dominion/projects/game/fake-llm/service",
     visibility = ["//visibility:public"],

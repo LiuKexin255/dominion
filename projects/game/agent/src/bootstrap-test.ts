@@ -10,6 +10,7 @@ import type { MemorySaver } from "@langchain/langgraph";
 import type { AdapterFactory } from "./llm";
 import { AgentAdapterImpl } from "./llm";
 import type { ChatModel } from "./model-provider";
+import type { OperationBridge } from "./operation-bridge";
 import { buildResolverAwareChatModel } from "./resolver-provider";
 
 async function main() {
@@ -28,10 +29,18 @@ async function main() {
 	const adapterFactory: AdapterFactory = async (
 		_getProvider: () => Promise<ChatModel>,
 		systemPrompt: string,
-		cp: MemorySaver,
+		toolNames: string[],
+		bridge: OperationBridge,
+		checkpointer: MemorySaver,
 	) => {
 		const chatModel = await buildResolverAwareChatModel(resolver);
-		return new AgentAdapterImpl(chatModel, systemPrompt, cp);
+		return new AgentAdapterImpl(
+			chatModel,
+			systemPrompt,
+			toolNames,
+			bridge,
+			checkpointer,
+		);
 	};
 
 	const server = await startServer(adapterFactory);

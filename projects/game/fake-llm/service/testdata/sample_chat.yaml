@@ -1,0 +1,6 @@
+name: chat-only
+keywords:
+  - chat
+  - conversation
+reasoning: "Responding with text only, no tools needed."
+text: "Sure, let's chat!"

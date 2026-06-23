@@ -99,6 +99,59 @@ func TestSessionName(t *testing.T) {
 	}
 }
 
+func TestAgentSessionID(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr error
+	}{
+		{
+			name:    "valid agent name returns session ID",
+			input:   "sessions/abc/agent",
+			want:    "abc",
+			wantErr: nil,
+		},
+		{
+			name:    "session name without agent suffix returns ErrInvalidAgentName",
+			input:   "sessions/abc",
+			want:    "",
+			wantErr: gameconst.ErrInvalidAgentName,
+		},
+		{
+			name:    "missing sessions prefix returns ErrInvalidSessionName",
+			input:   "abc/agent",
+			want:    "",
+			wantErr: gameconst.ErrInvalidSessionName,
+		},
+		{
+			name:    "empty string returns ErrInvalidAgentName",
+			input:   "",
+			want:    "",
+			wantErr: gameconst.ErrInvalidAgentName,
+		},
+		{
+			name:    "extra segment returns ErrInvalidAgentName",
+			input:   "sessions/abc/agent/extra",
+			want:    "",
+			wantErr: gameconst.ErrInvalidAgentName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := gameconst.AgentSessionID(tt.input)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("AgentSessionID(%q) error = %v, want %v", tt.input, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("AgentSessionID(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAgentProfileID(t *testing.T) {
 	tests := []struct {
 		name    string

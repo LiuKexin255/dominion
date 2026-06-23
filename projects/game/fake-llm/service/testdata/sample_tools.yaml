@@ -1,0 +1,41 @@
+tools:
+  - name: keyboard-success-text
+    tool_name: keyboard
+    match_result_contains: []
+    respond_with:
+      text: "Typed successfully."
+  - name: mouse-click-button
+    tool_name: mouse
+    match_result_contains: ["click here"]
+    respond_with:
+      tool_call:
+        name: mouse
+        arguments:
+          x_px: 100
+          y_px: 200
+          action: LEFT_CLICK
+  - name: mouse-followup-click
+    tool_name: mouse
+    match_result_contains: ["button"]
+    respond_with:
+      tool_call:
+        name: mouse
+        arguments:
+          x_px: 100
+          y_px: 200
+          action: LEFT_CLICK
+  - name: mouse-oob-click
+    tool_name: mouse
+    match_result_contains: ["out of bounds"]
+    respond_with:
+      tool_call:
+        name: mouse
+        arguments:
+          x_px: 99999
+          y_px: 99999
+          action: LEFT_CLICK
+  - name: mouse-success-text
+    tool_name: mouse
+    match_result_contains: []
+    respond_with:
+      text: "I see the screen now."

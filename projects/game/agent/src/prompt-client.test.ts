@@ -86,11 +86,12 @@ describe("PromptClient", () => {
       mockClient.getAgentProfile.mockImplementation(
         (
           _req: { agentProfileName: string },
-          cb: (err: null, response: { model: string; systemPrompt: string }) => void,
+          cb: (err: null, response: { model: string; systemPrompt: string; toolNames: string[] }) => void,
         ) => {
           cb(null, {
             model: expectedModel,
             systemPrompt: expectedSystemPrompt,
+            toolNames: ["mouse"],
           });
         },
       );
@@ -101,6 +102,7 @@ describe("PromptClient", () => {
       expect(result).toEqual({
         model: expectedModel,
         systemPrompt: expectedSystemPrompt,
+        toolNames: ["mouse"],
       });
     });
 
@@ -138,21 +140,20 @@ describe("PromptClient", () => {
           _req: { agentProfileName: string },
           cb: (
             err: null,
-            response: { model: string; systemPrompt: string },
+            response: { model: string; systemPrompt: string; toolNames: string[] },
           ) => void,
         ) => {
-          cb(null, { model, systemPrompt });
+          cb(null, { model, systemPrompt, toolNames: [] });
         },
       );
 
       const client = new PromptClient(mockClient as any);
       const result = await client.getProfile(profileName);
 
-      // Verify exact field extraction
       expect(result.model).toBe(model);
       expect(result.systemPrompt).toBe(systemPrompt);
+      expect(result.toolNames).toEqual([]);
 
-      // Verify the RPC was called with the correct profile name
       expect(mockClient.getAgentProfile).toHaveBeenCalledTimes(1);
       expect(mockClient.getAgentProfile).toHaveBeenCalledWith(
         { agentProfileName: profileName },
@@ -182,6 +183,48 @@ describe("PromptClient", () => {
       await expect(client.getProfile(profileName)).rejects.toThrow(
         "Service unavailable",
       );
+    });
+
+    it("extracts toolNames from the response", async () => {
+      mockClient.getAgentProfile.mockImplementation(
+        (
+          _req: { agentProfileName: string },
+          cb: (
+            err: null,
+            response: { model: string; systemPrompt: string; toolNames: string[] },
+          ) => void,
+        ) => {
+          cb(null, {
+            model: "m",
+            systemPrompt: "s",
+            toolNames: ["mouse", "keyboard"],
+          });
+        },
+      );
+
+      const client = new PromptClient(mockClient as any);
+      const result = await client.getProfile("tools-profile");
+
+      expect(result.toolNames).toEqual(["mouse", "keyboard"]);
+    });
+
+    it("defaults toolNames to empty array when absent in response", async () => {
+      mockClient.getAgentProfile.mockImplementation(
+        (
+          _req: { agentProfileName: string },
+          cb: (
+            err: null,
+            response: { model: string; systemPrompt: string; toolNames?: string[] },
+          ) => void,
+        ) => {
+          cb(null, { model: "m", systemPrompt: "s" });
+        },
+      );
+
+      const client = new PromptClient(mockClient as any);
+      const result = await client.getProfile("no-tools");
+
+      expect(result.toolNames).toEqual([]);
     });
   });
 

@@ -1,0 +1,223 @@
+/**
+ * operation-bridge.test.ts — Tests for OperationBridge.
+ *
+ * Covers the four required scenarios:
+ *   1. register sink → dispatch → handleResult → SUCCEEDED
+ *   2. no sink registered → dispatch → 5s timeout → FAILED
+ *   3. unregister mid-dispatch → timeout → FAILED
+ *   4. setCurrentScreenshotId / getCurrentScreenshotId roundtrip
+ *
+ * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
+ * and concurrent dispatch correlation.
+ */
+
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+
+import { OperationBridge } from "./operation-bridge";
+
+import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
+import type { AgentOperationResultFrame } from "../game_types/projects/game/AgentOperationResultFrame";
+
+const STATUS_SUCCEEDED = "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED";
+const STATUS_FAILED = "AGENT_OPERATION_RESULT_STATUS_FAILED";
+
+function makeOperation(): AgentOperationFrame {
+  return {
+    mouse: {
+      action: "AGENT_MOUSE_ACTION_LEFT_CLICK",
+      xPx: 10,
+      yPx: 20,
+    },
+  };
+}
+
+function makeResult(
+  operationId: string,
+  status: string,
+  message = "",
+): AgentOperationResultFrame {
+  return {
+    operationId,
+    status: status as AgentOperationResultFrame["status"],
+    message,
+  };
+}
+
+describe("OperationBridge", () => {
+  let bridge: OperationBridge;
+
+  beforeEach(() => {
+    bridge = new OperationBridge();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 1: register sink → dispatch → handleResult → SUCCEEDED
+  // ------------------------------------------------------------------
+  it("register sink → dispatch → handleResult → resolves with SUCCEEDED", async () => {
+    const written: unknown[] = [];
+    bridge.registerSink((frame) => {
+      written.push(frame);
+    });
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    expect(op.operationId).toBeDefined();
+    expect(op.operationId).toHaveLength(36);
+    expect(written).toHaveLength(1);
+
+    const operationId = op.operationId!;
+    bridge.handleResult(makeResult(operationId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 2: no sink → dispatch → 5s timeout → FAILED
+  // ------------------------------------------------------------------
+  it("no sink registered → dispatch → 5s timeout → FAILED", async () => {
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 3: unregister mid-dispatch → timeout → FAILED
+  // ------------------------------------------------------------------
+  it("unregister mid-dispatch → timeout → FAILED", async () => {
+    const written: unknown[] = [];
+    bridge.registerSink((frame) => {
+      written.push(frame);
+    });
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    expect(written).toHaveLength(1);
+
+    bridge.unregisterSink();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 4: screenshot ID roundtrip
+  // ------------------------------------------------------------------
+  it("setCurrentScreenshotId / getCurrentScreenshotId roundtrip", () => {
+    expect(bridge.getCurrentScreenshotId()).toBe("");
+
+    bridge.setCurrentScreenshotId("shot-123");
+    expect(bridge.getCurrentScreenshotId()).toBe("shot-123");
+
+    bridge.setCurrentScreenshotId("shot-456");
+    expect(bridge.getCurrentScreenshotId()).toBe("shot-456");
+
+    bridge.setCurrentScreenshotId("");
+    expect(bridge.getCurrentScreenshotId()).toBe("");
+  });
+
+  // ------------------------------------------------------------------
+  // Additional coverage
+  // ------------------------------------------------------------------
+
+  it("sink throws during write → immediate FAILED", async () => {
+    bridge.registerSink(() => {
+      throw new Error("stream closed");
+    });
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("stream closed");
+  });
+
+  it("handleResult with unknown operation_id is ignored", async () => {
+    bridge.registerSink(() => {});
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+  });
+
+  it("dispatch assigns a unique UUID operation_id to each frame", async () => {
+    const ids: string[] = [];
+    bridge.registerSink((frame) => {
+      const op = (frame as { operation?: { operationId?: string } }).operation;
+      if (op?.operationId) ids.push(op.operationId);
+    });
+
+    const promises = [
+      bridge.dispatch(makeOperation()),
+      bridge.dispatch(makeOperation()),
+      bridge.dispatch(makeOperation()),
+    ];
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await Promise.all(promises);
+
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("handleResult resolves the correct pending dispatch when multiple in-flight", async () => {
+    bridge.registerSink(() => {});
+
+    const opA = makeOperation();
+    const opB = makeOperation();
+    const pA = bridge.dispatch(opA);
+    const pB = bridge.dispatch(opB);
+
+    bridge.handleResult(makeResult(opB.operationId!, STATUS_SUCCEEDED, "b-done"));
+    bridge.handleResult(makeResult(opA.operationId!, STATUS_FAILED, "a-fail"));
+
+    const [rA, rB] = await Promise.all([pA, pB]);
+    expect(rA.status).toBe(STATUS_FAILED);
+    expect(rA.message).toBe("a-fail");
+    expect(rB.status).toBe(STATUS_SUCCEEDED);
+    expect(rB.message).toBe("b-done");
+  });
+
+  it("written envelope has payload='operation' and carries the operation frame", async () => {
+    let captured: { payload?: string; operation?: AgentOperationFrame } | undefined;
+    bridge.registerSink((frame) => {
+      captured = frame as typeof captured;
+    });
+
+    const op = makeOperation();
+    op.screenshotId = "shot-abc";
+    const promise = bridge.dispatch(op);
+
+    bridge.handleResult(makeResult(op.operationId!, STATUS_SUCCEEDED));
+    await promise;
+
+    expect(captured).toBeDefined();
+    expect(captured!.payload).toBe("operation");
+    expect(captured!.operation).toBe(op);
+    expect(captured!.operation!.operationId).toBe(op.operationId);
+    expect(captured!.operation!.screenshotId).toBe("shot-abc");
+  });
+});

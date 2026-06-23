@@ -80,6 +80,8 @@ projects/game/
 
 **Structure Decision**: Use the existing shared `projects/game/game.proto` transport contract as the sole API surface. The `oneof payload` field numbers are updated: `operation_result = 22` (was incorrectly 20), `user_turn = 23`. Service-specific code maps to and from that contract in its existing package (`agent`, `desktop`, `prompt`, `fake-llm`, `testplan`) to avoid duplicate frame or profile types.
 
+**Revision (post-review)**: Resource naming in `game.proto` is standardized to Google AIP (`style/api.md`): every resource declares `option (google.api.resource)` and carries a canonical `name` field; the redundant `agent_profile_name`/`skill_name` peer fields are removed from the resource messages (kept only on Create requests as user-supplied ids); Get/Update/Delete requests use a `name` field (full resource name) with `google.api.resource_reference`. `RefreshAgent` on `ProxyService` is HTTP-facing (`POST /api/v1/{name=sessions/*/agent}:refresh`) so the desktop can trigger it after a profile update. The proxy and session services no longer have a separate `service/` package: `ProxyHandler` owns owner resolution + agent routing + stream binding directly, and `SessionHandler` holds the repository directly. `GetAgent`/`ListMessages`/`RefreshAgent` require an existing owner (`NOT_FOUND` otherwise); only `ConnectAgent` allocates an owner.
+
 ## Complexity Tracking
 
 No constitution gate violations.

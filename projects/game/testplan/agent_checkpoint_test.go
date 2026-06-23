@@ -79,13 +79,13 @@ func TestAgentCheckpointResume(t *testing.T) {
 		t.Errorf("ListMessages after 3 turns returned %d messages, want at least 6", gotCount)
 	}
 	for i, msg := range lmr.GetMessages() {
-		t.Logf("message[%d]: type=%s sender=%s content=%q", i, msg.GetType(), senderString(msg.GetSender()), msg.GetContent())
+		t.Logf("message[%d]: type=%s sender=%s content=%q", i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
 	}
 
 	// Verify user messages are present and in order
 	foundFirst := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetContent() == messages[0] {
+		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == messages[0] {
 			foundFirst = true
 			break
 		}
@@ -103,8 +103,8 @@ func TestAgentCheckpointResume(t *testing.T) {
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: followUp},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: followUp},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -189,7 +189,7 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 
 	// Verify content-bearing messages are present
 	for i, msg := range lmr.GetMessages() {
-		if msg.GetType() == "text" && msg.GetContent() == "" {
+		if msg.GetType() == "text" && msg.GetText() == "" {
 			t.Errorf("message[%d]: text type has empty content", i)
 		}
 	}
@@ -202,8 +202,8 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: thirdMsg},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: thirdMsg},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -290,7 +290,7 @@ func TestAgentPerProfileModel(t *testing.T) {
 	textFrame1 := &game.AgentFrame{
 		SessionId:        sessionID1,
 		AgentProfileName: profile1Name,
-		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello from profile one"}},
+		Payload:          &game.AgentFrame_UserTurn{UserTurn: &game.AgentUserTurnFrame{Text: "Hello from profile one"}},
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn1, textFrame1)
@@ -310,7 +310,7 @@ func TestAgentPerProfileModel(t *testing.T) {
 	textFrame2 := &game.AgentFrame{
 		SessionId:        sessionID2,
 		AgentProfileName: profile2Name,
-		Payload:          &game.AgentFrame_Text{Text: &game.AgentTextFrame{Content: "Hello from profile two"}},
+		Payload:          &game.AgentFrame_UserTurn{UserTurn: &game.AgentUserTurnFrame{Text: "Hello from profile two"}},
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
 	}
 	writeWSFrame(t, conn2, textFrame2)
@@ -447,14 +447,14 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	}
 	for i, msg := range lmr.GetMessages() {
 		t.Logf("message[%d]: type=%s sender=%s content=%q",
-			i, msg.GetType(), senderString(msg.GetSender()), msg.GetContent())
+			i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
 	}
 
 	// Verify profile A's messages are present.
 	for _, um := range userMessages {
 		found := false
 		for _, msg := range lmr.GetMessages() {
-			if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetContent() == um {
+			if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == um {
 				found = true
 				break
 			}
@@ -467,7 +467,7 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	// Verify profile B's user message is present too.
 	profileBFound := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetContent() == profileBMsg {
+		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == profileBMsg {
 			profileBFound = true
 			break
 		}

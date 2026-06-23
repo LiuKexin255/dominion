@@ -7,6 +7,7 @@ import "google/api/client.proto";
 import "google/api/field_behavior.proto";
 import "google/api/resource.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "dominion/projects/game";
@@ -76,6 +77,16 @@ service ProxyService {
   // ConnectAgent establishes a bidirectional streaming channel for agent
   // communication. Messages are exchanged as AgentFrame units.
   rpc ConnectAgent(stream AgentFrame) returns (stream AgentFrame);
+
+  // RefreshAgent refreshes the agent for a session, applying profile updates.
+  rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/api/v1/{name=sessions/*/agent}:refresh"
+      body: "*"
+    };
+
+    option (google.api.method_signature) = "name";
+  }
 }
 
 // AgentService provides agent-side operations and a bidirectional stream for
@@ -92,6 +103,9 @@ service AgentService {
   // Connect establishes a bidirectional streaming channel for agent-to-agent
   // communication. Messages are exchanged as AgentFrame units.
   rpc Connect(stream AgentFrame) returns (stream AgentFrame);
+
+  // RefreshAgent refreshes the agent for a session, applying profile updates.
+  rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
 }
 
 // PromptService manages AgentProfile and Skill resources for agent
@@ -110,8 +124,10 @@ service PromptService {
   // GetAgentProfile returns the AgentProfile resource identified by name.
   rpc GetAgentProfile(GetAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/agentProfiles/{agent_profile_name}"
+      get: "/api/v1/prompts/{name=agentProfiles/*}"
     };
+
+    option (google.api.method_signature) = "name";
   }
 
   // ListAgentProfiles lists all AgentProfile resources.
@@ -124,8 +140,10 @@ service PromptService {
   // DeleteAgentProfile deletes the AgentProfile resource identified by name.
   rpc DeleteAgentProfile(DeleteAgentProfileRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/prompts/agentProfiles/{agent_profile_name}"
+      delete: "/api/v1/prompts/{name=agentProfiles/*}"
     };
+
+    option (google.api.method_signature) = "name";
   }
 
   // CreateSkill creates a new Skill resource.
@@ -139,8 +157,10 @@ service PromptService {
   // GetSkill returns the Skill resource identified by name.
   rpc GetSkill(GetSkillRequest) returns (Skill) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/skills/{skill_name}"
+      get: "/api/v1/prompts/{name=skills/*}"
     };
+
+    option (google.api.method_signature) = "name";
   }
 
   // ListSkills lists all Skill resources.
@@ -153,8 +173,20 @@ service PromptService {
   // DeleteSkill deletes the Skill resource identified by name.
   rpc DeleteSkill(DeleteSkillRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/prompts/skills/{skill_name}"
+      delete: "/api/v1/prompts/{name=skills/*}"
     };
+
+    option (google.api.method_signature) = "name";
+  }
+
+  // UpdateAgentProfile updates an existing AgentProfile using FieldMask.
+  rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
+    option (google.api.http) = {
+      patch: "/api/v1/prompts/{name=agentProfiles/*}"
+      body: "profile"
+    };
+
+    option (google.api.method_signature) = "name";
   }
 }
 
@@ -248,6 +280,10 @@ message AgentFrame {
     AgentWaitFrame wait = 18;
     // Agent is requesting a screenshot from desktop.
     AgentScreenshotRequestFrame screenshot_request = 19;
+    // Result of an executed operation reported by desktop.
+    AgentOperationResultFrame operation_result = 22;
+    // User turn bundling text and optional screenshot as user input.
+    AgentUserTurnFrame user_turn = 23;
   }
 
   // The originator of this frame (user, agent, or system).
@@ -300,18 +336,14 @@ enum ImageEncoding {
   IMAGE_ENCODING_PNG = 1;
 }
 
-// AgentMouseButton specifies the mouse button for an operation.
-enum AgentMouseButton {
-  AGENT_MOUSE_BUTTON_UNSPECIFIED = 0;
-  LEFT = 1;
-  RIGHT = 2;
-}
-
-// AgentMouseClickType specifies the type of mouse click.
-enum AgentMouseClickType {
-  AGENT_MOUSE_CLICK_TYPE_UNSPECIFIED = 0;
-  SINGLE = 1;
-  DOUBLE = 2;
+// AgentMouseAction specifies the mouse action for an operation.
+enum AgentMouseAction {
+  AGENT_MOUSE_ACTION_UNSPECIFIED = 0;
+  AGENT_MOUSE_ACTION_LEFT_CLICK = 1;
+  AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK = 2;
+  AGENT_MOUSE_ACTION_RIGHT_CLICK = 3;
+  AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK = 4;
+  AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS = 5;
 }
 
 // AgentScreenshotFrame carries a screenshot capture from the agent's desktop.
@@ -354,17 +386,36 @@ message AgentOperationFrame {
   }
 }
 
-// AgentMouseOperation specifies a mouse click operation.
+// AgentMouseOperation specifies a mouse operation.
 message AgentMouseOperation {
-  AgentMouseButton button = 1;
-  AgentMouseClickType click_type = 2;
-  int32 x_px = 3;
-  int32 y_px = 4;
+  AgentMouseAction action = 1;
+  int32 x_px = 2;
+  int32 y_px = 3;
 }
 
 // AgentKeyboardOperation specifies a keyboard key press operation.
 message AgentKeyboardOperation {
   string key_codes = 1;
+}
+
+// AgentOperationResultStatus indicates the outcome of an executed operation.
+enum AgentOperationResultStatus {
+  AGENT_OPERATION_RESULT_STATUS_UNSPECIFIED = 0;
+  AGENT_OPERATION_RESULT_STATUS_SUCCEEDED = 1;
+  AGENT_OPERATION_RESULT_STATUS_FAILED = 2;
+}
+
+// AgentOperationResultFrame reports the result of an executed operation.
+message AgentOperationResultFrame {
+  string operation_id = 1;
+  AgentOperationResultStatus status = 2;
+  string message = 3;
+}
+
+// AgentUserTurnFrame carries a single user turn bundling text and screenshot.
+message AgentUserTurnFrame {
+  string text = 1;
+  AgentScreenshotFrame screenshot = 2;
 }
 
 // AgentWaitFrame indicates the agent is waiting (e.g. for user instruction).
@@ -382,6 +433,13 @@ message AgentScreenshotRequestFrame {
 // Message is one normalized conversation entry reconstructed from checkpoint
 // state.
 message Message {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Message"
+    pattern: "sessions/{session}/agent/messages/{message}"
+    plural: "messages"
+    singular: "message"
+  };
+
   // The full resource name of the message, e.g.
   // "sessions/abc123/agent/messages/msg-xyz".
   string name = 1;
@@ -392,15 +450,18 @@ message Message {
   // The originator of this message (USER, AGENT, or SYSTEM).
   FrameSender sender = 3;
 
-  // The type of message: "text", "thinking", or "warn".
+  // The type of message: "text", "thinking", "warn", or "image".
   string type = 4;
-
-  // The visible display content of the message.
-  string content = 5;
 
   // Best-effort message timestamp sourced from the checkpoint that introduced
   // the message.
   google.protobuf.Timestamp create_time = 6;
+
+  // The visible content of the message: text or image data.
+  oneof content {
+    string text = 5;
+    bytes image_data = 7;
+  }
 }
 
 // ListMessagesRequest is the request to list Messages for an agent.
@@ -417,10 +478,19 @@ message ListMessagesResponse {
 
 // AgentProfile describes the configuration for creating an agent.
 message AgentProfile {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/AgentProfile"
+    pattern: "agentProfiles/{agent_profile}"
+    plural: "agentProfiles"
+    singular: "agentProfile"
+  };
+
+  reserved 2;
+  reserved "agent_profile_name";
+
   // The resource name, e.g. "agentProfiles/my-profile".
-  string name = 1;
-  // The business identifier for this profile.
-  string agent_profile_name = 2;
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
   // The model name to use.
   string model = 3;
   // The system prompt for the agent.
@@ -431,6 +501,8 @@ message AgentProfile {
   repeated string mcp_names = 6;
   // Whether this profile is enabled.
   bool enabled = 7;
+  // Names of tools referenced by this profile.
+  repeated string tool_names = 10;
   // Timestamp of creation.
   google.protobuf.Timestamp create_time = 8;
   // Timestamp of last update.
@@ -439,10 +511,19 @@ message AgentProfile {
 
 // Skill represents a tool-independent skill definition.
 message Skill {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Skill"
+    pattern: "skills/{skill}"
+    plural: "skills"
+    singular: "skill"
+  };
+
+  reserved 2;
+  reserved "skill_name";
+
   // The resource name, e.g. "skills/my-skill".
-  string name = 1;
-  // The business identifier for this skill.
-  string skill_name = 2;
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
   // The skill content (text).
   string content = 3;
   // Whether this skill is enabled.
@@ -517,11 +598,42 @@ message CreateAgentProfileRequest {
   repeated string skill_names = 4;
   repeated string mcp_names = 5;
   bool enabled = 6;
+  repeated string tool_names = 7;
+}
+
+// UpdateAgentProfileRequest is the request to update an AgentProfile.
+message UpdateAgentProfileRequest {
+  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/AgentProfile"
+    }
+  ];
+  AgentProfile profile = 2;
+  google.protobuf.FieldMask update_mask = 3;
+}
+
+// RefreshAgentRequest is the request to refresh an agent for a session.
+message RefreshAgentRequest {
+  // The resource name of the Agent, e.g. "sessions/abc123/agent".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Agent"
+    }
+  ];
 }
 
 // GetAgentProfileRequest is the request to retrieve an AgentProfile.
 message GetAgentProfileRequest {
-  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
+  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/AgentProfile"
+    }
+  ];
 }
 
 // ListAgentProfilesRequest is the request to list AgentProfiles.
@@ -538,7 +650,13 @@ message ListAgentProfilesResponse {
 
 // DeleteAgentProfileRequest is the request to delete an AgentProfile.
 message DeleteAgentProfileRequest {
-  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
+  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/AgentProfile"
+    }
+  ];
 }
 
 // CreateSkillRequest is the request to create a Skill.
@@ -550,7 +668,13 @@ message CreateSkillRequest {
 
 // GetSkillRequest is the request to retrieve a Skill.
 message GetSkillRequest {
-  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
+  // The resource name of the Skill, e.g. "skills/my-skill".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Skill"
+    }
+  ];
 }
 
 // ListSkillsRequest is the request to list Skills.
@@ -567,5 +691,11 @@ message ListSkillsResponse {
 
 // DeleteSkillRequest is the request to delete a Skill.
 message DeleteSkillRequest {
-  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
+  // The resource name of the Skill, e.g. "skills/my-skill".
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/Skill"
+    }
+  ];
 }

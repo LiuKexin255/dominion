@@ -228,7 +228,7 @@ func TestServeHTTP_NoMatchRandom(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
 
 	// then: 200, application/json, and a message whose text is one of
-	// the two configured responses (the random fallback).
+	// the configured responses (the random fallback).
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -237,7 +237,12 @@ func TestServeHTTP_NoMatchRandom(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	got := resp.Choices[0].Message.Content
-	if got != "Goodbye! Have a great day!" && got != "Hello! How can I help you today?" {
+	validTexts := map[string]bool{
+		"Goodbye! Have a great day!":         true,
+		"Hello! How can I help you today?":   true,
+		"Sure, let's chat!":                  true,
+	}
+	if !validTexts[got] {
 		t.Fatalf("random fallback content = %q, want one of the configured texts", got)
 	}
 }
@@ -424,4 +429,336 @@ func rawJSON(s string) json.RawMessage {
 		panic("rawJSON: invalid JSON: " + s)
 	}
 	return json.RawMessage(s)
+}
+
+// TestServeHTTP_ToolResultTextResponse verifies the tools dispatch
+// branch: a request whose last message role is "tool" matches against
+// the tools config by tool_name and returns a plain text response with
+// finish_reason "stop".
+func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
+	// given: the real embedded store (which includes sample_tools.yaml)
+	// and a tool-role request for the "mouse" tool.
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+	body := `{"stream":false,"messages":[` +
+		`{"role":"user","content":"take a screenshot"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"screenshot captured at 1920x1080"}` +
+		`]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: matched mouse-success-text (no substring constraint).
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices len = %d, want 1", len(resp.Choices))
+	}
+	c := resp.Choices[0]
+	if c.FinishReason == nil || *c.FinishReason != "stop" {
+		t.Fatalf("finish_reason = %v, want \"stop\"", c.FinishReason)
+	}
+	if c.Message.Content != "I see the screen now." {
+		t.Errorf("content = %q, want \"I see the screen now.\"", c.Message.Content)
+	}
+	if len(c.Message.ToolCalls) != 0 {
+		t.Errorf("tool_calls len = %d, want 0 for text response", len(c.Message.ToolCalls))
+	}
+}
+
+// TestServeHTTP_ToolResultToolCallResponse verifies the tool_call
+// response format: when a tool config's respond_with.tool_call is set
+// (and match_result_contains matches), the response carries tool_calls
+// with the correct function name/arguments and finish_reason
+// "tool_calls".
+func TestServeHTTP_ToolResultToolCallResponse(t *testing.T) {
+	// given: tool result for "mouse" whose text contains "button",
+	// matching mouse-followup-click which responds with a tool_call.
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+	body := `{"stream":false,"messages":[` +
+		`{"role":"user","content":"click the button"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"found a button at 50,60"}` +
+		`]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: tool_calls present with the correct shape.
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	c := resp.Choices[0]
+	if c.FinishReason == nil || *c.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want \"tool_calls\"", c.FinishReason)
+	}
+	if c.Message.Role != "assistant" {
+		t.Errorf("role = %q, want assistant", c.Message.Role)
+	}
+	if len(c.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(c.Message.ToolCalls))
+	}
+	tc := c.Message.ToolCalls[0]
+	if !strings.HasPrefix(tc.ID, "call_") {
+		t.Errorf("tool_call.id = %q, want prefix \"call_\"", tc.ID)
+	}
+	if tc.Type != "function" {
+		t.Errorf("tool_call.type = %q, want \"function\"", tc.Type)
+	}
+	if tc.Function.Name != "mouse" {
+		t.Errorf("tool_call.function.name = %q, want \"mouse\"", tc.Function.Name)
+	}
+	// Arguments must be a JSON string (not a JSON object), per the
+	// OpenAI schema.
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		t.Fatalf("tool_call.function.arguments is not valid JSON: %q (err: %v)", tc.Function.Arguments, err)
+	}
+	if args["action"] != "LEFT_CLICK" {
+		t.Errorf("tool_call.function.arguments.action = %v, want LEFT_CLICK", args["action"])
+	}
+	if args["x_px"] != float64(100) {
+		t.Errorf("tool_call.function.arguments.x_px = %v, want 100", args["x_px"])
+	}
+}
+
+// TestServeHTTP_ToolResultStreamingToolCall verifies the streaming
+// tool_call response: two SSE chunks (role+tool_calls delta, empty
+// delta with finish_reason "tool_calls") followed by [DONE].
+func TestServeHTTP_ToolResultStreamingToolCall(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+	body := `{"stream":true,"messages":[` +
+		`{"role":"user","content":"click"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"found a button at 50,60"}` +
+		`]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: 3 SSE frames (2 chunks + DONE).
+	frames := scanSSEFrames(t, rec.Body)
+	if n := len(frames); n != 3 {
+		t.Fatalf("got %d SSE frames, want 3 (2 chunks + DONE):\n%s", n, rec.Body.String())
+	}
+	if frames[2] != "[DONE]" {
+		t.Fatalf("last frame = %q, want [DONE]", frames[2])
+	}
+
+	// Frame 1: role assistant + tool_calls.
+	chunk1 := decodeChunk(t, frames[0])
+	if got := chunk1.Choices[0].Delta.Role; got != "assistant" {
+		t.Errorf("frame1 delta.role = %q, want assistant", got)
+	}
+	if len(chunk1.Choices[0].Delta.ToolCalls) != 1 {
+		t.Fatalf("frame1 tool_calls len = %d, want 1", len(chunk1.Choices[0].Delta.ToolCalls))
+	}
+	tc := chunk1.Choices[0].Delta.ToolCalls[0]
+	if tc.Function.Name != "mouse" {
+		t.Errorf("frame1 tool_call.function.name = %q, want mouse", tc.Function.Name)
+	}
+
+	// Frame 2: empty delta + finish_reason "tool_calls".
+	chunk2 := decodeChunk(t, frames[1])
+	if got := chunk2.Choices[0].FinishReason; got == nil || *got != "tool_calls" {
+		t.Errorf("frame2 finish_reason = %v, want \"tool_calls\"", got)
+	}
+}
+
+// TestServeHTTP_ToolResultUnmatchedRandom verifies that a tool result
+// whose tool_name matches no config falls through to the random
+// fallback (matched=false), returning one of the configured tool
+// responses without erroring.
+func TestServeHTTP_ToolResultUnmatchedRandom(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(99, 0)))
+	body := `{"stream":false,"messages":[` +
+		`{"role":"user","content":"use unknown tool"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"nonexistent","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"nonexistent","content":"result"}` +
+		`]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: 200 with a valid response (random fallback from tools).
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("choices len = %d, want 1", len(resp.Choices))
+	}
+}
+
+// TestServeHTTP_ToolResultExtractToolNameViaCallID verifies that when
+// the tool message's `name` field is absent, the handler falls back to
+// extracting the tool_name from the preceding assistant message's
+// tool_calls by matching tool_call_id.
+func TestServeHTTP_ToolResultExtractToolNameViaCallID(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+	// given: tool message WITHOUT a name field, but with tool_call_id
+	// that matches the preceding assistant's tool_call.
+	body := `{"stream":false,"messages":[` +
+		`{"role":"user","content":"screenshot"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_abc","content":"screenshot taken"}` +
+		`]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: tool_name resolved via call_id lookup → mouse-success-text.
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	if resp.Choices[0].Message.Content != "I see the screen now." {
+		t.Errorf("content = %q, want \"I see the screen now.\" (mouse matched via call_id lookup)", resp.Choices[0].Message.Content)
+	}
+}
+
+// TestServeHTTP_ImageURLTextExtraction verifies that image_url content
+// blocks are parsed correctly: text parts are extracted for keyword
+// matching while the image data URL is never searched for keywords.
+func TestServeHTTP_ImageURLTextExtraction(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	// given: array-form content with a large fake base64 image_url part
+	// whose data URL contains the literal "hello" (which must NOT
+	// trigger the greeting keyword match — only the text part "bye"
+	// drives keyword matching, so the farewell response is expected).
+	fakeBase64 := "data:image/png;base64," + strings.Repeat("aGVsbG8=", 50) // "hello" repeated in base64
+	body := `{"stream":false,"messages":[{"role":"user","content":[` +
+		`{"type":"image_url","image_url":{"url":"` + fakeBase64 + `"}},` +
+		`{"type":"text","text":"bye now"}` +
+		`]}]}`
+
+	// when
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: farewell matched (text "bye"), NOT greeting (image data
+	// contains "hello" but must be ignored).
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	if resp.Choices[0].Message.Content != "Goodbye! Have a great day!" {
+		t.Errorf("content = %q, want farewell text (image data must not drive keyword match)", resp.Choices[0].Message.Content)
+	}
+}
+
+// TestExtractToolName covers the tool-name resolution logic directly,
+// independent of the HTTP layer: name-field first, then tool_call_id
+// lookup, then empty.
+func TestExtractToolName(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []*messageParam
+		want     string
+	}{
+		{
+			name: "name field on tool message",
+			messages: []*messageParam{
+				{Role: "assistant", ToolCalls: []*toolCallParam{{ID: "c1", Function: toolCallParamFunction{Name: "wrong"}}}},
+				{Role: "tool", ToolCallID: "c1", Name: "mouse"},
+			},
+			want: "mouse",
+		},
+		{
+			name: "fallback to call_id lookup when name absent",
+			messages: []*messageParam{
+				{Role: "assistant", ToolCalls: []*toolCallParam{{ID: "c1", Function: toolCallParamFunction{Name: "keyboard"}}}},
+				{Role: "tool", ToolCallID: "c1"},
+			},
+			want: "keyboard",
+		},
+		{
+			name: "call_id not found returns empty",
+			messages: []*messageParam{
+				{Role: "assistant", ToolCalls: []*toolCallParam{{ID: "c2", Function: toolCallParamFunction{Name: "keyboard"}}}},
+				{Role: "tool", ToolCallID: "c1"},
+			},
+			want: "",
+		},
+		{
+			name: "no tool_call_id and no name returns empty",
+			messages: []*messageParam{
+				{Role: "tool"},
+			},
+			want: "",
+		},
+		{
+			name:     "empty messages returns empty",
+			messages: nil,
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractToolName(tt.messages)
+			if got != tt.want {
+				t.Fatalf("extractToolName = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLastMessageRole covers the role extraction helper directly.
+func TestLastMessageRole(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []*messageParam
+		want     string
+	}{
+		{name: "empty returns empty", messages: nil, want: ""},
+		{name: "last user role", messages: []*messageParam{{Role: "system"}, {Role: "user"}}, want: "user"},
+		{name: "last tool role", messages: []*messageParam{{Role: "user"}, {Role: "tool"}}, want: "tool"},
+		{name: "assistant role preserved", messages: []*messageParam{{Role: "assistant"}}, want: "assistant"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lastMessageRole(tt.messages)
+			if got != tt.want {
+				t.Fatalf("lastMessageRole = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

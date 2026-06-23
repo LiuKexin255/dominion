@@ -424,7 +424,7 @@ func TestListMessages_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
+		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"text","text":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"text","text":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
 	}))
 	defer srv.Close()
 

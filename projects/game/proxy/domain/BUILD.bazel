@@ -9,8 +9,5 @@ go_library(
     ],
     importpath = "dominion/projects/game/proxy/domain",
     visibility = ["//visibility:public"],
-    deps = [
-        "//projects/game",
-        "//projects/game/proxy/runtime/agentclient",
-    ],
+    deps = ["//projects/game/proxy/runtime/agentclient"],
 )

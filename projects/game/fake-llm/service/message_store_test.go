@@ -32,7 +32,7 @@ func TestLoadFromFS(t *testing.T) {
 	}
 
 	// when
-	got, err := LoadFromFS(fsys, "testdata")
+	got, _, err := LoadFromFS(fsys, "testdata")
 
 	// then: both formats parse, two messages merge, sorted by Name.
 	if err != nil {
@@ -132,7 +132,7 @@ func TestLoadFromFS_Failure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := LoadFromFS(tt.files, "testdata")
+			_, _, err := LoadFromFS(tt.files, "testdata")
 			if err == nil {
 				t.Fatalf("LoadFromFS expected error containing %q, got nil", tt.wantErr)
 			}
@@ -206,8 +206,9 @@ func TestValidate(t *testing.T) {
 
 // TestNewMessageStore_LoadsEmbeddedSamples loads the real testdata
 // embedded into the binary and pins the single-source-of-truth strings
-// (Name, Reasoning, Text, Keywords) that the T6 integration tests will
-// assert against. If these change, T6 must be updated in lockstep.
+// (Name, Reasoning, Text, Keywords) that the integration tests will
+// assert against. If these change, integration tests must be updated
+// in lockstep.
 func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	store, err := NewMessageStore()
 	if err != nil {
@@ -215,19 +216,33 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 2 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 2 (farewell + greeting)", len(got))
+	if len(got) != 3 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 3 (chat-only + farewell + greeting)", len(got))
 	}
 
-	// Sorted alphabetically: farewell before greeting.
-	if got[0].Name != "farewell" {
-		t.Fatalf("first message = %q, want farewell", got[0].Name)
+	// Sorted alphabetically: chat-only before farewell before greeting.
+	if got[0].Name != "chat-only" {
+		t.Fatalf("first message = %q, want chat-only", got[0].Name)
 	}
-	if got[1].Name != "greeting" {
-		t.Fatalf("second message = %q, want greeting", got[1].Name)
+	if got[1].Name != "farewell" {
+		t.Fatalf("second message = %q, want farewell", got[1].Name)
+	}
+	if got[2].Name != "greeting" {
+		t.Fatalf("third message = %q, want greeting", got[2].Name)
 	}
 
-	farewell := got[0]
+	chatOnly := got[0]
+	if chatOnly.Reasoning != "Responding with text only, no tools needed." {
+		t.Errorf("chat-only reasoning = %q, want the no-tools reasoning", chatOnly.Reasoning)
+	}
+	if chatOnly.Text != "Sure, let's chat!" {
+		t.Errorf("chat-only text = %q, want the chat text", chatOnly.Text)
+	}
+	if !slices.Contains(chatOnly.Keywords, "chat") {
+		t.Errorf("chat-only keywords missing chat: %v", chatOnly.Keywords)
+	}
+
+	farewell := got[1]
 	if farewell.Reasoning != "The user is saying goodbye." {
 		t.Errorf("farewell reasoning = %q, want the goodbye reasoning", farewell.Reasoning)
 	}
@@ -238,7 +253,7 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("farewell keywords missing bye: %v", farewell.Keywords)
 	}
 
-	greeting := got[1]
+	greeting := got[2]
 	if greeting.Reasoning != "The user is greeting me, I should respond warmly." {
 		t.Errorf("greeting reasoning = %q, want the warm greeting reasoning", greeting.Reasoning)
 	}
@@ -247,5 +262,89 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 	if !slices.Contains(greeting.Keywords, "hello") {
 		t.Errorf("greeting keywords missing hello: %v", greeting.Keywords)
+	}
+}
+
+// TestNewMessageStore_LoadsEmbeddedTools verifies the embedded
+// sample_tools.yaml is parsed into the store's Tools slice with the
+// configured values, and sorted alphabetically by Name.
+func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
+	store, err := NewMessageStore()
+	if err != nil {
+		t.Fatalf("NewMessageStore unexpected error: %v", err)
+	}
+
+	tools := store.Tools()
+	if len(tools) != 5 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 5 (keyboard-success-text, mouse-click-button, mouse-followup-click, mouse-oob-click, mouse-success-text)", len(tools))
+	}
+
+	// Sorted alphabetically by Name.
+	if tools[0].Name != "keyboard-success-text" {
+		t.Errorf("tools[0] name = %q, want keyboard-success-text", tools[0].Name)
+	}
+	if tools[1].Name != "mouse-click-button" {
+		t.Errorf("tools[1] name = %q, want mouse-click-button", tools[1].Name)
+	}
+	if tools[2].Name != "mouse-followup-click" {
+		t.Errorf("tools[2] name = %q, want mouse-followup-click", tools[2].Name)
+	}
+	if tools[3].Name != "mouse-oob-click" {
+		t.Errorf("tools[3] name = %q, want mouse-oob-click", tools[3].Name)
+	}
+	if tools[4].Name != "mouse-success-text" {
+		t.Errorf("tools[4] name = %q, want mouse-success-text", tools[4].Name)
+	}
+
+	// mouse-click-button produces a LEFT_CLICK tool_call when the result
+	// text contains "click here".
+	clickButton := tools[1]
+	if clickButton.ToolName != "mouse" {
+		t.Errorf("mouse-click-button tool_name = %q, want mouse", clickButton.ToolName)
+	}
+	if !slices.Contains(clickButton.MatchResultContains, "click here") {
+		t.Errorf("mouse-click-button match_result_contains missing 'click here': %v", clickButton.MatchResultContains)
+	}
+	if clickButton.RespondWith.ToolCall == nil {
+		t.Fatalf("mouse-click-button respond_with.tool_call is nil")
+	}
+	if clickButton.RespondWith.ToolCall.Arguments["action"] != "LEFT_CLICK" {
+		t.Errorf("mouse-click-button tool_call.arguments.action = %v, want LEFT_CLICK", clickButton.RespondWith.ToolCall.Arguments["action"])
+	}
+
+	// mouse-followup-click carries a tool_call response with arguments.
+	mouseFollowup := tools[2]
+	if mouseFollowup.ToolName != "mouse" {
+		t.Errorf("mouse-followup-click tool_name = %q, want mouse", mouseFollowup.ToolName)
+	}
+	if !slices.Contains(mouseFollowup.MatchResultContains, "button") {
+		t.Errorf("mouse-followup-click match_result_contains missing button: %v", mouseFollowup.MatchResultContains)
+	}
+	if mouseFollowup.RespondWith.ToolCall == nil {
+		t.Fatalf("mouse-followup-click respond_with.tool_call is nil")
+	}
+	if mouseFollowup.RespondWith.ToolCall.Name != "mouse" {
+		t.Errorf("mouse-followup-click tool_call.name = %q, want mouse", mouseFollowup.RespondWith.ToolCall.Name)
+	}
+	if mouseFollowup.RespondWith.ToolCall.Arguments["action"] != "LEFT_CLICK" {
+		t.Errorf("mouse-followup-click tool_call.arguments.action = %v, want LEFT_CLICK", mouseFollowup.RespondWith.ToolCall.Arguments["action"])
+	}
+
+	// mouse-oob-click produces an out-of-bounds LEFT_CLICK tool_call.
+	oobClick := tools[3]
+	if oobClick.RespondWith.ToolCall == nil {
+		t.Fatalf("mouse-oob-click respond_with.tool_call is nil")
+	}
+	if oobClick.RespondWith.ToolCall.Arguments["x_px"] != 99999 {
+		t.Errorf("mouse-oob-click tool_call.arguments.x_px = %v, want 99999", oobClick.RespondWith.ToolCall.Arguments["x_px"])
+	}
+
+	// mouse-success-text carries a plain text response.
+	mouseSuccess := tools[4]
+	if mouseSuccess.RespondWith.Text != "I see the screen now." {
+		t.Errorf("mouse-success-text respond_with.text = %q, want 'I see the screen now.'", mouseSuccess.RespondWith.Text)
+	}
+	if mouseSuccess.RespondWith.ToolCall != nil {
+		t.Errorf("mouse-success-text respond_with.tool_call should be nil")
 	}
 }

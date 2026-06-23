@@ -50,7 +50,14 @@ type manager struct {
 // Tests can replace it with a mock factory via save/restore.
 var newAgentConn = func(ctx context.Context, instanceIndex int) (*grpc.ClientConn, error) {
 	uri := grpcsolver.URI(gameconst.AgentTarget, grpcsolver.WithInstance(instanceIndex))
-	return grpc.NewClient(uri, pgrpc.ClientDefault()...)
+	opts := append(
+		pgrpc.ClientDefault(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(8*1024*1024),
+			grpc.MaxCallSendMsgSize(8*1024*1024),
+		),
+	)
+	return grpc.NewClient(uri, opts...)
 }
 
 // NewManager creates a new manager with the given resolver, target, and refresh interval.

@@ -24,6 +24,7 @@ type agentProfileDocument struct {
 	SkillNames       []string    `bson:"skill_names"`
 	MCPNames         []string    `bson:"mcp_names"`
 	Enabled          bool        `bson:"enabled"`
+	ToolNames        []string    `bson:"tool_names"`
 	CreateTime       time.Time   `bson:"create_time"`
 	UpdateTime       time.Time   `bson:"update_time"`
 }
@@ -41,6 +42,7 @@ func (d *agentProfileDocument) toDomain() *domain.AgentProfile {
 		SkillNames:       d.SkillNames,
 		MCPNames:         d.MCPNames,
 		Enabled:          d.Enabled,
+		ToolNames:        d.ToolNames,
 		CreateTime:       d.CreateTime,
 		UpdateTime:       d.UpdateTime,
 	}
@@ -59,6 +61,7 @@ func agentProfileDocumentFromDomain(p *domain.AgentProfile) *agentProfileDocumen
 		SkillNames:       p.SkillNames,
 		MCPNames:         p.MCPNames,
 		Enabled:          p.Enabled,
+		ToolNames:        p.ToolNames,
 		CreateTime:       p.CreateTime,
 		UpdateTime:       p.UpdateTime,
 	}

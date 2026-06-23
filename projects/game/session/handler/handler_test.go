@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // mockIDGenerator implements domain.IDGenerator for handler testing.
@@ -63,6 +64,10 @@ func (m *mockProxyClient) ListMessages(_ context.Context, _ *game.ListMessagesRe
 }
 
 func (m *mockProxyClient) ConnectAgent(_ context.Context, _ ...grpc.CallOption) (game.ProxyService_ConnectAgentClient, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented")
+}
+
+func (m *mockProxyClient) RefreshAgent(_ context.Context, _ *game.RefreshAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 

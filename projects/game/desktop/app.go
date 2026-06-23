@@ -15,6 +15,7 @@ import (
 	"dominion/projects/game/desktop/internal/capture"
 	"dominion/projects/game/desktop/internal/operation"
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -262,10 +263,11 @@ func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView,
 		})
 		return nil, err
 	}
+	createdID, _ := gameconst.AgentProfileID(profile.GetName())
 	a.logger.Info("backend", "Agent profile created", map[string]any{
 		"trace_id":           traceID,
 		"correlation_id":     corrID,
-		"agent_profile_name": profile.GetAgentProfileName(),
+		"agent_profile_name": createdID,
 	})
 	return agentProfileViewFromProto(profile), nil
 }
@@ -295,10 +297,11 @@ func (a *App) GetAgentProfile(agentProfileName string) (*AgentProfileView, error
 		})
 		return nil, err
 	}
+	gotID, _ := gameconst.AgentProfileID(profile.GetName())
 	a.logger.Info("backend", "Agent profile retrieved", map[string]any{
 		"trace_id":           traceID,
 		"correlation_id":     corrID,
-		"agent_profile_name": profile.GetAgentProfileName(),
+		"agent_profile_name": gotID,
 	})
 	return agentProfileViewFromProto(profile), nil
 }
@@ -336,17 +339,127 @@ func (a *App) DeleteAgentProfile(agentProfileName string) error {
 	return nil
 }
 
-// SendAgentText sends a text frame to the agent via WebSocket and streams
-// back all response frames as Wails "game:frame" events. The loop terminates
-// when a wait frame is received (signalling the agent is done) or an error occurs.
-// The agentProfileName selects which agent profile to use for this session.
-func (a *App) SendAgentText(sessionID string, text string, agentProfileName string) error {
-	if a.ws == nil {
-		return fmt.Errorf("send agent text: not connected")
+// UpdateAgentProfile partially updates an agent profile via PATCH.
+// Per grpc-gateway binding the profile fields are sent as the PATCH body and
+// updateMaskPaths are sent as repeated update_mask.paths query parameters.
+func (a *App) UpdateAgentProfile(agentProfileName string, profile AgentProfileView, updateMaskPaths []string) (*AgentProfileView, error) {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
 	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Updating agent profile", map[string]any{
+		"trace_id":           traceID,
+		"correlation_id":     corrID,
+		"agent_profile_name": agentProfileName,
+		"update_mask":        updateMaskPaths,
+	})
+	protoProfile := &game.AgentProfile{
+		Model:        profile.Model,
+		SystemPrompt: profile.SystemPrompt,
+		SkillNames:   profile.SkillNames,
+		McpNames:     profile.McpNames,
+		Enabled:      profile.Enabled,
+	}
+	updated, err := a.client.UpdateAgentProfile(ctx, agentProfileName, protoProfile, updateMaskPaths)
+	if err != nil {
+		a.logger.Error("backend", "Update agent profile failed", map[string]any{
+			"trace_id":           traceID,
+			"correlation_id":     corrID,
+			"agent_profile_name": agentProfileName,
+			"error":              err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Agent profile updated", map[string]any{
+		"trace_id":           traceID,
+		"correlation_id":     corrID,
+		"agent_profile_name": agentProfileName,
+	})
+	return agentProfileViewFromProto(updated), nil
+}
+
+// RefreshAgent refreshes the agent for a session so it reloads its adapter with
+// the latest profile configuration. Called by the UI after a profile update.
+func (a *App) RefreshAgent(sessionID string) error {
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return fmt.Errorf("refresh agent: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Refreshing agent", map[string]any{
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+		"session_id":     sessionID,
+	})
+	if err := a.client.RefreshAgent(ctx, sessionID); err != nil {
+		a.logger.Error("backend", "Refresh agent failed", map[string]any{
+			"trace_id":       traceID,
+			"correlation_id": corrID,
+			"session_id":     sessionID,
+			"error":          err.Error(),
+		})
+		return err
+	}
+	a.logger.Info("backend", "Agent refreshed", map[string]any{
+		"trace_id":       traceID,
+		"correlation_id": corrID,
+		"session_id":     sessionID,
+	})
+	return nil
+}
+
+// maxScreenshotBytes is the maximum allowed screenshot payload for a single
+// user turn (5 MiB). Per FR-005a the desktop rejects oversized screenshots
+// before any WebSocket send.
+const maxScreenshotBytes = 5 * 1024 * 1024
+
+// SendUserTurn sends a single user turn bundling text and an optional
+// screenshot to the agent via WebSocket, then streams back all response
+// frames as Wails "game:frame" events. The loop terminates when a wait
+// frame is received (signalling the agent is done) or an error occurs.
+//
+// The agentProfileName selects which agent profile to use for this session.
+// screenshotData is the raw PNG bytes of the bound window; pass an empty
+// slice when no screenshot is attached. screenshotWidth and screenshotHeight
+// describe the pixel dimensions of screenshotData and are ignored when it is
+// empty.
+//
+// Inbound AgentOperationFrame payloads are auto-executed and a matching
+// AgentOperationResultFrame is sent back over the same WebSocket connection
+// (FR-013). No follow-up screenshot is captured after execution (FR-014).
+func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
+	if a.ws == nil {
+		return fmt.Errorf("send user turn: not connected")
+	}
+	if len(screenshotData) > maxScreenshotBytes {
+		return fmt.Errorf("send user turn: screenshot size %d exceeds 5 MiB limit (%d)", len(screenshotData), maxScreenshotBytes)
+	}
+
 	frameID, err := randomHex(8)
 	if err != nil {
-		return fmt.Errorf("send agent text: %w", err)
+		return fmt.Errorf("send user turn: %w", err)
+	}
+
+	userTurn := &game.AgentUserTurnFrame{
+		Text: text,
+	}
+	if len(screenshotData) > 0 {
+		userTurn.Screenshot = &game.AgentScreenshotFrame{
+			Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+			Data:        screenshotData,
+			WidthPx:     int32(screenshotWidth),
+			HeightPx:    int32(screenshotHeight),
+			ScaleFactor: a.boundWin.ScaleFactor,
+			WindowTitle: a.boundWin.Title,
+			CaptureTime: timestamppb.Now(),
+		}
 	}
 
 	frame := &game.AgentFrame{
@@ -355,30 +468,31 @@ func (a *App) SendAgentText(sessionID string, text string, agentProfileName stri
 		CreateTime:       timestamppb.Now(),
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
 		AgentProfileName: agentProfileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: text},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: userTurn,
 		},
 	}
 
-	a.logger.Info("backend", "SendAgentText: sending text frame", map[string]any{
-		"session_id": sessionID,
-		"frame_id":   frameID,
-		"text_len":   len(text),
+	a.logger.Info("backend", "SendUserTurn: sending user turn frame", map[string]any{
+		"session_id":       sessionID,
+		"frame_id":         frameID,
+		"text_len":         len(text),
+		"screenshot_bytes": len(screenshotData),
 	})
 
 	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "SendAgentText: send failed", map[string]any{
+		a.logger.Error("backend", "SendUserTurn: send failed", map[string]any{
 			"session_id": sessionID,
 			"error":      err.Error(),
 		})
-		return fmt.Errorf("send agent text: %w", err)
+		return fmt.Errorf("send user turn: %w", err)
 	}
 
 	frameCount := 0
 	for {
 		resp, err := a.ws.RecvFrame(a.ctx)
 		if err != nil {
-			a.logger.Error("backend", "SendAgentText: recv error", map[string]any{
+			a.logger.Error("backend", "SendUserTurn: recv error", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 				"error":       err.Error(),
@@ -390,18 +504,134 @@ func (a *App) SendAgentText(sessionID string, text string, agentProfileName stri
 					Wait: &game.AgentWaitFrame{},
 				},
 			}))
-			return fmt.Errorf("send agent text: receive: %w", err)
+			return fmt.Errorf("send user turn: receive: %w", err)
 		}
 		frameCount++
 
 		runtime.EventsEmit(a.ctx, "game:frame", frameToMap(resp))
+
+		// Inbound operation: auto-execute and report the result without
+		// capturing a follow-up screenshot (FR-013, FR-014).
+		if op := resp.GetOperation(); op != nil {
+			if err := a.handleInboundOperation(sessionID, op); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if resp.GetWait() != nil {
-			a.logger.Info("backend", "SendAgentText: done", map[string]any{
+			a.logger.Info("backend", "SendUserTurn: done", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 			})
 			return nil
 		}
+	}
+}
+
+// handleInboundOperation executes an inbound AgentOperationFrame using the
+// existing operation executor and sends the matching AgentOperationResultFrame
+// back over the WebSocket. The result frame carries the same operation_id and
+// a SUCCEEDED/FAILED status; it is never carried by an AgentAckFrame (FR-013).
+// No follow-up screenshot is captured (FR-014).
+func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFrame) error {
+	result := a.executeAgentOperation(op)
+
+	resultFrameID, err := randomHex(8)
+	if err != nil {
+		a.logger.Error("backend", "handleInboundOperation: frame id failed", map[string]any{
+			"session_id":   sessionID,
+			"operation_id": result.GetOperationId(),
+			"error":        err.Error(),
+		})
+		return fmt.Errorf("send user turn: operation result: %w", err)
+	}
+
+	resultFrame := &game.AgentFrame{
+		SessionId:  sessionID,
+		FrameId:    resultFrameID,
+		CreateTime: timestamppb.Now(),
+		Sender:     game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_OperationResult{
+			OperationResult: result,
+		},
+	}
+
+	if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
+		a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
+			"session_id":   sessionID,
+			"operation_id": result.GetOperationId(),
+			"error":        err.Error(),
+		})
+		return fmt.Errorf("send user turn: operation result: %w", err)
+	}
+	return nil
+}
+
+// executeAgentOperation runs an inbound mouse operation via the new
+// 5-action operation executor and returns the matching result frame.
+// Screenshot-relative coordinates are converted to screen coordinates using
+// the bound window position. ExecuteMouseAction validates the action, checks
+// bounds, normalizes coordinates, and dispatches all supported actions
+// including LEFT_RIGHT_PRESS.
+func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOperationResultFrame {
+	operationID := op.GetOperationId()
+
+	corrSuffix, err := randomHex(8)
+	corrID := "corr-unknown"
+	if err != nil {
+		a.logger.Error("backend", "executeAgentOperation: correlation id failed", map[string]any{"error": err.Error()})
+	} else {
+		corrID = "corr-" + corrSuffix
+	}
+
+	failed := func(msg string) *game.AgentOperationResultFrame {
+		a.logger.Error("backend", "executeAgentOperation: failed", map[string]any{
+			"operation_id":   operationID,
+			"correlation_id": corrID,
+			"error":          msg,
+		})
+		return &game.AgentOperationResultFrame{
+			OperationId: operationID,
+			Status:      game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED,
+			Message:     msg,
+		}
+	}
+
+	mouse := op.GetMouse()
+	if mouse == nil {
+		return failed("unsupported operation: only mouse operations are supported")
+	}
+
+	if a.boundWin.Handle == 0 {
+		return failed("no window bound")
+	}
+
+	bounds, err := capture.CaptureWindowBounds(a.boundWin.Handle)
+	if err != nil {
+		return failed(fmt.Sprintf("capture window bounds: %s", err.Error()))
+	}
+
+	screenX, screenY, err := operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
+	if err != nil {
+		return failed(fmt.Sprintf("coordinate conversion: %s", err.Error()))
+	}
+
+	if err := operation.ExecuteMouseAction(screenX, screenY, mouse.GetAction()); err != nil {
+		return failed(fmt.Sprintf("mouse action: %s", err.Error()))
+	}
+
+	a.logger.Info("backend", "Operation executed", map[string]any{
+		"operation_id":   operationID,
+		"action":         mouse.GetAction().String(),
+		"screen_x":       screenX,
+		"screen_y":       screenY,
+		"correlation_id": corrID,
+	})
+	return &game.AgentOperationResultFrame{
+		OperationId: operationID,
+		Status:      game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_SUCCEEDED,
+		Message:     "ok",
 	}
 }
 
@@ -495,7 +725,7 @@ func (a *App) ListWindows() ([]capture.WindowRef, error) {
 }
 
 // BindWindow stores the given window handle as the currently bound window.
-// The bound window is used by CaptureScreenshot and SendScreenshot.
+// The bound window is used by CaptureScreenshot and SendUserTurn.
 func (a *App) BindWindow(hwnd uintptr) error {
 	corrSuffix, err := randomHex(8)
 	if err != nil {
@@ -556,107 +786,9 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 	return img, nil
 }
 
-// SendScreenshot captures the bound window, encodes as PNG, and sends it
-// to the agent via WebSocket. It waits for an ack frame with a matching
-// capture_id and returns the ack.
-func (a *App) SendScreenshot(hwnd uintptr) (*game.AgentAckFrame, error) {
-	if a.ws == nil {
-		return nil, fmt.Errorf("send screenshot: not connected")
-	}
-
-	// Capture the window.
-	img, err := capture.CaptureWindow(a.ctx, hwnd)
-	if err != nil {
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-
-	// Generate capture_id and frame_id via crypto/rand (8 bytes → 16 hex chars).
-	captureID, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-	frameID, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-
-	// Build the AgentFrame with a screenshot payload.
-	frame := &game.AgentFrame{
-		SessionId:  a.currentSessionID(),
-		FrameId:    frameID,
-		CreateTime: timestamppb.Now(),
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId:   captureID,
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        img.Data,
-				WidthPx:     int32(img.WidthPx),
-				HeightPx:    int32(img.HeightPx),
-				ScaleFactor: a.boundWin.ScaleFactor,
-				WindowTitle: a.boundWin.Title,
-				CaptureTime: timestamppb.Now(),
-			},
-		},
-	}
-
-	a.logger.Info("backend", "Sending screenshot", map[string]any{
-		"session_id":     a.currentSessionID(),
-		"correlation_id": corrID,
-		"capture_id":     captureID,
-		"frame_id":       frameID,
-		"size":           len(img.Data),
-	})
-
-	// Send frame via WebSocket.
-	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "Send screenshot frame failed", map[string]any{
-			"error":          err.Error(),
-			"session_id":     a.currentSessionID(),
-			"correlation_id": corrID,
-			"frame_id":       frameID,
-		})
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-
-	// Read ack response.
-	resp, err := a.ws.RecvFrame(a.ctx)
-	if err != nil {
-		a.logger.Error("backend", "Receive screenshot ack failed", map[string]any{
-			"error":          err.Error(),
-			"session_id":     a.currentSessionID(),
-			"correlation_id": corrID,
-			"frame_id":       frameID,
-		})
-		return nil, fmt.Errorf("send screenshot: %w", err)
-	}
-
-	// Verify ack contains matching capture_id.
-	ack := resp.GetAck()
-	if ack == nil {
-		return nil, fmt.Errorf("send screenshot: expected ack frame, got %T", resp.GetPayload())
-	}
-	if ack.GetAckFrameId() != captureID {
-		return nil, fmt.Errorf("send screenshot: ack frame_id mismatch: expected %s, got %s", captureID, ack.GetAckFrameId())
-	}
-
-	a.logger.Info("backend", "Screenshot ack received", map[string]any{
-		"capture_id":     captureID,
-		"ack_frame_id":   ack.GetAckFrameId(),
-		"session_id":     a.currentSessionID(),
-		"correlation_id": corrID,
-	})
-	return ack, nil
-}
-
 // ConnectAgent establishes a WebSocket connection for the session.
 // Connects directly without prior agent creation — the agent profile is
-// specified on first SendAgentText instead.
+// specified on first SendUserTurn instead.
 // After the WebSocket handshake, it performs an application-level probe
 // (round-trip ping) to verify the full path: desktop → gateway → proxy.
 // The probe has a 10-second timeout. On failure, the WebSocket is closed
@@ -794,175 +926,6 @@ func (a *App) CloseAgent() error {
 		return err
 	}
 	a.ws = nil
-	return nil
-}
-
-// Operation result status values for the frontend UI.
-const (
-	operationResultExecuted int32 = 2
-	operationResultFailed   int32 = 4
-)
-
-// ExecuteOperation executes a desktop operation (mouse click or key press)
-// at the given screenshot-relative coordinates, captures and sends the next
-// screenshot via WebSocket to continue the agent loop, and returns the
-// result view for the frontend UI.
-func (a *App) ExecuteOperation(operationID string, screenshotID string, sequence int64,
-	button int32, clickType int32, xPx int32, yPx int32, isMouse bool, keyCodes string,
-	windowLeft int32, windowTop int32) *OperationResultView {
-
-	corrSuffix, err := randomHex(8)
-	corrID := "corr-unknown"
-	if err != nil {
-		a.logger.Error("backend", "ExecuteOperation: failed to generate correlation id", map[string]any{"error": err.Error()})
-	} else {
-		corrID = "corr-" + corrSuffix
-	}
-
-	if isMouse {
-		screenX, screenY, err := operation.ScreenshotToScreenCoords(xPx, yPx, windowLeft, windowTop)
-		if err != nil {
-			a.logger.Error("backend", "ExecuteOperation: coordinate conversion failed", map[string]any{
-				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
-			})
-			a.sendNextScreenshot(operationID, corrID)
-			return &OperationResultView{
-				OperationID: operationID,
-				Sequence:    sequence,
-				Status:      operationResultFailed,
-				Message:     err.Error(),
-			}
-		}
-		if err := operation.ExecuteMouseClick(screenX, screenY, button, clickType); err != nil {
-			a.logger.Error("backend", "ExecuteOperation: mouse click failed", map[string]any{
-				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
-			})
-			a.sendNextScreenshot(operationID, corrID)
-			return &OperationResultView{
-				OperationID: operationID,
-				Sequence:    sequence,
-				Status:      operationResultFailed,
-				Message:     err.Error(),
-			}
-		}
-	} else {
-		if err := operation.ExecuteKeyPress(keyCodes); err != nil {
-			a.logger.Error("backend", "ExecuteOperation: key press failed", map[string]any{
-				"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
-			})
-			a.sendNextScreenshot(operationID, corrID)
-			return &OperationResultView{
-				OperationID: operationID,
-				Sequence:    sequence,
-				Status:      operationResultFailed,
-				Message:     err.Error(),
-			}
-		}
-	}
-
-	a.logger.Info("backend", "Operation executed", map[string]any{
-		"operation_id":   operationID,
-		"screenshot_id":  screenshotID,
-		"sequence":       sequence,
-		"is_mouse":       isMouse,
-		"correlation_id": corrID,
-	})
-
-	// Capture and send next screenshot via WebSocket to continue the agent loop.
-	a.sendNextScreenshot(operationID, corrID)
-
-	return &OperationResultView{
-		OperationID: operationID,
-		Sequence:    sequence,
-		Status:      operationResultExecuted,
-		Message:     "ok",
-	}
-}
-
-// sendNextScreenshot captures the bound window and sends a new screenshot
-// to the agent via WebSocket. Errors are logged but not propagated — the
-// agent loop continues on the next tick regardless.
-func (a *App) sendNextScreenshot(operationID string, corrID string) {
-	if err := a.SendNextScreenshot(); err != nil {
-		a.logger.Error("backend", "Send next screenshot failed", map[string]any{
-			"error": err.Error(), "operation_id": operationID, "correlation_id": corrID,
-		})
-	}
-}
-
-// SendNextScreenshot captures the bound window and sends a new screenshot
-// to the agent via WebSocket. This completes the feedback loop by providing
-// the agent with an updated view after an operation has been executed.
-func (a *App) SendNextScreenshot() error {
-	if a.ws == nil {
-		return fmt.Errorf("send next screenshot: not connected")
-	}
-	if a.boundWin.Handle == 0 {
-		return fmt.Errorf("send next screenshot: no window bound")
-	}
-
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("send next screenshot: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-
-	img, err := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
-	if err != nil {
-		return fmt.Errorf("send next screenshot: %w", err)
-	}
-
-	captureID, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("send next screenshot: %w", err)
-	}
-	frameID, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("send next screenshot: %w", err)
-	}
-
-	frame := &game.AgentFrame{
-		SessionId:  a.currentSessionID(),
-		FrameId:    frameID,
-		CreateTime: timestamppb.Now(),
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId:   captureID,
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        img.Data,
-				WidthPx:     int32(img.WidthPx),
-				HeightPx:    int32(img.HeightPx),
-				ScaleFactor: a.boundWin.ScaleFactor,
-				WindowTitle: a.boundWin.Title,
-				CaptureTime: timestamppb.Now(),
-			},
-		},
-	}
-
-	a.logger.Info("backend", "Sending next screenshot", map[string]any{
-		"session_id":     a.currentSessionID(),
-		"correlation_id": corrID,
-		"capture_id":     captureID,
-		"frame_id":       frameID,
-		"size":           len(img.Data),
-	})
-
-	if err := a.ws.SendFrame(a.ctx, frame); err != nil {
-		a.logger.Error("backend", "Send next screenshot failed", map[string]any{
-			"error":          err.Error(),
-			"session_id":     a.currentSessionID(),
-			"correlation_id": corrID,
-			"frame_id":       frameID,
-		})
-		return fmt.Errorf("send next screenshot: %w", err)
-	}
-
-	a.logger.Info("backend", "Next screenshot sent", map[string]any{
-		"capture_id":     captureID,
-		"frame_id":       frameID,
-		"session_id":     a.currentSessionID(),
-		"correlation_id": corrID,
-	})
 	return nil
 }
 

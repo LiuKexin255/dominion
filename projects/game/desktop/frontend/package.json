@@ -8,6 +8,8 @@
         "preview": ""
     },
     "dependencies": {
+        "dompurify": "catalog:",
+        "marked": "catalog:",
         "svelte": "catalog:",
         "@sveltejs/vite-plugin-svelte": "catalog:"
     },

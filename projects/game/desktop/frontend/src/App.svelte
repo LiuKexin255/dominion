@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, AgentOperationFrame, AgentOperationResultFrame } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -13,7 +13,7 @@
     listAgentProfiles,
     createAgentProfile,
     deleteAgentProfile,
-    sendAgentText,
+    sendUserTurn,
     listMessages,
   } from './api'
   import { log, setLogSink } from './logger'
@@ -40,10 +40,13 @@
   type ChatEntry = {
     messageId: string
     sender: FrameSender
-    type: 'thinking' | 'text' | 'warn'
+    type: 'thinking' | 'text' | 'warn' | 'image' | 'operation' | 'operation_result'
     content: string
     timestamp: string
     agentProfileName?: string
+    imageUrl?: string
+    operation?: AgentOperationFrame
+    operationResult?: AgentOperationResultFrame
   }
 
   // --- App-level state ---
@@ -304,6 +307,39 @@
         content: frame.warn.message,
         timestamp: frame.createTime || new Date().toISOString(),
       }]
+    } else if (frame.userTurn) {
+      const screenshot = frame.userTurn.screenshot
+      if (screenshot && screenshot.data) {
+        const encoding = screenshot.encoding || 'png'
+        const imageUrl = `data:image/${encoding};base64,${screenshot.data}`
+        chatMessages = [...chatMessages, {
+          messageId: frame.frameId,
+          sender: FrameSender.USER,
+          type: 'image',
+          content: '',
+          timestamp: frame.createTime || new Date().toISOString(),
+          imageUrl,
+        }]
+      }
+    } else if (frame.operation) {
+      chatMessages = [...chatMessages, {
+        messageId: frame.frameId,
+        sender: FrameSender.AGENT,
+        type: 'operation',
+        content: '',
+        timestamp: frame.createTime || new Date().toISOString(),
+        agentProfileName: frame.agentProfileName,
+        operation: frame.operation,
+      }]
+    } else if (frame.operationResult) {
+      chatMessages = [...chatMessages, {
+        messageId: frame.frameId,
+        sender: FrameSender.SYSTEM,
+        type: 'operation_result',
+        content: '',
+        timestamp: frame.createTime || new Date().toISOString(),
+        operationResult: frame.operationResult,
+      }]
     } else if (frame.wait) {
       processing = false
       if (playState === 'processing') playState = 'chat_ready'
@@ -312,7 +348,7 @@
 
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
-    // Auto-connect fallback if WS dropped (sendAgentText relies on the backend connection)
+    // Auto-connect fallback if WS dropped (sendUserTurn relies on the backend connection)
     const wasConnected = connectionState === 'connected'
     if (!wasConnected) {
       playState = 'connecting'
@@ -337,7 +373,7 @@
       processing = true
       playState = 'processing'
       queueCount++
-      await sendAgentText(selectedSession.sessionId, text, selectedProfile)
+      await sendUserTurn(selectedSession.sessionId, text, [], 0, 0, selectedProfile)
       queueCount = Math.max(0, queueCount - 1)
       log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {

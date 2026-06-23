@@ -94,9 +94,9 @@ export async function startServer(
 
   const adapterFactory: AdapterFactory =
     adapterFactoryOverride ??
-    (async (getProvider, systemPrompt, cp) => {
+    (async (getProvider, systemPrompt, toolNames, bridge, cp) => {
       const chatModel = await getProvider();
-      return new AgentAdapterImpl(chatModel, systemPrompt, cp);
+      return new AgentAdapterImpl(chatModel, systemPrompt, toolNames, bridge, cp);
     });
 
   const sessionAgentStore = new SessionAgentStore(
@@ -114,7 +114,10 @@ export async function startServer(
   const credentials = buildCredentials();
   const tlsEnabled = fs.existsSync("/etc/tls/tls.crt") && fs.existsSync("/etc/tls/tls.key");
 
-  const server = new grpc.Server();
+  const server = new grpc.Server({
+    "grpc.max_receive_message_length": 8 * 1024 * 1024,
+    "grpc.max_send_message_length": 8 * 1024 * 1024,
+  });
   server.addService(
     proto.projects.game.AgentService.service,
     handler as any,

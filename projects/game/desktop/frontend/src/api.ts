@@ -43,14 +43,19 @@ export interface MessageEntry {
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
-export enum AgentMouseButton {
-  LEFT = 1,
-  RIGHT = 2,
+export enum AgentMouseAction {
+  UNSPECIFIED = 0,
+  LEFT_CLICK = 1,
+  LEFT_DOUBLE_CLICK = 2,
+  RIGHT_CLICK = 3,
+  RIGHT_DOUBLE_CLICK = 4,
+  LEFT_RIGHT_PRESS = 5,
 }
 
-export enum AgentMouseClickType {
-  SINGLE = 1,
-  DOUBLE = 2,
+export enum AgentOperationResultStatus {
+  UNSPECIFIED = 0,
+  SUCCEEDED = 1,
+  FAILED = 2,
 }
 
 export enum FrameSender {
@@ -89,8 +94,7 @@ export interface AgentWarnFrame {
 }
 
 export interface AgentMouseOperation {
-  button: AgentMouseButton
-  clickType: AgentMouseClickType
+  action: AgentMouseAction
   xPx: number
   yPx: number
 }
@@ -114,6 +118,7 @@ export interface AgentProfile {
   systemPrompt: string
   skillNames: string[]
   mcpNames: string[]
+  toolNames: string[]
   enabled: boolean
   createTime?: string
   updateTime?: string
@@ -139,6 +144,25 @@ export interface AgentScreenshotFrame {
   captureTime: string
 }
 
+export interface AgentWaitFrame {
+  reason?: string
+}
+
+export interface AgentScreenshotRequestFrame {
+  reason?: string
+}
+
+export interface AgentOperationResultFrame {
+  operationId: string
+  status: number
+  message: string
+}
+
+export interface AgentUserTurnFrame {
+  text?: string
+  screenshot?: AgentScreenshotFrame
+}
+
 export interface AgentFrame {
   sessionId: string
   frameId: string
@@ -153,6 +177,10 @@ export interface AgentFrame {
   thinking?: AgentThinkingFrame
   operation?: AgentOperationFrame
   warn?: AgentWarnFrame
+  wait?: AgentWaitFrame
+  screenshotRequest?: AgentScreenshotRequestFrame
+  operationResult?: AgentOperationResultFrame
+  userTurn?: AgentUserTurnFrame
   sender: FrameSender
   agentProfileName?: string
 }
@@ -163,13 +191,6 @@ export interface ListSessionsResponse {
 }
 
 // ─── Operation Execution ─────────────────────────────────────────────────────
-
-export interface OperationResultView {
-  operationId: string
-  sequence: number
-  status: number
-  message: string
-}
 
 export interface WindowRef {
   handle: number
@@ -195,7 +216,14 @@ export interface CreateAgentProfileRequest {
   systemPrompt?: string
   skillNames?: string[]
   mcpNames?: string[]
+  toolNames?: string[]
   enabled?: boolean
+}
+
+export interface UpdateAgentProfileRequest {
+  agentProfileName: string
+  profile: AgentProfile
+  updateMask?: string[]
 }
 
 export interface ListAgentProfilesResponse {
@@ -228,32 +256,24 @@ interface WailsApp {
   BindWindow(hwnd: number): Promise<void>
   /** @deprecated Use chat-based interfaces instead. */
   CaptureScreenshot(): Promise<CapturedImage>
-  /** @deprecated Use chat-based interfaces instead. */
-  SendScreenshot(hwnd: number): Promise<AgentAckFrame>
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void>
+  SendUserTurn(sessionID: string, text: string, screenshotData: number[], screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
   ListMessages(sessionID: string): Promise<MessageEntry[]>
-  /** @deprecated Use chat-based interfaces instead. */
-  ExecuteOperation(
-    operationID: string, screenshotID: string, sequence: number,
-    button: number, clickType: number, xPx: number, yPx: number,
-    isMouse: boolean, keyCodes: string,
-    windowLeft: number, windowTop: number
-  ): Promise<OperationResultView>
-  /** @deprecated Use chat-based interfaces instead. */
-  SendNextScreenshot(): Promise<void>
 
   // Prompt Service
   CreateAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile>
   GetAgentProfile(agentProfileName: string): Promise<AgentProfile>
   ListAgentProfiles(pageSize: number, pageToken: string): Promise<ListAgentProfilesResponse>
+  UpdateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile>
   DeleteAgentProfile(agentProfileName: string): Promise<void>
   CreateSkill(req: CreateSkillRequest): Promise<Skill>
   GetSkill(skillName: string): Promise<Skill>
   ListSkills(pageSize: number, pageToken: string): Promise<ListSkillsResponse>
   DeleteSkill(skillName: string): Promise<void>
+
+  RefreshAgent(sessionID: string): Promise<void>
 }
 
 function app(): WailsApp | undefined {
@@ -323,13 +343,6 @@ export async function captureScreenshot(): Promise<CapturedImage> {
   return a.CaptureScreenshot()
 }
 
-/** @deprecated Use chat-based interfaces instead. */
-export async function sendScreenshot(hwnd: number): Promise<AgentAckFrame> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.SendScreenshot(hwnd)
-}
-
 export async function connectAgent(sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
@@ -348,35 +361,23 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
-export async function sendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void> {
+export async function sendUserTurn(
+  sessionID: string,
+  text: string,
+  screenshotData: number[],
+  screenshotWidth: number,
+  screenshotHeight: number,
+  agentProfileName: string,
+): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.SendAgentText(sessionId, text, agentProfileName)
+  return a.SendUserTurn(sessionID, text, screenshotData, screenshotWidth, screenshotHeight, agentProfileName)
 }
 
 export async function listMessages(sessionId: string): Promise<MessageEntry[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ListMessages(sessionId)
-}
-
-/** @deprecated Use chat-based interfaces instead. */
-export async function executeOperation(
-  operationID: string, screenshotID: string, sequence: number,
-  button: number, clickType: number, xPx: number, yPx: number,
-  isMouse: boolean, keyCodes: string,
-  windowLeft: number, windowTop: number
-): Promise<OperationResultView> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.ExecuteOperation(operationID, screenshotID, sequence, button, clickType, xPx, yPx, isMouse, keyCodes, windowLeft, windowTop)
-}
-
-/** @deprecated Use chat-based interfaces instead. */
-export async function sendNextScreenshot(): Promise<void> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.SendNextScreenshot()
 }
 
 // ─── Prompt Service Wrappers ───────────────────────────────────────────────
@@ -427,4 +428,16 @@ export async function deleteSkill(skillName: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.DeleteSkill(skillName)
+}
+
+export async function updateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.UpdateAgentProfile(agentProfileName, profile, updateMaskPaths)
+}
+
+export async function refreshAgent(sessionID: string): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.RefreshAgent(sessionID)
 }

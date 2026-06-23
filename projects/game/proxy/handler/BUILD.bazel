@@ -7,10 +7,16 @@ go_library(
     importpath = "dominion/projects/game/proxy/handler",
     visibility = ["//visibility:public"],
     deps = [
+        "//common/gopkg/logs",
+        "//common/gopkg/logs/event",
         "//projects/game",
+        "//projects/game/pkg/bind",
+        "//projects/game/pkg/gameconst",
         "//projects/game/proxy/domain",
+        "//projects/game/proxy/runtime/agentclient",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )
 
@@ -20,8 +26,13 @@ go_unittest(
     embed = [":handler"],
     deps = [
         "//projects/game",
+        "//projects/game/pkg/bind",
+        "//projects/game/proxy/domain",
+        "//projects/game/proxy/runtime/agentclient",
+        "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//metadata",
         "@org_golang_google_grpc//status",
+        "@org_golang_google_protobuf//types/known/emptypb",
     ],
 )

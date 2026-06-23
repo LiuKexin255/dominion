@@ -69,10 +69,17 @@ Fields:
 
 The shipped samples are:
 
-| file                      | name     | keywords                 | reasoning                                  | text                                |
-|---------------------------|----------|--------------------------|--------------------------------------------|-------------------------------------|
-| `sample_greeting.yaml`    | greeting | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
-| `sample_farewell.json`    | farewell | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
+| file                      | name      | keywords                 | reasoning                                  | text                                |
+|---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
+| `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
+| `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
+| `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+
+The tool configs in `sample_tools.yaml` are matched against the `role:"tool"`
+messages returned by LangChain after a tool invocation, keyed by `tool_name`
+and the `match_result_contains` substrings. See `style/large_test.md` for the
+test organization rules and `fake-llm/service/message_store.go` for the loader
+contract.
 
 ## 4. Stateless matching model
 
@@ -109,17 +116,17 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    the model field; only the agent-side routing cares.
 3. **Update the large-test assertions.** The expected `reasoning`/`text`
    strings are pinned as constants in `helpers_test.go`
-   (`expectedGreetingReasoning`, `expectedGreetingText`,
-   `expectedFarewellReasoning`, `expectedFarewellText`) with a comment marking
-   them as needing sync with the testdata. Update those constants whenever the
-   testdata changes, and adjust any `strings.Contains` assertions that depend
-   on them.
-4. **The T1 unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
+   (`expectedChatReasoning`, `expectedChatText`, `expectedGreetingReasoning`,
+   `expectedGreetingText`, `expectedFarewellReasoning`,
+   `expectedFarewellText`) with a comment marking them as needing sync with
+   the testdata. Update those constants whenever the testdata changes, and
+   adjust any `strings.Contains` assertions that depend on them.
+4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
-   embedded testdata (`farewell` before `greeting`, with exact `Reasoning` /
-   `Text` / `Keywords` values). It is the single source of truth — if the
-   testdata changes, that test breaks first and reminds you to update the T6
-   constants and assertions in lockstep.
+   embedded testdata (`chat-only` before `farewell` before `greeting`, with
+   exact `Reasoning` / `Text` / `Keywords` values). It is the single source
+   of truth — if the testdata changes, that test breaks first and reminds
+   you to update the helpers constants and assertions in lockstep.
 
 ## 6. How to run the testplan
 

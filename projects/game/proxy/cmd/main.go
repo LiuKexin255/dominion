@@ -19,7 +19,6 @@ import (
 	"dominion/projects/game/proxy/runtime/agentclient"
 	proxymongo "dominion/projects/game/proxy/runtime/mongo"
 	"dominion/projects/game/proxy/runtime/picker"
-	"dominion/projects/game/proxy/service"
 
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -58,15 +57,18 @@ func main() {
 	// Bidirectional stream binder.
 	binder := bind.NewBinder()
 
-	// ProxyService orchestrates owner resolution and agent downstream calls.
-	proxyService := service.NewProxyService(mongoOwnerStore, hashPicker, manager, binder)
-
-	// Proxy handler implements the ProxyService gRPC server interface.
-	handler := handler.NewProxyHandler(proxyService)
+	// Proxy handler implements the ProxyService gRPC server interface directly:
+	// owner resolution, agent-client routing, and stream binding live here.
+	grpcHandler := handler.NewProxyHandler(mongoOwnerStore, hashPicker, manager, binder)
 
 	// gRPC server with default service options (OTel tracing, TLS).
-	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
-	game.RegisterProxyServiceServer(grpcServer, handler)
+	serverOpts := append(
+		pgrpc.ServiceDefault(),
+		grpcgo.MaxRecvMsgSize(8*1024*1024),
+		grpcgo.MaxSendMsgSize(8*1024*1024),
+	)
+	grpcServer := grpcgo.NewServer(serverOpts...)
+	game.RegisterProxyServiceServer(grpcServer, grpcHandler)
 	reflection.Register(grpcServer)
 
 	// Bootstrap lifecycle: OTEL → Mongo client → Agent client manager → gRPC server.

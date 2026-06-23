@@ -35,27 +35,77 @@ type chatCompletionRequest struct {
 // Content is left as json.RawMessage so the same field can carry either
 // the plain-string form (`"hello"`) or the array-of-content-parts form
 // (`[{"type":"text","text":"hello"}]`) per the OpenAI multimodal spec.
+// ToolCallID/Name/ToolCalls carry the tool-message and assistant-tool-call
+// metadata used by the tools dispatch branch.
 type messageParam struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
+	ToolCalls  []*toolCallParam `json:"tool_calls,omitempty"`
+}
+
+// toolCallParam mirrors one entry of an assistant message's tool_calls
+// array in the request. Function.Arguments is a JSON string per the
+// OpenAI schema.
+type toolCallParam struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function toolCallParamFunction `json:"function"`
+}
+
+// toolCallParamFunction is the function sub-object of a request tool_call.
+type toolCallParamFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // contentPart is one element of the array-form Content. Only entries
-// with type "text" contribute their Text; non-text parts are ignored.
+// with type "text" contribute their Text to keyword matching. Entries
+// with type "image_url" carry a data URL in ImageURL.URL; their bytes
+// are never searched for keywords (per contract, only text blocks drive
+// keyword matching).
 type contentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string    `json:"type"`
+	Text     string    `json:"text"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+// imageURL is the image_url sub-object of an image_url content part.
+// Only the URL field is consumed; the detail field (if present) is
+// ignored.
+type imageURL struct {
+	URL string `json:"url"`
 }
 
 // assistantMessage is the unified message shape used for both the
 // non-streaming response's `message` field and the streaming response's
 // `delta` field. The omitempty tags keep the wire shape compact while
 // still emitting explicit empty strings where the validated prototype
-// does (e.g. an empty content on the reasoning delta).
+// does (e.g. an empty content on the reasoning delta). ToolCalls is
+// populated only when the response is a tool-call (finish_reason =
+// "tool_calls"); it is omitted otherwise so the text-response wire
+// shape is unchanged.
 type assistantMessage struct {
-	Role             string `json:"role,omitempty"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
-	Content          string `json:"content,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ToolCalls        []*toolCallResp `json:"tool_calls,omitempty"`
+}
+
+// toolCallResp is one entry of the response message's tool_calls array.
+// It follows the OpenAI Chat Completions format: Type is always
+// "function", Function.Arguments is a JSON-stringified object.
+type toolCallResp struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function toolCallRespFunc `json:"function"`
+}
+
+// toolCallRespFunc is the function sub-object of a response tool_call.
+type toolCallRespFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // choice is one entry of the response's choices array. Message is set
@@ -86,6 +136,57 @@ func generateResponseID() string {
 	return fmt.Sprintf("fake-%d-%04d", time.Now().UnixNano(), rand.IntN(10000))
 }
 
+// generateToolCallID returns a unique tool-call ID. The "call_" prefix
+// matches the OpenAI convention so LangChain's parser accepts it without
+// special-casing.
+func generateToolCallID() string {
+	return fmt.Sprintf("call_%d_%04d", time.Now().UnixNano(), rand.IntN(10000))
+}
+
+// finishReason values per the OpenAI Chat Completions schema. "stop" is
+// emitted for plain text responses; "tool_calls" when the assistant
+// message carries one or more tool_calls entries.
+const (
+	finishStop      = "stop"
+	finishToolCalls = "tool_calls"
+)
+
+// responseSpec is the handler-internal description of what to serialise
+// into the response body, abstracting over the two response shapes the
+// fake-LLM can emit (text vs tool-call). Exactly one meaningful path is
+// taken per request:
+//
+//   - TextPath: Reasoning + Text are set, ToolCall is nil → the response
+//     carries an assistant message with content and finish_reason "stop".
+//   - ToolCallPath: ToolCall is non-nil → the response carries an
+//     assistant message with tool_calls and finish_reason "tool_calls";
+//     Text is emitted as content only when non-empty (rare for tool-call
+//     responses but allowed by the schema).
+type responseSpec struct {
+	Reasoning string
+	Text      string
+	ToolCall  *ToolCall
+}
+
+// isToolCall reports whether the spec describes a tool-call response.
+func (s responseSpec) isToolCall() bool { return s.ToolCall != nil }
+
+// specFromMessage adapts a keyword-matched Message into a responseSpec
+// for the text path.
+func specFromMessage(msg *Message) responseSpec {
+	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text}
+}
+
+// specFromTool adapts a matched ToolConfig's RespondWith into a
+// responseSpec. Text and ToolCall are passed through verbatim; the
+// handler decides which path to take based on isToolCall().
+func specFromTool(tc *ToolConfig) responseSpec {
+	return responseSpec{
+		Text:     tc.RespondWith.Text,
+		ToolCall: tc.RespondWith.ToolCall,
+	}
+}
+
 // ChatHandler serves POST /v1/chat/completions. It is stateless across
 // requests: every request goes through Match against the same store
 // snapshot, and the RNG is shared only for fallback randomisation.
@@ -102,9 +203,17 @@ func NewChatHandler(store *MessageStore, rng *rand.Rand) *ChatHandler {
 }
 
 // ServeHTTP implements http.Handler. It accepts any Authorization
-// bearer (no validation), decodes the request body, runs Match against
-// the last user message, and dispatches to the streaming or
-// non-streaming writer based on the request's stream flag.
+// bearer (no validation), decodes the request body, and dispatches by
+// the role of the LAST message:
+//
+//   - role "tool" → tools branch: MatchToolResult against store.Tools()
+//     by tool_name (+ optional match_result_contains), producing either
+//     a text response or a tool_call response.
+//   - any other role (user/assistant/system) → messages branch: the
+//     existing keyword-match path against store.Messages().
+//
+// Both branches share the streaming/non-streaming writers; the spec
+// produced by the branch decides the wire shape.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -117,15 +226,30 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userText := lastUserText(req.Messages)
-	msg, _ := Match(h.store.Messages(), userText, h.rng)
+	spec := h.dispatch(req.Messages)
 
 	respID := generateResponseID()
 	if req.Stream {
-		serveStreaming(w, msg, respID)
+		serveStreaming(w, spec, respID)
 		return
 	}
-	serveNonStreaming(w, msg, respID)
+	serveNonStreaming(w, spec, respID)
+}
+
+// dispatch inspects the last message role and returns the responseSpec
+// for the appropriate branch. It is split out of ServeHTTP so tests can
+// exercise the dispatch logic without going through the HTTP layer.
+func (h *ChatHandler) dispatch(messages []*messageParam) responseSpec {
+	if lastMessageRole(messages) == "tool" {
+		toolName := extractToolName(messages)
+		resultText := decodeContent(lastMessageContent(messages))
+		tc, _ := MatchToolResult(h.store.Tools(), toolName, resultText, h.rng)
+		return specFromTool(tc)
+	}
+
+	userText := lastUserText(messages)
+	msg, _ := Match(h.store.Messages(), userText, h.rng)
+	return specFromMessage(msg)
 }
 
 // lastUserText extracts the text of the LAST message whose role equals
@@ -141,6 +265,50 @@ func lastUserText(messages []*messageParam) string {
 			continue
 		}
 		return decodeContent(m.Content)
+	}
+	return ""
+}
+
+// lastMessageRole returns the role of the last message in the slice
+// (case-preserved), or "" when the slice is empty.
+func lastMessageRole(messages []*messageParam) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	return messages[len(messages)-1].Role
+}
+
+// lastMessageContent returns the Content of the last message in the
+// slice, or nil when the slice is empty.
+func lastMessageContent(messages []*messageParam) json.RawMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	return messages[len(messages)-1].Content
+}
+
+// extractToolName resolves the tool_name for a tool-role last message.
+// It checks the message's `name` field first (set by LangChain's
+// completions converter), then falls back to searching backward for the
+// assistant message whose tool_call ID matches the tool message's
+// `tool_call_id`. Returns "" when neither path yields a name.
+func extractToolName(messages []*messageParam) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	last := messages[len(messages)-1]
+	if last.Name != "" {
+		return last.Name
+	}
+	if last.ToolCallID == "" {
+		return ""
+	}
+	for i := len(messages) - 2; i >= 0; i-- {
+		for _, tc := range messages[i].ToolCalls {
+			if tc.ID == last.ToolCallID {
+				return tc.Function.Name
+			}
+		}
 	}
 	return ""
 }
@@ -183,15 +351,26 @@ func decodeContent(raw json.RawMessage) string {
 	return strings.Join(texts, " ")
 }
 
-// serveNonStreaming writes the single chat.completion JSON object
-// carrying BOTH reasoning_content and content in the assistant message.
-// Created is captured once and reused; the finish_reason is the literal
-// "stop".
-func serveNonStreaming(w http.ResponseWriter, msg *Message, respID string) {
+// serveNonStreaming writes the single chat.completion JSON object.
+// For a text response it carries BOTH reasoning_content and content in
+// the assistant message with finish_reason "stop". For a tool-call
+// response it carries tool_calls (and optional content) with
+// finish_reason "tool_calls".
+func serveNonStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	stop := "stop"
+	finish := finishStop
+	msg := &assistantMessage{
+		Role:             "assistant",
+		ReasoningContent: spec.Reasoning,
+		Content:          spec.Text,
+	}
+	if spec.isToolCall() {
+		finish = finishToolCalls
+		msg.ToolCalls = []*toolCallResp{buildToolCallResp(spec.ToolCall)}
+	}
+
 	resp := completionResponse{
 		ID:      respID,
 		Object:  "chat.completion",
@@ -199,13 +378,9 @@ func serveNonStreaming(w http.ResponseWriter, msg *Message, respID string) {
 		Model:   FakeModel,
 		Choices: []*choice{
 			{
-				Index: 0,
-				Message: &assistantMessage{
-					Role:             "assistant",
-					ReasoningContent: msg.Reasoning,
-					Content:          msg.Text,
-				},
-				FinishReason: &stop,
+				Index:        0,
+				Message:      msg,
+				FinishReason: &finish,
 			},
 		},
 	}
@@ -216,8 +391,28 @@ func serveNonStreaming(w http.ResponseWriter, msg *Message, respID string) {
 	}
 }
 
-// serveStreaming writes the SSE event stream. The chunk sequence MUST
-// be, in order:
+// buildToolCallResp converts a config ToolCall into the OpenAI wire
+// shape, generating a unique call ID and JSON-stringifying the
+// arguments map.
+func buildToolCallResp(tc *ToolCall) *toolCallResp {
+	args := "{}"
+	if len(tc.Arguments) > 0 {
+		if b, err := json.Marshal(tc.Arguments); err == nil {
+			args = string(b)
+		}
+	}
+	return &toolCallResp{
+		ID:   generateToolCallID(),
+		Type: "function",
+		Function: toolCallRespFunc{
+			Name:      tc.Name,
+			Arguments: args,
+		},
+	}
+}
+
+// serveStreaming writes the SSE event stream. For a text response the
+// chunk sequence is, in order:
 //
 //  1. delta with role:"assistant" + reasoning_content (so the
 //     @langchain/openai parser treats the stream as an assistant turn);
@@ -225,11 +420,18 @@ func serveNonStreaming(w http.ResponseWriter, msg *Message, respID string) {
 //  3. delta {} with finish_reason:"stop";
 //  4. the literal "data: [DONE]" terminator.
 //
+// For a tool-call response the sequence is:
+//
+//  1. delta with role:"assistant" + tool_calls (the full call in one
+//     delta — LangChain's streaming parser tolerates this);
+//  2. delta {} with finish_reason:"tool_calls";
+//  3. "data: [DONE]".
+//
 // Each frame is flushed before the next is written so a slow client
 // observes progressive output. If the ResponseWriter does not implement
 // http.Flusher we surface a 500 once, before any chunk is emitted, so
 // the client does not receive a half-finished stream.
-func serveStreaming(w http.ResponseWriter, msg *Message, respID string) {
+func serveStreaming(w http.ResponseWriter, spec responseSpec, respID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -242,39 +444,11 @@ func serveStreaming(w http.ResponseWriter, msg *Message, respID string) {
 	}
 
 	now := time.Now().Unix()
-	chunks := []*completionResponse{
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index: 0,
-				Delta: &assistantMessage{
-					Role:             "assistant",
-					ReasoningContent: msg.Reasoning,
-				},
-				FinishReason: nil,
-			}},
-		},
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index: 0,
-				Delta: &assistantMessage{
-					Content: msg.Text,
-				},
-				FinishReason: nil,
-			}},
-		},
-		{
-			ID: respID, Object: "chat.completion.chunk",
-			Created: now, Model: FakeModel,
-			Choices: []*choice{{
-				Index:        0,
-				Delta:        new(assistantMessage),
-				FinishReason: strPtr("stop"),
-			}},
-		},
+	var chunks []*completionResponse
+	if spec.isToolCall() {
+		chunks = toolCallStreamChunks(respID, now, spec.ToolCall)
+	} else {
+		chunks = textStreamChunks(respID, now, spec)
 	}
 
 	for _, chunk := range chunks {
@@ -290,6 +464,73 @@ func serveStreaming(w http.ResponseWriter, msg *Message, respID string) {
 
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+// textStreamChunks builds the 3-chunk sequence for a plain text response
+// (role+reasoning delta, content delta, empty delta with finish "stop").
+func textStreamChunks(respID string, now int64, spec responseSpec) []*completionResponse {
+	return []*completionResponse{
+		{
+			ID: respID, Object: "chat.completion.chunk",
+			Created: now, Model: FakeModel,
+			Choices: []*choice{{
+				Index: 0,
+				Delta: &assistantMessage{
+					Role:             "assistant",
+					ReasoningContent: spec.Reasoning,
+				},
+				FinishReason: nil,
+			}},
+		},
+		{
+			ID: respID, Object: "chat.completion.chunk",
+			Created: now, Model: FakeModel,
+			Choices: []*choice{{
+				Index: 0,
+				Delta: &assistantMessage{
+					Content: spec.Text,
+				},
+				FinishReason: nil,
+			}},
+		},
+		{
+			ID: respID, Object: "chat.completion.chunk",
+			Created: now, Model: FakeModel,
+			Choices: []*choice{{
+				Index:        0,
+				Delta:        new(assistantMessage),
+				FinishReason: strPtr(finishStop),
+			}},
+		},
+	}
+}
+
+// toolCallStreamChunks builds the 2-chunk sequence for a tool-call
+// response (role+tool_calls delta, empty delta with finish "tool_calls").
+func toolCallStreamChunks(respID string, now int64, tc *ToolCall) []*completionResponse {
+	return []*completionResponse{
+		{
+			ID: respID, Object: "chat.completion.chunk",
+			Created: now, Model: FakeModel,
+			Choices: []*choice{{
+				Index: 0,
+				Delta: &assistantMessage{
+					Role:      "assistant",
+					ToolCalls: []*toolCallResp{buildToolCallResp(tc)},
+				},
+				FinishReason: nil,
+			}},
+		},
+		{
+			ID: respID, Object: "chat.completion.chunk",
+			Created: now, Model: FakeModel,
+			Choices: []*choice{{
+				Index:        0,
+				Delta:        new(assistantMessage),
+				FinishReason: strPtr(finishToolCalls),
+			}},
+		},
+	}
 }
 
 // strPtr returns a pointer to s, used so FinishReason can serialise as

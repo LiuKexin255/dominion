@@ -330,3 +330,63 @@ func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string
 	}
 	return nil
 }
+
+// UpdateAgentProfile partially updates an agent profile via PATCH to
+// /api/v1/prompts/agentProfiles/{agentProfileName}. The update_mask paths are
+// sent as the repeated update_mask.paths query parameter per grpc-gateway
+// FieldMask binding.
+func (c *Client) UpdateAgentProfile(ctx context.Context, agentProfileName string, profile *game.AgentProfile, updateMaskPaths []string) (*game.AgentProfile, error) {
+	body, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(profile)
+	if err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
+	}
+
+	path := "/api/v1/prompts/agentProfiles/" + agentProfileName
+	if len(updateMaskPaths) > 0 {
+		path += "?update_mask=" + strings.Join(updateMaskPaths, ",")
+	}
+
+	httpReq, err := c.newRequest(ctx, http.MethodPatch, path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
+	}
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("update agent profile: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	updated := new(game.AgentProfile)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(respBody, updated); err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
+	}
+	return updated, nil
+}
+
+// RefreshAgent refreshes the agent for a session via POST to
+// /api/v1/sessions/{sessionID}/agent:refresh. Used after a profile update so
+// the agent reloads its adapter with the new configuration.
+func (c *Client) RefreshAgent(ctx context.Context, sessionID string) error {
+	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent:refresh", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		return fmt.Errorf("refresh agent: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("refresh agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("refresh agent: status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

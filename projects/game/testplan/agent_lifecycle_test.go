@@ -6,6 +6,7 @@ package testplan
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -130,7 +131,7 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	}
 	for i, msg := range lmr.GetMessages() {
 		t.Logf("message[%d]: type=%s sender=%s content=%q",
-			i, msg.GetType(), senderString(msg.GetSender()), msg.GetContent())
+			i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
 	}
 }
 
@@ -198,16 +199,15 @@ func TestGetAgentNeverConnected(t *testing.T) {
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
-	// Call GetAgent without ever connecting — expect 200 with empty profile.
-	agent := getAgent(t, sutHostURL, sutEnvName, sessionID)
-	if agent.GetSessionId() != sessionID {
-		t.Errorf("session_id = %q, want %q", agent.GetSessionId(), sessionID)
+	// Call GetAgent without ever connecting — expect NOT_FOUND (404).
+	// An agent only exists after a WebSocket Connect allocates an owner.
+	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET agent for never-connected session: status=%d, want %d, body=%s",
+			resp.StatusCode, http.StatusNotFound, respBody)
 	}
-	if agent.GetAgentProfileName() != "" {
-		t.Errorf("agent_profile_name = %q, want empty (never connected)", agent.GetAgentProfileName())
-	}
-	t.Logf("GetAgent for never-connected session: session_id=%q, agent_profile_name=%q",
-		agent.GetSessionId(), agent.GetAgentProfileName())
+	t.Logf("GetAgent for never-connected session correctly returned NOT_FOUND (404)")
 }
 
 // TestDisconnectReconnectHistory verifies that conversation history persists
@@ -257,7 +257,7 @@ func TestDisconnectReconnectHistory(t *testing.T) {
 	}
 	for i, msg := range lmr.GetMessages() {
 		t.Logf("message[%d]: type=%s sender=%s content=%q",
-			i, msg.GetType(), senderString(msg.GetSender()), msg.GetContent())
+			i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
 	}
 
 	// Verify both user messages are present.
@@ -265,10 +265,10 @@ func TestDisconnectReconnectHistory(t *testing.T) {
 	foundSecond := false
 	for _, msg := range lmr.GetMessages() {
 		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER {
-			if msg.GetContent() == messages[0] {
+			if msg.GetText() == messages[0] {
 				foundFirst = true
 			}
-			if msg.GetContent() == messages[1] {
+			if msg.GetText() == messages[1] {
 				foundSecond = true
 			}
 		}

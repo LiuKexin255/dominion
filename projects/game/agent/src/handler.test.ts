@@ -16,8 +16,10 @@ import {
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
-import type { AgentAdapter, ContentBlock, AdapterStateSnapshot } from "./llm";
+import type { AgentAdapter, AdapterFactory, ContentBlock, AdapterStateSnapshot, TurnContent } from "./llm";
 import { Handler } from "./handler";
+import { SessionAgent } from "./session-agent";
+import { OperationBridge } from "./operation-bridge";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -53,12 +55,12 @@ function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
 
 function createRecordingAdapter(blocks: ContentBlock[]): {
   adapter: AgentAdapter;
-  calls: Array<{ threadId: string; userMessage: string }>;
+  calls: Array<{ threadId: string; content: TurnContent }>;
 } {
-  const calls: Array<{ threadId: string; userMessage: string }> = [];
+  const calls: Array<{ threadId: string; content: TurnContent }> = [];
   const adapter: AgentAdapter = {
-    async *generateTurn(threadId, userMessage) {
-      calls.push({ threadId, userMessage });
+    async *generateTurn(threadId, content) {
+      calls.push({ threadId, content });
       for (const block of blocks) yield block;
     },
     async getState() { return null; },
@@ -66,10 +68,22 @@ function createRecordingAdapter(blocks: ContentBlock[]): {
   return { adapter, calls };
 }
 
+interface MockBridge {
+  registerSink: ReturnType<typeof vi.fn>;
+  unregisterSink: ReturnType<typeof vi.fn>;
+  setCurrentScreenshotId: ReturnType<typeof vi.fn>;
+  getCurrentScreenshotId: ReturnType<typeof vi.fn>;
+  handleResult: ReturnType<typeof vi.fn>;
+  dispatch: ReturnType<typeof vi.fn>;
+}
+
 interface MockSessionAgent {
   getOrCreateAdapter: ReturnType<typeof vi.fn>;
   getAdapterState: ReturnType<typeof vi.fn>;
   getAdapter: ReturnType<typeof vi.fn>;
+  invalidateAdapter: ReturnType<typeof vi.fn>;
+  getBridge: ReturnType<typeof vi.fn>;
+  bridge: MockBridge;
 }
 
 interface MockSessionAgentStore {
@@ -80,11 +94,23 @@ interface MockSessionAgentStore {
   _clear(): void;
 }
 
+function createMockBridge(): MockBridge {
+  return {
+    registerSink: vi.fn(),
+    unregisterSink: vi.fn(),
+    setCurrentScreenshotId: vi.fn(),
+    getCurrentScreenshotId: vi.fn(() => ""),
+    handleResult: vi.fn(),
+    dispatch: vi.fn(),
+  };
+}
+
 function createMockSessionAgentStore(): MockSessionAgentStore {
   const agents = new Map<string, MockSessionAgent>();
 
   function getAgent(sessionId: string): MockSessionAgent {
     if (!agents.has(sessionId)) {
+      const bridge = createMockBridge();
       agents.set(sessionId, {
         getOrCreateAdapter: vi.fn(),
         getAdapterState: vi.fn(() => ({
@@ -92,6 +118,9 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
           isBound: false,
         })),
         getAdapter: vi.fn(() => null),
+        invalidateAdapter: vi.fn(),
+        getBridge: vi.fn(() => bridge),
+        bridge,
       });
     }
     return agents.get(sessionId)!;
@@ -181,17 +210,34 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-function textFrame(
+function userTurnFrame(
   sessionId: string,
   invokeId: string,
-  content: string,
+  text: string,
   profileName?: string,
 ) {
   return {
     sessionId,
     invokeId,
-    payload: "text",
-    text: { content },
+    payload: "user_turn",
+    userTurn: { text },
+    sender: FRAME_SENDER_USER,
+    ...(profileName ? { agentProfileName: profileName } : {}),
+  };
+}
+
+function userTurnWithScreenshotFrame(
+  sessionId: string,
+  invokeId: string,
+  text: string,
+  screenshot: { screenshotId: string; data: string; encoding: string },
+  profileName?: string,
+) {
+  return {
+    sessionId,
+    invokeId,
+    payload: "user_turn",
+    userTurn: { text, screenshot },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
@@ -215,10 +261,10 @@ function createHandler(deps: HandlerDeps): Handler {
 }
 
 // ===========================================================================
-// Tests: Connect — text frame produces thinking/text/wait frames
+// Tests: Connect — user_turn frame produces thinking/text/wait frames
 // ===========================================================================
 
-describe("Handler.Connect text frame", () => {
+describe("Handler.Connect user_turn frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -232,7 +278,7 @@ describe("Handler.Connect text frame", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("produces thinking + text + wait frames for profile-bound text frame", async () => {
+  it("produces thinking + text + wait frames for profile-bound user_turn frame", async () => {
     const blocks: ContentBlock[] = [
       { type: "reasoning", reasoning: "Let me think..." },
       { type: "text", text: "The answer is 42." },
@@ -247,7 +293,7 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-1", "turn-1", "What is the answer?", "helpful-assistant"));
+    stream.emit("data", userTurnFrame("sess-1", "turn-1", "What is the answer?", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(3);
@@ -280,7 +326,7 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-nt", "turn-2", "hello", "helpful-assistant"));
+    stream.emit("data", userTurnFrame("sess-nt", "turn-2", "hello", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(2);
@@ -301,9 +347,9 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-seq", "turn-a", "msg-1", "helpful-assistant"));
+    stream.emit("data", userTurnFrame("sess-seq", "turn-a", "msg-1", "helpful-assistant"));
     await flush();
-    stream.emit("data", textFrame("sess-seq", "turn-b", "msg-2", "helpful-assistant"));
+    stream.emit("data", userTurnFrame("sess-seq", "turn-b", "msg-2", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(4);
@@ -327,7 +373,7 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-uuid", "turn-u", "go", "helpful-assistant"));
+    stream.emit("data", userTurnFrame("sess-uuid", "turn-u", "go", "helpful-assistant"));
     await flush();
 
     const frameIds = stream.written.map(
@@ -355,7 +401,7 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-missing", "inv-x", "hello"));
+    stream.emit("data", userTurnFrame("sess-missing", "inv-x", "hello"));
     await flush();
 
     expect(stream.written).toHaveLength(1);
@@ -378,7 +424,7 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-fresh", "inv-x", "hello"));
+    stream.emit("data", userTurnFrame("sess-fresh", "inv-x", "hello"));
     await flush();
 
     expect(calls).toHaveLength(0);
@@ -417,10 +463,10 @@ describe("Handler.Connect profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-switch", "turn-1", "msg1", "profile-a"));
+    stream.emit("data", userTurnFrame("sess-switch", "turn-1", "msg1", "profile-a"));
     await flush();
 
-    stream.emit("data", textFrame("sess-switch", "turn-2", "msg2", "profile-b"));
+    stream.emit("data", userTurnFrame("sess-switch", "turn-2", "msg2", "profile-b"));
     await flush();
 
     expect(calls).toEqual(["profile-a", "profile-b"]);
@@ -469,10 +515,10 @@ describe("Handler.Connect failed profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-fail", "turn-ok", "hello", "valid-profile"));
+    stream.emit("data", userTurnFrame("sess-fail", "turn-ok", "hello", "valid-profile"));
     await flush();
 
-    stream.emit("data", textFrame("sess-fail", "turn-fail", "switch me", "nonexistent-profile"));
+    stream.emit("data", userTurnFrame("sess-fail", "turn-fail", "switch me", "nonexistent-profile"));
     await flush();
 
     const warnFrames = stream.written.filter(
@@ -485,15 +531,15 @@ describe("Handler.Connect failed profile switch", () => {
     ).toContain("Agent profile not found");
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].userMessage).toBe("hello");
+    expect(calls[0].content.text).toBe("hello");
   });
 });
 
 // ===========================================================================
-// Tests: Connect — deprecated payloads silently ignored
+// Tests: Connect — AgentOperationResultFrame dispatches to bridge.handleResult
 // ===========================================================================
 
-describe("Handler.Connect deprecated payloads", () => {
+describe("Handler.Connect operation_result frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -502,35 +548,237 @@ describe("Handler.Connect deprecated payloads", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  function setupStream() {
+  it("calls getBridge().handleResult when operation_result frame arrives", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-    return stream;
-  }
 
-  it("silently ignores screenshot payload", async () => {
-    const stream = setupStream();
+    const result = { operationId: "op-1", status: "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED", message: "ok" };
     stream.emit("data", {
-      sessionId: "sess-d",
-      invokeId: "inv-s",
-      payload: "screenshot",
+      sessionId: "sess-or",
+      invokeId: "inv-or",
+      payload: "operation_result",
+      operationResult: result,
       sender: FRAME_SENDER_USER,
     });
     await flush();
-    expect(stream.written).toHaveLength(0);
+
+    const bridge = sessionAgentStore._getAgent("sess-or").bridge;
+    expect(bridge.handleResult).toHaveBeenCalledTimes(1);
+    expect(bridge.handleResult).toHaveBeenCalledWith(result);
   });
 
-  it("silently ignores operation payload", async () => {
-    const stream = setupStream();
+  it("does not write any frame for operation_result", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
     stream.emit("data", {
-      sessionId: "sess-d",
-      invokeId: "inv-o",
-      payload: "operation",
+      sessionId: "sess-or2",
+      invokeId: "inv-or2",
+      payload: "operation_result",
+      operationResult: { operationId: "op-2", status: 1, message: "" },
       sender: FRAME_SENDER_USER,
     });
     await flush();
+
     expect(stream.written).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — OperationBridge sink lifecycle (register/unregister/screenshot)
+// ===========================================================================
+
+describe("Handler.Connect bridge lifecycle", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "helpful-assistant": {
+        model: "opencode-go/deepseek-v4",
+        systemPrompt: "You are helpful.",
+      },
+    });
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  it("registers bridge sink on user_turn frame", async () => {
+    sessionAgentStore._setBinding(
+      "sess-sink",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-sink", "turn-1", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-sink").bridge;
+    expect(bridge.registerSink).toHaveBeenCalledTimes(1);
+    expect(typeof bridge.registerSink.mock.calls[0][0]).toBe("function");
+  });
+
+  it("sets current screenshot ID on bridge from user_turn screenshot", async () => {
+    sessionAgentStore._setBinding(
+      "sess-ss",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userTurnWithScreenshotFrame(
+        "sess-ss",
+        "turn-ss",
+        "click here",
+        { screenshotId: "shot-123", data: "base64data", encoding: "png" },
+        "helpful-assistant",
+      ),
+    );
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-ss").bridge;
+    expect(bridge.setCurrentScreenshotId).toHaveBeenCalledWith("shot-123");
+  });
+
+  it("sets empty screenshot ID when user_turn has no screenshot", async () => {
+    sessionAgentStore._setBinding(
+      "sess-noss",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-noss", "turn-noss", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-noss").bridge;
+    expect(bridge.setCurrentScreenshotId).toHaveBeenCalledWith("");
+  });
+
+  it("calls generateTurn with text+screenshot TurnContent when both provided", async () => {
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "done" },
+    ]);
+    sessionAgentStore._setBinding("sess-tc", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userTurnWithScreenshotFrame(
+        "sess-tc",
+        "turn-tc",
+        "look at this",
+        { screenshotId: "shot-456", data: "abc123", encoding: "png" },
+        "helpful-assistant",
+      ),
+    );
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].content).toEqual({
+      text: "look at this",
+      screenshotId: "shot-456",
+      screenshotData: "abc123",
+      screenshotMimeType: "image/png",
+    });
+  });
+
+  it("calls generateTurn with text-only TurnContent when no screenshot", async () => {
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "done" },
+    ]);
+    sessionAgentStore._setBinding("sess-tc2", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-tc2", "turn-tc2", "plain text", "helpful-assistant"));
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].content).toEqual({ text: "plain text" });
+  });
+
+  it("unregisters bridge sink on stream end for active sessions", async () => {
+    sessionAgentStore._setBinding(
+      "sess-end",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-end", "turn-end", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-end").bridge;
+    expect(bridge.unregisterSink).not.toHaveBeenCalled();
+
+    stream.emit("end");
+    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
+  });
+
+  it("unregisters bridge sink on stream error", async () => {
+    sessionAgentStore._setBinding(
+      "sess-err-sink",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-err-sink", "turn-err", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-err-sink").bridge;
+    expect(bridge.unregisterSink).not.toHaveBeenCalled();
+
+    stream.emit("error", new Error("socket reset"));
+    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
+  });
+
+  it("sink callback writes operation envelope to stream", async () => {
+    sessionAgentStore._setBinding(
+      "sess-write",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userTurnFrame("sess-write", "turn-w", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-write").bridge;
+    const sinkFn = bridge.registerSink.mock.calls[0][0] as (f: unknown) => void;
+    const envelope = { payload: "operation", operation: { operationId: "x" } };
+    const before = stream.written.length;
+    sinkFn(envelope);
+    expect(stream.written.length).toBe(before + 1);
+    expect(stream.written[stream.written.length - 1]).toBe(envelope);
   });
 });
 
@@ -640,7 +888,7 @@ describe("Handler.Connect LLM error", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-err", "turn-err", "break me", "error-profile"));
+    stream.emit("data", userTurnFrame("sess-err", "turn-err", "break me", "error-profile"));
     await flush();
 
     expect(stream.written.length).toBeGreaterThanOrEqual(1);
@@ -658,7 +906,7 @@ describe("Handler.Connect LLM error", () => {
 // ===========================================================================
 
 describe("Handler.Connect same-session serialization", () => {
-  it("serializes concurrent text frames on same session (FIFO)", async () => {
+  it("serializes concurrent user_turn frames on same session (FIFO)", async () => {
     const promptClient = createMockPromptClient({
       "test-profile": { model: "m", systemPrompt: "s" },
     });
@@ -668,7 +916,8 @@ describe("Handler.Connect same-session serialization", () => {
     const processedMessages: string[] = [];
 
     const adapter: AgentAdapter = {
-      async *generateTurn(_threadId: string, userMessage: string) {
+      async *generateTurn(_threadId: string, content: TurnContent) {
+        const userMessage = content.text ?? "";
         concurrentCount++;
         maxConcurrent = Math.max(maxConcurrent, concurrentCount);
         processedMessages.push(userMessage);
@@ -689,8 +938,8 @@ describe("Handler.Connect same-session serialization", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-conc", "turn-a", "msg-1", "test-profile"));
-    stream.emit("data", textFrame("sess-conc", "turn-b", "msg-2", "test-profile"));
+    stream.emit("data", userTurnFrame("sess-conc", "turn-a", "msg-1", "test-profile"));
+    stream.emit("data", userTurnFrame("sess-conc", "turn-b", "msg-2", "test-profile"));
 
     await new Promise((r) => setTimeout(r, 100));
 
@@ -757,8 +1006,190 @@ describe("Handler.GetAgent", () => {
 });
 
 // ===========================================================================
-// Tests: ListMessages — REAL MemorySaver round-trip
+// Tests: RefreshAgent
 // ===========================================================================
+
+describe("Handler.RefreshAgent", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  function refreshAgent(handler: Handler, sessionId: string) {
+    const call = createUnaryCall({ name: `sessions/${sessionId}/agent` });
+    const { callback, promise } = createCallback<{}>();
+    handler.RefreshAgent(call, callback);
+    return promise;
+  }
+
+  it("succeeds and invalidates adapter when no turn is in-flight", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const { error, response } = await refreshAgent(handler, "sess-refresh");
+
+    expect(error).toBeNull();
+    expect(response).toEqual({});
+
+    const agent = sessionAgentStore._getAgent("sess-refresh");
+    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns FAILED_PRECONDITION when a turn is in-flight", async () => {
+    const blocks: ContentBlock[] = [{ type: "text", text: "late reply" }];
+    const slowAdapter: AgentAdapter = {
+      async *generateTurn(): AsyncIterable<ContentBlock> {
+        await new Promise((r) => setTimeout(r, 50));
+        for (const block of blocks) yield block;
+      },
+      async getState() { return null; },
+    };
+    sessionAgentStore._setBinding(
+      "sess-busy",
+      "test-profile",
+      slowAdapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userTurnFrame("sess-busy", "turn-1", "hello", "test-profile"),
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const { error, response } = await refreshAgent(handler, "sess-busy");
+
+    expect(error).not.toBeNull();
+    expect(error!.code).toBe(grpc.status.FAILED_PRECONDITION);
+    expect(response).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-busy");
+    expect(agent.invalidateAdapter).not.toHaveBeenCalled();
+
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  it("releases mutex so subsequent RefreshAgent calls still succeed", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const first = await refreshAgent(handler, "sess-repeat");
+    expect(first.error).toBeNull();
+
+    const second = await refreshAgent(handler, "sess-repeat");
+    expect(second.error).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-repeat");
+    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not block subsequent Connect turns after RefreshAgent", async () => {
+    const adapter = createMockAdapter([
+      { type: "text", text: "after refresh" },
+    ]);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const refreshResult = await refreshAgent(handler, "sess-post");
+    expect(refreshResult.error).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-post");
+    agent.getOrCreateAdapter.mockResolvedValue(adapter);
+    agent.getAdapterState.mockReturnValue({
+      activeProfileName: "p",
+      isBound: true,
+    });
+
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userTurnFrame("sess-post", "turn-after", "go", "p"),
+    );
+    await flush();
+
+    expect(stream.written.length).toBeGreaterThanOrEqual(1);
+    const textFrames = stream.written.filter(
+      (f) =>
+        (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
+        (f as Record<string, unknown>).text,
+    );
+    expect(textFrames).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// Tests: SessionAgent.invalidateAdapter + getBridge (integration)
+// ===========================================================================
+
+describe("SessionAgent.invalidateAdapter integration", () => {
+  it("nulls adapter so next getOrCreateAdapter rebuilds", async () => {
+    const created: AgentAdapter[] = [];
+    const factory: AdapterFactory = async () => {
+      const adapter = createMockAdapter([
+        { type: "text", text: `adapter-${created.length}` },
+      ]);
+      created.push(adapter);
+      return adapter;
+    };
+
+    const throwProvider = async () => {
+      throw new Error("not used");
+    };
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+
+    const fetcher = async () => ({
+      model: "m",
+      systemPrompt: "s",
+      toolNames: [],
+    });
+
+    const first = await agent.getOrCreateAdapter("p", fetcher);
+    expect(created).toHaveLength(1);
+    expect(agent.getAdapterState().isBound).toBe(true);
+
+    agent.invalidateAdapter();
+    expect(agent.getAdapter()).toBeNull();
+    expect(agent.getAdapterState()).toEqual({
+      activeProfileName: null,
+      isBound: false,
+    });
+
+    const second = await agent.getOrCreateAdapter("p", fetcher);
+    expect(second).not.toBe(first);
+    expect(created).toHaveLength(2);
+  });
+
+  it("invalidateAdapter on never-bound session is a no-op", () => {
+    const agent = new SessionAgent(
+      async () => { throw new Error("x"); },
+      async () => { throw new Error("x"); },
+      new MemorySaver(),
+    );
+
+    expect(() => agent.invalidateAdapter()).not.toThrow();
+    expect(agent.getAdapter()).toBeNull();
+  });
+
+  it("getBridge returns a stable OperationBridge instance", () => {
+    const agent = new SessionAgent(
+      async () => { throw new Error("x"); },
+      async () => { throw new Error("x"); },
+      new MemorySaver(),
+    );
+
+    const b1 = agent.getBridge();
+    const b2 = agent.getBridge();
+    expect(b1).toBe(b2);
+    expect(b1).toBeInstanceOf(OperationBridge);
+  });
+});
+
+
 
 describe("Handler.ListMessages (real MemorySaver)", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
@@ -886,6 +1317,40 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
     expect(response!.messages![1].type).toBe("text");
+  });
+
+  it("reconstructs image content blocks as imageData", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-image-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-image-rt", [
+      new HumanMessage({
+        content: [
+          { type: "text", text: "What is in this image?" },
+          {
+            type: "image",
+            data: "base64imagedata",
+            mime_type: "image/png",
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-image-rt");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+
+    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
+    expect(response!.messages![0].type).toBe("text");
+    expect(response!.messages![0].content).toBe("text");
+    expect(response!.messages![0].text).toBe("What is in this image?");
+
+    expect(response!.messages![1].sender).toBe(FRAME_SENDER_USER);
+    expect(response!.messages![1].type).toBe("image");
+    expect(response!.messages![1].content).toBe("imageData");
+    expect(response!.messages![1].imageData).toBe("base64imagedata");
   });
 
   it("filters out SystemMessages from the result", async () => {

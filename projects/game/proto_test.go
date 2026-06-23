@@ -255,10 +255,9 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 				ScreenshotId: "ss-001",
 				Operation: &game.AgentOperationFrame_Mouse{
 					Mouse: &game.AgentMouseOperation{
-						Button:    game.AgentMouseButton_LEFT,
-						ClickType: game.AgentMouseClickType_SINGLE,
-						XPx:       400,
-						YPx:       300,
+						Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+						XPx:    400,
+						YPx:    300,
 					},
 				},
 			},
@@ -294,11 +293,8 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 	if mouse == nil {
 		t.Fatal("GetMouse() returned nil")
 	}
-	if mouse.GetButton() != game.AgentMouseButton_LEFT {
-		t.Errorf("button: got %v, want %v", mouse.GetButton(), game.AgentMouseButton_LEFT)
-	}
-	if mouse.GetClickType() != game.AgentMouseClickType_SINGLE {
-		t.Errorf("clickType: got %v, want %v", mouse.GetClickType(), game.AgentMouseClickType_SINGLE)
+	if mouse.GetAction() != game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK {
+		t.Errorf("action: got %v, want %v", mouse.GetAction(), game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK)
 	}
 	if mouse.GetXPx() != 400 {
 		t.Errorf("xPx: got %d, want %d", mouse.GetXPx(), 400)
@@ -394,13 +390,12 @@ func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
 func TestAgentProfileRoundtrip(t *testing.T) {
 	// given: an AgentProfile with all fields populated
 	given := &game.AgentProfile{
-		Name:             "agentProfiles/default",
-		AgentProfileName: "default",
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a helpful game agent.",
-		SkillNames:       []string{"gameplay-basics", "navigation"},
-		McpNames:         []string{"screenshot-tool"},
-		Enabled:          true,
+		Name:         "agentProfiles/default",
+		Model:        "gpt-4",
+		SystemPrompt: "You are a helpful game agent.",
+		SkillNames:   []string{"gameplay-basics", "navigation"},
+		McpNames:     []string{"screenshot-tool"},
+		Enabled:      true,
 	}
 
 	// when: marshal to protojson
@@ -418,9 +413,6 @@ func TestAgentProfileRoundtrip(t *testing.T) {
 	// then: verify all fields preserved
 	if got.GetName() != "agentProfiles/default" {
 		t.Errorf("name: got %q, want %q", got.GetName(), "agentProfiles/default")
-	}
-	if got.GetAgentProfileName() != "default" {
-		t.Errorf("agentProfileName: got %q, want %q", got.GetAgentProfileName(), "default")
 	}
 	if got.GetModel() != "gpt-4" {
 		t.Errorf("model: got %q, want %q", got.GetModel(), "gpt-4")
@@ -442,10 +434,9 @@ func TestAgentProfileRoundtrip(t *testing.T) {
 func TestSkillRoundtrip(t *testing.T) {
 	// given: a Skill with all fields populated
 	given := &game.Skill{
-		Name:      "skills/navigation",
-		SkillName: "navigation",
-		Content:   "Navigate efficiently through the game world.",
-		Enabled:   true,
+		Name:    "skills/navigation",
+		Content: "Navigate efficiently through the game world.",
+		Enabled: true,
 	}
 
 	// when: marshal to protojson
@@ -463,9 +454,6 @@ func TestSkillRoundtrip(t *testing.T) {
 	// then: verify all fields preserved
 	if got.GetName() != "skills/navigation" {
 		t.Errorf("name: got %q, want %q", got.GetName(), "skills/navigation")
-	}
-	if got.GetSkillName() != "navigation" {
-		t.Errorf("skillName: got %q, want %q", got.GetSkillName(), "navigation")
 	}
 	if got.GetContent() != "Navigate efficiently through the game world." {
 		t.Errorf("content: got %q, want %q", got.GetContent(), "Navigate efficiently through the game world.")

@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 // inMemoryAgentProfileRepo implements domain.AgentProfileRepository for testing.
@@ -41,6 +42,19 @@ func (r *inMemoryAgentProfileRepo) GetAgentProfile(_ context.Context, profileNam
 		return nil, domain.ErrNotFound
 	}
 	return p, nil
+}
+
+func (r *inMemoryAgentProfileRepo) UpdateAgentProfile(_ context.Context, profile *domain.AgentProfile) (*domain.AgentProfile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.profiles[profile.AgentProfileName]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	clone := *profile
+	clone.CreateTime = existing.CreateTime
+	r.profiles[profile.AgentProfileName] = &clone
+	return &clone, nil
 }
 
 func (r *inMemoryAgentProfileRepo) ListAgentProfiles(_ context.Context, pageSize int, pageToken string) ([]*domain.AgentProfile, string, error) {
@@ -138,9 +152,6 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	if created.GetName() != "agentProfiles/test-profile" {
 		t.Fatalf("CreateAgentProfile() name = %q, want %q", created.GetName(), "agentProfiles/test-profile")
 	}
-	if created.GetAgentProfileName() != "test-profile" {
-		t.Fatalf("CreateAgentProfile() agent_profile_name = %q, want %q", created.GetAgentProfileName(), "test-profile")
-	}
 	if created.GetModel() != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("CreateAgentProfile() model = %q, want %q", created.GetModel(), "opencode-go/deepseek-v4-pro")
 	}
@@ -158,7 +169,7 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	}
 
 	// when — get
-	getReq := &game.GetAgentProfileRequest{AgentProfileName: "test-profile"}
+	getReq := &game.GetAgentProfileRequest{Name: "agentProfiles/test-profile"}
 	got, err := h.GetAgentProfile(ctx, getReq)
 
 	// then — get returns same profile
@@ -193,9 +204,6 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 	if created.GetName() != "skills/my-skill" {
 		t.Fatalf("CreateSkill() name = %q, want %q", created.GetName(), "skills/my-skill")
 	}
-	if created.GetSkillName() != "my-skill" {
-		t.Fatalf("CreateSkill() skill_name = %q, want %q", created.GetSkillName(), "my-skill")
-	}
 	if created.GetContent() != "You know how to browse the web." {
 		t.Fatalf("CreateSkill() content = %q, want %q", created.GetContent(), "You know how to browse the web.")
 	}
@@ -204,7 +212,7 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 	}
 
 	// when — get
-	getReq := &game.GetSkillRequest{SkillName: "my-skill"}
+	getReq := &game.GetSkillRequest{Name: "skills/my-skill"}
 	got, err := h.GetSkill(ctx, getReq)
 
 	// then — get returns same skill
@@ -226,10 +234,323 @@ func TestPromptService_ProfileNotFound(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	// when — get missing profile
-	_, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{AgentProfileName: "nonexistent"})
+	_, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/nonexistent"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
+}
+
+func TestPromptService_CreateGetAgentProfileWithToolNames(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	profileRepo := newInMemoryAgentProfileRepo()
+	skillRepo := newInMemorySkillRepo()
+	h := NewHandler(profileRepo, skillRepo)
+
+	createReq := &game.CreateAgentProfileRequest{
+		AgentProfileName: "tools-profile",
+		Model:            "opencode-go/deepseek-v4-pro",
+		SystemPrompt:     "You can click things.",
+		ToolNames:        []string{"mouse", "keyboard"},
+		Enabled:          true,
+	}
+
+	// when — create
+	created, err := h.CreateAgentProfile(ctx, createReq)
+
+	// then — tool_names echoed on create response
+	assertStatusCode(t, err, codes.OK)
+	if len(created.GetToolNames()) != 2 {
+		t.Fatalf("CreateAgentProfile() tool_names len = %d, want 2", len(created.GetToolNames()))
+	}
+	if created.GetToolNames()[0] != "mouse" || created.GetToolNames()[1] != "keyboard" {
+		t.Fatalf("CreateAgentProfile() tool_names = %v, want [mouse keyboard]", created.GetToolNames())
+	}
+
+	// when — get
+	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/tools-profile"})
+
+	// then — tool_names persisted and returned
+	assertStatusCode(t, err, codes.OK)
+	if len(got.GetToolNames()) != 2 {
+		t.Fatalf("GetAgentProfile() tool_names len = %d, want 2", len(got.GetToolNames()))
+	}
+	if got.GetToolNames()[0] != "mouse" || got.GetToolNames()[1] != "keyboard" {
+		t.Fatalf("GetAgentProfile() tool_names = %v, want [mouse keyboard]", got.GetToolNames())
+	}
+}
+
+func TestPromptService_UpdateAgentProfileToolNamesViaFieldMask(t *testing.T) {
+	ctx := context.Background()
+
+	// given — seed profile with tool_names=["mouse"]
+	profileRepo := newInMemoryAgentProfileRepo()
+	skillRepo := newInMemorySkillRepo()
+	h := NewHandler(profileRepo, skillRepo)
+
+	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
+		AgentProfileName: "mask-profile",
+		Model:            "opencode-go/deepseek-v4-pro",
+		SystemPrompt:     "original prompt",
+		ToolNames:        []string{"mouse"},
+		Enabled:          true,
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update tool_names to [] via FieldMask
+	updateReq := &game.UpdateAgentProfileRequest{
+		Name: "agentProfiles/mask-profile",
+		Profile: &game.AgentProfile{
+			ToolNames: []string{},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
+	}
+	updated, err := h.UpdateAgentProfile(ctx, updateReq)
+
+	// then — tool_names cleared, other fields preserved
+	assertStatusCode(t, err, codes.OK)
+	if len(updated.GetToolNames()) != 0 {
+		t.Fatalf("UpdateAgentProfile() tool_names = %v, want empty", updated.GetToolNames())
+	}
+	if updated.GetSystemPrompt() != "original prompt" {
+		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q (FieldMask should not touch)", updated.GetSystemPrompt(), "original prompt")
+	}
+	if updated.GetModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("UpdateAgentProfile() model = %q, want %q (FieldMask should not touch)", updated.GetModel(), "opencode-go/deepseek-v4-pro")
+	}
+	if !updated.GetEnabled() {
+		t.Fatalf("UpdateAgentProfile() enabled = false, want true (FieldMask should not touch)")
+	}
+	if updated.GetUpdateTime() == nil {
+		t.Fatal("UpdateAgentProfile() update_time is nil, want non-nil")
+	}
+	if updated.GetCreateTime() == nil {
+		t.Fatal("UpdateAgentProfile() create_time is nil, want non-nil")
+	}
+
+	// when — re-fetch
+	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/mask-profile"})
+
+	// then — persisted
+	assertStatusCode(t, err, codes.OK)
+	if len(got.GetToolNames()) != 0 {
+		t.Fatalf("GetAgentProfile() after update tool_names = %v, want empty", got.GetToolNames())
+	}
+}
+
+func TestPromptService_UpdateAgentProfileUnknownFieldMaskPath(t *testing.T) {
+	ctx := context.Background()
+
+	// given — seed profile
+	profileRepo := newInMemoryAgentProfileRepo()
+	skillRepo := newInMemorySkillRepo()
+	h := NewHandler(profileRepo, skillRepo)
+
+	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
+		AgentProfileName: "unknown-path-profile",
+		Model:            "opencode-go/deepseek-v4-pro",
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update with unknown FieldMask path
+	updateReq := &game.UpdateAgentProfileRequest{
+		Name:     "agentProfiles/unknown-path-profile",
+		Profile:  &game.AgentProfile{},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
+	}
+	_, err = h.UpdateAgentProfile(ctx, updateReq)
+
+	// then — returns InvalidArgument
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestPromptService_UpdateAgentProfileNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	profileRepo := newInMemoryAgentProfileRepo()
+	skillRepo := newInMemorySkillRepo()
+	h := NewHandler(profileRepo, skillRepo)
+
+	// when — update missing profile
+	updateReq := &game.UpdateAgentProfileRequest{
+		Name: "agentProfiles/ghost",
+		Profile: &game.AgentProfile{
+			Model: "opencode-go/deepseek-v4-pro",
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"model"}},
+	}
+	_, err := h.UpdateAgentProfile(ctx, updateReq)
+
+	// then — returns NotFound
+	assertStatusCode(t, err, codes.NotFound)
+}
+
+func TestPromptService_UpdateAgentProfileMultipleFields(t *testing.T) {
+	ctx := context.Background()
+
+	// given — seed
+	profileRepo := newInMemoryAgentProfileRepo()
+	skillRepo := newInMemorySkillRepo()
+	h := NewHandler(profileRepo, skillRepo)
+
+	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
+		AgentProfileName: "multi-mask",
+		Model:            "opencode-go/deepseek-v4-pro",
+		SystemPrompt:     "before",
+		Enabled:          true,
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update model + system_prompt + enabled simultaneously
+	updateReq := &game.UpdateAgentProfileRequest{
+		Name: "agentProfiles/multi-mask",
+		Profile: &game.AgentProfile{
+			Model:        "opencode-go/gpt-5",
+			SystemPrompt: "after",
+			Enabled:      false,
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"model", "system_prompt", "enabled"}},
+	}
+	updated, err := h.UpdateAgentProfile(ctx, updateReq)
+
+	// then — all masked fields updated
+	assertStatusCode(t, err, codes.OK)
+	if updated.GetModel() != "opencode-go/gpt-5" {
+		t.Fatalf("UpdateAgentProfile() model = %q, want %q", updated.GetModel(), "opencode-go/gpt-5")
+	}
+	if updated.GetSystemPrompt() != "after" {
+		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q", updated.GetSystemPrompt(), "after")
+	}
+	if updated.GetEnabled() {
+		t.Fatalf("UpdateAgentProfile() enabled = true, want false")
+	}
+}
+
+func Test_applyAgentProfileMask(t *testing.T) {
+	existing := &domain.AgentProfile{
+		AgentProfileName: "p",
+		Model:            "old-model",
+		SystemPrompt:     "old",
+		SkillNames:       []string{"s1"},
+		MCPNames:         []string{"m1"},
+		Enabled:          true,
+		ToolNames:        []string{"t1"},
+	}
+
+	tests := []struct {
+		name      string
+		patch     *game.AgentProfile
+		mask      *fieldmaskpb.FieldMask
+		wantModel string
+		wantTools []string
+		wantErr   bool
+	}{
+		{
+			name:      "nil mask leaves existing unchanged",
+			patch:     &game.AgentProfile{Model: "ignored"},
+			mask:      nil,
+			wantModel: "old-model",
+			wantTools: []string{"t1"},
+		},
+		{
+			name:      "empty mask paths leaves existing unchanged",
+			patch:     &game.AgentProfile{Model: "ignored"},
+			mask:      &fieldmaskpb.FieldMask{Paths: nil},
+			wantModel: "old-model",
+			wantTools: []string{"t1"},
+		},
+		{
+			name:      "single field model",
+			patch:     &game.AgentProfile{Model: "new-model"},
+			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model"}},
+			wantModel: "new-model",
+			wantTools: []string{"t1"},
+		},
+		{
+			name:      "tool_names cleared to empty slice",
+			patch:     &game.AgentProfile{ToolNames: []string{}},
+			mask:      &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
+			wantModel: "old-model",
+			wantTools: []string{},
+		},
+		{
+			name:      "tool_names replaced",
+			patch:     &game.AgentProfile{ToolNames: []string{"a", "b"}},
+			mask:      &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
+			wantModel: "old-model",
+			wantTools: []string{"a", "b"},
+		},
+		{
+			name:      "multiple fields masked",
+			patch:     &game.AgentProfile{Model: "new", ToolNames: []string{"x"}, Enabled: false},
+			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model", "tool_names", "enabled"}},
+			wantModel: "new",
+			wantTools: []string{"x"},
+		},
+		{
+			name:    "unknown path returns error",
+			patch:   &game.AgentProfile{},
+			mask:    &fieldmaskpb.FieldMask{Paths: []string{"bogus"}},
+			wantErr: true,
+		},
+		{
+			name:    "unknown path mixed with valid still errors",
+			patch:   &game.AgentProfile{Model: "new"},
+			mask:    &fieldmaskpb.FieldMask{Paths: []string{"model", "bogus"}},
+			wantErr: true,
+		},
+		{
+			name:      "nil patch with valid mask returns copy of existing",
+			patch:     nil,
+			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model"}},
+			wantModel: "old-model",
+			wantTools: []string{"t1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got, err := applyAgentProfileMask(existing, tt.patch, tt.mask)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("applyAgentProfileMask() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("applyAgentProfileMask() unexpected error: %v", err)
+			}
+			if got.Model != tt.wantModel {
+				t.Fatalf("applyAgentProfileMask() model = %q, want %q", got.Model, tt.wantModel)
+			}
+			if tt.wantTools == nil {
+				if got.ToolNames != nil {
+					t.Fatalf("applyAgentProfileMask() tool_names = %v, want nil", got.ToolNames)
+				}
+			} else {
+				if len(got.ToolNames) != len(tt.wantTools) {
+					t.Fatalf("applyAgentProfileMask() tool_names len = %d, want %d", len(got.ToolNames), len(tt.wantTools))
+				}
+				for i, want := range tt.wantTools {
+					if got.ToolNames[i] != want {
+						t.Fatalf("applyAgentProfileMask() tool_names[%d] = %q, want %q", i, got.ToolNames[i], want)
+					}
+				}
+			}
+			// Ensure existing was not mutated.
+			if existing.Model != "old-model" {
+				t.Fatalf("applyAgentProfileMask() mutated existing: model = %q", existing.Model)
+			}
+			if len(existing.ToolNames) != 1 || existing.ToolNames[0] != "t1" {
+				t.Fatalf("applyAgentProfileMask() mutated existing tool_names = %v", existing.ToolNames)
+			}
+		})
+	}
 }
 
 func TestPromptService_DeleteSuccess(t *testing.T) {
@@ -248,13 +569,13 @@ func TestPromptService_DeleteSuccess(t *testing.T) {
 	assertStatusCode(t, err, codes.OK)
 
 	// when — delete
-	_, err = h.DeleteAgentProfile(ctx, &game.DeleteAgentProfileRequest{AgentProfileName: "to-delete"})
+	_, err = h.DeleteAgentProfile(ctx, &game.DeleteAgentProfileRequest{Name: "agentProfiles/to-delete"})
 
 	// then — delete succeeds
 	assertStatusCode(t, err, codes.OK)
 
 	// when — get deleted profile
-	_, err = h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{AgentProfileName: "to-delete"})
+	_, err = h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/to-delete"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)

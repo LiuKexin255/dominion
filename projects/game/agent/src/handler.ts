@@ -21,6 +21,7 @@ import type { Message as MessageProto } from "../game_types/projects/game/Messag
 
 import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
+import type { TurnContent } from "./llm";
 
 const FrameSender = {
   FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
@@ -35,6 +36,7 @@ export class Handler implements AgentServiceHandlers {
   private promptClient: PromptClient;
   private sessionAgentStore: SessionAgentStore;
   private mutexes: Map<string, Promise<void>>;
+  private heldMutexes: Set<string>;
 
   constructor(
     promptClient: PromptClient,
@@ -43,6 +45,7 @@ export class Handler implements AgentServiceHandlers {
     this.promptClient = promptClient;
     this.sessionAgentStore = sessionAgentStore;
     this.mutexes = new Map();
+    this.heldMutexes = new Set();
   }
 
   // -----------------------------------------------------------------------
@@ -57,12 +60,20 @@ export class Handler implements AgentServiceHandlers {
     });
     this.mutexes.set(sessionId, prev.then(() => next));
     await prev;
+    this.heldMutexes.add(sessionId);
     (this.mutexes as any)[`_release_${sessionId}`] = release;
   }
 
   private releaseMutex(sessionId: string): void {
     const release = (this.mutexes as any)[`_release_${sessionId}`];
-    if (release) release();
+    if (release) {
+      this.heldMutexes.delete(sessionId);
+      release();
+    }
+  }
+
+  private isMutexHeld(sessionId: string): boolean {
+    return this.heldMutexes.has(sessionId);
   }
 
   // -----------------------------------------------------------------------
@@ -88,6 +99,33 @@ export class Handler implements AgentServiceHandlers {
   };
 
   // -----------------------------------------------------------------------
+  // RefreshAgent
+  // -----------------------------------------------------------------------
+
+  RefreshAgent: grpc.handleUnaryCall<{ name?: string }, {}> = (
+    call,
+    callback,
+  ) => {
+    const sessionId = extractSessionId(call.request.name ?? "");
+    info("refresh agent requested", { sessionId });
+
+    if (this.isMutexHeld(sessionId)) {
+      warn("refresh agent rejected: turn in-flight", { sessionId });
+      callback({
+        code: grpc.status.FAILED_PRECONDITION,
+        details: "cannot refresh agent while a turn is in-flight",
+      } as grpc.ServiceError);
+      return;
+    }
+
+    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+    sessionAgent.invalidateAdapter();
+    info("refresh agent completed", { sessionId });
+
+    callback(null, {});
+  };
+
+  // -----------------------------------------------------------------------
   // Connect (bidirectional streaming)
   // -----------------------------------------------------------------------
 
@@ -105,6 +143,21 @@ export class Handler implements AgentServiceHandlers {
       echo?: unknown;
       operation?: unknown;
       agentProfileName?: string;
+      userTurn?: {
+        text?: string;
+        screenshot?: {
+          screenshotId?: string;
+          data?: string;
+          encoding?: string;
+          widthPx?: number;
+          heightPx?: number;
+        };
+      } | null;
+      operationResult?: {
+        operationId?: string;
+        status?: string | number;
+        message?: string;
+      } | null;
     },
     AgentFrame
   > = (stream) => {
@@ -133,6 +186,20 @@ export class Handler implements AgentServiceHandlers {
       createTime: timestampNow(),
       ...payload,
     });
+
+    // Track sessions whose bridge sink was registered on this stream. The
+    // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
+    const activeSessions = new Set<string>();
+    const cleanupSinks = () => {
+      for (const sid of activeSessions) {
+        try {
+          const sa = this.sessionAgentStore.getOrCreate(sid);
+          sa.getBridge().unregisterSink();
+        } catch {
+        }
+      }
+      activeSessions.clear();
+    };
 
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
@@ -172,36 +239,35 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      if (
-        frame.payload === "screenshot" ||
-        frame.screenshot ||
-        frame.payload === "operation" ||
-        frame.operation
-      ) {
+      if (frame.payload === "operation_result" || frame.operationResult) {
+        const sa = this.sessionAgentStore.getOrCreate(sessionId);
+        sa.getBridge().handleResult(frame.operationResult as any);
         return;
       }
 
-      const senderValue =
-        typeof frame.sender === "string"
-          ? frame.sender
-          : FrameSender.FRAME_SENDER_USER;
-      if (
-        (frame.payload === "text" || frame.text) &&
-        senderValue === FrameSender.FRAME_SENDER_USER
-      ) {
-        const userText = frame.text?.content ?? "";
+      if (frame.payload === "user_turn" || frame.userTurn) {
+        const userTurn = frame.userTurn as {
+          text?: string;
+          screenshot?: {
+            screenshotId?: string;
+            data?: string;
+            encoding?: string;
+          };
+        };
+        const userText = userTurn?.text ?? "";
+        const screenshot = userTurn?.screenshot;
 
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
-          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-          const state = sessionAgent.getAdapterState();
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+          const state = sa.getAdapterState();
           if (state.isBound && state.activeProfileName) {
             effectiveProfileName = state.activeProfileName;
           }
         }
 
         if (!effectiveProfileName) {
-          warn("no agent profile name for text frame", {
+          warn("no agent profile name for user_turn frame", {
             sessionId,
             invokeId,
           });
@@ -221,25 +287,34 @@ export class Handler implements AgentServiceHandlers {
 
         await this.acquireMutex(sessionId);
         try {
-          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
-          const adapter = await sessionAgent.getOrCreateAdapter(
+          sa.getBridge().registerSink((operationEnvelope: AgentFrame) => {
+            stream.write(operationEnvelope);
+          });
+          activeSessions.add(sessionId);
+
+          sa.getBridge().setCurrentScreenshotId(screenshot?.screenshotId ?? "");
+
+          const adapter = await sa.getOrCreateAdapter(
             effectiveProfileName,
             () => this.promptClient.getProfile(effectiveProfileName),
           );
 
+          const turnContent: TurnContent = { text: userText };
+          if (screenshot?.data && screenshot?.encoding) {
+            turnContent.screenshotId = screenshot.screenshotId;
+            turnContent.screenshotData = screenshot.data;
+            turnContent.screenshotMimeType = `image/${screenshot.encoding}`;
+          }
+
           let blockCount = 0;
           for await (const block of adapter.generateTurn(
             sessionId,
-            userText,
+            turnContent,
           )) {
             blockCount++;
             if (block.type === "reasoning") {
-              info("writing thinking frame", {
-                sessionId,
-                invokeId,
-                length: block.reasoning.length,
-              });
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -251,12 +326,6 @@ export class Handler implements AgentServiceHandlers {
               );
               stream.write(thinkFrame);
             } else if (block.type === "text") {
-              info("writing text frame", {
-                sessionId,
-                invokeId,
-                length: block.text.length,
-                preview: block.text.slice(0, 100),
-              });
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
                 invokeId,
@@ -270,23 +339,21 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          {
-            info("text processing completed", {
-              sessionId,
-              invokeId,
-              blockCount,
-            });
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              invokeId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                agentProfileName: effectiveProfileName,
-                wait: {},
-              },
-            );
-            stream.write(waitFrame);
-          }
+          info("user_turn processing completed", {
+            sessionId,
+            invokeId,
+            blockCount,
+          });
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            invokeId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              agentProfileName: effectiveProfileName,
+              wait: {},
+            },
+          );
+          stream.write(waitFrame);
         } catch (err: unknown) {
           const message =
             err instanceof Error ? err.message : "Processing error";
@@ -320,6 +387,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
+      cleanupSinks();
       try {
         stream.end();
       } catch {
@@ -329,6 +397,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
+      cleanupSinks();
     });
   };
 
@@ -388,6 +457,9 @@ export class Handler implements AgentServiceHandlers {
           const textBlocks = msg.content.filter(
             (b: any) => b.type === "text",
           );
+          const imageBlocks = msg.content.filter(
+            (b: any) => b.type === "image" || b.type === "image_url",
+          );
 
           const reasoning = reasoningBlocks
             .map((b: any) => b.reasoning ?? "")
@@ -401,6 +473,14 @@ export class Handler implements AgentServiceHandlers {
             .join("");
           if (text) {
             segments.push({ type: "text", content: text });
+          }
+
+          for (const imgBlock of imageBlocks) {
+            const data = imgBlock.data ?? (imgBlock.image_url as any)?.url ?? "";
+            const base64Data = data.replace(/^data:image\/[^;]+;base64,/, "");
+            if (base64Data) {
+              segments.push({ type: "image_data", content: base64Data });
+            }
           }
 
           if (segments.length === 0) {
@@ -423,12 +503,26 @@ export class Handler implements AgentServiceHandlers {
             ? timestampFromMs(new Date(checkpointTs).getTime())
             : undefined;
 
+          if (seg.type === "image_data") {
+            result.push({
+              name: `sessions/${sessionId}/agent/messages/${segId}`,
+              messageId: segId,
+              sender,
+              type: "image",
+              content: "imageData",
+              imageData: seg.content,
+              createTime,
+            });
+            continue;
+          }
+
           result.push({
             name: `sessions/${sessionId}/agent/messages/${segId}`,
             messageId: segId,
             sender,
             type: seg.type,
-            content: seg.content,
+            content: "text",
+            text: seg.content,
             createTime,
           });
         }

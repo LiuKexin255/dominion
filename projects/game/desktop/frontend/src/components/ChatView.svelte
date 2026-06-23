@@ -1,14 +1,19 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender } from '../api'
+  import { FrameSender, AgentMouseAction } from '../api'
+  import type { AgentOperationFrame, AgentOperationResultFrame } from '../api'
+  import { renderMarkdown } from '../markdown'
 
   type ChatEntry = {
     messageId: string
     sender: FrameSender
-    type: 'thinking' | 'text' | 'warn'
+    type: 'thinking' | 'text' | 'warn' | 'image' | 'operation' | 'operation_result'
     content: string
     timestamp: string
     agentProfileName?: string
+    imageUrl?: string
+    operation?: AgentOperationFrame
+    operationResult?: AgentOperationResultFrame
   }
 
   let {
@@ -48,6 +53,33 @@
     return msg.sender === FrameSender.AGENT
   }
 
+  function isAgentText(msg: ChatEntry): boolean {
+    return isAgentEntry(msg) && msg.type === 'text'
+  }
+
+  function formatTime(t: string): string {
+    try {
+      return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    } catch {
+      return ''
+    }
+  }
+
+  function describeMouseAction(action: AgentMouseAction): string {
+    switch (action) {
+      case AgentMouseAction.LEFT_CLICK: return 'LEFT_CLICK'
+      case AgentMouseAction.LEFT_DOUBLE_CLICK: return 'LEFT_DOUBLE_CLICK'
+      case AgentMouseAction.RIGHT_CLICK: return 'RIGHT_CLICK'
+      case AgentMouseAction.RIGHT_DOUBLE_CLICK: return 'RIGHT_DOUBLE_CLICK'
+      case AgentMouseAction.LEFT_RIGHT_PRESS: return 'LEFT_RIGHT_PRESS'
+      default: return 'UNSPECIFIED'
+    }
+  }
+
+  function isOperationSucceeded(status: number): boolean {
+    return status === 1
+  }
+
   $effect(() => {
     // reactively scroll when messages change
     messages
@@ -77,7 +109,55 @@
           <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
         {/if}
         <div data-testid="chat-message">
-          <ChatMessage message={msg} />
+          {#if isAgentText(msg)}
+            {@const sanitizedHtml = renderMarkdown(msg.content)}
+            <div class="msg-row msg-agent">
+              <div class="msg-bubble agent-bubble">
+                <div class="msg-sender">Agent</div>
+                <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
+                <div class="msg-time">{formatTime(msg.timestamp)}</div>
+              </div>
+            </div>
+          {:else if msg.type === 'image'}
+            <div class="msg-row msg-image">
+              <details class="image-details">
+                <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
+                {#if msg.imageUrl}
+                  <img class="screenshot-img" src={msg.imageUrl} alt="Screenshot" data-testid="image-entry-img" />
+                {/if}
+              </details>
+            </div>
+          {:else if msg.type === 'operation' && msg.operation}
+            {@const op = msg.operation}
+            {@const mouse = op.mouse}
+            <div class="msg-row msg-operation">
+              <div class="op-card" data-testid="operation-entry">
+                <span class="op-label">Operation</span>
+                {#if mouse}
+                  <span class="op-action">{describeMouseAction(mouse.action)}</span>
+                  <span class="op-coords">(@ {mouse.xPx}, {mouse.yPx})</span>
+                {/if}
+                {#if op.keyboard}
+                  <span class="op-keys">keys: {op.keyboard.keyCodes}</span>
+                {/if}
+                <span class="op-screenshot" title={op.screenshotId}>screenshot: {op.screenshotId ? op.screenshotId.slice(0, 8) : '—'}</span>
+              </div>
+            </div>
+          {:else if msg.type === 'operation_result' && msg.operationResult}
+            {@const result = msg.operationResult}
+            {@const succeeded = isOperationSucceeded(result.status)}
+            <div class="msg-row msg-operation-result">
+              <div class="op-result-card" class:op-result-success={succeeded} class:op-result-failure={!succeeded} data-testid="operation-result-entry">
+                <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
+                <span class="op-result-status">{succeeded ? 'succeeded' : 'failed'}</span>
+                {#if result.message}
+                  <span class="op-result-message">{result.message}</span>
+                {/if}
+              </div>
+            </div>
+          {:else}
+            <ChatMessage message={msg} />
+          {/if}
         </div>
       {/each}
     {/if}
@@ -289,5 +369,204 @@
   .send-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* ── Message Row + Bubble (agent text with markdown) ── */
+  .msg-row {
+    display: flex;
+    padding: 2px 12px;
+  }
+
+  .msg-row.msg-agent {
+    justify-content: flex-start;
+  }
+
+  .msg-bubble {
+    max-width: 80%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .agent-bubble {
+    background: #1a1a3e;
+    border: 1px solid #2a2a5e;
+    color: #e0e0e0;
+    border-bottom-left-radius: 2px;
+  }
+
+  .agent-bubble .msg-sender {
+    font-size: 10px;
+    font-weight: 600;
+    color: #50fa7b;
+    margin-bottom: 2px;
+  }
+
+  .agent-bubble .msg-time {
+    font-size: 10px;
+    color: rgba(80, 250, 123, 0.4);
+    margin-top: 4px;
+  }
+
+  /* Markdown content rendered via {@html} */
+  .markdown-content :global(p) {
+    margin: 0 0 6px;
+  }
+
+  .markdown-content :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .markdown-content :global(pre) {
+    margin: 4px 0;
+    padding: 6px 8px;
+    background: #0d0d2b;
+    border-radius: 4px;
+    font-size: 11px;
+    overflow-x: auto;
+  }
+
+  .markdown-content :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+  }
+
+  .markdown-content :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .markdown-content :global(:not(pre) > code) {
+    background: rgba(80, 250, 123, 0.1);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .markdown-content :global(a) {
+    color: #4a9eff;
+  }
+
+  .markdown-content :global(blockquote) {
+    margin: 4px 0;
+    padding: 2px 10px;
+    border-left: 2px solid #333355;
+    color: #8888aa;
+  }
+
+  .markdown-content :global(ul),
+  .markdown-content :global(ol) {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+
+  .markdown-content :global(li) {
+    margin: 2px 0;
+  }
+
+  /* ── Image Entry ── */
+  .msg-image {
+    justify-content: flex-start;
+  }
+
+  .image-details {
+    max-width: 80%;
+    background: #1a1a3e;
+    border: 1px solid #2a2a5e;
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+
+  .image-summary {
+    font-size: 11px;
+    color: #8888aa;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .screenshot-img {
+    max-width: 100%;
+    margin-top: 6px;
+    border-radius: 4px;
+    display: block;
+  }
+
+  /* ── Operation Entry ── */
+  .msg-operation,
+  .msg-operation-result {
+    justify-content: flex-start;
+  }
+
+  .op-card {
+    max-width: 80%;
+    padding: 6px 10px;
+    background: rgba(74, 158, 255, 0.06);
+    border: 1px solid rgba(74, 158, 255, 0.2);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #a0c8ff;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .op-label {
+    font-weight: 600;
+    color: #4a9eff;
+  }
+
+  .op-action {
+    color: #e0e0e0;
+  }
+
+  .op-coords {
+    color: #50fa7b;
+  }
+
+  .op-keys {
+    color: #ffb86c;
+  }
+
+  .op-screenshot {
+    color: #606080;
+    font-size: 10px;
+  }
+
+  /* ── Operation Result Entry ── */
+  .op-result-card {
+    max-width: 80%;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .op-result-success {
+    background: rgba(80, 250, 123, 0.08);
+    border: 1px solid rgba(80, 250, 123, 0.3);
+    color: #50fa7b;
+  }
+
+  .op-result-failure {
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.3);
+    color: #ff6b6b;
+  }
+
+  .op-result-icon {
+    font-weight: 700;
+  }
+
+  .op-result-status {
+    font-weight: 600;
+  }
+
+  .op-result-message {
+    color: #a0a0b0;
   }
 </style>

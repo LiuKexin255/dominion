@@ -2,8 +2,8 @@
  * llm.test.ts — Tests for AgentAdapterImpl.
  *
  * The adapter receives a pre-created ChatModel (from ModelProviderCache)
- * at construction time.  createAgent compiles eagerly.  generateTurn
- * only takes threadId and userMessage.
+ * at construction time.  createAgent compiles eagerly.  generateTurn takes
+ * threadId and a multimodal TurnContent (text + optional screenshot).
  */
 
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -11,13 +11,19 @@ import { fakeModel } from "@langchain/core/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AgentAdapterImpl, type ContentBlock } from "./llm";
+import {
+	AgentAdapterImpl,
+	buildTools,
+	type ContentBlock,
+	type TurnContent,
+} from "./llm";
+import { OperationBridge } from "./operation-bridge";
 
 // Helpers
 
 type FakeStreamAgent = {
 	agent: {
-		streamEvents: () => Promise<{
+		streamEvents: (input?: { messages: BaseMessage[] }) => Promise<{
 			messages: AsyncGenerator<{
 				reasoning: AsyncGenerator<string>;
 				text: AsyncGenerator<string>;
@@ -25,6 +31,10 @@ type FakeStreamAgent = {
 		}>;
 	};
 };
+
+function noopBridge(): OperationBridge {
+	return new OperationBridge();
+}
 
 async function collect(
 	iter: AsyncIterable<ContentBlock>,
@@ -60,6 +70,33 @@ beforeEach(() => {
 });
 
 // ===========================================================================
+// buildTools — toolNames → StructuredToolInterface[] mapping
+// ===========================================================================
+
+describe("buildTools", () => {
+	it("returns a mouse tool when toolNames includes 'mouse'", () => {
+		const tools = buildTools(["mouse"], noopBridge());
+		expect(tools).toHaveLength(1);
+		expect(tools[0].name).toBe("mouse");
+	});
+
+	it("returns empty array when toolNames is empty", () => {
+		expect(buildTools([], noopBridge())).toEqual([]);
+	});
+
+	it("silently skips unknown tool names", () => {
+		expect(buildTools(["unknown-tool"], noopBridge())).toEqual([]);
+	});
+
+	it("maps multiple known tool names", () => {
+		const tools = buildTools(["mouse", "mouse"], noopBridge());
+		expect(tools).toHaveLength(2);
+		expect(tools[0].name).toBe("mouse");
+		expect(tools[1].name).toBe("mouse");
+	});
+});
+
+// ===========================================================================
 // AgentAdapterImpl constructor
 // ===========================================================================
 
@@ -68,18 +105,35 @@ describe("AgentAdapterImpl constructor", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("hi"),
 			"prompt",
+			[],
+			noopBridge(),
 			new MemorySaver(),
 		);
 		expect(typeof adapter.generateTurn).toBe("function");
 	});
 
-	it("generateTurn accepts 2 parameters (threadId, userMessage)", () => {
+	it("generateTurn accepts 2 parameters (threadId, content)", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("hi"),
 			"prompt",
+			[],
+			noopBridge(),
 			new MemorySaver(),
 		);
 		expect(adapter.generateTurn.length).toBe(2);
+	});
+
+	it("constructs without error when toolNames includes 'mouse'", () => {
+		expect(
+			() =>
+				new AgentAdapterImpl(
+					fakeTextModel("hi"),
+					"prompt",
+					["mouse"],
+					noopBridge(),
+					new MemorySaver(),
+				),
+		).not.toThrow();
 	});
 });
 
@@ -90,8 +144,16 @@ describe("AgentAdapterImpl constructor", () => {
 describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 	it("yields text ContentBlock for text-only response", async () => {
 		const model = fakeTextModel("The answer is 42.");
-		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-		const blocks = await collect(adapter.generateTurn("t-text", "Hi"));
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const blocks = await collect(
+			adapter.generateTurn("t-text", { text: "Hi" }),
+		);
 
 		expect(blocks.length).toBeGreaterThan(0);
 		const textBlocks = blocks.filter((b) => b.type === "text");
@@ -101,8 +163,16 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 
 	it("yields reasoning ContentBlock before text ContentBlock", async () => {
 		const model = fakeThinkingModel("Let me think...", "Done.");
-		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-		const blocks = await collect(adapter.generateTurn("t-think", "Why?"));
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const blocks = await collect(
+			adapter.generateTurn("t-think", { text: "Why?" }),
+		);
 
 		const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
 		const textBlocks = blocks.filter((b) => b.type === "text");
@@ -123,8 +193,16 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 
 	it("all yielded blocks have type 'reasoning' or 'text'", async () => {
 		const model = fakeThinkingModel("Thinking", "Text");
-		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
-		const blocks = await collect(adapter.generateTurn("t-types", "go"));
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const blocks = await collect(
+			adapter.generateTurn("t-types", { text: "go" }),
+		);
 
 		for (const block of blocks) {
 			expect(["reasoning", "text"]).toContain(block.type);
@@ -135,6 +213,8 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("unused"),
 			"prompt",
+			[],
+			noopBridge(),
 			new MemorySaver(),
 		);
 
@@ -154,7 +234,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		};
 
 		const blocks = await collect(
-			adapter.generateTurn("t-additional-kwargs", "Hi"),
+			adapter.generateTurn("t-additional-kwargs", { text: "Hi" }),
 		);
 
 		expect(blocks).toHaveLength(2);
@@ -169,6 +249,8 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("unused"),
 			"prompt",
+			[],
+			noopBridge(),
 			new MemorySaver(),
 		);
 
@@ -186,11 +268,126 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 		};
 
 		const blocks = await collect(
-			adapter.generateTurn("t-no-additional-kwargs", "Hi"),
+			adapter.generateTurn("t-no-additional-kwargs", { text: "Hi" }),
 		);
 
 		expect(blocks).toHaveLength(1);
 		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
+});
+
+// ===========================================================================
+// AgentAdapterImpl.generateTurn — multimodal HumanMessage construction
+// ===========================================================================
+
+describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
+	function captureAgent(): {
+		adapter: AgentAdapterImpl;
+		capturedMessages: BaseMessage[];
+	} {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const capturedMessages: BaseMessage[] = [];
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async (input?: { messages: BaseMessage[] }) => {
+				if (input) capturedMessages.push(...input.messages);
+				return {
+					messages: (async function* () {
+						yield {
+							reasoning: (async function* () {})(),
+							text: (async function* () {
+								yield "ok";
+							})(),
+						};
+					})(),
+				};
+			},
+		};
+		return { adapter, capturedMessages };
+	}
+
+	it("builds both text and image blocks when text + screenshot provided", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "click here",
+			screenshotId: "shot-1",
+			screenshotData: "base64data",
+			screenshotMimeType: "image/png",
+		};
+
+		await collect(adapter.generateTurn("t-multi", content));
+
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & {
+			_getType?: () => string;
+			content: unknown;
+		};
+		expect(msg._getType?.()).toBe("human");
+		expect(Array.isArray(msg.content)).toBe(true);
+		expect(msg.content).toEqual([
+			{ type: "text", text: "click here" },
+			{
+				type: "image",
+				source_type: "base64",
+				data: "base64data",
+				mime_type: "image/png",
+			},
+		]);
+	});
+
+	it("builds a single text block when only text is provided", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+
+		await collect(adapter.generateTurn("t-text-only", { text: "hello" }));
+
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("builds an image-only block when screenshot is present without text", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			screenshotId: "shot-2",
+			screenshotData: "imgdata",
+			screenshotMimeType: "image/jpeg",
+		};
+
+		await collect(adapter.generateTurn("t-img-only", content));
+
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([
+			{
+				type: "image",
+				source_type: "base64",
+				data: "imgdata",
+				mime_type: "image/jpeg",
+			},
+		]);
+	});
+
+	it("does NOT include screenshot_id in the HumanMessage content", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "look",
+			screenshotId: "internal-shot-id",
+			screenshotData: "data",
+			screenshotMimeType: "image/png",
+		};
+
+		await collect(adapter.generateTurn("t-no-shot-id", content));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown[] };
+		const serialized = JSON.stringify(msg.content);
+		expect(serialized).not.toContain("internal-shot-id");
+		expect(serialized).not.toContain("screenshotId");
+		expect(serialized).not.toContain("screenshot_id");
 	});
 });
 
@@ -202,9 +399,15 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 	it("getState returns both HumanMessage and AIMessage after generateTurn", async () => {
 		const model = fakeThinkingModel("Let me think...", "Done.");
 		const cp = new MemorySaver();
-		const adapter = new AgentAdapterImpl(model, "prompt", cp);
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			cp,
+		);
 
-		await collect(adapter.generateTurn("ckpt-1", "Hello"));
+		await collect(adapter.generateTurn("ckpt-1", { text: "Hello" }));
 
 		const state = await adapter.getState("ckpt-1");
 		expect(state).not.toBeNull();
@@ -224,10 +427,16 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 	it("getState returns accumulated messages after multiple turns", async () => {
 		const model = fakeTextModel("response");
 		const cp = new MemorySaver();
-		const adapter = new AgentAdapterImpl(model, "prompt", cp);
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			cp,
+		);
 
-		await collect(adapter.generateTurn("ckpt-2", "first"));
-		await collect(adapter.generateTurn("ckpt-2", "second"));
+		await collect(adapter.generateTurn("ckpt-2", { text: "first" }));
+		await collect(adapter.generateTurn("ckpt-2", { text: "second" }));
 
 		const state = await adapter.getState("ckpt-2");
 		expect(state).not.toBeNull();
@@ -247,10 +456,16 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 		);
 		const cp = new MemorySaver();
 
-		const adapter = new AgentAdapterImpl(model, "system-prompt-1", cp);
+		const adapter = new AgentAdapterImpl(
+			model,
+			"system-prompt-1",
+			[],
+			noopBridge(),
+			cp,
+		);
 
-		await collect(adapter.generateTurn("t-mw", "msg1"));
-		await collect(adapter.generateTurn("t-mw", "msg2"));
+		await collect(adapter.generateTurn("t-mw", { text: "msg1" }));
+		await collect(adapter.generateTurn("t-mw", { text: "msg2" }));
 
 		for (const call of model.calls) {
 			const systemMsgs = call.messages.filter(
@@ -268,10 +483,16 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 describe("AgentAdapterImpl.generateTurn error propagation", () => {
 	it("propagates error when the model responds with an error", async () => {
 		const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
-		const adapter = new AgentAdapterImpl(model, "prompt", new MemorySaver());
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
 
 		await expect(
-			collect(adapter.generateTurn("t-err2", "hi")),
+			collect(adapter.generateTurn("t-err2", { text: "hi" })),
 		).rejects.toThrow();
 	});
 });

@@ -8,6 +8,9 @@ type AgentProfileRepository interface {
 	CreateAgentProfile(ctx context.Context, profile *AgentProfile) error
 	// GetAgentProfile retrieves an AgentProfile by its profile name.
 	GetAgentProfile(ctx context.Context, profileName string) (*AgentProfile, error)
+	// UpdateAgentProfile replaces the stored AgentProfile identified by profile.AgentProfileName.
+	// It returns ErrNotFound if no profile with the given name exists.
+	UpdateAgentProfile(ctx context.Context, profile *AgentProfile) (*AgentProfile, error)
 	// ListAgentProfiles retrieves a page of AgentProfiles.
 	// pageSize controls the maximum number of results; pageToken is the cursor
 	// for the next page. Pass empty string for the first page.

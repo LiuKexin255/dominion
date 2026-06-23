@@ -34,13 +34,13 @@ New RPC on `PromptService`:
 ```proto
 rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
   option (google.api.http) = {
-    patch: "/api/v1/prompts/agentProfiles/{agent_profile_name}"
+    patch: "/api/v1/prompts/{name=agentProfiles/*}"
     body: "profile"
   };
 }
 
 message UpdateAgentProfileRequest {
-  string agent_profile_name = 1;
+  string name = 1;                              // resource name "agentProfiles/{id}"
   AgentProfile profile = 2;
   google.protobuf.FieldMask update_mask = 3;
 }
@@ -51,30 +51,58 @@ Contract:
 - `FieldMask` is used for partial updates, consistent with repository convention (`experimental/golang/mongo_demo` uses FieldMask).
 - `UpdateMask` supports editing `tool_names` among other writable profile fields.
 - HTTP method is `PATCH`, not `PUT`.
+- `name` carries the full AgentProfile resource name (e.g. `agentProfiles/my-profile`); the prompt handler parses it to the business id before calling the domain layer, so the domain never sees the URI prefix.
 
 ## RefreshAgent RPC
 
-New internal RPC on **both** `AgentService` and `ProxyService`:
+RPC on **both** `AgentService` and `ProxyService`. On `ProxyService` it is user-facing with an HTTP annotation so the desktop can trigger it after a profile update:
 
 ```proto
-// On AgentService (agent-side implementation):
-rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
-
 // On ProxyService (proxy-side forwarding to agent owner node):
+rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty) {
+  option (google.api.http) = {
+    post: "/api/v1/{name=sessions/*/agent}:refresh"
+    body: "*"
+  };
+}
+
+// On AgentService (agent-side implementation, internal gRPC only):
 rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
-```
 
 message RefreshAgentRequest {
-  string session_id = 1;
+  string name = 1;   // Agent resource name "sessions/{session}/agent"
 }
 ```
 
 Contract:
 
-- Routes: desktop → gateway → proxy → agent. The proxy gains forwarding for the new RPC.
+- Routes: desktop → gateway → proxy → agent. The proxy handler resolves the owner for the session and forwards to the owning agent instance.
 - Rejects with `FAILED_PRECONDITION` if a turn is in-flight for the given session (agent service tracks per-session mutex).
-- No HTTP annotation: internal RPC via proxy, not directly user-facing.
+- The proxy-side RPC is user-facing via `POST /api/v1/sessions/{session}/agent:refresh`; desktop calls it after `UpdateAgentProfile` so the agent reloads its adapter with the new profile configuration.
+- The agent-side handler parses the Agent resource `name` to recover the session id used as the adapter cache key.
 - The profile's updated `tool_names` take effect on the next turn after the refresh completes.
+- The proxy does NOT lazily create an owner for `RefreshAgent` (nor for `GetAgent`/`ListMessages`); an owner is allocated only by `ConnectAgent`. A missing owner returns `NOT_FOUND`.
+
+## Resource Naming (AIP Compliance)
+
+All resources in `game.proto` follow Google AIP resource-naming (`style/api.md`):
+
+- `Session`, `Agent`, `AgentProfile`, `Skill`, and `Message` each declare `option (google.api.resource)` with a `pattern` and carry a canonical `name` field holding the full resource name.
+- The redundant business-id peer fields (`AgentProfile.agent_profile_name`, `Skill.skill_name`) are removed from the resource messages; the id is the last path segment of `name`. Create requests still accept a user-supplied id field (`agent_profile_name`/`skill_name`) per AIP-133.
+- Get/Update/Delete requests use a `name` field (full resource name) with `google.api.resource_reference`, not a bare id.
+- HTTP patterns use `{name=<collection>/*}` so grpc-gateway captures the full resource name from the URL.
+- `RefreshAgentRequest.name` carries the Agent resource name. The internal `AgentGetRequest` (agent-to-agent, no HTTP) keeps `session_id`.
+
+## Proxy Handler Layer (No Separate Service)
+
+The proxy no longer has a `service/` package. `ProxyHandler` in `proxy/handler` owns owner resolution, agent-client routing, and stream binding directly:
+
+- `GetAgent`/`ListMessages`/`RefreshAgent` require an existing owner (`ownerStore.Get`); they return `NOT_FOUND` when no owner exists.
+- `ConnectAgent` is the only RPC that allocates an owner (pick + persist).
+- The previous `resolveOwner` lazy-create wrapper is removed.
+
+The session service also drops its (empty) `service/` package; `SessionHandler` in `session/handler` holds the repository directly.
+
 
 ## AgentFrame Payloads
 

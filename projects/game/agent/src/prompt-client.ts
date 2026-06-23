@@ -38,6 +38,8 @@ const TLS_CA_CERT = "/etc/tls/ca.crt";
 export interface ProfileResult {
   model: string;
   systemPrompt: string;
+  /** Tool names declared on the profile (proto field `tool_names`). */
+  toolNames: string[];
 }
 
 function buildClientCredentials(): grpc.ChannelCredentials {
@@ -113,7 +115,7 @@ export class PromptClient {
       deadline.setSeconds(deadline.getSeconds() + 10);
 
       (this.client as any).getAgentProfile(
-        { agentProfileName: profileName },
+        { name: `agentProfiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {
@@ -124,6 +126,7 @@ export class PromptClient {
           resolve({
             model: response.model,
             systemPrompt: response.systemPrompt,
+            toolNames: response.toolNames ?? [],
           });
         },
       );

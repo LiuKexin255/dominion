@@ -31,8 +31,8 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 		SystemPrompt:     "You are a test agent.",
 		Enabled:          true,
 	})
-	if profile.GetAgentProfileName() != profileName {
-		t.Errorf("profile name = %q, want %q", profile.GetAgentProfileName(), profileName)
+	if profile.GetName() != "agentProfiles/"+profileName {
+		t.Errorf("profile name = %q, want %q", profile.GetName(), "agentProfiles/"+profileName)
 	}
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -70,8 +70,8 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: sendText},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: sendText},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -133,8 +133,8 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: "Hello ordering test"},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: "Hello ordering test"},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}
@@ -184,8 +184,8 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	textFrame := &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: "Hello world"},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: "Hello world"},
 		},
 		Sender: game.FrameSender_FRAME_SENDER_USER,
 	}

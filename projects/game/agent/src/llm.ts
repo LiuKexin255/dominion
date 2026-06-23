@@ -11,8 +11,11 @@ import { info } from "@dominion/common-js-logs";
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
+import { createMouseTool } from "./mouse-tool";
+import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +25,37 @@ import type { ChatModel } from "./model-provider";
 export type ContentBlock =
 	| { type: "reasoning"; reasoning: string }
 	| { type: "text"; text: string };
+
+/**
+ * Per-turn user input for `generateTurn`.
+ *
+ * `screenshotId` is internal per-turn context for tools (read dynamically via
+ * the OperationBridge) and is NEVER included in the HumanMessage content sent
+ * to the model.  Only `text` and the `screenshot*` fields become content blocks.
+ */
+export interface TurnContent {
+	text?: string;
+	screenshotId?: string;
+	screenshotData?: string;
+	screenshotMimeType?: string;
+}
+
+/**
+ * Map profile `toolNames` entries to LangChain tool instances bound to the
+ * session-scoped bridge.  Unknown names are silently skipped.
+ */
+export function buildTools(
+	toolNames: string[],
+	bridge: OperationBridge,
+): StructuredToolInterface[] {
+	const tools: StructuredToolInterface[] = [];
+	for (const name of toolNames) {
+		if (name === "mouse") {
+			tools.push(createMouseTool(bridge));
+		}
+	}
+	return tools;
+}
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -61,19 +95,19 @@ export interface AdapterStateSnapshot {
 
 export interface AgentAdapter {
 	/**
-	 * Generate a single conversational turn.
+	 * Generate a single conversational turn from multimodal user input.
 	 *
 	 * The adapter was compiled at construction time with a specific model,
-	 * systemPrompt, and checkpointer.  Only the threadId and userMessage
-	 * vary per turn.
+	 * systemPrompt, tools, and checkpointer.  Only the threadId and the
+	 * per-turn content vary.
 	 *
-	 * @param threadId    - Stable checkpoint thread identifier (sessionId).
-	 * @param userMessage - The user's message for this turn.
+	 * @param threadId - Stable checkpoint thread identifier (sessionId).
+	 * @param content  - Text and/or screenshot blocks for this turn.
 	 * @returns Async iterable of ContentBlock in streaming order.
 	 */
 	generateTurn(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock>;
 
 	/**
@@ -94,12 +128,16 @@ export interface AgentAdapter {
 //
 // The factory receives a lazy getProvider callback rather than a pre-fetched
 // ChatModel.  The production factory calls getProvider() to obtain the shared
-// model; the test factory ignores it entirely.
+// model; the test factory ignores it entirely.  toolNames and bridge are
+// forwarded so the adapter can wire LangChain tools (e.g. mouse) at compile
+// time.
 // ---------------------------------------------------------------------------
 
 export type AdapterFactory = (
 	getProvider: () => Promise<ChatModel>,
 	systemPrompt: string,
+	toolNames: string[],
+	bridge: OperationBridge,
 	checkpointer: MemorySaver,
 ) => Promise<AgentAdapter>;
 
@@ -114,15 +152,21 @@ export class AgentAdapterImpl implements AgentAdapter {
 	constructor(
 		chatModel: ChatModel,
 		systemPrompt: string,
+		toolNames: string[],
+		bridge: OperationBridge,
 		checkpointer: MemorySaver,
 	) {
+		const tools = buildTools(toolNames, bridge);
+
 		info("compiling agent adapter", {
 			systemPromptLength: systemPrompt.length,
+			toolCount: tools.length,
 		});
 
 		this.agent = createAgent({
 			model: chatModel,
 			systemPrompt,
+			tools,
 			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
 			checkpointer,
 		});
@@ -130,9 +174,9 @@ export class AgentAdapterImpl implements AgentAdapter {
 
 	async *generateTurn(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock> {
-		yield* this.streamFromAgent(threadId, userMessage);
+		yield* this.streamFromAgent(threadId, content);
 	}
 
 	async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
@@ -149,11 +193,24 @@ export class AgentAdapterImpl implements AgentAdapter {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private async *streamFromAgent(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock> {
+		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
+		if (content.text) {
+			contentBlocks.push({ type: "text", text: content.text });
+		}
+		if (content.screenshotData && content.screenshotMimeType) {
+			contentBlocks.push({
+				type: "image",
+				source_type: "base64",
+				data: content.screenshotData,
+				mime_type: content.screenshotMimeType,
+			});
+		}
+
 		const stream = await this.agent.streamEvents(
 			{
-				messages: [new HumanMessage(userMessage)],
+				messages: [new HumanMessage({ content: contentBlocks })],
 			},
 			{
 				configurable: { thread_id: threadId },

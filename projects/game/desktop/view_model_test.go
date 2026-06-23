@@ -231,7 +231,7 @@ func TestToMessageViewModels(t *testing.T) {
 			MessageId:  "msg-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			Type:       "text",
-			Content:    "Hello from user",
+			Content:    &game.Message_Text{Text: "Hello from user"},
 			CreateTime: timestamppb.New(createTime),
 		},
 		{
@@ -239,7 +239,7 @@ func TestToMessageViewModels(t *testing.T) {
 			MessageId:  "msg-2",
 			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
 			Type:       "thinking",
-			Content:    "Agent is thinking",
+			Content:    &game.Message_Text{Text: "Agent is thinking"},
 			CreateTime: timestamppb.New(createTime),
 		},
 	}

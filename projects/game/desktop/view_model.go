@@ -4,6 +4,8 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -89,7 +91,7 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 			MessageID:  m.GetMessageId(),
 			Sender:     m.GetSender().String(),
 			Type:       m.GetType(),
-			Content:    m.GetContent(),
+			Content:    m.GetText(),
 			CreateTime: timestampString(m.GetCreateTime()),
 		}
 	}
@@ -124,14 +126,6 @@ type ListAgentProfilesView struct {
 	NextPageToken string              `json:"nextPageToken,omitempty"`
 }
 
-// OperationResultView is the Wails view model for an operation execution result.
-type OperationResultView struct {
-	OperationID string `json:"operationId"`
-	Sequence    int64  `json:"sequence"`
-	Status      int32  `json:"status"`
-	Message     string `json:"message,omitempty"`
-}
-
 // timestampString formats a protobuf Timestamp as an RFC3339 string.
 // Returns "" if t is nil.
 func timestampString(t *timestamppb.Timestamp) string {
@@ -145,9 +139,10 @@ func agentProfileViewFromProto(p *game.AgentProfile) *AgentProfileView {
 	if p == nil {
 		return nil
 	}
+	profileID, _ := gameconst.AgentProfileID(p.GetName())
 	return &AgentProfileView{
 		Name:             p.GetName(),
-		AgentProfileName: p.GetAgentProfileName(),
+		AgentProfileName: profileID,
 		Model:            p.GetModel(),
 		SystemPrompt:     p.GetSystemPrompt(),
 		SkillNames:       p.GetSkillNames(),

@@ -18,7 +18,6 @@ go_library(
         "//projects/game/proxy/runtime/agentclient",
         "//projects/game/proxy/runtime/mongo",
         "//projects/game/proxy/runtime/picker",
-        "//projects/game/proxy/service",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//reflection",
     ],

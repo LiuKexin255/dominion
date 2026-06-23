@@ -4,6 +4,7 @@ package testplan
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +38,27 @@ const (
 	expectedGreetingText      = "Hello! How can I help you today?"
 	expectedFarewellReasoning = "The user is saying goodbye."
 	expectedFarewellText      = "Goodbye! Have a great day!"
+	expectedChatReasoning     = "Responding with text only, no tools needed."
+	expectedChatText          = "Sure, let's chat!"
 )
+
+// smallScreenshotData is a minimal 1×1 PNG used as screenshot payload in
+// multimodal-turn tests. The fake-LLM ignores image bytes (only text blocks
+// drive keyword matching), so the actual pixel content is irrelevant — tests
+// only verify the server accepts and processes the multimodal frame.
+var smallScreenshotData = mustBase64PNG()
+
+// mustBase64PNG decodes a minimal 1×1 transparent PNG. It panics on failure,
+// which would indicate a bug in the test itself rather than the SUT.
+func mustBase64PNG() []byte {
+	raw, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRf5ErkJggg==",
+	)
+	if err != nil {
+		panic(fmt.Sprintf("decode test png: %v", err))
+	}
+	return raw
+}
 
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
 
@@ -399,8 +420,8 @@ func buildTextFrame(sessionID, agentProfileName, content string, sender game.Fra
 	return &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: agentProfileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: content},
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{Text: content},
 		},
 		Sender: sender,
 	}
@@ -412,6 +433,85 @@ func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentPro
 	t.Helper()
 	frame := buildTextFrame(sessionID, agentProfileName, text, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, frame)
+}
+
+// buildScreenshotFrame constructs a minimal AgentScreenshotFrame carrying a
+// 1×1 PNG (smallScreenshotData) plus the metadata required by the proto.
+// sessionID is used to derive stable capture/screenshot IDs for diagnostics.
+func buildScreenshotFrame(sessionID string) *game.AgentScreenshotFrame {
+	return &game.AgentScreenshotFrame{
+		CaptureId:    fmt.Sprintf("cap-%s", sessionID),
+		Encoding:     game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:         smallScreenshotData,
+		WidthPx:      1,
+		HeightPx:     1,
+		ScaleFactor:  1.0,
+		WindowTitle:  "Test Window",
+		ScreenshotId: fmt.Sprintf("scr-%s", sessionID),
+	}
+}
+
+// buildUserTurnFrame constructs an AgentFrame whose payload is an
+// AgentUserTurnFrame carrying the given text and an optional screenshot.
+// Pass a nil screenshot for a text-only user turn.
+func buildUserTurnFrame(sessionID, profileName, text string, screenshot *game.AgentScreenshotFrame) *game.AgentFrame {
+	ut := &game.AgentUserTurnFrame{Text: text}
+	if screenshot != nil {
+		ut.Screenshot = screenshot
+	}
+	return &game.AgentFrame{
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
+		Sender:           game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: ut,
+		},
+	}
+}
+
+// sendUserTurn builds and writes a user_turn frame over the WebSocket.
+// Pass a nil screenshot for a text-only turn.
+func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, screenshot *game.AgentScreenshotFrame) {
+	t.Helper()
+	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, screenshot))
+}
+
+// buildOperationResultFrame constructs an AgentFrame whose payload is an
+// operation_result with the given status and message. Used to simulate a
+// desktop-executed mouse operation result delivered back to the agent.
+func buildOperationResultFrame(sessionID, operationID string, status game.AgentOperationResultStatus, message string) *game.AgentFrame {
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_OperationResult{
+			OperationResult: &game.AgentOperationResultFrame{
+				OperationId: operationID,
+				Status:      status,
+				Message:     message,
+			},
+		},
+	}
+}
+
+// updateAgentProfileTools sends an HTTP PATCH to add the given tool names to
+// an existing agent profile via UpdateAgentProfile. Returns the HTTP status
+// code and response body.
+func updateAgentProfileTools(t *testing.T, sutHostURL, sutEnvName, profileName string, toolNames []string) (int, []byte) {
+	t.Helper()
+
+	patchProfile := &game.AgentProfile{
+		Name:      "agentProfiles/" + profileName,
+		ToolNames: toolNames,
+	}
+	body, err := protojson.Marshal(patchProfile)
+	if err != nil {
+		t.Fatalf("protojson.Marshal patch profile: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%sprompts/agentProfiles/%s?update_mask=tool_names",
+		sutHostURL, pathPrefix, profileName)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
 }
 
 // drainWSFrame reads and discards frames until a frame matches the predicate,

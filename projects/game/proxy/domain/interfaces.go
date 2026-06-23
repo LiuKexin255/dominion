@@ -4,7 +4,6 @@ package domain
 import (
 	"context"
 
-	game "dominion/projects/game"
 	"dominion/projects/game/proxy/runtime/agentclient"
 )
 
@@ -23,16 +22,4 @@ type OwnerPicker interface {
 	// Pick selects an agent connection for the session using a hash-based
 	// strategy. Returns the connection or an error if no connections are available.
 	Pick(ctx context.Context, sessionID string, conns []*agentclient.ConnRef) (*agentclient.ConnRef, error)
-}
-
-// ProxyService orchestrates proxy operations between the gRPC handler and
-// downstream agent instances.
-type ProxyService interface {
-	// GetAgent returns the Agent resource for the given session.
-	GetAgent(ctx context.Context, sessionID string) (*game.Agent, error)
-	// ListMessages lists messages for the given session.
-	ListMessages(ctx context.Context, sessionID string, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
-	// Connect establishes a bidirectional stream to the agent for the given session.
-	// The handler supplies the first frame it has already read and validated.
-	Connect(ctx context.Context, sessionID string, firstFrame *game.AgentFrame, stream game.ProxyService_ConnectAgentServer) error
 }
