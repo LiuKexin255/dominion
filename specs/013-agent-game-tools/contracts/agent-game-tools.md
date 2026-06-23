@@ -22,8 +22,8 @@ Add `tool_names` field:
 
 ```proto
 message CreateAgentProfileRequest {
-  // existing fields 1-5
-  repeated string tool_names = 6;
+  // existing fields 1-6 (agent_profile_name, model, system_prompt, skill_names, mcp_names, enabled)
+  repeated string tool_names = 7;
 }
 ```
 
@@ -54,11 +54,15 @@ Contract:
 
 ## RefreshAgent RPC
 
-New internal RPC on `AgentService`:
+New internal RPC on **both** `AgentService` and `ProxyService`:
 
 ```proto
+// On AgentService (agent-side implementation):
 rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
-}
+
+// On ProxyService (proxy-side forwarding to agent owner node):
+rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
+```
 
 message RefreshAgentRequest {
   string session_id = 1;

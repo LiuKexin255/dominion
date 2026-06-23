@@ -25,7 +25,8 @@
       "variant": "medium"
     },
     "prometheus": {
-      "model": "zhipuai-coding-plan/glm-5.2"
+      "model": "zhipuai-coding-plan/glm-5.2",
+      "prompt_append": "With one exception, you can edit the 'specs' directory when necessary for those who use the spec-kit as an sdd framework"
     },
     "metis": {
       "model": "zhipuai-coding-plan/glm-5.2"
