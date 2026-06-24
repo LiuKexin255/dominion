@@ -5,7 +5,7 @@
 ## 需求&方案规范
 
 * 本仓库开发采用 `SDD` 架构，使用 `speckit` 作为 `SDD` 框架。
-* 所有 Agent 在进行需求**规划**、**方案**设计与**代码开发**时，应当遵守 `.specify/memory/constitution.md` 规范。
+* 所有 Agent 在进行**需求规划**、**方案设计**与**代码开发**时，应当遵守 `.specify/memory/constitution.md` 规范。
 
 ## 操作命令参考
 
