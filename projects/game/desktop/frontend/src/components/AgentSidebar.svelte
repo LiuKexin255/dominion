@@ -11,6 +11,8 @@
     onDeleteSession,
     onBack,
     loading = false,
+    onRefresh = () => {},
+    refreshing = false,
   }: {
     agent: Agent | null
     connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -21,6 +23,8 @@
     onDeleteSession: () => void
     onBack: () => void
     loading?: boolean
+    onRefresh?: () => void
+    refreshing?: boolean
   } = $props()
 
   let showProfileDetails = $state(false)
@@ -83,6 +87,17 @@
   </div>
 
   <div class="sidebar-section">
+    <button
+      class="btn refresh-btn"
+      data-testid="agent-refresh-btn"
+      onclick={onRefresh}
+      disabled={refreshing || loading}
+    >
+      {refreshing ? 'Refreshing…' : 'Refresh Agent'}
+    </button>
+  </div>
+
+  <div class="sidebar-section">
     <button class="btn view-profile-btn" onclick={toggleProfileDetails}>
       {showProfileDetails ? 'Hide Profile' : 'View Profile'}
     </button>
@@ -103,6 +118,10 @@
         <div class="info-row">
           <span class="info-key">MCPs</span>
           <span class="info-value">{matchedProfile?.mcpNames?.join(', ') || '—'}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-key">Tools</span>
+          <span class="info-value">{matchedProfile?.toolNames?.join(', ') || '—'}</span>
         </div>
       </div>
     {/if}
@@ -230,6 +249,10 @@
   }
 
   .view-profile-btn {
+    width: 100%;
+  }
+
+  .refresh-btn {
     width: 100%;
   }
 
