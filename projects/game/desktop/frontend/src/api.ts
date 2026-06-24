@@ -250,16 +250,13 @@ interface WailsApp {
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
   GetAgent(sessionID: string): Promise<Agent>
-  /** @deprecated Use chat-based interfaces instead. */
   ListWindows(): Promise<WindowRef[]>
-  /** @deprecated Use chat-based interfaces instead. */
   BindWindow(hwnd: number): Promise<void>
-  /** @deprecated Use chat-based interfaces instead. */
   CaptureScreenshot(): Promise<CapturedImage>
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendUserTurn(sessionID: string, text: string, screenshotData: number[], screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
+  SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
   ListMessages(sessionID: string): Promise<MessageEntry[]>
 
   // Prompt Service
@@ -329,14 +326,12 @@ export async function listWindows(): Promise<WindowRef[]> {
   return a.ListWindows()
 }
 
-/** @deprecated Use chat-based interfaces instead. */
 export async function bindWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.BindWindow(hwnd)
 }
 
-/** @deprecated Use chat-based interfaces instead. */
 export async function captureScreenshot(): Promise<CapturedImage> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
@@ -364,7 +359,7 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
 export async function sendUserTurn(
   sessionID: string,
   text: string,
-  screenshotData: number[],
+  screenshotData: string,
   screenshotWidth: number,
   screenshotHeight: number,
   agentProfileName: string,

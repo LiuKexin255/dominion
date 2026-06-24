@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, AgentOperationFrame, AgentOperationResultFrame } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, AgentOperationFrame, AgentOperationResultFrame, WindowRef, CapturedImage } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -13,6 +13,11 @@
     listAgentProfiles,
     createAgentProfile,
     deleteAgentProfile,
+    updateAgentProfile,
+    refreshAgent,
+    listWindows,
+    bindWindow,
+    captureScreenshot,
     sendUserTurn,
     listMessages,
   } from './api'
@@ -77,6 +82,21 @@
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
+
+  // --- Window + Screenshot state ---
+  let windows: WindowRef[] = $state([])
+  let selectedWindowHandle: number | undefined = $state(undefined)
+  let boundWindowTitle = $state('')
+  let pendingScreenshot: { dataUrl: string; data: string; widthPx: number; heightPx: number } | null = $state(null)
+  let capturing = $state(false)
+  let refreshing = $state(false)
+
+  function resetPlayPageState() {
+    boundWindowTitle = ''
+    pendingScreenshot = null
+    selectedWindowHandle = undefined
+    windows = []
+  }
 
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
@@ -161,6 +181,7 @@
   }
 
   async function handleSelectSession(session: Session) {
+    resetPlayPageState()
     selectedSession = session
     agent = null
     error = null
@@ -175,6 +196,7 @@
     }
 
     page = 'chat'
+    handleLoadWindows()
     playState = 'connecting'
     if ((connectionState as ConnectionState) !== 'connected') {
       await handleConnectAgent()
@@ -362,26 +384,55 @@
       messagesError = 'Connection failed. Retry to send your message.'
       return
     }
+    const optimisticIds: string[] = []
     try {
-      chatMessages = [...chatMessages, {
-        messageId: crypto.randomUUID(),
-        sender: FrameSender.USER,
-        type: 'text',
-        content: text,
-        timestamp: new Date().toISOString(),
-      }]
+      if (text.trim()) {
+        const msgId = crypto.randomUUID()
+        optimisticIds.push(msgId)
+        chatMessages = [...chatMessages, {
+          messageId: msgId,
+          sender: FrameSender.USER,
+          type: 'text',
+          content: text,
+          timestamp: new Date().toISOString(),
+        }]
+      }
+      if (pendingScreenshot) {
+        const imgId = crypto.randomUUID()
+        optimisticIds.push(imgId)
+        chatMessages = [...chatMessages, {
+          messageId: imgId,
+          sender: FrameSender.USER,
+          type: 'image',
+          content: '',
+          timestamp: new Date().toISOString(),
+          imageUrl: pendingScreenshot.dataUrl,
+        }]
+      }
       processing = true
       playState = 'processing'
       queueCount++
-      await sendUserTurn(selectedSession.sessionId, text, [], 0, 0, selectedProfile)
+      await sendUserTurn(
+        selectedSession.sessionId,
+        text,
+        pendingScreenshot?.data ?? '',
+        pendingScreenshot?.widthPx ?? 0,
+        pendingScreenshot?.heightPx ?? 0,
+        selectedProfile,
+      )
+      pendingScreenshot = null
       queueCount = Math.max(0, queueCount - 1)
-      log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
+      log('info', 'chat', `Sent to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
+      if (optimisticIds.length > 0) {
+        const idSet = new Set(optimisticIds)
+        chatMessages = chatMessages.filter(m => !idSet.has(m.messageId))
+      }
       error = String(e)
       processing = false
       queueCount = Math.max(0, queueCount - 1)
       if (playState === 'processing') playState = 'chat_ready'
-      log('error', 'chat', `Send text failed: ${String(e)}`)
+      log('error', 'chat', `Send failed: ${String(e)}`)
     }
   }
 
@@ -400,6 +451,7 @@
       }
       connectionState = 'disconnected'
     }
+    resetPlayPageState()
     selectedSession = null
     agent = null
     chatMessages = []
@@ -420,6 +472,7 @@
         }
         connectionState = 'disconnected'
       }
+      resetPlayPageState()
       await deleteSession(selectedSession.sessionId)
       log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
       selectedSession = null
@@ -477,6 +530,84 @@
     await deleteAgentProfile(agentProfileName)
     await handleRefreshProfiles()
   }
+
+  // --- Window + Screenshot handlers ---
+  async function handleLoadWindows() {
+    try {
+      windows = await listWindows()
+    } catch (e: unknown) {
+      log('warn', 'windows', `Failed to list windows: ${String(e)}`)
+    }
+  }
+
+  async function handleBindWindow() {
+    if (selectedWindowHandle == null) return
+    try {
+      await bindWindow(selectedWindowHandle)
+      boundWindowTitle = windows.find(w => w.handle === selectedWindowHandle)?.title ?? ''
+      log('info', 'window', `Bound to window: ${boundWindowTitle}`)
+    } catch (e: unknown) {
+      log('error', 'window', `Bind window failed: ${String(e)}`)
+    }
+  }
+
+  async function handleCaptureScreenshot() {
+    capturing = true
+    try {
+      const img = await captureScreenshot()
+      pendingScreenshot = {
+        dataUrl: 'data:image/png;base64,' + img.data,
+        data: img.data,
+        widthPx: img.widthPx,
+        heightPx: img.heightPx,
+      }
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'screenshot', `Capture failed: ${String(e)}`)
+    } finally {
+      capturing = false
+    }
+  }
+
+  function handleRemoveScreenshot() {
+    pendingScreenshot = null
+  }
+
+  async function handleUpdateProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]) {
+    await updateAgentProfile(agentProfileName, profile, updateMaskPaths)
+    const resp = await listAgentProfiles(100, '')
+    managedProfiles = resp.agentProfiles
+    profiles = resp.agentProfiles
+    // Auto-refresh (FR-026) — ISOLATED error handling
+    if (selectedSession && connectionState === 'connected' && playState !== 'processing') {
+      try {
+        await refreshAgent(selectedSession.sessionId)
+      } catch (e: unknown) {
+        log('warn', 'agent', `refresh failed (may be in-flight): ${String(e)}`)
+      }
+    }
+  }
+
+  async function handleRefreshAgent() {
+    if (!selectedSession) return
+    refreshing = true
+    try {
+      await refreshAgent(selectedSession.sessionId)
+      log('info', 'agent', 'Agent refreshed')
+    } catch (e: unknown) {
+      log('error', 'agent', `Refresh agent failed: ${String(e)}`)
+    } finally {
+      refreshing = false
+    }
+  }
+
+  function handleBackFromProfiles() {
+    if (selectedSession) {
+      page = 'chat'
+    } else {
+      page = 'sessions'
+    }
+  }
 </script>
 
 <div class="app-container">
@@ -517,11 +648,28 @@
         onSelectProfile={handleSelectProfile}
         onDeleteSession={handleDeleteSession}
         onBack={handleBackToSessions}
+        onRefresh={handleRefreshAgent}
+        {refreshing}
         {loading}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
+          <select data-testid="window-select" bind:value={selectedWindowHandle}>
+            <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
+            {#each windows as w}
+              <option value={w.handle}>{w.title}</option>
+            {/each}
+          </select>
+          <button class="btn btn-small" data-testid="bind-btn" onclick={handleBindWindow} disabled={selectedWindowHandle == null}>
+            Bind
+          </button>
+          {#if boundWindowTitle}
+            <span class="bound-status" data-testid="bound-status">{boundWindowTitle}</span>
+          {/if}
+          <button class="btn btn-small" data-testid="capture-btn" onclick={handleCaptureScreenshot} disabled={!boundWindowTitle || capturing}>
+            {capturing ? 'Capturing…' : 'Capture Screenshot'}
+          </button>
           {#if playState === 'connection_error'}
             <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>
           {:else if error}
@@ -535,6 +683,8 @@
           loadingMessages={playState === 'loading_messages'}
           messagesError={messagesError}
           onSend={handleSendChatText}
+          pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
+          onRemoveScreenshot={handleRemoveScreenshot}
         />
       </div>
     </div>
@@ -546,7 +696,8 @@
       onCreate={handleCreateProfile}
       onDelete={handleDeleteProfile}
       onRefresh={handleRefreshProfiles}
-      onBack={handleBackToSessions}
+      onUpdate={handleUpdateProfile}
+      onBack={handleBackFromProfiles}
     />
   {/if}
 
@@ -587,6 +738,15 @@
 
   .session-label strong {
     color: #e0e0e0;
+  }
+
+  .bound-status {
+    font-size: 12px;
+    color: #50fa7b;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .chat-error {
