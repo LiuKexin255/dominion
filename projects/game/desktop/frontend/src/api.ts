@@ -105,7 +105,6 @@ export interface AgentKeyboardOperation {
 
 export interface AgentOperationFrame {
   operationId: string
-  screenshotId: string
   sequence: number
   mouse?: AgentMouseOperation
   keyboard?: AgentKeyboardOperation
@@ -133,22 +132,16 @@ export interface Skill {
   updateTime?: string
 }
 
-export interface AgentScreenshotFrame {
-  captureId: string
+export interface AgentImageFrame {
   encoding: string
   data: string // base64-encoded bytes
   widthPx: number
   heightPx: number
   scaleFactor: number
   windowTitle: string
-  captureTime: string
 }
 
 export interface AgentWaitFrame {
-  reason?: string
-}
-
-export interface AgentScreenshotRequestFrame {
   reason?: string
 }
 
@@ -160,7 +153,7 @@ export interface AgentOperationResultFrame {
 
 export interface AgentUserTurnFrame {
   text?: string
-  screenshot?: AgentScreenshotFrame
+  image?: AgentImageFrame
 }
 
 export interface AgentFrame {
@@ -171,14 +164,12 @@ export interface AgentFrame {
   sequence?: number
   status?: AgentStatusFrame
   echo?: AgentEchoFrame
-  screenshot?: AgentScreenshotFrame
   ack?: AgentAckFrame
   text?: AgentTextFrame
   thinking?: AgentThinkingFrame
   operation?: AgentOperationFrame
   warn?: AgentWarnFrame
   wait?: AgentWaitFrame
-  screenshotRequest?: AgentScreenshotRequestFrame
   operationResult?: AgentOperationResultFrame
   userTurn?: AgentUserTurnFrame
   sender: FrameSender

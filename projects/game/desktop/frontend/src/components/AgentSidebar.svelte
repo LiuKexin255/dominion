@@ -32,9 +32,7 @@
   let activeProfileName = $derived(agent?.agentProfileName || selectedProfile)
 
   let matchedProfile = $derived<AgentProfile | null>(
-    activeProfileName
-      ? profiles.find(p => p.agentProfileName === activeProfileName) ?? null
-      : null
+    profiles.find(p => p.agentProfileName === (selectedProfile || agent?.agentProfileName || '')) ?? null
   )
 
   let connected = $derived(connectionState === 'connected')

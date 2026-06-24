@@ -3,9 +3,7 @@
  * the session-scoped OperationBridge.
  *
  * The tool is created per session by SessionAgent via createMouseTool(bridge),
- * binding the bridge in a closure.  screenshot_id is NOT part of the tool's
- * Zod schema — it is read dynamically from the bridge at dispatch time so each
- * turn uses the most recent screenshot without the LLM having to track it.
+ * binding the bridge in a closure.
  */
 
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -28,20 +26,13 @@ const MOUSE_ACTION_TO_PROTO = {
   LEFT_RIGHT_PRESS: "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS",
 } as const;
 
-/**
- * Zod schema for the mouse tool input.
- *
- * screenshot_id is deliberately absent — it is injected from the bridge at
- * dispatch time (per-turn dynamic context), not modelled as an LLM-facing
- * parameter.
- */
 const mouseSchema = z.object({
   x_px: z
     .number()
-    .describe("X coordinate in pixels, screenshot-relative"),
+    .describe("X coordinate in pixels, image-relative"),
   y_px: z
     .number()
-    .describe("Y coordinate in pixels, screenshot-relative"),
+    .describe("Y coordinate in pixels, image-relative"),
   action: z
     .enum([
       "LEFT_CLICK",
@@ -57,10 +48,9 @@ const mouseSchema = z.object({
  * Create the "mouse" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
- *   1. Reads the current screenshot_id from the bridge.
- *   2. Builds an AgentOperationFrame carrying the mouse operation.
- *   3. Dispatches it through the bridge and awaits the desktop result.
- *   4. Returns the result message string to LangChain.
+ *   1. Builds an AgentOperationFrame carrying the mouse operation.
+ *   2. Dispatches it through the bridge and awaits the desktop result.
+ *   3. Returns the result message string to LangChain.
  *
  * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
  */
@@ -69,10 +59,7 @@ export function createMouseTool(
 ): StructuredToolInterface {
   return tool(
     async ({ x_px, y_px, action }) => {
-      const screenshotId = bridge.getCurrentScreenshotId();
-
       const frame: AgentOperationFrame = {
-        screenshotId,
         mouse: {
           action: MOUSE_ACTION_TO_PROTO[action],
           xPx: x_px,
@@ -87,9 +74,8 @@ export function createMouseTool(
       name: "mouse",
       description:
         "Perform a mouse operation (click, double-click, right-click, or " +
-        "simultaneous left+right press) at the given screenshot-relative " +
-        "pixel coordinates. The current screenshot context is injected " +
-        "automatically each turn.",
+        "simultaneous left+right press) at the given image-relative " +
+        "pixel coordinates.",
       schema: mouseSchema,
     },
   );

@@ -10,85 +10,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestAgentFrameOneofRoundtrip(t *testing.T) {
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-1",
-		FrameId:   "frame-001",
-		CreateTime: &timestamppb.Timestamp{
-			Seconds: 1748534400,
-			Nanos:   123456789,
-		},
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId:   "cap-001",
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        []byte{0x01, 0x02, 0x03, 0x04},
-				WidthPx:     1920,
-				HeightPx:    1080,
-				ScaleFactor: 1.5,
-				WindowTitle: "Test Window",
-				CaptureTime: &timestamppb.Timestamp{
-					Seconds: 1748534401,
-					Nanos:   987654321,
-				},
-			},
-		},
-	}
-
-	// when: marshal to protojson
-	jsonBytes, err := protojson.Marshal(given)
-	if err != nil {
-		t.Fatalf("protojson.Marshal() error: %v", err)
-	}
-
-	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
-	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
-		t.Fatalf("protojson.Unmarshal() error: %v", err)
-	}
-
-	// then: verify top-level fields
-	if got.GetSessionId() != "sessions/test-1" {
-		t.Errorf("sessionId: got %q, want %q", got.GetSessionId(), "sessions/test-1")
-	}
-	if got.GetFrameId() != "frame-001" {
-		t.Errorf("frameId: got %q, want %q", got.GetFrameId(), "frame-001")
-	}
-	if got.GetCreateTime().GetSeconds() != 1748534400 {
-		t.Errorf("createTime.seconds: got %d, want %d", got.GetCreateTime().GetSeconds(), 1748534400)
-	}
-	if got.GetCreateTime().GetNanos() != 123456789 {
-		t.Errorf("createTime.nanos: got %d, want %d", got.GetCreateTime().GetNanos(), 123456789)
-	}
-
-	// then: verify screenshot payload
-	screenshot := got.GetScreenshot()
-	if screenshot == nil {
-		t.Fatal("GetScreenshot() returned nil")
-	}
-	if screenshot.GetCaptureId() != "cap-001" {
-		t.Errorf("captureId: got %q, want %q", screenshot.GetCaptureId(), "cap-001")
-	}
-	if screenshot.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
-		t.Errorf("encoding: got %v, want %v", screenshot.GetEncoding(), game.ImageEncoding_IMAGE_ENCODING_PNG)
-	}
-	if screenshot.GetWidthPx() != 1920 {
-		t.Errorf("widthPx: got %d, want %d", screenshot.GetWidthPx(), 1920)
-	}
-	if screenshot.GetHeightPx() != 1080 {
-		t.Errorf("heightPx: got %d, want %d", screenshot.GetHeightPx(), 1080)
-	}
-	if screenshot.GetScaleFactor() != 1.5 {
-		t.Errorf("scaleFactor: got %f, want %f", screenshot.GetScaleFactor(), 1.5)
-	}
-	if screenshot.GetWindowTitle() != "Test Window" {
-		t.Errorf("windowTitle: got %q, want %q", screenshot.GetWindowTitle(), "Test Window")
-	}
-	if screenshot.GetCaptureTime().GetSeconds() != 1748534401 {
-		t.Errorf("captureTime.seconds: got %d, want %d", screenshot.GetCaptureTime().GetSeconds(), 1748534401)
-	}
-}
-
 func TestAgentFrameAckRoundtrip(t *testing.T) {
 	// given: an AgentFrame with ack payload
 	given := &game.AgentFrame{
@@ -251,8 +172,7 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 		Sequence:  2,
 		Payload: &game.AgentFrame_Operation{
 			Operation: &game.AgentOperationFrame{
-				OperationId:  "op-001",
-				ScreenshotId: "ss-001",
+				OperationId: "op-001",
 				Operation: &game.AgentOperationFrame_Mouse{
 					Mouse: &game.AgentMouseOperation{
 						Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
@@ -283,9 +203,6 @@ func TestAgentFrameOperationRoundtrip(t *testing.T) {
 	}
 	if op.GetOperationId() != "op-001" {
 		t.Errorf("operationId: got %q, want %q", op.GetOperationId(), "op-001")
-	}
-	if op.GetScreenshotId() != "ss-001" {
-		t.Errorf("screenshotId: got %q, want %q", op.GetScreenshotId(), "ss-001")
 	}
 
 	// then: verify mouse operation
@@ -338,17 +255,15 @@ func TestAgentFrameWarnRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
-	// given: an AgentScreenshotFrame with screenshot_id and sequence
-	given := &game.AgentScreenshotFrame{
-		CaptureId:    "cap-002",
-		Encoding:     game.ImageEncoding_IMAGE_ENCODING_PNG,
-		Data:         []byte{0xAA, 0xBB, 0xCC},
-		WidthPx:      1920,
-		HeightPx:     1080,
-		ScaleFactor:  1.0,
-		WindowTitle:  "Test Game",
-		ScreenshotId: "ss-002",
+func TestAgentImageFrameRoundtrip(t *testing.T) {
+	// given: an AgentImageFrame
+	given := &game.AgentImageFrame{
+		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:        []byte{0xAA, 0xBB, 0xCC},
+		WidthPx:     1920,
+		HeightPx:    1080,
+		ScaleFactor: 1.0,
+		WindowTitle: "Test Game",
 	}
 
 	// when: marshal to protojson
@@ -358,15 +273,12 @@ func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentScreenshotFrame)
+	got := new(game.AgentImageFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
 
 	// then: verify all fields preserved
-	if got.GetCaptureId() != "cap-002" {
-		t.Errorf("captureId: got %q, want %q", got.GetCaptureId(), "cap-002")
-	}
 	if got.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
 		t.Errorf("encoding: got %v, want %v", got.GetEncoding(), game.ImageEncoding_IMAGE_ENCODING_PNG)
 	}
@@ -381,9 +293,6 @@ func TestAgentScreenshotFrameRoundtrip(t *testing.T) {
 	}
 	if got.GetWindowTitle() != "Test Game" {
 		t.Errorf("windowTitle: got %q, want %q", got.GetWindowTitle(), "Test Game")
-	}
-	if got.GetScreenshotId() != "ss-002" {
-		t.Errorf("screenshotId: got %q, want %q", got.GetScreenshotId(), "ss-002")
 	}
 }
 

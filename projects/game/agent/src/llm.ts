@@ -29,15 +29,12 @@ export type ContentBlock =
 /**
  * Per-turn user input for `generateTurn`.
  *
- * `screenshotId` is internal per-turn context for tools (read dynamically via
- * the OperationBridge) and is NEVER included in the HumanMessage content sent
- * to the model.  Only `text` and the `screenshot*` fields become content blocks.
+ * Only `text` and the `image*` fields become content blocks sent to the model.
  */
 export interface TurnContent {
 	text?: string;
-	screenshotId?: string;
-	screenshotData?: string;
-	screenshotMimeType?: string;
+	imageData?: string;
+	imageMimeType?: string;
 }
 
 /**
@@ -102,7 +99,7 @@ export interface AgentAdapter {
 	 * per-turn content vary.
 	 *
 	 * @param threadId - Stable checkpoint thread identifier (sessionId).
-	 * @param content  - Text and/or screenshot blocks for this turn.
+	 * @param content  - Text and/or image blocks for this turn.
 	 * @returns Async iterable of ContentBlock in streaming order.
 	 */
 	generateTurn(
@@ -196,15 +193,17 @@ export class AgentAdapterImpl implements AgentAdapter {
 		content: TurnContent,
 	): AsyncIterable<ContentBlock> {
 		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
-		if (content.text) {
-			contentBlocks.push({ type: "text", text: content.text });
+		const hasImage = !!(content.imageData && content.imageMimeType);
+		const text = content.text || (hasImage ? "如图所示" : "");
+		if (text) {
+			contentBlocks.push({ type: "text", text });
 		}
-		if (content.screenshotData && content.screenshotMimeType) {
+		if (hasImage) {
 			contentBlocks.push({
 				type: "image",
 				source_type: "base64",
-				data: content.screenshotData,
-				mime_type: content.screenshotMimeType,
+				data: content.imageData,
+				mime_type: content.imageMimeType,
 			});
 		}
 

@@ -86,13 +86,11 @@
   // --- Window + Screenshot state ---
   let windows: WindowRef[] = $state([])
   let selectedWindowHandle: number | undefined = $state(undefined)
-  let boundWindowTitle = $state('')
   let pendingScreenshot: { dataUrl: string; data: string; widthPx: number; heightPx: number } | null = $state(null)
   let capturing = $state(false)
   let refreshing = $state(false)
 
   function resetPlayPageState() {
-    boundWindowTitle = ''
     pendingScreenshot = null
     selectedWindowHandle = undefined
     windows = []
@@ -330,10 +328,10 @@
         timestamp: frame.createTime || new Date().toISOString(),
       }]
     } else if (frame.userTurn) {
-      const screenshot = frame.userTurn.screenshot
-      if (screenshot && screenshot.data) {
-        const encoding = screenshot.encoding || 'png'
-        const imageUrl = `data:image/${encoding};base64,${screenshot.data}`
+      const image = frame.userTurn.image
+      if (image && image.data) {
+        const encoding = (image.encoding || 'png').toLowerCase()
+        const imageUrl = `data:image/${encoding};base64,${image.data}`
         chatMessages = [...chatMessages, {
           messageId: frame.frameId,
           sender: FrameSender.USER,
@@ -524,11 +522,15 @@
   async function handleCreateProfile(req: CreateAgentProfileRequest) {
     await createAgentProfile(req)
     await handleRefreshProfiles()
+    const resp = await listAgentProfiles(50, '')
+    profiles = resp.agentProfiles
   }
 
   async function handleDeleteProfile(agentProfileName: string) {
     await deleteAgentProfile(agentProfileName)
     await handleRefreshProfiles()
+    const resp = await listAgentProfiles(50, '')
+    profiles = resp.agentProfiles
   }
 
   // --- Window + Screenshot handlers ---
@@ -540,20 +542,11 @@
     }
   }
 
-  async function handleBindWindow() {
-    if (selectedWindowHandle == null) return
-    try {
-      await bindWindow(selectedWindowHandle)
-      boundWindowTitle = windows.find(w => w.handle === selectedWindowHandle)?.title ?? ''
-      log('info', 'window', `Bound to window: ${boundWindowTitle}`)
-    } catch (e: unknown) {
-      log('error', 'window', `Bind window failed: ${String(e)}`)
-    }
-  }
-
   async function handleCaptureScreenshot() {
+    if (selectedWindowHandle == null) return
     capturing = true
     try {
+      await bindWindow(selectedWindowHandle)
       const img = await captureScreenshot()
       pendingScreenshot = {
         dataUrl: 'data:image/png;base64,' + img.data,
@@ -655,19 +648,13 @@
       <div class="chat-main">
         <div class="chat-top-bar">
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
-          <select data-testid="window-select" bind:value={selectedWindowHandle}>
+          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle}>
             <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
             {#each windows as w}
               <option value={w.handle}>{w.title}</option>
             {/each}
           </select>
-          <button class="btn btn-small" data-testid="bind-btn" onclick={handleBindWindow} disabled={selectedWindowHandle == null}>
-            Bind
-          </button>
-          {#if boundWindowTitle}
-            <span class="bound-status" data-testid="bound-status">{boundWindowTitle}</span>
-          {/if}
-          <button class="btn btn-small" data-testid="capture-btn" onclick={handleCaptureScreenshot} disabled={!boundWindowTitle || capturing}>
+          <button class="btn btn-small" data-testid="capture-btn" onclick={handleCaptureScreenshot} disabled={selectedWindowHandle == null || capturing}>
             {capturing ? 'Capturing…' : 'Capture Screenshot'}
           </button>
           {#if playState === 'connection_error'}
@@ -740,13 +727,21 @@
     color: #e0e0e0;
   }
 
-  .bound-status {
+  .window-select {
+    padding: 6px 8px;
     font-size: 12px;
-    color: #50fa7b;
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    background: #0f3460;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+    max-width: 220px;
+    min-width: 120px;
+    flex-shrink: 1;
+  }
+
+  .window-select:focus {
+    outline: none;
+    border-color: #4a9eff;
   }
 
   .chat-error {

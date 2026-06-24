@@ -145,8 +145,7 @@ export class Handler implements AgentServiceHandlers {
       agentProfileName?: string;
       userTurn?: {
         text?: string;
-        screenshot?: {
-          screenshotId?: string;
+        image?: {
           data?: string;
           encoding?: string;
           widthPx?: number;
@@ -248,14 +247,13 @@ export class Handler implements AgentServiceHandlers {
       if (frame.payload === "user_turn" || frame.userTurn) {
         const userTurn = frame.userTurn as {
           text?: string;
-          screenshot?: {
-            screenshotId?: string;
+          image?: {
             data?: string;
             encoding?: string;
           };
         };
         const userText = userTurn?.text ?? "";
-        const screenshot = userTurn?.screenshot;
+        const image = userTurn?.image;
 
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
@@ -294,18 +292,15 @@ export class Handler implements AgentServiceHandlers {
           });
           activeSessions.add(sessionId);
 
-          sa.getBridge().setCurrentScreenshotId(screenshot?.screenshotId ?? "");
-
           const adapter = await sa.getOrCreateAdapter(
             effectiveProfileName,
             () => this.promptClient.getProfile(effectiveProfileName),
           );
 
           const turnContent: TurnContent = { text: userText };
-          if (screenshot?.data && screenshot?.encoding) {
-            turnContent.screenshotId = screenshot.screenshotId;
-            turnContent.screenshotData = screenshot.data;
-            turnContent.screenshotMimeType = `image/${screenshot.encoding}`;
+          if (image?.data && image?.encoding) {
+            turnContent.imageData = image.data;
+            turnContent.imageMimeType = `image/${image.encoding.toLowerCase()}`;
           }
 
           let blockCount = 0;
@@ -476,8 +471,7 @@ export class Handler implements AgentServiceHandlers {
           }
 
           for (const imgBlock of imageBlocks) {
-            const data = imgBlock.data ?? (imgBlock.image_url as any)?.url ?? "";
-            const base64Data = data.replace(/^data:image\/[^;]+;base64,/, "");
+            const base64Data = extractBase64FromImageBlock(imgBlock);
             if (base64Data) {
               segments.push({ type: "image_data", content: base64Data });
             }
@@ -563,4 +557,34 @@ function timestampFromMs(ms: number): { seconds: number; nanos: number } {
 function extractSessionId(parent: string): string {
   const match = parent.match(/^sessions\/([^/]+?)(?:\/agent)?$/);
   return match ? match[1] : parent;
+}
+
+function bytesToBase64(value: Uint8Array): string {
+  return Buffer.from(value).toString("base64");
+}
+
+function stripDataUrlPrefix(value: string): string {
+  return value.replace(/^data:image\/[^;]+;base64,/, "");
+}
+
+function extractBase64FromImageBlock(block: any): string {
+  const rawCandidates: unknown[] = [
+    block?.data,
+    block?.image_url?.url,
+    block?.image,
+    block?.source?.data,
+  ];
+
+  for (const raw of rawCandidates) {
+    if (typeof raw === "string" && raw.length > 0) {
+      return stripDataUrlPrefix(raw);
+    }
+    if (raw instanceof Uint8Array && raw.length > 0) {
+      return bytesToBase64(raw);
+    }
+    if (Buffer.isBuffer(raw) && raw.length > 0) {
+      return raw.toString("base64");
+    }
+  }
+  return "";
 }

@@ -3,7 +3,7 @@
  *
  * The adapter receives a pre-created ChatModel (from ModelProviderCache)
  * at construction time.  createAgent compiles eagerly.  generateTurn takes
- * threadId and a multimodal TurnContent (text + optional screenshot).
+ * threadId and a multimodal TurnContent (text + optional image).
  */
 
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -311,13 +311,12 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		return { adapter, capturedMessages };
 	}
 
-	it("builds both text and image blocks when text + screenshot provided", async () => {
+	it("builds both text and image blocks when text + image provided", async () => {
 		const { adapter, capturedMessages } = captureAgent();
 		const content: TurnContent = {
 			text: "click here",
-			screenshotId: "shot-1",
-			screenshotData: "base64data",
-			screenshotMimeType: "image/png",
+			imageData: "base64data",
+			imageMimeType: "image/png",
 		};
 
 		await collect(adapter.generateTurn("t-multi", content));
@@ -350,12 +349,11 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
 	});
 
-	it("builds an image-only block when screenshot is present without text", async () => {
+	it("builds an image block plus default text when image is present without text", async () => {
 		const { adapter, capturedMessages } = captureAgent();
 		const content: TurnContent = {
-			screenshotId: "shot-2",
-			screenshotData: "imgdata",
-			screenshotMimeType: "image/jpeg",
+			imageData: "imgdata",
+			imageMimeType: "image/jpeg",
 		};
 
 		await collect(adapter.generateTurn("t-img-only", content));
@@ -363,6 +361,7 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(capturedMessages).toHaveLength(1);
 		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
 		expect(msg.content).toEqual([
+			{ type: "text", text: "如图所示" },
 			{
 				type: "image",
 				source_type: "base64",
@@ -372,22 +371,14 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		]);
 	});
 
-	it("does NOT include screenshot_id in the HumanMessage content", async () => {
+	it("does not add default text when neither text nor image is provided", async () => {
 		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "look",
-			screenshotId: "internal-shot-id",
-			screenshotData: "data",
-			screenshotMimeType: "image/png",
-		};
 
-		await collect(adapter.generateTurn("t-no-shot-id", content));
+		await collect(adapter.generateTurn("t-empty", {}));
 
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown[] };
-		const serialized = JSON.stringify(msg.content);
-		expect(serialized).not.toContain("internal-shot-id");
-		expect(serialized).not.toContain("screenshotId");
-		expect(serialized).not.toContain("screenshot_id");
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([]);
 	});
 });
 

@@ -232,8 +232,8 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 }
 
 // TestWSClient_SendRecvFrame_Screenshot verifies protojson round-trip for screenshot frames.
-func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
-	// given: mock server that receives a screenshot and echoes it back with ack
+func TestWSClient_SendRecvFrame_UserTurnImage(t *testing.T) {
+	// given: mock server that receives a user_turn+image and echoes it back with ack
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		_, data, err := conn.Read(ctx)
@@ -246,18 +246,17 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 			return
 		}
 
-		screenshot := frame.GetScreenshot()
-		if screenshot == nil {
+		ut := frame.GetUserTurn()
+		if ut == nil {
 			return
 		}
 
-		// respond with ack referencing the capture
 		ackFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
 			Payload: &game.AgentFrame_Ack{
 				Ack: &game.AgentAckFrame{
-					AckFrameId: screenshot.GetCaptureId(),
-					Message:    "screenshot received",
+					AckFrameId: frame.GetFrameId(),
+					Message:    "user_turn received",
 				},
 			},
 		}
@@ -266,7 +265,7 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 	})
 	defer srv.Close()
 
-	// when: client connects and sends a screenshot frame
+	// when: client connects and sends a user_turn+image frame
 	ws := &WSClient{}
 	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
@@ -277,15 +276,19 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 	imageData := []byte("fake-png-data")
 	sendFrame := &game.AgentFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId:   "cap-001",
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        imageData,
-				WidthPx:     1920,
-				HeightPx:    1080,
-				ScaleFactor: 1.0,
-				WindowTitle: "Test Window",
+		FrameId:   "frame-001",
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{
+				Text: "look",
+				Image: &game.AgentImageFrame{
+					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:        imageData,
+					WidthPx:     1920,
+					HeightPx:    1080,
+					ScaleFactor: 1.0,
+					WindowTitle: "Test Window",
+				},
 			},
 		},
 	}
@@ -294,7 +297,7 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received ack references the capture ID
+	// then: received ack references the frame ID
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
@@ -303,11 +306,11 @@ func TestWSClient_SendRecvFrame_Screenshot(t *testing.T) {
 	if ackPayload == nil {
 		t.Fatal("Ack payload is nil, want non-nil")
 	}
-	if ackPayload.GetAckFrameId() != "cap-001" {
-		t.Errorf("Ack.AckFrameId = %q, want %q", ackPayload.GetAckFrameId(), "cap-001")
+	if ackPayload.GetAckFrameId() != "frame-001" {
+		t.Errorf("Ack.AckFrameId = %q, want %q", ackPayload.GetAckFrameId(), "frame-001")
 	}
-	if ackPayload.GetMessage() != "screenshot received" {
-		t.Errorf("Ack.Message = %q, want %q", ackPayload.GetMessage(), "screenshot received")
+	if ackPayload.GetMessage() != "user_turn received" {
+		t.Errorf("Ack.Message = %q, want %q", ackPayload.GetMessage(), "user_turn received")
 	}
 }
 

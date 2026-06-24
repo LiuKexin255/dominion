@@ -453,14 +453,13 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		Text: text,
 	}
 	if len(screenshotData) > 0 {
-		userTurn.Screenshot = &game.AgentScreenshotFrame{
+		userTurn.Image = &game.AgentImageFrame{
 			Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 			Data:        screenshotData,
 			WidthPx:     int32(screenshotWidth),
 			HeightPx:    int32(screenshotHeight),
 			ScaleFactor: a.boundWin.ScaleFactor,
 			WindowTitle: a.boundWin.Title,
-			CaptureTime: timestamppb.Now(),
 		}
 	}
 

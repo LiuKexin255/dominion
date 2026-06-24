@@ -1,6 +1,27 @@
 <script lang="ts">
   import type { AgentProfile, CreateAgentProfileRequest } from '../api'
 
+  const MODEL_OPTIONS: { value: string; label: string }[] = [
+    { value: 'opencode-go/glm-5.2', label: 'GLM-5.2' },
+    { value: 'opencode-go/glm-5.1', label: 'GLM-5.1' },
+    { value: 'opencode-go/kimi-k2.7-code', label: 'Kimi K2.7 Code' },
+    { value: 'opencode-go/kimi-k2.6', label: 'Kimi K2.6' },
+    { value: 'opencode-go/deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+    { value: 'opencode-go/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+    { value: 'opencode-go/mimo-v2.5', label: 'MiMo V2.5' },
+    { value: 'opencode-go/mimo-v2.5-pro', label: 'MiMo V2.5 Pro' },
+    { value: 'opencode-go/minimax-m3', label: 'MiniMax M3' },
+    { value: 'opencode-go/minimax-m2.7', label: 'MiniMax M2.7' },
+    { value: 'opencode-go/minimax-m2.5', label: 'MiniMax M2.5' },
+    { value: 'opencode-go/qwen3.7-max', label: 'Qwen3.7 Max' },
+    { value: 'opencode-go/qwen3.7-plus', label: 'Qwen3.7 Plus' },
+    { value: 'opencode-go/qwen3.6-plus', label: 'Qwen3.6 Plus' },
+  ]
+
+  const TOOL_OPTIONS: { value: string; label: string }[] = [
+    { value: 'mouse', label: 'Mouse' },
+  ]
+
   let {
     profiles,
     loading,
@@ -30,7 +51,7 @@
   let formModel = $state('')
   let formSystemPrompt = $state('')
   let formEnabled = $state(true)
-  let formToolNames = $state('')
+  let formToolNames = $state<string[]>([])
   let createError = $state<string | null>(null)
   let creating = $state(false)
 
@@ -42,7 +63,7 @@
   let editModel = $state('')
   let editSystemPrompt = $state('')
   let editEnabled = $state(true)
-  let editToolNames = $state('')
+  let editToolNames = $state<string[]>([])
   let editError = $state<string | null>(null)
   let saving = $state(false)
 
@@ -59,7 +80,7 @@
     formModel = ''
     formSystemPrompt = ''
     formEnabled = true
-    formToolNames = ''
+    formToolNames = []
   }
 
   function cancelCreateForm() {
@@ -79,7 +100,7 @@
         model: formModel.trim() || undefined,
         systemPrompt: formSystemPrompt || undefined,
         enabled: formEnabled,
-        toolNames: formToolNames.split(',').map((s) => s.trim()).filter(Boolean),
+        toolNames: formToolNames,
       })
       resetForm()
       showCreateForm = false
@@ -90,12 +111,18 @@
     }
   }
 
+  function toggleTool(current: string[], tool: string): string[] {
+    return current.includes(tool)
+      ? current.filter((t) => t !== tool)
+      : [...current, tool]
+  }
+
   function startEdit(profile: AgentProfile) {
     editingName = profile.agentProfileName
     editModel = profile.model || ''
     editSystemPrompt = profile.systemPrompt || ''
     editEnabled = profile.enabled
-    editToolNames = profile.toolNames?.join(', ') || ''
+    editToolNames = profile.toolNames ? [...profile.toolNames] : []
     editError = null
   }
 
@@ -115,7 +142,7 @@
         model: editModel,
         systemPrompt: editSystemPrompt,
         enabled: editEnabled,
-        toolNames: editToolNames.split(',').map((s) => s.trim()).filter(Boolean),
+        toolNames: editToolNames,
       }
       await onUpdate(profile.agentProfileName, updated, [
         'model',
@@ -200,12 +227,12 @@
 
           <div class="form-field">
             <label for="profile-model">Model</label>
-            <input
-              id="profile-model"
-              type="text"
-              bind:value={formModel}
-              placeholder="e.g., opencode-go/deepseek-v4-pro (optional)"
-            />
+            <select id="profile-model" bind:value={formModel}>
+              <option value="" disabled selected={formModel === ''}>Select model...</option>
+              {#each MODEL_OPTIONS as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
           </div>
 
           <div class="form-field">
@@ -226,13 +253,19 @@
           </div>
 
           <div class="form-field">
-            <label for="profile-tools">Tool Names</label>
-            <input
-              id="profile-tools"
-              type="text"
-              bind:value={formToolNames}
-              placeholder="comma-separated, e.g. mouse,keyboard"
-            />
+            <span class="field-label">Tool Names</span>
+            <div class="tool-chips">
+              {#each TOOL_OPTIONS as tool}
+                <button
+                  type="button"
+                  class="tool-chip"
+                  class:active={formToolNames.includes(tool.value)}
+                  onclick={() => (formToolNames = toggleTool(formToolNames, tool.value))}
+                >
+                  {tool.label}
+                </button>
+              {/each}
+            </div>
           </div>
 
           <div class="form-buttons">
@@ -341,12 +374,12 @@
 
                   <div class="form-field">
                     <label for={`edit-model-${profile.agentProfileName}`}>Model</label>
-                    <input
-                      id={`edit-model-${profile.agentProfileName}`}
-                      type="text"
-                      bind:value={editModel}
-                      placeholder="e.g., opencode-go/deepseek-v4-pro (optional)"
-                    />
+                    <select id={`edit-model-${profile.agentProfileName}`} bind:value={editModel}>
+                      <option value="" disabled selected={editModel === ''}>Select model...</option>
+                      {#each MODEL_OPTIONS as opt}
+                        <option value={opt.value}>{opt.label}</option>
+                      {/each}
+                    </select>
                   </div>
 
                   <div class="form-field">
@@ -371,13 +404,19 @@
                   </div>
 
                   <div class="form-field">
-                    <label for={`edit-tools-${profile.agentProfileName}`}>Tool Names</label>
-                    <input
-                      id={`edit-tools-${profile.agentProfileName}`}
-                      type="text"
-                      bind:value={editToolNames}
-                      placeholder="comma-separated, e.g. mouse,keyboard"
-                    />
+                    <span class="field-label">Tool Names</span>
+                    <div class="tool-chips">
+                      {#each TOOL_OPTIONS as tool}
+                        <button
+                          type="button"
+                          class="tool-chip"
+                          class:active={editToolNames.includes(tool.value)}
+                          onclick={() => (editToolNames = toggleTool(editToolNames, tool.value))}
+                        >
+                          {tool.label}
+                        </button>
+                      {/each}
+                    </div>
                   </div>
 
                   <div class="form-buttons">
@@ -489,7 +528,8 @@
     gap: 3px;
   }
 
-  .form-field label {
+  .form-field label,
+  .form-field .field-label {
     font-size: 11px;
     color: #a0a0b0;
   }
@@ -508,6 +548,21 @@
 
   .form-field input[type='text']:focus,
   .form-field textarea:focus {
+    outline: none;
+    border-color: #4a9eff;
+  }
+
+  .form-field select {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    background: #1a1a2e;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+  }
+
+  .form-field select:focus {
     outline: none;
     border-color: #4a9eff;
   }
@@ -536,6 +591,34 @@
   .form-buttons {
     display: flex;
     gap: 4px;
+  }
+
+  .tool-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .tool-chip {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: #1a1a2e;
+    border: 1px solid #1a3a6e;
+    border-radius: 12px;
+    color: #a0a0b0;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tool-chip:hover {
+    border-color: #4a9eff;
+    color: #e0e0e0;
+  }
+
+  .tool-chip.active {
+    background: rgba(74, 158, 255, 0.15);
+    border-color: #4a9eff;
+    color: #4a9eff;
   }
 
   /* List Error */
@@ -655,7 +738,7 @@
     gap: 8px;
     padding: 10px;
     margin-top: 4px;
-    background: #1a1a2e;
+    background: #0f3460;
     border-radius: 4px;
     border: 1px solid #1a3a6e;
   }

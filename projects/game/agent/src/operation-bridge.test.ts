@@ -1,11 +1,10 @@
 /**
  * operation-bridge.test.ts — Tests for OperationBridge.
  *
- * Covers the four required scenarios:
+ * Covers the core scenarios:
  *   1. register sink → dispatch → handleResult → SUCCEEDED
  *   2. no sink registered → dispatch → 5s timeout → FAILED
  *   3. unregister mid-dispatch → timeout → FAILED
- *   4. setCurrentScreenshotId / getCurrentScreenshotId roundtrip
  *
  * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
  * and concurrent dispatch correlation.
@@ -117,22 +116,6 @@ describe("OperationBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Required scenario 4: screenshot ID roundtrip
-  // ------------------------------------------------------------------
-  it("setCurrentScreenshotId / getCurrentScreenshotId roundtrip", () => {
-    expect(bridge.getCurrentScreenshotId()).toBe("");
-
-    bridge.setCurrentScreenshotId("shot-123");
-    expect(bridge.getCurrentScreenshotId()).toBe("shot-123");
-
-    bridge.setCurrentScreenshotId("shot-456");
-    expect(bridge.getCurrentScreenshotId()).toBe("shot-456");
-
-    bridge.setCurrentScreenshotId("");
-    expect(bridge.getCurrentScreenshotId()).toBe("");
-  });
-
-  // ------------------------------------------------------------------
   // Additional coverage
   // ------------------------------------------------------------------
 
@@ -208,7 +191,6 @@ describe("OperationBridge", () => {
     });
 
     const op = makeOperation();
-    op.screenshotId = "shot-abc";
     const promise = bridge.dispatch(op);
 
     bridge.handleResult(makeResult(op.operationId!, STATUS_SUCCEEDED));
@@ -218,6 +200,5 @@ describe("OperationBridge", () => {
     expect(captured!.payload).toBe("operation");
     expect(captured!.operation).toBe(op);
     expect(captured!.operation!.operationId).toBe(op.operationId);
-    expect(captured!.operation!.screenshotId).toBe("shot-abc");
   });
 });

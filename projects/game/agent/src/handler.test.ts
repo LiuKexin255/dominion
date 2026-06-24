@@ -71,8 +71,6 @@ function createRecordingAdapter(blocks: ContentBlock[]): {
 interface MockBridge {
   registerSink: ReturnType<typeof vi.fn>;
   unregisterSink: ReturnType<typeof vi.fn>;
-  setCurrentScreenshotId: ReturnType<typeof vi.fn>;
-  getCurrentScreenshotId: ReturnType<typeof vi.fn>;
   handleResult: ReturnType<typeof vi.fn>;
   dispatch: ReturnType<typeof vi.fn>;
 }
@@ -98,8 +96,6 @@ function createMockBridge(): MockBridge {
   return {
     registerSink: vi.fn(),
     unregisterSink: vi.fn(),
-    setCurrentScreenshotId: vi.fn(),
-    getCurrentScreenshotId: vi.fn(() => ""),
     handleResult: vi.fn(),
     dispatch: vi.fn(),
   };
@@ -226,18 +222,18 @@ function userTurnFrame(
   };
 }
 
-function userTurnWithScreenshotFrame(
+function userTurnWithImageFrame(
   sessionId: string,
   invokeId: string,
   text: string,
-  screenshot: { screenshotId: string; data: string; encoding: string },
+  image: { data: string; encoding: string },
   profileName?: string,
 ) {
   return {
     sessionId,
     invokeId,
     payload: "user_turn",
-    userTurn: { text, screenshot },
+    userTurn: { text, image },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
@@ -587,7 +583,7 @@ describe("Handler.Connect operation_result frame", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — OperationBridge sink lifecycle (register/unregister/screenshot)
+// Tests: Connect — OperationBridge sink lifecycle (register/unregister)
 // ===========================================================================
 
 describe("Handler.Connect bridge lifecycle", () => {
@@ -623,52 +619,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     expect(typeof bridge.registerSink.mock.calls[0][0]).toBe("function");
   });
 
-  it("sets current screenshot ID on bridge from user_turn screenshot", async () => {
-    sessionAgentStore._setBinding(
-      "sess-ss",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit(
-      "data",
-      userTurnWithScreenshotFrame(
-        "sess-ss",
-        "turn-ss",
-        "click here",
-        { screenshotId: "shot-123", data: "base64data", encoding: "png" },
-        "helpful-assistant",
-      ),
-    );
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-ss").bridge;
-    expect(bridge.setCurrentScreenshotId).toHaveBeenCalledWith("shot-123");
-  });
-
-  it("sets empty screenshot ID when user_turn has no screenshot", async () => {
-    sessionAgentStore._setBinding(
-      "sess-noss",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userTurnFrame("sess-noss", "turn-noss", "hi", "helpful-assistant"));
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-noss").bridge;
-    expect(bridge.setCurrentScreenshotId).toHaveBeenCalledWith("");
-  });
-
-  it("calls generateTurn with text+screenshot TurnContent when both provided", async () => {
+  it("calls generateTurn with text+image TurnContent when both provided", async () => {
     const { adapter, calls } = createRecordingAdapter([
       { type: "text", text: "done" },
     ]);
@@ -680,11 +631,11 @@ describe("Handler.Connect bridge lifecycle", () => {
 
     stream.emit(
       "data",
-      userTurnWithScreenshotFrame(
+      userTurnWithImageFrame(
         "sess-tc",
         "turn-tc",
         "look at this",
-        { screenshotId: "shot-456", data: "abc123", encoding: "png" },
+        { data: "abc123", encoding: "png" },
         "helpful-assistant",
       ),
     );
@@ -693,13 +644,12 @@ describe("Handler.Connect bridge lifecycle", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].content).toEqual({
       text: "look at this",
-      screenshotId: "shot-456",
-      screenshotData: "abc123",
-      screenshotMimeType: "image/png",
+      imageData: "abc123",
+      imageMimeType: "image/png",
     });
   });
 
-  it("calls generateTurn with text-only TurnContent when no screenshot", async () => {
+  it("calls generateTurn with text-only TurnContent when no image", async () => {
     const { adapter, calls } = createRecordingAdapter([
       { type: "text", text: "done" },
     ]);
@@ -1351,6 +1301,35 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages![1].type).toBe("image");
     expect(response!.messages![1].content).toBe("imageData");
     expect(response!.messages![1].imageData).toBe("base64imagedata");
+  });
+
+  it("reconstructs image content blocks when data is a Uint8Array", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-image-uint8", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const expectedBase64 = Buffer.from(imageBytes).toString("base64");
+
+    await writeMessages(graph, "sess-image-uint8", [
+      new HumanMessage({
+        content: [
+          { type: "text", text: "look" },
+          {
+            type: "image",
+            data: imageBytes,
+            mime_type: "image/png",
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-image-uint8");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(2);
+    expect(response!.messages![1].type).toBe("image");
+    expect(response!.messages![1].imageData).toBe(expectedBase64);
   });
 
   it("filters out SystemMessages from the result", async () => {

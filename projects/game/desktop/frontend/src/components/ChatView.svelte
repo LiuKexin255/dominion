@@ -123,7 +123,7 @@
               </div>
             </div>
           {:else if msg.type === 'image'}
-            <div class="msg-row msg-image">
+            <div class="msg-row msg-image" class:msg-image-user={msg.sender === FrameSender.USER}>
               <details class="image-details">
                 <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
                 {#if msg.imageUrl}
@@ -144,7 +144,6 @@
                 {#if op.keyboard}
                   <span class="op-keys">keys: {op.keyboard.keyCodes}</span>
                 {/if}
-                <span class="op-screenshot" title={op.screenshotId}>screenshot: {op.screenshotId ? op.screenshotId.slice(0, 8) : '—'}</span>
               </div>
             </div>
           {:else if msg.type === 'operation_result' && msg.operationResult}
@@ -516,6 +515,10 @@
     justify-content: flex-start;
   }
 
+  .msg-image.msg-image-user {
+    justify-content: flex-end;
+  }
+
   .image-details {
     max-width: 80%;
     background: #1a1a3e;
@@ -574,11 +577,6 @@
 
   .op-keys {
     color: #ffb86c;
-  }
-
-  .op-screenshot {
-    color: #606080;
-    font-size: 10px;
   }
 
   /* ── Operation Result Entry ── */

@@ -593,10 +593,10 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: screenshot frame roundtrip
+// Test: user_turn image frame roundtrip
 // ---------------------------------------------------------------------------
 
-func TestScreenshotFrameRoundtrip(t *testing.T) {
+func TestUserTurnImageFrameRoundtrip(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 	ackSent := make(chan struct{})
 
@@ -616,8 +616,6 @@ func TestScreenshotFrameRoundtrip(t *testing.T) {
 				return err
 			}
 			close(ackSent)
-			// Block until the test is done so the gRPC stream stays open
-			// for the gateway to forward the ack to the WS client.
 			<-stream.Context().Done()
 			return stream.Context().Err()
 		},
@@ -647,15 +645,18 @@ func TestScreenshotFrameRoundtrip(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "shot-session",
 		FrameId:   "frame-1",
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				CaptureId:   "cap-1",
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        pngData,
-				WidthPx:     800,
-				HeightPx:    600,
-				ScaleFactor: 1.5,
-				WindowTitle: "Test Window",
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{
+				Text: "look",
+				Image: &game.AgentImageFrame{
+					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:        pngData,
+					WidthPx:     800,
+					HeightPx:    600,
+					ScaleFactor: 1.5,
+					WindowTitle: "Test Window",
+				},
 			},
 		},
 	}
@@ -674,18 +675,22 @@ func TestScreenshotFrameRoundtrip(t *testing.T) {
 		if f.GetSessionId() != "shot-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
 		}
-		sf := f.GetScreenshot()
-		if sf == nil {
-			t.Fatal("payload oneof = nil, want screenshot")
+		ut := f.GetUserTurn()
+		if ut == nil {
+			t.Fatal("payload oneof = nil, want user_turn")
 		}
-		if sf.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
-			t.Fatalf("encoding = %v, want PNG", sf.GetEncoding())
+		img := ut.GetImage()
+		if img == nil {
+			t.Fatal("user_turn.image = nil")
 		}
-		if string(sf.GetData()) != string(pngData) {
-			t.Fatalf("screenshot data mismatch: got %d bytes, want %d bytes", len(sf.GetData()), len(pngData))
+		if img.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
+			t.Fatalf("encoding = %v, want PNG", img.GetEncoding())
 		}
-		if sf.GetWidthPx() != 800 || sf.GetHeightPx() != 600 {
-			t.Fatalf("dimensions = %dx%d, want 800x600", sf.GetWidthPx(), sf.GetHeightPx())
+		if string(img.GetData()) != string(pngData) {
+			t.Fatalf("image data mismatch: got %d bytes, want %d bytes", len(img.GetData()), len(pngData))
+		}
+		if img.GetWidthPx() != 800 || img.GetHeightPx() != 600 {
+			t.Fatalf("dimensions = %dx%d, want 800x600", img.GetWidthPx(), img.GetHeightPx())
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for screenshot frame on gRPC server")
@@ -761,12 +766,15 @@ func TestReadLimitSet(t *testing.T) {
 
 	sendFrame := &game.AgentFrame{
 		SessionId: "limit-test",
-		Payload: &game.AgentFrame_Screenshot{
-			Screenshot: &game.AgentScreenshotFrame{
-				Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:     largeData,
-				WidthPx:  100,
-				HeightPx: 100,
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_UserTurn{
+			UserTurn: &game.AgentUserTurnFrame{
+				Image: &game.AgentImageFrame{
+					Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:     largeData,
+					WidthPx:  100,
+					HeightPx: 100,
+				},
 			},
 		},
 	}

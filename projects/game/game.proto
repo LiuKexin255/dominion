@@ -264,8 +264,6 @@ message AgentFrame {
     AgentStatusFrame status = 10;
     // Echo response for connectivity check.
     AgentEchoFrame echo = 11;
-    // Screenshot capture from the agent.
-    AgentScreenshotFrame screenshot = 12;
     // Acknowledgement of a received frame.
     AgentAckFrame ack = 13;
     // Text output from the agent for desktop display.
@@ -278,11 +276,9 @@ message AgentFrame {
     AgentWarnFrame warn = 17;
     // Agent is waiting for input or instruction.
     AgentWaitFrame wait = 18;
-    // Agent is requesting a screenshot from desktop.
-    AgentScreenshotRequestFrame screenshot_request = 19;
     // Result of an executed operation reported by desktop.
     AgentOperationResultFrame operation_result = 22;
-    // User turn bundling text and optional screenshot as user input.
+    // User turn bundling text and optional image as user input.
     AgentUserTurnFrame user_turn = 23;
   }
 
@@ -346,10 +342,11 @@ enum AgentMouseAction {
   AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS = 5;
 }
 
-// AgentScreenshotFrame carries a screenshot capture from the agent's desktop.
-message AgentScreenshotFrame {
-  // The unique identifier for this capture.
-  string capture_id = 1;
+// AgentImageFrame carries an image (typically a captured screenshot) sent from
+// the desktop to the agent as part of a user turn.
+message AgentImageFrame {
+  reserved 1, 8, 9;
+  reserved "capture_id", "capture_time", "screenshot_id";
 
   // The encoding format of the image data (e.g. PNG).
   ImageEncoding encoding = 2;
@@ -357,10 +354,10 @@ message AgentScreenshotFrame {
   // The raw image bytes. Over protojson this is base64-encoded.
   bytes data = 3;
 
-  // The width of the captured image in pixels.
+  // The width of the image in pixels.
   int32 width_px = 4;
 
-  // The height of the captured image in pixels.
+  // The height of the image in pixels.
   int32 height_px = 5;
 
   // The DPI scale factor of the captured display.
@@ -368,18 +365,11 @@ message AgentScreenshotFrame {
 
   // The title of the window that was captured.
   string window_title = 7;
-
-  // The timestamp when the screenshot was captured.
-  google.protobuf.Timestamp capture_time = 8;
-
-  // The unique identifier for this screenshot.
-  string screenshot_id = 9;
 }
 
 // AgentOperationFrame represents an operation request from the agent.
 message AgentOperationFrame {
   string operation_id = 1;
-  string screenshot_id = 2;
   oneof operation {
     AgentMouseOperation mouse = 10;
     AgentKeyboardOperation keyboard = 11;
@@ -412,21 +402,15 @@ message AgentOperationResultFrame {
   string message = 3;
 }
 
-// AgentUserTurnFrame carries a single user turn bundling text and screenshot.
+// AgentUserTurnFrame carries a single user turn bundling text and image.
 message AgentUserTurnFrame {
   string text = 1;
-  AgentScreenshotFrame screenshot = 2;
+  AgentImageFrame image = 2;
 }
 
 // AgentWaitFrame indicates the agent is waiting (e.g. for user instruction).
 message AgentWaitFrame {
   // The reason the agent is waiting.
-  string reason = 1;
-}
-
-// AgentScreenshotRequestFrame requests a new screenshot from the desktop.
-message AgentScreenshotRequestFrame {
-  // The reason for requesting the screenshot.
   string reason = 1;
 }
 

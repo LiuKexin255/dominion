@@ -435,29 +435,26 @@ func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentPro
 	writeWSFrame(t, conn, frame)
 }
 
-// buildScreenshotFrame constructs a minimal AgentScreenshotFrame carrying a
+// buildImageFrame constructs a minimal AgentImageFrame carrying a
 // 1×1 PNG (smallScreenshotData) plus the metadata required by the proto.
-// sessionID is used to derive stable capture/screenshot IDs for diagnostics.
-func buildScreenshotFrame(sessionID string) *game.AgentScreenshotFrame {
-	return &game.AgentScreenshotFrame{
-		CaptureId:    fmt.Sprintf("cap-%s", sessionID),
-		Encoding:     game.ImageEncoding_IMAGE_ENCODING_PNG,
-		Data:         smallScreenshotData,
-		WidthPx:      1,
-		HeightPx:     1,
-		ScaleFactor:  1.0,
-		WindowTitle:  "Test Window",
-		ScreenshotId: fmt.Sprintf("scr-%s", sessionID),
+func buildImageFrame(sessionID string) *game.AgentImageFrame {
+	return &game.AgentImageFrame{
+		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:        smallScreenshotData,
+		WidthPx:     1,
+		HeightPx:    1,
+		ScaleFactor: 1.0,
+		WindowTitle: "Test Window",
 	}
 }
 
 // buildUserTurnFrame constructs an AgentFrame whose payload is an
-// AgentUserTurnFrame carrying the given text and an optional screenshot.
-// Pass a nil screenshot for a text-only user turn.
-func buildUserTurnFrame(sessionID, profileName, text string, screenshot *game.AgentScreenshotFrame) *game.AgentFrame {
+// AgentUserTurnFrame carrying the given text and an optional image.
+// Pass a nil image for a text-only user turn.
+func buildUserTurnFrame(sessionID, profileName, text string, image *game.AgentImageFrame) *game.AgentFrame {
 	ut := &game.AgentUserTurnFrame{Text: text}
-	if screenshot != nil {
-		ut.Screenshot = screenshot
+	if image != nil {
+		ut.Image = image
 	}
 	return &game.AgentFrame{
 		SessionId:        sessionID,
@@ -470,10 +467,10 @@ func buildUserTurnFrame(sessionID, profileName, text string, screenshot *game.Ag
 }
 
 // sendUserTurn builds and writes a user_turn frame over the WebSocket.
-// Pass a nil screenshot for a text-only turn.
-func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, screenshot *game.AgentScreenshotFrame) {
+// Pass a nil image for a text-only turn.
+func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, image *game.AgentImageFrame) {
 	t.Helper()
-	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, screenshot))
+	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, image))
 }
 
 // buildOperationResultFrame constructs an AgentFrame whose payload is an

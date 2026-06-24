@@ -34,7 +34,7 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	frame := buildUserTurnFrame(sessionID, profileName, "hello multimodal", buildScreenshotFrame(sessionID))
+	frame := buildUserTurnFrame(sessionID, profileName, "hello multimodal", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
@@ -81,7 +81,7 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	frame := buildUserTurnFrame(sessionID, profileName, "", buildScreenshotFrame(sessionID))
+	frame := buildUserTurnFrame(sessionID, profileName, "", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
 	respFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {

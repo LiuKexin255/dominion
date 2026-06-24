@@ -51,7 +51,6 @@ interface PendingDispatch {
 export class OperationBridge {
   private sink: OperationSink | null = null;
   private readonly pending = new Map<string, PendingDispatch>();
-  private currentScreenshotId = "";
 
   /**
    * Register the stream write callback.  Called by the Connect handler when a
@@ -148,21 +147,5 @@ export class OperationBridge {
     const status = resultFrame.status ?? STATUS_UNSPECIFIED;
     const message = resultFrame.message ?? "";
     pending.resolve({ status, message });
-  }
-
-  /**
-   * Store the current turn's screenshot_id.  Set by the Connect handler when a
-   * screenshot frame arrives; read by the mouse tool at dispatch time.
-   */
-  setCurrentScreenshotId(id: string): void {
-    this.currentScreenshotId = id;
-  }
-
-  /**
-   * Return the most recently stored screenshot_id.  The mouse tool reads this
-   * to populate AgentOperationFrame.screenshotId before calling dispatch.
-   */
-  getCurrentScreenshotId(): string {
-    return this.currentScreenshotId;
   }
 }
