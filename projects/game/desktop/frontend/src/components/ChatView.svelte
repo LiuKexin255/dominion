@@ -156,7 +156,7 @@
               </div>
             </div>
           {:else}
-            <ChatMessage message={msg} />
+            <ChatMessage message={{ sender: msg.sender, type: msg.type as 'thinking' | 'text' | 'warn', content: msg.content, timestamp: msg.timestamp }} />
           {/if}
         </div>
       {/each}

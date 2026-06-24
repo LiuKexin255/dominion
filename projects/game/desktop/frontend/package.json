@@ -5,7 +5,8 @@
     "scripts": {
         "dev": "",
         "build": "vite build",
-        "preview": ""
+        "preview": "",
+        "typecheck": "svelte-check --tsconfig ./tsconfig.json"
     },
     "dependencies": {
         "dompurify": "catalog:",
@@ -16,6 +17,7 @@
     "devDependencies": {
         "typescript": "catalog:",
         "vite": "catalog:",
-        "@types/node": "catalog:"
+        "@types/node": "catalog:",
+        "svelte-check": "catalog:"
     }
 }

@@ -176,11 +176,11 @@
 
     page = 'chat'
     playState = 'connecting'
-    if (connectionState !== 'connected') {
+    if ((connectionState as ConnectionState) !== 'connected') {
       await handleConnectAgent()
     }
 
-    if (connectionState === 'connected') {
+    if ((connectionState as ConnectionState) === 'connected') {
       await handleLoadMessages()
     } else {
       playState = 'connection_error'

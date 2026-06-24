@@ -124,6 +124,7 @@
   }
 
   .log-msg {
+    word-break: break-word;
   }
 
   .log-fields {
