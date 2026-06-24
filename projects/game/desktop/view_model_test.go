@@ -332,3 +332,46 @@ func TestTimestampString_Nil(t *testing.T) {
 		t.Fatalf("expected empty string, got %q", result)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestAgentProfileViewFromProto_ToolNames
+// ---------------------------------------------------------------------------
+
+func TestAgentProfileViewFromProto_ToolNames(t *testing.T) {
+	// given: a proto AgentProfile with ToolNames set
+	proto := &game.AgentProfile{
+		Name:      "agentProfiles/tool-test",
+		Model:     "gpt-4",
+		ToolNames: []string{"mouse", "keyboard"},
+	}
+
+	// when: convert to view model
+	view := agentProfileViewFromProto(proto)
+
+	// then: ToolNames round-trips with matching length and values
+	if view == nil {
+		t.Fatal("expected non-nil view, got nil")
+	}
+	if len(view.ToolNames) != 2 {
+		t.Fatalf("expected ToolNames length 2, got %d", len(view.ToolNames))
+	}
+	if view.ToolNames[0] != "mouse" {
+		t.Errorf("expected ToolNames[0] %q, got %q", "mouse", view.ToolNames[0])
+	}
+	if view.ToolNames[1] != "keyboard" {
+		t.Errorf("expected ToolNames[1] %q, got %q", "keyboard", view.ToolNames[1])
+	}
+
+	// and: JSON marshalling uses camelCase
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"toolNames"`) {
+		t.Fatalf("expected JSON to contain 'toolNames', got: %s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"tool_names"`) {
+		t.Fatalf("expected JSON to NOT contain 'tool_names', got: %s", jsonStr)
+	}
+}

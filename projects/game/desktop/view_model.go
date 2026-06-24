@@ -101,10 +101,11 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 // CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
 // Per UI contract FR-004, SkillNames and McpNames are omitted in this version.
 type CreateAgentProfileView struct {
-	AgentProfileName string `json:"agentProfileName"`
-	Model            string `json:"model"`
-	SystemPrompt     string `json:"systemPrompt"`
-	Enabled          bool   `json:"enabled"`
+	AgentProfileName string   `json:"agentProfileName"`
+	Model            string   `json:"model"`
+	SystemPrompt     string   `json:"systemPrompt"`
+	Enabled          bool     `json:"enabled"`
+	ToolNames        []string `json:"toolNames"`
 }
 
 // AgentProfileView is the Wails view model for game.AgentProfile.
@@ -115,6 +116,7 @@ type AgentProfileView struct {
 	SystemPrompt     string   `json:"systemPrompt"`
 	SkillNames       []string `json:"skillNames"`
 	McpNames         []string `json:"mcpNames"`
+	ToolNames        []string `json:"toolNames"`
 	Enabled          bool     `json:"enabled"`
 	CreateTime       string   `json:"createTime,omitempty"`
 	UpdateTime       string   `json:"updateTime,omitempty"`
@@ -147,6 +149,7 @@ func agentProfileViewFromProto(p *game.AgentProfile) *AgentProfileView {
 		SystemPrompt:     p.GetSystemPrompt(),
 		SkillNames:       p.GetSkillNames(),
 		McpNames:         p.GetMcpNames(),
+		ToolNames:        p.GetToolNames(),
 		Enabled:          p.GetEnabled(),
 		CreateTime:       timestampString(p.GetCreateTime()),
 		UpdateTime:       timestampString(p.GetUpdateTime()),

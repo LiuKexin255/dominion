@@ -252,6 +252,7 @@ func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView,
 		Model:            req.Model,
 		SystemPrompt:     req.SystemPrompt,
 		Enabled:          req.Enabled,
+		ToolNames:        req.ToolNames,
 	}
 	profile, err := a.client.CreateAgentProfile(ctx, protoReq)
 	if err != nil {
@@ -362,6 +363,7 @@ func (a *App) UpdateAgentProfile(agentProfileName string, profile AgentProfileVi
 		SystemPrompt: profile.SystemPrompt,
 		SkillNames:   profile.SkillNames,
 		McpNames:     profile.McpNames,
+		ToolNames:    profile.ToolNames,
 		Enabled:      profile.Enabled,
 	}
 	updated, err := a.client.UpdateAgentProfile(ctx, agentProfileName, protoProfile, updateMaskPaths)

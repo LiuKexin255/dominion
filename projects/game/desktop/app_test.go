@@ -218,8 +218,11 @@ func TestCreateAgentProfile_Success(t *testing.T) {
 		if req.GetEnabled() != true {
 			t.Errorf("expected enabled true, got %v", req.GetEnabled())
 		}
+		if got := req.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+			t.Errorf("expected tool_names [\"mouse\"], got %v", got)
+		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true}`)
+		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
 	}))
 	defer srv.Close()
 
@@ -234,6 +237,7 @@ func TestCreateAgentProfile_Success(t *testing.T) {
 		Model:            "gpt-4",
 		SystemPrompt:     "You are a test assistant.",
 		Enabled:          true,
+		ToolNames:        []string{"mouse"},
 	})
 
 	// then
@@ -254,6 +258,9 @@ func TestCreateAgentProfile_Success(t *testing.T) {
 	}
 	if view.Enabled != true {
 		t.Errorf("expected Enabled true, got %v", view.Enabled)
+	}
+	if len(view.ToolNames) != 1 || view.ToolNames[0] != "mouse" {
+		t.Errorf("expected ToolNames [\"mouse\"], got %v", view.ToolNames)
 	}
 }
 
@@ -300,7 +307,7 @@ func TestGetAgentProfile_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true}`)
+		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
 	}))
 	defer srv.Close()
 
@@ -324,6 +331,9 @@ func TestGetAgentProfile_Success(t *testing.T) {
 	}
 	if view.Model != "gpt-4" {
 		t.Errorf("expected Model %q, got %q", "gpt-4", view.Model)
+	}
+	if len(view.ToolNames) != 1 || view.ToolNames[0] != "mouse" {
+		t.Errorf("expected ToolNames [\"mouse\"], got %v", view.ToolNames)
 	}
 }
 
@@ -353,6 +363,117 @@ func TestGetAgentProfile_NotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "get agent profile") {
 		t.Errorf("error should contain 'get agent profile', got %q", err.Error())
+	}
+}
+
+// TestCreateAgentProfile_ToolNamesRoundTrip verifies that ToolNames supplied at
+// create time survive a create-then-get round trip through the view layer.
+func TestCreateAgentProfile_ToolNamesRoundTrip(t *testing.T) {
+	// given: mock server handling both POST (create) and GET (get)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			req := new(game.CreateAgentProfileRequest)
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+				t.Fatalf("failed to parse create body: %v", err)
+			}
+			if got := req.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+				t.Errorf("POST expected tool_names [\"mouse\"], got %v", got)
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["mouse"]}`)
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["mouse"]}`)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when: create then get the profile
+	created, err := app.CreateAgentProfile(CreateAgentProfileView{
+		AgentProfileName: "tool-test",
+		Enabled:          true,
+		ToolNames:        []string{"mouse"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAgentProfile() unexpected error: %v", err)
+	}
+	got, err := app.GetAgentProfile("tool-test")
+	if err != nil {
+		t.Fatalf("GetAgentProfile() unexpected error: %v", err)
+	}
+
+	// then: both views carry ToolNames ["mouse"]
+	if len(created.ToolNames) != 1 || created.ToolNames[0] != "mouse" {
+		t.Errorf("created: expected ToolNames [\"mouse\"], got %v", created.ToolNames)
+	}
+	if len(got.ToolNames) != 1 || got.ToolNames[0] != "mouse" {
+		t.Errorf("got: expected ToolNames [\"mouse\"], got %v", got.ToolNames)
+	}
+}
+
+// TestUpdateAgentProfile_ToolNames verifies that an update with the tool_names
+// mask round-trips ToolNames through the view layer.
+func TestUpdateAgentProfile_ToolNames(t *testing.T) {
+	// given: mock server handling both PATCH (update) and GET (get)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			if got := r.URL.Query().Get("update_mask"); got != "tool_names" {
+				t.Errorf("PATCH expected update_mask=tool_names, got %q", got)
+			}
+			body, _ := io.ReadAll(r.Body)
+			profile := new(game.AgentProfile)
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
+				t.Fatalf("failed to parse patch body: %v", err)
+			}
+			if got := profile.GetToolNames(); len(got) != 1 || got[0] != "keyboard" {
+				t.Errorf("PATCH expected tool_names [\"keyboard\"], got %v", got)
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["keyboard"]}`)
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["keyboard"]}`)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.client = api.NewClient(api.Config{GatewayURL: srv.URL})
+
+	// when: update with the tool_names mask then get
+	updated, err := app.UpdateAgentProfile("tool-test", AgentProfileView{
+		AgentProfileName: "tool-test",
+		Enabled:          true,
+		ToolNames:        []string{"keyboard"},
+	}, []string{"tool_names"})
+	if err != nil {
+		t.Fatalf("UpdateAgentProfile() unexpected error: %v", err)
+	}
+	got, err := app.GetAgentProfile("tool-test")
+	if err != nil {
+		t.Fatalf("GetAgentProfile() unexpected error: %v", err)
+	}
+
+	// then: both views carry ToolNames ["keyboard"]
+	if len(updated.ToolNames) != 1 || updated.ToolNames[0] != "keyboard" {
+		t.Errorf("updated: expected ToolNames [\"keyboard\"], got %v", updated.ToolNames)
+	}
+	if len(got.ToolNames) != 1 || got.ToolNames[0] != "keyboard" {
+		t.Errorf("got: expected ToolNames [\"keyboard\"], got %v", got.ToolNames)
 	}
 }
 
