@@ -23,6 +23,8 @@
     loadingMessages = false,
     messagesError = null,
     onSend,
+    pendingScreenshot = null,
+    onRemoveScreenshot = () => {},
   }: {
     messages: ChatEntry[]
     processing?: boolean
@@ -30,6 +32,8 @@
     loadingMessages?: boolean
     messagesError?: string | null
     onSend: (text: string) => void
+    pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
+    onRemoveScreenshot?: () => void
   } = $props()
 
   let inputText = $state('')
@@ -37,7 +41,7 @@
 
   function handleSend() {
     const text = inputText.trim()
-    if (!text) return
+    if (!text && !pendingScreenshot) return
     onSend(text)
     inputText = ''
   }
@@ -182,6 +186,13 @@
 
   <!-- Input Area -->
   <div class="chat-input-area">
+    {#if pendingScreenshot}
+      <div class="pending-attachment" data-testid="pending-attachment">
+        <img class="attachment-thumb" src={pendingScreenshot.dataUrl} alt="Screenshot attachment" />
+        <span class="attachment-info">{pendingScreenshot.widthPx}×{pendingScreenshot.heightPx}</span>
+        <button class="attachment-remove" onclick={onRemoveScreenshot} data-testid="remove-attachment">✕</button>
+      </div>
+    {/if}
     <textarea
       class="chat-input"
       data-testid="chat-input"
@@ -195,7 +206,7 @@
       class="send-btn"
       data-testid="chat-send-btn"
       onclick={handleSend}
-      disabled={processing || !inputText.trim()}
+      disabled={processing || (!inputText.trim() && !pendingScreenshot)}
     >
       Send
     </button>
@@ -313,10 +324,46 @@
   /* ── Input Area ── */
   .chat-input-area {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 8px;
     border-top: 1px solid #0f3460;
     background: #1a1a2e;
+  }
+
+  /* ── Pending Attachment Preview ── */
+  .pending-attachment {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    background: #0f3460;
+    border: 1px solid #1a4a80;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    width: 100%;
+  }
+
+  .attachment-thumb {
+    max-height: 48px;
+    max-width: 80px;
+    object-fit: contain;
+    border-radius: 2px;
+  }
+
+  .attachment-info {
+    font-size: 11px;
+    color: #a0a0b0;
+  }
+
+  .attachment-remove {
+    background: transparent;
+    border: none;
+    color: #ff6b6b;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
   }
 
   .chat-input {
