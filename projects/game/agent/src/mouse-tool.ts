@@ -45,12 +45,26 @@ const mouseSchema = z.object({
 });
 
 /**
+ * A content block returned to LangChain. Mirrors the subset of the LangChain
+ * multimodal content shape consumed by `_formatToolOutput`: an array whose
+ * elements each carry a `type` discriminator is passed through verbatim as the
+ * `ToolMessage.content`, so an `image_url` block reaches the model as a real
+ * image rather than a stringified blob.
+ */
+type MouseContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+/**
  * Create the "mouse" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
  *   1. Builds an AgentOperationFrame carrying the mouse operation.
  *   2. Dispatches it through the bridge and awaits the desktop result.
- *   3. Returns the result message string to LangChain.
+ *   3. Returns a content-block array to LangChain: the status text always,
+ *      and — when the desktop captured a screenshot — the image plus a
+ *      pixel-dimension annotation so the model can re-estimate coordinates
+ *      against the correct pixel space.
  *
  * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
  */
@@ -58,7 +72,7 @@ export function createMouseTool(
   bridge: OperationBridge,
 ): StructuredToolInterface {
   return tool(
-    async ({ x_px, y_px, action }) => {
+    async ({ x_px, y_px, action }): Promise<MouseContentBlock[]> => {
       const frame: AgentOperationFrame = {
         mouse: {
           action: MOUSE_ACTION_TO_PROTO[action],
@@ -68,7 +82,25 @@ export function createMouseTool(
       };
 
       const result = await bridge.dispatch(frame);
-      return result.message;
+
+      const blocks: MouseContentBlock[] = [
+        { type: "text", text: result.message },
+      ];
+
+      if (result.screenshot) {
+        blocks.push({
+          type: "image_url",
+          image_url: {
+            url: `data:image/png;base64,${result.screenshot.data}`,
+          },
+        });
+        blocks.push({
+          type: "text",
+          text: `[图片像素尺寸：${result.screenshot.widthPx}×${result.screenshot.heightPx}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+        });
+      }
+
+      return blocks;
     },
     {
       name: "mouse",
