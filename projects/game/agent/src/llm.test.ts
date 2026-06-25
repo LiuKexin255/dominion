@@ -411,6 +411,30 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(blocks[1].type).toBe("image_url");
 	});
 
+	it("does not append size annotation when image dimensions are zero or negative", async () => {
+		// Regression guard for the `w > 0 && h > 0` precondition at
+		// llm.ts:223. FR-014's annotation must only appear when both
+		// dimensions are strictly positive; zero/negative — which would
+		// produce a meaningless "0×0" annotation — must skip it. This
+		// complements the absent-dims test above by covering the boundary.
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "hello",
+			imageData: "imgdata",
+			imageMimeType: "image/png",
+			imageWidthPx: 0,
+			imageHeightPx: -1,
+		};
+
+		await collect(adapter.generateTurn("t-zero-dims", content));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		const blocks = msg.content as Array<{ type: string }>;
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].type).toBe("text");
+		expect(blocks[1].type).toBe("image_url");
+	});
+
 	it("does not add default text when neither text nor image is provided", async () => {
 		const { adapter, capturedMessages } = captureAgent();
 
