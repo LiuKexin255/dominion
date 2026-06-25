@@ -156,6 +156,12 @@ export class Handler implements AgentServiceHandlers {
         operationId?: string;
         status?: string | number;
         message?: string;
+        screenshot?: {
+          data?: Uint8Array | string;
+          encoding?: string;
+          widthPx?: number;
+          heightPx?: number;
+        } | null;
       } | null;
     },
     AgentFrame
