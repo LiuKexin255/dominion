@@ -68,6 +68,7 @@ func Test_validateMouseAction(t *testing.T) {
 		{name: "right click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK},
 		{name: "right double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK},
 		{name: "left right press valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS},
+		{name: "move valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE},
 		{name: "unspecified rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_UNSPECIFIED, wantErr: true},
 		{name: "unknown value rejected", action: game.AgentMouseAction(99), wantErr: true},
 		{name: "negative value rejected", action: game.AgentMouseAction(-1), wantErr: true},
@@ -117,6 +118,11 @@ func Test_actionEventSequence(t *testing.T) {
 			name:      "left right press: both down then both up",
 			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS,
 			wantFlags: []uint32{v2MouseLeftDown, v2MouseRightDown, v2MouseRightUp, v2MouseLeftUp},
+		},
+		{
+			name:      "move: empty event sequence",
+			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE,
+			wantFlags: []uint32{},
 		},
 		{
 			name:    "unspecified rejected",
@@ -170,5 +176,49 @@ func Test_actionEventSequence_LeftRightPressIsSimultaneous(t *testing.T) {
 		if f != want[i] {
 			t.Errorf("event[%d] = 0x%x, want 0x%x", i, f, want[i])
 		}
+	}
+}
+
+// Test_actionEventSequence_MoveIsEmptyNonNil locks the MOVE contract: the
+// returned slice must be empty AND non-nil so callers can distinguish the
+// success path (zero events, cursor already moved by SetCursorPos) from the
+// (nil, err) error path. The table-driven test above only compares lengths,
+// which cannot tell []uint32{} apart from nil.
+func Test_actionEventSequence_MoveIsEmptyNonNil(t *testing.T) {
+	got, err := actionEventSequence(game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE)
+	if err != nil {
+		t.Fatalf("actionEventSequence(MOVE) unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("actionEventSequence(MOVE) returned nil slice, want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("actionEventSequence(MOVE) returned %d events, want 0", len(got))
+	}
+}
+
+// Test_validateScreenCoords_out_of_bounds is the FR-003 regression guard for
+// MOVE: ExecuteMouseAction runs validateScreenCoords before setCursorPos for
+// every action including MOVE, so an out-of-bounds target must be rejected
+// regardless of action. This complements the granular subtests in
+// Test_validateScreenCoords with a single named assertion tying the check to
+// the MOVE path that inherits it.
+func Test_validateScreenCoords_out_of_bounds(t *testing.T) {
+	rect := screenRect{X: 0, Y: 0, Width: 3840, Height: 2160}
+	cases := []struct {
+		name string
+		x, y int32
+	}{
+		{name: "x beyond right edge", x: rect.X + rect.Width, y: 100},
+		{name: "y beyond bottom edge", x: 100, y: rect.Y + rect.Height},
+		{name: "x below origin", x: rect.X - 1, y: 100},
+		{name: "y below origin", x: 100, y: rect.Y - 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := validateScreenCoords(c.x, c.y, rect); err == nil {
+				t.Errorf("validateScreenCoords(%d,%d) expected error, got nil", c.x, c.y)
+			}
+		})
 	}
 }

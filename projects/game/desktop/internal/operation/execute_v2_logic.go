@@ -45,7 +45,8 @@ func validateMouseAction(action game.AgentMouseAction) error {
 		game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK,
 		game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK,
 		game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK,
-		game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS:
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS,
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE:
 		return nil
 	default:
 		return fmt.Errorf("unsupported mouse action: %v", action)
@@ -58,8 +59,16 @@ func validateMouseAction(action game.AgentMouseAction) error {
 //
 // LEFT_RIGHT_PRESS order is left-down, right-down, right-up, left-up,
 // modeling a simultaneous press (both buttons held) followed by release.
+//
+// MOVE returns an empty (non-nil) sequence: ExecuteMouseAction has already
+// repositioned the cursor via SetCursorPos, so a zero-length sequence leaves
+// the buttons untouched and the move is the only effect. A non-nil empty
+// slice keeps the success path distinguishable from the (nil, err) error
+// path.
 func actionEventSequence(action game.AgentMouseAction) ([]uint32, error) {
 	switch action {
+	case game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE:
+		return []uint32{}, nil
 	case game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK:
 		return []uint32{v2MouseLeftDown, v2MouseLeftUp}, nil
 	case game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK:
