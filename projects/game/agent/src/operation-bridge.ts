@@ -37,15 +37,47 @@ const STATUS_UNSPECIFIED = "AGENT_OPERATION_RESULT_STATUS_UNSPECIFIED";
  */
 export type OperationSink = (frame: AgentFrame) => void;
 
+/**
+ * Screenshot captured by the desktop alongside an operation result.
+ * `data` is a base64-encoded PNG string (raw bytes from the wire are encoded
+ * by handleResult before reaching consumers).
+ */
+export interface OperationScreenshot {
+  data: string;
+  widthPx: number;
+  heightPx: number;
+}
+
 /** Outcome of a dispatch — mirrors the relevant fields of AgentOperationResultFrame. */
 export interface OperationResult {
   status: AgentOperationResultStatus;
   message: string;
+  screenshot?: OperationScreenshot;
 }
 
 interface PendingDispatch {
   resolve: (result: OperationResult) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Convert a result-frame screenshot into the resolved OperationScreenshot
+ * shape.  Raw bytes (`Uint8Array`/`Buffer`) arriving over the bidi stream are
+ * base64-encoded here; an already-string `data` (e.g. protojson) is passed
+ * through unchanged.  Missing numeric dimensions coalesce to 0 so the
+ * resolved shape stays non-optional per the interface contract.
+ */
+function toOperationScreenshot(
+  source: NonNullable<AgentOperationResultFrame["screenshot"]>,
+): OperationScreenshot {
+  const { data, widthPx, heightPx } = source;
+  const encoded =
+    typeof data === "string" ? data : Buffer.from(data ?? "").toString("base64");
+  return {
+    data: encoded,
+    widthPx: widthPx ?? 0,
+    heightPx: heightPx ?? 0,
+  };
 }
 
 export class OperationBridge {
@@ -146,6 +178,10 @@ export class OperationBridge {
 
     const status = resultFrame.status ?? STATUS_UNSPECIFIED;
     const message = resultFrame.message ?? "";
-    pending.resolve({ status, message });
+    const result: OperationResult = { status, message };
+    if (resultFrame.screenshot) {
+      result.screenshot = toOperationScreenshot(resultFrame.screenshot);
+    }
+    pending.resolve(result);
   }
 }

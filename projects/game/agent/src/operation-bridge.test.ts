@@ -201,4 +201,69 @@ describe("OperationBridge", () => {
     expect(captured!.operation).toBe(op);
     expect(captured!.operation!.operationId).toBe(op.operationId);
   });
+
+  // ------------------------------------------------------------------
+  // Screenshot pass-through (Wave 3)
+  // ------------------------------------------------------------------
+
+  it("handleResult base64-encodes a Uint8Array screenshot and forwards dimensions", async () => {
+    bridge.registerSink(() => {});
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
+    bridge.handleResult({
+      operationId: op.operationId!,
+      status: STATUS_SUCCEEDED as AgentOperationResultFrame["status"],
+      message: "done",
+      screenshot: {
+        data: pngBytes,
+        widthPx: 1920,
+        heightPx: 1080,
+      },
+    });
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.screenshot).toBeDefined();
+    expect(result.screenshot!.data).toBe(Buffer.from(pngBytes).toString("base64"));
+    expect(result.screenshot!.widthPx).toBe(1920);
+    expect(result.screenshot!.heightPx).toBe(1080);
+  });
+
+  it("handleResult passes through an already-string (protojson) screenshot data", async () => {
+    bridge.registerSink(() => {});
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    bridge.handleResult({
+      operationId: op.operationId!,
+      status: STATUS_SUCCEEDED as AgentOperationResultFrame["status"],
+      message: "done",
+      screenshot: {
+        data: "cHJlLWVuY29kZWQ=", // already base64
+        widthPx: 800,
+        heightPx: 600,
+      },
+    });
+
+    const result = await promise;
+    expect(result.screenshot).toBeDefined();
+    expect(result.screenshot!.data).toBe("cHJlLWVuY29kZWQ=");
+    expect(result.screenshot!.widthPx).toBe(800);
+  });
+
+  it("handleResult omits screenshot when the result frame carries none", async () => {
+    bridge.registerSink(() => {});
+
+    const op = makeOperation();
+    const promise = bridge.dispatch(op);
+
+    bridge.handleResult(makeResult(op.operationId!, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.screenshot).toBeUndefined();
+  });
 });
