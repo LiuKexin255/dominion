@@ -340,6 +340,7 @@ enum AgentMouseAction {
   AGENT_MOUSE_ACTION_RIGHT_CLICK = 3;
   AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK = 4;
   AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS = 5;
+  AGENT_MOUSE_ACTION_MOVE = 6;
 }
 
 // AgentImageFrame carries an image (typically a captured screenshot) sent from
@@ -400,6 +401,7 @@ message AgentOperationResultFrame {
   string operation_id = 1;
   AgentOperationResultStatus status = 2;
   string message = 3;
+  AgentImageFrame screenshot = 4;
 }
 
 // AgentUserTurnFrame carries a single user turn bundling text and image.
