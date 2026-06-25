@@ -26,7 +26,7 @@
     },
     "prometheus": {
       "model": "zhipuai-coding-plan/glm-5.2",
-      "prompt_append": "With one exception, you can edit the 'specs' directory when necessary for those who use the spec-kit as an sdd framework"
+      "prompt_append": "Read `constitution.md` before you generate any documents. With one exception, you can edit the 'specs' directory when necessary for those who use the spec-kit as an sdd framework."
     },
     "metis": {
       "model": "zhipuai-coding-plan/glm-5.2"
@@ -37,7 +37,8 @@
     },
     "atlas": {
       "model": "opencode-go/deepseek-v4-pro",
-      "variant": "high"
+      "variant": "high",
+      "prompt_append": "During the development process, commit in time as planned."
     },
     "sisyphus-junior": {
       "model": "opencode-go/deepseek-v4-pro",
