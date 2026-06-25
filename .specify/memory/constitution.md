@@ -1,6 +1,36 @@
 <!--
 Sync Impact Report
 =====================================================================
+Version change: 1.4.0 → 2.0.0
+
+Modified principles:
+  - V. Refactoring-Oriented Changes → renumbered to IV. Refactoring-
+    Oriented Changes (no content change beyond cross-reference updates)
+
+Added principles:
+  - None
+
+Removed sections:
+  - Core Principles → IV. Implementation Checkpointing (实现检查点插入):
+    the principle mandating check-task insertion at phase boundaries in
+    `tasks.md`. Removed entirely; check-task insertion is no longer
+    constitutionally mandated.
+
+Templates requiring updates:
+  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
+    §IV bullet removed; sample `> §IV check task` callouts and `CHECK`
+    task examples removed; §V references renumbered to §IV; closing
+    "Check tasks are §IV checkpoints" note removed)
+  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
+    §IV bullet removed; §V reference renumbered to §IV)
+  - .specify/templates/spec-template.md — ✅ verified (spec authoring
+    precedes planning; §IV applies at tasks.md stage, no change needed)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (directory does not exist)
+
+Follow-up TODOs: none
+===================================================================
+
 Version change: 1.3.0 → 1.4.0
 
 Modified principles:
@@ -241,49 +271,7 @@ reality, complements §I (which obligates citing sources) by obligating the
 actual reading of them, and gives reviewers verifiable evidence rather than
 trust.
 
-### IV. Implementation Checkpointing (实现检查点插入)
-
-When `tasks.md` contains many tasks, the author MUST insert check tasks at
-appropriate positions to verify that the running implementation has not
-drifted from the task plan and `plan.md`, and that code is correctly
-committed. Deviations discovered by a check task MUST be fixed promptly.
-
-**Mandatory rules**:
-
-- **Check-task insertion rule**: when `tasks.md` exceeds a moderate task
-  count, check tasks MUST be inserted at natural boundaries (end of a
-  user-story phase, after a foundational phase, before a cross-cutting
-  polish phase). A "moderate count" starts at roughly 15 implementation
-  tasks or whenever the plan spans two or more user-story phases.
-- **Scope of a check task**: each check task MUST verify, at minimum,
-  (a) that the work completed so far matches the corresponding items in
-  `tasks.md` and the design in `plan.md` — no undocumented scope creep
-  or dropped requirements, and (b) that the completed work has been
-  committed to version control with a coherent, descriptive commit
-  history (no large uncommitted changes left behind at the checkpoint).
-- **Failure handling**: when a check task finds a deviation (drift from
-  the plan, a missing commit, or an uncommitted change), the deviation
-  MUST be fixed immediately — realign the implementation to the plan
-  (or amend the plan with justification), and commit the corrected
-  state — BEFORE subsequent tasks proceed past the checkpoint.
-- **Placement**: check tasks MUST be ordered so they run after the
-  tasks they verify and before the next dependent phase begins. They
-  MUST NOT be batched into a single trailing check at the end of the
-  file when intermediate phases exist.
-- **Visibility**: each check task MUST be labeled distinctly (e.g., a
-  `CHECK` prefix or an explicit "checkpoint" marker) so it is not
-  mistaken for an ordinary implementation task.
-
-**Rationale**: long task lists let drift accumulate silently — an
-implementation diverges from the plan, or work goes uncommitted, and the
-error is only discovered at the end when the cost of correction is highest.
-Periodic checkpoints bound the blast radius: deviations are caught at the
-phase boundary where they originate, the plan and the code stay aligned,
-and the commit history stays reviewable. This complements §II (style) and
-§III (dependency research) by verifying their obligations are honored
-during execution, not just at planning time.
-
-### V. Refactoring-Oriented Changes (重构式变更)
+### IV. Refactoring-Oriented Changes (重构式变更)
 
 Every code change described in `plan.md` and `tasks.md` MUST be expressed
 as a refactor of the affected unit, not as logic stacked on top of it.
@@ -340,10 +328,9 @@ affected design makes that drift visible at planning time, when it is
 cheapest to fix. Requiring synchronous updates keeps the design and the
 code as one artifact across versions, instead of letting them diverge
 until a future "refactor pass" that never arrives. This complements §II
-(style), §III (dependency research), and §IV (checkpointing): style
-governs how code is written, research governs what is chosen,
-checkpointing governs whether the plan is followed, and this principle
-governs how the plan describes change itself.
+(style), which governs how code is written, and §III (dependency
+research), which governs what is chosen; this principle governs how the
+plan describes change itself.
 
 ## Spec Artifact Scope
 
@@ -380,16 +367,11 @@ This constitution applies to the following Spec Kit artifacts:
   Every external dependency or component referenced in `plan.md` (and any
   new dependency introduced in `tasks.md`) MUST show evidence of
   documentation research per §III, with inline citations to the official
-  sources consulted. When `tasks.md` contains a moderate or larger task
-  count, check tasks MUST be inserted at phase boundaries per §IV to verify
-  the implementation has not drifted from `plan.md`/`tasks.md` and that
-  work is correctly committed; discovered deviations MUST be fixed before
-  the next phase proceeds. Every change in `plan.md` and every
-  implementation task in `tasks.md` MUST be classified as 新增 / 修改 /
-  删除 per §V, with 修改 changes implemented as refactors and every
-  修改 / 删除 change carrying an explicit verdict on whether the
-  existing design and layering still serve the new goal; outdated
-  designs MUST be updated within the same change, never deferred as
-  "out of scope".
+  sources consulted. Every change in `plan.md` and every implementation
+  task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §IV,
+  with 修改 changes implemented as refactors and every 修改 / 删除
+  change carrying an explicit verdict on whether the existing design and
+  layering still serve the new goal; outdated designs MUST be updated
+  within the same change, never deferred as "out of scope".
 
-**Version**: 1.4.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-23
+**Version**: 2.0.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-25

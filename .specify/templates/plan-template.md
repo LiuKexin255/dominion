@@ -61,14 +61,7 @@
   documentation URLs consulted as inline citations (per §I) with a
   one-line summary of the finding, and pin the version or version range
   researched. Relying on memory or prior assumptions is a violation.
-- **Implementation Checkpointing (§IV)**: the task list exported to
-  `tasks.md` MUST insert check tasks at phase boundaries when it contains
-  a moderate or larger task count (roughly 15+ tasks or two or more
-  user-story phases). Each check task verifies the completed phase
-  matches this plan and is correctly committed; deviations MUST be fixed
-  before the next phase proceeds. The plan's phase breakdown MUST make
-  those boundaries explicit so check tasks can be placed deterministically.
-- **Refactoring-Oriented Changes (§V)**: every change described in this
+- **Refactoring-Oriented Changes (§IV)**: every change described in this
   plan MUST be explicitly classified as 新增 (Add), 修改 (Modify), or
   删除 (Delete), where 新增 applies ONLY to modules, files, types, or
   design elements that did not previously exist (adding a function to an

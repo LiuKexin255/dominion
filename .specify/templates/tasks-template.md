@@ -17,7 +17,7 @@ description: "Task list template for feature implementation"
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- **[新增|修改|删除]**: Change classification per Constitution §V —
+- **[新增|修改|删除]**: Change classification per Constitution §IV —
   新增 only for modules/files/types/design elements that did not
   previously exist; 修改 for any change to an existing unit (including
   adding a function to an existing class); 删除 for removal of an
@@ -44,18 +44,7 @@ description: "Task list template for feature implementation"
   §I) before implementation begins. Dependencies inherited from
   `plan.md` MUST explicitly reference the plan's research rather than
   restating decisions without provenance.
-- **Implementation Checkpointing (§IV)**: when this file contains a
-  moderate or larger task count (roughly 15+ implementation tasks, or
-  two or more user-story phases), check tasks MUST be inserted at phase
-  boundaries (end of a foundational phase, end of each user-story phase,
-  before a cross-cutting polish phase). Each check task MUST verify (a)
-  the completed work matches `tasks.md` and `plan.md` — no undocumented
-  scope creep or dropped requirements — and (b) the completed work is
-  committed with a coherent commit history. Deviations found at a
-  checkpoint MUST be fixed BEFORE the next phase proceeds. Check tasks
-  MUST be labeled distinctly (e.g., a `CHECK` prefix or "checkpoint"
-  marker) so they are not mistaken for ordinary implementation tasks.
-- **Refactoring-Oriented Changes (§V)**: every implementation task MUST
+- **Refactoring-Oriented Changes (§IV)**: every implementation task MUST
   carry the 新增 / 修改 / 删除 (Add / Modify / Delete) classification
   inherited from `plan.md`, where 新增 applies ONLY to modules, files,
   types, or design elements that did not previously exist (adding a
@@ -125,14 +114,6 @@ Examples of foundational tasks (adjust based on your project):
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
-> **§IV check task** (insert one when the foundational phase is substantial):
-> verify the foundation matches `plan.md`, all foundational work is
-> committed, and fix any drift before user-story work begins.
-
-- [ ] CHECK Foundational phase review: confirm T004–T009 match the
-      design in `plan.md`, no scope drift, and all work committed with
-      descriptive messages. Fix deviations before starting User Story 1.
-
 ---
 
 ## Phase 3: User Story 1 - [Title] (Priority: P1) 🎯 MVP
@@ -159,13 +140,6 @@ Examples of foundational tasks (adjust based on your project):
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently
 
-> **§IV check task**: verify US1 work matches `tasks.md`/`plan.md` and is
-> committed; fix drift before the next story.
-
-- [ ] CHECK User Story 1 checkpoint: confirm T010–T017 match `plan.md`,
-      no undocumented scope creep, and all US1 work committed. Fix
-      deviations before starting User Story 2.
-
 ---
 
 ## Phase 4: User Story 2 - [Title] (Priority: P2)
@@ -188,13 +162,6 @@ Examples of foundational tasks (adjust based on your project):
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently
 
-> **§IV check task**: verify US2 work matches the plan and is committed;
-> fix drift before the next story.
-
-- [ ] CHECK User Story 2 checkpoint: confirm T018–T023 match `plan.md`,
-      no undocumented scope creep, and all US2 work committed. Fix
-      deviations before starting User Story 3.
-
 ---
 
 ## Phase 5: User Story 3 - [Title] (Priority: P3)
@@ -215,13 +182,6 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] T028 [US3] Implement [endpoint/feature] in src/[location]/[file].py
 
 **Checkpoint**: All user stories should now be independently functional
-
-> **§IV check task**: verify all user-story work matches the plan and is
-> committed; fix drift before the polish phase.
-
-- [ ] CHECK User Story 3 checkpoint: confirm T024–T028 match `plan.md`,
-      no undocumented scope creep, and all US3 work committed. Fix
-      deviations before starting the Polish phase.
 
 ---
 
@@ -331,10 +291,6 @@ With multiple developers:
 - Verify tests fail before implementing
 - Commit after each task or logical group
 - Stop at any checkpoint to validate story independently
-- Check tasks (labeled `CHECK`) are §IV checkpoints: they verify the
-  completed phase matches `plan.md`/`tasks.md` and is correctly committed.
-  Insert one at each phase boundary when the task count is moderate or
-  larger; fix any drift found before proceeding.
 - Avoid: vague tasks, same file conflicts, cross-story dependencies that break independence
 
 ## References *(mandatory per Constitution §I — Citation Provenance)*
