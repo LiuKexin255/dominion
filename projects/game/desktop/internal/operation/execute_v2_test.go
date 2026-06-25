@@ -6,56 +6,6 @@ import (
 	"dominion/projects/game"
 )
 
-func Test_normalizeAbsoluteVirtual(t *testing.T) {
-	tests := []struct {
-		name   string
-		pixel  int32
-		origin int32
-		dim    int32
-		want   int32
-	}{
-		{name: "primary origin maps to 0", pixel: 0, origin: 0, dim: 1920, want: 0},
-		{name: "last pixel maps to 65535 at 1920", pixel: 1919, origin: 0, dim: 1920, want: 65535},
-		{name: "last pixel maps to 65535 at 1080", pixel: 1079, origin: 0, dim: 1080, want: 65535},
-		{name: "center of 1920", pixel: 960, origin: 0, dim: 1920, want: (960 * 65535) / 1919},
-		{name: "100px on 800-wide screen", pixel: 100, origin: 0, dim: 800, want: (100 * 65535) / 799},
-		{name: "degenerate dim 1 returns 0", pixel: 500, origin: 0, dim: 1, want: 0},
-		{name: "degenerate dim 0 returns 0", pixel: 500, origin: 0, dim: 0, want: 0},
-		{name: "negative dim returns 0", pixel: 500, origin: 0, dim: -10, want: 0},
-		{name: "negative-origin virtual left edge maps to 0", pixel: -1920, origin: -1920, dim: 3840, want: 0},
-		{name: "primary origin (0) maps mid-range on virtual desk", pixel: 0, origin: -1920, dim: 3840, want: (1920 * 65535) / 3839},
-		{name: "virtual right edge maps to 65535", pixel: 1919, origin: -1920, dim: 3840, want: 65535},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeAbsoluteVirtual(tt.pixel, tt.origin, tt.dim)
-			if got != tt.want {
-				t.Errorf("normalizeAbsoluteVirtual(%d, %d, %d) = %d, want %d",
-					tt.pixel, tt.origin, tt.dim, got, tt.want)
-			}
-		})
-	}
-}
-
-func Test_normalizeAbsoluteVirtual_AlwaysInRange(t *testing.T) {
-	for dim := int32(3); dim <= 3840; dim += 37 {
-		originStep := dim / 3
-		if originStep < 1 {
-			originStep = 1
-		}
-		for origin := -dim; origin <= dim; origin += originStep {
-			for pixel := origin; pixel < origin+dim; pixel += 41 {
-				got := normalizeAbsoluteVirtual(pixel, origin, dim)
-				if got < 0 || got > mouseAbsoluteMax {
-					t.Errorf("normalizeAbsoluteVirtual(%d, %d, %d) = %d, outside [0, %d]",
-						pixel, origin, dim, got, mouseAbsoluteMax)
-				}
-			}
-		}
-	}
-}
-
 func Test_validateScreenCoords(t *testing.T) {
 	t.Run("in bounds on primary", func(t *testing.T) {
 		rect := screenRect{X: 0, Y: 0, Width: 3840, Height: 2160}

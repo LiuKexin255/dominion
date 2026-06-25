@@ -30,11 +30,16 @@ export type ContentBlock =
  * Per-turn user input for `generateTurn`.
  *
  * Only `text` and the `image*` fields become content blocks sent to the model.
+ * `imageWidthPx`/`imageHeightPx` are used to append a size-annotation text
+ * block so the model knows the exact pixel dimensions of the screenshot
+ * (mouse tool coordinates are interpreted relative to this pixel space).
  */
 export interface TurnContent {
 	text?: string;
 	imageData?: string;
 	imageMimeType?: string;
+	imageWidthPx?: number;
+	imageHeightPx?: number;
 }
 
 /**
@@ -194,9 +199,12 @@ export class AgentAdapterImpl implements AgentAdapter {
 	): AsyncIterable<ContentBlock> {
 		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
 		const hasImage = !!(content.imageData && content.imageMimeType);
-		const text = content.text || (hasImage ? "如图所示" : "");
-		if (text) {
-			contentBlocks.push({ type: "text", text });
+
+		// User text is required (enforced by desktop SendUserTurn). No
+		// synthetic default is injected when text is missing — the caller is
+		// responsible for providing meaningful instructions.
+		if (content.text) {
+			contentBlocks.push({ type: "text", text: content.text });
 		}
 		if (hasImage) {
 			contentBlocks.push({
@@ -205,6 +213,19 @@ export class AgentAdapterImpl implements AgentAdapter {
 					url: `data:${content.imageMimeType};base64,${content.imageData}`,
 				},
 			});
+			// Append an explicit size-annotation text block so the model knows
+			// the screenshot's exact pixel dimensions. Mouse tool coordinates
+			// are interpreted relative to this pixel space, so telling the
+			// model the real width×height prevents it from guessing a
+			// different resolution and picking mis-targeted coordinates.
+			const w = content.imageWidthPx;
+			const h = content.imageHeightPx;
+			if (typeof w === "number" && typeof h === "number" && w > 0 && h > 0) {
+				contentBlocks.push({
+					type: "text",
+					text: `[图片像素尺寸：${w}×${h}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+				});
+			}
 		}
 
 		const stream = await this.agent.streamEvents(
@@ -213,6 +234,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 			},
 			{
 				configurable: { thread_id: threadId },
+				metadata: { session_id: threadId },
 				version: "v3",
 			},
 		);

@@ -347,7 +347,11 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
 	});
 
-	it("builds an image block plus default text when image is present without text", async () => {
+	it("does not inject default text when image is present without text", async () => {
+		// Regression guard: the old code injected "如图所示" when text was
+		// empty and an image was present. That default is removed — the
+		// desktop SendUserTurn now requires non-empty text, and the adapter
+		// no longer fabricates placeholder instructions.
 		const { adapter, capturedMessages } = captureAgent();
 		const content: TurnContent = {
 			imageData: "imgdata",
@@ -359,12 +363,52 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(capturedMessages).toHaveLength(1);
 		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
 		expect(msg.content).toEqual([
-			{ type: "text", text: "如图所示" },
 			{
 				type: "image_url",
 				image_url: { url: "data:image/jpeg;base64,imgdata" },
 			},
 		]);
+	});
+
+	it("appends a size-annotation text block after image when dimensions are provided", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "click the centre",
+			imageData: "pngdata",
+			imageMimeType: "image/png",
+			imageWidthPx: 332,
+			imageHeightPx: 508,
+		};
+
+		await collect(adapter.generateTurn("t-size", content));
+
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		const blocks = msg.content as Array<{ type: string; text?: string }>;
+		expect(blocks).toHaveLength(3);
+		expect(blocks[0]).toEqual({ type: "text", text: "click the centre" });
+		expect(blocks[1].type).toBe("image_url");
+		expect(blocks[2]).toEqual({
+			type: "text",
+			text: "[图片像素尺寸：332×508（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+		});
+	});
+
+	it("does not append size annotation when image dimensions are missing", async () => {
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "hello",
+			imageData: "imgdata",
+			imageMimeType: "image/png",
+		};
+
+		await collect(adapter.generateTurn("t-no-dims", content));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		const blocks = msg.content as Array<{ type: string }>;
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].type).toBe("text");
+		expect(blocks[1].type).toBe("image_url");
 	});
 
 	it("does not add default text when neither text nor image is provided", async () => {
@@ -375,6 +419,48 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(capturedMessages).toHaveLength(1);
 		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
 		expect(msg.content).toEqual([]);
+	});
+
+	it("passes session_id metadata to streamEvents so LLM observability sees the session", async () => {
+		// The threadId IS the sessionId. LangChain invocation metadata flows
+		// through the callback/tracing pipeline so LLM-side consoles can
+		// correlate model calls back to the originating session.
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		let capturedConfig: Record<string, unknown> | undefined;
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async (
+				_input?: { messages: BaseMessage[] },
+				config?: Record<string, unknown>,
+			) => {
+				if (config) capturedConfig = config;
+				return {
+					messages: (async function* () {
+						yield {
+							reasoning: (async function* () {})(),
+							text: (async function* () {
+								yield "ok";
+							})(),
+						};
+					})(),
+				};
+			},
+		};
+
+		await collect(adapter.generateTurn("sess-metadata", { text: "hi" }));
+
+		expect(capturedConfig).toBeDefined();
+		expect(capturedConfig!.metadata).toMatchObject({
+			session_id: "sess-metadata",
+		});
+		expect(capturedConfig!.configurable).toMatchObject({
+			thread_id: "sess-metadata",
+		});
 	});
 });
 

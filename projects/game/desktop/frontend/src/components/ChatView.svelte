@@ -1,6 +1,6 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender, AgentMouseAction } from '../api'
+  import { FrameSender, AgentMouseAction, AgentOperationResultStatus } from '../api'
   import type { AgentOperationFrame, AgentOperationResultFrame } from '../api'
   import { renderMarkdown } from '../markdown'
 
@@ -15,6 +15,30 @@
     operation?: AgentOperationFrame
     operationResult?: AgentOperationResultFrame
   }
+
+  // Lookup tables for enum → display-name conversions. protojson serializes
+  // enums as their proto names (e.g. "AGENT_MOUSE_ACTION_LEFT_CLICK"), while
+  // the TypeScript types in api.ts declare them as numeric enums. To stay
+  // robust against both forms, each table maps both the numeric enum value
+  // (coerced to string by the Record lookup) and the proto name string to the
+  // same display name.
+  const MOUSE_ACTION_DISPLAY: Record<string, string> = {
+    [String(AgentMouseAction.LEFT_CLICK)]: 'LEFT_CLICK',
+    [String(AgentMouseAction.LEFT_DOUBLE_CLICK)]: 'LEFT_DOUBLE_CLICK',
+    [String(AgentMouseAction.RIGHT_CLICK)]: 'RIGHT_CLICK',
+    [String(AgentMouseAction.RIGHT_DOUBLE_CLICK)]: 'RIGHT_DOUBLE_CLICK',
+    [String(AgentMouseAction.LEFT_RIGHT_PRESS)]: 'LEFT_RIGHT_PRESS',
+    AGENT_MOUSE_ACTION_LEFT_CLICK: 'LEFT_CLICK',
+    AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK: 'LEFT_DOUBLE_CLICK',
+    AGENT_MOUSE_ACTION_RIGHT_CLICK: 'RIGHT_CLICK',
+    AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK: 'RIGHT_DOUBLE_CLICK',
+    AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS: 'LEFT_RIGHT_PRESS',
+  }
+
+  const OPERATION_RESULT_SUCCESS_VALUES: ReadonlySet<string> = new Set<string>([
+    String(AgentOperationResultStatus.SUCCEEDED),
+    'AGENT_OPERATION_RESULT_STATUS_SUCCEEDED',
+  ])
 
   let {
     messages,
@@ -69,19 +93,18 @@
     }
   }
 
-  function describeMouseAction(action: AgentMouseAction): string {
-    switch (action) {
-      case AgentMouseAction.LEFT_CLICK: return 'LEFT_CLICK'
-      case AgentMouseAction.LEFT_DOUBLE_CLICK: return 'LEFT_DOUBLE_CLICK'
-      case AgentMouseAction.RIGHT_CLICK: return 'RIGHT_CLICK'
-      case AgentMouseAction.RIGHT_DOUBLE_CLICK: return 'RIGHT_DOUBLE_CLICK'
-      case AgentMouseAction.LEFT_RIGHT_PRESS: return 'LEFT_RIGHT_PRESS'
-      default: return 'UNSPECIFIED'
-    }
+  function describeMouseAction(action: AgentMouseAction | string): string {
+    // protojson serializes enums as their proto names (e.g.
+    // "AGENT_MOUSE_ACTION_LEFT_CLICK"), not their numeric values, so the
+    // lookup table accepts both the numeric enum (coerced to string) and the
+    // proto name form. See game.proto / protojson defaults.
+    return MOUSE_ACTION_DISPLAY[String(action)] ?? 'UNSPECIFIED'
   }
 
-  function isOperationSucceeded(status: number): boolean {
-    return status === 1
+  function isOperationSucceeded(status: number | string): boolean {
+    // protojson emits the proto name ("AGENT_OPERATION_RESULT_STATUS_SUCCEEDED");
+    // accept both that and the numeric enum form.
+    return OPERATION_RESULT_SUCCESS_VALUES.has(String(status))
   }
 
   $effect(() => {

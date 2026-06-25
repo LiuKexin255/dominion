@@ -264,6 +264,18 @@ describe("PromptClient", () => {
       expect(options?.["grpc.initial_reconnect_backoff_ms"]).toBe(1_000);
       expect(options?.["grpc.max_reconnect_backoff_ms"]).toBe(15_000);
     });
+
+    it("configures round_robin load balancing via grpc.service_config", () => {
+      new PromptClient();
+
+      const options = MockClient.mock.calls[0]?.[2];
+      const serviceConfig = JSON.parse(
+        options?.["grpc.service_config"] as string,
+      );
+      expect(serviceConfig.loadBalancingConfig).toEqual([
+        { round_robin: {} },
+      ]);
+    });
   });
 
   describe("warmup", () => {

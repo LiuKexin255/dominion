@@ -250,6 +250,8 @@ export class Handler implements AgentServiceHandlers {
           image?: {
             data?: Uint8Array | string;
             encoding?: string;
+            widthPx?: number;
+            heightPx?: number;
           };
         };
         const userText = userTurn?.text ?? "";
@@ -301,6 +303,8 @@ export class Handler implements AgentServiceHandlers {
           if (image?.data && image?.encoding) {
             turnContent.imageData = bytesToBase64String(image.data);
             turnContent.imageMimeType = encodingToMime(image.encoding);
+            turnContent.imageWidthPx = image.widthPx;
+            turnContent.imageHeightPx = image.heightPx;
           }
 
           let blockCount = 0;

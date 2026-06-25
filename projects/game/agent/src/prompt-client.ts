@@ -54,9 +54,8 @@ function buildClientCredentials(): grpc.ChannelCredentials {
   return grpc.credentials.createSsl(rootCert);
 }
 
-// Keep the channel warm and detect dead peers fast: without these the broken
-// connection is only noticed on the next RPC, surfacing as the intermittent
-// "DEADLINE_EXCEEDED ... Waiting for LB pick" on getProfile.
+// Keep the channel warm and detect silently-dropped connections fast, so a
+// dead peer is noticed within ~10s rather than on the next failed RPC.
 const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
   "grpc.keepalive_time_ms": 30_000,
   "grpc.keepalive_timeout_ms": 10_000,
@@ -65,8 +64,19 @@ const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
   "grpc.max_reconnect_backoff_ms": 15_000,
 };
 
+// grpc-js defaults to pick_first, which pins a single connection; when that
+// backend pod restarts the call hangs in "Waiting for LB pick" until reconnect.
+// round_robin (matching grpc-go's ClientDefault) connects to every resolved
+// endpoint, so a rolling-upgrade pod swap routes around the terminating pod.
+const ROUND_ROBIN_SERVICE_CONFIG = JSON.stringify({
+  loadBalancingConfig: [{ round_robin: {} }],
+});
+
 function buildChannelOptions(): grpc.ChannelOptions {
-  const options: grpc.ChannelOptions = { ...KEEPALIVE_OPTIONS };
+  const options: grpc.ChannelOptions = {
+    ...KEEPALIVE_OPTIONS,
+    "grpc.service_config": ROUND_ROBIN_SERVICE_CONFIG,
+  };
   const serverName = process.env.TLS_SERVER_NAME;
   if (serverName && fs.existsSync(TLS_CA_CERT)) {
     options["grpc.ssl_target_name_override"] = serverName;

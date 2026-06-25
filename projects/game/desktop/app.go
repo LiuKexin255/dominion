@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"dominion/common/gopkg/otel/tracecontext"
@@ -440,6 +441,9 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
 	}
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("send user turn: text is required and cannot be empty")
+	}
 	if len(screenshotData) > maxScreenshotBytes {
 		return fmt.Errorf("send user turn: screenshot size %d exceeds 5 MiB limit (%d)", len(screenshotData), maxScreenshotBytes)
 	}
@@ -625,6 +629,18 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 	a.logger.Info("backend", "Operation executed", map[string]any{
 		"operation_id":   operationID,
 		"action":         mouse.GetAction().String(),
+		"screenshot_x":   mouse.GetXPx(),
+		"screenshot_y":   mouse.GetYPx(),
+		"window_handle":  a.boundWin.Handle,
+		"window_title":   a.boundWin.Title,
+		"window_bounds": map[string]int{
+			"left":   bounds.Left,
+			"top":    bounds.Top,
+			"right":  bounds.Right,
+			"bottom": bounds.Bottom,
+			"width":  bounds.Right - bounds.Left,
+			"height": bounds.Bottom - bounds.Top,
+		},
 		"screen_x":       screenX,
 		"screen_y":       screenY,
 		"correlation_id": corrID,
