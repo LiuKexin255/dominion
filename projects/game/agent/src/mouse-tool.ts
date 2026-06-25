@@ -24,6 +24,7 @@ const MOUSE_ACTION_TO_PROTO = {
   RIGHT_CLICK: "AGENT_MOUSE_ACTION_RIGHT_CLICK",
   RIGHT_DOUBLE_CLICK: "AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK",
   LEFT_RIGHT_PRESS: "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS",
+  MOVE: "AGENT_MOUSE_ACTION_MOVE",
 } as const;
 
 const mouseSchema = z.object({
@@ -40,6 +41,7 @@ const mouseSchema = z.object({
       "RIGHT_CLICK",
       "RIGHT_DOUBLE_CLICK",
       "LEFT_RIGHT_PRESS",
+      "MOVE",
     ])
     .describe("Mouse action to perform"),
 });
@@ -105,9 +107,13 @@ export function createMouseTool(
     {
       name: "mouse",
       description:
-        "Perform a mouse operation (click, double-click, right-click, or " +
-        "simultaneous left+right press) at the given image-relative " +
-        "pixel coordinates.",
+        "Perform a mouse operation at the given image-relative pixel " +
+        "coordinates. Available actions: left click, left double-click, " +
+        "right click, right double-click, simultaneous left+right press, " +
+        "and move (reposition cursor without clicking). When a window is " +
+        "bound, the result includes a post-action screenshot with a red " +
+        "marker ring at the operation coordinates and the image pixel " +
+        "dimensions.",
       schema: mouseSchema,
     },
   );
