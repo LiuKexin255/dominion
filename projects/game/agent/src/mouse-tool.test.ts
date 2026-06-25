@@ -181,6 +181,7 @@ describe("createMouseTool", () => {
     ["RIGHT_CLICK", "AGENT_MOUSE_ACTION_RIGHT_CLICK"],
     ["RIGHT_DOUBLE_CLICK", "AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK"],
     ["LEFT_RIGHT_PRESS", "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS"],
+    ["MOVE", "AGENT_MOUSE_ACTION_MOVE"],
   ] as const)(
     "maps action %s to proto value %s",
     async (action, protoValue) => {
