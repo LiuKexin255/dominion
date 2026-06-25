@@ -34,6 +34,9 @@ export const PROMPT_SERVICE_TARGET = "dominion:///game/prompt:50051";
 
 const TLS_CA_CERT = "/etc/tls/ca.crt";
 
+/** Ample for TCP + TLS handshake on a healthy peer during startup warmup. */
+const DEFAULT_WARMUP_TIMEOUT_MS = 5_000;
+
 /** Return type for PromptClient.getProfile(). */
 export interface ProfileResult {
   model: string;
@@ -51,12 +54,24 @@ function buildClientCredentials(): grpc.ChannelCredentials {
   return grpc.credentials.createSsl(rootCert);
 }
 
-function buildChannelOptions(): Record<string, unknown> {
+// Keep the channel warm and detect dead peers fast: without these the broken
+// connection is only noticed on the next RPC, surfacing as the intermittent
+// "DEADLINE_EXCEEDED ... Waiting for LB pick" on getProfile.
+const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
+  "grpc.keepalive_time_ms": 30_000,
+  "grpc.keepalive_timeout_ms": 10_000,
+  "grpc.keepalive_permit_without_calls": 1,
+  "grpc.initial_reconnect_backoff_ms": 1_000,
+  "grpc.max_reconnect_backoff_ms": 15_000,
+};
+
+function buildChannelOptions(): grpc.ChannelOptions {
+  const options: grpc.ChannelOptions = { ...KEEPALIVE_OPTIONS };
   const serverName = process.env.TLS_SERVER_NAME;
   if (serverName && fs.existsSync(TLS_CA_CERT)) {
-    return { "grpc.ssl_target_name_override": serverName };
+    options["grpc.ssl_target_name_override"] = serverName;
   }
-  return {};
+  return options;
 }
 
 /**
@@ -130,6 +145,42 @@ export class PromptClient {
           });
         },
       );
+    });
+  }
+
+  /**
+   * Best-effort pre-warm of the gRPC channel.
+   *
+   * Forces the otherwise-lazy channel to start connecting and waits until it
+   * reaches READY or `timeoutMs` elapses. Eliminates the cold-start window on
+   * the first real RPC. Never rejects — a timeout resolves `false` and leaves
+   * connection establishment to the next RPC's own deadline.
+   *
+   * @returns `true` if the channel reached READY, `false` on timeout.
+   */
+  async warmup(timeoutMs = DEFAULT_WARMUP_TIMEOUT_MS): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const channel = this.client.getChannel();
+      const deadline = new Date(Date.now() + timeoutMs);
+
+      const step = (): void => {
+        const state = channel.getConnectivityState(true);
+        if (
+          state === grpc.connectivityState.READY ||
+          state === grpc.connectivityState.SHUTDOWN
+        ) {
+          resolve(state === grpc.connectivityState.READY);
+          return;
+        }
+        channel.watchConnectivityState(state, deadline, (err) => {
+          if (err) {
+            resolve(false);
+            return;
+          }
+          step();
+        });
+      };
+      step();
     });
   }
 

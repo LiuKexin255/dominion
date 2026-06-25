@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { info } from "@dominion/common-js-logs";
+import { info, warn } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
 import {
   MemorySaver,
@@ -85,6 +85,12 @@ export async function startServer(
   );
 
   const promptClient = new PromptClient();
+  const promptReady = await promptClient.warmup();
+  if (promptReady) {
+    info("prompt service connection pre-warmed");
+  } else {
+    warn("prompt service not ready after warmup; deferring to first RPC");
+  }
 
   const checkpointer = new MemorySaver();
 

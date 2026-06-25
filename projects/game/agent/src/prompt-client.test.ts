@@ -14,14 +14,19 @@ import { PromptClient } from "./prompt-client";
 // For dependency injection we construct PromptClient with a mock client,
 // but we still mock the modules so the constructor doesn't throw when
 // loading proto files etc.
+const { MockClient } = vi.hoisted(() => {
+  const MockClient = vi.fn(
+    (_target: string, _creds: unknown, _options: Record<string, unknown>) => ({
+      getAgentProfile: vi.fn(),
+      close: vi.fn(),
+    }),
+  );
+  return { MockClient };
+});
+
 vi.mock("@grpc/grpc-js", () => {
   // A simple constructor that accepts (target, credentials) and returns
   // an object with a mockable getAgentProfile method.
-  const MockClient = vi.fn(() => ({
-    getAgentProfile: vi.fn(),
-    close: vi.fn(),
-  }));
-
   return {
     Client: MockClient,
     loadPackageDefinition: vi.fn(() => ({
@@ -39,6 +44,13 @@ vi.mock("@grpc/grpc-js", () => {
       NOT_FOUND: 5,
       OK: 0,
       UNAVAILABLE: 14,
+    },
+    connectivityState: {
+      IDLE: 0,
+      CONNECTING: 1,
+      READY: 2,
+      TRANSIENT_FAILURE: 3,
+      SHUTDOWN: 4,
     },
   };
 });
@@ -75,6 +87,7 @@ describe("PromptClient", () => {
       getAgentProfile: vi.fn(),
       close: vi.fn(),
     };
+    MockClient.mockClear();
   });
 
   describe("getProfile", () => {
@@ -233,6 +246,67 @@ describe("PromptClient", () => {
       const client = new PromptClient(mockClient as any);
       client.close();
       expect(mockClient.close).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("channel construction", () => {
+    beforeEach(() => {
+      MockClient.mockClear();
+    });
+
+    it("configures keepalive and reconnect-backoff channel options", () => {
+      new PromptClient();
+
+      const options = MockClient.mock.calls[0]?.[2];
+      expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
+      expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
+      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
+      expect(options?.["grpc.initial_reconnect_backoff_ms"]).toBe(1_000);
+      expect(options?.["grpc.max_reconnect_backoff_ms"]).toBe(15_000);
+    });
+  });
+
+  describe("warmup", () => {
+    it("resolves true when the channel is already READY", async () => {
+      const channel = {
+        getConnectivityState: vi.fn(() => 2), // READY
+        watchConnectivityState: vi.fn(),
+      };
+      const client = new PromptClient({ getChannel: () => channel } as any);
+
+      await expect(client.warmup()).resolves.toBe(true);
+      expect(channel.getConnectivityState).toHaveBeenCalledWith(true);
+      expect(channel.watchConnectivityState).not.toHaveBeenCalled();
+    });
+
+    it("waits for READY via watchConnectivityState then resolves true", async () => {
+      const states = [1, 2]; // CONNECTING on first read, READY after watch fires
+      const channel = {
+        getConnectivityState: vi.fn(() => states.shift()),
+        watchConnectivityState: vi.fn(
+          (_state: number, _deadline: Date, cb: (err?: Error) => void) => {
+            cb();
+          },
+        ),
+      };
+      const client = new PromptClient({ getChannel: () => channel } as any);
+
+      await expect(client.warmup()).resolves.toBe(true);
+      expect(channel.watchConnectivityState).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolves false when watchConnectivityState times out", async () => {
+      const channel = {
+        getConnectivityState: vi.fn(() => 1), // CONNECTING forever
+        watchConnectivityState: vi.fn(
+          (_state: number, _deadline: Date, cb: (err?: Error) => void) => {
+            cb(new Error("Deadline exceeded"));
+          },
+        ),
+      };
+      const client = new PromptClient({ getChannel: () => channel } as any);
+
+      await expect(client.warmup()).resolves.toBe(false);
     });
   });
 });
