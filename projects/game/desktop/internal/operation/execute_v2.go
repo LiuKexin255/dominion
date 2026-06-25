@@ -10,41 +10,53 @@ import (
 
 var procGetSystemMetrics = user32DLL.NewProc("GetSystemMetrics")
 
-// GetSystemMetrics indices for primary screen dimensions.
+// GetSystemMetrics indices for the virtual desktop. Unlike SM_CXSCREEN /
+// SM_CYSCREEN (which report only the primary monitor), the SM_*VIRTUALSCREEN
+// metrics describe the bounding rectangle of every attached monitor. The
+// origin (X, Y) is the top-left of the virtual desktop and may be negative
+// when a secondary monitor sits to the left of or above the primary monitor.
 const (
-	smCXScreen uintptr = 0
-	smCYScreen uintptr = 1
+	smXVirtualScreen  uintptr = 76
+	smYVirtualScreen  uintptr = 77
+	smCXVirtualScreen uintptr = 78
+	smCYVirtualScreen uintptr = 79
 )
 
-// screenDimensions returns the primary monitor's width and height in pixels
-// via GetSystemMetrics(SM_CXSCREEN) / GetSystemMetrics(SM_CYSCREEN).
-func screenDimensions() (int32, int32, error) {
-	cx, _, _ := procGetSystemMetrics.Call(smCXScreen)
-	if cx == 0 {
-		return 0, 0, errors.New("GetSystemMetrics(SM_CXSCREEN) returned 0")
+// virtualScreenRect returns the bounding rectangle of the entire virtual
+// desktop via the SM_*VIRTUALSCREEN metrics. This covers all attached
+// monitors, so absolute screen coordinates derived from windows on any
+// monitor — including those with negative X/Y — fall inside this rectangle.
+func virtualScreenRect() (screenRect, error) {
+	x, _, _ := procGetSystemMetrics.Call(smXVirtualScreen)
+	y, _, _ := procGetSystemMetrics.Call(smYVirtualScreen)
+	cx, _, _ := procGetSystemMetrics.Call(smCXVirtualScreen)
+	cy, _, _ := procGetSystemMetrics.Call(smCYVirtualScreen)
+	if cx == 0 || cy == 0 {
+		return screenRect{}, errors.New("GetSystemMetrics(SM_CXVIRTUALSCREEN/SM_CYVIRTUALSCREEN) returned zero area")
 	}
-	cy, _, _ := procGetSystemMetrics.Call(smCYScreen)
-	if cy == 0 {
-		return 0, 0, errors.New("GetSystemMetrics(SM_CYSCREEN) returned 0")
-	}
-	return int32(cx), int32(cy), nil
+	return screenRect{X: int32(x), Y: int32(y), Width: int32(cx), Height: int32(cy)}, nil
 }
 
 // ExecuteMouseAction dispatches a mouse action at the given absolute screen
 // coordinates via the Windows SendInput API.
 //
-// screenX, screenY are absolute screen pixel coordinates. Convert
-// screenshot-relative coordinates to screen-absolute coordinates before
-// calling this function using ScreenshotToScreenCoords together with the
-// target window bounds from capture.CaptureWindowBounds:
+// screenX, screenY are absolute screen pixel coordinates (relative to the
+// virtual desktop, whose origin may be negative on multi-monitor systems).
+// Convert screenshot-relative coordinates to screen-absolute coordinates
+// before calling this function using ScreenshotToScreenCoords together with
+// the target window bounds from capture.CaptureWindowBounds:
 //
 //	bounds, _ := capture.CaptureWindowBounds(hwnd)
 //	sx, sy, _ := ScreenshotToScreenCoords(imgX, imgY, int32(bounds.Left), int32(bounds.Top))
 //	err := ExecuteMouseAction(sx, sy, action)
 //
-// The action is validated, coordinates are bounds-checked against the primary
-// screen dimensions via ValidateBounds, then normalized to the 0..65535 range
-// required by MOUSEEVENTF_ABSOLUTE before dispatch through SendInput.
+// The action is validated, coordinates are bounds-checked against the
+// virtual desktop rectangle via validateScreenCoords, then normalized to the
+// 0..65535 range over the full virtual desktop (with MOUSEEVENTF_VIRTUALDESK)
+// before dispatch through SendInput. Using the virtual desktop — rather than
+// the primary monitor — ensures clicks on windows placed on secondary
+// monitors (whose absolute coordinates may be negative or exceed the primary
+// monitor's dimensions) are dispatched correctly.
 //
 // This replaces the legacy ExecuteMouseClick, which passed raw pixel
 // coordinates directly to MOUSEEVENTF_ABSOLUTE (causing mis-targeted clicks)
@@ -54,17 +66,17 @@ func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) er
 		return err
 	}
 
-	screenWidth, screenHeight, err := screenDimensions()
+	rect, err := virtualScreenRect()
 	if err != nil {
 		return err
 	}
 
-	if err := ValidateBounds(screenX, screenY, screenWidth, screenHeight); err != nil {
+	if err := validateScreenCoords(screenX, screenY, rect); err != nil {
 		return err
 	}
 
-	normX := normalizeAbsolute(screenX, screenWidth)
-	normY := normalizeAbsolute(screenY, screenHeight)
+	normX := normalizeAbsoluteVirtual(screenX, rect.X, rect.Width)
+	normY := normalizeAbsoluteVirtual(screenY, rect.Y, rect.Height)
 
 	events, err := actionEventSequence(action)
 	if err != nil {
@@ -76,7 +88,7 @@ func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) er
 			Type:    inputMouse,
 			DX:      normX,
 			DY:      normY,
-			DwFlags: flag | v2MouseAbsolute,
+			DwFlags: flag | v2MouseAbsolute | v2MouseVirtualDesk,
 		})
 	}
 

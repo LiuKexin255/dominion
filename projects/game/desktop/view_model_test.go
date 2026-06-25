@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -300,6 +301,50 @@ func TestToMessageViewModels(t *testing.T) {
 	}
 	if strings.Contains(jsonStr, `"message_id"`) {
 		t.Fatalf("expected JSON to NOT contain 'message_id', got: %s", jsonStr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestToMessageViewModels_Image
+// ---------------------------------------------------------------------------
+
+func TestToMessageViewModels_Image(t *testing.T) {
+	createTime := time.Date(2024, 7, 1, 12, 0, 0, 0, time.UTC)
+	rawImage := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
+	messages := []*game.Message{
+		{
+			Name:       "sessions/sess-1/agent/messages/img-1",
+			MessageId:  "img-1",
+			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Type:       "image",
+			Content:    &game.Message_ImageData{ImageData: rawImage},
+			CreateTime: timestamppb.New(createTime),
+		},
+	}
+
+	views := ToMessageViewModels(messages)
+
+	if len(views) != 1 {
+		t.Fatalf("expected 1 view model, got %d", len(views))
+	}
+	if views[0].Type != "image" {
+		t.Fatalf("expected Type %q, got %q", "image", views[0].Type)
+	}
+	if views[0].Content != "" {
+		t.Fatalf("expected empty Content for image message, got %q", views[0].Content)
+	}
+	expectedB64 := base64.StdEncoding.EncodeToString(rawImage)
+	if views[0].ImageData != expectedB64 {
+		t.Fatalf("expected ImageData %q, got %q", expectedB64, views[0].ImageData)
+	}
+
+	data, err := json.Marshal(views[0])
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"imageData"`) {
+		t.Fatalf("expected JSON to contain 'imageData', got: %s", jsonStr)
 	}
 }
 

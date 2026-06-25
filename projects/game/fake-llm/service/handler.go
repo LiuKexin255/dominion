@@ -7,6 +7,8 @@
 package service
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -223,6 +225,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := validateImageContent(req.Messages); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -537,4 +544,87 @@ func toolCallStreamChunks(respID string, now int64, tc *ToolCall) []*completionR
 // the literal string "stop" rather than null in the final chunk.
 func strPtr(s string) *string {
 	return &s
+}
+
+// pngMagic is the PNG file signature.
+var pngMagic = []byte{0x89, 0x50, 0x4e, 0x47}
+
+// validateImageContent rejects malformed image_url data URLs the way a
+// real OpenAI-compatible provider would ("Param Incorrect"), and logs
+// the URL structure so test runs reveal what the agent actually
+// serialised (real base64 vs Buffer toString vs comma-separated bytes).
+func validateImageContent(messages []*messageParam) error {
+	for _, msg := range messages {
+		if len(msg.Content) == 0 || msg.Content[0] != '[' {
+			continue
+		}
+		var parts []contentPart
+		if err := json.Unmarshal(msg.Content, &parts); err != nil {
+			continue
+		}
+		for _, p := range parts {
+			if p.Type != "image_url" || p.ImageURL == nil {
+				continue
+			}
+			if err := validateDataURL(p.ImageURL.URL); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateDataURL validates one image data URL: data: prefix, ;base64
+// marker, image/* MIME, and decodable base64. Logs the URL prefix and
+// decoded length for diagnosis.
+func validateDataURL(rawURL string) error {
+	slog.Info("image_url part received",
+		slog.Int("url_len", len(rawURL)),
+		slog.String("url_prefix", truncPrefix(rawURL, 100)),
+	)
+
+	if !strings.HasPrefix(rawURL, "data:") {
+		return fmt.Errorf("Param Incorrect: image_url is not a data URL (prefix=%q)", truncPrefix(rawURL, 40))
+	}
+
+	commaIdx := strings.Index(rawURL, ",")
+	if commaIdx < 0 {
+		return fmt.Errorf("Param Incorrect: data URL has no comma separator")
+	}
+
+	meta := rawURL[:commaIdx]
+	b64data := rawURL[commaIdx+1:]
+
+	if !strings.HasSuffix(meta, ";base64") {
+		return fmt.Errorf("Param Incorrect: data URL meta lacks ;base64 (meta=%q)", meta)
+	}
+
+	mime := strings.TrimSuffix(strings.TrimPrefix(meta, "data:"), ";base64")
+	if !strings.HasPrefix(mime, "image/") {
+		return fmt.Errorf("Param Incorrect: invalid MIME %q", mime)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(b64data)
+	if err != nil {
+		slog.Error("image_url base64 decode failed",
+			slog.String("error", err.Error()),
+			slog.Int("b64_len", len(b64data)),
+			slog.String("b64_prefix", truncPrefix(b64data, 80)),
+		)
+		return fmt.Errorf("Param Incorrect: invalid base64 (%v)", err)
+	}
+
+	slog.Info("image_url decoded successfully",
+		slog.Int("decoded_len", len(decoded)),
+		slog.String("mime", mime),
+		slog.Bool("is_png", len(decoded) >= 4 && bytes.HasPrefix(decoded, pngMagic)),
+	)
+	return nil
+}
+
+func truncPrefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

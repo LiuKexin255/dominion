@@ -226,7 +226,7 @@ function userTurnWithImageFrame(
   sessionId: string,
   invokeId: string,
   text: string,
-  image: { data: string; encoding: string },
+  image: { data: Uint8Array | string; encoding: string },
   profileName?: string,
 ) {
   return {
@@ -629,13 +629,14 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
     stream.emit(
       "data",
       userTurnWithImageFrame(
         "sess-tc",
         "turn-tc",
         "look at this",
-        { data: "abc123", encoding: "png" },
+        { data: pngBytes, encoding: "IMAGE_ENCODING_PNG" },
         "helpful-assistant",
       ),
     );
@@ -644,7 +645,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].content).toEqual({
       text: "look at this",
-      imageData: "abc123",
+      imageData: pngBytes.toString("base64"),
       imageMimeType: "image/png",
     });
   });
@@ -1279,9 +1280,8 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
         content: [
           { type: "text", text: "What is in this image?" },
           {
-            type: "image",
-            data: "base64imagedata",
-            mime_type: "image/png",
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,base64imagedata" },
           },
         ],
       }),

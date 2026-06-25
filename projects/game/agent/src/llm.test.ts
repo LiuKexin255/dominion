@@ -331,10 +331,8 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(msg.content).toEqual([
 			{ type: "text", text: "click here" },
 			{
-				type: "image",
-				source_type: "base64",
-				data: "base64data",
-				mime_type: "image/png",
+				type: "image_url",
+				image_url: { url: "data:image/png;base64,base64data" },
 			},
 		]);
 	});
@@ -363,10 +361,8 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(msg.content).toEqual([
 			{ type: "text", text: "如图所示" },
 			{
-				type: "image",
-				source_type: "base64",
-				data: "imgdata",
-				mime_type: "image/jpeg",
+				type: "image_url",
+				image_url: { url: "data:image/jpeg;base64,imgdata" },
 			},
 		]);
 	});

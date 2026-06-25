@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"time"
 
 	game "dominion/projects/game"
@@ -37,6 +38,7 @@ type MessageViewModel struct {
 	Sender     string `json:"sender"`
 	Type       string `json:"type"`
 	Content    string `json:"content"`
+	ImageData  string `json:"imageData,omitempty"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -86,7 +88,7 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 	}
 	views := make([]*MessageViewModel, len(messages))
 	for i, m := range messages {
-		views[i] = &MessageViewModel{
+		vm := &MessageViewModel{
 			Name:       m.GetName(),
 			MessageID:  m.GetMessageId(),
 			Sender:     m.GetSender().String(),
@@ -94,6 +96,12 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 			Content:    m.GetText(),
 			CreateTime: timestampString(m.GetCreateTime()),
 		}
+		if m.GetType() == "image" {
+			if data := m.GetImageData(); len(data) > 0 {
+				vm.ImageData = base64.StdEncoding.EncodeToString(data)
+			}
+		}
+		views[i] = vm
 	}
 	return views
 }

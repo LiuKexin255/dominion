@@ -200,10 +200,10 @@ export class AgentAdapterImpl implements AgentAdapter {
 		}
 		if (hasImage) {
 			contentBlocks.push({
-				type: "image",
-				source_type: "base64",
-				data: content.imageData,
-				mime_type: content.imageMimeType,
+				type: "image_url",
+				image_url: {
+					url: `data:${content.imageMimeType};base64,${content.imageData}`,
+				},
 			});
 		}
 

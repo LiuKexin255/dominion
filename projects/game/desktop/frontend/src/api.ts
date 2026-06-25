@@ -38,6 +38,7 @@ export interface MessageEntry {
   sender: string
   type: string
   content: string
+  imageData?: string
   createTime?: string
 }
 

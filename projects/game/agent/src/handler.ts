@@ -146,7 +146,7 @@ export class Handler implements AgentServiceHandlers {
       userTurn?: {
         text?: string;
         image?: {
-          data?: string;
+          data?: Uint8Array | string;
           encoding?: string;
           widthPx?: number;
           heightPx?: number;
@@ -248,7 +248,7 @@ export class Handler implements AgentServiceHandlers {
         const userTurn = frame.userTurn as {
           text?: string;
           image?: {
-            data?: string;
+            data?: Uint8Array | string;
             encoding?: string;
           };
         };
@@ -299,8 +299,8 @@ export class Handler implements AgentServiceHandlers {
 
           const turnContent: TurnContent = { text: userText };
           if (image?.data && image?.encoding) {
-            turnContent.imageData = image.data;
-            turnContent.imageMimeType = `image/${image.encoding.toLowerCase()}`;
+            turnContent.imageData = bytesToBase64String(image.data);
+            turnContent.imageMimeType = encodingToMime(image.encoding);
           }
 
           let blockCount = 0;
@@ -561,6 +561,16 @@ function extractSessionId(parent: string): string {
 
 function bytesToBase64(value: Uint8Array): string {
   return Buffer.from(value).toString("base64");
+}
+
+function bytesToBase64String(data: Uint8Array | string): string {
+  if (typeof data === "string") return data;
+  return Buffer.from(data).toString("base64");
+}
+
+function encodingToMime(encoding: string): string {
+  const subtype = encoding.replace(/^IMAGE_ENCODING_/, "").toLowerCase();
+  return `image/${subtype || "png"}`;
 }
 
 function stripDataUrlPrefix(value: string): string {

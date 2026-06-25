@@ -12,28 +12,50 @@ import (
 // integers matching the Win32 API and are only consumed by SendInput on
 // Windows.
 const (
-	v2MouseAbsolute  uint32 = 0x8000 // MOUSEEVENTF_ABSOLUTE
-	v2MouseLeftDown  uint32 = 0x0002 // MOUSEEVENTF_LEFTDOWN
-	v2MouseLeftUp    uint32 = 0x0004 // MOUSEEVENTF_LEFTUP
-	v2MouseRightDown uint32 = 0x0008 // MOUSEEVENTF_RIGHTDOWN
-	v2MouseRightUp   uint32 = 0x0010 // MOUSEEVENTF_RIGHTUP
+	v2MouseAbsolute    uint32 = 0x8000 // MOUSEEVENTF_ABSOLUTE
+	v2MouseVirtualDesk uint32 = 0x4000 // MOUSEEVENTF_VIRTUALDESK — normalize coordinates across the entire virtual desktop (all monitors), not just the primary screen
+	v2MouseLeftDown    uint32 = 0x0002 // MOUSEEVENTF_LEFTDOWN
+	v2MouseLeftUp      uint32 = 0x0004 // MOUSEEVENTF_LEFTUP
+	v2MouseRightDown   uint32 = 0x0008 // MOUSEEVENTF_RIGHTDOWN
+	v2MouseRightUp     uint32 = 0x0010 // MOUSEEVENTF_RIGHTUP
 )
 
 // mouseAbsoluteMax is the upper bound of the normalized coordinate range
 // expected by MOUSEEVENTF_ABSOLUTE. Pixel 0 maps to 0 and pixel (dim-1)
-// maps to mouseAbsoluteMax, giving precise edge-to-edge coverage across
-// the full primary screen.
+// maps to mouseAbsoluteMax, giving precise edge-to-edge coverage.
 const mouseAbsoluteMax int32 = 65535
 
-// normalizeAbsolute maps a pixel coordinate to the 0..65535 range required
-// by MOUSEEVENTF_ABSOLUTE. Returns 0 for degenerate dimensions (dim <= 1)
-// to avoid division by zero; callers must reject such dimensions before
-// reaching this function.
-func normalizeAbsolute(pixel, screenDim int32) int32 {
-	if screenDim <= 1 {
+// screenRect describes a screen rectangle in absolute pixel coordinates.
+// On multi-monitor systems the virtual desktop origin (X, Y) may be
+// negative — e.g. when a secondary monitor sits to the left of or above
+// the primary monitor — and Width/Height span every attached monitor.
+type screenRect struct {
+	X, Y          int32
+	Width, Height int32
+}
+
+// normalizeAbsoluteVirtual maps an absolute screen pixel coordinate to the
+// 0..65535 range required by MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK.
+// origin is the virtual screen's top-left pixel (may be negative on
+// multi-monitor systems); dim is the virtual screen's width or height.
+// Returns 0 for degenerate dimensions (dim <= 1) to avoid division by
+// zero; callers must reject such dimensions before reaching this function.
+func normalizeAbsoluteVirtual(pixel, origin, dim int32) int32 {
+	if dim <= 1 {
 		return 0
 	}
-	return (pixel * mouseAbsoluteMax) / (screenDim - 1)
+	return ((pixel - origin) * mouseAbsoluteMax) / (dim - 1)
+}
+
+// validateScreenCoords checks that absolute screen coordinates fall within
+// the given screen rectangle. The rectangle may have a negative origin
+// (multi-monitor virtual desktop). Returns an error whose format matches
+// the legacy ValidateBounds output for log-search continuity.
+func validateScreenCoords(x, y int32, rect screenRect) error {
+	if x < rect.X || x >= rect.X+rect.Width || y < rect.Y || y >= rect.Y+rect.Height {
+		return fmt.Errorf("coordinates (%d,%d) out of bounds [%dx%d]", x, y, rect.Width, rect.Height)
+	}
+	return nil
 }
 
 // validateMouseAction rejects UNSPECIFIED and any unknown action value so

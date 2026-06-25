@@ -264,13 +264,25 @@
     messagesError = null
     try {
       const entries = (await listMessages(selectedSession.sessionId)) ?? []
-      chatMessages = entries.map(entry => ({
-        messageId: entry.messageId,
-        sender: senderFromString(entry.sender),
-        type: typeFromString(entry.type),
-        content: entry.content,
-        timestamp: entry.createTime || new Date().toISOString(),
-      }))
+      chatMessages = entries.map(entry => {
+        if (entry.type === 'image' && entry.imageData) {
+          return {
+            messageId: entry.messageId,
+            sender: senderFromString(entry.sender),
+            type: 'image',
+            content: '',
+            timestamp: entry.createTime || new Date().toISOString(),
+            imageUrl: `data:image/png;base64,${entry.imageData}`,
+          }
+        }
+        return {
+          messageId: entry.messageId,
+          sender: senderFromString(entry.sender),
+          type: typeFromString(entry.type),
+          content: entry.content,
+          timestamp: entry.createTime || new Date().toISOString(),
+        }
+      })
       playState = 'chat_ready'
       log('info', 'chat', `Loaded ${entries.length} messages from history`)
     } catch (e: unknown) {

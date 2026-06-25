@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"math/rand/v2"
@@ -185,8 +186,9 @@ func TestServeHTTP_ArrayContentDecode(t *testing.T) {
 
 	// given: array-form content with a non-text part (which must be
 	// ignored) interleaved with the text carrying the "bye" keyword.
+	validPNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRf5ErkJggg=="
 	body := `{"stream":false,"messages":[{"role":"user","content":[` +
-		`{"type":"image_url","image_url":{"url":"data:..."}},` +
+		`{"type":"image_url","image_url":{"url":"` + validPNG + `"}},` +
 		`{"type":"text","text":"time to say"}` +
 		`]},{"role":"user","content":[{"type":"text","text":"bye now"}]}]}`
 
@@ -658,13 +660,13 @@ func TestServeHTTP_ImageURLTextExtraction(t *testing.T) {
 	}
 	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
 
-	// given: array-form content with a large fake base64 image_url part
-	// whose data URL contains the literal "hello" (which must NOT
-	// trigger the greeting keyword match — only the text part "bye"
-	// drives keyword matching, so the farewell response is expected).
-	fakeBase64 := "data:image/png;base64," + strings.Repeat("aGVsbG8=", 50) // "hello" repeated in base64
+	// given: array-form content with a valid base64 image_url part whose
+	// decoded bytes spell "hellohello..." (which must NOT trigger the
+	// greeting keyword match — only the text part "bye" drives keyword
+	// matching, so the farewell response is expected).
+	imgB64 := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("hello", 50)))
 	body := `{"stream":false,"messages":[{"role":"user","content":[` +
-		`{"type":"image_url","image_url":{"url":"` + fakeBase64 + `"}},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,` + imgB64 + `"}},` +
 		`{"type":"text","text":"bye now"}` +
 		`]}]}`
 
@@ -758,6 +760,77 @@ func TestLastMessageRole(t *testing.T) {
 			got := lastMessageRole(tt.messages)
 			if got != tt.want {
 				t.Fatalf("lastMessageRole = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateImageContent(t *testing.T) {
+	validPNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRf5ErkJggg=="
+
+	tests := []struct {
+		name     string
+		messages []*messageParam
+		wantErr  bool
+	}{
+		{
+			name:     "no image parts returns nil",
+			messages: []*messageParam{{Role: "user", Content: rawJSON(`"hello"`)}},
+			wantErr:  false,
+		},
+		{
+			name: "valid base64 PNG returns nil",
+			messages: []*messageParam{{
+				Role:    "user",
+				Content: rawJSON(`[{"type":"image_url","image_url":{"url":"` + validPNG + `"}},{"type":"text","text":"hi"}]`),
+			}},
+			wantErr: false,
+		},
+		{
+			name: "garbage base64 returns error",
+			messages: []*messageParam{{
+				Role:    "user",
+				Content: rawJSON(`[{"type":"image_url","image_url":{"url":"data:image/png;base64,137,80,78,71"}},{"type":"text","text":"hi"}]`),
+			}},
+			wantErr: true,
+		},
+		{
+			name: "non-data URL returns error",
+			messages: []*messageParam{{
+				Role:    "user",
+				Content: rawJSON(`[{"type":"image_url","image_url":{"url":"https://example.com/img.png"}},{"type":"text","text":"hi"}]`),
+			}},
+			wantErr: true,
+		},
+		{
+			name: "wrong MIME returns error",
+			messages: []*messageParam{{
+				Role:    "user",
+				Content: rawJSON(`[{"type":"image_url","image_url":{"url":"data:text/plain;base64,aGVsbG8="}},{"type":"text","text":"hi"}]`),
+			}},
+			wantErr: true,
+		},
+		{
+			name: "missing ;base64 marker returns error",
+			messages: []*messageParam{{
+				Role:    "user",
+				Content: rawJSON(`[{"type":"image_url","image_url":{"url":"data:image/png,iVBORw0KGgo="}},{"type":"text","text":"hi"}]`),
+			}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateImageContent(tt.messages)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateImageContent returned nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateImageContent returned %v, want nil", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "Param Incorrect") {
+				t.Fatalf("error = %q, want to contain 'Param Incorrect'", err.Error())
 			}
 		})
 	}
