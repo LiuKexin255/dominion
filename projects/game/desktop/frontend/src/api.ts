@@ -51,6 +51,7 @@ export enum AgentMouseAction {
   RIGHT_CLICK = 3,
   RIGHT_DOUBLE_CLICK = 4,
   LEFT_RIGHT_PRESS = 5,
+  MOVE = 6,
 }
 
 export enum AgentOperationResultStatus {
@@ -150,6 +151,14 @@ export interface AgentOperationResultFrame {
   operationId: string
   status: number
   message: string
+  screenshot?: {
+    data?: string
+    widthPx?: number
+    heightPx?: number
+    encoding?: string
+    scaleFactor?: number
+    windowTitle?: string
+  }
 }
 
 export interface AgentUserTurnFrame {
