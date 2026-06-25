@@ -436,7 +436,8 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 //
 // Inbound AgentOperationFrame payloads are auto-executed and a matching
 // AgentOperationResultFrame is sent back over the same WebSocket connection
-// (FR-013). No follow-up screenshot is captured after execution (FR-014).
+// (FR-013). The result frame carries a post-action screenshot of the bound
+// window with a red-ring marker at the operation coordinates (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -515,8 +516,8 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 
 		runtime.EventsEmit(a.ctx, "game:frame", frameToMap(resp))
 
-		// Inbound operation: auto-execute and report the result without
-		// capturing a follow-up screenshot (FR-013, FR-014).
+		// Inbound operation: auto-execute and report the result with a
+		// post-action screenshot (FR-007, FR-013).
 		if op := resp.GetOperation(); op != nil {
 			if err := a.handleInboundOperation(sessionID, op); err != nil {
 				return err
@@ -538,7 +539,8 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 // existing operation executor and sends the matching AgentOperationResultFrame
 // back over the WebSocket. The result frame carries the same operation_id and
 // a SUCCEEDED/FAILED status; it is never carried by an AgentAckFrame (FR-013).
-// No follow-up screenshot is captured (FR-014).
+// A post-action screenshot with a red-ring marker is attached when the bound
+// window can be captured (FR-007).
 func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFrame) error {
 	result := a.executeAgentOperation(op)
 
@@ -579,6 +581,15 @@ func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFr
 // the bound window position. ExecuteMouseAction validates the action, checks
 // bounds, normalizes coordinates, and dispatches all supported actions
 // including LEFT_RIGHT_PRESS.
+//
+// After the action phase — regardless of whether it succeeded — a follow-up
+// screenshot of the bound window is captured and a red-ring marker is drawn
+// at the operation's screenshot-relative coordinates (FR-007). The screenshot
+// is attached to the result frame when capture, sizing, and marker drawing
+// all succeed; otherwise the capture failure is recorded in the result
+// message. Status always reflects the ACTION outcome (never SUCCEEDED when
+// the action failed). Precondition failures (no mouse payload, no window
+// bound) return early since no screenshot is possible without a bound window.
 func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOperationResultFrame {
 	operationID := op.GetOperationId()
 
@@ -612,44 +623,91 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 		return failed("no window bound")
 	}
 
-	bounds, err := capture.CaptureWindowBounds(a.boundWin.Handle)
-	if err != nil {
-		return failed(fmt.Sprintf("capture window bounds: %s", err.Error()))
+	// Action phase: accumulate errors instead of early-returning so the
+	// screenshot phase always runs (FR-007). actionStatus reflects only the
+	// ACTION outcome; a failed action never reports SUCCEEDED.
+	var actionErr error
+	var screenX, screenY int32
+	bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
+	if bErr != nil {
+		actionErr = fmt.Errorf("capture window bounds: %w", bErr)
+	} else {
+		sx, sy, cErr := operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
+		if cErr != nil {
+			actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
+		} else {
+			screenX, screenY = sx, sy
+			if eErr := operation.ExecuteMouseAction(screenX, screenY, mouse.GetAction()); eErr != nil {
+				actionErr = fmt.Errorf("mouse action: %w", eErr)
+			}
+		}
 	}
 
-	screenX, screenY, err := operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
-	if err != nil {
-		return failed(fmt.Sprintf("coordinate conversion: %s", err.Error()))
+	actionStatus := game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_SUCCEEDED
+	actionMsg := "ok"
+	if actionErr != nil {
+		actionStatus = game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED
+		actionMsg = actionErr.Error()
+		a.logger.Error("backend", "executeAgentOperation: action failed", map[string]any{
+			"operation_id":   operationID,
+			"correlation_id": corrID,
+			"error":          actionErr.Error(),
+		})
+	} else {
+		a.logger.Info("backend", "Operation executed", map[string]any{
+			"operation_id":  operationID,
+			"action":        mouse.GetAction().String(),
+			"screenshot_x":  mouse.GetXPx(),
+			"screenshot_y":  mouse.GetYPx(),
+			"window_handle": a.boundWin.Handle,
+			"window_title":  a.boundWin.Title,
+			"window_bounds": map[string]int{
+				"left":   bounds.Left,
+				"top":    bounds.Top,
+				"right":  bounds.Right,
+				"bottom": bounds.Bottom,
+				"width":  bounds.Right - bounds.Left,
+				"height": bounds.Bottom - bounds.Top,
+			},
+			"screen_x":       screenX,
+			"screen_y":       screenY,
+			"correlation_id": corrID,
+		})
 	}
 
-	if err := operation.ExecuteMouseAction(screenX, screenY, mouse.GetAction()); err != nil {
-		return failed(fmt.Sprintf("mouse action: %s", err.Error()))
-	}
-
-	a.logger.Info("backend", "Operation executed", map[string]any{
-		"operation_id":   operationID,
-		"action":         mouse.GetAction().String(),
-		"screenshot_x":   mouse.GetXPx(),
-		"screenshot_y":   mouse.GetYPx(),
-		"window_handle":  a.boundWin.Handle,
-		"window_title":   a.boundWin.Title,
-		"window_bounds": map[string]int{
-			"left":   bounds.Left,
-			"top":    bounds.Top,
-			"right":  bounds.Right,
-			"bottom": bounds.Bottom,
-			"width":  bounds.Right - bounds.Left,
-			"height": bounds.Bottom - bounds.Top,
-		},
-		"screen_x":       screenX,
-		"screen_y":       screenY,
-		"correlation_id": corrID,
-	})
-	return &game.AgentOperationResultFrame{
+	// Single exit: build the result with the accumulated action status, then
+	// always attempt a post-action screenshot when a window is bound (FR-007).
+	result := &game.AgentOperationResultFrame{
 		OperationId: operationID,
-		Status:      game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_SUCCEEDED,
-		Message:     "ok",
+		Status:      actionStatus,
+		Message:     actionMsg,
 	}
+
+	if a.boundWin.Handle != 0 {
+		capturedImg, captureErr := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
+		switch {
+		case captureErr != nil:
+			result.Message = fmt.Sprintf("%s (screenshot capture failed: %s)", result.Message, captureErr.Error())
+		case len(capturedImg.Data) > maxScreenshotBytes:
+			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
+		default:
+			marked, markerErr := operation.ApplyMarker(capturedImg.Data, int(mouse.GetXPx()), int(mouse.GetYPx()))
+			if markerErr != nil {
+				result.Message = fmt.Sprintf("%s (screenshot marker failed: %s)", result.Message, markerErr.Error())
+			} else {
+				result.Screenshot = &game.AgentImageFrame{
+					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:        marked,
+					WidthPx:     int32(capturedImg.WidthPx),
+					HeightPx:    int32(capturedImg.HeightPx),
+					ScaleFactor: a.boundWin.ScaleFactor,
+					WindowTitle: a.boundWin.Title,
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 // GetAgent retrieves the agent for a session.

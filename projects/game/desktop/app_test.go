@@ -13,6 +13,7 @@ import (
 	"dominion/projects/game"
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
+	"dominion/projects/game/desktop/internal/capture"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -661,5 +662,100 @@ func TestListMessages_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "list messages") {
 		t.Errorf("error should contain 'list messages', got %q", err.Error())
+	}
+}
+
+// Test_executeAgentOperation_NoWindowBound verifies Rule 6: when no window is
+// bound the result is FAILED with "no window bound" and no screenshot is
+// attached (precondition early-return — no screenshot is possible without a
+// bound window).
+func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
+	// given: App with no bound window (boundWin.Handle zero value)
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	op := &game.AgentOperationFrame{
+		OperationId: "op-no-window",
+		Operation: &game.AgentOperationFrame_Mouse{
+			Mouse: &game.AgentMouseOperation{
+				XPx:    10,
+				YPx:    20,
+				Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+			},
+		},
+	}
+
+	// when
+	result := app.executeAgentOperation(op)
+
+	// then: FAILED precondition, no screenshot
+	if got := result.GetStatus(); got != game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "no window bound") {
+		t.Errorf("expected message to mention 'no window bound', got %q", result.GetMessage())
+	}
+	if result.GetScreenshot() != nil {
+		t.Errorf("expected nil screenshot when no window is bound, got non-nil")
+	}
+	if result.GetOperationId() != "op-no-window" {
+		t.Errorf("expected operation_id %q, got %q", "op-no-window", result.GetOperationId())
+	}
+}
+
+// Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn verifies
+// Rule 5: when the action setup fails AND the screenshot capture fails, the
+// function must NOT early-return on the action error — it must reach the
+// screenshot phase and record both failures in the result message. On the
+// Linux stub both CaptureWindowBounds (action setup) and CaptureWindow
+// (screenshot) return "not supported" errors, which is the exact Rule 5
+// scenario. Status reflects the action failure (never SUCCEEDED), screenshot
+// is nil, and the message records both the action and the screenshot failure.
+func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing.T) {
+	// given: App with a bound window. On the Linux stub CaptureWindowBounds
+	// and CaptureWindow both fail, exercising the error-accumulation path.
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	}
+
+	op := &game.AgentOperationFrame{
+		OperationId: "op-both-fail",
+		Operation: &game.AgentOperationFrame_Mouse{
+			Mouse: &game.AgentMouseOperation{
+				XPx:    100,
+				YPx:    200,
+				Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+			},
+		},
+	}
+
+	// when
+	result := app.executeAgentOperation(op)
+
+	// then: status FAILED (action outcome), screenshot nil (capture failed),
+	// and the message records BOTH the action failure and the screenshot
+	// capture failure — proving the screenshot phase ran despite the action
+	// error rather than early-returning.
+	if got := result.GetStatus(); got != game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if result.GetScreenshot() != nil {
+		t.Errorf("expected nil screenshot when capture fails, got non-nil")
+	}
+	msg := result.GetMessage()
+	if !strings.Contains(msg, "capture window bounds") {
+		t.Errorf("message should record the action (bounds) failure, got %q", msg)
+	}
+	if !strings.Contains(msg, "screenshot capture failed") {
+		t.Errorf("message should record screenshot capture failure (proves no early return on action error), got %q", msg)
+	}
+	if result.GetOperationId() != "op-both-fail" {
+		t.Errorf("expected operation_id %q, got %q", "op-both-fail", result.GetOperationId())
 	}
 }
