@@ -38,7 +38,7 @@
     "atlas": {
       "model": "opencode-go/deepseek-v4-pro",
       "variant": "high",
-      "prompt_append": "During the development process, commit in time as planned. Before executing the task, select the appropriate category type according to the task goal and complexity; Instead of just using only one type of lazy thinking."
+      "prompt_append": "During the development process, commit in time as planned. Before starting to delegate tasks, **MUST** select the appropriate category type according to the task goal and complexity; Instead of just using only one type of lazy thinking."
     },
     "sisyphus-junior": {
       "model": "opencode-go/deepseek-v4-pro",
