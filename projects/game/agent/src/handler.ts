@@ -17,6 +17,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { AgentOperationResultFrame } from "../game_types/projects/game/AgentOperationResultFrame";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
 import type { PromptClient } from "./prompt-client";
@@ -246,7 +247,7 @@ export class Handler implements AgentServiceHandlers {
 
       if (frame.payload === "operation_result" || frame.operationResult) {
         const sa = this.sessionAgentStore.getOrCreate(sessionId);
-        sa.getBridge().handleResult(frame.operationResult as any);
+        sa.getBridge().handleResult(frame.operationResult as AgentOperationResultFrame);
         return;
       }
 
