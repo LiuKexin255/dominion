@@ -439,7 +439,8 @@ func rawJSON(s string) json.RawMessage {
 // finish_reason "stop".
 func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
 	// given: the real embedded store (which includes sample_tools.yaml)
-	// and a tool-role request for the "mouse" tool.
+	// and a tool-role request for the "mouse_move" tool. Feature 015
+	// split the single mouse tool into mouse_move / mouse_click.
 	store, err := NewMessageStore()
 	if err != nil {
 		t.Fatalf("NewMessageStore unexpected error: %v", err)
@@ -447,15 +448,15 @@ func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
 	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
 	body := `{"stream":false,"messages":[` +
 		`{"role":"user","content":"take a screenshot"},` +
-		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
-		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"screenshot captured at 1920x1080"}` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse_move","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse_move","content":"screenshot captured at 1920x1080"}` +
 		`]}`
 
 	// when
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
 
-	// then: matched mouse-success-text (no substring constraint).
+	// then: matched mouse-move-success-text (no substring constraint).
 	var resp completionResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
@@ -481,8 +482,9 @@ func TestServeHTTP_ToolResultTextResponse(t *testing.T) {
 // with the correct function name/arguments and finish_reason
 // "tool_calls".
 func TestServeHTTP_ToolResultToolCallResponse(t *testing.T) {
-	// given: tool result for "mouse" whose text contains "button",
-	// matching mouse-followup-click which responds with a tool_call.
+	// given: tool result for "mouse_move" whose text contains "button",
+	// matching mouse-move-followup-click which responds with a mouse_click
+	// tool_call (feature 015 split: a move can chain into a click).
 	store, err := NewMessageStore()
 	if err != nil {
 		t.Fatalf("NewMessageStore unexpected error: %v", err)
@@ -490,8 +492,8 @@ func TestServeHTTP_ToolResultToolCallResponse(t *testing.T) {
 	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
 	body := `{"stream":false,"messages":[` +
 		`{"role":"user","content":"click the button"},` +
-		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
-		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"found a button at 50,60"}` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse_move","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse_move","content":"found a button at 50,60"}` +
 		`]}`
 
 	// when
@@ -520,20 +522,17 @@ func TestServeHTTP_ToolResultToolCallResponse(t *testing.T) {
 	if tc.Type != "function" {
 		t.Errorf("tool_call.type = %q, want \"function\"", tc.Type)
 	}
-	if tc.Function.Name != "mouse" {
-		t.Errorf("tool_call.function.name = %q, want \"mouse\"", tc.Function.Name)
+	if tc.Function.Name != "mouse_click" {
+		t.Errorf("tool_call.function.name = %q, want \"mouse_click\"", tc.Function.Name)
 	}
 	// Arguments must be a JSON string (not a JSON object), per the
-	// OpenAI schema.
+	// OpenAI schema. After the US2 split a click carries only click_type.
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		t.Fatalf("tool_call.function.arguments is not valid JSON: %q (err: %v)", tc.Function.Arguments, err)
 	}
-	if args["action"] != "LEFT_CLICK" {
-		t.Errorf("tool_call.function.arguments.action = %v, want LEFT_CLICK", args["action"])
-	}
-	if args["x_px"] != float64(100) {
-		t.Errorf("tool_call.function.arguments.x_px = %v, want 100", args["x_px"])
+	if args["click_type"] != "LEFT_CLICK" {
+		t.Errorf("tool_call.function.arguments.click_type = %v, want LEFT_CLICK", args["click_type"])
 	}
 }
 
@@ -548,8 +547,8 @@ func TestServeHTTP_ToolResultStreamingToolCall(t *testing.T) {
 	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
 	body := `{"stream":true,"messages":[` +
 		`{"role":"user","content":"click"},` +
-		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
-		`{"role":"tool","tool_call_id":"call_1","name":"mouse","content":"found a button at 50,60"}` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"mouse_move","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","name":"mouse_move","content":"found a button at 50,60"}` +
 		`]}`
 
 	// when
@@ -565,7 +564,8 @@ func TestServeHTTP_ToolResultStreamingToolCall(t *testing.T) {
 		t.Fatalf("last frame = %q, want [DONE]", frames[2])
 	}
 
-	// Frame 1: role assistant + tool_calls.
+	// Frame 1: role assistant + tool_calls. The mouse-move-followup-click
+	// config chains a move result into a mouse_click tool_call.
 	chunk1 := decodeChunk(t, frames[0])
 	if got := chunk1.Choices[0].Delta.Role; got != "assistant" {
 		t.Errorf("frame1 delta.role = %q, want assistant", got)
@@ -574,8 +574,8 @@ func TestServeHTTP_ToolResultStreamingToolCall(t *testing.T) {
 		t.Fatalf("frame1 tool_calls len = %d, want 1", len(chunk1.Choices[0].Delta.ToolCalls))
 	}
 	tc := chunk1.Choices[0].Delta.ToolCalls[0]
-	if tc.Function.Name != "mouse" {
-		t.Errorf("frame1 tool_call.function.name = %q, want mouse", tc.Function.Name)
+	if tc.Function.Name != "mouse_click" {
+		t.Errorf("frame1 tool_call.function.name = %q, want mouse_click", tc.Function.Name)
 	}
 
 	// Frame 2: empty delta + finish_reason "tool_calls".
@@ -629,10 +629,11 @@ func TestServeHTTP_ToolResultExtractToolNameViaCallID(t *testing.T) {
 	}
 	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
 	// given: tool message WITHOUT a name field, but with tool_call_id
-	// that matches the preceding assistant's tool_call.
+	// that matches the preceding assistant's tool_call. Feature 015
+	// renamed the mouse tool to mouse_move / mouse_click.
 	body := `{"stream":false,"messages":[` +
 		`{"role":"user","content":"screenshot"},` +
-		`{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"mouse","arguments":"{}"}}]},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"mouse_move","arguments":"{}"}}]},` +
 		`{"role":"tool","tool_call_id":"call_abc","content":"screenshot taken"}` +
 		`]}`
 
@@ -640,13 +641,13 @@ func TestServeHTTP_ToolResultExtractToolNameViaCallID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
 
-	// then: tool_name resolved via call_id lookup → mouse-success-text.
+	// then: tool_name resolved via call_id lookup → mouse-move-success-text.
 	var resp completionResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
 	}
 	if resp.Choices[0].Message.Content != "I see the screen now." {
-		t.Errorf("content = %q, want \"I see the screen now.\" (mouse matched via call_id lookup)", resp.Choices[0].Message.Content)
+		t.Errorf("content = %q, want \"I see the screen now.\" (mouse_move matched via call_id lookup)", resp.Choices[0].Message.Content)
 	}
 }
 

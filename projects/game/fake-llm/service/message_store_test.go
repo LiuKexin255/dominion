@@ -268,6 +268,10 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 // TestNewMessageStore_LoadsEmbeddedTools verifies the embedded
 // sample_tools.yaml is parsed into the store's Tools slice with the
 // configured values, and sorted alphabetically by Name.
+//
+// Feature 015 split the single "mouse" tool into "mouse_move"
+// (coordinates) and "mouse_click" (click_type only), so the tool_name
+// and tool_call argument shapes below reflect the split.
 func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	store, err := NewMessageStore()
 	if err != nil {
@@ -275,32 +279,31 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	tools := store.Tools()
-	if len(tools) != 5 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 5 (keyboard-success-text, mouse-click-button, mouse-followup-click, mouse-oob-click, mouse-success-text)", len(tools))
+	if len(tools) != 6 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 6 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
-	if tools[0].Name != "keyboard-success-text" {
-		t.Errorf("tools[0] name = %q, want keyboard-success-text", tools[0].Name)
+	wantNames := []string{
+		"keyboard-success-text",
+		"mouse-click-button",
+		"mouse-click-success-text",
+		"mouse-move-followup-click",
+		"mouse-move-oob",
+		"mouse-move-success-text",
 	}
-	if tools[1].Name != "mouse-click-button" {
-		t.Errorf("tools[1] name = %q, want mouse-click-button", tools[1].Name)
-	}
-	if tools[2].Name != "mouse-followup-click" {
-		t.Errorf("tools[2] name = %q, want mouse-followup-click", tools[2].Name)
-	}
-	if tools[3].Name != "mouse-oob-click" {
-		t.Errorf("tools[3] name = %q, want mouse-oob-click", tools[3].Name)
-	}
-	if tools[4].Name != "mouse-success-text" {
-		t.Errorf("tools[4] name = %q, want mouse-success-text", tools[4].Name)
+	for i, want := range wantNames {
+		if tools[i].Name != want {
+			t.Errorf("tools[%d] name = %q, want %q", i, tools[i].Name, want)
+		}
 	}
 
-	// mouse-click-button produces a LEFT_CLICK tool_call when the result
-	// text contains "click here".
+	// mouse-click-button produces a LEFT_CLICK mouse_click tool_call when
+	// the result text contains "click here". After the US2 split a click
+	// carries only click_type (no coordinates).
 	clickButton := tools[1]
-	if clickButton.ToolName != "mouse" {
-		t.Errorf("mouse-click-button tool_name = %q, want mouse", clickButton.ToolName)
+	if clickButton.ToolName != "mouse_click" {
+		t.Errorf("mouse-click-button tool_name = %q, want mouse_click", clickButton.ToolName)
 	}
 	if !slices.Contains(clickButton.MatchResultContains, "click here") {
 		t.Errorf("mouse-click-button match_result_contains missing 'click here': %v", clickButton.MatchResultContains)
@@ -308,43 +311,65 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	if clickButton.RespondWith.ToolCall == nil {
 		t.Fatalf("mouse-click-button respond_with.tool_call is nil")
 	}
-	if clickButton.RespondWith.ToolCall.Arguments["action"] != "LEFT_CLICK" {
-		t.Errorf("mouse-click-button tool_call.arguments.action = %v, want LEFT_CLICK", clickButton.RespondWith.ToolCall.Arguments["action"])
+	if clickButton.RespondWith.ToolCall.Name != "mouse_click" {
+		t.Errorf("mouse-click-button tool_call.name = %q, want mouse_click", clickButton.RespondWith.ToolCall.Name)
+	}
+	if clickButton.RespondWith.ToolCall.Arguments["click_type"] != "LEFT_CLICK" {
+		t.Errorf("mouse-click-button tool_call.arguments.click_type = %v, want LEFT_CLICK", clickButton.RespondWith.ToolCall.Arguments["click_type"])
 	}
 
-	// mouse-followup-click carries a tool_call response with arguments.
-	mouseFollowup := tools[2]
-	if mouseFollowup.ToolName != "mouse" {
-		t.Errorf("mouse-followup-click tool_name = %q, want mouse", mouseFollowup.ToolName)
+	// mouse-click-success-text carries a plain text response.
+	clickSuccess := tools[2]
+	if clickSuccess.ToolName != "mouse_click" {
+		t.Errorf("mouse-click-success-text tool_name = %q, want mouse_click", clickSuccess.ToolName)
 	}
-	if !slices.Contains(mouseFollowup.MatchResultContains, "button") {
-		t.Errorf("mouse-followup-click match_result_contains missing button: %v", mouseFollowup.MatchResultContains)
+	if clickSuccess.RespondWith.Text != "Clicked successfully." {
+		t.Errorf("mouse-click-success-text respond_with.text = %q, want 'Clicked successfully.'", clickSuccess.RespondWith.Text)
 	}
-	if mouseFollowup.RespondWith.ToolCall == nil {
-		t.Fatalf("mouse-followup-click respond_with.tool_call is nil")
-	}
-	if mouseFollowup.RespondWith.ToolCall.Name != "mouse" {
-		t.Errorf("mouse-followup-click tool_call.name = %q, want mouse", mouseFollowup.RespondWith.ToolCall.Name)
-	}
-	if mouseFollowup.RespondWith.ToolCall.Arguments["action"] != "LEFT_CLICK" {
-		t.Errorf("mouse-followup-click tool_call.arguments.action = %v, want LEFT_CLICK", mouseFollowup.RespondWith.ToolCall.Arguments["action"])
+	if clickSuccess.RespondWith.ToolCall != nil {
+		t.Errorf("mouse-click-success-text respond_with.tool_call should be nil")
 	}
 
-	// mouse-oob-click produces an out-of-bounds LEFT_CLICK tool_call.
-	oobClick := tools[3]
-	if oobClick.RespondWith.ToolCall == nil {
-		t.Fatalf("mouse-oob-click respond_with.tool_call is nil")
+	// mouse-move-followup-click chains a move result into a click tool_call.
+	moveFollowup := tools[3]
+	if moveFollowup.ToolName != "mouse_move" {
+		t.Errorf("mouse-move-followup-click tool_name = %q, want mouse_move", moveFollowup.ToolName)
 	}
-	if oobClick.RespondWith.ToolCall.Arguments["x_px"] != 99999 {
-		t.Errorf("mouse-oob-click tool_call.arguments.x_px = %v, want 99999", oobClick.RespondWith.ToolCall.Arguments["x_px"])
+	if !slices.Contains(moveFollowup.MatchResultContains, "button") {
+		t.Errorf("mouse-move-followup-click match_result_contains missing button: %v", moveFollowup.MatchResultContains)
+	}
+	if moveFollowup.RespondWith.ToolCall == nil {
+		t.Fatalf("mouse-move-followup-click respond_with.tool_call is nil")
+	}
+	if moveFollowup.RespondWith.ToolCall.Name != "mouse_click" {
+		t.Errorf("mouse-move-followup-click tool_call.name = %q, want mouse_click", moveFollowup.RespondWith.ToolCall.Name)
 	}
 
-	// mouse-success-text carries a plain text response.
-	mouseSuccess := tools[4]
-	if mouseSuccess.RespondWith.Text != "I see the screen now." {
-		t.Errorf("mouse-success-text respond_with.text = %q, want 'I see the screen now.'", mouseSuccess.RespondWith.Text)
+	// mouse-move-oob produces an out-of-bounds mouse_move tool_call with
+	// coordinates (clicks carry no coordinates after the US2 split).
+	moveOob := tools[4]
+	if moveOob.ToolName != "mouse_move" {
+		t.Errorf("mouse-move-oob tool_name = %q, want mouse_move", moveOob.ToolName)
 	}
-	if mouseSuccess.RespondWith.ToolCall != nil {
-		t.Errorf("mouse-success-text respond_with.tool_call should be nil")
+	if moveOob.RespondWith.ToolCall == nil {
+		t.Fatalf("mouse-move-oob respond_with.tool_call is nil")
+	}
+	if moveOob.RespondWith.ToolCall.Arguments["x_px"] != 99999 {
+		t.Errorf("mouse-move-oob tool_call.arguments.x_px = %v, want 99999", moveOob.RespondWith.ToolCall.Arguments["x_px"])
+	}
+	if moveOob.RespondWith.ToolCall.Arguments["y_px"] != 99999 {
+		t.Errorf("mouse-move-oob tool_call.arguments.y_px = %v, want 99999", moveOob.RespondWith.ToolCall.Arguments["y_px"])
+	}
+
+	// mouse-move-success-text carries a plain text response.
+	moveSuccess := tools[5]
+	if moveSuccess.ToolName != "mouse_move" {
+		t.Errorf("mouse-move-success-text tool_name = %q, want mouse_move", moveSuccess.ToolName)
+	}
+	if moveSuccess.RespondWith.Text != "I see the screen now." {
+		t.Errorf("mouse-move-success-text respond_with.text = %q, want 'I see the screen now.'", moveSuccess.RespondWith.Text)
+	}
+	if moveSuccess.RespondWith.ToolCall != nil {
+		t.Errorf("mouse-move-success-text respond_with.tool_call should be nil")
 	}
 }

@@ -461,6 +461,7 @@ export class Handler implements AgentServiceHandlers {
               messageId: msg.id,
               sender: FrameSender.FRAME_SENDER_SYSTEM,
               type: "operation_result",
+              content: "operationResult",
               operationResult,
               createTime,
             });
@@ -563,6 +564,7 @@ export class Handler implements AgentServiceHandlers {
               messageId: `${msg.id}-${callId}`,
               sender: FrameSender.FRAME_SENDER_AGENT,
               type: "operation",
+              content: "operation",
               operation,
               createTime,
             });

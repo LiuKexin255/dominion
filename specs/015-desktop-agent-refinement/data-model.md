@@ -5,6 +5,44 @@
 
 ## Proto Changes
 
+### Message — content oneof extended (修改)
+
+The `operation` and `operation_result` fields are moved INTO the existing
+`content` oneof (alongside `text` and `image_data`), so a single Message
+carries exactly one body — text, image, a tool invocation, or a tool result.
+The `type` field comment is updated to list all six values.
+
+Field numbers are unchanged (`operation = 8`, `operation_result = 9`), so the
+change is wire-compatible with existing serialized history.
+
+```
+message Message {
+  // ... name, message_id, sender, type, create_time unchanged ...
+
+  string type = 4;   // "text" | "thinking" | "warn" | "image"
+                      //   | "operation" | "operation_result"
+
+  oneof content {
+    string text = 5;
+    bytes image_data = 7;
+    AgentOperationFrame operation = 8;
+    AgentOperationResultFrame operation_result = 9;
+  }
+}
+```
+
+**Classification (§IV)**: 修改 — refactor of an existing message. **Design
+verdict**: previously `operation` and `operation_result` were independent
+optional fields, yet a single history Message is semantically either a tool
+call OR a tool result (the `type` field already encoded this exclusivity, and
+both are exclusive with text/image too). Modeling them as separate optionals
+permitted the invalid state where multiple bodies are set simultaneously.
+Promoting them into the `content` oneof makes the mutual-exclusivity invariant
+structural and unifies the body discriminator. The prior design did not serve
+the goal; the oneof corrects it. Getters (`GetOperation()` /
+`GetOperationResult()`) remain valid and return `nil` when their case is
+inactive, so all existing read sites are unaffected.
+
 ### AgentMouseAction (unchanged)
 
 ```

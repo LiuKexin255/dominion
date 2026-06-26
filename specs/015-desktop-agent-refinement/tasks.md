@@ -116,6 +116,8 @@
 
 - [ ] T018 [P] [US4] [修改] Add `<details>` collapsed section to `operation_result` bubble in `projects/game/desktop/frontend/src/components/ChatView.svelte` — show result message and screenshot (when present in `operationResult.screenshot`) collapsed by default with expand affordance. See [data-model.md](data-model.md) for markup. **Design review**: the existing `<details>` pattern for image entries is reused for consistency.
 
+- [ ] T018a [US4] [修改] Move `operation` (8) and `operation_result` (9) into the existing `content` oneof in `projects/game/game.proto` `Message` (alongside `text`/`image_data`); update the `type` field comment to list all six values. Then update the two `Message` construction sites in `projects/game/agent/src/handler.ts` to set the proto-loader oneof discriminator (`content: "operation"` + `operation`; `content: "operationResult"` + `operationResult`), mirroring the existing text/image construction pattern. See [data-model.md](data-model.md) § Message. **Design review**: the fields were independent optionals yet semantically mutually exclusive (and exclusive with text/image); the oneof makes the invariant structural. Go read sites use `GetOperation()`/`GetOperationResult()` getters, which remain valid under the oneof, so no Go change is required. Wire-compatible (field numbers unchanged). Depends on T001.
+
 - [ ] T019 [US4] [修改] Extend `MessageEntry` in `projects/game/desktop/frontend/src/api.ts` to include optional `operation?: AgentOperationFrame` and `operationResult?: AgentOperationResultFrame` fields returned by history. **Design review**: frontend API typing must match the live `ChatEntry` operation/result data shape so history can render identically to live view.
 
 - [ ] T020 [US4] [修改] Extend `handleLoadMessages` and `typeFromString` in `projects/game/desktop/frontend/src/App.svelte` to map `'operation'` and `'operation_result'` message types from history — include `operation` and `operationResult` data in mapped `ChatEntry` objects. Depends on T019. **Design review**: the history loader currently drops operations; extending it makes history rendering identical to live view (FR-013/FR-014).
@@ -133,6 +135,8 @@
 - [ ] T023 Run `bazel run //:gazelle projects/game/desktop` to update BUILD.bazel for new Go file `cursor.go`, new `cursor_test.go`, and deletion of `marker.go`
 
 - [ ] T024 Run full build and test verification: `bazel build //projects/game/desktop && bazel build //projects/game/agent && bazel test //projects/game/desktop/internal/operation:all && bazel test //projects/game/agent/src:all`
+
+- [ ] T024a [US2] [US4] [修改] Update the large-test testplan at `projects/game/testplan/` for the US2 mouse tool split and US4 history wire change: (a) `projects/game/fake-llm/service/testdata/sample_tools.yaml` — replace the legacy `tool_name: mouse` entries with `mouse_move` / `mouse_click` entries matching the post-split argument schemas (`click_type` for clicks, `x_px`/`y_px` for moves); (b) `projects/game/fake-llm/service/message_store_test.go` `TestNewMessageStore_LoadsEmbeddedTools` — sync the pinned tool count, names, `tool_name`, and argument assertions to the updated testdata; (c) `projects/game/testplan/agent_operation_test.go` — switch profile `ToolNames` from `["mouse"]` to `["mouse_move","mouse_click"]` and add a regression case verifying the split tool names bind end-to-end. US4 operation-history reconstruction stays unit-tested in `handler.test.ts` (fake-llm cannot initiate tool_calls). See `projects/game/testplan/README.md` §7. **Design review**: the legacy `mouse` name is no longer recognized by `buildTools` after T009, so any testplan profile or fake-llm config still keying on `mouse` is stale config that silently registers zero tools.
 
 - [ ] T025 Run [quickstart.md](quickstart.md) validation scenarios 1–6 on a Windows machine to verify all four user stories end-to-end
 
@@ -195,7 +199,7 @@ These MUST be done sequentially in the order T002 → T007 → T014 (matching th
 
 - [P] tasks = different files, no dependencies on incomplete tasks
 - `app.go` changes MUST be sequential across US1 → US2 → US3
-- Proto is unchanged — no proto regeneration needed
+- Proto `Message.content` oneof now holds `operation`/`operation_result` (T018a) — TS types regenerate via the existing `ts_proto_library` target at build time; no manual regen step
 - No new external dependencies — win32 APIs via existing `syscall` pattern
 - `marker.go` deletion (T014) also removes `marker_test.go` if it exists
 - Non-Windows stubs (T006) are build-only; no behavioral testing needed

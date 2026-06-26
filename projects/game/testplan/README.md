@@ -143,3 +143,33 @@ The deployment (`deploy_agent.yaml`) stands up `mongodb`, `session`, `proxy`,
 `fake-llm`, `agent_test`, `prompt`, and `gateway`, and exposes the gateway at
 `https://game.liukexin.com`. Test binaries read the endpoint and environment
 via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
+
+## 7. Feature 015 coverage (mouse tool split + operation history)
+
+Feature 015 changed the agent tool surface and the history wire shape. The
+large-test coverage for those changes is split across layers:
+
+- **US2 (mouse tool split):** `sample_tools.yaml` now keys tool-result
+  responses by `mouse_move` / `mouse_click` (the legacy single `mouse` name
+  is gone). `agent_operation_test.go` declares the split tool names on its
+  profiles and includes `TestAgentMouseSplitToolBinding`, a regression guard
+  that confirms a profile with the split names binds and processes a turn
+  end-to-end.
+- **US4 (operation/operation_result history):** `handler.ts:ListMessages`
+  reconstruction of `operation` / `operation_result` Messages is covered at
+  the **unit** level in `projects/game/agent/src/handler.test.ts`
+  (`"emits operation Message for AIMessage with tool_calls"`,
+  `"emits operation_result Message for ToolMessage ..."`). It is NOT covered
+  at the large-test level because fake-llm's stateless keyword-matched
+  `Message` templates cannot initiate a tool call (only `ToolResponse`
+  entries chain a *follow-up* call off a prior tool result), so no
+  `AIMessage`-with-`tool_calls` or `ToolMessage` ever enters the LangChain
+  checkpoint state during a large test. Closing that gap would require
+  extending fake-llm `Message` to carry an initial `tool_call`; until then,
+  the `checkpoint-resume` suite remains the text-only history regression
+  guard and operation history parity relies on the unit tests.
+
+When updating mouse tool names or argument schemas, sync
+`sample_tools.yaml`, `message_store_test.go`
+(`TestNewMessageStore_LoadsEmbeddedTools`), and the `mouseSplitToolNames`
+constant + profiles in `agent_operation_test.go` in lockstep.

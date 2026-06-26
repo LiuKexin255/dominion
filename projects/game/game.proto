@@ -436,25 +436,28 @@ message Message {
   // The originator of this message (USER, AGENT, or SYSTEM).
   FrameSender sender = 3;
 
-  // The type of message: "text", "thinking", "warn", or "image".
+  // The type of message: "text", "thinking", "warn", "image", "operation",
+  // or "operation_result". Determines which content oneof case is set.
   string type = 4;
 
   // Best-effort message timestamp sourced from the checkpoint that introduced
   // the message.
   google.protobuf.Timestamp create_time = 6;
 
-  // The visible content of the message: text or image data.
+  // The visible content of the message. A single message carries exactly one
+  // of these: text, image data, a tool invocation, or a tool result. They are
+  // mutually exclusive, so they share one oneof to make that invariant
+  // structural.
   oneof content {
     string text = 5;
     bytes image_data = 7;
+    // An operation request (tool call) carried by an "operation" message,
+    // reconstructed from history.
+    AgentOperationFrame operation = 8;
+    // The result of an executed operation, carried by an "operation_result"
+    // message.
+    AgentOperationResultFrame operation_result = 9;
   }
-
-  // An operation frame carried by this message (for operation/operation_result
-  // message types reconstructed from history). Absent for text/image messages.
-  AgentOperationFrame operation = 8;
-
-  // The result of the operation carried by this message, when present.
-  AgentOperationResultFrame operation_result = 9;
 }
 
 // ListMessagesRequest is the request to list Messages for an agent.

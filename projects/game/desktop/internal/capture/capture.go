@@ -62,7 +62,7 @@ func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
 		return nil, fmt.Errorf("capture window: capture rect returned nil image")
 	}
 
-	if err := operation.DrawCursor(img, bounds.Left, bounds.Top); err != nil {
+	if err := operation.DrawCursor(img, int32(bounds.Left), int32(bounds.Top)); err != nil {
 		log.Printf("capture window: draw cursor: %v", err)
 	}
 

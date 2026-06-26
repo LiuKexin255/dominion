@@ -16,7 +16,7 @@ Four refinements to the desktop agent interaction, addressing issues discovered 
 
 **Storage**: N/A
 
-**Testing**: `bazel test` (Go unit tests via `go_test`, TypeScript unit tests via vitest, Svelte component tests via vitest + @testing-library/svelte)
+**Testing**: `bazel test` (Go unit tests via `go_test`, TypeScript unit tests via vitest, Svelte component tests via vitest + @testing-library/svelte). Large-test testplan at `projects/game/testplan/` covers the agent service end-to-end via the fake-llm harness; US2 tool-name changes (mouse→mouse_move/mouse_click) require syncing `sample_tools.yaml` + `agent_operation_test.go` profiles, and US4 operation-history reconstruction is unit-tested in `handler.test.ts` (fake-llm cannot initiate tool_calls, so operation history is not exercised at the large-test layer — see `projects/game/testplan/README.md` §7).
 
 **Target Platform**: Windows (desktop backend — win32 API), Linux (agent service), cross-platform (frontend dev)
 
@@ -83,6 +83,12 @@ projects/game/agent/src/
 **Structure Decision**: Existing monorepo layout — no new directories or projects. New files: `cursor.go` (+ test) in the already-existing `internal/operation/` package, `ScreenshotModal.svelte` in the already-existing `components/` directory.
 
 ## Change Classification (§IV)
+
+### Proto Layer — Message content oneof (US4)
+
+| # | File | Classification | Change | Design Verdict |
+|---|------|---------------|--------|----------------|
+| 0 | `projects/game/game.proto` — `Message` | 修改 | Move `operation` (8) and `operation_result` (9) into the existing `content` oneof (alongside `text` and `image_data`); update the `type` field comment to list all six values. Field numbers unchanged → wire-compatible. | **Refactor**: previously `operation` and `operation_result` were independent optionals, but a single history Message is semantically either a tool call OR a tool result (and exclusive with text/image) — the `type` field already encoded this. Separate optionals permitted the invalid state of multiple bodies set at once. Promoting them into `content` makes the mutual-exclusivity invariant structural. Getters stay valid, so Go read sites (`view_model.go`) are unaffected; only the TS agent `handler.ts` construction sites must set the proto-loader oneof discriminator. |
 
 ### Desktop Go Layer — Real-Time Dialog Update (US1)
 
