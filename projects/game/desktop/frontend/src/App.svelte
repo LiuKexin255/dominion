@@ -28,6 +28,7 @@
   import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
+  import ScreenshotModal from './components/ScreenshotModal.svelte'
 
   // --- Page state ---
   let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
@@ -89,6 +90,7 @@
   let pendingScreenshot: { dataUrl: string; data: string; widthPx: number; heightPx: number } | null = $state(null)
   let capturing = $state(false)
   let refreshing = $state(false)
+  let zoomedImageUrl: string | null = $state(null)
 
   function resetPlayPageState() {
     pendingScreenshot = null
@@ -115,6 +117,18 @@
         handleAgentFrame(data as AgentFrame & { wait?: { reason?: string } })
       })
     }
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (page !== 'chat') return
+      if (selectedWindowHandle == null) return
+      if (e.ctrlKey && e.shiftKey && e.key.toUpperCase() === 'S') {
+        e.preventDefault()
+        handleCaptureScreenshot()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   })
 
   // --- Config handlers ---
@@ -581,6 +595,10 @@
     pendingScreenshot = null
   }
 
+  function handleZoom(url: string) {
+    zoomedImageUrl = url
+  }
+
   async function handleUpdateProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]) {
     await updateAgentProfile(agentProfileName, profile, updateMaskPaths)
     const resp = await listAgentProfiles(100, '')
@@ -705,6 +723,10 @@
 
   <!-- Log Panel (bottom, always visible) -->
   <LogPanel logs={logEntries} onclear={handleClearLogs} />
+
+  {#if zoomedImageUrl}
+    <ScreenshotModal imageUrl={zoomedImageUrl} onClose={() => zoomedImageUrl = null} />
+  {/if}
 </div>
 
 <style>
