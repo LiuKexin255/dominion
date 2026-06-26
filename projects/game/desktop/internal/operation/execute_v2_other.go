@@ -8,7 +8,12 @@ import (
 	"dominion/projects/game"
 )
 
-// ExecuteMouseAction is not supported on non-Windows platforms.
-func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) error {
+// MoveCursor is not supported on non-Windows platforms.
+func MoveCursor(screenX, screenY int32) error {
+	return errors.New("not supported on this platform")
+}
+
+// ExecuteClickAtCurrentPos is not supported on non-Windows platforms.
+func ExecuteClickAtCurrentPos(action game.AgentMouseAction) error {
 	return errors.New("not supported on this platform")
 }

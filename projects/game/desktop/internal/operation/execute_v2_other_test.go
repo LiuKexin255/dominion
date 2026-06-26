@@ -3,12 +3,24 @@
 package operation
 
 import (
+	"strings"
 	"testing"
 
 	"dominion/projects/game"
 )
 
-func TestExecuteMouseAction_StubRejects(t *testing.T) {
+func TestMoveCursor_StubRejects(t *testing.T) {
+	err := MoveCursor(100, 200)
+	if err == nil {
+		t.Fatal("MoveCursor() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("MoveCursor() error = %q, want to contain %q",
+			err.Error(), "not supported")
+	}
+}
+
+func TestExecuteClickAtCurrentPos_StubRejects(t *testing.T) {
 	tests := []struct {
 		name   string
 		action game.AgentMouseAction
@@ -20,13 +32,13 @@ func TestExecuteMouseAction_StubRejects(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ExecuteMouseAction(100, 200, tt.action)
+			err := ExecuteClickAtCurrentPos(tt.action)
 			if err == nil {
-				t.Fatal("ExecuteMouseAction() expected error, got nil")
+				t.Fatal("ExecuteClickAtCurrentPos() expected error, got nil")
 			}
-			if err.Error() != "not supported on this platform" {
-				t.Errorf("ExecuteMouseAction() error = %q, want %q",
-					err.Error(), "not supported on this platform")
+			if !strings.Contains(err.Error(), "not supported") {
+				t.Errorf("ExecuteClickAtCurrentPos() error = %q, want to contain %q",
+					err.Error(), "not supported")
 			}
 		})
 	}
