@@ -40,6 +40,8 @@ export interface MessageEntry {
   content: string
   imageData?: string
   createTime?: string
+  operation?: AgentOperationFrame
+  operationResult?: AgentOperationResultFrame
 }
 
 // ─── Enums ──────────────────────────────────────────────────────────────────

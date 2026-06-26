@@ -448,6 +448,13 @@ message Message {
     string text = 5;
     bytes image_data = 7;
   }
+
+  // An operation frame carried by this message (for operation/operation_result
+  // message types reconstructed from history). Absent for text/image messages.
+  AgentOperationFrame operation = 8;
+
+  // The result of the operation carried by this message, when present.
+  AgentOperationResultFrame operation_result = 9;
 }
 
 // ListMessagesRequest is the request to list Messages for an agent.
