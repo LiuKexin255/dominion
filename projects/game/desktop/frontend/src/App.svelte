@@ -703,6 +703,7 @@
           loadingMessages={playState === 'loading_messages'}
           messagesError={messagesError}
           onSend={handleSendChatText}
+          onZoom={handleZoom}
           pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
           onRemoveScreenshot={handleRemoveScreenshot}
         />

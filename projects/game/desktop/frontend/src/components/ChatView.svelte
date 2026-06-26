@@ -47,6 +47,7 @@
     loadingMessages = false,
     messagesError = null,
     onSend,
+    onZoom = () => {},
     pendingScreenshot = null,
     onRemoveScreenshot = () => {},
   }: {
@@ -56,6 +57,7 @@
     loadingMessages?: boolean
     messagesError?: string | null
     onSend: (text: string) => void
+    onZoom?: (url: string) => void
     pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
     onRemoveScreenshot?: () => void
   } = $props()
@@ -150,7 +152,7 @@
               <details class="image-details">
                 <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
                 {#if msg.imageUrl}
-                  <img class="screenshot-img" src={msg.imageUrl} alt="Screenshot" data-testid="image-entry-img" />
+                  <img class="screenshot-img clickable" src={msg.imageUrl} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(msg.imageUrl!)} />
                 {/if}
               </details>
             </div>
@@ -178,6 +180,19 @@
                 <span class="op-result-status">{succeeded ? 'succeeded' : 'failed'}</span>
                 {#if result.message}
                   <span class="op-result-message">{result.message}</span>
+                {/if}
+                {#if result.screenshot?.data}
+                  {@const screenshotUrl = 'data:image/png;base64,' + result.screenshot.data}
+                  <details class="op-result-details">
+                    <summary class="op-result-summary">Result screenshot</summary>
+                    <img
+                      class="screenshot-img clickable"
+                      src={screenshotUrl}
+                      alt="Operation result screenshot"
+                      data-testid="operation-result-screenshot"
+                      onclick={() => onZoom(screenshotUrl)}
+                    />
+                  </details>
                 {/if}
               </div>
             </div>
@@ -210,7 +225,7 @@
   <div class="chat-input-area">
     {#if pendingScreenshot}
       <div class="pending-attachment" data-testid="pending-attachment">
-        <img class="attachment-thumb" src={pendingScreenshot.dataUrl} alt="Screenshot attachment" />
+        <img class="attachment-thumb clickable" src={pendingScreenshot.dataUrl} alt="Screenshot attachment" onclick={() => onZoom(pendingScreenshot.dataUrl)} />
         <span class="attachment-info">{pendingScreenshot.widthPx}×{pendingScreenshot.heightPx}</span>
         <button class="attachment-remove" onclick={onRemoveScreenshot} data-testid="remove-attachment">✕</button>
       </div>
@@ -636,5 +651,21 @@
 
   .op-result-message {
     color: #a0a0b0;
+  }
+
+  .op-result-details {
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .op-result-summary {
+    font-size: 11px;
+    color: #8888aa;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .clickable {
+    cursor: pointer;
   }
 </style>
