@@ -422,16 +422,19 @@
       processing = true
       playState = 'processing'
       queueCount++
+      const screenshotData = pendingScreenshot?.data ?? ''
+      const screenshotWidthPx = pendingScreenshot?.widthPx ?? 0
+      const screenshotHeightPx = pendingScreenshot?.heightPx ?? 0
+      pendingScreenshot = null
+      queueCount = Math.max(0, queueCount - 1)
       await sendUserTurn(
         selectedSession.sessionId,
         text,
-        pendingScreenshot?.data ?? '',
-        pendingScreenshot?.widthPx ?? 0,
-        pendingScreenshot?.heightPx ?? 0,
+        screenshotData,
+        screenshotWidthPx,
+        screenshotHeightPx,
         selectedProfile,
       )
-      pendingScreenshot = null
-      queueCount = Math.max(0, queueCount - 1)
       log('info', 'chat', `Sent to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
       if (optimisticIds.length > 0) {
