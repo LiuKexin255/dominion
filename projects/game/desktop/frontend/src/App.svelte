@@ -267,8 +267,8 @@
     return FrameSender.SYSTEM
   }
 
-  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' {
-    if (raw === 'thinking' || raw === 'text' || raw === 'warn') return raw
+  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' | 'operation' | 'operation_result' | 'image' {
+    if (raw === 'thinking' || raw === 'text' || raw === 'warn' || raw === 'operation' || raw === 'operation_result' || raw === 'image') return raw
     return 'text'
   }
 
@@ -287,6 +287,26 @@
             content: '',
             timestamp: entry.createTime || new Date().toISOString(),
             imageUrl: `data:image/png;base64,${entry.imageData}`,
+          }
+        }
+        if (entry.type === 'operation' && entry.operation) {
+          return {
+            messageId: entry.messageId,
+            sender: senderFromString(entry.sender),
+            type: 'operation',
+            content: '',
+            timestamp: entry.createTime || new Date().toISOString(),
+            operation: entry.operation,
+          }
+        }
+        if (entry.type === 'operation_result' && entry.operationResult) {
+          return {
+            messageId: entry.messageId,
+            sender: senderFromString(entry.sender),
+            type: 'operation_result',
+            content: '',
+            timestamp: entry.createTime || new Date().toISOString(),
+            operationResult: entry.operationResult,
           }
         }
         return {
