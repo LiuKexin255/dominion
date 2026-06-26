@@ -439,8 +439,7 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 // Inbound AgentOperationFrame payloads are auto-executed by recvLoop and a
 // matching AgentOperationResultFrame is sent back over the same WebSocket
 // connection (FR-013). The result frame carries a post-action screenshot of
-// the bound window with a red-ring marker at the operation coordinates
-// (FR-007).
+// the bound window (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -567,8 +566,8 @@ func (a *App) recvLoop(sessionID, frameID string) {
 // existing operation executor and sends the matching AgentOperationResultFrame
 // back over the WebSocket. The result frame carries the same operation_id and
 // a SUCCEEDED/FAILED status; it is never carried by an AgentAckFrame (FR-013).
-// A post-action screenshot with a red-ring marker is attached when the bound
-// window can be captured (FR-007).
+// A post-action screenshot is attached when the bound window can be
+// captured (FR-007).
 func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFrame) error {
 	result := a.executeAgentOperation(op)
 
@@ -611,13 +610,12 @@ func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFr
 // coordinate conversion.
 //
 // After the action phase — regardless of whether it succeeded — a follow-up
-// screenshot of the bound window is captured and a red-ring marker is drawn
-// at the operation's screenshot-relative coordinates (FR-007). The screenshot
-// is attached to the result frame when capture, sizing, and marker drawing
-// all succeed; otherwise the capture failure is recorded in the result
-// message. Status always reflects the ACTION outcome (never SUCCEEDED when
-// the action failed). Precondition failures (no mouse payload, no window
-// bound) return early since no screenshot is possible without a bound window.
+// screenshot of the bound window is captured (FR-007). The screenshot is
+// attached to the result frame when capture and sizing succeed; otherwise
+// the capture failure is recorded in the result message. Status always
+// reflects the ACTION outcome (never SUCCEEDED when the action failed).
+// Precondition failures (no mouse payload, no window bound) return early
+// since no screenshot is possible without a bound window.
 func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOperationResultFrame {
 	operationID := op.GetOperationId()
 
@@ -730,18 +728,13 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 		case len(capturedImg.Data) > maxScreenshotBytes:
 			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
 		default:
-			marked, markerErr := operation.ApplyMarker(capturedImg.Data, int(mouse.GetXPx()), int(mouse.GetYPx()))
-			if markerErr != nil {
-				result.Message = fmt.Sprintf("%s (screenshot marker failed: %s)", result.Message, markerErr.Error())
-			} else {
-				result.Screenshot = &game.AgentImageFrame{
-					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-					Data:        marked,
-					WidthPx:     int32(capturedImg.WidthPx),
-					HeightPx:    int32(capturedImg.HeightPx),
-					ScaleFactor: a.boundWin.ScaleFactor,
-					WindowTitle: a.boundWin.Title,
-				}
+			result.Screenshot = &game.AgentImageFrame{
+				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:        capturedImg.Data,
+				WidthPx:     int32(capturedImg.WidthPx),
+				HeightPx:    int32(capturedImg.HeightPx),
+				ScaleFactor: a.boundWin.ScaleFactor,
+				WindowTitle: a.boundWin.Title,
 			}
 		}
 	}
