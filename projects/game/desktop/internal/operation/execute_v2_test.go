@@ -87,6 +87,36 @@ func Test_validateMouseAction(t *testing.T) {
 	}
 }
 
+func Test_validateClickAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  game.AgentMouseAction
+		wantErr bool
+	}{
+		{name: "left click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK},
+		{name: "left double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK},
+		{name: "right click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK},
+		{name: "right double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK},
+		{name: "left right press valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS},
+		{name: "move rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE, wantErr: true},
+		{name: "unspecified rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_UNSPECIFIED, wantErr: true},
+		{name: "unknown value rejected", action: game.AgentMouseAction(99), wantErr: true},
+		{name: "negative value rejected", action: game.AgentMouseAction(-1), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClickAction(tt.action)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateClickAction(%v) expected error, got nil", tt.action)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateClickAction(%v) unexpected error: %v", tt.action, err)
+			}
+		})
+	}
+}
+
 func Test_actionEventSequence(t *testing.T) {
 	tests := []struct {
 		name      string

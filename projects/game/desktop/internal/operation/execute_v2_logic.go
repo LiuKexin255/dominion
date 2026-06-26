@@ -53,6 +53,23 @@ func validateMouseAction(action game.AgentMouseAction) error {
 	}
 }
 
+// validateClickAction accepts only the five button-pressing actions and
+// rejects MOVE (no button event) and UNSPECIFIED/unknown values, so the
+// click path never reaches actionEventSequence with an action that would
+// emit an empty or undefined flag sequence.
+func validateClickAction(action game.AgentMouseAction) error {
+	switch action {
+	case game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK,
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK,
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK,
+		game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS:
+		return nil
+	default:
+		return fmt.Errorf("not a click action: %v", action)
+	}
+}
+
 // actionEventSequence returns the ordered MOUSEEVENTF flag sequence for the
 // given action. Each entry produces one SendInput mouse event dispatched by
 // the Windows caller as a relative click at the cursor's current position.
