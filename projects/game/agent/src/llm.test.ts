@@ -74,10 +74,16 @@ beforeEach(() => {
 // ===========================================================================
 
 describe("buildTools", () => {
-	it("returns a mouse tool when toolNames includes 'mouse'", () => {
-		const tools = buildTools(["mouse"], noopBridge());
+	it("returns a mouse_move tool when toolNames includes 'mouse_move'", () => {
+		const tools = buildTools(["mouse_move"], noopBridge());
 		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("mouse");
+		expect(tools[0].name).toBe("mouse_move");
+	});
+
+	it("returns a mouse_click tool when toolNames includes 'mouse_click'", () => {
+		const tools = buildTools(["mouse_click"], noopBridge());
+		expect(tools).toHaveLength(1);
+		expect(tools[0].name).toBe("mouse_click");
 	});
 
 	it("returns empty array when toolNames is empty", () => {
@@ -88,11 +94,15 @@ describe("buildTools", () => {
 		expect(buildTools(["unknown-tool"], noopBridge())).toEqual([]);
 	});
 
+	it("does not register the legacy 'mouse' name", () => {
+		expect(buildTools(["mouse"], noopBridge())).toEqual([]);
+	});
+
 	it("maps multiple known tool names", () => {
-		const tools = buildTools(["mouse", "mouse"], noopBridge());
+		const tools = buildTools(["mouse_move", "mouse_click"], noopBridge());
 		expect(tools).toHaveLength(2);
-		expect(tools[0].name).toBe("mouse");
-		expect(tools[1].name).toBe("mouse");
+		expect(tools[0].name).toBe("mouse_move");
+		expect(tools[1].name).toBe("mouse_click");
 	});
 });
 
@@ -123,13 +133,13 @@ describe("AgentAdapterImpl constructor", () => {
 		expect(adapter.generateTurn.length).toBe(2);
 	});
 
-	it("constructs without error when toolNames includes 'mouse'", () => {
+	it("constructs without error when toolNames includes the mouse tools", () => {
 		expect(
 			() =>
 				new AgentAdapterImpl(
 					fakeTextModel("hi"),
 					"prompt",
-					["mouse"],
+					["mouse_move", "mouse_click"],
 					noopBridge(),
 					new MemorySaver(),
 				),

@@ -104,7 +104,7 @@ describe("PromptClient", () => {
           cb(null, {
             model: expectedModel,
             systemPrompt: expectedSystemPrompt,
-            toolNames: ["mouse"],
+            toolNames: ["mouse_move"],
           });
         },
       );
@@ -115,7 +115,7 @@ describe("PromptClient", () => {
       expect(result).toEqual({
         model: expectedModel,
         systemPrompt: expectedSystemPrompt,
-        toolNames: ["mouse"],
+        toolNames: ["mouse_move"],
       });
     });
 
@@ -210,7 +210,7 @@ describe("PromptClient", () => {
           cb(null, {
             model: "m",
             systemPrompt: "s",
-            toolNames: ["mouse", "keyboard"],
+            toolNames: ["mouse_move", "mouse_click"],
           });
         },
       );
@@ -218,7 +218,7 @@ describe("PromptClient", () => {
       const client = new PromptClient(mockClient as any);
       const result = await client.getProfile("tools-profile");
 
-      expect(result.toolNames).toEqual(["mouse", "keyboard"]);
+      expect(result.toolNames).toEqual(["mouse_move", "mouse_click"]);
     });
 
     it("defaults toolNames to empty array when absent in response", async () => {

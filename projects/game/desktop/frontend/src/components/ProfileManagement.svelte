@@ -19,7 +19,8 @@
   ]
 
   const TOOL_OPTIONS: { value: string; label: string }[] = [
-    { value: 'mouse', label: 'Mouse' },
+    { value: 'mouse_move', label: 'Mouse Move' },
+    { value: 'mouse_click', label: 'Mouse Click' },
   ]
 
   let {

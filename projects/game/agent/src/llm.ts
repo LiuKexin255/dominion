@@ -14,7 +14,7 @@ import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
-import { createMouseTool } from "./mouse-tool";
+import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
@@ -52,8 +52,10 @@ export function buildTools(
 ): StructuredToolInterface[] {
 	const tools: StructuredToolInterface[] = [];
 	for (const name of toolNames) {
-		if (name === "mouse") {
-			tools.push(createMouseTool(bridge));
+		if (name === "mouse_move") {
+			tools.push(createMouseMoveTool(bridge));
+		} else if (name === "mouse_click") {
+			tools.push(createMouseClickTool(bridge));
 		}
 	}
 	return tools;

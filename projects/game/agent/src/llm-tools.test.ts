@@ -36,11 +36,11 @@ beforeEach(() => {
 });
 
 describe("AgentAdapterImpl createAgent tools wiring", () => {
-	it("passes a tools array containing the mouse tool when toolNames=['mouse']", () => {
+	it("passes mouse_move and mouse_click tools when toolNames includes them", () => {
 		new AgentAdapterImpl(
 			fakeModel(),
 			"prompt",
-			["mouse"],
+			["mouse_move", "mouse_click"],
 			new OperationBridge(),
 			new MemorySaver(),
 		);
@@ -50,8 +50,9 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			tools?: { name: string }[];
 		};
 		expect(Array.isArray(opts.tools)).toBe(true);
-		expect(opts.tools).toHaveLength(1);
-		expect(opts.tools![0].name).toBe("mouse");
+		expect(opts.tools).toHaveLength(2);
+		expect(opts.tools![0].name).toBe("mouse_move");
+		expect(opts.tools![1].name).toBe("mouse_click");
 	});
 
 	it("passes an empty tools array when toolNames=[]", () => {
@@ -74,7 +75,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 		new AgentAdapterImpl(
 			fakeModel(),
 			"prompt",
-			["mouse", "nonexistent"],
+			["mouse_move", "nonexistent"],
 			new OperationBridge(),
 			new MemorySaver(),
 		);
@@ -83,6 +84,6 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			tools?: { name: string }[];
 		};
 		expect(opts.tools).toHaveLength(1);
-		expect(opts.tools![0].name).toBe("mouse");
+		expect(opts.tools![0].name).toBe("mouse_move");
 	});
 });
