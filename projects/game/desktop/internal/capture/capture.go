@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"log"
+
+	"dominion/projects/game/desktop/internal/operation"
 
 	"github.com/kbinani/screenshot"
 )
@@ -57,6 +60,10 @@ func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
 
 	if img == nil {
 		return nil, fmt.Errorf("capture window: capture rect returned nil image")
+	}
+
+	if err := operation.DrawCursor(img, bounds.Left, bounds.Top); err != nil {
+		log.Printf("capture window: draw cursor: %v", err)
 	}
 
 	pngBytes, err := EncodePNG(img)
