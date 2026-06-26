@@ -211,9 +211,14 @@ func Test_actionEventSequence_LeftRightPressIsSimultaneous(t *testing.T) {
 
 // Test_actionEventSequence_MoveIsEmptyNonNil locks the MOVE contract: the
 // returned slice must be empty AND non-nil so callers can distinguish the
-// success path (zero events, cursor already moved by SetCursorPos) from the
-// (nil, err) error path. The table-driven test above only compares lengths,
-// which cannot tell []uint32{} apart from nil.
+// success path (zero events) from the (nil, err) error path. The
+// table-driven test above only compares lengths, which cannot tell
+// []uint32{} apart from nil.
+//
+// Note: in the split dispatch model, MOVE never reaches actionEventSequence
+// in production — MoveCursor repositions the cursor without calling it, and
+// ExecuteClickAtCurrentPos rejects MOVE via validateClickAction first. The
+// empty-non-nil contract is kept for the function's own robustness.
 func Test_actionEventSequence_MoveIsEmptyNonNil(t *testing.T) {
 	got, err := actionEventSequence(game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE)
 	if err != nil {
@@ -228,11 +233,10 @@ func Test_actionEventSequence_MoveIsEmptyNonNil(t *testing.T) {
 }
 
 // Test_validateScreenCoords_out_of_bounds is the FR-003 regression guard for
-// MOVE: ExecuteMouseAction runs validateScreenCoords before setCursorPos for
-// every action including MOVE, so an out-of-bounds target must be rejected
-// regardless of action. This complements the granular subtests in
-// Test_validateScreenCoords with a single named assertion tying the check to
-// the MOVE path that inherits it.
+// MOVE: MoveCursor runs validateScreenCoords before setCursorPos, so an
+// out-of-bounds target must be rejected. This complements the granular
+// subtests in Test_validateScreenCoords with a single named assertion tying
+// the check to the MOVE path that inherits it.
 func Test_validateScreenCoords_out_of_bounds(t *testing.T) {
 	rect := screenRect{X: 0, Y: 0, Width: 3840, Height: 2160}
 	cases := []struct {

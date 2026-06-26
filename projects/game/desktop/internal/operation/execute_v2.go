@@ -4,7 +4,6 @@ package operation
 
 import (
 	"errors"
-	"fmt"
 
 	"dominion/projects/game"
 )
@@ -38,41 +37,29 @@ func virtualScreenRect() (screenRect, error) {
 	return screenRect{X: int32(x), Y: int32(y), Width: int32(cx), Height: int32(cy)}, nil
 }
 
-// ExecuteMouseAction dispatches a mouse action at the given absolute screen
-// coordinates using the canonical two-phase pattern:
+// MoveCursor positions the mouse cursor at the given absolute screen
+// coordinates via user32!SetCursorPos. screenX, screenY are absolute screen
+// pixel coordinates relative to the virtual desktop, whose origin may be
+// negative on multi-monitor systems where a secondary monitor sits to the
+// left of or above the primary monitor.
 //
-//  1. Move the cursor to (screenX, screenY) with user32!SetCursorPos.
-//  2. Send relative button events (no MOUSEEVENTF_ABSOLUTE) so the click
-//     fires at the cursor's current position.
+// Coordinates are bounds-checked against the virtual desktop rectangle via
+// validateScreenCoords before dispatch, so an out-of-bounds target is
+// rejected before the cursor is touched.
 //
-// This matches the widely-deployed Go pattern (github.com/stephen-fox/
-// user32util and github.com/go-vgo/robotgo). SetCursorPos handles
-// multi-monitor negative coordinates natively and avoids the edge cases of
-// MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK normalization, which on some
-// configurations dispatched events that landed at incorrect positions
-// despite SendInput returning success.
-//
-// screenX, screenY are absolute screen pixel coordinates (relative to the
-// virtual desktop, whose origin may be negative on multi-monitor systems).
 // Convert screenshot-relative coordinates to screen-absolute coordinates
 // before calling this function using ScreenshotToScreenCoords together with
 // the target window bounds from capture.CaptureWindowBounds:
 //
 //	bounds, _ := capture.CaptureWindowBounds(hwnd)
 //	sx, sy, _ := ScreenshotToScreenCoords(imgX, imgY, int32(bounds.Left), int32(bounds.Top))
-//	err := ExecuteMouseAction(sx, sy, action)
+//	err := MoveCursor(sx, sy)
 //
-// Coordinates are bounds-checked against the virtual desktop rectangle via
-// validateScreenCoords before dispatch.
-//
-// This replaces the legacy ExecuteMouseClick, which passed raw pixel
-// coordinates directly to MOUSEEVENTF_ABSOLUTE (causing mis-targeted clicks)
-// and could not express LEFT_RIGHT_PRESS.
-func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) error {
-	if err := validateMouseAction(action); err != nil {
-		return err
-	}
-
+// This pairs with ExecuteClickAtCurrentPos, which dispatches button events as
+// relative clicks at the cursor's current position. Splitting move and click
+// lets callers issue a MOVE action (cursor only) or a click action (buttons
+// only) without coupling cursor repositioning to the click dispatch path.
+func MoveCursor(screenX, screenY int32) error {
 	rect, err := virtualScreenRect()
 	if err != nil {
 		return err
@@ -82,10 +69,29 @@ func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) er
 		return err
 	}
 
-	// Phase 1: position the cursor at the target screen coordinates. Any
-	// subsequent relative mouse event will fire at this position.
-	if err := setCursorPos(screenX, screenY); err != nil {
-		return fmt.Errorf("set cursor position: %w", err)
+	return setCursorPos(screenX, screenY)
+}
+
+// ExecuteClickAtCurrentPos dispatches button events for the given click
+// action at the cursor's current position. It does NOT move the cursor —
+// pair it with MoveCursor (or rely on the cursor's existing position) so the
+// click lands where intended.
+//
+// Button events are sent as relative clicks (no MOUSEEVENTF_ABSOLUTE, dx/dy
+// left zero) so each event fires at the cursor's current position. This is
+// the canonical, widely-deployed Go pattern (github.com/stephen-fox/
+// user32util and github.com/go-vgo/robotgo): SetCursorPos (called separately
+// via MoveCursor) handles multi-monitor negative coordinates natively and
+// avoids the edge cases of MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK
+// normalization, which on some configurations dispatched events that landed
+// at incorrect positions despite SendInput returning success.
+//
+// action must be one of the five button-pressing actions; validateClickAction
+// rejects MOVE (no button event) and UNSPECIFIED/unknown values before any
+// event is dispatched.
+func ExecuteClickAtCurrentPos(action game.AgentMouseAction) error {
+	if err := validateClickAction(action); err != nil {
+		return err
 	}
 
 	events, err := actionEventSequence(action)
@@ -93,9 +99,6 @@ func ExecuteMouseAction(screenX, screenY int32, action game.AgentMouseAction) er
 		return err
 	}
 
-	// Phase 2: dispatch button events as relative clicks (no
-	// MOUSEEVENTF_ABSOLUTE, dx/dy left zero) so they act at the cursor's
-	// current position set by SetCursorPos above.
 	for _, flag := range events {
 		sendInput(mouseInput{
 			Type: inputMouse,
