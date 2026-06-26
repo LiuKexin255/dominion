@@ -705,16 +705,20 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 }
 
 // Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn verifies
-// Rule 5: when the action setup fails AND the screenshot capture fails, the
+// Rule 5: when the action fails AND the screenshot capture fails, the
 // function must NOT early-return on the action error — it must reach the
-// screenshot phase and record both failures in the result message. On the
-// Linux stub both CaptureWindowBounds (action setup) and CaptureWindow
-// (screenshot) return "not supported" errors, which is the exact Rule 5
-// scenario. Status reflects the action failure (never SUCCEEDED), screenshot
-// is nil, and the message records both the action and the screenshot failure.
+// screenshot phase and record both failures in the result message. A click
+// action on the Linux stub fails inside ExecuteClickAtCurrentPos ("not
+// supported") and CaptureWindow (screenshot) also returns "not supported",
+// which is the exact Rule 5 scenario. The click path performs no window
+// bounds capture or coordinate conversion, so only the click action and the
+// screenshot capture failures are recorded. Status reflects the action
+// failure (never SUCCEEDED), screenshot is nil.
 func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing.T) {
-	// given: App with a bound window. On the Linux stub CaptureWindowBounds
-	// and CaptureWindow both fail, exercising the error-accumulation path.
+	// given: App with a bound window. A click action skips bounds capture /
+	// coordinate conversion and dispatches ExecuteClickAtCurrentPos, which
+	// fails on the Linux stub; CaptureWindow (screenshot) also fails,
+	// exercising the error-accumulation path.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
@@ -739,9 +743,10 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	result := app.executeAgentOperation(op)
 
 	// then: status FAILED (action outcome), screenshot nil (capture failed),
-	// and the message records BOTH the action failure and the screenshot
+	// and the message records BOTH the click action failure and the screenshot
 	// capture failure — proving the screenshot phase ran despite the action
-	// error rather than early-returning.
+	// error rather than early-returning. The click path performs no window
+	// bounds capture, so the message must NOT mention "capture window bounds".
 	if got := result.GetStatus(); got != game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED {
 		t.Fatalf("expected FAILED status, got %s", got)
 	}
@@ -749,8 +754,11 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 		t.Errorf("expected nil screenshot when capture fails, got non-nil")
 	}
 	msg := result.GetMessage()
-	if !strings.Contains(msg, "capture window bounds") {
-		t.Errorf("message should record the action (bounds) failure, got %q", msg)
+	if !strings.Contains(msg, "click action") {
+		t.Errorf("message should record the click action failure, got %q", msg)
+	}
+	if strings.Contains(msg, "capture window bounds") {
+		t.Errorf("click path must not capture window bounds, but message mentions it: %q", msg)
 	}
 	if !strings.Contains(msg, "screenshot capture failed") {
 		t.Errorf("message should record screenshot capture failure (proves no early return on action error), got %q", msg)

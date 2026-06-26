@@ -603,12 +603,12 @@ func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFr
 	return nil
 }
 
-// executeAgentOperation runs an inbound mouse operation via the new
-// 5-action operation executor and returns the matching result frame.
-// Screenshot-relative coordinates are converted to screen coordinates using
-// the bound window position. ExecuteMouseAction validates the action, checks
-// bounds, normalizes coordinates, and dispatches all supported actions
-// including LEFT_RIGHT_PRESS.
+// executeAgentOperation runs an inbound mouse operation via the split
+// move/click executor and returns the matching result frame. A MOVE action
+// captures the bound window's bounds, converts the screenshot-relative target
+// to screen-absolute coordinates, and repositions the cursor; any click
+// action dispatches button events at the cursor's current position with no
+// coordinate conversion.
 //
 // After the action phase — regardless of whether it succeeded — a follow-up
 // screenshot of the bound window is captured and a red-ring marker is drawn
@@ -654,20 +654,31 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 	// Action phase: accumulate errors instead of early-returning so the
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
+	//
+	// MOVE captures the bound window's bounds to translate the
+	// screenshot-relative target into screen-absolute coordinates, then moves
+	// the cursor. Click actions dispatch button events at the cursor's current
+	// position and perform no coordinate conversion or cursor repositioning.
 	var actionErr error
 	var screenX, screenY int32
-	bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
-	if bErr != nil {
-		actionErr = fmt.Errorf("capture window bounds: %w", bErr)
-	} else {
-		sx, sy, cErr := operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
-		if cErr != nil {
-			actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
+	var bounds capture.WindowBounds
+	if mouse.GetAction() == game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE {
+		var bErr error
+		bounds, bErr = capture.CaptureWindowBounds(a.boundWin.Handle)
+		if bErr != nil {
+			actionErr = fmt.Errorf("capture window bounds: %w", bErr)
 		} else {
-			screenX, screenY = sx, sy
-			if eErr := operation.ExecuteMouseAction(screenX, screenY, mouse.GetAction()); eErr != nil {
-				actionErr = fmt.Errorf("mouse action: %w", eErr)
+			var cErr error
+			screenX, screenY, cErr = operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
+			if cErr != nil {
+				actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
+			} else if eErr := operation.MoveCursor(screenX, screenY); eErr != nil {
+				actionErr = fmt.Errorf("move cursor: %w", eErr)
 			}
+		}
+	} else {
+		if eErr := operation.ExecuteClickAtCurrentPos(mouse.GetAction()); eErr != nil {
+			actionErr = fmt.Errorf("click action: %w", eErr)
 		}
 	}
 
