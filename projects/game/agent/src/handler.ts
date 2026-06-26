@@ -17,6 +17,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
 import type { AgentOperationResultFrame } from "../game_types/projects/game/AgentOperationResultFrame";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
@@ -434,6 +435,9 @@ export class Handler implements AgentServiceHandlers {
       const checkpointTs: string | undefined = state?.createdAt as
         | string
         | undefined;
+      const createTime = checkpointTs
+        ? timestampFromMs(new Date(checkpointTs).getTime())
+        : undefined;
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
@@ -443,7 +447,24 @@ export class Handler implements AgentServiceHandlers {
           continue;
         }
 
-        if (msgType !== "human" && msgType !== "ai") {
+        if (msgType !== "human" && msgType !== "ai" && msgType !== "tool") {
+          continue;
+        }
+
+        // Tool messages are best-effort reconstructed as operation_result
+        // Messages so history renders identically to live operation results.
+        if (msgType === "tool") {
+          const operationResult = reconstructOperationResult(msg.content);
+          if (operationResult) {
+            result.push({
+              name: `sessions/${sessionId}/agent/messages/${msg.id}`,
+              messageId: msg.id,
+              sender: FrameSender.FRAME_SENDER_SYSTEM,
+              type: "operation_result",
+              operationResult,
+              createTime,
+            });
+          }
           continue;
         }
 
@@ -504,10 +525,6 @@ export class Handler implements AgentServiceHandlers {
           const multi = segments.length > 1;
           const segId = multi ? `${msg.id}-${seg.type}` : msg.id;
 
-          const createTime = checkpointTs
-            ? timestampFromMs(new Date(checkpointTs).getTime())
-            : undefined;
-
           if (seg.type === "image_data") {
             result.push({
               name: `sessions/${sessionId}/agent/messages/${segId}`,
@@ -530,6 +547,26 @@ export class Handler implements AgentServiceHandlers {
             text: seg.content,
             createTime,
           });
+        }
+
+        // AI tool_calls are best-effort reconstructed as operation Messages so
+        // history renders identically to live agent operation requests.
+        if (msgType === "ai") {
+          const toolCalls = extractToolCalls(msg);
+          for (let i = 0; i < toolCalls.length; i++) {
+            const call = toolCalls[i];
+            const operation = toolCallToOperationFrame(call);
+            if (!operation) continue;
+            const callId = call.id ?? String(i);
+            result.push({
+              name: `sessions/${sessionId}/agent/messages/${msg.id}-${callId}`,
+              messageId: `${msg.id}-${callId}`,
+              sender: FrameSender.FRAME_SENDER_AGENT,
+              type: "operation",
+              operation,
+              createTime,
+            });
+          }
         }
       }
 
@@ -608,4 +645,155 @@ function extractBase64FromImageBlock(block: any): string {
     }
   }
   return "";
+}
+
+// ---------------------------------------------------------------------------
+// Operation history reconstruction helpers
+//
+// ListMessages best-effort reconstructs AgentOperationFrame / AgentOperation
+// ResultFrame from LangChain message state so operation history renders
+// identically to the live operation stream.
+// ---------------------------------------------------------------------------
+
+/** Minimal shape of a LangChain tool_call carried on an AIMessage. */
+interface ToolCallLike {
+  name?: string;
+  args?: Record<string, unknown>;
+  id?: string;
+}
+
+/** Minimal shape of a content block inside a BaseMessage content array. */
+interface ContentBlockLike {
+  type?: string;
+  text?: string;
+  reasoning?: string;
+  image_url?: { url?: string };
+  data?: unknown;
+}
+
+/** Matches the pixel-dimension annotation emitted by mouse tools. */
+const PIXEL_SIZE_PATTERN = /图片像素尺寸[：:]?\s*(\d+)\s*[×xX*]\s*(\d+)/;
+
+/** Extract tool_calls from a BaseMessage (AIMessage carries them directly). */
+function extractToolCalls(msg: BaseMessage): ToolCallLike[] {
+  const calls = (msg as unknown as { tool_calls?: unknown }).tool_calls;
+  return Array.isArray(calls) ? (calls as ToolCallLike[]) : [];
+}
+
+/** Coerce a tool argument value to a finite int32, defaulting to 0. */
+function toInt32(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/** Map a mouse_click click_type arg to the proto AgentMouseAction string. */
+function clickTypeToAction(clickType: unknown): string {
+  if (typeof clickType !== "string" || !clickType) {
+    return "AGENT_MOUSE_ACTION_UNSPECIFIED";
+  }
+  return `AGENT_MOUSE_ACTION_${clickType.toUpperCase()}`;
+}
+
+/**
+ * Best-effort map a LangChain tool_call to an AgentOperationFrame.
+ *
+ * Recognises the mouse_move and mouse_click tools; unknown tools return null
+ * (no operation Message is emitted for them).
+ */
+function toolCallToOperationFrame(
+  call: ToolCallLike,
+): AgentOperationFrame | null {
+  const name = call.name;
+  const args = call.args ?? {};
+  if (name === "mouse_move") {
+    return {
+      mouse: {
+        action: "AGENT_MOUSE_ACTION_MOVE",
+        xPx: toInt32(args.x_px),
+        yPx: toInt32(args.y_px),
+      },
+    };
+  }
+  if (name === "mouse_click") {
+    return {
+      mouse: {
+        action: clickTypeToAction(args.click_type),
+        xPx: 0,
+        yPx: 0,
+      },
+    };
+  }
+  return null;
+}
+
+/** Infer AgentOperationResultStatus from the result message text. */
+function inferOperationStatus(message: string): string {
+  const lower = message.toLowerCase();
+  return lower.includes("ok") || lower.includes("succeeded")
+    ? "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED"
+    : "AGENT_OPERATION_RESULT_STATUS_FAILED";
+}
+
+/**
+ * Best-effort reconstruct an AgentOperationResultFrame from a ToolMessage's
+ * content blocks.
+ *
+ * - text block (non-annotation) → message
+ * - image_url block → screenshot.data (base64, data-url prefix stripped)
+ * - pixel-size annotation text → screenshot widthPx / heightPx
+ * - status inferred from message ("ok"/"succeeded" → SUCCEEDED, else FAILED)
+ *
+ * String content (when the ToolMessage carries a plain string) is used as the
+ * message directly.
+ */
+function reconstructOperationResult(
+  content: BaseMessage["content"],
+): AgentOperationResultFrame | null {
+  const blocks: ContentBlockLike[] = Array.isArray(content)
+    ? (content as ContentBlockLike[])
+    : [];
+
+  let message = "";
+  let screenshotData = "";
+  let widthPx = 0;
+  let heightPx = 0;
+
+  for (const block of blocks) {
+    if (block.type === "text" && typeof block.text === "string") {
+      const dims = block.text.match(PIXEL_SIZE_PATTERN);
+      if (dims) {
+        widthPx = Number.parseInt(dims[1], 10) || 0;
+        heightPx = Number.parseInt(dims[2], 10) || 0;
+      } else if (!message) {
+        message = block.text;
+      }
+    } else if (block.type === "image_url" && block.image_url?.url) {
+      screenshotData = stripDataUrlPrefix(block.image_url.url);
+    }
+  }
+
+  if (!message && typeof content === "string") {
+    message = content;
+  }
+
+  const status = inferOperationStatus(message);
+
+  const result: AgentOperationResultFrame = {
+    status,
+    message,
+  };
+  if (screenshotData) {
+    result.screenshot = {
+      data: screenshotData,
+      widthPx,
+      heightPx,
+    };
+  }
+  return result;
 }

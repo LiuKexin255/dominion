@@ -9,7 +9,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import * as grpc from "@grpc/grpc-js";
 
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import {
   MemorySaver,
   StateGraph,
@@ -1183,7 +1183,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     graph: any,
     sessionId: string,
-    messages: Array<HumanMessage | AIMessage | SystemMessage>,
+    messages: Array<HumanMessage | AIMessage | SystemMessage | ToolMessage>,
   ) {
     await graph.invoke(
       { messages },
@@ -1219,11 +1219,11 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
     expect(response!.messages![0].type).toBe("text");
-    expect(response!.messages![0].content).toBe("Hello");
+    expect(response!.messages![0].text).toBe("Hello");
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
     expect(response!.messages![1].type).toBe("text");
-    expect(response!.messages![1].content).toBe("Hi there!");
+    expect(response!.messages![1].text).toBe("Hi there!");
   });
 
   it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
@@ -1245,7 +1245,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
     expect(response!.messages![1].type).toBe("thinking");
-    expect(response!.messages![1].content).toBe("Let me analyze...");
+    expect(response!.messages![1].text).toBe("Let me analyze...");
   });
 
   it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
@@ -1378,9 +1378,170 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(4);
-    expect(response!.messages![0].content).toBe("first");
-    expect(response!.messages![1].content).toBe("second");
-    expect(response!.messages![2].content).toBe("third");
-    expect(response!.messages![3].content).toBe("fourth");
+    expect(response!.messages![0].text).toBe("first");
+    expect(response!.messages![1].text).toBe("second");
+    expect(response!.messages![2].text).toBe("third");
+    expect(response!.messages![3].text).toBe("fourth");
+  });
+
+  it("emits operation Message for AIMessage with tool_calls", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-op-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-op-rt", [
+      new HumanMessage("click the button"),
+      new AIMessage({
+        content: "I'll move the mouse first.",
+        tool_calls: [
+          {
+            name: "mouse_move",
+            args: { x_px: 150, y_px: 250 },
+            id: "call-move-1",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-op-rt");
+
+    expect(error).toBeNull();
+    const opMsg = response!.messages!.find((m) => m.type === "operation");
+    expect(opMsg).toBeDefined();
+    expect(opMsg!.sender).toBe(FRAME_SENDER_AGENT);
+    const op = opMsg!.operation as {
+      mouse?: { action?: string; xPx?: number; yPx?: number };
+    };
+    expect(op.mouse?.action).toBe("AGENT_MOUSE_ACTION_MOVE");
+    expect(op.mouse?.xPx).toBe(150);
+    expect(op.mouse?.yPx).toBe(250);
+  });
+
+  it("emits operation Message for mouse_click tool_call with click_type", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opclick-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opclick-rt", [
+      new HumanMessage("click here"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_click",
+            args: { click_type: "LEFT_CLICK" },
+            id: "call-click-1",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opclick-rt");
+
+    expect(error).toBeNull();
+    const opMsg = response!.messages!.find((m) => m.type === "operation");
+    expect(opMsg).toBeDefined();
+    const op = opMsg!.operation as {
+      mouse?: { action?: string; xPx?: number; yPx?: number };
+    };
+    expect(op.mouse?.action).toBe("AGENT_MOUSE_ACTION_LEFT_CLICK");
+  });
+
+  it("emits operation_result Message for ToolMessage with reconstructed fields", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opres-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opres-rt", [
+      new HumanMessage("move the mouse"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_move",
+            args: { x_px: 10, y_px: 20 },
+            id: "call-2",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+      new ToolMessage({
+        content: [
+          { type: "text", text: "ok" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,screenshotdata" },
+          },
+          {
+            type: "text",
+            text: "[图片像素尺寸：800×600（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+          },
+        ],
+        tool_call_id: "call-2",
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opres-rt");
+
+    expect(error).toBeNull();
+
+    // The AIMessage tool_call produces an operation Message.
+    const opMsg = response!.messages!.find((m) => m.type === "operation");
+    expect(opMsg).toBeDefined();
+
+    // The ToolMessage produces an operation_result Message.
+    const resultMsg = response!.messages!.find(
+      (m) => m.type === "operation_result",
+    );
+    expect(resultMsg).toBeDefined();
+    expect(resultMsg!.sender).toBe(FRAME_SENDER_SYSTEM);
+    const result = resultMsg!.operationResult as {
+      status?: string;
+      message?: string;
+      screenshot?: { data?: string; widthPx?: number; heightPx?: number };
+    };
+    expect(result.status).toBe("AGENT_OPERATION_RESULT_STATUS_SUCCEEDED");
+    expect(result.message).toBe("ok");
+    expect(result.screenshot).toBeDefined();
+    expect(result.screenshot?.data).toBe("screenshotdata");
+    expect(result.screenshot?.widthPx).toBe(800);
+    expect(result.screenshot?.heightPx).toBe(600);
+  });
+
+  it("infers FAILED status from ToolMessage message without ok/succeeded", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opfail-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opfail-rt", [
+      new HumanMessage("do something"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_click",
+            args: { click_type: "RIGHT_CLICK" },
+            id: "call-3",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+      new ToolMessage({
+        content: [{ type: "text", text: "operation timed out" }],
+        tool_call_id: "call-3",
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opfail-rt");
+
+    expect(error).toBeNull();
+    const resultMsg = response!.messages!.find(
+      (m) => m.type === "operation_result",
+    );
+    expect(resultMsg).toBeDefined();
+    const result = resultMsg!.operationResult as { status?: string };
+    expect(result.status).toBe("AGENT_OPERATION_RESULT_STATUS_FAILED");
   });
 });
