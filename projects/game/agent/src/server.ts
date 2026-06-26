@@ -94,9 +94,18 @@ export async function startServer(
 
   const checkpointer = new MemorySaver();
 
-  const baseUrl =
-    process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
-  const providerCache = new ModelProviderCache(baseUrl, providerSecret);
+  const openaiBaseUrl =
+    process.env.OPENCODE_OPENAI_BASE_URL ||
+    process.env.OPENCODE_BASE_URL ||
+    "https://opencode.ai/zen/go/v1";
+  const anthropicBaseUrl =
+    process.env.OPENCODE_ANTHROPIC_BASE_URL ||
+    "https://opencode.ai/zen/go";
+  const providerCache = new ModelProviderCache(
+    openaiBaseUrl,
+    anthropicBaseUrl,
+    providerSecret,
+  );
 
   const adapterFactory: AdapterFactory =
     adapterFactoryOverride ??

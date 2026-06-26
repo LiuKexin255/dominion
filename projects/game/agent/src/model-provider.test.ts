@@ -10,7 +10,7 @@ import {
   inferProvider,
   ModelProviderCache,
 } from "./model-provider";
-import type { ProviderFactory } from "./model-provider";
+import type { ProviderFactory, LLMProvider } from "./model-provider";
 
 // ===========================================================================
 // parseModelSpec
@@ -78,7 +78,7 @@ describe("ModelProviderCache", () => {
       created.push(bareModel);
       return {} as never;
     };
-    const cache = new ModelProviderCache("", "", factory);
+    const cache = new ModelProviderCache("", "", "", factory);
 
     await cache.getProvider("opencode-go/gpt-4o");
     await cache.getProvider("opencode-go/gpt-4o");
@@ -92,7 +92,7 @@ describe("ModelProviderCache", () => {
       created.push(bareModel);
       return {} as never;
     };
-    const cache = new ModelProviderCache("", "", factory);
+    const cache = new ModelProviderCache("", "", "", factory);
 
     await cache.getProvider("opencode-go/gpt-4o");
     await cache.getProvider("opencode-go/minimax-m1");
@@ -102,12 +102,52 @@ describe("ModelProviderCache", () => {
 
   it("returns the cached instance on repeated calls", async () => {
     const factory: ProviderFactory = vi.fn(async () => ({ id: 1 }) as never);
-    const cache = new ModelProviderCache("", "", factory);
+    const cache = new ModelProviderCache("", "", "", factory);
 
     const first = await cache.getProvider("gpt-4o");
     const second = await cache.getProvider("gpt-4o");
 
     expect(first).toBe(second);
     expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes OpenAI-family models to the OpenAI base URL", async () => {
+    const calls: Array<{ provider: LLMProvider; baseUrl: string }> = [];
+    const factory: ProviderFactory = async (bareModel, provider, baseUrl) => {
+      calls.push({ provider, baseUrl });
+      return {} as never;
+    };
+    const cache = new ModelProviderCache(
+      "https://opencode.ai/zen/go/v1",
+      "https://opencode.ai/zen/go",
+      "secret",
+      factory,
+    );
+
+    await cache.getProvider("opencode-go/deepseek-v4-pro");
+
+    expect(calls).toEqual([
+      { provider: "openai", baseUrl: "https://opencode.ai/zen/go/v1" },
+    ]);
+  });
+
+  it("routes Anthropic-family models to the Anthropic base URL", async () => {
+    const calls: Array<{ provider: LLMProvider; baseUrl: string }> = [];
+    const factory: ProviderFactory = async (bareModel, provider, baseUrl) => {
+      calls.push({ provider, baseUrl });
+      return {} as never;
+    };
+    const cache = new ModelProviderCache(
+      "https://opencode.ai/zen/go/v1",
+      "https://opencode.ai/zen/go",
+      "secret",
+      factory,
+    );
+
+    await cache.getProvider("opencode-go/qwen3.7-max");
+
+    expect(calls).toEqual([
+      { provider: "anthropic", baseUrl: "https://opencode.ai/zen/go" },
+    ]);
   });
 });

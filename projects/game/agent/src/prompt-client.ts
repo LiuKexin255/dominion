@@ -54,12 +54,16 @@ function buildClientCredentials(): grpc.ChannelCredentials {
   return grpc.credentials.createSsl(rootCert);
 }
 
-// Keep the channel warm and detect silently-dropped connections fast, so a
-// dead peer is noticed within ~10s rather than on the next failed RPC.
+// Keep the channel warm and detect silently-dropped connections, but stay
+// within the prompt service's keepalive enforcement policy. The prompt
+// server is grpc-go, which by default rejects pings more frequent than
+// 5 minutes as "excess pings" and GOAWAYs the connection. Use 5m so the
+// PING interval is safely above that threshold, and only send PINGs when
+// there is an active RPC to avoid waking idle connections.
 const KEEPALIVE_OPTIONS: grpc.ChannelOptions = {
-  "grpc.keepalive_time_ms": 30_000,
+  "grpc.keepalive_time_ms": 300_000,
   "grpc.keepalive_timeout_ms": 10_000,
-  "grpc.keepalive_permit_without_calls": 1,
+  "grpc.keepalive_permit_without_calls": 0,
   "grpc.initial_reconnect_backoff_ms": 1_000,
   "grpc.max_reconnect_backoff_ms": 15_000,
 };
