@@ -1,18 +1,23 @@
 /**
- * mouse-tool.test.ts — Tests for the mouse LangChain tool.
+ * mouse-tool.test.ts — Tests for the split mouse LangChain tools.
  *
- * Covers the core scenarios:
- *   1. invoke → bridge.dispatch called with correct frame (action, x_px, y_px).
- *   2. tool returns a content-block array: single text block when no
- *      screenshot, [text, image_url, text] when a screenshot is present.
- *   3. annotation text matches the llm.ts:226 pixel-dimension template exactly.
+ * Feature 015 splits the single "mouse" tool into two:
+ *   - mouse_move (createMouseMoveTool): schema {x_px, y_px}, dispatches MOVE.
+ *   - mouse_click (createMouseClickTool): schema {click_type}, dispatches the
+ *     mapped click action at (0, 0).
  *
- * Plus coverage for each of the 5 action enum values.
+ * Coverage:
+ *   - mouse_move invokes bridge.dispatch with the correct MOVE frame + coords.
+ *   - mouse_click invokes bridge.dispatch at (0, 0) with each click proto value.
+ *   - Both tools build content-block results via the shared buildResultBlocks
+ *     helper: single text block when no screenshot, [text, image_url, text]
+ *     when a screenshot is present, and the pixel-dimension annotation matches
+ *     the llm.ts:226 template exactly.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import { createMouseTool } from "./mouse-tool";
+import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
 
 import type { OperationBridge } from "./operation-bridge";
 import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
@@ -47,28 +52,147 @@ function asBlocks(value: unknown): ContentBlock[] {
   return value as ContentBlock[];
 }
 
-describe("createMouseTool", () => {
+function readSchemaShape(
+  t: unknown,
+): Record<string, unknown> | undefined {
+  return (t as { schema?: { shape?: Record<string, unknown> } }).schema?.shape;
+}
+
+// ─── mouse_move ────────────────────────────────────────────────────────────
+
+describe("createMouseMoveTool", () => {
   let bridge: ReturnType<typeof makeMockBridge>;
 
   beforeEach(() => {
     bridge = makeMockBridge();
   });
 
-  it("invokes bridge.dispatch with the correct AgentOperationFrame", async () => {
-    const mouseTool = createMouseTool(bridge);
+  it("invokes bridge.dispatch with a MOVE frame at the given coordinates", async () => {
+    const mouseTool = createMouseMoveTool(bridge);
 
-    await mouseTool.invoke({
-      x_px: 100,
-      y_px: 200,
-      action: "LEFT_CLICK",
+    await mouseTool.invoke({ x_px: 100, y_px: 200 });
+
+    expect(bridge.dispatch).toHaveBeenCalledTimes(1);
+    const frame = bridge.dispatch.mock.calls[0][0] as AgentOperationFrame;
+    expect(frame.mouse).toBeDefined();
+    expect(frame.mouse!.action).toBe("AGENT_MOUSE_ACTION_MOVE");
+    expect(frame.mouse!.xPx).toBe(100);
+    expect(frame.mouse!.yPx).toBe(200);
+  });
+
+  it("returns a single text content block when no screenshot is present", async () => {
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_SUCCEEDED,
+      message: "moved",
     });
+
+    const mouseTool = createMouseMoveTool(bridge);
+    const result = asBlocks(
+      await mouseTool.invoke({ x_px: 10, y_px: 20 }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ type: "text", text: "moved" });
+  });
+
+  it("returns a single text block carrying the failure message on dispatch failure", async () => {
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_FAILED,
+      message: "operation timed out",
+    });
+
+    const mouseTool = createMouseMoveTool(bridge);
+    const result = asBlocks(
+      await mouseTool.invoke({ x_px: 1, y_px: 2 }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({
+      type: "text",
+      text: "operation timed out",
+    });
+  });
+
+  it("returns [text, image_url, text] with annotation when screenshot is present", async () => {
+    const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_SUCCEEDED,
+      message: "moved",
+      screenshot: { data: pngBase64, widthPx: 1920, heightPx: 1080 },
+    });
+
+    const mouseTool = createMouseMoveTool(bridge);
+    const result = asBlocks(
+      await mouseTool.invoke({ x_px: 5, y_px: 6 }),
+    );
+
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual({ type: "text", text: "moved" });
+    expect(result[1]).toEqual({
+      type: "image_url",
+      image_url: { url: `data:image/png;base64,${pngBase64}` },
+    });
+    // Annotation matches the llm.ts:226 template exactly.
+    expect(result[2]).toEqual({
+      type: "text",
+      text: "[图片像素尺寸：1920×1080（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+    });
+  });
+
+  it("does not emit the annotation without a screenshot", async () => {
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_SUCCEEDED,
+      message: "ok",
+    });
+
+    const mouseTool = createMouseMoveTool(bridge);
+    const result = asBlocks(
+      await mouseTool.invoke({ x_px: 0, y_px: 0 }),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("text");
+  });
+
+  it("tool schema exposes only x_px and y_px", () => {
+    const mouseTool = createMouseMoveTool(bridge);
+    const schemaKeys = Object.keys(readSchemaShape(mouseTool) ?? {});
+    expect(schemaKeys.sort()).toEqual(["x_px", "y_px"]);
+  });
+
+  it("has name 'mouse_move' for profile.tool_names matching", () => {
+    const mouseTool = createMouseMoveTool(bridge);
+    expect(mouseTool.name).toBe("mouse_move");
+  });
+
+  it("has a non-empty description", () => {
+    const mouseTool = createMouseMoveTool(bridge);
+    expect(mouseTool.description).toBeTruthy();
+    expect(mouseTool.description.length).toBeGreaterThan(10);
+  });
+});
+
+// ─── mouse_click ───────────────────────────────────────────────────────────
+
+describe("createMouseClickTool", () => {
+  let bridge: ReturnType<typeof makeMockBridge>;
+
+  beforeEach(() => {
+    bridge = makeMockBridge();
+  });
+
+  it("invokes bridge.dispatch at (0, 0) with the mapped click action", async () => {
+    const mouseTool = createMouseClickTool(bridge);
+
+    await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
     const frame = bridge.dispatch.mock.calls[0][0] as AgentOperationFrame;
     expect(frame.mouse).toBeDefined();
     expect(frame.mouse!.action).toBe("AGENT_MOUSE_ACTION_LEFT_CLICK");
-    expect(frame.mouse!.xPx).toBe(100);
-    expect(frame.mouse!.yPx).toBe(200);
+    // Click never carries coordinates — desktop clicks at the current position.
+    expect(frame.mouse!.xPx).toBe(0);
+    expect(frame.mouse!.yPx).toBe(0);
   });
 
   it("returns a single text content block when no screenshot is present", async () => {
@@ -77,13 +201,9 @@ describe("createMouseTool", () => {
       message: "click registered",
     });
 
-    const mouseTool = createMouseTool(bridge);
+    const mouseTool = createMouseClickTool(bridge);
     const result = asBlocks(
-      await mouseTool.invoke({
-        x_px: 10,
-        y_px: 20,
-        action: "LEFT_CLICK",
-      }),
+      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
     );
 
     expect(result).toHaveLength(1);
@@ -96,13 +216,9 @@ describe("createMouseTool", () => {
       message: "operation timed out",
     });
 
-    const mouseTool = createMouseTool(bridge);
+    const mouseTool = createMouseClickTool(bridge);
     const result = asBlocks(
-      await mouseTool.invoke({
-        x_px: 1,
-        y_px: 2,
-        action: "RIGHT_CLICK",
-      }),
+      await mouseTool.invoke({ click_type: "RIGHT_CLICK" }),
     );
 
     expect(result).toHaveLength(1);
@@ -120,24 +236,17 @@ describe("createMouseTool", () => {
       screenshot: { data: pngBase64, widthPx: 1920, heightPx: 1080 },
     });
 
-    const mouseTool = createMouseTool(bridge);
+    const mouseTool = createMouseClickTool(bridge);
     const result = asBlocks(
-      await mouseTool.invoke({
-        x_px: 5,
-        y_px: 6,
-        action: "LEFT_CLICK",
-      }),
+      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
     );
 
     expect(result).toHaveLength(3);
-    // Block 0 — status text.
     expect(result[0]).toEqual({ type: "text", text: "click registered" });
-    // Block 1 — image_url with data URL prefix.
     expect(result[1]).toEqual({
       type: "image_url",
       image_url: { url: `data:image/png;base64,${pngBase64}` },
     });
-    // Block 2 — annotation matching the llm.ts:226 template exactly.
     expect(result[2]).toEqual({
       type: "text",
       text: "[图片像素尺寸：1920×1080（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
@@ -145,34 +254,24 @@ describe("createMouseTool", () => {
   });
 
   it("does not emit the annotation without a screenshot", async () => {
-    // Screenshot-absent path must produce exactly one text block; the
-    // pixel-dimension annotation is paired with the image, never standalone.
     bridge.dispatch.mockResolvedValueOnce({
       status: STATUS_SUCCEEDED,
       message: "ok",
     });
 
-    const mouseTool = createMouseTool(bridge);
+    const mouseTool = createMouseClickTool(bridge);
     const result = asBlocks(
-      await mouseTool.invoke({
-        x_px: 0,
-        y_px: 0,
-        action: "LEFT_CLICK",
-      }),
+      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
     );
 
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe("text");
   });
 
-  it("tool schema exposes only x_px, y_px, action", () => {
-    const mouseTool = createMouseTool(bridge);
-
-    const schemaKeys = Object.keys(
-      (mouseTool as unknown as { schema?: { shape?: Record<string, unknown> } })
-        .schema?.shape ?? {},
-    );
-    expect(schemaKeys.sort()).toEqual(["action", "x_px", "y_px"]);
+  it("tool schema exposes only click_type", () => {
+    const mouseTool = createMouseClickTool(bridge);
+    const schemaKeys = Object.keys(readSchemaShape(mouseTool) ?? {});
+    expect(schemaKeys).toEqual(["click_type"]);
   });
 
   it.each([
@@ -181,26 +280,25 @@ describe("createMouseTool", () => {
     ["RIGHT_CLICK", "AGENT_MOUSE_ACTION_RIGHT_CLICK"],
     ["RIGHT_DOUBLE_CLICK", "AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK"],
     ["LEFT_RIGHT_PRESS", "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS"],
-    ["MOVE", "AGENT_MOUSE_ACTION_MOVE"],
-  ] as const)(
-    "maps action %s to proto value %s",
-    async (action, protoValue) => {
-      const mouseTool = createMouseTool(bridge);
+  ] as const)("maps click_type %s to proto value %s", async (clickType, protoValue) => {
+    const mouseTool = createMouseClickTool(bridge);
 
-      await mouseTool.invoke({ x_px: 0, y_px: 0, action });
+    await mouseTool.invoke({ click_type: clickType });
 
-      const frame = bridge.dispatch.mock.calls[0][0] as AgentOperationFrame;
-      expect(frame.mouse!.action).toBe(protoValue);
-    },
-  );
+    const frame = bridge.dispatch.mock.calls[0][0] as AgentOperationFrame;
+    expect(frame.mouse!.action).toBe(protoValue);
+    // Coordinates must always be 0 for a click.
+    expect(frame.mouse!.xPx).toBe(0);
+    expect(frame.mouse!.yPx).toBe(0);
+  });
 
-  it("has name 'mouse' for profile.tool_names matching", () => {
-    const mouseTool = createMouseTool(bridge);
-    expect(mouseTool.name).toBe("mouse");
+  it("has name 'mouse_click' for profile.tool_names matching", () => {
+    const mouseTool = createMouseClickTool(bridge);
+    expect(mouseTool.name).toBe("mouse_click");
   });
 
   it("has a non-empty description", () => {
-    const mouseTool = createMouseTool(bridge);
+    const mouseTool = createMouseClickTool(bridge);
     expect(mouseTool.description).toBeTruthy();
     expect(mouseTool.description.length).toBeGreaterThan(10);
   });

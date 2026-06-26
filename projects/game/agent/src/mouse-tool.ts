@@ -1,49 +1,51 @@
 /**
- * mouse-tool.ts — LangChain tool that dispatches mouse operations through
- * the session-scoped OperationBridge.
+ * mouse-tool.ts — LangChain tools that dispatch mouse operations through the
+ * session-scoped OperationBridge.
  *
- * The tool is created per session by SessionAgent via createMouseTool(bridge),
- * binding the bridge in a closure.
+ * Feature 015 splits the single mouse tool into two purpose-specific tools:
+ *   - mouse_move: reposition the cursor at screenshot-relative coordinates.
+ *   - mouse_click: perform a button action at the current cursor position.
+ *
+ * Each tool is created per session by SessionAgent via createMouseMoveTool /
+ * createMouseClickTool, binding the bridge in a closure.
  */
 
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { tool } from "langchain";
 import { z } from "zod";
 
-import type { OperationBridge } from "./operation-bridge";
+import type { OperationBridge, OperationResult } from "./operation-bridge";
 import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
 
-/**
- * Map the short action names exposed to the LLM to the proto enum string
- * values expected by AgentMouseOperation.action.  Kept as a const record so
- * the indexed value preserves the literal type required by the proto field.
- */
-const MOUSE_ACTION_TO_PROTO = {
+// ─── mouse_move tool ───────────────────────────────────────────────────────
+
+const mouseMoveSchema = z.object({
+  x_px: z.number().describe("X coordinate in pixels, image-relative"),
+  y_px: z.number().describe("Y coordinate in pixels, image-relative"),
+});
+
+// ─── mouse_click tool ──────────────────────────────────────────────────────
+
+const CLICK_TYPES = [
+  "LEFT_CLICK",
+  "LEFT_DOUBLE_CLICK",
+  "RIGHT_CLICK",
+  "RIGHT_DOUBLE_CLICK",
+  "LEFT_RIGHT_PRESS",
+] as const;
+
+const CLICK_TYPE_TO_PROTO = {
   LEFT_CLICK: "AGENT_MOUSE_ACTION_LEFT_CLICK",
   LEFT_DOUBLE_CLICK: "AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK",
   RIGHT_CLICK: "AGENT_MOUSE_ACTION_RIGHT_CLICK",
   RIGHT_DOUBLE_CLICK: "AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK",
   LEFT_RIGHT_PRESS: "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS",
-  MOVE: "AGENT_MOUSE_ACTION_MOVE",
 } as const;
 
-const mouseSchema = z.object({
-  x_px: z
-    .number()
-    .describe("X coordinate in pixels, image-relative"),
-  y_px: z
-    .number()
-    .describe("Y coordinate in pixels, image-relative"),
-  action: z
-    .enum([
-      "LEFT_CLICK",
-      "LEFT_DOUBLE_CLICK",
-      "RIGHT_CLICK",
-      "RIGHT_DOUBLE_CLICK",
-      "LEFT_RIGHT_PRESS",
-      "MOVE",
-    ])
-    .describe("Mouse action to perform"),
+const mouseClickSchema = z.object({
+  click_type: z
+    .enum(CLICK_TYPES)
+    .describe("Click type to perform at the current cursor position"),
 });
 
 /**
@@ -58,63 +60,107 @@ type MouseContentBlock =
   | { type: "image_url"; image_url: { url: string } };
 
 /**
- * Create the "mouse" LangChain tool bound to a session's OperationBridge.
+ * Create the "mouse_move" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
- *   1. Builds an AgentOperationFrame carrying the mouse operation.
+ *   1. Builds an AgentOperationFrame carrying a MOVE operation at the given
+ *      screenshot-relative pixel coordinates.
  *   2. Dispatches it through the bridge and awaits the desktop result.
- *   3. Returns a content-block array to LangChain: the status text always,
- *      and — when the desktop captured a screenshot — the image plus a
- *      pixel-dimension annotation so the model can re-estimate coordinates
- *      against the correct pixel space.
+ *   3. Returns a content-block array to LangChain via buildResultBlocks.
  *
  * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
  */
-export function createMouseTool(
+export function createMouseMoveTool(
   bridge: OperationBridge,
 ): StructuredToolInterface {
   return tool(
-    async ({ x_px, y_px, action }): Promise<MouseContentBlock[]> => {
+    async ({ x_px, y_px }): Promise<MouseContentBlock[]> => {
       const frame: AgentOperationFrame = {
         mouse: {
-          action: MOUSE_ACTION_TO_PROTO[action],
+          action: "AGENT_MOUSE_ACTION_MOVE",
           xPx: x_px,
           yPx: y_px,
         },
       };
-
       const result = await bridge.dispatch(frame);
-
-      const blocks: MouseContentBlock[] = [
-        { type: "text", text: result.message },
-      ];
-
-      if (result.screenshot) {
-        blocks.push({
-          type: "image_url",
-          image_url: {
-            url: `data:image/png;base64,${result.screenshot.data}`,
-          },
-        });
-        blocks.push({
-          type: "text",
-          text: `[图片像素尺寸：${result.screenshot.widthPx}×${result.screenshot.heightPx}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
-        });
-      }
-
-      return blocks;
+      return buildResultBlocks(result);
     },
     {
-      name: "mouse",
+      name: "mouse_move",
       description:
-        "Perform a mouse operation at the given image-relative pixel " +
-        "coordinates. Available actions: left click, left double-click, " +
-        "right click, right double-click, simultaneous left+right press, " +
-        "and move (reposition cursor without clicking). When a window is " +
-        "bound, the result includes a post-action screenshot with a red " +
-        "marker ring at the operation coordinates and the image pixel " +
-        "dimensions.",
-      schema: mouseSchema,
+        "Move the mouse cursor to the given image-relative pixel coordinates " +
+        "without clicking. Use this to position the cursor before a click. " +
+        "When a window is bound, the result includes a post-action screenshot " +
+        "showing the cursor at its new position.",
+      schema: mouseMoveSchema,
     },
   );
+}
+
+/**
+ * Create the "mouse_click" LangChain tool bound to a session's OperationBridge.
+ *
+ * On invoke the tool:
+ *   1. Builds an AgentOperationFrame carrying the requested click action with
+ *      coordinates fixed at (0, 0); the desktop ignores them and clicks at the
+ *      cursor's current position.
+ *   2. Dispatches it through the bridge and awaits the desktop result.
+ *   3. Returns a content-block array to LangChain via buildResultBlocks.
+ *
+ * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
+ */
+export function createMouseClickTool(
+  bridge: OperationBridge,
+): StructuredToolInterface {
+  return tool(
+    async ({ click_type }): Promise<MouseContentBlock[]> => {
+      const frame: AgentOperationFrame = {
+        mouse: {
+          action: CLICK_TYPE_TO_PROTO[click_type],
+          xPx: 0,
+          yPx: 0,
+        },
+      };
+      const result = await bridge.dispatch(frame);
+      return buildResultBlocks(result);
+    },
+    {
+      name: "mouse_click",
+      description:
+        "Perform a mouse click at the current cursor position. Use mouse_move " +
+        "first to position the cursor. Click types: left click, left " +
+        "double-click, right click, right double-click, simultaneous " +
+        "left+right press. When a window is bound, the result includes a " +
+        "post-action screenshot showing the cursor at the click position.",
+      schema: mouseClickSchema,
+    },
+  );
+}
+
+// ─── shared result-block builder ───────────────────────────────────────────
+
+/**
+ * Build the LangChain content-block array for an operation result.
+ *
+ * Emits the status text always, and — when the desktop captured a screenshot —
+ * the image plus a pixel-dimension annotation so the model can re-estimate
+ * coordinates against the correct pixel space.
+ */
+function buildResultBlocks(result: OperationResult): MouseContentBlock[] {
+  const blocks: MouseContentBlock[] = [
+    { type: "text", text: result.message },
+  ];
+  if (result.screenshot) {
+    blocks.push({
+      type: "image_url",
+      image_url: {
+        url: `data:image/png;base64,${result.screenshot.data}`,
+      },
+    });
+    blocks.push({
+      type: "text",
+      text: `[图片像素尺寸：${result.screenshot.widthPx}×${result.screenshot.heightPx}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+    });
+  }
+  return blocks;
 }
