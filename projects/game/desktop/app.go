@@ -32,6 +32,7 @@ type App struct {
 	ctx       context.Context
 	boundWin  capture.WindowRef
 	sessionID string // active session set on WebSocket connect
+	recvDone  chan struct{}
 }
 
 // NewApp creates a new App with default configuration.
@@ -424,9 +425,10 @@ func (a *App) RefreshAgent(sessionID string) error {
 const maxScreenshotBytes = 5 * 1024 * 1024
 
 // SendUserTurn sends a single user turn bundling text and an optional
-// screenshot to the agent via WebSocket, then streams back all response
-// frames as Wails "game:frame" events. The loop terminates when a wait
-// frame is received (signalling the agent is done) or an error occurs.
+// screenshot to the agent via WebSocket, then returns immediately. The
+// inbound response frames are drained asynchronously by recvLoop, which
+// emits each as a Wails "game:frame" event and terminates when a wait
+// frame is received (signalling the agent is done) or RecvFrame errors.
 //
 // The agentProfileName selects which agent profile to use for this session.
 // screenshotData is the raw PNG bytes of the bound window; pass an empty
@@ -434,10 +436,11 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 // describe the pixel dimensions of screenshotData and are ignored when it is
 // empty.
 //
-// Inbound AgentOperationFrame payloads are auto-executed and a matching
-// AgentOperationResultFrame is sent back over the same WebSocket connection
-// (FR-013). The result frame carries a post-action screenshot of the bound
-// window with a red-ring marker at the operation coordinates (FR-007).
+// Inbound AgentOperationFrame payloads are auto-executed by recvLoop and a
+// matching AgentOperationResultFrame is sent back over the same WebSocket
+// connection (FR-013). The result frame carries a post-action screenshot of
+// the bound window with a red-ring marker at the operation coordinates
+// (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -494,11 +497,31 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		return fmt.Errorf("send user turn: %w", err)
 	}
 
+	// Drain inbound frames asynchronously so this call returns immediately.
+	// recvLoop closes recvDone when it exits (wait frame received or error);
+	// CloseAgent waits on recvDone after tearing the socket down so the
+	// blocked RecvFrame unblocks instead of deadlocking.
+	a.recvDone = make(chan struct{})
+	go a.recvLoop(sessionID, frameID)
+	return nil
+}
+
+// recvLoop drains inbound WebSocket frames for an in-flight user turn and
+// emits each as a "game:frame" event. It runs in its own goroutine launched
+// by SendUserTurn. The loop terminates — and closes recvDone — when a wait
+// frame is received (the agent is done) or RecvFrame errors.
+//
+// On RecvFrame error a synthesized wait frame is emitted so the frontend can
+// settle the turn before the failure surfaces, preserving the behavior the
+// synchronous loop previously had.
+func (a *App) recvLoop(sessionID, frameID string) {
+	defer close(a.recvDone)
+
 	frameCount := 0
 	for {
 		resp, err := a.ws.RecvFrame(a.ctx)
 		if err != nil {
-			a.logger.Error("backend", "SendUserTurn: recv error", map[string]any{
+			a.logger.Error("backend", "recvLoop: recv error", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 				"error":       err.Error(),
@@ -510,7 +533,7 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 					Wait: &game.AgentWaitFrame{},
 				},
 			}))
-			return fmt.Errorf("send user turn: receive: %w", err)
+			return
 		}
 		frameCount++
 
@@ -520,17 +543,22 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		// post-action screenshot (FR-007, FR-013).
 		if op := resp.GetOperation(); op != nil {
 			if err := a.handleInboundOperation(sessionID, op); err != nil {
-				return err
+				a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
+					"session_id":  sessionID,
+					"frame_count": frameCount,
+					"error":       err.Error(),
+				})
+				return
 			}
 			continue
 		}
 
 		if resp.GetWait() != nil {
-			a.logger.Info("backend", "SendUserTurn: done", map[string]any{
+			a.logger.Info("backend", "recvLoop: done", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 			})
-			return nil
+			return
 		}
 	}
 }
@@ -999,6 +1027,13 @@ func (a *App) CloseAgent() error {
 	if err := a.ws.Close(); err != nil {
 		a.logger.Error("backend", "Close agent failed", map[string]any{"error": err.Error()})
 		return err
+	}
+	// ws.Close() tears the socket down, which unblocks any in-flight
+	// RecvFrame in recvLoop; the goroutine then emits a synthesized wait
+	// frame and closes recvDone. Waiting here avoids clearing a.ws while
+	// recvLoop may still be reading it.
+	if a.recvDone != nil {
+		<-a.recvDone
 	}
 	a.ws = nil
 	return nil
