@@ -14,6 +14,7 @@ import (
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
+	"dominion/projects/game/desktop/internal/chatstream"
 	"dominion/projects/game/desktop/internal/operation"
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 	gameconst "dominion/projects/game/pkg/gameconst"
@@ -25,14 +26,16 @@ import (
 
 // App is the Wails application struct holding all state.
 type App struct {
-	logger    *applog.Logger
-	client    *api.Client
-	ws        *api.WSClient
-	cfg       api.Config
-	ctx       context.Context
-	boundWin  capture.WindowRef
-	sessionID string // active session set on WebSocket connect
-	recvDone  chan struct{}
+	logger      *applog.Logger
+	client      *api.Client
+	ws          *api.WSClient
+	cfg         api.Config
+	ctx         context.Context
+	boundWin    capture.WindowRef
+	sessionID   string // active session set on WebSocket connect
+	recvDone    chan struct{}
+	chatStreams *chatstream.Registry
+	chatServer  *chatstream.Server
 }
 
 // NewApp creates a new App with default configuration.
@@ -48,6 +51,13 @@ func NewApp(logger *applog.Logger) *App {
 // SetContext is called by the Wails OnStartup hook to store the app context.
 func (a *App) SetContext(ctx context.Context) {
 	a.ctx = ctx
+}
+
+// SetChatStream injects the chatstream Registry and Server into the App.
+// Called once from main.go OnStartup before the frontend binds.
+func (a *App) SetChatStream(reg *chatstream.Registry, srv *chatstream.Server) {
+	a.chatStreams = reg
+	a.chatServer = srv
 }
 
 // ensureClient lazily creates the API client if not yet initialized.
@@ -662,9 +672,9 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 
 	failed := func(msg string) *game.ToolResultPart {
 		a.logger.Error("backend", "executeAgentOperation: failed", map[string]any{
-			"tool_id":       toolID,
+			"tool_id":        toolID,
 			"correlation_id": corrID,
-			"error":         msg,
+			"error":          msg,
 		})
 		return &game.ToolResultPart{
 			ToolId:  toolID,
@@ -721,10 +731,10 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		fgOk := capture.SetForeground(a.boundWin.Handle)
 		fgAfter := capture.ForegroundWindow()
 		a.logger.Info("backend", "click: foreground state", map[string]any{
-			"tool_id":         toolID,
-			"correlation_id":  corrID,
-			"window_handle":   a.boundWin.Handle,
-			"window_title":    a.boundWin.Title,
+			"tool_id":           toolID,
+			"correlation_id":    corrID,
+			"window_handle":     a.boundWin.Handle,
+			"window_title":      a.boundWin.Title,
 			"foreground_before": fgBefore,
 			"set_foreground_ok": fgOk,
 			"foreground_after":  fgAfter,
@@ -746,8 +756,8 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		})
 	} else {
 		a.logger.Info("backend", "Operation executed", map[string]any{
-			"tool_id":  toolID,
-			"action":   actionLabel,
+			"tool_id":       toolID,
+			"action":        actionLabel,
 			"window_handle": a.boundWin.Handle,
 			"window_title":  a.boundWin.Title,
 			"window_bounds": map[string]int{
@@ -1096,6 +1106,64 @@ func (a *App) CloseAgent() error {
 		<-a.recvDone
 	}
 	a.ws = nil
+	return nil
+}
+
+// OpenChatStream opens (or reopens) the chat push channel for sessionID.
+//
+// On first access the stream is created and seeded synchronously from
+// ListMessages (F11: history fits in memory for a single-session desktop
+// client; a very large history may block entry — acceptable for the
+// current scope). On re-entry the existing stream is reused without
+// re-seeding, but RotateToken is called so any stale EventSource from a
+// previous entry is invalidated (R11) and the handoff always carries a
+// fresh, non-empty token.
+//
+// The frontend MUST call CloseChatStream(sessionID) AFTER closeAgent()
+// returns on session leave (F5 ordering): closeAgent closes the WS and
+// waits on recvDone, so recvLoop has already exited by the time the log
+// is dropped.
+func (a *App) OpenChatStream(sessionID string) (*ChatStreamHandoff, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("open chat stream: sessionID is empty")
+	}
+	a.ensureClient()
+	if a.chatStreams == nil || a.chatServer == nil {
+		return nil, fmt.Errorf("open chat stream: server not started")
+	}
+
+	stream, err := a.chatStreams.Open(sessionID, func() ([]*game.Message, error) {
+		resp, err := a.client.ListMessages(a.ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		return resp.GetMessages(), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open chat stream: %w", err)
+	}
+
+	// C3/C10: RotateToken on EVERY call — first creation and re-entry —
+	// so old subscribers are disconnected and the handoff always carries a
+	// fresh token.
+	token := stream.RotateToken()
+
+	return &ChatStreamHandoff{
+		Endpoint:    a.chatServer.Endpoint(),
+		Token:       token,
+		LastEventID: stream.LastID(),
+	}, nil
+}
+
+// CloseChatStream closes the chat push channel for sessionID. It is
+// idempotent (F5: safe to call on an already-closed or never-opened
+// stream). The caller MUST close the agent first so recvLoop has exited
+// before the event log is dropped (F5 ordering).
+func (a *App) CloseChatStream(sessionID string) error {
+	if a.chatStreams == nil {
+		return nil
+	}
+	a.chatStreams.Close(sessionID)
 	return nil
 }
 

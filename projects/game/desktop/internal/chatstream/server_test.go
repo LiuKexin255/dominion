@@ -195,12 +195,11 @@ func TestServer_Method_405(t *testing.T) {
 	}
 }
 
-// TestServer_MissingParams_400 verifies §3.3: omitting session or token
-// yields 400 Bad Request (text/plain, never text/event-stream). This is
-// distinct from a known session with a bad/stale token (→ 401): a missing
-// param is a malformed request, not an auth failure, so EventSource's
-// reconnect still fires but the server never reaches the stream lookup.
-func TestServer_MissingParams_400(t *testing.T) {
+// TestServer_MissingParams_401 verifies §3.3: omitting session or token
+// yields 401 Unauthorized (text/plain, never text/event-stream) so
+// EventSource treats the connection as failed and reconnects (FR-009).
+// Auth is checked before the stream lookup, so no registry access occurs.
+func TestServer_MissingParams_401(t *testing.T) {
 	_, _, _, ts := newTestServerHTTP(t)
 
 	tests := []struct {
@@ -218,8 +217,8 @@ func TestServer_MissingParams_400(t *testing.T) {
 				t.Fatalf("Get: %v", err)
 			}
 			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusBadRequest {
-				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 			}
 			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
 				t.Errorf("Content-Type = %q, want text/plain", ct)

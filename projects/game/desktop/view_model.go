@@ -157,6 +157,29 @@ type ListAgentProfilesView struct {
 	NextPageToken string              `json:"nextPageToken,omitempty"`
 }
 
+// ChatStreamHandoff is returned by OpenChatStream and carries the
+// connection parameters the frontend uses to open an EventSource:
+//
+//   - Endpoint: the full SSE endpoint URL
+//     (http://127.0.0.1:<port>/api/v1/chat/stream), stable for the
+//     process lifetime.
+//   - Token: a fresh crypto/rand auth token, rotated on every
+//     OpenChatStream call so a re-entry invalidates old subscribers.
+//   - LastEventID: the highest event ID currently in the log (the
+//     highest ID the frontend has already received). Debug/observability
+//     only; EventSource cannot set Last-Event-ID on the initial connect
+//     so the frontend does NOT consume it as a query param.
+//
+// OpenChatStream seeds history synchronously from ListMessages.
+// Assumption (current single-session desktop scope): history fits in
+// memory. A very large history blocking session entry is acceptable
+// in this version; pagination / async-seed is future work (F11).
+type ChatStreamHandoff struct {
+	Endpoint    string `json:"endpoint"`
+	Token       string `json:"token"`
+	LastEventID int64  `json:"lastEventId"`
+}
+
 // timestampString formats a protobuf Timestamp as an RFC3339 string.
 // Returns "" if t is nil.
 func timestampString(t *timestamppb.Timestamp) string {

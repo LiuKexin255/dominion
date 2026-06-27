@@ -122,13 +122,15 @@ func (s *Server) serveChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Query params: both session and token are required (§3.3: missing → 400,
-	// distinct from a known session with a bad/stale token → 401). R7: never
-	// log any URL component that may carry the token — only r.URL.Path is safe.
+	// Query params: both session and token are required. §3.3: a missing
+	// session or token is treated as unauthorized (401) so EventSource
+	// treats the connection as failed and reconnects (FR-009), identical
+	// to a stale-token rejection. R7: never log any URL component that may
+	// carry the token — only r.URL.Path is safe.
 	session := r.URL.Query().Get("session")
 	token := r.URL.Query().Get("token")
 	if session == "" || token == "" {
-		writePlain(w, http.StatusBadRequest, "missing session or token\n")
+		writePlain(w, http.StatusUnauthorized, "unauthorized\n")
 		return
 	}
 
