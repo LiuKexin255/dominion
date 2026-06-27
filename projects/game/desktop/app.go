@@ -424,6 +424,12 @@ func (a *App) RefreshAgent(sessionID string) error {
 // before any WebSocket send.
 const maxScreenshotBytes = 5 * 1024 * 1024
 
+// postActionScreenshotDelay is the pause between completing a mouse action
+// and capturing the post-action screenshot. Waiting briefly lets the target
+// application finish rendering the result of the action before the screenshot
+// is taken.
+const postActionScreenshotDelay = 500 * time.Millisecond
+
 // SendUserTurn sends a single user turn bundling text and an optional
 // screenshot to the agent via WebSocket, then returns immediately. The
 // inbound response frames are drained asynchronously by recvLoop, which
@@ -739,6 +745,10 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 	}
 
 	if a.boundWin.Handle != 0 {
+		// Wait briefly so the target window can render the effect of the
+		// action before the screenshot is captured.
+		time.Sleep(postActionScreenshotDelay)
+
 		capturedImg, captureErr := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
 		switch {
 		case captureErr != nil:

@@ -18,6 +18,14 @@ import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
+/**
+ * LangGraph recursion limit (super-steps) per agent turn. The framework
+ * default of 25 aborts a turn at ~12 model→tool rounds via
+ * GraphRecursionError; 1000 permits extended tool chains while still
+ * bounding runaway loops.
+ */
+const RECURSION_LIMIT = 1000;
+
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
 // ---------------------------------------------------------------------------
@@ -234,11 +242,12 @@ export class AgentAdapterImpl implements AgentAdapter {
 			{
 				messages: [new HumanMessage({ content: contentBlocks })],
 			},
-			{
-				configurable: { thread_id: threadId },
-				metadata: { session_id: threadId },
-				version: "v3",
-			},
+		{
+			configurable: { thread_id: threadId },
+			metadata: { session_id: threadId },
+			version: "v3",
+			recursionLimit: RECURSION_LIMIT,
+		},
 		);
 
 		for await (const message of stream.messages) {
