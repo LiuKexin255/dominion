@@ -14,6 +14,7 @@ import (
 	"dominion/projects/game/desktop/internal/api"
 	"dominion/projects/game/desktop/internal/applog"
 	"dominion/projects/game/desktop/internal/capture"
+	"dominion/projects/game/desktop/internal/chatstream"
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -794,5 +795,175 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	}
 	if result.GetToolId() != "op-both-fail" {
 		t.Errorf("expected tool_id %q, got %q", "op-both-fail", result.GetToolId())
+	}
+}
+
+// TestRecvLoop_AppendsToChatStream verifies the T6 delivery-hop refactor:
+// recvLoop delivers inbound WS frames to the session's chat stream via
+// chatStreams.Append (with stable monotonic IDs) instead of the former
+// runtime.EventsEmit("game:frame"). A content frame followed by a wait
+// signal must both land in the log, in order, terminating the loop.
+func TestRecvLoop_AppendsToChatStream(t *testing.T) {
+	// given: a mock WS server that sends one content frame then a wait signal
+	contentFrame := &game.AgentFrame{
+		SessionId: "recv-session",
+		FrameId:   "srv-content-1",
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello from agent"}}},
+			}},
+		},
+	}
+	waitFrame := &game.AgentFrame{
+		SessionId: "recv-session",
+		FrameId:   "srv-wait-1",
+		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
+			data, _ := protojson.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+				return
+			}
+		}
+		select {} // keep the connection open until the client tears it down
+	})
+	defer srv.Close()
+
+	// given: an App wired with a chatstream Registry (stream pre-opened so
+	// Append is a real enqueue, not a no-op) and a connected WSClient
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("recv-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("recv-session")
+
+	app.ws = &api.WSClient{}
+	if err := app.ws.Connect(context.Background(), srv.URL, "recv-session", "test-env"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer app.ws.Close()
+
+	// when: run recvLoop (terminates on the wait signal)
+	app.recvDone = make(chan struct{})
+	go app.recvLoop("recv-session", "user-frame-1")
+
+	select {
+	case <-app.recvDone:
+		// recvLoop terminated on the wait signal
+	case <-time.After(3 * time.Second):
+		t.Fatal("recvLoop did not terminate within 3s")
+	}
+
+	// then: both frames were appended with monotonic 1-based IDs
+	if got := stream.LastID(); got != 2 {
+		t.Fatalf("LastID = %d, want 2 (content + wait)", got)
+	}
+	_, snap := stream.Subscribe(0)
+	if len(snap) != 2 {
+		t.Fatalf("snapshot length = %d, want 2", len(snap))
+	}
+	if snap[0].ID != 1 || snap[1].ID != 2 {
+		t.Errorf("event IDs = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
+	}
+	// first appended frame is the received content frame
+	if snap[0].Frame.GetContent() == nil {
+		t.Errorf("snap[0] expected Content payload, got %T", snap[0].Frame.GetPayload())
+	}
+	// second appended frame is the received wait signal (turn terminus)
+	if snap[1].Frame.GetWait() == nil {
+		t.Errorf("snap[1] expected Wait payload, got %T", snap[1].Frame.GetPayload())
+	}
+}
+
+// TestRecvLoop_SynthesizesWaitOnRecvError verifies the T6 error path: when
+// RecvFrame errors, recvLoop appends a synthesized AgentFrame_Wait that
+// reuses the in-flight turn's frameID (F13b) so the frontend can settle the
+// turn before the failure surfaces. The synthesized wait lands in the log
+// after any frames already delivered, with a monotonic id.
+func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
+	// given: mock WS server that sends one content frame then closes the
+	// connection, causing the next RecvFrame to error.
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		contentFrame := &game.AgentFrame{
+			SessionId: "sess-recv",
+			FrameId:   "srv-frame-1",
+			Payload: &game.AgentFrame_Content{
+				Content: &game.PartBlock{Parts: []*game.Part{
+					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+				}},
+			},
+		}
+		data, _ := protojson.Marshal(contentFrame)
+		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+			return
+		}
+		// Closing after the write guarantees (via TCP ordering) the client
+		// reads the content frame first, then sees the closure as an error.
+		conn.Close(websocket.StatusNormalClosure, "")
+	})
+	defer srv.Close()
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// connect a WS client directly (bypassing ConnectAgent's probe)
+	ws := &api.WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "sess-recv", "test"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer ws.Close()
+	app.ws = ws
+
+	// wire up the chatstream registry and open a stream for the session
+	reg := chatstream.NewRegistry(logger)
+	app.SetChatStream(reg, nil)
+	stream, err := reg.Open("sess-recv", func() ([]*game.Message, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("registry Open: %v", err)
+	}
+
+	// when: run recvLoop synchronously — it appends the content frame, then
+	// on the next RecvFrame error appends a synthesized wait and returns.
+	app.recvDone = make(chan struct{})
+	app.recvLoop("sess-recv", "turn-frame-id")
+
+	// then: the log carries exactly 2 events with monotonic ids 1 and 2.
+	if got := stream.LastID(); got != 2 {
+		t.Fatalf("LastID = %d, want 2", got)
+	}
+	sub, snap := stream.Subscribe(0)
+	defer sub.Close()
+	if len(snap) != 2 {
+		t.Fatalf("snapshot len = %d, want 2", len(snap))
+	}
+	if snap[0].ID != 1 || snap[1].ID != 2 {
+		t.Errorf("event ids = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
+	}
+
+	// event 1: the content frame delivered from the server verbatim.
+	if snap[0].Frame.GetContent() == nil {
+		t.Fatal("event 0: expected Content payload, got nil")
+	}
+
+	// event 2: the synthesized wait reusing the in-flight turn's frameID (F13b).
+	waitFrame := snap[1].Frame
+	if waitFrame.GetWait() == nil {
+		t.Fatal("event 1: expected Wait payload, got nil")
+	}
+	if got := waitFrame.GetFrameId(); got != "turn-frame-id" {
+		t.Errorf("event 1 FrameId = %q, want %q (F13b: synthesized wait reuses turn frameID)", got, "turn-frame-id")
 	}
 }

@@ -65,6 +65,7 @@ go_unittest(
         "//projects/game/desktop/internal/api",
         "//projects/game/desktop/internal/applog",
         "//projects/game/desktop/internal/capture",
+        "//projects/game/desktop/internal/chatstream",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//types/known/timestamppb",

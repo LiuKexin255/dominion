@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -19,8 +18,6 @@ import (
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 	gameconst "dominion/projects/game/pkg/gameconst"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -526,20 +523,20 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 }
 
 // recvLoop drains inbound WebSocket frames for an in-flight user turn and
-// emits each as a "game:frame" event. It runs in its own goroutine launched
-// by SendUserTurn. The loop terminates — and closes recvDone — when a wait
-// signal is received (the agent is done) or RecvFrame errors.
+// appends each to the session's chat stream. It runs in its own goroutine
+// launched by SendUserTurn. The loop terminates — and closes recvDone —
+// when a wait signal is received (the agent is done) or RecvFrame errors.
 //
 // Frames carry exactly one payload (PartBlock content OR a single control
 // signal). Content frames are scanned for tool requests: MouseMovePart and
 // MouseClickPart are auto-executed and their ToolResultPart is sent back
 // (FR-007, FR-013); the remaining parts (text/thinking/image) are surfaced
-// via the emitted frame only. Wait/Warn/Status signals are forwarded via
-// the emitted frame; a wait signal additionally ends the turn.
+// via the appended frame only. Wait/Warn/Status signals are forwarded via
+// the appended frame; a wait signal additionally ends the turn.
 //
-// On RecvFrame error a synthesized wait signal is emitted so the frontend can
-// settle the turn before the failure surfaces, preserving the behavior the
-// synchronous loop previously had.
+// On RecvFrame error a synthesized wait signal is appended so the frontend
+// can settle the turn before the failure surfaces, preserving the behavior
+// the synchronous loop previously had.
 func (a *App) recvLoop(sessionID, frameID string) {
 	defer close(a.recvDone)
 
@@ -552,18 +549,18 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				"frame_count": frameCount,
 				"error":       err.Error(),
 			})
-			runtime.EventsEmit(a.ctx, "game:frame", frameToMap(&game.AgentFrame{
+			a.chatStreams.Append(sessionID, &game.AgentFrame{
 				SessionId: sessionID,
 				FrameId:   frameID,
 				Payload: &game.AgentFrame_Wait{
 					Wait: &game.WaitSignal{},
 				},
-			}))
+			})
 			return
 		}
 		frameCount++
 
-		runtime.EventsEmit(a.ctx, "game:frame", frameToMap(resp))
+		a.chatStreams.Append(sessionID, resp)
 
 		switch payload := resp.GetPayload().(type) {
 		case *game.AgentFrame_Content:
@@ -589,7 +586,7 @@ func (a *App) recvLoop(sessionID, frameID string) {
 			})
 			return
 		case *game.AgentFrame_Warn, *game.AgentFrame_Status:
-			// Forwarded via the emitted frame above; nothing else to do.
+			// Forwarded via the appended frame above; nothing else to do.
 		}
 	}
 }
@@ -1184,20 +1181,4 @@ func randomHex(n int) (string, error) {
 		return "", fmt.Errorf("random hex: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// frameToMap serializes a proto AgentFrame to a map[string]any using protojson,
-// so that Wails EventsEmit (which uses encoding/json) produces the correct
-// camelCase field names and flattens oneof payload fields (e.g. "text", "wait")
-// to the top level — matching what the frontend expects.
-func frameToMap(frame *game.AgentFrame) map[string]any {
-	jsonBytes, err := protojson.Marshal(frame)
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(jsonBytes, &m); err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	return m
 }

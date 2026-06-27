@@ -390,6 +390,66 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	}
 }
 
+// TestWSClient_CloseDuringRecvFrame_NoDeadlock is the R5 deadlock regression
+// test: Close must return promptly while RecvFrame is blocked on conn.Read.
+// The pre-fix RecvFrame held w.mu across conn.Read, and Close held w.mu across
+// conn.Close — so Close waited for the mu RecvFrame never released (deadlock).
+// The fix snapshots the conn under w.mu and releases it before Read/Close.
+func TestWSClient_CloseDuringRecvFrame_NoDeadlock(t *testing.T) {
+	// given: a server that blocks on Read (never sends), so the client's
+	// RecvFrame blocks inside conn.Read. The server must actively Read so it
+	// processes the client's close frame during the close handshake — a
+	// select{} server would never read the close frame, stretching
+	// conn.Close's waitCloseHandshake to its 5s timeout and masking the
+	// w.mu deadlock this test is meant to catch.
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		_, _, _ = conn.Read(ctx)
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "deadlock-test", "test-env"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+
+	// when: RecvFrame blocks on conn.Read (background context — no timeout;
+	// only Close unblocking the connection can end it)
+	recvErr := make(chan error, 1)
+	go func() {
+		_, err := ws.RecvFrame(context.Background())
+		recvErr <- err
+	}()
+
+	// Let RecvFrame enter conn.Read before calling Close.
+	time.Sleep(100 * time.Millisecond)
+
+	// then: Close must return within 2s. Under the pre-fix code Close deadlocked
+	// waiting for w.mu held by the in-flight RecvFrame.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = ws.Close()
+	}()
+	select {
+	case <-done:
+		// Close returned without deadlock — pass
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() deadlocked: did not return within 2s while RecvFrame was in-flight")
+	}
+
+	// then: RecvFrame must have unblocked (conn.Close terminated the Read) and
+	// returned an error — proving the two operations no longer serialize on w.mu.
+	select {
+	case err := <-recvErr:
+		if err == nil {
+			t.Error("RecvFrame returned nil error, want an error after Close")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RecvFrame did not unblock within 2s after Close")
+	}
+}
+
 // TestWSClient_RecvFrame_ContextCancel verifies RecvFrame detects context
 // cancellation via coder/websocket's AfterFunc that closes the connection.
 func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {

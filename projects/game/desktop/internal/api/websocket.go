@@ -80,15 +80,20 @@ func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error 
 
 // RecvFrame receives a protojson-encoded AgentFrame from the WebSocket.
 // Unknown fields are discarded for forward compatibility.
+//
+// The connection is snapshotted under w.mu and Read is called WITHOUT the
+// lock held: conn.Read blocks for the lifetime of the turn, so holding w.mu
+// across it would deadlock Close (R5).
 func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	conn := w.conn
+	w.mu.Unlock()
 
-	if w.conn == nil {
+	if conn == nil {
 		return nil, fmt.Errorf("receive frame: not connected")
 	}
 
-	_, data, err := w.conn.Read(ctx)
+	_, data, err := conn.Read(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}
@@ -102,18 +107,27 @@ func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
 
 // Close closes the WebSocket connection.
 // It is safe to call Close multiple times or when not connected.
+//
+// The connection is grabbed and nil'd under w.mu, then closed OUTSIDE the
+// lock so an in-flight RecvFrame does not deadlock on w.mu (R5).
+//
+// CloseNow (not Close with a status) is used deliberately: coder/websocket's
+// Close(code, reason) performs a close handshake whose waitCloseHandshake
+// acquires the same read-lock an in-flight RecvFrame holds, blocking up to
+// the 5s handshake timeout. CloseNow tears the underlying connection down
+// immediately, unblocking RecvFrame's Read without any handshake wait — the
+// semantics CloseAgent needs to promptly tear the socket down.
 func (w *WSClient) Close() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	conn := w.conn
+	w.conn = nil
+	w.mu.Unlock()
 
-	if w.conn == nil {
+	if conn == nil {
 		return nil
 	}
 
-	// Close with normal status
-	err := w.conn.Close(websocket.StatusNormalClosure, "")
-	w.conn = nil
-	if err != nil {
+	if err := conn.CloseNow(); err != nil {
 		return fmt.Errorf("close: %w", err)
 	}
 	return nil
