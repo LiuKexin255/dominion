@@ -5,6 +5,7 @@ go_library(
     name = "chatstream",
     srcs = [
         "chunk.go",
+        "server.go",
         "stream.go",
     ],
     importpath = "dominion/projects/game/desktop/internal/chatstream",
@@ -20,6 +21,7 @@ go_unittest(
     name = "chatstream_test",
     srcs = [
         "chunk_test.go",
+        "server_test.go",
         "stream_test.go",
     ],
     embed = [":chatstream"],

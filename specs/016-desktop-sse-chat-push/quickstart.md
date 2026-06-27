@@ -145,9 +145,9 @@ entries still arrive via the `game:log` Wails event, not over SSE.)
 
 ## Inspecting the stream (devtools, all scenarios)
 
-- **Network tab**: one persistent `GET …/api/v1/chat/stream?token=…` request of
-  type `eventsource`, staying `pending` (open). On reconnect it reopens and
-  carries a `Last-Event-ID` request header.
+- **Network tab**: one persistent `GET …/api/v1/chat/stream?session=<id>&token=…`
+  request of type `eventsource`, staying `pending` (open). On reconnect it
+  reopens and carries a `Last-Event-ID` request header.
 - **Event stream**: `chat` events for small frames; `chunk` events (sharing a
   `groupId`) for screenshots. `id:` lines are monotonic and never repeat for the
   active session.

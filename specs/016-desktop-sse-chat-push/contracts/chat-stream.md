@@ -86,13 +86,17 @@ Closes subscribers and drops the `ChatStream`. Idempotent.
 |---|---|
 | Method | `GET` |
 | Path | `/api/v1/chat/stream` |
-| Query | `token=<ChatStreamHandoff.token>` (required) |
+| Query | `session=<ChatStreamHandoff.sessionId>` (required, URL-encoded) **and** `token=<ChatStreamHandoff.token>` (required) |
 | Header | `Accept: text/event-stream` (set automatically by `EventSource`) |
 | Header | `Last-Event-ID: <id>` (sent automatically by the browser **on reconnect only**) |
 
-The token MUST be a query parameter because `EventSource` cannot set custom
-headers ([HTML §9.2.2](https://html.spec.whatwg.org/multipage/server-sent-events.html#the-eventsource-interface);
-[whatwg/html#2177](https://github.com/whatwg/html/issues/2177)).
+Both `session` and `token` MUST be query parameters because `EventSource`
+cannot set custom headers ([HTML §9.2.2](https://html.spec.whatwg.org/multipage/server-sent-events.html#the-eventsourceinterface);
+[whatwg/html#2177](https://github.com/whatwg/html/issues/2177)). The `session`
+value is the session ID (URL-encoded if it contains reserved characters); the
+server looks up the per-session `ChatStream` by it, then authorizes with
+`token`. A single endpoint serves all sessions — the `session` param is the
+router key, `token` is the per-session secret (rotated on every `OpenChatStream`).
 
 ### 3.2 Response — success
 
@@ -125,7 +129,9 @@ connection.
 
 | Condition | Status | Body |
 |---|---|---|
-| Missing / mismatched / stale `token` | `401 Unauthorized` | plain text — **non**-`text/event-stream`, so `EventSource` treats it as a failed connection and auto-reconnects (FR-009). A stale token after rotation naturally returns 401 until the frontend re-`Open`s. |
+| Missing `session` or `token` query param | `400 Bad Request` | plain text |
+| Unknown `session` (no `ChatStream`) / missing / mismatched / stale `token` | `401 Unauthorized` | plain text — **non**-`text/event-stream`, so `EventSource` treats it as a failed connection and auto-reconnects (FR-009). A stale token after rotation naturally returns 401 until the frontend re-`Open`s. |
+| `session` resolves to a stream closed mid-request (close-vs-Get race) | `503 Service Unavailable` | plain text |
 | Wrong method | `405 Method Not Allowed` | — |
 
 The server MUST NOT return `204` (that would tell the client to stop
@@ -231,10 +237,15 @@ session (FR-003a). See [../data-model.md §1.1–1.2](../data-model.md).
 
 - The listener is created with `net.Listen("tcp", "127.0.0.1:0")` — **loopback
   only**, unreachable from remote hosts.
-- Every connection is authenticated by the `?token=` query parameter, compared to
-  the `ChatStream`'s current token. Missing/mismatched/stale → `401`.
+- Every connection is authenticated by the `?session=<id>&token=<secret>`
+  query parameters: `session` selects the per-session `ChatStream`, then
+  `token` is compared to that stream's current token under a single lock (C2).
+  Missing `session`/`token` → `400`; unknown session / missing / mismatched /
+  stale token → `401`.
 - The token is a cryptographically-random opaque secret, scoped to one session,
-  rotated on each `OpenChatStream`, and never logged.
+  rotated on each `OpenChatStream`, and never logged. Only `r.URL.Path` and
+  `r.RemoteAddr` ever reach logs — the query string (which carries `token`) is
+  never logged, and the HTTP server's request-line logger is silenced (R7).
 - The ephemeral port is chosen by the OS (`:0`), avoiding conflicts with other
   local services (FR-010).
 
