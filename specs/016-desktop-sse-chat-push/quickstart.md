@@ -40,13 +40,16 @@ guide* — implementation lives in `tasks.md`. Refer to
 
 ```bash
 # Go: SSE server, per-session log, token rotation, chunking, Last-Event-ID resume
-bazel test //projects/game/desktop/internal/chatstream/...
+bazel test //projects/game/desktop/internal/chatstream:chatstream_test
 
 # Go: recvLoop now appends to the chatstream log (refactor regression guard)
-bazel test //projects/game/desktop:go_default_test
+bazel test //projects/game/desktop:desktop_test
 
-# Frontend: chunk reassembly + id-dedup (pure functions, no webview needed)
-bazel test //projects/game/desktop/frontend:all
+# Frontend: build + Svelte typecheck (no frontend unit-test target exists in this
+# repo today; chunk-reassembly/dedup protocol correctness is covered by the Go
+# round-trip test in chatstream_test, and the wiring is validated by the manual
+# scenarios below)
+bazel build //projects/game/desktop/frontend:dist
 ```
 
 **Expected**: all green. The Go tests assert, at minimum: loopback-only listen;

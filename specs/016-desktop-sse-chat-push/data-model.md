@@ -124,18 +124,20 @@ for the exact wire format). Conceptually:
 
 | Piece | Carries | SSE `id:` |
 |---|---|---|
-| `chunk` × N | A fragment of the serialized JSON (`fragment`), plus `groupId`, `index`, `total` | Each piece gets its **own** monotonic `ID` (so `Last-Event-ID` resume is per-piece). |
+| `chunk` × N | A fragment of the serialized JSON (`fragment`), plus `groupId`, `index`, `total` | The group shares **one** logical event `ID`; the `id:` line is emitted **only on the final fragment** (earlier fragments carry none). A drop before the final fragment leaves `Last-Event-ID` un-advanced → reconnect replays the **whole group** (no dependence on the frontend buffer surviving). |
 | (reassembled) | The full `AgentFrame` JSON, reconstructed by concatenating `fragment` in `index` order, then parsed. | — |
 
 **Frontend reassembly & dedup**:
 - The frontend buffers `fragment`s per `groupId`. When all `total` pieces arrive,
   it concatenates, parses the `AgentFrame`, and dispatches it to `handleAgentFrame`
   exactly like a small event.
-- It records every `id` it has *fully applied* (small events on their own id;
-  chunk groups on all of their piece ids once reassembled). On reconnect replay
-  it ignores any id already applied, and ignores any `groupId` already completed,
-  so a partially-replayed group (client's `Last-Event-ID` landed mid-group) does
-  not duplicate or half-render.
+- It records every event `id` it has *fully applied*; on reconnect replay it
+  ignores any id already applied, and ignores any `groupId` already completed, so
+  a replayed group does not duplicate. Because the server replays whole logical
+  events (id on the final fragment only), a reconnect never delivers a
+  half-group — it either replays the complete group or nothing for that event.
+- A partial `groupId` buffer is evicted on session leave and after a staleness
+  window, so a never-completing group (agent error mid-screenshot) does not leak.
 
 **Why a generic JSON-fragment scheme (not screenshot-specific)**: it is
 transport-level, applies uniformly to any future large content, and keeps the

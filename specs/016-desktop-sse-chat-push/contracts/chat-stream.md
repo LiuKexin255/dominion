@@ -155,19 +155,21 @@ data: {"sessionId":"s","frameId":"f","sender":"FRAME_SENDER_AGENT","content":{"p
 ### 4.2 Large event (payload > 48 KiB) — chunked group
 
 The serialized event JSON is split into `total` fragments, each ≤
-`maxEventBytes`. Each fragment is its own SSE event with its **own** monotonic
-`id` (so `Last-Event-ID` resume is per-fragment):
+`maxEventBytes`. The whole group shares **one** logical event `id`; the SSE `id:`
+line is emitted **only on the final fragment** (the earlier fragments carry no
+`id:` line). This makes `Last-Event-ID` resume **per logical event**: a drop
+before the final fragment leaves the client's `Last-Event-ID` un-advanced for
+that event, so reconnect replays the **whole group** — correctness does not
+depend on the frontend's partial-group buffer surviving across reconnect.
 
 ```
-id: 8
 event: chunk
 data: {"groupId":"g1","index":0,"total":3,"fragment":"<json-bytes-0..47999>"}
 
-id: 9
 event: chunk
 data: {"groupId":"g1","index":1,"total":3,"fragment":"<json-bytes-48000..95999>"}
 
-id: 10
+id: 8
 event: chunk
 data: {"groupId":"g1","index":2,"total":3,"fragment":"<json-bytes-96000..>"}
 
@@ -176,7 +178,9 @@ data: {"groupId":"g1","index":2,"total":3,"fragment":"<json-bytes-96000..>"}
 **Reassembly (frontend)**: buffer `fragment` per `groupId`; once all `total`
 pieces arrive (indices `0..total-1`), concatenate fragments in index order to
 rebuild the full event JSON, parse it to an `AgentFrame`, and dispatch it exactly
-like a small `chat` event. `groupId` is opaque (a UUID); `total` ≥ 2.
+like a small `chat` event. `groupId` is opaque (a UUID); `total` ≥ 2. The
+frontend evicts a partial `groupId` buffer on session leave and after a
+staleness window, so a never-completing group does not leak.
 
 > Screenshots are the only payload currently large enough to trigger chunking
 > (a 5 MiB PNG → ~6.7 MiB base64 → ~145 fragments). Text, reasoning, tool
