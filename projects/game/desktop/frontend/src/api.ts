@@ -210,6 +210,12 @@ export interface Message {
   content?: PartBlock
 }
 
+export interface ChatStreamHandoff {
+  endpoint: string
+  token: string
+  lastEventId: number
+}
+
 export interface ListSessionsResponse {
   sessions: Session[]
   nextPageToken: string
@@ -283,6 +289,8 @@ interface WailsApp {
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
   SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
   ListMessages(sessionID: string): Promise<Message[]>
+  CloseChatStream(sessionID: string): Promise<void>
+  OpenChatStream(sessionID: string): Promise<ChatStreamHandoff>
 
   // Prompt Service
   CreateAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile>
@@ -398,6 +406,18 @@ export async function listMessages(sessionId: string): Promise<Message[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ListMessages(sessionId)
+}
+
+export async function closeChatStream(sessionId: string): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CloseChatStream(sessionId)
+}
+
+export async function openChatStream(sessionId: string): Promise<ChatStreamHandoff> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.OpenChatStream(sessionId)
 }
 
 // ─── Prompt Service Wrappers ───────────────────────────────────────────────
