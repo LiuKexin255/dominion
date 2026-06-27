@@ -46,7 +46,7 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 }
 
 // TestAgentDialogTextToResponse verifies the core dialog flow:
-// send text frame → receive thinking frame → receive text frame
+// send a content text frame → receive thinking frame → receive text frame
 // → verify FrameSender.AGENT on response frames.
 func TestAgentDialogTextToResponse(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
@@ -65,21 +65,14 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Send text frame with sender=USER
+	// Send a content frame carrying a TextPart with sender=USER.
 	sendText := "Hello, agent!"
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{Text: sendText},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame := buildTextFrame(sessionID, profileName, sendText, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Receive thinking frame
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
+		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame")
@@ -89,14 +82,14 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	if thinkingFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("thinking sender = %s, want AGENT", senderString(thinkingFrame.GetSender()))
 	}
-	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
-		t.Errorf("thinking = %q, want to contain %q", thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
+	if !strings.Contains(frameThinking(thinkingFrame), expectedGreetingReasoning) {
+		t.Errorf("thinking = %q, want to contain %q", frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
-	t.Logf("thinking: %q (sender=%s)", thinkingFrame.GetThinking().GetContent(), senderString(thinkingFrame.GetSender()))
+	t.Logf("thinking: %q (sender=%s)", frameThinking(thinkingFrame), senderString(thinkingFrame.GetSender()))
 
 	// Receive text frame
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textRespFrame == nil {
 		t.Fatal("did not receive text frame")
@@ -104,10 +97,10 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	if textRespFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("text sender = %s, want AGENT", senderString(textRespFrame.GetSender()))
 	}
-	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(textRespFrame), expectedGreetingText) {
+		t.Errorf("text = %q, want to contain %q", frameText(textRespFrame), expectedGreetingText)
 	}
-	t.Logf("text: %q (sender=%s)", textRespFrame.GetText().GetContent(), senderString(textRespFrame.GetSender()))
+	t.Logf("text: %q (sender=%s)", frameText(textRespFrame), senderString(textRespFrame.GetSender()))
 }
 
 // TestAgentDialogThinkingBeforeText verifies that the thinking frame arrives
@@ -130,34 +123,27 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	defer conn.Close()
 
 	// Send text carrying the greeting keyword so the response is deterministic.
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{Text: "Hello ordering test"},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame := buildTextFrame(sessionID, profileName, "Hello ordering test", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Read frames in order — first must be thinking, second must be text
 	frame1 := readWSFrame(t, conn)
-	if frame1.GetThinking() == nil {
+	if !frameHasThinking(frame1) {
 		t.Fatal("frame 1: expected thinking, got something else")
 	}
-	if !strings.Contains(frame1.GetThinking().GetContent(), expectedGreetingReasoning) {
-		t.Errorf("frame 1 thinking = %q, want to contain %q", frame1.GetThinking().GetContent(), expectedGreetingReasoning)
+	if !strings.Contains(frameThinking(frame1), expectedGreetingReasoning) {
+		t.Errorf("frame 1 thinking = %q, want to contain %q", frameThinking(frame1), expectedGreetingReasoning)
 	}
 	frame2 := readWSFrame(t, conn)
-	if frame2.GetText() == nil {
+	if !frameHasText(frame2) {
 		t.Fatal("frame 2: expected text, got something else")
 	}
-	if !strings.Contains(frame2.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("frame 2 text = %q, want to contain %q", frame2.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(frame2), expectedGreetingText) {
+		t.Errorf("frame 2 text = %q, want to contain %q", frameText(frame2), expectedGreetingText)
 	}
 
-	t.Logf("frame 1 thinking: %q", frame1.GetThinking().GetContent())
-	t.Logf("frame 2 text: %q", frame2.GetText().GetContent())
+	t.Logf("frame 1 thinking: %q", frameThinking(frame1))
+	t.Logf("frame 2 text: %q", frameText(frame2))
 }
 
 // TestAgentDialogDeterministicContent verifies that fake-llm returns the
@@ -181,36 +167,29 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	defer conn.Close()
 
 	// "Hello world" carries the greeting keyword "hello".
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{Text: "Hello world"},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame := buildTextFrame(sessionID, profileName, "Hello world", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Read and verify thinking content
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
+		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame")
 	}
-	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
-		t.Errorf("thinking = %q, want to contain %q", thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
+	if !strings.Contains(frameThinking(thinkingFrame), expectedGreetingReasoning) {
+		t.Errorf("thinking = %q, want to contain %q", frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
 
 	// Read and verify text content
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textRespFrame == nil {
 		t.Fatal("did not receive text frame")
 	}
-	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(textRespFrame), expectedGreetingText) {
+		t.Errorf("text = %q, want to contain %q", frameText(textRespFrame), expectedGreetingText)
 	}
 }
 
@@ -251,16 +230,16 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 
 	for i, want := range wantTexts {
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
+			return frameHasThinking(f)
 		})
 		textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
+			return frameHasText(f)
 		})
 		if textFrame == nil {
 			t.Fatalf("turn %d: did not receive text response frame", i)
 		}
-		if !strings.Contains(textFrame.GetText().GetContent(), want) {
-			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, textFrame.GetText().GetContent(), want)
+		if !strings.Contains(frameText(textFrame), want) {
+			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, frameText(textFrame), want)
 		}
 	}
 }
@@ -288,8 +267,8 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 
 	// Turn before deletion carries the greeting keyword.
 	sendTextWithProfile(t, conn, sessionID, profileName, "Hello before delete")
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
-	firstResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	firstResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if firstResp == nil {
 		t.Fatal("no response before profile deletion")
 	}
@@ -304,7 +283,7 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	sendTextWithProfile(t, conn, sessionID, profileName, "Goodbye after delete")
 
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textRespFrame == nil {
 		t.Fatal("did not receive text response after profile deletion")
@@ -312,7 +291,7 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	if textRespFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("response sender = %s, want AGENT", senderString(textRespFrame.GetSender()))
 	}
-	if !strings.Contains(textRespFrame.GetText().GetContent(), expectedFarewellText) {
-		t.Errorf("response text = %q, want to contain %q", textRespFrame.GetText().GetContent(), expectedFarewellText)
+	if !strings.Contains(frameText(textRespFrame), expectedFarewellText) {
+		t.Errorf("response text = %q, want to contain %q", frameText(textRespFrame), expectedFarewellText)
 	}
 }

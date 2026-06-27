@@ -32,35 +32,7 @@ export interface Agent {
   agentProfileName: string
 }
 
-export interface MessageEntry {
-  name: string
-  messageId: string
-  sender: string
-  type: string
-  content: string
-  imageData?: string
-  createTime?: string
-  operation?: AgentOperationFrame
-  operationResult?: AgentOperationResultFrame
-}
-
 // ─── Enums ──────────────────────────────────────────────────────────────────
-
-export enum AgentMouseAction {
-  UNSPECIFIED = 0,
-  LEFT_CLICK = 1,
-  LEFT_DOUBLE_CLICK = 2,
-  RIGHT_CLICK = 3,
-  RIGHT_DOUBLE_CLICK = 4,
-  LEFT_RIGHT_PRESS = 5,
-  MOVE = 6,
-}
-
-export enum AgentOperationResultStatus {
-  UNSPECIFIED = 0,
-  SUCCEEDED = 1,
-  FAILED = 2,
-}
 
 export enum FrameSender {
   UNSPECIFIED = 0,
@@ -69,49 +41,121 @@ export enum FrameSender {
   SYSTEM = 3,
 }
 
-// ─── Frame Types ───────────────────────────────────────────────────────────
-
-export interface AgentStatusFrame {
-  status: string
+export enum ImageEncoding {
+  UNSPECIFIED = 0,
+  PNG = 1,
 }
 
-export interface AgentEchoFrame {
-  data: string // base64-encoded bytes
+// MouseClickAction lists click types only. MOVE is expressed by MouseMovePart,
+// so a click part cannot carry a move action. Mirrors proto MouseClickAction.
+export enum MouseClickAction {
+  UNSPECIFIED = 0,
+  LEFT_CLICK = 1,
+  LEFT_DOUBLE_CLICK = 2,
+  RIGHT_CLICK = 3,
+  RIGHT_DOUBLE_CLICK = 4,
+  LEFT_RIGHT_PRESS = 5,
 }
 
-export interface AgentAckFrame {
-  ackFrameId: string
-  message: string
+// Outcome of an executed tool operation. Mirrors proto ToolResultStatus.
+export enum ToolResultStatus {
+  UNSPECIFIED = 0,
+  SUCCEEDED = 1,
+  FAILED = 2,
 }
 
-export interface AgentTextFrame {
+// ─── Content Part Model ────────────────────────────────────────────────────
+//
+// Part is one discriminated content block; PartBlock is the first-class
+// content unit carried by AgentFrame (as a payload case) and Message (as its
+// content). protojson flattens the Part.kind oneof, so exactly one of the
+// variant fields below is present on a Part object — the active field name is
+// the discriminator (see partKind). Live frames and persisted history share
+// the identical PartBlock shape, so live view and history render identically.
+
+export interface TextPart {
   content: string
 }
 
-export interface AgentThinkingFrame {
+export interface ThinkingPart {
   content: string
 }
 
-export interface AgentWarnFrame {
-  message: string
-  code: string
+// ImagePart arrives as protojson: encoding is the enum name string
+// (e.g. "IMAGE_ENCODING_PNG") and data is base64-encoded bytes.
+export interface ImagePart {
+  encoding?: ImageEncoding | string
+  data: string
+  widthPx?: number
+  heightPx?: number
+  scaleFactor?: number
+  windowTitle?: string
 }
 
-export interface AgentMouseOperation {
-  action: AgentMouseAction
+export interface MouseMovePart {
+  toolId?: string
   xPx: number
   yPx: number
 }
 
-export interface AgentKeyboardOperation {
-  keyCodes: string
+// MouseClickPart.click arrives as the proto enum name string
+// (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK") under protojson.
+export interface MouseClickPart {
+  toolId?: string
+  click?: MouseClickAction | string
 }
 
-export interface AgentOperationFrame {
-  operationId: string
-  sequence: number
-  mouse?: AgentMouseOperation
-  keyboard?: AgentKeyboardOperation
+export interface ToolResultPart {
+  toolId?: string
+  // status arrives as the proto enum name string
+  // (e.g. "TOOL_RESULT_STATUS_SUCCEEDED") under protojson.
+  status?: ToolResultStatus | string
+  message?: string
+  screenshot?: ImagePart
+}
+
+// Part is a single content block. Exactly one variant field is set; use
+// partKind() to read the active variant.
+export interface Part {
+  text?: TextPart
+  thinking?: ThinkingPart
+  image?: ImagePart
+  mouseMove?: MouseMovePart
+  mouseClick?: MouseClickPart
+  toolResult?: ToolResultPart
+}
+
+export interface PartBlock {
+  parts?: Part[]
+}
+
+// Active variant of a Part (the set oneof field), or undefined for an
+// empty/unknown part. Used to dispatch rendering by part kind.
+export type PartKind = 'text' | 'thinking' | 'image' | 'mouseMove' | 'mouseClick' | 'toolResult'
+
+export function partKind(part: Part): PartKind | undefined {
+  if (part.text) return 'text'
+  if (part.thinking) return 'thinking'
+  if (part.image) return 'image'
+  if (part.mouseMove) return 'mouseMove'
+  if (part.mouseClick) return 'mouseClick'
+  if (part.toolResult) return 'toolResult'
+  return undefined
+}
+
+// ─── Control Signals (frame-payload only; never persisted to history) ──────
+
+export interface WaitSignal {
+  reason?: string
+}
+
+export interface WarnSignal {
+  message?: string
+  code?: string
+}
+
+export interface StatusSignal {
+  status?: string
 }
 
 export interface AgentProfile {
@@ -136,56 +180,34 @@ export interface Skill {
   updateTime?: string
 }
 
-export interface AgentImageFrame {
-  encoding: string
-  data: string // base64-encoded bytes
-  widthPx: number
-  heightPx: number
-  scaleFactor: number
-  windowTitle: string
-}
+// ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
-export interface AgentWaitFrame {
-  reason?: string
-}
-
-export interface AgentOperationResultFrame {
-  operationId: string
-  status: number
-  message: string
-  screenshot?: {
-    data?: string
-    widthPx?: number
-    heightPx?: number
-    encoding?: string
-    scaleFactor?: number
-    windowTitle?: string
-  }
-}
-
-export interface AgentUserTurnFrame {
-  text?: string
-  image?: AgentImageFrame
-}
-
+// AgentFrame is the transport unit exchanged over WebSocket / gRPC streams.
+// A frame carries exactly one payload (protojson flattens the oneof): a
+// PartBlock of content, or a single control signal (wait / warn / status).
+// Removed dead metadata: invoke_id and sequence never existed on the wire.
 export interface AgentFrame {
-  sessionId: string
-  frameId: string
-  createTime: string
-  invokeId?: string
-  sequence?: number
-  status?: AgentStatusFrame
-  echo?: AgentEchoFrame
-  ack?: AgentAckFrame
-  text?: AgentTextFrame
-  thinking?: AgentThinkingFrame
-  operation?: AgentOperationFrame
-  warn?: AgentWarnFrame
-  wait?: AgentWaitFrame
-  operationResult?: AgentOperationResultFrame
-  userTurn?: AgentUserTurnFrame
-  sender: FrameSender
+  sessionId?: string
+  frameId?: string
+  createTime?: string
+  sender?: FrameSender | string
   agentProfileName?: string
+  content?: PartBlock
+  wait?: WaitSignal
+  warn?: WarnSignal
+  status?: StatusSignal
+}
+
+// Message is one normalized conversation entry reconstructed from checkpoint
+// state (history). Its content is the same PartBlock shape as a live frame's
+// content payload, so history and live view render identically. Control
+// signals are frame-only and never appear here.
+export interface Message {
+  name?: string
+  messageId?: string
+  sender?: FrameSender | string
+  createTime?: string
+  content?: PartBlock
 }
 
 export interface ListSessionsResponse {
@@ -260,7 +282,7 @@ interface WailsApp {
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
   SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
-  ListMessages(sessionID: string): Promise<MessageEntry[]>
+  ListMessages(sessionID: string): Promise<Message[]>
 
   // Prompt Service
   CreateAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile>
@@ -372,7 +394,7 @@ export async function sendUserTurn(
   return a.SendUserTurn(sessionID, text, screenshotData, screenshotWidth, screenshotHeight, agentProfileName)
 }
 
-export async function listMessages(sessionId: string): Promise<MessageEntry[]> {
+export async function listMessages(sessionId: string): Promise<Message[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ListMessages(sessionId)

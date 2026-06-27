@@ -14,6 +14,6 @@ func MoveCursor(screenX, screenY int32) error {
 }
 
 // ExecuteClickAtCurrentPos is not supported on non-Windows platforms.
-func ExecuteClickAtCurrentPos(action game.AgentMouseAction) error {
+func ExecuteClickAtCurrentPos(action game.MouseClickAction) error {
 	return errors.New("not supported on this platform")
 }

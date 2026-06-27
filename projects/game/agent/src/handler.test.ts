@@ -3,6 +3,10 @@
  *
  * Uses mocked PromptClient + SessionAgentStore, and REAL MemorySaver +
  * StateGraph for ListMessages round-trip tests.
+ *
+ * Part-model contract: user turns and agent output are content frames
+ * (PartBlock) distinguished by `sender`; tool results are content frames
+ * carrying a ToolResultPart. No invoke_id/sequence/echo machinery.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -206,34 +210,37 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-function userTurnFrame(
+/** Build an inbound user content frame (TextPart, sender USER). */
+function userContentFrame(
   sessionId: string,
-  invokeId: string,
   text: string,
   profileName?: string,
 ) {
   return {
     sessionId,
-    invokeId,
-    payload: "user_turn",
-    userTurn: { text },
+    payload: "content",
+    content: { parts: [{ text: { content: text } }] },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
 }
 
-function userTurnWithImageFrame(
+/** Build an inbound user content frame carrying text + image. */
+function userContentWithImageFrame(
   sessionId: string,
-  invokeId: string,
   text: string,
   image: { data: Uint8Array | string; encoding: string },
   profileName?: string,
 ) {
   return {
     sessionId,
-    invokeId,
-    payload: "user_turn",
-    userTurn: { text, image },
+    payload: "content",
+    content: {
+      parts: [
+        { text: { content: text } },
+        { image: { data: image.data, encoding: image.encoding } },
+      ],
+    },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
@@ -257,10 +264,10 @@ function createHandler(deps: HandlerDeps): Handler {
 }
 
 // ===========================================================================
-// Tests: Connect — user_turn frame produces thinking/text/wait frames
+// Tests: Connect — user content frame produces thinking/text/wait frames
 // ===========================================================================
 
-describe("Handler.Connect user_turn frame", () => {
+describe("Handler.Connect user content frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -274,7 +281,7 @@ describe("Handler.Connect user_turn frame", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("produces thinking + text + wait frames for profile-bound user_turn frame", async () => {
+  it("produces thinking + text + wait frames for profile-bound user content frame", async () => {
     const blocks: ContentBlock[] = [
       { type: "reasoning", reasoning: "Let me think..." },
       { type: "text", text: "The answer is 42." },
@@ -289,26 +296,28 @@ describe("Handler.Connect user_turn frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-1", "turn-1", "What is the answer?", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-1", "What is the answer?", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(3);
 
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f0.thinking).toEqual({ content: "Let me think..." });
-    expect(f0.invokeId).toBe("turn-1");
-    expect(f0.sequence).toBe(0);
+    expect(f0.payload).toBe("content");
+    expect(f0.content).toEqual({
+      parts: [{ thinking: { content: "Let me think..." } }],
+    });
 
     const f1 = stream.written[1] as Record<string, unknown>;
     expect(f1.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f1.text).toEqual({ content: "The answer is 42." });
-    expect(f1.sequence).toBe(1);
+    expect(f1.content).toEqual({
+      parts: [{ text: { content: "The answer is 42." } }],
+    });
 
     const f2 = stream.written[2] as Record<string, unknown>;
     expect(f2.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f2.payload).toBe("wait");
     expect(f2.wait).toEqual({});
-    expect(f2.sequence).toBe(2);
   });
 
   it("produces text + wait for response with no thinking", async () => {
@@ -322,37 +331,14 @@ describe("Handler.Connect user_turn frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-nt", "turn-2", "hello", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-nt", "hello", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(2);
-    expect((stream.written[0] as Record<string, unknown>).text).toEqual({
-      content: "Direct answer",
+    expect((stream.written[0] as Record<string, unknown>).content).toEqual({
+      parts: [{ text: { content: "Direct answer" } }],
     });
     expect((stream.written[1] as Record<string, unknown>).wait).toEqual({});
-  });
-
-  it("resets sequence on new invokeId within same connection", async () => {
-    sessionAgentStore._setBinding(
-      "sess-seq",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "reply" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userTurnFrame("sess-seq", "turn-a", "msg-1", "helpful-assistant"));
-    await flush();
-    stream.emit("data", userTurnFrame("sess-seq", "turn-b", "msg-2", "helpful-assistant"));
-    await flush();
-
-    expect(stream.written).toHaveLength(4);
-    expect((stream.written[0] as Record<string, unknown>).sequence).toBe(0);
-    expect((stream.written[0] as Record<string, unknown>).invokeId).toBe("turn-a");
-    expect((stream.written[2] as Record<string, unknown>).sequence).toBe(0);
-    expect((stream.written[2] as Record<string, unknown>).invokeId).toBe("turn-b");
   });
 
   it("generates unique frameId per frame", async () => {
@@ -369,7 +355,7 @@ describe("Handler.Connect user_turn frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-uuid", "turn-u", "go", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-uuid", "go", "helpful-assistant"));
     await flush();
 
     const frameIds = stream.written.map(
@@ -397,17 +383,17 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-missing", "inv-x", "hello"));
+    stream.emit("data", userContentFrame("sess-missing", "hello"));
     await flush();
 
     expect(stream.written).toHaveLength(1);
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f0.payload).toBe("warn");
     expect(f0.warn).toBeDefined();
     expect((f0.warn as Record<string, unknown>).message).toContain(
       "agent_profile_name",
     );
-    expect(f0.invokeId).toBe("inv-x");
   });
 
   it("does NOT call getOrCreateAdapter when profile is missing", async () => {
@@ -420,7 +406,7 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-fresh", "inv-x", "hello"));
+    stream.emit("data", userContentFrame("sess-fresh", "hello"));
     await flush();
 
     expect(calls).toHaveLength(0);
@@ -459,10 +445,10 @@ describe("Handler.Connect profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-switch", "turn-1", "msg1", "profile-a"));
+    stream.emit("data", userContentFrame("sess-switch", "msg1", "profile-a"));
     await flush();
 
-    stream.emit("data", userTurnFrame("sess-switch", "turn-2", "msg2", "profile-b"));
+    stream.emit("data", userContentFrame("sess-switch", "msg2", "profile-b"));
     await flush();
 
     expect(calls).toEqual(["profile-a", "profile-b"]);
@@ -471,13 +457,12 @@ describe("Handler.Connect profile switch", () => {
       .filter(
         (f) =>
           (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-          (f as Record<string, unknown>).text,
+          (f as Record<string, unknown>).payload === "content",
       )
-      .map(
-        (f) =>
-          ((f as Record<string, unknown>).text as Record<string, unknown>)
-            .content,
-      );
+      .map((f) => {
+        const parts = ((f as Record<string, unknown>).content as { parts: { text?: { content?: string } }[] }).parts;
+        return parts[0]?.text?.content ?? "";
+      });
     expect(texts).toEqual(["Response from A", "Response from B"]);
   });
 });
@@ -511,14 +496,14 @@ describe("Handler.Connect failed profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-fail", "turn-ok", "hello", "valid-profile"));
+    stream.emit("data", userContentFrame("sess-fail", "hello", "valid-profile"));
     await flush();
 
-    stream.emit("data", userTurnFrame("sess-fail", "turn-fail", "switch me", "nonexistent-profile"));
+    stream.emit("data", userContentFrame("sess-fail", "switch me", "nonexistent-profile"));
     await flush();
 
     const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).warn,
+      (f) => (f as Record<string, unknown>).payload === "warn",
     );
     expect(warnFrames).toHaveLength(1);
     expect(
@@ -532,10 +517,10 @@ describe("Handler.Connect failed profile switch", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — AgentOperationResultFrame dispatches to bridge.handleResult
+// Tests: Connect — ToolResultPart content frame dispatches to bridge.handleResult
 // ===========================================================================
 
-describe("Handler.Connect operation_result frame", () => {
+describe("Handler.Connect tool result content frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -544,37 +529,39 @@ describe("Handler.Connect operation_result frame", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("calls getBridge().handleResult when operation_result frame arrives", async () => {
+  it("calls getBridge().handleResult when a ToolResultPart content frame arrives", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    const result = { operationId: "op-1", status: "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED", message: "ok" };
+    const toolResult = {
+      toolId: "tool-1",
+      status: "TOOL_RESULT_STATUS_SUCCEEDED",
+      message: "ok",
+    };
     stream.emit("data", {
       sessionId: "sess-or",
-      invokeId: "inv-or",
-      payload: "operation_result",
-      operationResult: result,
-      sender: FRAME_SENDER_USER,
+      payload: "content",
+      content: { parts: [{ toolResult }] },
+      sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-or").bridge;
     expect(bridge.handleResult).toHaveBeenCalledTimes(1);
-    expect(bridge.handleResult).toHaveBeenCalledWith(result);
+    expect(bridge.handleResult).toHaveBeenCalledWith(toolResult);
   });
 
-  it("does not write any frame for operation_result", async () => {
+  it("does not write any frame for a tool result content frame", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     stream.emit("data", {
       sessionId: "sess-or2",
-      invokeId: "inv-or2",
-      payload: "operation_result",
-      operationResult: { operationId: "op-2", status: 1, message: "" },
-      sender: FRAME_SENDER_USER,
+      payload: "content",
+      content: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
+      sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
 
@@ -600,7 +587,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("registers bridge sink on user_turn frame", async () => {
+  it("registers bridge sink on user content frame", async () => {
     sessionAgentStore._setBinding(
       "sess-sink",
       "helpful-assistant",
@@ -611,7 +598,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-sink", "turn-1", "hi", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-sink", "hi", "helpful-assistant"));
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-sink").bridge;
@@ -632,9 +619,8 @@ describe("Handler.Connect bridge lifecycle", () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
     stream.emit(
       "data",
-      userTurnWithImageFrame(
+      userContentWithImageFrame(
         "sess-tc",
-        "turn-tc",
         "look at this",
         { data: pngBytes, encoding: "IMAGE_ENCODING_PNG" },
         "helpful-assistant",
@@ -660,7 +646,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-tc2", "turn-tc2", "plain text", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-tc2", "plain text", "helpful-assistant"));
     await flush();
 
     expect(calls).toHaveLength(1);
@@ -678,7 +664,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-end", "turn-end", "hi", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-end", "hi", "helpful-assistant"));
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-end").bridge;
@@ -699,7 +685,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-err-sink", "turn-err", "hi", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-err-sink", "hi", "helpful-assistant"));
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-err-sink").bridge;
@@ -709,7 +695,7 @@ describe("Handler.Connect bridge lifecycle", () => {
     expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
   });
 
-  it("sink callback writes operation envelope to stream", async () => {
+  it("sink callback writes content envelope to stream", async () => {
     sessionAgentStore._setBinding(
       "sess-write",
       "helpful-assistant",
@@ -720,12 +706,12 @@ describe("Handler.Connect bridge lifecycle", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-write", "turn-w", "hi", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-write", "hi", "helpful-assistant"));
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-write").bridge;
     const sinkFn = bridge.registerSink.mock.calls[0][0] as (f: unknown) => void;
-    const envelope = { payload: "operation", operation: { operationId: "x" } };
+    const envelope = { payload: "content", content: { parts: [{ mouseMove: { toolId: "x", xPx: 1, yPx: 2 } }] } };
     const before = stream.written.length;
     sinkFn(envelope);
     expect(stream.written.length).toBe(before + 1);
@@ -734,7 +720,7 @@ describe("Handler.Connect bridge lifecycle", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — status & echo probes
+// Tests: Connect — status probe
 // ===========================================================================
 
 describe("Handler.Connect probes", () => {
@@ -753,7 +739,6 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-status",
-      invokeId: "inv-st",
       payload: "status",
       sender: FRAME_SENDER_USER,
     });
@@ -762,6 +747,7 @@ describe("Handler.Connect probes", () => {
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f.payload).toBe("status");
     expect(f.status).toEqual({ status: "unknown" });
   });
 
@@ -778,7 +764,6 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-bound",
-      invokeId: "inv-st",
       payload: "status",
       sender: FRAME_SENDER_USER,
     });
@@ -787,25 +772,6 @@ describe("Handler.Connect probes", () => {
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.status).toEqual({ status: "idle" });
-  });
-
-  it("echoes echo payload back", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", {
-      sessionId: "sess-echo",
-      invokeId: "inv-ec",
-      payload: "echo",
-      echo: { data: "hello-echo" },
-      sender: FRAME_SENDER_USER,
-    });
-    await flush();
-
-    expect(stream.written).toHaveLength(1);
-    const f = stream.written[0] as Record<string, unknown>;
-    expect(f.echo).toEqual({ data: "hello-echo" });
   });
 });
 
@@ -839,14 +805,14 @@ describe("Handler.Connect LLM error", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-err", "turn-err", "break me", "error-profile"));
+    stream.emit("data", userContentFrame("sess-err", "break me", "error-profile"));
     await flush();
 
     expect(stream.written.length).toBeGreaterThanOrEqual(1);
     expect(stream.ended).toBe(false);
 
     const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).warn,
+      (f) => (f as Record<string, unknown>).payload === "warn",
     );
     expect(warnFrames.length).toBeGreaterThanOrEqual(1);
   });
@@ -857,7 +823,7 @@ describe("Handler.Connect LLM error", () => {
 // ===========================================================================
 
 describe("Handler.Connect same-session serialization", () => {
-  it("serializes concurrent user_turn frames on same session (FIFO)", async () => {
+  it("serializes concurrent user content frames on same session (FIFO)", async () => {
     const promptClient = createMockPromptClient({
       "test-profile": { model: "m", systemPrompt: "s" },
     });
@@ -889,8 +855,8 @@ describe("Handler.Connect same-session serialization", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userTurnFrame("sess-conc", "turn-a", "msg-1", "test-profile"));
-    stream.emit("data", userTurnFrame("sess-conc", "turn-b", "msg-2", "test-profile"));
+    stream.emit("data", userContentFrame("sess-conc", "msg-1", "test-profile"));
+    stream.emit("data", userContentFrame("sess-conc", "msg-2", "test-profile"));
 
     await new Promise((r) => setTimeout(r, 100));
 
@@ -1009,7 +975,7 @@ describe("Handler.RefreshAgent", () => {
 
     stream.emit(
       "data",
-      userTurnFrame("sess-busy", "turn-1", "hello", "test-profile"),
+      userContentFrame("sess-busy", "hello", "test-profile"),
     );
 
     await new Promise((r) => setTimeout(r, 10));
@@ -1059,7 +1025,7 @@ describe("Handler.RefreshAgent", () => {
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
     stream.emit(
       "data",
-      userTurnFrame("sess-post", "turn-after", "go", "p"),
+      userContentFrame("sess-post", "go", "p"),
     );
     await flush();
 
@@ -1067,7 +1033,7 @@ describe("Handler.RefreshAgent", () => {
     const textFrames = stream.written.filter(
       (f) =>
         (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-        (f as Record<string, unknown>).text,
+        (f as Record<string, unknown>).payload === "content",
     );
     expect(textFrames).toHaveLength(1);
   });
@@ -1202,6 +1168,12 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     return promise;
   }
 
+  /** Extract the single Part's content string from a Message's PartBlock. */
+  function firstPartText(msg: Record<string, unknown>): string {
+    const parts = (msg.content as { parts: { text?: { content?: string } }[] }).parts;
+    return parts[0]?.text?.content ?? "";
+  }
+
   it("round-trips text messages (human + ai) in chronological order", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-text-rt", "test-profile", adapter);
@@ -1218,15 +1190,13 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages).toHaveLength(2);
 
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    expect(response!.messages![0].type).toBe("text");
-    expect(response!.messages![0].text).toBe("Hello");
+    expect(firstPartText(response!.messages![0])).toBe("Hello");
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    expect(response!.messages![1].type).toBe("text");
-    expect(response!.messages![1].text).toBe("Hi there!");
+    expect(firstPartText(response!.messages![1])).toBe("Hi there!");
   });
 
-  it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
+  it("maps AIMessage with only reasoning blocks to a ThinkingPart", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-think-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1244,11 +1214,11 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages).toHaveLength(2);
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    expect(response!.messages![1].type).toBe("thinking");
-    expect(response!.messages![1].text).toBe("Let me analyze...");
+    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string } }[] }).parts;
+    expect(parts[0]?.thinking?.content).toBe("Let me analyze...");
   });
 
-  it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
+  it("maps AIMessage with mixed reasoning + text to both parts", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-mixed-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1267,10 +1237,13 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
-    expect(response!.messages![1].type).toBe("text");
+    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string }; text?: { content?: string } }[] }).parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0]?.thinking?.content).toBe("Step 1");
+    expect(parts[1]?.text?.content).toBe("The answer is 42.");
   });
 
-  it("reconstructs image content blocks as imageData", async () => {
+  it("reconstructs image content blocks as an ImagePart alongside text", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-image-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1290,17 +1263,14 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     const { error, response } = await listMessages(handler, "sess-image-rt");
 
     expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
+    expect(response!.messages).toHaveLength(1);
 
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    expect(response!.messages![0].type).toBe("text");
-    expect(response!.messages![0].content).toBe("text");
-    expect(response!.messages![0].text).toBe("What is in this image?");
-
-    expect(response!.messages![1].sender).toBe(FRAME_SENDER_USER);
-    expect(response!.messages![1].type).toBe("image");
-    expect(response!.messages![1].content).toBe("imageData");
-    expect(response!.messages![1].imageData).toBe("base64imagedata");
+    const parts = (response!.messages![0].content as { parts: { text?: { content?: string }; image?: { data?: unknown; encoding?: string } }[] }).parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0]?.text?.content).toBe("What is in this image?");
+    expect(parts[1]?.image?.data).toBe("base64imagedata");
+    expect(parts[1]?.image?.encoding).toBe("IMAGE_ENCODING_PNG");
   });
 
   it("reconstructs image content blocks when data is a Uint8Array", async () => {
@@ -1327,9 +1297,9 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     const { error, response } = await listMessages(handler, "sess-image-uint8");
 
     expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
-    expect(response!.messages![1].type).toBe("image");
-    expect(response!.messages![1].imageData).toBe(expectedBase64);
+    expect(response!.messages).toHaveLength(1);
+    const parts = (response!.messages![0].content as { parts: { image?: { data?: unknown } }[] }).parts;
+    expect(parts[1]?.image?.data).toBe(expectedBase64);
   });
 
   it("filters out SystemMessages from the result", async () => {
@@ -1348,9 +1318,6 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
-    for (const msg of response!.messages!) {
-      expect(msg.type).not.toBe("warn");
-    }
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
   });
@@ -1378,13 +1345,13 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(4);
-    expect(response!.messages![0].text).toBe("first");
-    expect(response!.messages![1].text).toBe("second");
-    expect(response!.messages![2].text).toBe("third");
-    expect(response!.messages![3].text).toBe("fourth");
+    expect(firstPartText(response!.messages![0])).toBe("first");
+    expect(firstPartText(response!.messages![1])).toBe("second");
+    expect(firstPartText(response!.messages![2])).toBe("third");
+    expect(firstPartText(response!.messages![3])).toBe("fourth");
   });
 
-  it("emits operation Message for AIMessage with tool_calls", async () => {
+  it("emits a MouseMovePart for AIMessage with a mouse_move tool_call", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-op-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1407,18 +1374,18 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     const { error, response } = await listMessages(handler, "sess-op-rt");
 
     expect(error).toBeNull();
-    const opMsg = response!.messages!.find((m) => m.type === "operation");
+    const opMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { mouseMove?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.mouseMove);
+    });
     expect(opMsg).toBeDefined();
     expect(opMsg!.sender).toBe(FRAME_SENDER_AGENT);
-    const op = opMsg!.operation as {
-      mouse?: { action?: string; xPx?: number; yPx?: number };
-    };
-    expect(op.mouse?.action).toBe("AGENT_MOUSE_ACTION_MOVE");
-    expect(op.mouse?.xPx).toBe(150);
-    expect(op.mouse?.yPx).toBe(250);
+    const movePart = (opMsg!.content as { parts: { mouseMove?: { xPx?: number; yPx?: number } }[] }).parts.find((p) => p.mouseMove)!.mouseMove;
+    expect(movePart?.xPx).toBe(150);
+    expect(movePart?.yPx).toBe(250);
   });
 
-  it("emits operation Message for mouse_click tool_call with click_type", async () => {
+  it("emits a MouseClickPart for a mouse_click tool_call with click_type", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-opclick-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1441,15 +1408,16 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     const { error, response } = await listMessages(handler, "sess-opclick-rt");
 
     expect(error).toBeNull();
-    const opMsg = response!.messages!.find((m) => m.type === "operation");
+    const opMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { mouseClick?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.mouseClick);
+    });
     expect(opMsg).toBeDefined();
-    const op = opMsg!.operation as {
-      mouse?: { action?: string; xPx?: number; yPx?: number };
-    };
-    expect(op.mouse?.action).toBe("AGENT_MOUSE_ACTION_LEFT_CLICK");
+    const clickPart = (opMsg!.content as { parts: { mouseClick?: { click?: string } }[] }).parts.find((p) => p.mouseClick)!.mouseClick;
+    expect(clickPart?.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
   });
 
-  it("emits operation_result Message for ToolMessage with reconstructed fields", async () => {
+  it("emits a ToolResultPart for a ToolMessage with reconstructed fields", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-opres-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1487,27 +1455,20 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
 
-    // The AIMessage tool_call produces an operation Message.
-    const opMsg = response!.messages!.find((m) => m.type === "operation");
-    expect(opMsg).toBeDefined();
-
-    // The ToolMessage produces an operation_result Message.
-    const resultMsg = response!.messages!.find(
-      (m) => m.type === "operation_result",
-    );
+    // The ToolMessage produces a Message carrying a ToolResultPart.
+    const resultMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolResult);
+    });
     expect(resultMsg).toBeDefined();
     expect(resultMsg!.sender).toBe(FRAME_SENDER_SYSTEM);
-    const result = resultMsg!.operationResult as {
-      status?: string;
-      message?: string;
-      screenshot?: { data?: string; widthPx?: number; heightPx?: number };
-    };
-    expect(result.status).toBe("AGENT_OPERATION_RESULT_STATUS_SUCCEEDED");
-    expect(result.message).toBe("ok");
-    expect(result.screenshot).toBeDefined();
-    expect(result.screenshot?.data).toBe("screenshotdata");
-    expect(result.screenshot?.widthPx).toBe(800);
-    expect(result.screenshot?.heightPx).toBe(600);
+    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string; message?: string; screenshot?: { data?: string; encoding?: string; widthPx?: number; heightPx?: number } } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    expect(tr?.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
+    expect(tr?.message).toBe("ok");
+    expect(tr?.screenshot).toBeDefined();
+    expect(tr?.screenshot?.data).toBe("screenshotdata");
+    expect(tr?.screenshot?.widthPx).toBe(800);
+    expect(tr?.screenshot?.heightPx).toBe(600);
   });
 
   it("infers FAILED status from ToolMessage message without ok/succeeded", async () => {
@@ -1537,11 +1498,12 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     const { error, response } = await listMessages(handler, "sess-opfail-rt");
 
     expect(error).toBeNull();
-    const resultMsg = response!.messages!.find(
-      (m) => m.type === "operation_result",
-    );
+    const resultMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolResult);
+    });
     expect(resultMsg).toBeDefined();
-    const result = resultMsg!.operationResult as { status?: string };
-    expect(result.status).toBe("AGENT_OPERATION_RESULT_STATUS_FAILED");
+    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    expect(tr?.status).toBe("TOOL_RESULT_STATUS_FAILED");
   });
 });

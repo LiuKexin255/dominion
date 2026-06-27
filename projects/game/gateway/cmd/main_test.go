@@ -284,10 +284,10 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: bidirectional echo forwarding
+// Test: bidirectional frame forwarding
 // ---------------------------------------------------------------------------
 
-func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
+func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	mock := &mockProxyServer{
 		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
 			// Echo each received frame back.
@@ -319,11 +319,16 @@ func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send a valid AgentFrame.
+	// Send a content frame (PartBlock with a single TextPart) — the new
+	// first-class payload unit. The server echoes it back unmodified.
 	sendFrame := &game.AgentFrame{
 		SessionId: "echo-session",
-		Payload: &game.AgentFrame_Echo{
-			Echo: &game.AgentEchoFrame{Data: []byte("hello")},
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{
+				Parts: []*game.Part{
+					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+				},
+			},
 		},
 	}
 	msg, err := protojson.Marshal(sendFrame)
@@ -350,12 +355,19 @@ func TestHandleWebSocketConnect_BidirectionalEcho(t *testing.T) {
 	if recvFrame.GetSessionId() != "echo-session" {
 		t.Fatalf("session_id = %q, want %q", recvFrame.GetSessionId(), "echo-session")
 	}
-	echoPayload := recvFrame.GetEcho()
-	if echoPayload == nil {
-		t.Fatal("payload oneof = nil, want echo")
+	content := recvFrame.GetContent()
+	if content == nil {
+		t.Fatal("payload oneof = nil, want content")
 	}
-	if string(echoPayload.GetData()) != "hello" {
-		t.Fatalf("echo data = %q, want %q", string(echoPayload.GetData()), "hello")
+	if len(content.GetParts()) != 1 {
+		t.Fatalf("parts = %d, want 1", len(content.GetParts()))
+	}
+	textPart := content.GetParts()[0].GetText()
+	if textPart == nil {
+		t.Fatal("part[0].kind = nil, want text")
+	}
+	if textPart.GetContent() != "hello" {
+		t.Fatalf("text content = %q, want %q", textPart.GetContent(), "hello")
 	}
 }
 
@@ -415,7 +427,7 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "err-session",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{Status: "ping"},
+			Status: &game.StatusSignal{Status: "ping"},
 		},
 	}
 	msg, err := protojson.Marshal(sendFrame)
@@ -519,7 +531,7 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	want := &game.AgentFrame{
 		SessionId: "s1",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{Status: "running"},
+			Status: &game.StatusSignal{Status: "running"},
 		},
 	}
 	if !proto.Equal(frame, want) {
@@ -593,12 +605,12 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: user_turn image frame roundtrip
+// Test: content frame with image roundtrips and server can reply with a status
 // ---------------------------------------------------------------------------
 
-func TestUserTurnImageFrameRoundtrip(t *testing.T) {
+func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
-	ackSent := make(chan struct{})
+	statusSent := make(chan struct{})
 
 	mock := &mockProxyServer{
 		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
@@ -607,15 +619,18 @@ func TestUserTurnImageFrameRoundtrip(t *testing.T) {
 				return err
 			}
 			received <- frame
+			// Reply with a StatusSignal — the new control-signal payload
+			// used for connectivity / lifecycle confirmation. (Replaces the
+			// removed AgentAckFrame.)
 			if err := stream.Send(&game.AgentFrame{
 				SessionId: frame.GetSessionId(),
-				Payload: &game.AgentFrame_Ack{
-					Ack: &game.AgentAckFrame{AckFrameId: frame.GetFrameId()},
+				Payload: &game.AgentFrame_Status{
+					Status: &game.StatusSignal{Status: "received"},
 				},
 			}); err != nil {
 				return err
 			}
-			close(ackSent)
+			close(statusSent)
 			<-stream.Context().Done()
 			return stream.Context().Err()
 		},
@@ -642,20 +657,24 @@ func TestUserTurnImageFrameRoundtrip(t *testing.T) {
 		pngData[i] = byte(i)
 	}
 
+	// Send a content frame carrying [TextPart, ImagePart] — the new shape
+	// for a multimodal user turn.
 	sendFrame := &game.AgentFrame{
 		SessionId: "shot-session",
 		FrameId:   "frame-1",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{
-				Text: "look",
-				Image: &game.AgentImageFrame{
-					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-					Data:        pngData,
-					WidthPx:     800,
-					HeightPx:    600,
-					ScaleFactor: 1.5,
-					WindowTitle: "Test Window",
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{
+				Parts: []*game.Part{
+					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
+					{Kind: &game.Part_Image{Image: &game.ImagePart{
+						Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+						Data:        pngData,
+						WidthPx:     800,
+						HeightPx:    600,
+						ScaleFactor: 1.5,
+						WindowTitle: "Test Window",
+					}}},
 				},
 			},
 		},
@@ -675,13 +694,20 @@ func TestUserTurnImageFrameRoundtrip(t *testing.T) {
 		if f.GetSessionId() != "shot-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
 		}
-		ut := f.GetUserTurn()
-		if ut == nil {
-			t.Fatal("payload oneof = nil, want user_turn")
+		content := f.GetContent()
+		if content == nil {
+			t.Fatal("payload oneof = nil, want content")
 		}
-		img := ut.GetImage()
+		parts := content.GetParts()
+		if len(parts) != 2 {
+			t.Fatalf("parts = %d, want 2", len(parts))
+		}
+		if parts[0].GetText().GetContent() != "look" {
+			t.Fatalf("part[0].text.content = %q, want %q", parts[0].GetText().GetContent(), "look")
+		}
+		img := parts[1].GetImage()
 		if img == nil {
-			t.Fatal("user_turn.image = nil")
+			t.Fatal("part[1].image = nil")
 		}
 		if img.GetEncoding() != game.ImageEncoding_IMAGE_ENCODING_PNG {
 			t.Fatalf("encoding = %v, want PNG", img.GetEncoding())
@@ -693,25 +719,25 @@ func TestUserTurnImageFrameRoundtrip(t *testing.T) {
 			t.Fatalf("dimensions = %dx%d, want 800x600", img.GetWidthPx(), img.GetHeightPx())
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for screenshot frame on gRPC server")
+		t.Fatal("timeout waiting for content frame on gRPC server")
 	}
 
 	_, resp, err := conn.Read(ctx)
 	if err != nil {
-		t.Fatalf("read ack: %v", err)
+		t.Fatalf("read status: %v", err)
 	}
 
 	recvFrame := new(game.AgentFrame)
 	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
-		t.Fatalf("unmarshal ack: %v", err)
+		t.Fatalf("unmarshal status: %v", err)
 	}
 
-	ack := recvFrame.GetAck()
-	if ack == nil {
-		t.Fatal("response payload oneof = nil, want ack")
+	status := recvFrame.GetStatus()
+	if status == nil {
+		t.Fatal("response payload oneof = nil, want status")
 	}
-	if ack.GetAckFrameId() != "frame-1" {
-		t.Fatalf("ack_frame_id = %q, want %q", ack.GetAckFrameId(), "frame-1")
+	if status.GetStatus() != "received" {
+		t.Fatalf("status = %q, want %q", status.GetStatus(), "received")
 	}
 }
 
@@ -758,7 +784,7 @@ func TestReadLimitSet(t *testing.T) {
 	// Raise client-side ReadLimit too so we can read the large echoed response.
 	conn.SetReadLimit(10 << 20)
 
-	// Build a frame with 64KB of screenshot data — exceeds default 32KB limit.
+	// Build a content frame with a 64KB ImagePart — exceeds default 32KB limit.
 	largeData := make([]byte, 64*1024)
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
@@ -767,13 +793,15 @@ func TestReadLimitSet(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "limit-test",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{
-				Image: &game.AgentImageFrame{
-					Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
-					Data:     largeData,
-					WidthPx:  100,
-					HeightPx: 100,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{
+				Parts: []*game.Part{
+					{Kind: &game.Part_Image{Image: &game.ImagePart{
+						Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+						Data:     largeData,
+						WidthPx:  100,
+						HeightPx: 100,
+					}}},
 				},
 			},
 		},

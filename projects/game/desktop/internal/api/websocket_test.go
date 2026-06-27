@@ -165,7 +165,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 
 // TestWSClient_SendRecvFrame verifies protojson round-trip for SendFrame/RecvFrame.
 func TestWSClient_SendRecvFrame(t *testing.T) {
-	// given: mock server that echoes frames with modified payload
+	// given: mock server that reads a frame and responds with a status signal
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		_, data, err := conn.Read(ctx)
@@ -179,21 +179,19 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 			return
 		}
 
-		// echo back with status payload instead
-		echoFrame := &game.AgentFrame{
+		// respond with a status signal instead
+		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Echo{
-				Echo: &game.AgentEchoFrame{
-					Data: []byte("echo-back"),
-				},
+			Payload: &game.AgentFrame_Status{
+				Status: &game.StatusSignal{Status: "echo-back"},
 			},
 		}
-		resp, _ := protojson.Marshal(echoFrame)
+		resp, _ := protojson.Marshal(respFrame)
 		conn.Write(ctx, websocket.MessageText, resp)
 	})
 	defer srv.Close()
 
-	// when: client connects and sends a status frame
+	// when: client connects and sends a status signal
 	ws := &WSClient{}
 	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
@@ -204,7 +202,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "test-session",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{
+			Status: &game.StatusSignal{
 				Status: "ping",
 			},
 		},
@@ -214,7 +212,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received frame has echoed payload
+	// then: received frame carries the status signal
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
@@ -222,18 +220,19 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	if resp.GetSessionId() != "test-session" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "test-session")
 	}
-	echoPayload := resp.GetEcho()
-	if echoPayload == nil {
-		t.Fatal("Echo payload is nil, want non-nil")
+	statusPayload := resp.GetStatus()
+	if statusPayload == nil {
+		t.Fatal("Status payload is nil, want non-nil")
 	}
-	if string(echoPayload.GetData()) != "echo-back" {
-		t.Errorf("Echo.Data = %q, want %q", string(echoPayload.GetData()), "echo-back")
+	if statusPayload.GetStatus() != "echo-back" {
+		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), "echo-back")
 	}
 }
 
-// TestWSClient_SendRecvFrame_Screenshot verifies protojson round-trip for screenshot frames.
-func TestWSClient_SendRecvFrame_UserTurnImage(t *testing.T) {
-	// given: mock server that receives a user_turn+image and echoes it back with ack
+// TestWSClient_SendRecvFrame_Content verifies protojson round-trip for a
+// content PartBlock carrying text and an image.
+func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
+	// given: mock server that reads a content frame and responds with a status signal
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		_, data, err := conn.Read(ctx)
@@ -246,26 +245,23 @@ func TestWSClient_SendRecvFrame_UserTurnImage(t *testing.T) {
 			return
 		}
 
-		ut := frame.GetUserTurn()
-		if ut == nil {
+		content := frame.GetContent()
+		if content == nil {
 			return
 		}
 
-		ackFrame := &game.AgentFrame{
+		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Ack{
-				Ack: &game.AgentAckFrame{
-					AckFrameId: frame.GetFrameId(),
-					Message:    "user_turn received",
-				},
+			Payload: &game.AgentFrame_Status{
+				Status: &game.StatusSignal{Status: "content received"},
 			},
 		}
-		resp, _ := protojson.Marshal(ackFrame)
+		resp, _ := protojson.Marshal(respFrame)
 		conn.Write(ctx, websocket.MessageText, resp)
 	})
 	defer srv.Close()
 
-	// when: client connects and sends a user_turn+image frame
+	// when: client connects and sends a content frame with text+image parts
 	ws := &WSClient{}
 	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
@@ -278,18 +274,18 @@ func TestWSClient_SendRecvFrame_UserTurnImage(t *testing.T) {
 		SessionId: "test-session",
 		FrameId:   "frame-001",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{
-				Text: "look",
-				Image: &game.AgentImageFrame{
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
+				{Kind: &game.Part_Image{Image: &game.ImagePart{
 					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:        imageData,
 					WidthPx:     1920,
 					HeightPx:    1080,
 					ScaleFactor: 1.0,
 					WindowTitle: "Test Window",
-				},
-			},
+				}}},
+			}},
 		},
 	}
 	err = ws.SendFrame(context.Background(), sendFrame)
@@ -297,20 +293,17 @@ func TestWSClient_SendRecvFrame_UserTurnImage(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received ack references the frame ID
+	// then: received status signal confirms the content round-trip
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
 	}
-	ackPayload := resp.GetAck()
-	if ackPayload == nil {
-		t.Fatal("Ack payload is nil, want non-nil")
+	statusPayload := resp.GetStatus()
+	if statusPayload == nil {
+		t.Fatal("Status payload is nil, want non-nil")
 	}
-	if ackPayload.GetAckFrameId() != "frame-001" {
-		t.Errorf("Ack.AckFrameId = %q, want %q", ackPayload.GetAckFrameId(), "frame-001")
-	}
-	if ackPayload.GetMessage() != "user_turn received" {
-		t.Errorf("Ack.Message = %q, want %q", ackPayload.GetMessage(), "user_turn received")
+	if statusPayload.GetStatus() != "content received" {
+		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), "content received")
 	}
 }
 
@@ -384,7 +377,7 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	err := ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "x",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{Status: "test"},
+			Status: &game.StatusSignal{Status: "test"},
 		},
 	})
 
@@ -423,7 +416,7 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	err = ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "test-session",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{Status: "ping"},
+			Status: &game.StatusSignal{Status: "ping"},
 		},
 	})
 	if err != nil {

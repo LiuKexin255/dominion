@@ -17,7 +17,6 @@ option go_package = "dominion/projects/game";
 //
 // Prefix Path: /api/v1/sessions
 service SessionService {
-  // CreateSession creates a new Session resource.
   rpc CreateSession(CreateSessionRequest) returns (Session) {
     option (google.api.http) = {
       post: "/api/v1/sessions"
@@ -25,28 +24,23 @@ service SessionService {
     };
   }
 
-  // ListSessions lists all Sessions.
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
     option (google.api.http) = {
       get: "/api/v1/sessions"
     };
   }
 
-  // GetSession returns the Session resource identified by name.
   rpc GetSession(GetSessionRequest) returns (Session) {
     option (google.api.http) = {
       get: "/api/v1/{name=sessions/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // DeleteSession deletes the Session resource and all owned resources.
   rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       delete: "/api/v1/{name=sessions/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 }
@@ -56,35 +50,30 @@ service SessionService {
 //
 // Prefix Path: /api/v1/sessions/{session}/agent
 service ProxyService {
-  // GetAgent returns the Agent resource identified by name.
   rpc GetAgent(GetAgentRequest) returns (Agent) {
     option (google.api.http) = {
       get: "/api/v1/{name=sessions/*/agent}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // ListMessages lists all Messages for the agent.
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
     option (google.api.http) = {
       get: "/api/v1/{parent=sessions/*}/messages"
     };
-
     option (google.api.method_signature) = "parent";
   }
 
   // ConnectAgent establishes a bidirectional streaming channel for agent
-  // communication. Messages are exchanged as AgentFrame units.
+  // communication. Each frame carries exactly one payload: a PartBlock of
+  // content or a single control signal.
   rpc ConnectAgent(stream AgentFrame) returns (stream AgentFrame);
 
-  // RefreshAgent refreshes the agent for a session, applying profile updates.
   rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       post: "/api/v1/{name=sessions/*/agent}:refresh"
       body: "*"
     };
-
     option (google.api.method_signature) = "name";
   }
 }
@@ -94,17 +83,9 @@ service ProxyService {
 //
 // Prefix Path: /api/v1/agents
 service AgentService {
-  // GetAgent returns the Agent resource for a session.
   rpc GetAgent(AgentGetRequest) returns (Agent);
-
-  // ListMessages lists all Messages for the agent.
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
-
-  // Connect establishes a bidirectional streaming channel for agent-to-agent
-  // communication. Messages are exchanged as AgentFrame units.
   rpc Connect(stream AgentFrame) returns (stream AgentFrame);
-
-  // RefreshAgent refreshes the agent for a session, applying profile updates.
   rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
 }
 
@@ -113,7 +94,6 @@ service AgentService {
 //
 // Prefix Path: /api/v1/prompts
 service PromptService {
-  // CreateAgentProfile creates a new AgentProfile resource.
   rpc CreateAgentProfile(CreateAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
       post: "/api/v1/prompts/agentProfiles"
@@ -121,32 +101,26 @@ service PromptService {
     };
   }
 
-  // GetAgentProfile returns the AgentProfile resource identified by name.
   rpc GetAgentProfile(GetAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
       get: "/api/v1/prompts/{name=agentProfiles/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // ListAgentProfiles lists all AgentProfile resources.
   rpc ListAgentProfiles(ListAgentProfilesRequest) returns (ListAgentProfilesResponse) {
     option (google.api.http) = {
       get: "/api/v1/prompts/agentProfiles"
     };
   }
 
-  // DeleteAgentProfile deletes the AgentProfile resource identified by name.
   rpc DeleteAgentProfile(DeleteAgentProfileRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       delete: "/api/v1/prompts/{name=agentProfiles/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // CreateSkill creates a new Skill resource.
   rpc CreateSkill(CreateSkillRequest) returns (Skill) {
     option (google.api.http) = {
       post: "/api/v1/prompts/skills"
@@ -154,43 +128,36 @@ service PromptService {
     };
   }
 
-  // GetSkill returns the Skill resource identified by name.
   rpc GetSkill(GetSkillRequest) returns (Skill) {
     option (google.api.http) = {
       get: "/api/v1/prompts/{name=skills/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // ListSkills lists all Skill resources.
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
     option (google.api.http) = {
       get: "/api/v1/prompts/skills"
     };
   }
 
-  // DeleteSkill deletes the Skill resource identified by name.
   rpc DeleteSkill(DeleteSkillRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
       delete: "/api/v1/prompts/{name=skills/*}"
     };
-
     option (google.api.method_signature) = "name";
   }
 
-  // UpdateAgentProfile updates an existing AgentProfile using FieldMask.
   rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
       patch: "/api/v1/prompts/{name=agentProfiles/*}"
       body: "profile"
     };
-
     option (google.api.method_signature) = "name";
   }
 }
 
-// ─── Shared Messages ──────────────────────────────────────────────────────
+// ─── Shared Resources ──────────────────────────────────────────────────────
 
 // Session is the top-level container for a game session.
 message Session {
@@ -201,13 +168,8 @@ message Session {
     singular: "session"
   };
 
-  // The resource name of the session, e.g. "sessions/abc123".
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-
-  // The unique identifier for this session.
   string session_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
-
-  // The timestamp when this session was created.
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
@@ -220,16 +182,9 @@ message Agent {
     singular: "agent"
   };
 
-  // The resource name of the agent, e.g. "sessions/abc123/agent".
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-
-  // The session this agent belongs to.
   string session_id = 2 [(google.api.field_behavior) = REQUIRED];
-
-  // The timestamp when this agent was created.
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
-
-  // The agent profile name used to configure this agent's behavior.
   string agent_profile_name = 4;
 }
 
@@ -241,183 +196,156 @@ enum FrameSender {
   FRAME_SENDER_SYSTEM = 3;
 }
 
-// AgentFrame is the minimal transport unit exchanged over WebSocket and gRPC
-// streams.
-message AgentFrame {
-  // The session this frame belongs to.
-  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
-
-  // The unique identifier for this frame.
-  string frame_id = 2;
-
-  // The timestamp when this frame was created.
-  google.protobuf.Timestamp create_time = 3;
-
-  // The invoke identifier linking related frames within an invoke cycle.
-  string invoke_id = 4;
-  // Monotonically increasing sequence number within an invoke.
-  int64 sequence = 5;
-
-  // The frame payload, one of the following types.
-  oneof payload {
-    // Status update from the agent.
-    AgentStatusFrame status = 10;
-    // Echo response for connectivity check.
-    AgentEchoFrame echo = 11;
-    // Acknowledgement of a received frame.
-    AgentAckFrame ack = 13;
-    // Text output from the agent for desktop display.
-    AgentTextFrame text = 14;
-    // Thinking or intermediate process content from the agent.
-    AgentThinkingFrame thinking = 15;
-    // An operation request from the agent for desktop to execute.
-    AgentOperationFrame operation = 16;
-    // Warning or error information about protocol state.
-    AgentWarnFrame warn = 17;
-    // Agent is waiting for input or instruction.
-    AgentWaitFrame wait = 18;
-    // Result of an executed operation reported by desktop.
-    AgentOperationResultFrame operation_result = 22;
-    // User turn bundling text and optional image as user input.
-    AgentUserTurnFrame user_turn = 23;
-  }
-
-  // The originator of this frame (user, agent, or system).
-  FrameSender sender = 20;
-
-  // The agent profile name used to configure the agent for this session.
-  string agent_profile_name = 21;
-}
-
-// AgentStatusFrame reports the current status string of an agent.
-message AgentStatusFrame {
-  // The current status string.
-  string status = 1;
-}
-
-// AgentEchoFrame is used for connectivity checks, echoing back arbitrary data.
-message AgentEchoFrame {
-  // The echoed data bytes.
-  bytes data = 1;
-}
-
-// AgentAckFrame acknowledges receipt of a specific frame.
-message AgentAckFrame {
-  // The frame_id of the frame being acknowledged.
-  string ack_frame_id = 1;
-
-  // Optional message accompanying the acknowledgement.
-  string message = 2;
-}
-
-// AgentTextFrame carries text output from the agent for desktop display.
-message AgentTextFrame {
-  string content = 1;
-}
-
-// AgentThinkingFrame carries thinking or intermediate process output.
-message AgentThinkingFrame {
-  string content = 1;
-}
-
-// AgentWarnFrame carries warning or error information.
-message AgentWarnFrame {
-  string message = 1;
-  string code = 2;
-}
-
 // ImageEncoding specifies the encoding format for image data.
 enum ImageEncoding {
   IMAGE_ENCODING_UNSPECIFIED = 0;
   IMAGE_ENCODING_PNG = 1;
 }
 
-// AgentMouseAction specifies the mouse action for an operation.
-enum AgentMouseAction {
-  AGENT_MOUSE_ACTION_UNSPECIFIED = 0;
-  AGENT_MOUSE_ACTION_LEFT_CLICK = 1;
-  AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK = 2;
-  AGENT_MOUSE_ACTION_RIGHT_CLICK = 3;
-  AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK = 4;
-  AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS = 5;
-  AGENT_MOUSE_ACTION_MOVE = 6;
+// MouseClickAction lists the click types accepted by MouseClickPart. MOVE is
+// absent on purpose: moving the cursor is expressed by MouseMovePart, so a
+// click part cannot structurally carry a move action.
+// (Replaces the former bundled mouse-action enum, which combined MOVE + clicks.)
+enum MouseClickAction {
+  MOUSE_CLICK_ACTION_UNSPECIFIED = 0;
+  MOUSE_CLICK_ACTION_LEFT_CLICK = 1;
+  MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK = 2;
+  MOUSE_CLICK_ACTION_RIGHT_CLICK = 3;
+  MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK = 4;
+  MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS = 5;
 }
 
-// AgentImageFrame carries an image (typically a captured screenshot) sent from
-// the desktop to the agent as part of a user turn.
-message AgentImageFrame {
-  reserved 1, 8, 9;
-  reserved "capture_id", "capture_time", "screenshot_id";
-
-  // The encoding format of the image data (e.g. PNG).
-  ImageEncoding encoding = 2;
-
-  // The raw image bytes. Over protojson this is base64-encoded.
-  bytes data = 3;
-
-  // The width of the image in pixels.
-  int32 width_px = 4;
-
-  // The height of the image in pixels.
-  int32 height_px = 5;
-
-  // The DPI scale factor of the captured display.
-  double scale_factor = 6;
-
-  // The title of the window that was captured.
-  string window_title = 7;
+// ToolResultStatus indicates the outcome of an executed tool operation.
+// (Renamed from AgentOperationResultStatus for coherence with ToolResultPart.)
+enum ToolResultStatus {
+  TOOL_RESULT_STATUS_UNSPECIFIED = 0;
+  TOOL_RESULT_STATUS_SUCCEEDED = 1;
+  TOOL_RESULT_STATUS_FAILED = 2;
 }
 
-// AgentOperationFrame represents an operation request from the agent.
-message AgentOperationFrame {
-  string operation_id = 1;
-  oneof operation {
-    AgentMouseOperation mouse = 10;
-    AgentKeyboardOperation keyboard = 11;
+// ─── Content Part Model ────────────────────────────────────────────────────
+//
+// Part is one content block. PartBlock is the first-class content unit shared
+// by AgentFrame (as a payload case) and Message (as its content): it carries
+// 1+ Parts. Both live frames and persisted history use the identical
+// PartBlock shape, so live view and history render identically without any
+// per-field mirroring. Each tool is its own Part variant (no ToolPart
+// wrapper) — MouseMovePart and MouseClickPart sit directly alongside
+// Text/Thinking/Image.
+
+// PartBlock is the basic content unit carried by frames and messages.
+message PartBlock {
+  // Ordered content blocks. A user turn, for example, is a PartBlock of
+  // [TextPart, ImagePart].
+  repeated Part parts = 1;
+}
+
+// Part is a single discriminated content block.
+message Part {
+  oneof kind {
+    TextPart       text        = 1;
+    ThinkingPart   thinking    = 2;
+    ImagePart      image       = 3;
+    MouseMovePart  mouse_move  = 4;
+    MouseClickPart mouse_click = 5;
+    ToolResultPart tool_result = 6;
   }
 }
 
-// AgentMouseOperation specifies a mouse operation.
-message AgentMouseOperation {
-  AgentMouseAction action = 1;
+// TextPart carries visible text content.
+message TextPart {
+  string content = 1;
+}
+
+// ThinkingPart carries reasoning / intermediate process content.
+message ThinkingPart {
+  string content = 1;
+}
+
+// ImagePart carries an image (e.g. a captured screenshot).
+message ImagePart {
+  ImageEncoding encoding = 1;
+  bytes data = 2;
+  int32 width_px = 3;
+  int32 height_px = 4;
+  double scale_factor = 5;
+  string window_title = 6;
+}
+
+// MouseMovePart requests the desktop move the cursor to image-relative
+// coordinates. tool_id links the request to its ToolResultPart.
+message MouseMovePart {
+  string tool_id = 1;
   int32 x_px = 2;
   int32 y_px = 3;
 }
 
-// AgentKeyboardOperation specifies a keyboard key press operation.
-message AgentKeyboardOperation {
-  string key_codes = 1;
+// MouseClickPart requests the desktop perform a click at the current cursor
+// position. tool_id links the request to its ToolResultPart.
+message MouseClickPart {
+  string tool_id = 1;
+  MouseClickAction click = 2;
 }
 
-// AgentOperationResultStatus indicates the outcome of an executed operation.
-enum AgentOperationResultStatus {
-  AGENT_OPERATION_RESULT_STATUS_UNSPECIFIED = 0;
-  AGENT_OPERATION_RESULT_STATUS_SUCCEEDED = 1;
-  AGENT_OPERATION_RESULT_STATUS_FAILED = 2;
-}
-
-// AgentOperationResultFrame reports the result of an executed operation.
-message AgentOperationResultFrame {
-  string operation_id = 1;
-  AgentOperationResultStatus status = 2;
+// ToolResultPart carries the outcome of an executed tool operation, reported
+// by the desktop. tool_id matches the originating MouseMovePart /
+// MouseClickPart. Generic across tools: move and click results are
+// shape-identical (status + message + screenshot).
+message ToolResultPart {
+  string tool_id = 1;
+  ToolResultStatus status = 2;
   string message = 3;
-  AgentImageFrame screenshot = 4;
+  ImagePart screenshot = 4;
 }
 
-// AgentUserTurnFrame carries a single user turn bundling text and image.
-message AgentUserTurnFrame {
-  string text = 1;
-  AgentImageFrame image = 2;
-}
+// ─── Control Signals (frame-payload only; never persisted to history) ──────
 
-// AgentWaitFrame indicates the agent is waiting (e.g. for user instruction).
-message AgentWaitFrame {
-  // The reason the agent is waiting.
+// WaitSignal indicates the agent finished a turn and is waiting for input.
+message WaitSignal {
   string reason = 1;
 }
 
+// WarnSignal carries a warning / recoverable error for the current turn.
+message WarnSignal {
+  string message = 1;
+  string code = 2;
+}
+
+// StatusSignal carries a connectivity / lifecycle status string.
+message StatusSignal {
+  string status = 1;
+}
+
+// ─── Frame & Message Envelopes ─────────────────────────────────────────────
+
+// AgentFrame is the transport unit exchanged over WebSocket and gRPC streams.
+// A frame carries exactly one payload: a PartBlock of content OR a single
+// control signal. The content-vs-signal split is structural (one oneof).
+message AgentFrame {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  string frame_id = 2;
+  google.protobuf.Timestamp create_time = 3;
+
+  // Removed dead metadata (no consumer ever read these):
+  reserved 4, 5;
+  reserved "invoke_id", "sequence";
+
+  FrameSender sender = 6;
+  string agent_profile_name = 7;
+
+  // Exactly one payload per frame.
+  oneof payload {
+    PartBlock    content = 10;
+    WaitSignal   wait    = 20;
+    WarnSignal   warn    = 21;
+    StatusSignal status  = 22;
+  }
+}
+
 // Message is one normalized conversation entry reconstructed from checkpoint
-// state.
+// state (history). Its content is the same PartBlock shape as a live frame's
+// content payload, so history and live view are structurally identical.
+// Control signals are frame-only and never appear here.
 message Message {
   option (google.api.resource) = {
     type: "game.liukexin.com/Message"
@@ -426,49 +354,29 @@ message Message {
     singular: "message"
   };
 
-  // The full resource name of the message, e.g.
-  // "sessions/abc123/agent/messages/msg-xyz".
   string name = 1;
-
-  // The native LangChain BaseMessage.id carried inside checkpoint state.
   string message_id = 2;
-
-  // The originator of this message (USER, AGENT, or SYSTEM).
   FrameSender sender = 3;
+  google.protobuf.Timestamp create_time = 4;
 
-  // The type of message: "text", "thinking", "warn", "image", "operation",
-  // or "operation_result". Determines which content oneof case is set.
-  string type = 4;
+  // Content blocks — identical shape to AgentFrame's content payload.
+  PartBlock content = 5;
 
-  // Best-effort message timestamp sourced from the checkpoint that introduced
-  // the message.
-  google.protobuf.Timestamp create_time = 6;
-
-  // The visible content of the message. A single message carries exactly one
-  // of these: text, image data, a tool invocation, or a tool result. They are
-  // mutually exclusive, so they share one oneof to make that invariant
-  // structural.
-  oneof content {
-    string text = 5;
-    bytes image_data = 7;
-    // An operation request (tool call) carried by an "operation" message,
-    // reconstructed from history.
-    AgentOperationFrame operation = 8;
-    // The result of an executed operation, carried by an "operation_result"
-    // message.
-    AgentOperationResultFrame operation_result = 9;
-  }
+  // Removed (breaking): `type` (string) — Part.kind self-describes, so a
+  // separate discriminator is redundant. The former content oneof fields
+  // (text / image_data / operation / operation_result) are folded into the
+  // PartBlock above.
+  reserved 6, 7, 8, 9;
+  reserved "type", "image_data", "operation", "operation_result";
 }
 
 // ListMessagesRequest is the request to list Messages for an agent.
 message ListMessagesRequest {
-  // The parent resource name, e.g. "sessions/abc123".
   string parent = 1;
 }
 
 // ListMessagesResponse is the response for listing Messages.
 message ListMessagesResponse {
-  // The list of messages in chronological order.
   repeated Message messages = 1;
 }
 
@@ -484,24 +392,14 @@ message AgentProfile {
   reserved 2;
   reserved "agent_profile_name";
 
-  // The resource name, e.g. "agentProfiles/my-profile".
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-
-  // The model name to use.
   string model = 3;
-  // The system prompt for the agent.
   string system_prompt = 4;
-  // Names of skills referenced by this profile.
   repeated string skill_names = 5;
-  // Names of MCP servers referenced by this profile.
   repeated string mcp_names = 6;
-  // Whether this profile is enabled.
   bool enabled = 7;
-  // Names of tools referenced by this profile.
   repeated string tool_names = 10;
-  // Timestamp of creation.
   google.protobuf.Timestamp create_time = 8;
-  // Timestamp of last update.
   google.protobuf.Timestamp update_time = 9;
 }
 
@@ -517,39 +415,28 @@ message Skill {
   reserved 2;
   reserved "skill_name";
 
-  // The resource name, e.g. "skills/my-skill".
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-
-  // The skill content (text).
   string content = 3;
-  // Whether this skill is enabled.
   bool enabled = 4;
-  // Timestamp of creation.
   google.protobuf.Timestamp create_time = 5;
-  // Timestamp of last update.
   google.protobuf.Timestamp update_time = 6;
 }
 
-// ─── Request Messages ─────────────────────────────────────────────────────
+// ─── Request Messages (unchanged) ──────────────────────────────────────────
 
-// CreateSessionRequest is the request to create a new Session.
 message CreateSessionRequest {}
 
-// ListSessionsRequest is the request to list Sessions.
 message ListSessionsRequest {
   int32 page_size = 1;
   string page_token = 2;
 }
 
-// ListSessionsResponse is the response for listing Sessions.
 message ListSessionsResponse {
   repeated Session sessions = 1;
   string next_page_token = 2;
 }
 
-// GetSessionRequest is the request to retrieve a Session by name.
 message GetSessionRequest {
-  // The resource name of the session, e.g. "sessions/abc123".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -558,9 +445,7 @@ message GetSessionRequest {
   ];
 }
 
-// DeleteSessionRequest is the request to delete a Session by name.
 message DeleteSessionRequest {
-  // The resource name of the session, e.g. "sessions/abc123".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -569,9 +454,7 @@ message DeleteSessionRequest {
   ];
 }
 
-// GetAgentRequest is the request to retrieve an Agent by name.
 message GetAgentRequest {
-  // The resource name of the agent, e.g. "sessions/abc123/agent".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -580,13 +463,10 @@ message GetAgentRequest {
   ];
 }
 
-// AgentGetRequest is the request to get an agent for a session.
 message AgentGetRequest {
-  // The session identifier.
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
-// CreateAgentProfileRequest is the request to create an AgentProfile.
 message CreateAgentProfileRequest {
   string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
   string model = 2;
@@ -597,9 +477,7 @@ message CreateAgentProfileRequest {
   repeated string tool_names = 7;
 }
 
-// UpdateAgentProfileRequest is the request to update an AgentProfile.
 message UpdateAgentProfileRequest {
-  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -610,9 +488,7 @@ message UpdateAgentProfileRequest {
   google.protobuf.FieldMask update_mask = 3;
 }
 
-// RefreshAgentRequest is the request to refresh an agent for a session.
 message RefreshAgentRequest {
-  // The resource name of the Agent, e.g. "sessions/abc123/agent".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -621,9 +497,7 @@ message RefreshAgentRequest {
   ];
 }
 
-// GetAgentProfileRequest is the request to retrieve an AgentProfile.
 message GetAgentProfileRequest {
-  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -632,21 +506,17 @@ message GetAgentProfileRequest {
   ];
 }
 
-// ListAgentProfilesRequest is the request to list AgentProfiles.
 message ListAgentProfilesRequest {
   int32 page_size = 1;
   string page_token = 2;
 }
 
-// ListAgentProfilesResponse is the response for listing AgentProfiles.
 message ListAgentProfilesResponse {
   repeated AgentProfile agent_profiles = 1;
   string next_page_token = 2;
 }
 
-// DeleteAgentProfileRequest is the request to delete an AgentProfile.
 message DeleteAgentProfileRequest {
-  // The resource name of the AgentProfile, e.g. "agentProfiles/my-profile".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -655,16 +525,13 @@ message DeleteAgentProfileRequest {
   ];
 }
 
-// CreateSkillRequest is the request to create a Skill.
 message CreateSkillRequest {
   string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
   string content = 2;
   bool enabled = 3;
 }
 
-// GetSkillRequest is the request to retrieve a Skill.
 message GetSkillRequest {
-  // The resource name of the Skill, e.g. "skills/my-skill".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
@@ -673,21 +540,17 @@ message GetSkillRequest {
   ];
 }
 
-// ListSkillsRequest is the request to list Skills.
 message ListSkillsRequest {
   int32 page_size = 1;
   string page_token = 2;
 }
 
-// ListSkillsResponse is the response for listing Skills.
 message ListSkillsResponse {
   repeated Skill skills = 1;
   string next_page_token = 2;
 }
 
-// DeleteSkillRequest is the request to delete a Skill.
 message DeleteSkillRequest {
-  // The resource name of the Skill, e.g. "skills/my-skill".
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {

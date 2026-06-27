@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, AgentOperationFrame, AgentOperationResultFrame, WindowRef, CapturedImage } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, Part, WindowRef, CapturedImage } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -43,16 +43,18 @@
     | 'connection_error'
     | 'agent_lost'
 
+  // ChatEntry is one rendered chat row. A content entry carries one or more
+  // Parts (a content frame's PartBlock.parts); a warn entry carries a control
+  // signal rendered as a warning bubble. mergeKind is an internal hint used to
+  // fold consecutive streaming text/thinking chunks into a single bubble.
   type ChatEntry = {
     messageId: string
     sender: FrameSender
-    type: 'thinking' | 'text' | 'warn' | 'image' | 'operation' | 'operation_result'
-    content: string
     timestamp: string
     agentProfileName?: string
-    imageUrl?: string
-    operation?: AgentOperationFrame
-    operationResult?: AgentOperationResultFrame
+    parts?: Part[]
+    warnMessage?: string
+    mergeKind?: 'text' | 'thinking' | 'mixed'
   }
 
   // --- App-level state ---
@@ -114,7 +116,7 @@
     const runtime = window.runtime
     if (runtime?.EventsOn) {
       runtime.EventsOn('game:frame', (data: unknown) => {
-        handleAgentFrame(data as AgentFrame & { wait?: { reason?: string } })
+        handleAgentFrame(data as AgentFrame)
       })
     }
 
@@ -267,9 +269,22 @@
     return FrameSender.SYSTEM
   }
 
-  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' | 'operation' | 'operation_result' | 'image' {
-    if (raw === 'thinking' || raw === 'text' || raw === 'warn' || raw === 'operation' || raw === 'operation_result' || raw === 'image') return raw
-    return 'text'
+  // resolveSender normalizes a frame/message sender, which arrives as the
+  // protojson enum name string (or, defensively, as a numeric enum).
+  function resolveSender(sender: FrameSender | string | undefined): FrameSender {
+    if (typeof sender === 'number') return sender
+    if (typeof sender === 'string') return senderFromString(sender)
+    return FrameSender.SYSTEM
+  }
+
+  // homogeneousStreamKind classifies a content frame's parts for the streaming
+  // merge decision: a frame of only TextParts or only ThinkingParts may fold
+  // into the preceding agent bubble; anything mixed starts a new entry.
+  function homogeneousStreamKind(parts: Part[]): 'text' | 'thinking' | 'mixed' {
+    if (parts.length === 0) return 'mixed'
+    if (parts.every(p => p.text != null)) return 'text'
+    if (parts.every(p => p.thinking != null)) return 'thinking'
+    return 'mixed'
   }
 
   async function handleLoadMessages() {
@@ -278,45 +293,17 @@
     messagesError = null
     try {
       const entries = (await listMessages(selectedSession.sessionId)) ?? []
-      chatMessages = entries.map(entry => {
-        if (entry.type === 'image' && entry.imageData) {
-          return {
-            messageId: entry.messageId,
-            sender: senderFromString(entry.sender),
-            type: 'image',
-            content: '',
-            timestamp: entry.createTime || new Date().toISOString(),
-            imageUrl: `data:image/png;base64,${entry.imageData}`,
-          }
-        }
-        if (entry.type === 'operation' && entry.operation) {
-          return {
-            messageId: entry.messageId,
-            sender: senderFromString(entry.sender),
-            type: 'operation',
-            content: '',
-            timestamp: entry.createTime || new Date().toISOString(),
-            operation: entry.operation,
-          }
-        }
-        if (entry.type === 'operation_result' && entry.operationResult) {
-          return {
-            messageId: entry.messageId,
-            sender: senderFromString(entry.sender),
-            type: 'operation_result',
-            content: '',
-            timestamp: entry.createTime || new Date().toISOString(),
-            operationResult: entry.operationResult,
-          }
-        }
-        return {
-          messageId: entry.messageId,
-          sender: senderFromString(entry.sender),
-          type: typeFromString(entry.type),
-          content: entry.content,
-          timestamp: entry.createTime || new Date().toISOString(),
-        }
-      })
+      // History mapping: each Message carries a PartBlock.content; the part
+      // kind is the sole discriminator (no `type` field). One messageId → one
+      // chat entry holding all of that message's parts. frame.frameId (live)
+      // and message.messageId (history) stay as the two distinct identity
+      // keys by design and are never unified.
+      chatMessages = entries.map(entry => ({
+        messageId: entry.messageId ?? '',
+        sender: resolveSender(entry.sender),
+        timestamp: entry.createTime || new Date().toISOString(),
+        parts: entry.content?.parts ?? [],
+      }))
       playState = 'chat_ready'
       log('info', 'chat', `Loaded ${entries.length} messages from history`)
     } catch (e: unknown) {
@@ -328,87 +315,73 @@
     }
   }
 
-  function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
-    if (frame.thinking) {
-      const thinkingContent = frame.thinking.content || ''
-      if (!thinkingContent) return
+  // handleContentPayload renders a content frame. One frameId maps to one chat
+  // entry containing ALL of the frame's parts (a user-turn frame carrying
+  // [TextPart, ImagePart] is a single grouped entry, never split per-part).
+  //
+  // Streaming exception: the agent emits many small text/thinking chunks as
+  // separate content frames. To preserve the legacy single-bubble streaming
+  // UX, consecutive agent content frames that are purely TextPart (or purely
+  // ThinkingPart) and share the same agentProfileName fold into the preceding
+  // entry by concatenating content onto the trailing same-kind part. Every
+  // other content frame (image, mouse, tool result, mixed) starts a new entry.
+  function handleContentPayload(frame: AgentFrame, block: { parts?: Part[] }, timestamp: string) {
+    const incomingParts = block.parts ?? []
+    // Graceful degradation: a content frame with zero parts is a no-op.
+    if (incomingParts.length === 0) return
+
+    const sender = resolveSender(frame.sender)
+    const profile = frame.agentProfileName
+    const kind = homogeneousStreamKind(incomingParts)
+
+    if (sender === FrameSender.AGENT && (kind === 'text' || kind === 'thinking')) {
       const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'thinking' && last.sender === FrameSender.AGENT
-          && last.agentProfileName === frame.agentProfileName) {
-        last.content += thinkingContent
+      if (last && last.sender === FrameSender.AGENT
+          && last.agentProfileName === profile
+          && last.mergeKind === kind
+          && last.parts && last.parts.length > 0) {
+        const trailing = last.parts[last.parts.length - 1]
+        const joined = incomingParts
+          .map(p => (kind === 'text' ? p.text?.content : p.thinking?.content) ?? '')
+          .join('')
+        if (kind === 'text' && trailing.text) {
+          trailing.text.content += joined
+        } else if (kind === 'thinking' && trailing.thinking) {
+          trailing.thinking.content += joined
+        }
         chatMessages = [...chatMessages]
-      } else {
-        chatMessages = [...chatMessages, {
-          messageId: frame.frameId,
-          sender: FrameSender.AGENT,
-          type: 'thinking',
-          content: thinkingContent,
-          timestamp: frame.createTime || new Date().toISOString(),
-          agentProfileName: frame.agentProfileName,
-        }]
+        return
       }
-    } else if (frame.text) {
-      const textContent = frame.text.content || ''
-      if (!textContent) return
-      const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'text' && last.sender === FrameSender.AGENT
-          && last.agentProfileName === frame.agentProfileName) {
-        last.content += textContent
-        chatMessages = [...chatMessages]
-      } else {
-        chatMessages = [...chatMessages, {
-          messageId: frame.frameId,
-          sender: FrameSender.AGENT,
-          type: 'text',
-          content: textContent,
-          timestamp: frame.createTime || new Date().toISOString(),
-          agentProfileName: frame.agentProfileName,
-        }]
-      }
-    } else if (frame.warn) {
-      chatMessages = [...chatMessages, {
-        messageId: frame.frameId,
-        sender: FrameSender.SYSTEM,
-        type: 'warn',
-        content: frame.warn.message,
-        timestamp: frame.createTime || new Date().toISOString(),
-      }]
-    } else if (frame.userTurn) {
-      const image = frame.userTurn.image
-      if (image && image.data) {
-        const encoding = (image.encoding || 'png').toLowerCase()
-        const imageUrl = `data:image/${encoding};base64,${image.data}`
-        chatMessages = [...chatMessages, {
-          messageId: frame.frameId,
-          sender: FrameSender.USER,
-          type: 'image',
-          content: '',
-          timestamp: frame.createTime || new Date().toISOString(),
-          imageUrl,
-        }]
-      }
-    } else if (frame.operation) {
-      chatMessages = [...chatMessages, {
-        messageId: frame.frameId,
-        sender: FrameSender.AGENT,
-        type: 'operation',
-        content: '',
-        timestamp: frame.createTime || new Date().toISOString(),
-        agentProfileName: frame.agentProfileName,
-        operation: frame.operation,
-      }]
-    } else if (frame.operationResult) {
-      chatMessages = [...chatMessages, {
-        messageId: frame.frameId,
-        sender: FrameSender.SYSTEM,
-        type: 'operation_result',
-        content: '',
-        timestamp: frame.createTime || new Date().toISOString(),
-        operationResult: frame.operationResult,
-      }]
+    }
+
+    chatMessages = [...chatMessages, {
+      messageId: frame.frameId ?? crypto.randomUUID(),
+      sender,
+      timestamp,
+      agentProfileName: profile,
+      parts: incomingParts,
+      mergeKind: kind,
+    }]
+  }
+
+  function handleAgentFrame(frame: AgentFrame) {
+    const timestamp = frame.createTime || new Date().toISOString()
+    // A frame carries exactly one payload (protojson flattens the oneof). The
+    // part kind — not a separate `type` field — discriminates content.
+    if (frame.content) {
+      handleContentPayload(frame, frame.content, timestamp)
     } else if (frame.wait) {
       processing = false
       if (playState === 'processing') playState = 'chat_ready'
+    } else if (frame.warn) {
+      chatMessages = [...chatMessages, {
+        messageId: frame.frameId ?? crypto.randomUUID(),
+        sender: FrameSender.SYSTEM,
+        timestamp,
+        warnMessage: frame.warn.message ?? '',
+      }]
+    } else if (frame.status) {
+      // Lifecycle status signal — no chat rendering.
     }
   }
 
@@ -430,27 +403,24 @@
     }
     const optimisticIds: string[] = []
     try {
-      if (text.trim()) {
+      // Optimistic user turn: mirror the backend's single user-turn frame,
+      // which carries [TextPart, ImagePart] as one PartBlock. One local id →
+      // one entry holding all submitted parts (text and/or screenshot).
+      const optimisticParts: Part[] = []
+      if (text.trim()) optimisticParts.push({ text: { content: text } })
+      if (pendingScreenshot) {
+        optimisticParts.push({
+          image: { data: pendingScreenshot.data, encoding: 'IMAGE_ENCODING_PNG' },
+        })
+      }
+      if (optimisticParts.length > 0) {
         const msgId = crypto.randomUUID()
         optimisticIds.push(msgId)
         chatMessages = [...chatMessages, {
           messageId: msgId,
           sender: FrameSender.USER,
-          type: 'text',
-          content: text,
           timestamp: new Date().toISOString(),
-        }]
-      }
-      if (pendingScreenshot) {
-        const imgId = crypto.randomUUID()
-        optimisticIds.push(imgId)
-        chatMessages = [...chatMessages, {
-          messageId: imgId,
-          sender: FrameSender.USER,
-          type: 'image',
-          content: '',
-          timestamp: new Date().toISOString(),
-          imageUrl: pendingScreenshot.dataUrl,
+          parts: optimisticParts,
         }]
       }
       processing = true

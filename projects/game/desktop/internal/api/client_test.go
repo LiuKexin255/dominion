@@ -469,7 +469,7 @@ func TestClient_ListMessages(t *testing.T) {
 			name:       "success with messages",
 			sessionID:  "test-session",
 			statusCode: http.StatusOK,
-			respBody:   `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"text","text":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"text","content":"text","text":"hi there","createTime":"2024-01-01T00:00:01Z"}]}`,
+			respBody:   `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
@@ -535,8 +535,8 @@ func TestClient_ListMessages(t *testing.T) {
 				if first.GetMessageId() != "msg-1" {
 					t.Errorf("expected message_id %q, got %q", "msg-1", first.GetMessageId())
 				}
-				if first.GetText() != "hello" {
-					t.Errorf("expected text %q, got %q", "hello", first.GetText())
+				if got := firstTextPartContent(first); got != "hello" {
+					t.Errorf("expected text part content %q, got %q", "hello", got)
 				}
 				if first.GetSender() != game.FrameSender_FRAME_SENDER_USER {
 					t.Errorf("expected sender FRAME_SENDER_USER, got %v", first.GetSender())
@@ -880,4 +880,19 @@ func TestClient_DeleteAgentProfile(t *testing.T) {
 			}
 		})
 	}
+}
+
+// firstTextPartContent returns the content string of the first TextPart in a
+// Message's PartBlock, or "" when absent. Used by ListMessages tests to
+// assert history content projected through the Part model.
+func firstTextPartContent(m *game.Message) string {
+	if m == nil || m.GetContent() == nil {
+		return ""
+	}
+	for _, part := range m.GetContent().GetParts() {
+		if tp := part.GetText(); tp != nil {
+			return tp.GetContent()
+		}
+	}
+	return ""
 }

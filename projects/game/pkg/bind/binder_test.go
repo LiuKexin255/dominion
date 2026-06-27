@@ -12,6 +12,15 @@ import (
 	"dominion/projects/game/pkg/bind"
 )
 
+// probeFrame returns a minimal AgentFrame carrying a StatusSignal payload. It
+// is used as a generic transport probe in forwarding tests — the binder is
+// payload-agnostic, so the concrete payload shape is irrelevant to coverage.
+func probeFrame() *game.AgentFrame {
+	return &game.AgentFrame{
+		Payload: &game.AgentFrame_Status{Status: &game.StatusSignal{Status: "probe"}},
+	}
+}
+
 // mockStream is a test double for bind.AgentFrameStream.
 type mockStream struct {
 	mu      sync.Mutex
@@ -119,9 +128,9 @@ func TestBind(t *testing.T) {
 		{
 			name: "left to right forwarding",
 			setup: func(fx *streamFixture) {
-				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
-				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
-				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
+				fx.leftIn <- probeFrame()
+				fx.leftIn <- probeFrame()
+				fx.leftIn <- probeFrame()
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				sent := fx.right.SentFrames()
@@ -133,8 +142,8 @@ func TestBind(t *testing.T) {
 		{
 			name: "right to left forwarding",
 			setup: func(fx *streamFixture) {
-				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("reply")}}}
-				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("reply")}}}
+				fx.rightIn <- probeFrame()
+				fx.rightIn <- probeFrame()
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				sent := fx.left.SentFrames()
@@ -146,9 +155,9 @@ func TestBind(t *testing.T) {
 		{
 			name: "bidirectional simultaneous forwarding",
 			setup: func(fx *streamFixture) {
-				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("L1")}}}
-				fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("L2")}}}
-				fx.rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("R1")}}}
+				fx.leftIn <- probeFrame()
+				fx.leftIn <- probeFrame()
+				fx.rightIn <- probeFrame()
 			},
 			verify: func(t *testing.T, fx *streamFixture) {
 				time.Sleep(20 * time.Millisecond)
@@ -228,7 +237,7 @@ func TestBind_sendReturnsError_propagatesError(t *testing.T) {
 	fx.right.sendErr = sendErr
 
 	// Send a frame to left, which will be forwarded to right where Send fails.
-	fx.leftIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("hello")}}}
+	fx.leftIn <- probeFrame()
 
 	b := bind.NewBinder()
 
@@ -268,7 +277,7 @@ func TestBind_doneFlagRespected(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Send a frame to right — it should be ignored since done is true.
-	rightIn <- &game.AgentFrame{Payload: &game.AgentFrame_Echo{Echo: &game.AgentEchoFrame{Data: []byte("should not forward")}}}
+	rightIn <- probeFrame()
 	close(rightIn)
 
 	if !errors.Is(err, wantErr) {

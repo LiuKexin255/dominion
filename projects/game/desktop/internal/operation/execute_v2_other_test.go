@@ -23,11 +23,11 @@ func TestMoveCursor_StubRejects(t *testing.T) {
 func TestExecuteClickAtCurrentPos_StubRejects(t *testing.T) {
 	tests := []struct {
 		name   string
-		action game.AgentMouseAction
+		action game.MouseClickAction
 	}{
-		{name: "left click", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK},
-		{name: "right click", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK},
-		{name: "left right press", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS},
+		{name: "left click", action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK},
+		{name: "right click", action: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK},
+		{name: "left right press", action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS},
 	}
 
 	for _, tt := range tests {

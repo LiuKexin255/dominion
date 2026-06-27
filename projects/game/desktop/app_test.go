@@ -39,7 +39,7 @@ func mockWSServer(t *testing.T, handler func(*websocket.Conn)) *httptest.Server 
 // TestConnectAgent_ProbeSuccess verifies that ConnectAgent stores a.ws
 // when the probe round-trip succeeds.
 func TestConnectAgent_ProbeSuccess(t *testing.T) {
-	// given: mock WS server that responds to the probe ping with any frame
+	// given: mock WS server that responds to the probe status signal with any frame
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		// read the probe frame
@@ -51,16 +51,16 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
 			return
 		}
-		// respond with an ack frame (any response proves the round-trip)
-		ackFrame := &game.AgentFrame{
+		// respond with a status signal (any response proves the round-trip)
+		respFrame := &game.AgentFrame{
 			SessionId:  frame.GetSessionId(),
-			FrameId:    "test-ack-frame",
+			FrameId:    "test-status-frame",
 			CreateTime: timestamppb.Now(),
-			Payload: &game.AgentFrame_Ack{
-				Ack: &game.AgentAckFrame{AckFrameId: frame.GetFrameId(), Message: "ok"},
+			Payload: &game.AgentFrame_Status{
+				Status: &game.StatusSignal{Status: "ok"},
 			},
 		}
-		resp, _ := protojson.Marshal(ackFrame)
+		resp, _ := protojson.Marshal(respFrame)
 		conn.Write(ctx, websocket.MessageText, resp)
 	})
 	defer srv.Close()
@@ -546,7 +546,7 @@ func TestListMessages_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","type":"text","content":"text","text":"hello","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","type":"thinking","content":"text","text":"pondering","createTime":"2024-01-01T00:00:01Z"}]}`)
+		fmt.Fprint(w, `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","content":{"parts":[{"thinking":{"content":"pondering"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`)
 	}))
 	defer srv.Close()
 
@@ -571,21 +571,54 @@ func TestListMessages_Success(t *testing.T) {
 	if views[0].MessageID != "msg-1" {
 		t.Errorf("expected first MessageID %q, got %q", "msg-1", views[0].MessageID)
 	}
-	if views[0].Content != "hello" {
-		t.Errorf("expected first Content %q, got %q", "hello", views[0].Content)
-	}
 	if views[0].Sender != "FRAME_SENDER_USER" {
 		t.Errorf("expected first Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
 	}
-	if views[0].Type != "text" {
-		t.Errorf("expected first Type %q, got %q", "text", views[0].Type)
+	if got := messagePartText(views[0].Content); got != "hello" {
+		t.Errorf("expected first text part content %q, got %q", "hello", got)
 	}
 	if views[1].MessageID != "msg-2" {
 		t.Errorf("expected second MessageID %q, got %q", "msg-2", views[1].MessageID)
 	}
-	if views[1].Type != "thinking" {
-		t.Errorf("expected second Type %q, got %q", "thinking", views[1].Type)
+	if got := messagePartThinking(views[1].Content); got != "pondering" {
+		t.Errorf("expected second thinking part content %q, got %q", "pondering", got)
 	}
+}
+
+// messagePartText extracts the first text part content from a serialized
+// PartBlock view-model Content map ({"parts":[{"text":{"content":"..."}}]}),
+// or "" when absent. Used by ListMessages tests to assert history content.
+func messagePartText(content map[string]any) string {
+	return messagePartString(content, "text")
+}
+
+// messagePartThinking extracts the first thinking part content from a
+// serialized PartBlock view-model Content map, or "" when absent.
+func messagePartThinking(content map[string]any) string {
+	return messagePartString(content, "thinking")
+}
+
+// messagePartString extracts the content string of the first part with the
+// given kind key in a serialized PartBlock view-model Content map.
+func messagePartString(content map[string]any, kind string) string {
+	parts, ok := content["parts"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, p := range parts {
+		part, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		kindBlock, ok := part[kind].(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := kindBlock["content"].(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // TestListMessages_Empty verifies ListMessages returns no view models for empty list.
@@ -675,13 +708,11 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 
-	op := &game.AgentOperationFrame{
-		OperationId: "op-no-window",
-		Operation: &game.AgentOperationFrame_Mouse{
-			Mouse: &game.AgentMouseOperation{
-				XPx:    10,
-				YPx:    20,
-				Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+	op := &game.Part{
+		Kind: &game.Part_MouseClick{
+			MouseClick: &game.MouseClickPart{
+				ToolId: "op-no-window",
+				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
 			},
 		},
 	}
@@ -690,7 +721,7 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	result := app.executeAgentOperation(op)
 
 	// then: FAILED precondition, no screenshot
-	if got := result.GetStatus(); got != game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED {
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
 		t.Fatalf("expected FAILED status, got %s", got)
 	}
 	if !strings.Contains(result.GetMessage(), "no window bound") {
@@ -699,8 +730,8 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	if result.GetScreenshot() != nil {
 		t.Errorf("expected nil screenshot when no window is bound, got non-nil")
 	}
-	if result.GetOperationId() != "op-no-window" {
-		t.Errorf("expected operation_id %q, got %q", "op-no-window", result.GetOperationId())
+	if result.GetToolId() != "op-no-window" {
+		t.Errorf("expected tool_id %q, got %q", "op-no-window", result.GetToolId())
 	}
 }
 
@@ -728,13 +759,11 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.AgentOperationFrame{
-		OperationId: "op-both-fail",
-		Operation: &game.AgentOperationFrame_Mouse{
-			Mouse: &game.AgentMouseOperation{
-				XPx:    100,
-				YPx:    200,
-				Action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+	op := &game.Part{
+		Kind: &game.Part_MouseClick{
+			MouseClick: &game.MouseClickPart{
+				ToolId: "op-both-fail",
+				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
 			},
 		},
 	}
@@ -747,7 +776,7 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	// capture failure — proving the screenshot phase ran despite the action
 	// error rather than early-returning. The click path performs no window
 	// bounds capture, so the message must NOT mention "capture window bounds".
-	if got := result.GetStatus(); got != game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED {
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
 		t.Fatalf("expected FAILED status, got %s", got)
 	}
 	if result.GetScreenshot() != nil {
@@ -763,7 +792,7 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	if !strings.Contains(msg, "screenshot capture failed") {
 		t.Errorf("message should record screenshot capture failure (proves no early return on action error), got %q", msg)
 	}
-	if result.GetOperationId() != "op-both-fail" {
-		t.Errorf("expected operation_id %q, got %q", "op-both-fail", result.GetOperationId())
+	if result.GetToolId() != "op-both-fail" {
+		t.Errorf("expected tool_id %q, got %q", "op-both-fail", result.GetToolId())
 	}
 }

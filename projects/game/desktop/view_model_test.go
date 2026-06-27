@@ -224,24 +224,27 @@ func TestAgentViewFromProto_Nil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToMessageViewModels(t *testing.T) {
-	// given: a slice of proto Messages with all fields
+	// given: a slice of proto Messages whose content is a PartBlock carrying
+	// a text part (user) and a thinking part (agent)
 	createTime := time.Date(2024, 7, 1, 12, 0, 0, 0, time.UTC)
 	messages := []*game.Message{
 		{
 			Name:       "sessions/sess-1/agent/messages/msg-1",
 			MessageId:  "msg-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
-			Type:       "text",
-			Content:    &game.Message_Text{Text: "Hello from user"},
 			CreateTime: timestamppb.New(createTime),
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "Hello from user"}}},
+			}},
 		},
 		{
 			Name:       "sessions/sess-1/agent/messages/msg-2",
 			MessageId:  "msg-2",
 			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
-			Type:       "thinking",
-			Content:    &game.Message_Text{Text: "Agent is thinking"},
 			CreateTime: timestamppb.New(createTime),
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
+			}},
 		},
 	}
 
@@ -263,14 +266,11 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[0].Sender != "FRAME_SENDER_USER" {
 		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
 	}
-	if views[0].Type != "text" {
-		t.Fatalf("expected Type %q, got %q", "text", views[0].Type)
-	}
-	if views[0].Content != "Hello from user" {
-		t.Fatalf("expected Content %q, got %q", "Hello from user", views[0].Content)
-	}
 	if views[0].CreateTime != "2024-07-01T12:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-07-01T12:00:00Z", views[0].CreateTime)
+	}
+	if got := messagePartText(views[0].Content); got != "Hello from user" {
+		t.Fatalf("expected first text part content %q, got %q", "Hello from user", got)
 	}
 
 	// and: verify second message fields
@@ -283,11 +283,8 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[1].Sender != "FRAME_SENDER_AGENT" {
 		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_AGENT", views[1].Sender)
 	}
-	if views[1].Type != "thinking" {
-		t.Fatalf("expected Type %q, got %q", "thinking", views[1].Type)
-	}
-	if views[1].Content != "Agent is thinking" {
-		t.Fatalf("expected Content %q, got %q", "Agent is thinking", views[1].Content)
+	if got := messagePartThinking(views[1].Content); got != "Agent is thinking" {
+		t.Fatalf("expected second thinking part content %q, got %q", "Agent is thinking", got)
 	}
 
 	// and: JSON marshalling uses camelCase
@@ -316,9 +313,13 @@ func TestToMessageViewModels_Image(t *testing.T) {
 			Name:       "sessions/sess-1/agent/messages/img-1",
 			MessageId:  "img-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
-			Type:       "image",
-			Content:    &game.Message_ImageData{ImageData: rawImage},
 			CreateTime: timestamppb.New(createTime),
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Image{Image: &game.ImagePart{
+					Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+					Data:     rawImage,
+				}}},
+			}},
 		},
 	}
 
@@ -327,15 +328,17 @@ func TestToMessageViewModels_Image(t *testing.T) {
 	if len(views) != 1 {
 		t.Fatalf("expected 1 view model, got %d", len(views))
 	}
-	if views[0].Type != "image" {
-		t.Fatalf("expected Type %q, got %q", "image", views[0].Type)
+	if views[0].MessageID != "img-1" {
+		t.Fatalf("expected MessageID %q, got %q", "img-1", views[0].MessageID)
 	}
-	if views[0].Content != "" {
-		t.Fatalf("expected empty Content for image message, got %q", views[0].Content)
+	// Content carries the PartBlock; the image part's base64 data round-trips.
+	imgB64 := firstPartImageBase64(views[0].Content)
+	if imgB64 == "" {
+		t.Fatalf("expected non-empty image data in Content, got %v", views[0].Content)
 	}
 	expectedB64 := base64.StdEncoding.EncodeToString(rawImage)
-	if views[0].ImageData != expectedB64 {
-		t.Fatalf("expected ImageData %q, got %q", expectedB64, views[0].ImageData)
+	if imgB64 != expectedB64 {
+		t.Fatalf("expected image data %q, got %q", expectedB64, imgB64)
 	}
 
 	data, err := json.Marshal(views[0])
@@ -343,9 +346,32 @@ func TestToMessageViewModels_Image(t *testing.T) {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
 	jsonStr := string(data)
-	if !strings.Contains(jsonStr, `"imageData"`) {
-		t.Fatalf("expected JSON to contain 'imageData', got: %s", jsonStr)
+	if !strings.Contains(jsonStr, `"content"`) {
+		t.Fatalf("expected JSON to contain 'content', got: %s", jsonStr)
 	}
+}
+
+// firstPartImageBase64 extracts the base64 data string of the first image
+// part in a serialized PartBlock view-model Content map, or "" when absent.
+func firstPartImageBase64(content map[string]any) string {
+	parts, ok := content["parts"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, p := range parts {
+		part, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		img, ok := part["image"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := img["data"].(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

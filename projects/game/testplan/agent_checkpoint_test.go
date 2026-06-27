@@ -44,25 +44,25 @@ func TestAgentCheckpointResume(t *testing.T) {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
 		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
+			return frameHasThinking(f)
 		})
 		if thinkingResp == nil {
 			t.Fatalf("message %q: did not receive thinking response", msg)
 		}
-		if !strings.Contains(thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning) {
-			t.Errorf("message %q: thinking = %q, want to contain %q", msg, thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning)
+		if !strings.Contains(frameThinking(thinkingResp), expectedGreetingReasoning) {
+			t.Errorf("message %q: thinking = %q, want to contain %q", msg, frameThinking(thinkingResp), expectedGreetingReasoning)
 		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
+			return frameHasText(f)
 		})
 		if textResp == nil {
 			t.Fatalf("message %q: did not receive text response", msg)
 		}
-		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
-			t.Errorf("message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
+		if !strings.Contains(frameText(textResp), expectedGreetingText) {
+			t.Errorf("message %q: text = %q, want to contain %q", msg, frameText(textResp), expectedGreetingText)
 		}
-		responseTexts = append(responseTexts, textResp.GetText().GetContent())
-		t.Logf("turn %d: user=%q → agent=%q", len(responseTexts), msg, textResp.GetText().GetContent())
+		responseTexts = append(responseTexts, frameText(textResp))
+		t.Logf("turn %d: user=%q → agent=%q", len(responseTexts), msg, frameText(textResp))
 	}
 
 	if len(responseTexts) != 3 {
@@ -79,13 +79,13 @@ func TestAgentCheckpointResume(t *testing.T) {
 		t.Errorf("ListMessages after 3 turns returned %d messages, want at least 6", gotCount)
 	}
 	for i, msg := range lmr.GetMessages() {
-		t.Logf("message[%d]: type=%s sender=%s content=%q", i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
+		t.Logf("message[%d]: type=%s sender=%s content=%q", i, messageKind(msg), senderString(msg.GetSender()), messageText(msg))
 	}
 
 	// Verify user messages are present and in order
 	foundFirst := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == messages[0] {
+		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && messageText(msg) == messages[0] {
 			foundFirst = true
 			break
 		}
@@ -100,24 +100,17 @@ func TestAgentCheckpointResume(t *testing.T) {
 
 	// Send follow-up referencing turn 1, carrying the greeting keyword.
 	followUp := "Hello, what is my name and what do I do for work?"
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{Text: followUp},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame := buildTextFrame(sessionID, profileName, followUp, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn2, textFrame)
 
 	followThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
+		return frameHasThinking(f)
 	})
 	if followThinking == nil {
 		t.Fatal("did not receive thinking response for follow-up after re-enter")
 	}
 	textResp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textResp == nil {
 		t.Fatal("did not receive text response for follow-up after re-enter")
@@ -125,10 +118,10 @@ func TestAgentCheckpointResume(t *testing.T) {
 	if textResp.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("follow-up sender = %s, want AGENT", senderString(textResp.GetSender()))
 	}
-	if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("follow-up text = %q, want to contain %q", textResp.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(textResp), expectedGreetingText) {
+		t.Errorf("follow-up text = %q, want to contain %q", frameText(textResp), expectedGreetingText)
 	}
-	t.Logf("follow-up response: %s", textResp.GetText().GetContent())
+	t.Logf("follow-up response: %s", frameText(textResp))
 
 	// Verify message count increased
 	lmr2 := listMessages(t, sutHostURL, sutEnvName, sessionID)
@@ -161,22 +154,22 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 		sendTextWithProfile(t, conn, sessionID, profileName, msg)
 
 		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
+			return frameHasThinking(f)
 		})
 		if thinkingResp == nil {
 			t.Fatalf("message %q: no thinking response", msg)
 		}
-		if !strings.Contains(thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning) {
-			t.Errorf("message %q: thinking = %q, want to contain %q", msg, thinkingResp.GetThinking().GetContent(), expectedGreetingReasoning)
+		if !strings.Contains(frameThinking(thinkingResp), expectedGreetingReasoning) {
+			t.Errorf("message %q: thinking = %q, want to contain %q", msg, frameThinking(thinkingResp), expectedGreetingReasoning)
 		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
+			return frameHasText(f)
 		})
 		if textResp == nil {
 			t.Fatalf("message %q: no text response", msg)
 		}
-		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
-			t.Errorf("message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
+		if !strings.Contains(frameText(textResp), expectedGreetingText) {
+			t.Errorf("message %q: text = %q, want to contain %q", msg, frameText(textResp), expectedGreetingText)
 		}
 	}
 	conn.Close()
@@ -189,8 +182,8 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 
 	// Verify content-bearing messages are present
 	for i, msg := range lmr.GetMessages() {
-		if msg.GetType() == "text" && msg.GetText() == "" {
-			t.Errorf("message[%d]: text type has empty content", i)
+		if messageKind(msg) == "text" && messageText(msg) == "" {
+			t.Errorf("message[%d]: text part has empty content", i)
 		}
 	}
 
@@ -199,30 +192,23 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	defer conn2.Close()
 
 	thirdMsg := "Hello, turn three continuing"
-	textFrame := &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: &game.AgentUserTurnFrame{Text: thirdMsg},
-		},
-		Sender: game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame := buildTextFrame(sessionID, profileName, thirdMsg, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn2, textFrame)
 
 	thirdThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
+		return frameHasThinking(f)
 	})
 	if thirdThinking == nil {
 		t.Fatal("third message: no thinking response after re-enter")
 	}
 	textR := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textR == nil {
 		t.Fatal("third message: no text response after re-enter")
 	}
-	if !strings.Contains(textR.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("third message text = %q, want to contain %q", textR.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(textR), expectedGreetingText) {
+		t.Errorf("third message text = %q, want to contain %q", frameText(textR), expectedGreetingText)
 	}
 
 	// Verify message count increased by 2 (1 user + 1 agent)
@@ -287,42 +273,32 @@ func TestAgentPerProfileModel(t *testing.T) {
 	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID1)
 	defer conn1.Close()
 
-	textFrame1 := &game.AgentFrame{
-		SessionId:        sessionID1,
-		AgentProfileName: profile1Name,
-		Payload:          &game.AgentFrame_UserTurn{UserTurn: &game.AgentUserTurnFrame{Text: "Hello from profile one"}},
-		Sender:           game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame1 := buildTextFrame(sessionID1, profile1Name, "Hello from profile one", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn1, textFrame1)
-	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
-	resp1 := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	resp1 := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if resp1 == nil {
 		t.Fatal("agent1 (gpt-4 profile): no text response")
 	}
-	if !strings.Contains(resp1.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("agent1 (gpt-4) text = %q, want to contain %q", resp1.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(resp1), expectedGreetingText) {
+		t.Errorf("agent1 (gpt-4) text = %q, want to contain %q", frameText(resp1), expectedGreetingText)
 	}
-	t.Logf("agent1 (gpt-4) responded: %s", resp1.GetText().GetContent())
+	t.Logf("agent1 (gpt-4) responded: %s", frameText(resp1))
 
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID2)
 	defer conn2.Close()
 
-	textFrame2 := &game.AgentFrame{
-		SessionId:        sessionID2,
-		AgentProfileName: profile2Name,
-		Payload:          &game.AgentFrame_UserTurn{UserTurn: &game.AgentUserTurnFrame{Text: "Hello from profile two"}},
-		Sender:           game.FrameSender_FRAME_SENDER_USER,
-	}
+	textFrame2 := buildTextFrame(sessionID2, profile2Name, "Hello from profile two", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn2, textFrame2)
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
-	resp2 := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	resp2 := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if resp2 == nil {
 		t.Fatal("agent2 (gpt-4-turbo profile): no text response")
 	}
-	if !strings.Contains(resp2.GetText().GetContent(), expectedGreetingText) {
-		t.Errorf("agent2 (gpt-4-turbo) text = %q, want to contain %q", resp2.GetText().GetContent(), expectedGreetingText)
+	if !strings.Contains(frameText(resp2), expectedGreetingText) {
+		t.Errorf("agent2 (gpt-4-turbo) text = %q, want to contain %q", frameText(resp2), expectedGreetingText)
 	}
-	t.Logf("agent2 (gpt-4-turbo) responded: %s", resp2.GetText().GetContent())
+	t.Logf("agent2 (gpt-4-turbo) responded: %s", frameText(resp2))
 
 	// Both agents' profiles match their configured models.
 	t.Logf("profile1=%s model=%s, profile2=%s model=%s", profile1Name, fetched1.GetModel(), profile2Name, fetched2.GetModel())
@@ -358,16 +334,16 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 
 	for i, want := range wantTexts {
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
+			return frameHasThinking(f)
 		})
 		textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
+			return frameHasText(f)
 		})
 		if textFrame == nil {
 			t.Fatalf("message %d: did not receive text response", i)
 		}
-		if !strings.Contains(textFrame.GetText().GetContent(), want) {
-			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, textFrame.GetText().GetContent(), want)
+		if !strings.Contains(frameText(textFrame), want) {
+			t.Errorf("response %d = %q, want to contain %q (FIFO order violated)", i, frameText(textFrame), want)
 		}
 	}
 }
@@ -406,36 +382,36 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	for _, msg := range userMessages {
 		sendTextWithProfile(t, conn, sessionID, profileAName, msg)
 		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetThinking() != nil
+			return frameHasThinking(f)
 		})
 		if thinkingResp == nil {
 			t.Fatalf("profile A, message %q: no thinking response", msg)
 		}
 		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-			return f.GetText() != nil
+			return frameHasText(f)
 		})
 		if textResp == nil {
 			t.Fatalf("profile A, message %q: no text response", msg)
 		}
-		if !strings.Contains(textResp.GetText().GetContent(), expectedGreetingText) {
-			t.Errorf("profile A, message %q: text = %q, want to contain %q", msg, textResp.GetText().GetContent(), expectedGreetingText)
+		if !strings.Contains(frameText(textResp), expectedGreetingText) {
+			t.Errorf("profile A, message %q: text = %q, want to contain %q", msg, frameText(textResp), expectedGreetingText)
 		}
-		t.Logf("profile A exchange: %q → %q", msg, textResp.GetText().GetContent())
+		t.Logf("profile A exchange: %q → %q", msg, frameText(textResp))
 	}
 
 	// Switch to profile B mid-connection. The farewell keyword yields a
 	// distinct template, confirming profile B's adapter also reaches fake-llm.
 	profileBMsg := "Goodbye, profile B turn one"
 	sendTextWithProfile(t, conn, sessionID, profileBName, profileBMsg)
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetThinking() != nil })
-	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetText() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if textRespB == nil {
 		t.Fatal("profile B: no text response after switch")
 	}
-	if !strings.Contains(textRespB.GetText().GetContent(), expectedFarewellText) {
-		t.Errorf("profile B text = %q, want to contain %q", textRespB.GetText().GetContent(), expectedFarewellText)
+	if !strings.Contains(frameText(textRespB), expectedFarewellText) {
+		t.Errorf("profile B text = %q, want to contain %q", frameText(textRespB), expectedFarewellText)
 	}
-	t.Logf("profile B response: %q", textRespB.GetText().GetContent())
+	t.Logf("profile B response: %q", frameText(textRespB))
 
 	conn.Close()
 
@@ -447,14 +423,14 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	}
 	for i, msg := range lmr.GetMessages() {
 		t.Logf("message[%d]: type=%s sender=%s content=%q",
-			i, msg.GetType(), senderString(msg.GetSender()), msg.GetText())
+			i, messageKind(msg), senderString(msg.GetSender()), messageText(msg))
 	}
 
 	// Verify profile A's messages are present.
 	for _, um := range userMessages {
 		found := false
 		for _, msg := range lmr.GetMessages() {
-			if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == um {
+			if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && messageText(msg) == um {
 				found = true
 				break
 			}
@@ -467,7 +443,7 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	// Verify profile B's user message is present too.
 	profileBFound := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && msg.GetText() == profileBMsg {
+		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && messageText(msg) == profileBMsg {
 			profileBFound = true
 			break
 		}

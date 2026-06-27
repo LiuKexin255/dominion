@@ -57,51 +57,20 @@ func Test_validateScreenCoords(t *testing.T) {
 	})
 }
 
-func Test_validateMouseAction(t *testing.T) {
-	tests := []struct {
-		name    string
-		action  game.AgentMouseAction
-		wantErr bool
-	}{
-		{name: "left click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK},
-		{name: "left double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK},
-		{name: "right click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK},
-		{name: "right double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK},
-		{name: "left right press valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS},
-		{name: "move valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE},
-		{name: "unspecified rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_UNSPECIFIED, wantErr: true},
-		{name: "unknown value rejected", action: game.AgentMouseAction(99), wantErr: true},
-		{name: "negative value rejected", action: game.AgentMouseAction(-1), wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateMouseAction(tt.action)
-			if tt.wantErr && err == nil {
-				t.Errorf("validateMouseAction(%v) expected error, got nil", tt.action)
-			}
-			if !tt.wantErr && err != nil {
-				t.Errorf("validateMouseAction(%v) unexpected error: %v", tt.action, err)
-			}
-		})
-	}
-}
-
 func Test_validateClickAction(t *testing.T) {
 	tests := []struct {
 		name    string
-		action  game.AgentMouseAction
+		action  game.MouseClickAction
 		wantErr bool
 	}{
-		{name: "left click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK},
-		{name: "left double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK},
-		{name: "right click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK},
-		{name: "right double click valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK},
-		{name: "left right press valid", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS},
-		{name: "move rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE, wantErr: true},
-		{name: "unspecified rejected", action: game.AgentMouseAction_AGENT_MOUSE_ACTION_UNSPECIFIED, wantErr: true},
-		{name: "unknown value rejected", action: game.AgentMouseAction(99), wantErr: true},
-		{name: "negative value rejected", action: game.AgentMouseAction(-1), wantErr: true},
+		{name: "left click valid", action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK},
+		{name: "left double click valid", action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK},
+		{name: "right click valid", action: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK},
+		{name: "right double click valid", action: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK},
+		{name: "left right press valid", action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS},
+		{name: "unspecified rejected", action: game.MouseClickAction_MOUSE_CLICK_ACTION_UNSPECIFIED, wantErr: true},
+		{name: "unknown value rejected", action: game.MouseClickAction(99), wantErr: true},
+		{name: "negative value rejected", action: game.MouseClickAction(-1), wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -120,43 +89,38 @@ func Test_validateClickAction(t *testing.T) {
 func Test_actionEventSequence(t *testing.T) {
 	tests := []struct {
 		name      string
-		action    game.AgentMouseAction
+		action    game.MouseClickAction
 		wantFlags []uint32
 		wantErr   bool
 	}{
 		{
 			name:      "left click: down then up",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_CLICK,
+			action:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
 			wantFlags: []uint32{v2MouseLeftDown, v2MouseLeftUp},
 		},
 		{
 			name:      "left double click: two down-up cycles",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK,
+			action:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK,
 			wantFlags: []uint32{v2MouseLeftDown, v2MouseLeftUp, v2MouseLeftDown, v2MouseLeftUp},
 		},
 		{
 			name:      "right click: down then up",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_CLICK,
+			action:    game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK,
 			wantFlags: []uint32{v2MouseRightDown, v2MouseRightUp},
 		},
 		{
 			name:      "right double click: two down-up cycles",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK,
+			action:    game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK,
 			wantFlags: []uint32{v2MouseRightDown, v2MouseRightUp, v2MouseRightDown, v2MouseRightUp},
 		},
 		{
 			name:      "left right press: both down then both up",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS,
+			action:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS,
 			wantFlags: []uint32{v2MouseLeftDown, v2MouseRightDown, v2MouseRightUp, v2MouseLeftUp},
 		},
 		{
-			name:      "move: empty event sequence",
-			action:    game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE,
-			wantFlags: []uint32{},
-		},
-		{
 			name:    "unspecified rejected",
-			action:  game.AgentMouseAction_AGENT_MOUSE_ACTION_UNSPECIFIED,
+			action:  game.MouseClickAction_MOUSE_CLICK_ACTION_UNSPECIFIED,
 			wantErr: true,
 		},
 	}
@@ -188,7 +152,7 @@ func Test_actionEventSequence(t *testing.T) {
 }
 
 func Test_actionEventSequence_LeftRightPressIsSimultaneous(t *testing.T) {
-	got, err := actionEventSequence(game.AgentMouseAction_AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS)
+	got, err := actionEventSequence(game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,34 +173,11 @@ func Test_actionEventSequence_LeftRightPressIsSimultaneous(t *testing.T) {
 	}
 }
 
-// Test_actionEventSequence_MoveIsEmptyNonNil locks the MOVE contract: the
-// returned slice must be empty AND non-nil so callers can distinguish the
-// success path (zero events) from the (nil, err) error path. The
-// table-driven test above only compares lengths, which cannot tell
-// []uint32{} apart from nil.
-//
-// Note: in the split dispatch model, MOVE never reaches actionEventSequence
-// in production — MoveCursor repositions the cursor without calling it, and
-// ExecuteClickAtCurrentPos rejects MOVE via validateClickAction first. The
-// empty-non-nil contract is kept for the function's own robustness.
-func Test_actionEventSequence_MoveIsEmptyNonNil(t *testing.T) {
-	got, err := actionEventSequence(game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE)
-	if err != nil {
-		t.Fatalf("actionEventSequence(MOVE) unexpected error: %v", err)
-	}
-	if got == nil {
-		t.Fatal("actionEventSequence(MOVE) returned nil slice, want non-nil empty slice")
-	}
-	if len(got) != 0 {
-		t.Fatalf("actionEventSequence(MOVE) returned %d events, want 0", len(got))
-	}
-}
-
 // Test_validateScreenCoords_out_of_bounds is the FR-003 regression guard for
-// MOVE: MoveCursor runs validateScreenCoords before setCursorPos, so an
-// out-of-bounds target must be rejected. This complements the granular
+// MouseMovePart: MoveCursor runs validateScreenCoords before setCursorPos, so
+// an out-of-bounds target must be rejected. This complements the granular
 // subtests in Test_validateScreenCoords with a single named assertion tying
-// the check to the MOVE path that inherits it.
+// the check to the move path that inherits it.
 func Test_validateScreenCoords_out_of_bounds(t *testing.T) {
 	rect := screenRect{X: 0, Y: 0, Width: 3840, Height: 2160}
 	cases := []struct {

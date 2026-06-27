@@ -1,7 +1,7 @@
 // Package testplan contains agent multimodal-turn integration tests.
-// These tests validate the agent's processing of AgentUserTurnFrame
-// payloads carrying text and/or screenshot data through the WebSocket
-// surface, using the fake-llm test artifact for deterministic responses.
+// These tests validate the agent's processing of content PartBlock payloads
+// carrying text and/or an ImagePart through the WebSocket surface, using the
+// fake-llm test artifact for deterministic responses.
 package testplan
 
 import (
@@ -13,11 +13,11 @@ import (
 	game "dominion/projects/game"
 )
 
-// TestAgentMultimodalTextPlusImageTurn verifies that a user_turn frame
-// containing BOTH text and a screenshot is accepted, and the agent
-// produces thinking + text response frames. The text carries the
-// "hello" keyword so fake-llm deterministically returns the greeting
-// template, proving the multimodal user_turn was processed end-to-end.
+// TestAgentMultimodalTextPlusImageTurn verifies that a content frame whose
+// PartBlock holds BOTH a TextPart and an ImagePart is accepted, and the agent
+// produces thinking + text response frames. The text carries the "hello"
+// keyword so fake-llm deterministically returns the greeting template, proving
+// the multimodal content frame was processed end-to-end.
 func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -38,33 +38,33 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	writeWSFrame(t, conn, frame)
 
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil
+		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
 		t.Fatal("did not receive thinking frame for text+image turn")
 	}
-	if !strings.Contains(thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning) {
+	if !strings.Contains(frameThinking(thinkingFrame), expectedGreetingReasoning) {
 		t.Errorf("thinking = %q, want to contain %q",
-			thinkingFrame.GetThinking().GetContent(), expectedGreetingReasoning)
+			frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
 
 	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetText() != nil
+		return frameHasText(f)
 	})
 	if textFrame == nil {
 		t.Fatal("did not receive text frame for text+image turn")
 	}
-	if !strings.Contains(textFrame.GetText().GetContent(), expectedGreetingText) {
+	if !strings.Contains(frameText(textFrame), expectedGreetingText) {
 		t.Errorf("text = %q, want to contain %q",
-			textFrame.GetText().GetContent(), expectedGreetingText)
+			frameText(textFrame), expectedGreetingText)
 	}
 }
 
-// TestAgentMultimodalImageOnlyTurn verifies that a user_turn containing
-// ONLY a screenshot (no text) is accepted by the server. Because the
-// text is empty, fake-llm cannot keyword-match and returns a random
-// template — the test only verifies that the server processes the
-// frame and returns a response (thinking, text, or warn) without error.
+// TestAgentMultimodalImageOnlyTurn verifies that a content frame containing
+// ONLY an ImagePart (empty TextPart) is accepted by the server. Because the
+// text is empty, fake-llm cannot keyword-match and returns a random template —
+// the test only verifies that the server processes the frame and returns a
+// response (thinking, text, or warn) without error.
 func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -85,7 +85,7 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	writeWSFrame(t, conn, frame)
 
 	respFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetThinking() != nil || f.GetText() != nil || f.GetWarn() != nil
+		return frameHasThinking(f) || frameHasText(f) || f.GetWarn() != nil
 	})
 	if respFrame == nil {
 		t.Fatal("did not receive any response frame for image-only turn")
@@ -93,9 +93,9 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	switch {
 	case respFrame.GetWarn() != nil:
 		t.Logf("warn (acceptable for empty-text turn): %q", respFrame.GetWarn().GetMessage())
-	case respFrame.GetText() != nil:
-		t.Logf("text response received: %q", respFrame.GetText().GetContent())
-	case respFrame.GetThinking() != nil:
-		t.Logf("thinking response received: %q", respFrame.GetThinking().GetContent())
+	case frameHasText(respFrame):
+		t.Logf("text response received: %q", frameText(respFrame))
+	case frameHasThinking(respFrame):
+		t.Logf("thinking response received: %q", frameThinking(respFrame))
 	}
 }

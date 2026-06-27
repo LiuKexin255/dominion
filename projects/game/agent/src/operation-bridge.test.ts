@@ -8,36 +8,34 @@
  *
  * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
  * and concurrent dispatch correlation.
+ *
+ * Part-model contract: dispatch accepts a Part (MouseMovePart/MouseClickPart),
+ * stamps a tool_id, and wraps it in a content PartBlock frame. handleResult
+ * accepts a ToolResultPart correlated by tool_id.
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { OperationBridge } from "./operation-bridge";
 
-import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
-import type { AgentOperationResultFrame } from "../game_types/projects/game/AgentOperationResultFrame";
+import type { Part } from "../game_types/projects/game/Part";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 
-const STATUS_SUCCEEDED = "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED";
-const STATUS_FAILED = "AGENT_OPERATION_RESULT_STATUS_FAILED";
+const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
+const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 
-function makeOperation(): AgentOperationFrame {
-  return {
-    mouse: {
-      action: "AGENT_MOUSE_ACTION_LEFT_CLICK",
-      xPx: 10,
-      yPx: 20,
-    },
-  };
+function makeMovePart(): Part {
+  return { mouseMove: { xPx: 10, yPx: 20 } };
 }
 
 function makeResult(
-  operationId: string,
+  toolId: string,
   status: string,
   message = "",
-): AgentOperationResultFrame {
+): ToolResultPart {
   return {
-    operationId,
-    status: status as AgentOperationResultFrame["status"],
+    toolId,
+    status: status as ToolResultPart["status"],
     message,
   };
 }
@@ -63,15 +61,15 @@ describe("OperationBridge", () => {
       written.push(frame);
     });
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
-    expect(op.operationId).toBeDefined();
-    expect(op.operationId).toHaveLength(36);
+    expect(part.mouseMove!.toolId).toBeDefined();
+    expect(part.mouseMove!.toolId).toHaveLength(36);
     expect(written).toHaveLength(1);
 
-    const operationId = op.operationId!;
-    bridge.handleResult(makeResult(operationId, STATUS_SUCCEEDED, "ok"));
+    const toolId = part.mouseMove!.toolId!;
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
@@ -82,8 +80,8 @@ describe("OperationBridge", () => {
   // Required scenario 2: no sink → dispatch → 5s timeout → FAILED
   // ------------------------------------------------------------------
   it("no sink registered → dispatch → 5s timeout → FAILED", async () => {
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     await vi.advanceTimersByTimeAsync(5_000);
 
@@ -101,8 +99,8 @@ describe("OperationBridge", () => {
       written.push(frame);
     });
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     expect(written).toHaveLength(1);
 
@@ -124,19 +122,19 @@ describe("OperationBridge", () => {
       throw new Error("stream closed");
     });
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toContain("stream closed");
   });
 
-  it("handleResult with unknown operation_id is ignored", async () => {
+  it("handleResult with unknown tool_id is ignored", async () => {
     bridge.registerSink(() => {});
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
 
@@ -146,17 +144,18 @@ describe("OperationBridge", () => {
     expect(result.status).toBe(STATUS_FAILED);
   });
 
-  it("dispatch assigns a unique UUID operation_id to each frame", async () => {
+  it("dispatch assigns a unique UUID tool_id to each part", async () => {
     const ids: string[] = [];
     bridge.registerSink((frame) => {
-      const op = (frame as { operation?: { operationId?: string } }).operation;
-      if (op?.operationId) ids.push(op.operationId);
+      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const id = parts[0]?.mouseMove?.toolId;
+      if (id) ids.push(id);
     });
 
     const promises = [
-      bridge.dispatch(makeOperation()),
-      bridge.dispatch(makeOperation()),
-      bridge.dispatch(makeOperation()),
+      bridge.dispatch(makeMovePart()),
+      bridge.dispatch(makeMovePart()),
+      bridge.dispatch(makeMovePart()),
     ];
 
     await vi.advanceTimersByTimeAsync(5_000);
@@ -169,13 +168,13 @@ describe("OperationBridge", () => {
   it("handleResult resolves the correct pending dispatch when multiple in-flight", async () => {
     bridge.registerSink(() => {});
 
-    const opA = makeOperation();
-    const opB = makeOperation();
-    const pA = bridge.dispatch(opA);
-    const pB = bridge.dispatch(opB);
+    const partA = makeMovePart();
+    const partB = makeMovePart();
+    const pA = bridge.dispatch(partA);
+    const pB = bridge.dispatch(partB);
 
-    bridge.handleResult(makeResult(opB.operationId!, STATUS_SUCCEEDED, "b-done"));
-    bridge.handleResult(makeResult(opA.operationId!, STATUS_FAILED, "a-fail"));
+    bridge.handleResult(makeResult(partB.mouseMove!.toolId!, STATUS_SUCCEEDED, "b-done"));
+    bridge.handleResult(makeResult(partA.mouseMove!.toolId!, STATUS_FAILED, "a-fail"));
 
     const [rA, rB] = await Promise.all([pA, pB]);
     expect(rA.status).toBe(STATUS_FAILED);
@@ -184,40 +183,47 @@ describe("OperationBridge", () => {
     expect(rB.message).toBe("b-done");
   });
 
-  it("written envelope has payload='operation' and carries the operation frame", async () => {
-    let captured: { payload?: string; operation?: AgentOperationFrame } | undefined;
+  it("written envelope has payload='content' and carries the tool Part", async () => {
+    let captured:
+      | { payload?: string; content?: { parts?: Part[] } }
+      | undefined;
     bridge.registerSink((frame) => {
       captured = frame as typeof captured;
     });
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
-    bridge.handleResult(makeResult(op.operationId!, STATUS_SUCCEEDED));
+    bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED));
     await promise;
 
     expect(captured).toBeDefined();
-    expect(captured!.payload).toBe("operation");
-    expect(captured!.operation).toBe(op);
-    expect(captured!.operation!.operationId).toBe(op.operationId);
+    expect(captured!.payload).toBe("content");
+    expect(captured!.content).toBeDefined();
+    expect(captured!.content!.parts).toHaveLength(1);
+    expect(captured!.content!.parts![0]).toBe(part);
+    expect(captured!.content!.parts![0].mouseMove!.toolId).toBe(
+      part.mouseMove!.toolId,
+    );
   });
 
   // ------------------------------------------------------------------
-  // Screenshot pass-through (Wave 3)
+  // Screenshot pass-through
   // ------------------------------------------------------------------
 
   it("handleResult base64-encodes a Uint8Array screenshot and forwards dimensions", async () => {
     bridge.registerSink(() => {});
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
     bridge.handleResult({
-      operationId: op.operationId!,
-      status: STATUS_SUCCEEDED as AgentOperationResultFrame["status"],
+      toolId: part.mouseMove!.toolId!,
+      status: STATUS_SUCCEEDED as ToolResultPart["status"],
       message: "done",
       screenshot: {
+        encoding: "IMAGE_ENCODING_PNG",
         data: pngBytes,
         widthPx: 1920,
         heightPx: 1080,
@@ -235,14 +241,15 @@ describe("OperationBridge", () => {
   it("handleResult passes through an already-string (protojson) screenshot data", async () => {
     bridge.registerSink(() => {});
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
     bridge.handleResult({
-      operationId: op.operationId!,
-      status: STATUS_SUCCEEDED as AgentOperationResultFrame["status"],
+      toolId: part.mouseMove!.toolId!,
+      status: STATUS_SUCCEEDED as ToolResultPart["status"],
       message: "done",
       screenshot: {
+        encoding: "IMAGE_ENCODING_PNG",
         data: "cHJlLWVuY29kZWQ=", // already base64
         widthPx: 800,
         heightPx: 600,
@@ -255,13 +262,13 @@ describe("OperationBridge", () => {
     expect(result.screenshot!.widthPx).toBe(800);
   });
 
-  it("handleResult omits screenshot when the result frame carries none", async () => {
+  it("handleResult omits screenshot when the result part carries none", async () => {
     bridge.registerSink(() => {});
 
-    const op = makeOperation();
-    const promise = bridge.dispatch(op);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
 
-    bridge.handleResult(makeResult(op.operationId!, STATUS_SUCCEEDED, "ok"));
+    bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;
     expect(result.screenshot).toBeUndefined();

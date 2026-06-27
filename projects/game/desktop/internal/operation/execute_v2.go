@@ -86,10 +86,11 @@ func MoveCursor(screenX, screenY int32) error {
 // normalization, which on some configurations dispatched events that landed
 // at incorrect positions despite SendInput returning success.
 //
-// action must be one of the five button-pressing actions; validateClickAction
-// rejects MOVE (no button event) and UNSPECIFIED/unknown values before any
-// event is dispatched.
-func ExecuteClickAtCurrentPos(action game.AgentMouseAction) error {
+// action must be one of the five MouseClickAction button-pressing values;
+// validateClickAction rejects UNSPECIFIED/unknown values before any event is
+// dispatched. MouseClickAction carries no MOVE variant — cursor
+// repositioning is handled by MoveCursor.
+func ExecuteClickAtCurrentPos(action game.MouseClickAction) error {
 	if err := validateClickAction(action); err != nil {
 		return err
 	}

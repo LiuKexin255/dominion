@@ -434,7 +434,7 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // screenshot to the agent via WebSocket, then returns immediately. The
 // inbound response frames are drained asynchronously by recvLoop, which
 // emits each as a Wails "game:frame" event and terminates when a wait
-// frame is received (signalling the agent is done) or RecvFrame errors.
+// signal is received (signalling the agent is done) or RecvFrame errors.
 //
 // The agentProfileName selects which agent profile to use for this session.
 // screenshotData is the raw PNG bytes of the bound window; pass an empty
@@ -442,10 +442,12 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // describe the pixel dimensions of screenshotData and are ignored when it is
 // empty.
 //
-// Inbound AgentOperationFrame payloads are auto-executed by recvLoop and a
-// matching AgentOperationResultFrame is sent back over the same WebSocket
-// connection (FR-013). The result frame carries a post-action screenshot of
-// the bound window (FR-007).
+// The user turn is carried as a content frame whose PartBlock holds a
+// TextPart and, when a screenshot is attached, an ImagePart. Inbound
+// MouseMovePart/MouseClickPart payloads are auto-executed by recvLoop and a
+// matching ToolResultPart is sent back over the same WebSocket connection
+// (FR-013). The result part carries a post-action screenshot of the bound
+// window (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -462,18 +464,20 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		return fmt.Errorf("send user turn: %w", err)
 	}
 
-	userTurn := &game.AgentUserTurnFrame{
-		Text: text,
+	parts := []*game.Part{
+		{Kind: &game.Part_Text{Text: &game.TextPart{Content: text}}},
 	}
 	if len(screenshotData) > 0 {
-		userTurn.Image = &game.AgentImageFrame{
-			Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-			Data:        screenshotData,
-			WidthPx:     int32(screenshotWidth),
-			HeightPx:    int32(screenshotHeight),
-			ScaleFactor: a.boundWin.ScaleFactor,
-			WindowTitle: a.boundWin.Title,
-		}
+		parts = append(parts, &game.Part{
+			Kind: &game.Part_Image{Image: &game.ImagePart{
+				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:        screenshotData,
+				WidthPx:     int32(screenshotWidth),
+				HeightPx:    int32(screenshotHeight),
+				ScaleFactor: a.boundWin.ScaleFactor,
+				WindowTitle: a.boundWin.Title,
+			}},
+		})
 	}
 
 	frame := &game.AgentFrame{
@@ -482,8 +486,8 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		CreateTime:       timestamppb.Now(),
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
 		AgentProfileName: agentProfileName,
-		Payload: &game.AgentFrame_UserTurn{
-			UserTurn: userTurn,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: parts},
 		},
 	}
 
@@ -503,7 +507,7 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 	}
 
 	// Drain inbound frames asynchronously so this call returns immediately.
-	// recvLoop closes recvDone when it exits (wait frame received or error);
+	// recvLoop closes recvDone when it exits (wait signal received or error);
 	// CloseAgent waits on recvDone after tearing the socket down so the
 	// blocked RecvFrame unblocks instead of deadlocking.
 	a.recvDone = make(chan struct{})
@@ -514,9 +518,16 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 // recvLoop drains inbound WebSocket frames for an in-flight user turn and
 // emits each as a "game:frame" event. It runs in its own goroutine launched
 // by SendUserTurn. The loop terminates — and closes recvDone — when a wait
-// frame is received (the agent is done) or RecvFrame errors.
+// signal is received (the agent is done) or RecvFrame errors.
 //
-// On RecvFrame error a synthesized wait frame is emitted so the frontend can
+// Frames carry exactly one payload (PartBlock content OR a single control
+// signal). Content frames are scanned for tool requests: MouseMovePart and
+// MouseClickPart are auto-executed and their ToolResultPart is sent back
+// (FR-007, FR-013); the remaining parts (text/thinking/image) are surfaced
+// via the emitted frame only. Wait/Warn/Status signals are forwarded via
+// the emitted frame; a wait signal additionally ends the turn.
+//
+// On RecvFrame error a synthesized wait signal is emitted so the frontend can
 // settle the turn before the failure surfaces, preserving the behavior the
 // synchronous loop previously had.
 func (a *App) recvLoop(sessionID, frameID string) {
@@ -535,7 +546,7 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				SessionId: sessionID,
 				FrameId:   frameID,
 				Payload: &game.AgentFrame_Wait{
-					Wait: &game.AgentWaitFrame{},
+					Wait: &game.WaitSignal{},
 				},
 			}))
 			return
@@ -544,45 +555,50 @@ func (a *App) recvLoop(sessionID, frameID string) {
 
 		runtime.EventsEmit(a.ctx, "game:frame", frameToMap(resp))
 
-		// Inbound operation: auto-execute and report the result with a
-		// post-action screenshot (FR-007, FR-013).
-		if op := resp.GetOperation(); op != nil {
-			if err := a.handleInboundOperation(sessionID, op); err != nil {
-				a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
-					"session_id":  sessionID,
-					"frame_count": frameCount,
-					"error":       err.Error(),
-				})
-				return
+		switch payload := resp.GetPayload().(type) {
+		case *game.AgentFrame_Content:
+			// Auto-execute tool requests (mousemove/mouseclick) and report
+			// each result with a post-action screenshot (FR-007, FR-013).
+			for _, part := range payload.Content.GetParts() {
+				if part.GetMouseMove() == nil && part.GetMouseClick() == nil {
+					continue
+				}
+				if err := a.handleInboundOperation(sessionID, part); err != nil {
+					a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
+						"session_id":  sessionID,
+						"frame_count": frameCount,
+						"error":       err.Error(),
+					})
+					return
+				}
 			}
-			continue
-		}
-
-		if resp.GetWait() != nil {
+		case *game.AgentFrame_Wait:
 			a.logger.Info("backend", "recvLoop: done", map[string]any{
 				"session_id":  sessionID,
 				"frame_count": frameCount,
 			})
 			return
+		case *game.AgentFrame_Warn, *game.AgentFrame_Status:
+			// Forwarded via the emitted frame above; nothing else to do.
 		}
 	}
 }
 
-// handleInboundOperation executes an inbound AgentOperationFrame using the
-// existing operation executor and sends the matching AgentOperationResultFrame
-// back over the WebSocket. The result frame carries the same operation_id and
-// a SUCCEEDED/FAILED status; it is never carried by an AgentAckFrame (FR-013).
-// A post-action screenshot is attached when the bound window can be
-// captured (FR-007).
-func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFrame) error {
-	result := a.executeAgentOperation(op)
+// handleInboundOperation executes an inbound tool-request Part
+// (MouseMovePart/MouseClickPart) and sends the matching ToolResultPart back
+// over the WebSocket wrapped in a content frame. The result part carries the
+// same tool_id and a SUCCEEDED/FAILED status; it is never carried by an ack
+// (FR-013). A post-action screenshot is attached when the bound window can
+// be captured (FR-007).
+func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
+	result := a.executeAgentOperation(part)
 
 	resultFrameID, err := randomHex(8)
 	if err != nil {
 		a.logger.Error("backend", "handleInboundOperation: frame id failed", map[string]any{
-			"session_id":   sessionID,
-			"operation_id": result.GetOperationId(),
-			"error":        err.Error(),
+			"session_id": sessionID,
+			"tool_id":    result.GetToolId(),
+			"error":      err.Error(),
 		})
 		return fmt.Errorf("send user turn: operation result: %w", err)
 	}
@@ -592,38 +608,49 @@ func (a *App) handleInboundOperation(sessionID string, op *game.AgentOperationFr
 		FrameId:    resultFrameID,
 		CreateTime: timestamppb.Now(),
 		Sender:     game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_OperationResult{
-			OperationResult: result,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{
+				Parts: []*game.Part{
+					{Kind: &game.Part_ToolResult{ToolResult: result}},
+				},
+			},
 		},
 	}
 
 	if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
 		a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
-			"session_id":   sessionID,
-			"operation_id": result.GetOperationId(),
-			"error":        err.Error(),
+			"session_id": sessionID,
+			"tool_id":    result.GetToolId(),
+			"error":      err.Error(),
 		})
 		return fmt.Errorf("send user turn: operation result: %w", err)
 	}
 	return nil
 }
 
-// executeAgentOperation runs an inbound mouse operation via the split
-// move/click executor and returns the matching result frame. A MOVE action
-// captures the bound window's bounds, converts the screenshot-relative target
-// to screen-absolute coordinates, and repositions the cursor; any click
-// action dispatches button events at the cursor's current position with no
-// coordinate conversion.
+// executeAgentOperation runs an inbound tool-request Part (MouseMovePart or
+// MouseClickPart) via the split move/click executor and returns the matching
+// ToolResultPart. A move part captures the bound window's bounds, converts
+// the screenshot-relative target to screen-absolute coordinates, and
+// repositions the cursor; a click part dispatches button events at the
+// cursor's current position with no coordinate conversion.
 //
 // After the action phase — regardless of whether it succeeded — a follow-up
 // screenshot of the bound window is captured (FR-007). The screenshot is
-// attached to the result frame when capture and sizing succeed; otherwise
+// attached to the result part when capture and sizing succeed; otherwise
 // the capture failure is recorded in the result message. Status always
 // reflects the ACTION outcome (never SUCCEEDED when the action failed).
-// Precondition failures (no mouse payload, no window bound) return early
+// Precondition failures (no tool payload, no window bound) return early
 // since no screenshot is possible without a bound window.
-func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOperationResultFrame {
-	operationID := op.GetOperationId()
+func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
+	move := part.GetMouseMove()
+	click := part.GetMouseClick()
+	var toolID string
+	if move != nil {
+		toolID = move.GetToolId()
+	} else if click != nil {
+		toolID = click.GetToolId()
+	}
 
 	corrSuffix, err := randomHex(8)
 	corrID := "corr-unknown"
@@ -633,21 +660,20 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 		corrID = "corr-" + corrSuffix
 	}
 
-	failed := func(msg string) *game.AgentOperationResultFrame {
+	failed := func(msg string) *game.ToolResultPart {
 		a.logger.Error("backend", "executeAgentOperation: failed", map[string]any{
-			"operation_id":   operationID,
+			"tool_id":       toolID,
 			"correlation_id": corrID,
-			"error":          msg,
+			"error":         msg,
 		})
-		return &game.AgentOperationResultFrame{
-			OperationId: operationID,
-			Status:      game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED,
-			Message:     msg,
+		return &game.ToolResultPart{
+			ToolId:  toolID,
+			Status:  game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED,
+			Message: msg,
 		}
 	}
 
-	mouse := op.GetMouse()
-	if mouse == nil {
+	if move == nil && click == nil {
 		return failed("unsupported operation: only mouse operations are supported")
 	}
 
@@ -659,21 +685,24 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
 	//
-	// MOVE captures the bound window's bounds to translate the
+	// MouseMovePart captures the bound window's bounds to translate the
 	// screenshot-relative target into screen-absolute coordinates, then moves
-	// the cursor. Click actions dispatch button events at the cursor's current
-	// position and perform no coordinate conversion or cursor repositioning.
+	// the cursor. MouseClickPart dispatches button events at the cursor's
+	// current position and performs no coordinate conversion or cursor
+	// repositioning.
 	var actionErr error
 	var screenX, screenY int32
 	var bounds capture.WindowBounds
-	if mouse.GetAction() == game.AgentMouseAction_AGENT_MOUSE_ACTION_MOVE {
+	var actionLabel string
+	if move != nil {
+		actionLabel = "move"
 		var bErr error
 		bounds, bErr = capture.CaptureWindowBounds(a.boundWin.Handle)
 		if bErr != nil {
 			actionErr = fmt.Errorf("capture window bounds: %w", bErr)
 		} else {
 			var cErr error
-			screenX, screenY, cErr = operation.ScreenshotToScreenCoords(mouse.GetXPx(), mouse.GetYPx(), int32(bounds.Left), int32(bounds.Top))
+			screenX, screenY, cErr = operation.ScreenshotToScreenCoords(move.GetXPx(), move.GetYPx(), int32(bounds.Left), int32(bounds.Top))
 			if cErr != nil {
 				actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
 			} else if eErr := operation.MoveCursor(screenX, screenY); eErr != nil {
@@ -687,39 +716,38 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 		// otherwise the click lands as an activation gesture with no
 		// application-level effect. The cursor position from the preceding
 		// mouse_move is preserved by SetForeground.
+		actionLabel = click.GetClick().String()
 		fgBefore := capture.ForegroundWindow()
 		fgOk := capture.SetForeground(a.boundWin.Handle)
 		fgAfter := capture.ForegroundWindow()
 		a.logger.Info("backend", "click: foreground state", map[string]any{
-			"operation_id":      operationID,
-			"correlation_id":    corrID,
-			"window_handle":     a.boundWin.Handle,
-			"window_title":      a.boundWin.Title,
+			"tool_id":         toolID,
+			"correlation_id":  corrID,
+			"window_handle":   a.boundWin.Handle,
+			"window_title":    a.boundWin.Title,
 			"foreground_before": fgBefore,
 			"set_foreground_ok": fgOk,
 			"foreground_after":  fgAfter,
 		})
-		if eErr := operation.ExecuteClickAtCurrentPos(mouse.GetAction()); eErr != nil {
+		if eErr := operation.ExecuteClickAtCurrentPos(click.GetClick()); eErr != nil {
 			actionErr = fmt.Errorf("click action: %w", eErr)
 		}
 	}
 
-	actionStatus := game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_SUCCEEDED
+	actionStatus := game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED
 	actionMsg := "ok"
 	if actionErr != nil {
-		actionStatus = game.AgentOperationResultStatus_AGENT_OPERATION_RESULT_STATUS_FAILED
+		actionStatus = game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED
 		actionMsg = actionErr.Error()
 		a.logger.Error("backend", "executeAgentOperation: action failed", map[string]any{
-			"operation_id":   operationID,
+			"tool_id":        toolID,
 			"correlation_id": corrID,
 			"error":          actionErr.Error(),
 		})
 	} else {
 		a.logger.Info("backend", "Operation executed", map[string]any{
-			"operation_id":  operationID,
-			"action":        mouse.GetAction().String(),
-			"screenshot_x":  mouse.GetXPx(),
-			"screenshot_y":  mouse.GetYPx(),
+			"tool_id":  toolID,
+			"action":   actionLabel,
 			"window_handle": a.boundWin.Handle,
 			"window_title":  a.boundWin.Title,
 			"window_bounds": map[string]int{
@@ -738,10 +766,10 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 
 	// Single exit: build the result with the accumulated action status, then
 	// always attempt a post-action screenshot when a window is bound (FR-007).
-	result := &game.AgentOperationResultFrame{
-		OperationId: operationID,
-		Status:      actionStatus,
-		Message:     actionMsg,
+	result := &game.ToolResultPart{
+		ToolId:  toolID,
+		Status:  actionStatus,
+		Message: actionMsg,
 	}
 
 	if a.boundWin.Handle != 0 {
@@ -756,7 +784,7 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 		case len(capturedImg.Data) > maxScreenshotBytes:
 			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
 		default:
-			result.Screenshot = &game.AgentImageFrame{
+			result.Screenshot = &game.ImagePart{
 				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 				Data:        capturedImg.Data,
 				WidthPx:     int32(capturedImg.WidthPx),
@@ -965,7 +993,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 		return err
 	}
 
-	// Application-level probe: send a ping frame and wait for any response.
+	// Application-level probe: send a status signal and wait for any response.
 	// This verifies the full path: desktop → gateway → proxy → agent.
 	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
 	probeFrame := &game.AgentFrame{
@@ -973,7 +1001,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 		FrameId:    probeFrameID,
 		CreateTime: timestamppb.Now(),
 		Payload: &game.AgentFrame_Status{
-			Status: &game.AgentStatusFrame{Status: "ping"},
+			Status: &game.StatusSignal{Status: "ping"},
 		},
 	}
 

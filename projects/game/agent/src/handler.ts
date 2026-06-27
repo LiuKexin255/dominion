@@ -6,6 +6,11 @@
  *
  * The handler delegates adapter lifecycle to SessionAgentStore.  Each
  * SessionAgent owns its adapter and manages profile binding/switching.
+ *
+ * Frame contract (Part model): every AgentFrame carries exactly one payload —
+ * a PartBlock of content OR a single control signal (wait/warn/status).  User
+ * turns and agent output are both content frames distinguished only by
+ * `sender`; tool results are content frames carrying a ToolResultPart.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -17,14 +22,23 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
-import type { AgentOperationResultFrame } from "../game_types/projects/game/AgentOperationResultFrame";
+import type { Part } from "../game_types/projects/game/Part";
+import type { ImagePart } from "../game_types/projects/game/ImagePart";
+import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
+import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
 import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
 import type { TurnContent } from "./llm";
 
+/**
+ * FrameSender enum values (proto string literals). Defined locally rather
+ * than imported as a value so the handler has no runtime dependency on the
+ * generated game_types modules (which are not resolvable from the test
+ * runfiles tree); all other game_types references are type-only.
+ */
 const FrameSender = {
   FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
   FRAME_SENDER_USER: "FRAME_SENDER_USER",
@@ -131,64 +145,14 @@ export class Handler implements AgentServiceHandlers {
   // Connect (bidirectional streaming)
   // -----------------------------------------------------------------------
 
-  Connect: grpc.handleBidiStreamingCall<
-    {
-      sessionId?: string;
-      frameId?: string;
-      invokeId?: string;
-      sequence?: number | string;
-      sender?: string | number;
-      payload?: string;
-      text?: { content?: string } | null;
-      status?: { status?: string } | null;
-      screenshot?: unknown;
-      echo?: unknown;
-      operation?: unknown;
-      agentProfileName?: string;
-      userTurn?: {
-        text?: string;
-        image?: {
-          data?: Uint8Array | string;
-          encoding?: string;
-          widthPx?: number;
-          heightPx?: number;
-        };
-      } | null;
-      operationResult?: {
-        operationId?: string;
-        status?: string | number;
-        message?: string;
-        screenshot?: {
-          data?: Uint8Array | string;
-          encoding?: string;
-          widthPx?: number;
-          heightPx?: number;
-        } | null;
-      } | null;
-    },
-    AgentFrame
-  > = (stream) => {
-    let currentInvokeId = "";
-    let sequence = 0;
-
-    const nextSequence = (invokeId: string): number => {
-      if (invokeId !== currentInvokeId) {
-        currentInvokeId = invokeId;
-        sequence = 0;
-      }
-      return sequence++;
-    };
-
+  Connect: grpc.handleBidiStreamingCall<AgentFrame, AgentFrame> = (stream) => {
     const buildFrame = (
       sessionId: string,
-      invokeId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
     ): AgentFrame => ({
       sessionId,
       frameId: randomUUID(),
-      invokeId,
-      sequence: nextSequence(invokeId),
       sender,
       createTime: timestampNow(),
       ...payload,
@@ -210,14 +174,12 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
-      const invokeId = frame.invokeId ?? "";
 
-      if (frame.payload === "status" || frame.status) {
+      if (frame.payload === "status") {
         const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
         const state = sessionAgent.getAdapterState();
         const statusFrame: AgentFrame = buildFrame(
           sessionId,
-          invokeId,
           FrameSender.FRAME_SENDER_SYSTEM,
           {
             status: {
@@ -229,41 +191,43 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      if (frame.payload === "echo" || frame.echo) {
-        const echoData =
-          frame.echo && typeof frame.echo === "object" && "data" in frame.echo
-            ? (frame.echo as { data?: string }).data ?? ""
-            : "";
-        const echoFrame: AgentFrame = buildFrame(
-          sessionId,
-          invokeId,
-          FrameSender.FRAME_SENDER_SYSTEM,
-          {
-            echo: { data: echoData },
-          },
-        );
-        stream.write(echoFrame);
+      // Control signals that terminate a turn / flag a warning. The agent
+      // never initiates on these, so inbound wait/warn are acknowledged as
+      // no-ops (logged) rather than driving any turn state.
+      if (frame.payload === "wait") {
+        info("wait signal received from peer", { sessionId });
+        return;
+      }
+      if (frame.payload === "warn") {
+        const message = frame.warn?.message ?? "";
+        warn("warn signal received from peer", { sessionId, message });
         return;
       }
 
-      if (frame.payload === "operation_result" || frame.operationResult) {
-        const sa = this.sessionAgentStore.getOrCreate(sessionId);
-        sa.getBridge().handleResult(frame.operationResult as AgentOperationResultFrame);
-        return;
-      }
+      if (frame.payload === "content") {
+        const parts = frame.content?.parts ?? [];
 
-      if (frame.payload === "user_turn" || frame.userTurn) {
-        const userTurn = frame.userTurn as {
-          text?: string;
-          image?: {
-            data?: Uint8Array | string;
-            encoding?: string;
-            widthPx?: number;
-            heightPx?: number;
-          };
-        };
-        const userText = userTurn?.text ?? "";
-        const image = userTurn?.image;
+        // Tool results from the desktop arrive as content carrying
+        // ToolResultPart(s); route them to the bridge before any user-turn
+        // handling.
+        const toolResults = parts.filter((p: Part) => p.toolResult);
+        if (toolResults.length > 0) {
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+          for (const p of toolResults) {
+            sa.getBridge().handleResult(p.toolResult as ToolResultPart);
+          }
+          return;
+        }
+
+        // Only user-sent content drives a turn.
+        if (frame.sender !== FrameSender.FRAME_SENDER_USER) {
+          return;
+        }
+
+        const userText = parts
+          .map((p: Part) => p.text?.content ?? "")
+          .join("");
+        const imagePart = parts.map((p: Part) => p.image).find(Boolean);
 
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
@@ -275,13 +239,9 @@ export class Handler implements AgentServiceHandlers {
         }
 
         if (!effectiveProfileName) {
-          warn("no agent profile name for user_turn frame", {
-            sessionId,
-            invokeId,
-          });
+          warn("no agent profile name for user content frame", { sessionId });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               warn: {
@@ -297,8 +257,8 @@ export class Handler implements AgentServiceHandlers {
         try {
           const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
-          sa.getBridge().registerSink((operationEnvelope: AgentFrame) => {
-            stream.write(operationEnvelope);
+          sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
+            stream.write(contentEnvelope);
           });
           activeSessions.add(sessionId);
 
@@ -308,11 +268,11 @@ export class Handler implements AgentServiceHandlers {
           );
 
           const turnContent: TurnContent = { text: userText };
-          if (image?.data && image?.encoding) {
-            turnContent.imageData = bytesToBase64String(image.data);
-            turnContent.imageMimeType = encodingToMime(image.encoding);
-            turnContent.imageWidthPx = image.widthPx;
-            turnContent.imageHeightPx = image.heightPx;
+          if (imagePart?.data) {
+            turnContent.imageData = bytesToBase64String(imagePart.data);
+            turnContent.imageMimeType = encodingToMime(imagePart.encoding);
+            turnContent.imageWidthPx = imagePart.widthPx;
+            turnContent.imageHeightPx = imagePart.heightPx;
           }
 
           let blockCount = 0;
@@ -324,36 +284,36 @@ export class Handler implements AgentServiceHandlers {
             if (block.type === "reasoning") {
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
-                invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  thinking: { content: block.reasoning },
+                  content: {
+                    parts: [{ thinking: { content: block.reasoning } }],
+                  },
                 },
               );
               stream.write(thinkFrame);
             } else if (block.type === "text") {
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
-                invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  text: { content: block.text },
+                  content: {
+                    parts: [{ text: { content: block.text } }],
+                  },
                 },
               );
               stream.write(textFrame);
             }
           }
 
-          info("user_turn processing completed", {
+          info("user content processing completed", {
             sessionId,
-            invokeId,
             blockCount,
           });
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               agentProfileName: effectiveProfileName,
@@ -364,14 +324,9 @@ export class Handler implements AgentServiceHandlers {
         } catch (err: unknown) {
           const message =
             err instanceof Error ? err.message : "Processing error";
-          error("LLM processing failed", {
-            sessionId,
-            invokeId,
-            error: message,
-          });
+          error("LLM processing failed", { sessionId, error: message });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               warn: { message: `Processing error: ${message}` },
@@ -381,7 +336,6 @@ export class Handler implements AgentServiceHandlers {
 
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             { agentProfileName: effectiveProfileName, wait: {} },
           );
@@ -451,125 +405,79 @@ export class Handler implements AgentServiceHandlers {
           continue;
         }
 
-        // Tool messages are best-effort reconstructed as operation_result
-        // Messages so history renders identically to live operation results.
-        if (msgType === "tool") {
-          const operationResult = reconstructOperationResult(msg.content);
-          if (operationResult) {
-            result.push({
-              name: `sessions/${sessionId}/agent/messages/${msg.id}`,
-              messageId: msg.id,
-              sender: FrameSender.FRAME_SENDER_SYSTEM,
-              type: "operation_result",
-              content: "operationResult",
-              operationResult,
-              createTime,
-            });
-          }
-          continue;
-        }
-
         const sender =
           msgType === "human"
             ? FrameSender.FRAME_SENDER_USER
-            : FrameSender.FRAME_SENDER_AGENT;
+            : msgType === "ai"
+              ? FrameSender.FRAME_SENDER_AGENT
+              : FrameSender.FRAME_SENDER_SYSTEM;
 
-        const segments: { type: string; content: string }[] = [];
+        const parts: Part[] = [];
 
-        if (typeof msg.content === "string") {
-          segments.push({ type: "text", content: msg.content });
-        } else if (Array.isArray(msg.content)) {
-          const reasoningBlocks = msg.content.filter(
-            (b: any) => b.type === "reasoning",
-          );
-          const textBlocks = msg.content.filter(
-            (b: any) => b.type === "text",
-          );
-          const imageBlocks = msg.content.filter(
-            (b: any) => b.type === "image" || b.type === "image_url",
-          );
-
-          const reasoning = reasoningBlocks
-            .map((b: any) => b.reasoning ?? "")
-            .join("\n");
-          if (reasoning) {
-            segments.push({ type: "thinking", content: reasoning });
+        if (msgType === "tool") {
+          const toolResult = reconstructToolResult(msg.content);
+          if (toolResult) {
+            parts.push({ toolResult });
           }
-
-          const text = textBlocks
-            .map((b: any) => b.text ?? "")
-            .join("");
-          if (text) {
-            segments.push({ type: "text", content: text });
-          }
-
-          for (const imgBlock of imageBlocks) {
-            const base64Data = extractBase64FromImageBlock(imgBlock);
-            if (base64Data) {
-              segments.push({ type: "image_data", content: base64Data });
+        } else {
+          if (typeof msg.content === "string") {
+            if (msg.content) {
+              parts.push({ text: { content: msg.content } });
             }
-          }
+          } else if (Array.isArray(msg.content)) {
+            const reasoningBlocks = msg.content.filter(
+              (b: any) => b.type === "reasoning",
+            );
+            const textBlocks = msg.content.filter(
+              (b: any) => b.type === "text",
+            );
+            const imageBlocks = msg.content.filter(
+              (b: any) => b.type === "image" || b.type === "image_url",
+            );
 
-          if (segments.length === 0) {
-            const fallback = msg.content
-              .map((b: any) => b.text ?? b.reasoning ?? "")
+            for (const b of reasoningBlocks) {
+              const reasoning = (b as any).reasoning ?? "";
+              if (reasoning) parts.push({ thinking: { content: reasoning } });
+            }
+            const text = textBlocks
+              .map((b: any) => b.text ?? "")
               .join("");
-            if (fallback) {
-              segments.push({ type: "text", content: fallback });
+            if (text) parts.push({ text: { content: text } });
+
+            for (const imgBlock of imageBlocks) {
+              const base64Data = extractBase64FromImageBlock(imgBlock);
+              if (base64Data) {
+                parts.push({
+                  image: {
+                    encoding: "IMAGE_ENCODING_PNG",
+                    data: base64Data,
+                  },
+                });
+              }
+            }
+          }
+
+          // AI tool_calls reconstruct as MouseMovePart / MouseClickPart parts
+          // so operation history renders identically to live tool dispatch.
+          if (msgType === "ai") {
+            for (const call of extractToolCalls(msg)) {
+              const part = toolCallToPart(call);
+              if (part) parts.push(part);
             }
           }
         }
 
-        for (const seg of segments) {
-          if (!seg.content && seg.type !== "text") continue;
-
-          const multi = segments.length > 1;
-          const segId = multi ? `${msg.id}-${seg.type}` : msg.id;
-
-          if (seg.type === "image_data") {
-            result.push({
-              name: `sessions/${sessionId}/agent/messages/${segId}`,
-              messageId: segId,
-              sender,
-              type: "image",
-              content: "imageData",
-              imageData: seg.content,
-              createTime,
-            });
-            continue;
-          }
-
-          result.push({
-            name: `sessions/${sessionId}/agent/messages/${segId}`,
-            messageId: segId,
-            sender,
-            type: seg.type,
-            content: "text",
-            text: seg.content,
-            createTime,
-          });
+        if (parts.length === 0) {
+          continue;
         }
 
-        // AI tool_calls are best-effort reconstructed as operation Messages so
-        // history renders identically to live agent operation requests.
-        if (msgType === "ai") {
-          const toolCalls = extractToolCalls(msg);
-          for (let i = 0; i < toolCalls.length; i++) {
-            const call = toolCalls[i];
-            const operation = toolCallToOperationFrame(call);
-            if (!operation) continue;
-            const callId = call.id ?? String(i);
-            result.push({
-              name: `sessions/${sessionId}/agent/messages/${msg.id}-${callId}`,
-              messageId: `${msg.id}-${callId}`,
-              sender: FrameSender.FRAME_SENDER_AGENT,
-              type: "operation",
-              content: "operation",
-              operation,
-              createTime,
-            });
-          }
-        }
+        result.push({
+          name: `sessions/${sessionId}/agent/messages/${msg.id}`,
+          messageId: msg.id,
+          sender,
+          content: { parts },
+          createTime,
+        });
       }
 
       callback(null, { messages: result });
@@ -609,17 +517,16 @@ function extractSessionId(parent: string): string {
   return match ? match[1] : parent;
 }
 
-function bytesToBase64(value: Uint8Array): string {
-  return Buffer.from(value).toString("base64");
-}
-
 function bytesToBase64String(data: Uint8Array | string): string {
   if (typeof data === "string") return data;
   return Buffer.from(data).toString("base64");
 }
 
-function encodingToMime(encoding: string): string {
-  const subtype = encoding.replace(/^IMAGE_ENCODING_/, "").toLowerCase();
+function encodingToMime(encoding: unknown): string {
+  if (typeof encoding === "number") {
+    return encoding === 1 ? "image/png" : "image/png";
+  }
+  const subtype = String(encoding ?? "").replace(/^IMAGE_ENCODING_/, "").toLowerCase();
   return `image/${subtype || "png"}`;
 }
 
@@ -640,7 +547,7 @@ function extractBase64FromImageBlock(block: any): string {
       return stripDataUrlPrefix(raw);
     }
     if (raw instanceof Uint8Array && raw.length > 0) {
-      return bytesToBase64(raw);
+      return Buffer.from(raw).toString("base64");
     }
     if (Buffer.isBuffer(raw) && raw.length > 0) {
       return raw.toString("base64");
@@ -650,11 +557,11 @@ function extractBase64FromImageBlock(block: any): string {
 }
 
 // ---------------------------------------------------------------------------
-// Operation history reconstruction helpers
+// Tool history reconstruction helpers
 //
-// ListMessages best-effort reconstructs AgentOperationFrame / AgentOperation
-// ResultFrame from LangChain message state so operation history renders
-// identically to the live operation stream.
+// ListMessages best-effort reconstructs MouseMovePart / MouseClickPart /
+// ToolResultPart from LangChain message state so operation history renders
+// identically to the live tool stream.
 // ---------------------------------------------------------------------------
 
 /** Minimal shape of a LangChain tool_call carried on an AIMessage. */
@@ -662,15 +569,6 @@ interface ToolCallLike {
   name?: string;
   args?: Record<string, unknown>;
   id?: string;
-}
-
-/** Minimal shape of a content block inside a BaseMessage content array. */
-interface ContentBlockLike {
-  type?: string;
-  text?: string;
-  reasoning?: string;
-  image_url?: { url?: string };
-  data?: unknown;
 }
 
 /** Matches the pixel-dimension annotation emitted by mouse tools. */
@@ -694,57 +592,48 @@ function toInt32(value: unknown): number {
   return 0;
 }
 
-/** Map a mouse_click click_type arg to the proto AgentMouseAction string. */
+/** Map a mouse_click click_type arg to the proto MouseClickAction string. */
 function clickTypeToAction(clickType: unknown): string {
   if (typeof clickType !== "string" || !clickType) {
-    return "AGENT_MOUSE_ACTION_UNSPECIFIED";
+    return "MOUSE_CLICK_ACTION_UNSPECIFIED";
   }
-  return `AGENT_MOUSE_ACTION_${clickType.toUpperCase()}`;
+  return `MOUSE_CLICK_ACTION_${clickType.toUpperCase()}`;
 }
 
 /**
- * Best-effort map a LangChain tool_call to an AgentOperationFrame.
- *
- * Recognises the mouse_move and mouse_click tools; unknown tools return null
- * (no operation Message is emitted for them).
+ * Best-effort map a LangChain tool_call to a Part (MouseMovePart or
+ * MouseClickPart). Unknown tools return null (no Part emitted for them).
  */
-function toolCallToOperationFrame(
-  call: ToolCallLike,
-): AgentOperationFrame | null {
+function toolCallToPart(call: ToolCallLike): Part | null {
   const name = call.name;
   const args = call.args ?? {};
   if (name === "mouse_move") {
-    return {
-      mouse: {
-        action: "AGENT_MOUSE_ACTION_MOVE",
-        xPx: toInt32(args.x_px),
-        yPx: toInt32(args.y_px),
-      },
+    const part: MouseMovePart = {
+      xPx: toInt32(args.x_px),
+      yPx: toInt32(args.y_px),
     };
+    return { mouseMove: part };
   }
   if (name === "mouse_click") {
-    return {
-      mouse: {
-        action: clickTypeToAction(args.click_type),
-        xPx: 0,
-        yPx: 0,
-      },
+    const part: MouseClickPart = {
+      click: clickTypeToAction(args.click_type) as MouseClickPart["click"],
     };
+    return { mouseClick: part };
   }
   return null;
 }
 
-/** Infer AgentOperationResultStatus from the result message text. */
-function inferOperationStatus(message: string): string {
+/** Infer ToolResultStatus from the result message text. */
+function inferToolResultStatus(message: string): string {
   const lower = message.toLowerCase();
   return lower.includes("ok") || lower.includes("succeeded")
-    ? "AGENT_OPERATION_RESULT_STATUS_SUCCEEDED"
-    : "AGENT_OPERATION_RESULT_STATUS_FAILED";
+    ? "TOOL_RESULT_STATUS_SUCCEEDED"
+    : "TOOL_RESULT_STATUS_FAILED";
 }
 
 /**
- * Best-effort reconstruct an AgentOperationResultFrame from a ToolMessage's
- * content blocks.
+ * Best-effort reconstruct a ToolResultPart from a ToolMessage's content
+ * blocks.
  *
  * - text block (non-annotation) → message
  * - image_url block → screenshot.data (base64, data-url prefix stripped)
@@ -752,14 +641,15 @@ function inferOperationStatus(message: string): string {
  * - status inferred from message ("ok"/"succeeded" → SUCCEEDED, else FAILED)
  *
  * String content (when the ToolMessage carries a plain string) is used as the
- * message directly.
+ * message directly. tool_id is unknown from history, so it is left empty.
  */
-function reconstructOperationResult(
+function reconstructToolResult(
   content: BaseMessage["content"],
-): AgentOperationResultFrame | null {
-  const blocks: ContentBlockLike[] = Array.isArray(content)
-    ? (content as ContentBlockLike[])
-    : [];
+): ToolResultPart | null {
+  const blocks: { type?: string; text?: string; image_url?: { url?: string } }[] =
+    Array.isArray(content)
+      ? (content as { type?: string; text?: string; image_url?: { url?: string } }[])
+      : [];
 
   let message = "";
   let screenshotData = "";
@@ -784,18 +674,20 @@ function reconstructOperationResult(
     message = content;
   }
 
-  const status = inferOperationStatus(message);
+  const status = inferToolResultStatus(message) as ToolResultPart["status"];
 
-  const result: AgentOperationResultFrame = {
+  const result: ToolResultPart = {
     status,
     message,
   };
   if (screenshotData) {
-    result.screenshot = {
+    const screenshot: ImagePart = {
+      encoding: "IMAGE_ENCODING_PNG",
       data: screenshotData,
       widthPx,
       heightPx,
     };
+    result.screenshot = screenshot;
   }
   return result;
 }

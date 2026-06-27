@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"time"
 
@@ -34,28 +33,19 @@ type AgentView struct {
 	AgentProfileName string `json:"agentProfileName"`
 }
 
-// MessageViewModel is the Wails view model for game.Message.
+// MessageViewModel is the Wails view model for game.Message. The message
+// content is projected as the same PartBlock shape a live AgentFrame's content
+// payload carries, so history and live view render identically: Content holds
+// the protojson-serialized PartBlock ({"parts":[...]} with camelCase field
+// names and base64 image bytes), matching what app.go's frameToMap emits for
+// live content frames.
 type MessageViewModel struct {
-	Name            string                      `json:"name"`
-	MessageID       string                      `json:"messageId"`
-	Sender          string                      `json:"sender"`
-	Type            string                      `json:"type"`
-	Content         string                      `json:"content"`
-	ImageData       string                      `json:"imageData,omitempty"`
-	CreateTime      string                      `json:"createTime,omitempty"`
-	Operation       *MessageOperationJSON       `json:"operation,omitempty"`
-	OperationResult *MessageOperationResultJSON `json:"operationResult,omitempty"`
+	Name       string         `json:"name"`
+	MessageID  string         `json:"messageId"`
+	Sender     string         `json:"sender"`
+	CreateTime string         `json:"createTime,omitempty"`
+	Content    map[string]any `json:"content,omitempty"`
 }
-
-// MessageOperationJSON is the JSON carrier for an operation frame attached to a
-// history Message. It mirrors the live AgentFrame.operation shape (produced by
-// app.go's frameToMap via protojson) so history renders identically to live view.
-type MessageOperationJSON map[string]any
-
-// MessageOperationResultJSON is the JSON carrier for an operation-result frame
-// attached to a history Message. It mirrors the live AgentFrame.operationResult
-// shape (protojson) so history renders identically to live view.
-type MessageOperationResultJSON map[string]any
 
 // sessionViewFromProto converts a proto Session to a view model.
 func sessionViewFromProto(s *game.Session) *SessionView {
@@ -96,37 +86,36 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 	}
 }
 
-// ToMessageViewModels converts a slice of proto Message to view models.
+// ToMessageViewModels converts a slice of proto Message to view models. Each
+// message's Content PartBlock is serialized via protojson (camelCase field
+// names, flattened oneofs, base64 image bytes) so it matches the live
+// AgentFrame content emitted by app.go's frameToMap — history and live view
+// render identically.
 func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 	if messages == nil {
 		return nil
 	}
 	views := make([]*MessageViewModel, len(messages))
 	for i, m := range messages {
-		vm := &MessageViewModel{
-			Name:            m.GetName(),
-			MessageID:       m.GetMessageId(),
-			Sender:          m.GetSender().String(),
-			Type:            m.GetType(),
-			Content:         m.GetText(),
-			CreateTime:      timestampString(m.GetCreateTime()),
-			Operation:       operationToJSON(m.GetOperation()),
-			OperationResult: operationResultToJSON(m.GetOperationResult()),
+		views[i] = &MessageViewModel{
+			Name:       m.GetName(),
+			MessageID:  m.GetMessageId(),
+			Sender:     m.GetSender().String(),
+			CreateTime: timestampString(m.GetCreateTime()),
+			Content:    protoToJSONMap(m.GetContent()),
 		}
-		if m.GetType() == "image" {
-			if data := m.GetImageData(); len(data) > 0 {
-				vm.ImageData = base64.StdEncoding.EncodeToString(data)
-			}
-		}
-		views[i] = vm
 	}
 	return views
 }
 
 // protoToJSONMap marshals a proto message via protojson and decodes it into a
 // generic map, mirroring app.go's frameToMap: camelCase field names, flattened
-// oneofs, enums serialized as their string names, and bytes as base64.
+// oneofs, enums serialized as their string names, and bytes as base64. Returns
+// nil for a nil message so the Content field omits cleanly.
 func protoToJSONMap(m proto.Message) map[string]any {
+	if m == nil {
+		return nil
+	}
 	jsonBytes, err := protojson.Marshal(m)
 	if err != nil {
 		return nil
@@ -136,26 +125,6 @@ func protoToJSONMap(m proto.Message) map[string]any {
 		return nil
 	}
 	return out
-}
-
-// operationToJSON converts a proto AgentOperationFrame to its history JSON
-// carrier, or nil when the operation is absent.
-func operationToJSON(op *game.AgentOperationFrame) *MessageOperationJSON {
-	if op == nil {
-		return nil
-	}
-	m := protoToJSONMap(op)
-	return (*MessageOperationJSON)(&m)
-}
-
-// operationResultToJSON converts a proto AgentOperationResultFrame to its
-// history JSON carrier, or nil when the result is absent.
-func operationResultToJSON(r *game.AgentOperationResultFrame) *MessageOperationResultJSON {
-	if r == nil {
-		return nil
-	}
-	m := protoToJSONMap(r)
-	return (*MessageOperationResultJSON)(&m)
 }
 
 // CreateAgentProfileView is the Wails input struct for creating an AgentProfile.

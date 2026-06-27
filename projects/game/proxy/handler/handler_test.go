@@ -570,7 +570,7 @@ func makeProxyStream(sessionID string) *mockProxyStream {
 	recvCh := make(chan *game.AgentFrame, 1)
 	recvCh <- &game.AgentFrame{
 		SessionId: sessionID,
-		Payload:   &game.AgentFrame_Status{Status: &game.AgentStatusFrame{Status: "ready"}},
+		Payload:   &game.AgentFrame_Status{Status: &game.StatusSignal{Status: "ready"}},
 	}
 	close(recvCh)
 	return &mockProxyStream{ctx: context.Background(), recvCh: recvCh}

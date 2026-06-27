@@ -8,6 +8,11 @@
  *
  * Each tool is created per session by SessionAgent via createMouseMoveTool /
  * createMouseClickTool, binding the bridge in a closure.
+ *
+ * Part-model contract: a tool emits a Part (MouseMovePart / MouseClickPart)
+ * which the bridge stamps with a tool_id and dispatches as a content frame.
+ * The bridge resolves the dispatch from the matching ToolResultPart and
+ * buildResultBlocks renders it back to LangChain content blocks.
  */
 
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -15,7 +20,7 @@ import { tool } from "langchain";
 import { z } from "zod";
 
 import type { OperationBridge, OperationResult } from "./operation-bridge";
-import type { AgentOperationFrame } from "../game_types/projects/game/AgentOperationFrame";
+import type { Part } from "../game_types/projects/game/Part";
 
 // ─── mouse_move tool ───────────────────────────────────────────────────────
 
@@ -35,11 +40,11 @@ const CLICK_TYPES = [
 ] as const;
 
 const CLICK_TYPE_TO_PROTO = {
-  LEFT_CLICK: "AGENT_MOUSE_ACTION_LEFT_CLICK",
-  LEFT_DOUBLE_CLICK: "AGENT_MOUSE_ACTION_LEFT_DOUBLE_CLICK",
-  RIGHT_CLICK: "AGENT_MOUSE_ACTION_RIGHT_CLICK",
-  RIGHT_DOUBLE_CLICK: "AGENT_MOUSE_ACTION_RIGHT_DOUBLE_CLICK",
-  LEFT_RIGHT_PRESS: "AGENT_MOUSE_ACTION_LEFT_RIGHT_PRESS",
+  LEFT_CLICK: "MOUSE_CLICK_ACTION_LEFT_CLICK",
+  LEFT_DOUBLE_CLICK: "MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK",
+  RIGHT_CLICK: "MOUSE_CLICK_ACTION_RIGHT_CLICK",
+  RIGHT_DOUBLE_CLICK: "MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK",
+  LEFT_RIGHT_PRESS: "MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS",
 } as const;
 
 const mouseClickSchema = z.object({
@@ -63,8 +68,8 @@ type MouseContentBlock =
  * Create the "mouse_move" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
- *   1. Builds an AgentOperationFrame carrying a MOVE operation at the given
- *      screenshot-relative pixel coordinates.
+ *   1. Builds a Part carrying a MouseMovePart at the given screenshot-relative
+ *      pixel coordinates.
  *   2. Dispatches it through the bridge and awaits the desktop result.
  *   3. Returns a content-block array to LangChain via buildResultBlocks.
  *
@@ -75,14 +80,10 @@ export function createMouseMoveTool(
 ): StructuredToolInterface {
   return tool(
     async ({ x_px, y_px }): Promise<MouseContentBlock[]> => {
-      const frame: AgentOperationFrame = {
-        mouse: {
-          action: "AGENT_MOUSE_ACTION_MOVE",
-          xPx: x_px,
-          yPx: y_px,
-        },
+      const part: Part = {
+        mouseMove: { xPx: x_px, yPx: y_px },
       };
-      const result = await bridge.dispatch(frame);
+      const result = await bridge.dispatch(part);
       return buildResultBlocks(result);
     },
     {
@@ -101,9 +102,8 @@ export function createMouseMoveTool(
  * Create the "mouse_click" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
- *   1. Builds an AgentOperationFrame carrying the requested click action with
- *      coordinates fixed at (0, 0); the desktop ignores them and clicks at the
- *      cursor's current position.
+ *   1. Builds a Part carrying a MouseClickPart with the requested click
+ *      action; the desktop clicks at the cursor's current position.
  *   2. Dispatches it through the bridge and awaits the desktop result.
  *   3. Returns a content-block array to LangChain via buildResultBlocks.
  *
@@ -114,14 +114,12 @@ export function createMouseClickTool(
 ): StructuredToolInterface {
   return tool(
     async ({ click_type }): Promise<MouseContentBlock[]> => {
-      const frame: AgentOperationFrame = {
-        mouse: {
-          action: CLICK_TYPE_TO_PROTO[click_type],
-          xPx: 0,
-          yPx: 0,
+      const part: Part = {
+        mouseClick: {
+          click: CLICK_TYPE_TO_PROTO[click_type],
         },
       };
-      const result = await bridge.dispatch(frame);
+      const result = await bridge.dispatch(part);
       return buildResultBlocks(result);
     },
     {
@@ -140,9 +138,9 @@ export function createMouseClickTool(
 // ─── shared result-block builder ───────────────────────────────────────────
 
 /**
- * Build the LangChain content-block array for an operation result.
+ * Build the LangChain content-block array for a tool result.
  *
- * Emits the status text always, and — when the desktop captured a screenshot —
+ * Emits the status text always, and — when the desktop captured a screenshot—
  * the image plus a pixel-dimension annotation so the model can re-estimate
  * coordinates against the correct pixel space.
  */
