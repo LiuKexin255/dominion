@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, Part, WindowRef, CapturedImage } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, Part, WindowRef, CapturedImage, ChatStreamHandoff } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -19,8 +19,11 @@
     bindWindow,
     captureScreenshot,
     sendUserTurn,
-    listMessages,
+    openChatStream,
+    closeChatStream,
   } from './api'
+  import { openChatEventSource, makeDeduper } from './chat-stream'
+  import type { ChunkState } from './chat-stream'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
@@ -73,6 +76,19 @@
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
 
+  // --- SSE chat push state ---
+  // The chat dialog is delivered over a renderer-initiated EventSource (spec
+  // 016) instead of the host→webview `game:frame` channel, which silently
+  // dropped frames once the desktop window lost foreground. History replay and
+  // live streaming share this single channel.
+  let chatStreamHandoff: ChatStreamHandoff | null = $state(null)
+  let currentEventSource: EventSource | null = $state(null)
+  let openingPromise: Promise<void> | null = $state(null)
+  let deduper = $state(makeDeduper())
+  let chunkState: Map<string, ChunkState> = $state(new Map())
+  let consecutiveErrors = $state(0)
+  const ERROR_THRESHOLD = 3
+
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
   let selectedProfile = $state('')
@@ -111,13 +127,6 @@
     if (!initialized) {
       initialized = true
       handleRefresh()
-    }
-
-    const runtime = window.runtime
-    if (runtime?.EventsOn) {
-      runtime.EventsOn('game:frame', (data: unknown) => {
-        handleAgentFrame(data as AgentFrame)
-      })
     }
 
     function handleKeyDown(e: KeyboardEvent) {
@@ -217,7 +226,7 @@
     }
 
     if ((connectionState as ConnectionState) === 'connected') {
-      await handleLoadMessages()
+      await openSseStream()
     } else {
       playState = 'connection_error'
     }
@@ -287,32 +296,105 @@
     return 'mixed'
   }
 
-  async function handleLoadMessages() {
-    if (!selectedSession) return
-    playState = 'loading_messages'
-    messagesError = null
+  // wireChatEventSource builds an EventSource for the chat push stream from a
+  // handoff and wires open/frame/error handlers. playState transitions to
+  // 'chat_ready' on open (R13 — even for an empty backlog on a first-ever
+  // session, since history replays as early chat events). After ERROR_THRESHOLD
+  // consecutive errors the stream is re-opened with a fresh token (R10).
+  function wireChatEventSource(handoff: ChatStreamHandoff, sessionID: string): EventSource {
+    return openChatEventSource(
+      handoff.endpoint,
+      sessionID,
+      handoff.token,
+      chunkState,
+      deduper,
+      {
+        onOpen() {
+          playState = 'chat_ready'
+          consecutiveErrors = 0
+        },
+        onFrame(frame) {
+          handleAgentFrame(frame)
+        },
+        onError() {
+          consecutiveErrors++
+          if (consecutiveErrors < ERROR_THRESHOLD) return
+          consecutiveErrors = 0
+          if (currentEventSource) {
+            currentEventSource.close()
+            currentEventSource = null
+          }
+          // R10: re-open with a fresh token. The deduper is intentionally kept
+          // so events replayed by the fresh EventSource (which carries no
+          // Last-Event-ID) that were already applied are ignored rather than
+          // duplicated.
+          void reopenChatStream(sessionID)
+        },
+      },
+    )
+  }
+
+  // openSseStream opens the chat push stream for the selected session. History
+  // replay and live streaming both arrive over this single channel, replacing
+  // the one-shot listMessages history fetch. Concurrent opens are collapsed
+  // into one in-flight open (C10).
+  async function openSseStream(): Promise<void> {
+    if (openingPromise) return openingPromise
+    const p = doOpenSseStream()
+    openingPromise = p
     try {
-      const entries = (await listMessages(selectedSession.sessionId)) ?? []
-      // History mapping: each Message carries a PartBlock.content; the part
-      // kind is the sole discriminator (no `type` field). One messageId → one
-      // chat entry holding all of that message's parts. frame.frameId (live)
-      // and message.messageId (history) stay as the two distinct identity
-      // keys by design and are never unified.
-      chatMessages = entries.map(entry => ({
-        messageId: entry.messageId ?? '',
-        sender: resolveSender(entry.sender),
-        timestamp: entry.createTime || new Date().toISOString(),
-        parts: entry.content?.parts ?? [],
-      }))
-      playState = 'chat_ready'
-      log('info', 'chat', `Loaded ${entries.length} messages from history`)
-    } catch (e: unknown) {
-      const errStr = String(e)
-      messagesError = errStr
-      playState = 'chat_ready'
-      chatMessages = []
-      log('warn', 'chat', `Failed to load messages: ${errStr}`)
+      await p
+    } finally {
+      if (openingPromise === p) openingPromise = null
     }
+  }
+
+  async function doOpenSseStream(): Promise<void> {
+    if (!selectedSession) return
+    // Close any existing stream and reset state for a fresh session entry.
+    if (currentEventSource) {
+      currentEventSource.close()
+      currentEventSource = null
+    }
+    chunkState = new Map()
+    deduper = makeDeduper()
+    consecutiveErrors = 0
+    try {
+      const handoff = await openChatStream(selectedSession.sessionId)
+      chatStreamHandoff = handoff
+      currentEventSource = wireChatEventSource(handoff, selectedSession.sessionId)
+    } catch (e: unknown) {
+      log('error', 'chat', `Open SSE stream failed: ${String(e)}`)
+      playState = 'connection_error'
+    }
+  }
+
+  // reopenChatStream re-establishes the stream after repeated errors (R10).
+  // Partial chunk groups are cleared (the fresh EventSource replays them
+  // whole); dedup state is preserved so already-applied events are skipped.
+  async function reopenChatStream(sessionID: string): Promise<void> {
+    chunkState = new Map()
+    try {
+      const handoff = await openChatStream(sessionID)
+      chatStreamHandoff = handoff
+      currentEventSource = wireChatEventSource(handoff, sessionID)
+    } catch (e: unknown) {
+      log('error', 'chat', `SSE reopen failed: ${String(e)}`)
+      playState = 'connection_error'
+    }
+  }
+
+  // closeSseStream tears down the chat push stream on session leave (F5/F8).
+  function closeSseStream(): void {
+    if (currentEventSource) {
+      currentEventSource.close()
+      currentEventSource = null
+    }
+    // F8: evict any partial chunk groups so a never-completing group does
+    // not leak across sessions.
+    chunkState = new Map()
+    chatStreamHandoff = null
+    consecutiveErrors = 0
   }
 
   // handleContentPayload renders a content frame. One frameId maps to one chat
@@ -394,13 +476,13 @@
       await handleConnectAgent()
     }
     const nowConnected = connectionState === 'connected'
-    if (!wasConnected && nowConnected) {
-      await handleLoadMessages()
-    } else if (!nowConnected) {
+    if (!nowConnected) {
       playState = 'connection_error'
       messagesError = 'Connection failed. Retry to send your message.'
       return
     }
+    // The SSE chat stream auto-reconnects independently of the agent
+    // WebSocket; re-establishing the WS path needs no history re-fetch here.
     const optimisticIds: string[] = []
     try {
       // Optimistic user turn: mirror the backend's single user-turn frame,
@@ -460,6 +542,10 @@
   async function handleBackToSessions() {
     error = null
     messagesError = null
+    const sessionId = selectedSession?.sessionId
+    // F5 ordering: tear down the SSE stream first, then the agent, then the
+    // chat-stream resource on the backend.
+    closeSseStream()
     if (connectionState === 'connected' || connectionState === 'connecting') {
       try {
         await closeAgent()
@@ -467,6 +553,13 @@
         // ignore close errors on teardown
       }
       connectionState = 'disconnected'
+    }
+    if (sessionId) {
+      try {
+        await closeChatStream(sessionId)
+      } catch {
+        // ignore close errors on teardown
+      }
     }
     resetPlayPageState()
     selectedSession = null
@@ -478,9 +571,12 @@
 
   async function handleDeleteSession() {
     if (!selectedSession) return
+    const sessionId = selectedSession.sessionId
     try {
       loading = true
       error = null
+      // F5 ordering: SSE stream → agent → chat-stream resource.
+      closeSseStream()
       if (connectionState === 'connected') {
         try {
           await closeAgent()
@@ -489,9 +585,14 @@
         }
         connectionState = 'disconnected'
       }
+      try {
+        await closeChatStream(sessionId)
+      } catch {
+        // ignore close errors
+      }
       resetPlayPageState()
-      await deleteSession(selectedSession.sessionId)
-      log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
+      await deleteSession(sessionId)
+      log('info', 'sessions', `Session deleted: ${sessionId}`)
       selectedSession = null
       agent = null
       chatMessages = []
