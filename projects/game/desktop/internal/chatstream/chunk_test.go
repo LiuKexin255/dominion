@@ -118,9 +118,9 @@ func TestChunkPayload_FitsWithinBudget(t *testing.T) {
 // reassemble exactly to the original, and (R9) consist of valid UTF-8.
 func TestChunkPayload_FragmentsLargePayload(t *testing.T) {
 	tests := []struct {
-		name             string
-		bytes            []byte
-		wantExactPieces  int // 0 means do not assert the exact count, only ≥ 2
+		name            string
+		bytes           []byte
+		wantExactPieces int // 0 means do not assert the exact count, only ≥ 2
 	}{
 		{name: "large ASCII frame", bytes: asciiBytes(maxFragmentBytes * 5)},
 		{name: "CJK multibyte frame", bytes: cjkBytes(maxFragmentBytes * 3)},

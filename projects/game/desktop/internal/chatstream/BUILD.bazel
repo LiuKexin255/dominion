@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+go_library(
+    name = "chatstream",
+    srcs = [
+        "chunk.go",
+        "stream.go",
+    ],
+    importpath = "dominion/projects/game/desktop/internal/chatstream",
+    visibility = ["//projects/game/desktop:__subpackages__"],
+    deps = [
+        "//projects/game",
+        "//projects/game/desktop/internal/applog",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_unittest(
+    name = "chatstream_test",
+    srcs = [
+        "chunk_test.go",
+        "stream_test.go",
+    ],
+    embed = [":chatstream"],
+    deps = [
+        "//projects/game",
+        "//projects/game/desktop/internal/applog",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
