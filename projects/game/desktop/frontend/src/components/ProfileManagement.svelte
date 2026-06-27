@@ -23,6 +23,8 @@
     { value: 'mouse_click', label: 'Mouse Click' },
   ]
 
+  const VALID_TOOL_VALUES = new Set(TOOL_OPTIONS.map((t) => t.value))
+
   let {
     profiles,
     loading,
@@ -118,12 +120,16 @@
       : [...current, tool]
   }
 
+  function filterValidTools(names: string[] | undefined): string[] {
+    return (names ?? []).filter((n) => VALID_TOOL_VALUES.has(n))
+  }
+
   function startEdit(profile: AgentProfile) {
     editingName = profile.agentProfileName
     editModel = profile.model || ''
     editSystemPrompt = profile.systemPrompt || ''
     editEnabled = profile.enabled
-    editToolNames = profile.toolNames ? [...profile.toolNames] : []
+    editToolNames = filterValidTools(profile.toolNames)
     editError = null
   }
 
@@ -350,8 +356,8 @@
                 >
                   {profile.enabled ? 'Enabled' : 'Disabled'}
                 </span>
-                {#if profile.toolNames?.length > 0}
-                  <span class="badge badge-tools">tools: {profile.toolNames.join(', ')}</span>
+                {#if filterValidTools(profile.toolNames).length > 0}
+                  <span class="badge badge-tools">tools: {filterValidTools(profile.toolNames).join(', ')}</span>
                 {/if}
               </div>
 

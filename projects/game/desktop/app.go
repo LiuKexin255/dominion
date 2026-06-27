@@ -675,6 +675,24 @@ func (a *App) executeAgentOperation(op *game.AgentOperationFrame) *game.AgentOpe
 			}
 		}
 	} else {
+		// Synthetic clicks (SendInput) are consumed by Windows for window
+		// activation when the target is not the foreground window, so the
+		// bound window must be foreground before the button event fires —
+		// otherwise the click lands as an activation gesture with no
+		// application-level effect. The cursor position from the preceding
+		// mouse_move is preserved by SetForeground.
+		fgBefore := capture.ForegroundWindow()
+		fgOk := capture.SetForeground(a.boundWin.Handle)
+		fgAfter := capture.ForegroundWindow()
+		a.logger.Info("backend", "click: foreground state", map[string]any{
+			"operation_id":      operationID,
+			"correlation_id":    corrID,
+			"window_handle":     a.boundWin.Handle,
+			"window_title":      a.boundWin.Title,
+			"foreground_before": fgBefore,
+			"set_foreground_ok": fgOk,
+			"foreground_after":  fgAfter,
+		})
 		if eErr := operation.ExecuteClickAtCurrentPos(mouse.GetAction()); eErr != nil {
 			actionErr = fmt.Errorf("click action: %w", eErr)
 		}

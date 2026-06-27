@@ -105,9 +105,11 @@ type bitmapInfoHeader struct {
 //
 // The cursor is drawn via a GDI memory-DC round-trip: img pixels are copied
 // into a 32-bit DIB section, the cursor is composited onto it with
-// DrawIconEx using explicit pixel dimensions from GetObject (avoiding the
-// 0x0008 flag that would force the system default icon size and break DPI
-// correctness), and the result is copied back.
+// DrawIconEx, and the result is copied back. DrawIconEx is called with
+// cxWidth=cyHeight=0, which makes it use the cursor resource's actual pixel
+// dimensions. This is DPI-correct (distinct from the DI_DEFAULTSIZE=0x0008
+// flag, which forces the 32×32 system icon size) and matches every
+// production Go reference for cursor-on-screenshot drawing.
 //
 // winLeft, winTop are the screen coordinates of the captured window's
 // top-left corner (from capture.CaptureWindowBounds), used to translate the
@@ -136,15 +138,10 @@ func DrawCursor(img *image.RGBA, winLeft, winTop int32) error {
 	}
 	defer freeIconBitmaps(&ii)
 
-	cursorW, cursorH, err := cursorDimensions(&ii)
-	if err != nil {
-		return err
-	}
-
 	drawX := ci.PtScreenPos.X - int32(ii.XHotspot) - winLeft
 	drawY := ci.PtScreenPos.Y - int32(ii.YHotspot) - winTop
 
-	return drawCursorViaDIB(img, ci.HCursor, drawX, drawY, cursorW, cursorH)
+	return drawCursorViaDIB(img, ci.HCursor, drawX, drawY)
 }
 
 // cursorVisible reports whether the cursor should be drawn: true only when
@@ -167,30 +164,11 @@ func freeIconBitmaps(ii *iconInfo) {
 	}
 }
 
-// cursorDimensions returns the cursor's pixel width and height via GetObject.
-// For color cursors hbmColor is non-zero and carries the dimensions directly.
-// For monochrome cursors hbmColor is zero and hbmMask is a stacked AND+XOR
-// mask whose height is double the cursor height.
-func cursorDimensions(ii *iconInfo) (width, height int32, err error) {
-	var bm bitmap
-	if ii.HbmColor != 0 {
-		n, _, _ := procGetObject.Call(ii.HbmColor, uintptr(unsafe.Sizeof(bm)), uintptr(unsafe.Pointer(&bm)))
-		if n == 0 {
-			return 0, 0, errors.New("GetObject(hbmColor) failed")
-		}
-		return bm.BmWidth, bm.BmHeight, nil
-	}
-	n, _, _ := procGetObject.Call(ii.HbmMask, uintptr(unsafe.Sizeof(bm)), uintptr(unsafe.Pointer(&bm)))
-	if n == 0 {
-		return 0, 0, errors.New("GetObject(hbmMask) failed")
-	}
-	return bm.BmWidth, bm.BmHeight / 2, nil
-}
-
 // drawCursorViaDIB performs the GDI memory-DC round-trip: it copies img into
 // a 32-bit top-down DIB section, draws the cursor with DrawIconEx, and copies
-// the result back into img.
-func drawCursorViaDIB(img *image.RGBA, hCursor uintptr, drawX, drawY, cursorW, cursorH int32) error {
+// the result back into img. DrawIconEx receives cxWidth=cyHeight=0 so it
+// renders the cursor at its own resource size (see DrawCursor doc).
+func drawCursorViaDIB(img *image.RGBA, hCursor uintptr, drawX, drawY int32) error {
 	b := img.Bounds()
 	imgW := b.Dx()
 	imgH := b.Dy()
@@ -237,7 +215,7 @@ func drawCursorViaDIB(img *image.RGBA, hCursor uintptr, drawX, drawY, cursorW, c
 		hdcMem,
 		uintptr(drawX), uintptr(drawY),
 		hCursor,
-		uintptr(cursorW), uintptr(cursorH),
+		0, 0, // cxWidth=cyHeight=0 → cursor resource's actual size
 		0, 0,
 		uintptr(diNormal),
 	)
