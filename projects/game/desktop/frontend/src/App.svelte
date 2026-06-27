@@ -23,7 +23,7 @@
     closeChatStream,
   } from './api'
   import { openChatEventSource, makeDeduper } from './chat-stream'
-  import type { ChunkState } from './chat-stream'
+  import type { ChunkState, Deduper } from './chat-stream'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
