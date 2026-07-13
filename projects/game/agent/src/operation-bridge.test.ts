@@ -16,7 +16,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-import { OperationBridge, DesktopDisconnectedError } from "./operation-bridge";
+import { OperationBridge } from "./operation-bridge";
 
 import type { Part } from "../game_types/projects/game/Part";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
@@ -77,12 +77,13 @@ describe("OperationBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Required scenario 2: no sink → dispatch → throws DesktopDisconnectedError
+  // Required scenario 2: no sink → dispatch → resolves FAILED (no throw)
   // ------------------------------------------------------------------
-  it("no sink registered → dispatch → throws DesktopDisconnectedError", async () => {
+  it("no sink registered → dispatch → resolves FAILED", async () => {
     const part = makeMovePart();
-    await expect(bridge.dispatch(part)).rejects.toThrow(DesktopDisconnectedError);
-    await expect(bridge.dispatch(part)).rejects.toThrow("desktop disconnected");
+    const result = await bridge.dispatch(part);
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("desktop disconnected");
   });
 
   // ------------------------------------------------------------------
@@ -106,6 +107,51 @@ describe("OperationBridge", () => {
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Signal-aware dispatch: abort resolves FAILED without throwing
+  // ------------------------------------------------------------------
+  it("signal already aborted → dispatch resolves FAILED 'aborted'", async () => {
+    bridge.registerSink(() => {});
+    const controller = new AbortController();
+    controller.abort();
+    const part = makeMovePart();
+    const result = await bridge.dispatch(part, controller.signal);
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toBe("aborted");
+  });
+
+  it("signal aborts mid-dispatch → resolves FAILED before 5s timeout", async () => {
+    bridge.registerSink(() => {});
+    const controller = new AbortController();
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part, controller.signal);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort();
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toBe("aborted");
+  });
+
+  it("handleResult wins over late signal abort (no double-resolve)", async () => {
+    let capturedToolId = "";
+    bridge.registerSink((frame) => {
+      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
+    });
+    const controller = new AbortController();
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part, controller.signal);
+
+    bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+
+    controller.abort();
+    expect(result.status).toBe(STATUS_SUCCEEDED);
   });
 
   // ------------------------------------------------------------------
