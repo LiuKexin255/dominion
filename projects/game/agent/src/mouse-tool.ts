@@ -79,11 +79,12 @@ export function createMouseMoveTool(
   bridge: OperationBridge,
 ): StructuredToolInterface {
   return tool(
-    async ({ x_px, y_px }): Promise<MouseContentBlock[]> => {
+    async ({ x_px, y_px }, config): Promise<MouseContentBlock[]> => {
+      const signal = (config as { signal?: AbortSignal } | undefined)?.signal;
       const part: Part = {
         mouseMove: { xPx: x_px, yPx: y_px },
       };
-      const result = await bridge.dispatch(part);
+      const result = await bridge.dispatch(part, signal);
       return buildResultBlocks(result);
     },
     {
@@ -113,13 +114,14 @@ export function createMouseClickTool(
   bridge: OperationBridge,
 ): StructuredToolInterface {
   return tool(
-    async ({ click_type }): Promise<MouseContentBlock[]> => {
+    async ({ click_type }, config): Promise<MouseContentBlock[]> => {
+      const signal = (config as { signal?: AbortSignal } | undefined)?.signal;
       const part: Part = {
         mouseClick: {
           click: CLICK_TYPE_TO_PROTO[click_type],
         },
       };
-      const result = await bridge.dispatch(part);
+      const result = await bridge.dispatch(part, signal);
       return buildResultBlocks(result);
     },
     {
