@@ -178,6 +178,19 @@ export class Handler implements AgentServiceHandlers {
       activeSessions.clear();
     };
 
+    // Per-turn AbortControllers for sessions with an in-flight generateTurn.
+    // Cleared in finally after the turn resolves OR aborted by abortAllTurns
+    // on stream end/error.
+    const activeTurns = new Map<string, AbortController>();
+    const abortAllTurns = () => {
+      // Snapshot values first: finally blocks will asynchronously delete
+      // entries as each aborted turn unwinds.
+      for (const controller of [...activeTurns.values()]) {
+        controller.abort();
+      }
+      activeTurns.clear();
+    };
+
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
 
@@ -262,6 +275,8 @@ export class Handler implements AgentServiceHandlers {
         }
 
         await this.acquireMutex(sessionId);
+        const controller = new AbortController();
+        activeTurns.set(sessionId, controller);
         try {
           const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
@@ -287,6 +302,7 @@ export class Handler implements AgentServiceHandlers {
           for await (const block of adapter.generateTurn(
             sessionId,
             turnContent,
+            controller.signal,
           )) {
             blockCount++;
             if (block.type === "reasoning") {
@@ -316,39 +332,48 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          info("user content processing completed", {
-            sessionId,
-            blockCount,
-          });
-          const waitFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            {
-              agentProfileName: effectiveProfileName,
-              wait: {},
-            },
-          );
-          stream.write(waitFrame);
+          if (controller.signal.aborted) {
+            info("turn aborted on desktop disconnect", { sessionId });
+          } else {
+            info("user content processing completed", {
+              sessionId,
+              blockCount,
+            });
+            const waitFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                agentProfileName: effectiveProfileName,
+                wait: {},
+              },
+            );
+            stream.write(waitFrame);
+          }
         } catch (err: unknown) {
-          const message =
-            err instanceof Error ? err.message : "Processing error";
-          error("LLM processing failed", { sessionId, error: message });
-          const warnFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            {
-              warn: { message: `Processing error: ${message}` },
-            },
-          );
-          stream.write(warnFrame);
+          if (controller.signal.aborted) {
+            info("turn aborted on desktop disconnect", { sessionId });
+          } else {
+            const message =
+              err instanceof Error ? err.message : "Processing error";
+            error("LLM processing failed", { sessionId, error: message });
+            const warnFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                warn: { message: `Processing error: ${message}` },
+              },
+            );
+            stream.write(warnFrame);
 
-          const waitFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            { agentProfileName: effectiveProfileName, wait: {} },
-          );
-          stream.write(waitFrame);
+            const waitFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              { agentProfileName: effectiveProfileName, wait: {} },
+            );
+            stream.write(waitFrame);
+          }
         } finally {
+          activeTurns.delete(sessionId);
           this.releaseMutex(sessionId);
         }
       }
@@ -356,6 +381,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
+      abortAllTurns();
       cleanupSinks();
       try {
         stream.end();
@@ -366,6 +392,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
+      abortAllTurns();
       cleanupSinks();
     });
   };
