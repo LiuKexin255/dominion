@@ -379,11 +379,6 @@ def _artifact_pkg_js_impl(ctx):
                 fail("{}: JsRuntimePackageInfo from {} has empty package_metadata".format(ctx.label, target.label))
             if not info.package_name:
                 fail("{}: JsRuntimePackageInfo from {} has empty package_name".format(ctx.label, target.label))
-            if not info.npm_deps:
-                # Best-effort check: warn if npm_deps is empty.
-                # Try to read package.json to see if npm deps are declared;
-                # if reading fails, the check is skipped silently.
-                print("{}: JsRuntimePackageInfo from {} has empty npm_deps — npm deps may be missing at runtime".format(ctx.label, target.label))
 
         workspace_pkgs, closure_npm_targets = _collect_runtime_closure(ctx.attr.runtime_deps)
         args.add("--workspace-deps")

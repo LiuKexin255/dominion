@@ -41,17 +41,27 @@ func main() {
 	flag.Parse()
 
 	// 1. Create gRPC connections to backend services.
-	sessionConn, err := grpc.NewClient(solver.URI(gameconst.SessionTarget), pgrpc.ClientDefault()...)
+	// MaxRecvMsgSize/MaxSendMsgSize are bumped to 8MB so screenshots and
+	// multimodal frames fit comfortably within the gRPC hop.
+	clientOpts := append(
+		pgrpc.ClientDefault(),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(8*1024*1024),
+			grpc.MaxCallSendMsgSize(8*1024*1024),
+		),
+	)
+
+	sessionConn, err := grpc.NewClient(solver.URI(gameconst.SessionTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("session dial: %v", err)
 	}
 
-	proxyConn, err := grpc.NewClient(solver.URI(gameconst.ProxyTarget), pgrpc.ClientDefault()...)
+	proxyConn, err := grpc.NewClient(solver.URI(gameconst.ProxyTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("proxy dial: %v", err)
 	}
 
-	promptConn, err := grpc.NewClient(solver.URI(gameconst.PromptTarget), pgrpc.ClientDefault()...)
+	promptConn, err := grpc.NewClient(solver.URI(gameconst.PromptTarget), clientOpts...)
 	if err != nil {
 		log.Fatalf("prompt dial: %v", err)
 	}

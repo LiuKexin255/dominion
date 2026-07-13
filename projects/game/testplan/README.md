@@ -69,10 +69,17 @@ Fields:
 
 The shipped samples are:
 
-| file                      | name     | keywords                 | reasoning                                  | text                                |
-|---------------------------|----------|--------------------------|--------------------------------------------|-------------------------------------|
-| `sample_greeting.yaml`    | greeting | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
-| `sample_farewell.json`    | farewell | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
+| file                      | name      | keywords                 | reasoning                                  | text                                |
+|---------------------------|-----------|--------------------------|--------------------------------------------|-------------------------------------|
+| `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
+| `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
+| `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+
+The tool configs in `sample_tools.yaml` are matched against the `role:"tool"`
+messages returned by LangChain after a tool invocation, keyed by `tool_name`
+and the `match_result_contains` substrings. See `style/large_test.md` for the
+test organization rules and `fake-llm/service/message_store.go` for the loader
+contract.
 
 ## 4. Stateless matching model
 
@@ -109,17 +116,17 @@ and use **distinct** keywords per turn to prove FIFO ordering.
    the model field; only the agent-side routing cares.
 3. **Update the large-test assertions.** The expected `reasoning`/`text`
    strings are pinned as constants in `helpers_test.go`
-   (`expectedGreetingReasoning`, `expectedGreetingText`,
-   `expectedFarewellReasoning`, `expectedFarewellText`) with a comment marking
-   them as needing sync with the testdata. Update those constants whenever the
-   testdata changes, and adjust any `strings.Contains` assertions that depend
-   on them.
-4. **The T1 unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
+   (`expectedChatReasoning`, `expectedChatText`, `expectedGreetingReasoning`,
+   `expectedGreetingText`, `expectedFarewellReasoning`,
+   `expectedFarewellText`) with a comment marking them as needing sync with
+   the testdata. Update those constants whenever the testdata changes, and
+   adjust any `strings.Contains` assertions that depend on them.
+4. **The fake-llm unit test fails first.** `TestNewMessageStore_LoadsEmbeddedSamples`
    in `projects/game/fake-llm/service/message_store_test.go` pins the real
-   embedded testdata (`farewell` before `greeting`, with exact `Reasoning` /
-   `Text` / `Keywords` values). It is the single source of truth — if the
-   testdata changes, that test breaks first and reminds you to update the T6
-   constants and assertions in lockstep.
+   embedded testdata (`chat-only` before `farewell` before `greeting`, with
+   exact `Reasoning` / `Text` / `Keywords` values). It is the single source
+   of truth — if the testdata changes, that test breaks first and reminds
+   you to update the helpers constants and assertions in lockstep.
 
 ## 6. How to run the testplan
 
@@ -136,3 +143,33 @@ The deployment (`deploy_agent.yaml`) stands up `mongodb`, `session`, `proxy`,
 `fake-llm`, `agent_test`, `prompt`, and `gateway`, and exposes the gateway at
 `https://game.liukexin.com`. Test binaries read the endpoint and environment
 via `testtool.MustEndpoint` / `testtool.MustEnv` (injected by `guitar`).
+
+## 7. Feature 015 coverage (mouse tool split + operation history)
+
+Feature 015 changed the agent tool surface and the history wire shape. The
+large-test coverage for those changes is split across layers:
+
+- **US2 (mouse tool split):** `sample_tools.yaml` now keys tool-result
+  responses by `mouse_move` / `mouse_click` (the legacy single `mouse` name
+  is gone). `agent_operation_test.go` declares the split tool names on its
+  profiles and includes `TestAgentMouseSplitToolBinding`, a regression guard
+  that confirms a profile with the split names binds and processes a turn
+  end-to-end.
+- **US4 (operation/operation_result history):** `handler.ts:ListMessages`
+  reconstruction of `operation` / `operation_result` Messages is covered at
+  the **unit** level in `projects/game/agent/src/handler.test.ts`
+  (`"emits operation Message for AIMessage with tool_calls"`,
+  `"emits operation_result Message for ToolMessage ..."`). It is NOT covered
+  at the large-test level because fake-llm's stateless keyword-matched
+  `Message` templates cannot initiate a tool call (only `ToolResponse`
+  entries chain a *follow-up* call off a prior tool result), so no
+  `AIMessage`-with-`tool_calls` or `ToolMessage` ever enters the LangChain
+  checkpoint state during a large test. Closing that gap would require
+  extending fake-llm `Message` to carry an initial `tool_call`; until then,
+  the `checkpoint-resume` suite remains the text-only history regression
+  guard and operation history parity relies on the unit tests.
+
+When updating mouse tool names or argument schemas, sync
+`sample_tools.yaml`, `message_store_test.go`
+(`TestNewMessageStore_LoadsEmbeddedTools`), and the `mouseSplitToolNames`
+constant + profiles in `agent_operation_test.go` in lockstep.

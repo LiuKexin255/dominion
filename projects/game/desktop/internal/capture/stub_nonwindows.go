@@ -60,3 +60,9 @@ func CaptureWindow(ctx context.Context, hwnd uintptr) (*CapturedImage, error) {
 func CaptureWindowBounds(hwnd uintptr) (WindowBounds, error) {
 	return WindowBounds{}, errors.New("not supported on this platform")
 }
+
+// SetForeground is not supported on non-Windows platforms.
+func SetForeground(hwnd uintptr) bool { return false }
+
+// ForegroundWindow is not supported on non-Windows platforms.
+func ForegroundWindow() uintptr { return 0 }

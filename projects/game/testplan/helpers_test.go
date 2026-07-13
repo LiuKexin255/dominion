@@ -4,6 +4,7 @@ package testplan
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,7 +38,27 @@ const (
 	expectedGreetingText      = "Hello! How can I help you today?"
 	expectedFarewellReasoning = "The user is saying goodbye."
 	expectedFarewellText      = "Goodbye! Have a great day!"
+	expectedChatReasoning     = "Responding with text only, no tools needed."
+	expectedChatText          = "Sure, let's chat!"
 )
+
+// smallScreenshotData is a minimal 1×1 PNG used as screenshot payload in
+// multimodal-turn tests. The fake-LLM ignores image bytes (only text blocks
+// drive keyword matching), so the actual pixel content is irrelevant — tests
+// only verify the server accepts and processes the multimodal frame.
+var smallScreenshotData = mustBase64PNG()
+
+// mustBase64PNG decodes a minimal 1×1 transparent PNG. It panics on failure,
+// which would indicate a bug in the test itself rather than the SUT.
+func mustBase64PNG() []byte {
+	raw, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRf5ErkJggg==",
+	)
+	if err != nil {
+		panic(fmt.Sprintf("decode test png: %v", err))
+	}
+	return raw
+}
 
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
 
@@ -393,16 +414,18 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 	return frame
 }
 
-// buildTextFrame constructs an AgentFrame with a text payload, setting the
-// session ID, agent profile name, and sender.
+// buildTextFrame constructs an AgentFrame whose content payload is a PartBlock
+// holding a single TextPart. Sets the session ID, agent profile name, sender.
 func buildTextFrame(sessionID, agentProfileName, content string, sender game.FrameSender) *game.AgentFrame {
 	return &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: agentProfileName,
-		Payload: &game.AgentFrame_Text{
-			Text: &game.AgentTextFrame{Content: content},
+		Sender:           sender,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_Text{Text: &game.TextPart{Content: content}}},
+			}},
 		},
-		Sender: sender,
 	}
 }
 
@@ -412,6 +435,191 @@ func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentPro
 	t.Helper()
 	frame := buildTextFrame(sessionID, agentProfileName, text, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, frame)
+}
+
+// buildImageFrame constructs a minimal ImagePart carrying a 1×1 PNG
+// (smallScreenshotData) plus the metadata required by the proto. The returned
+// part is embedded in a user-turn PartBlock by buildUserTurnFrame.
+func buildImageFrame(sessionID string) *game.ImagePart {
+	return &game.ImagePart{
+		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:        smallScreenshotData,
+		WidthPx:     1,
+		HeightPx:    1,
+		ScaleFactor: 1.0,
+		WindowTitle: "Test Window",
+	}
+}
+
+// buildUserTurnFrame constructs an AgentFrame whose content payload is a
+// PartBlock of [TextPart, (optional) ImagePart]. Pass a nil image for a
+// text-only user turn.
+func buildUserTurnFrame(sessionID, profileName, text string, image *game.ImagePart) *game.AgentFrame {
+	parts := []*game.Part{
+		{Kind: &game.Part_Text{Text: &game.TextPart{Content: text}}},
+	}
+	if image != nil {
+		parts = append(parts, &game.Part{Kind: &game.Part_Image{Image: image}})
+	}
+	return &game.AgentFrame{
+		SessionId:        sessionID,
+		AgentProfileName: profileName,
+		Sender:           game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: parts},
+		},
+	}
+}
+
+// sendUserTurn builds and writes a content user-turn frame over the WebSocket.
+// Pass a nil image for a text-only turn.
+func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, image *game.ImagePart) {
+	t.Helper()
+	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, image))
+}
+
+// buildOperationResultFrame constructs an AgentFrame whose content payload is a
+// PartBlock holding a ToolResultPart. Used to simulate a desktop-executed tool
+// operation result delivered back to the agent.
+func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string) *game.AgentFrame {
+	return &game.AgentFrame{
+		SessionId: sessionID,
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_ToolResult{ToolResult: &game.ToolResultPart{
+					ToolId:  toolID,
+					Status:  status,
+					Message: message,
+				}}},
+			}},
+		},
+	}
+}
+
+// ─── Content-projection helpers ─────────────────────────────────────────────
+//
+// The Part model folds every content variant into a PartBlock of Parts, so a
+// thinking or text response is now a content frame whose PartBlock carries a
+// ThinkingPart / TextPart — not a dedicated frame payload. These helpers
+// project a part-kind out of a content frame (or Message) the way the old
+// frame.GetThinking() / frame.GetText() / message.GetText() accessors did.
+
+// frameHasThinking reports whether a content frame's PartBlock holds a
+// ThinkingPart.
+func frameHasThinking(f *game.AgentFrame) bool {
+	if f.GetContent() == nil {
+		return false
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if p.GetThinking() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// frameHasText reports whether a content frame's PartBlock holds a TextPart.
+func frameHasText(f *game.AgentFrame) bool {
+	if f.GetContent() == nil {
+		return false
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if p.GetText() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// frameThinking returns the content of the first ThinkingPart in a content
+// frame's PartBlock, or "" if the frame has no thinking part.
+func frameThinking(f *game.AgentFrame) string {
+	if f.GetContent() == nil {
+		return ""
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if t := p.GetThinking(); t != nil {
+			return t.GetContent()
+		}
+	}
+	return ""
+}
+
+// frameText returns the content of the first TextPart in a content frame's
+// PartBlock, or "" if the frame has no text part.
+func frameText(f *game.AgentFrame) string {
+	if f.GetContent() == nil {
+		return ""
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if t := p.GetText(); t != nil {
+			return t.GetContent()
+		}
+	}
+	return ""
+}
+
+// messageKind returns the part-kind string of the first Part in a Message's
+// content PartBlock ("text", "thinking", "image", "mouseMove", "mouseClick",
+// "toolResult"), or "" if the message has no content. Replaces the removed
+// Message.type field — Part.kind self-describes, so a separate discriminator
+// is redundant on the wire, but tests still need a kind label for logging.
+func messageKind(m *game.Message) string {
+	if m.GetContent() == nil || len(m.GetContent().GetParts()) == 0 {
+		return ""
+	}
+	p := m.GetContent().GetParts()[0]
+	switch {
+	case p.GetText() != nil:
+		return "text"
+	case p.GetThinking() != nil:
+		return "thinking"
+	case p.GetImage() != nil:
+		return "image"
+	case p.GetMouseMove() != nil:
+		return "mouseMove"
+	case p.GetMouseClick() != nil:
+		return "mouseClick"
+	case p.GetToolResult() != nil:
+		return "toolResult"
+	}
+	return ""
+}
+
+// messageText returns the content of the first TextPart in a Message's content
+// PartBlock, or "" if none. Replaces the removed Message.text field.
+func messageText(m *game.Message) string {
+	if m.GetContent() == nil {
+		return ""
+	}
+	for _, p := range m.GetContent().GetParts() {
+		if t := p.GetText(); t != nil {
+			return t.GetContent()
+		}
+	}
+	return ""
+}
+
+// updateAgentProfileTools sends an HTTP PATCH to add the given tool names to
+// an existing agent profile via UpdateAgentProfile. Returns the HTTP status
+// code and response body.
+func updateAgentProfileTools(t *testing.T, sutHostURL, sutEnvName, profileName string, toolNames []string) (int, []byte) {
+	t.Helper()
+
+	patchProfile := &game.AgentProfile{
+		Name:      "agentProfiles/" + profileName,
+		ToolNames: toolNames,
+	}
+	body, err := protojson.Marshal(patchProfile)
+	if err != nil {
+		t.Fatalf("protojson.Marshal patch profile: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%sprompts/agentProfiles/%s?update_mask=tool_names",
+		sutHostURL, pathPrefix, profileName)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
 }
 
 // drainWSFrame reads and discards frames until a frame matches the predicate,

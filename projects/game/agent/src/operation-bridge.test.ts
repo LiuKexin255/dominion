@@ -1,0 +1,279 @@
+/**
+ * operation-bridge.test.ts — Tests for OperationBridge.
+ *
+ * Covers the core scenarios:
+ *   1. register sink → dispatch → handleResult → SUCCEEDED
+ *   2. no sink registered → dispatch → 5s timeout → FAILED
+ *   3. unregister mid-dispatch → timeout → FAILED
+ *
+ * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
+ * and concurrent dispatch correlation.
+ *
+ * Part-model contract: dispatch accepts a Part (MouseMovePart/MouseClickPart),
+ * stamps a tool_id, and wraps it in a content PartBlock frame. handleResult
+ * accepts a ToolResultPart correlated by tool_id.
+ */
+
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+
+import { OperationBridge, DesktopDisconnectedError } from "./operation-bridge";
+
+import type { Part } from "../game_types/projects/game/Part";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
+
+const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
+const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
+
+function makeMovePart(): Part {
+  return { mouseMove: { xPx: 10, yPx: 20 } };
+}
+
+function makeResult(
+  toolId: string,
+  status: string,
+  message = "",
+): ToolResultPart {
+  return {
+    toolId,
+    status: status as ToolResultPart["status"],
+    message,
+  };
+}
+
+describe("OperationBridge", () => {
+  let bridge: OperationBridge;
+
+  beforeEach(() => {
+    bridge = new OperationBridge();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 1: register sink → dispatch → handleResult → SUCCEEDED
+  // ------------------------------------------------------------------
+  it("register sink → dispatch → handleResult → resolves with SUCCEEDED", async () => {
+    const written: unknown[] = [];
+    bridge.registerSink((frame) => {
+      written.push(frame);
+    });
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    expect(part.mouseMove!.toolId).toBeDefined();
+    expect(part.mouseMove!.toolId).toHaveLength(36);
+    expect(written).toHaveLength(1);
+
+    const toolId = part.mouseMove!.toolId!;
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 2: no sink → dispatch → throws DesktopDisconnectedError
+  // ------------------------------------------------------------------
+  it("no sink registered → dispatch → throws DesktopDisconnectedError", async () => {
+    const part = makeMovePart();
+    await expect(bridge.dispatch(part)).rejects.toThrow(DesktopDisconnectedError);
+    await expect(bridge.dispatch(part)).rejects.toThrow("desktop disconnected");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 3: unregister mid-dispatch → timeout → FAILED
+  // ------------------------------------------------------------------
+  it("unregister mid-dispatch → timeout → FAILED", async () => {
+    const written: unknown[] = [];
+    bridge.registerSink((frame) => {
+      written.push(frame);
+    });
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    expect(written).toHaveLength(1);
+
+    bridge.unregisterSink();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Additional coverage
+  // ------------------------------------------------------------------
+
+  it("hasSink() reflects sink registration state", () => {
+    expect(bridge.hasSink()).toBe(false);
+    bridge.registerSink(() => {});
+    expect(bridge.hasSink()).toBe(true);
+    bridge.unregisterSink();
+    expect(bridge.hasSink()).toBe(false);
+  });
+
+  it("sink throws during write → immediate FAILED", async () => {
+    bridge.registerSink(() => {
+      throw new Error("stream closed");
+    });
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("stream closed");
+  });
+
+  it("handleResult with unknown tool_id is ignored", async () => {
+    bridge.registerSink(() => {});
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_FAILED);
+  });
+
+  it("dispatch assigns a unique UUID tool_id to each part", async () => {
+    const ids: string[] = [];
+    bridge.registerSink((frame) => {
+      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const id = parts[0]?.mouseMove?.toolId;
+      if (id) ids.push(id);
+    });
+
+    const promises = [
+      bridge.dispatch(makeMovePart()),
+      bridge.dispatch(makeMovePart()),
+      bridge.dispatch(makeMovePart()),
+    ];
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await Promise.all(promises);
+
+    expect(ids).toHaveLength(3);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("handleResult resolves the correct pending dispatch when multiple in-flight", async () => {
+    bridge.registerSink(() => {});
+
+    const partA = makeMovePart();
+    const partB = makeMovePart();
+    const pA = bridge.dispatch(partA);
+    const pB = bridge.dispatch(partB);
+
+    bridge.handleResult(makeResult(partB.mouseMove!.toolId!, STATUS_SUCCEEDED, "b-done"));
+    bridge.handleResult(makeResult(partA.mouseMove!.toolId!, STATUS_FAILED, "a-fail"));
+
+    const [rA, rB] = await Promise.all([pA, pB]);
+    expect(rA.status).toBe(STATUS_FAILED);
+    expect(rA.message).toBe("a-fail");
+    expect(rB.status).toBe(STATUS_SUCCEEDED);
+    expect(rB.message).toBe("b-done");
+  });
+
+  it("written envelope has payload='content' and carries the tool Part", async () => {
+    let captured:
+      | { payload?: string; content?: { parts?: Part[] } }
+      | undefined;
+    bridge.registerSink((frame) => {
+      captured = frame as typeof captured;
+    });
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED));
+    await promise;
+
+    expect(captured).toBeDefined();
+    expect(captured!.payload).toBe("content");
+    expect(captured!.content).toBeDefined();
+    expect(captured!.content!.parts).toHaveLength(1);
+    expect(captured!.content!.parts![0]).toBe(part);
+    expect(captured!.content!.parts![0].mouseMove!.toolId).toBe(
+      part.mouseMove!.toolId,
+    );
+  });
+
+  // ------------------------------------------------------------------
+  // Screenshot pass-through
+  // ------------------------------------------------------------------
+
+  it("handleResult base64-encodes a Uint8Array screenshot and forwards dimensions", async () => {
+    bridge.registerSink(() => {});
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
+    bridge.handleResult({
+      toolId: part.mouseMove!.toolId!,
+      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      message: "done",
+      screenshot: {
+        encoding: "IMAGE_ENCODING_PNG",
+        data: pngBytes,
+        widthPx: 1920,
+        heightPx: 1080,
+      },
+    });
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.screenshot).toBeDefined();
+    expect(result.screenshot!.data).toBe(Buffer.from(pngBytes).toString("base64"));
+    expect(result.screenshot!.widthPx).toBe(1920);
+    expect(result.screenshot!.heightPx).toBe(1080);
+  });
+
+  it("handleResult passes through an already-string (protojson) screenshot data", async () => {
+    bridge.registerSink(() => {});
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    bridge.handleResult({
+      toolId: part.mouseMove!.toolId!,
+      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      message: "done",
+      screenshot: {
+        encoding: "IMAGE_ENCODING_PNG",
+        data: "cHJlLWVuY29kZWQ=", // already base64
+        widthPx: 800,
+        heightPx: 600,
+      },
+    });
+
+    const result = await promise;
+    expect(result.screenshot).toBeDefined();
+    expect(result.screenshot!.data).toBe("cHJlLWVuY29kZWQ=");
+    expect(result.screenshot!.widthPx).toBe(800);
+  });
+
+  it("handleResult omits screenshot when the result part carries none", async () => {
+    bridge.registerSink(() => {});
+
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+
+    bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.screenshot).toBeUndefined();
+  });
+});

@@ -74,3 +74,33 @@ go_largetest(
         "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
+
+go_largetest(
+    name = "agent_multimodal_test",
+    size = "small",
+    srcs = [
+        "agent_multimodal_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)
+
+go_largetest(
+    name = "agent_operation_test",
+    size = "small",
+    srcs = [
+        "agent_operation_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

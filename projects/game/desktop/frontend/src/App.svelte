@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, Part, WindowRef, CapturedImage, ChatStreamHandoff } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -13,9 +13,17 @@
     listAgentProfiles,
     createAgentProfile,
     deleteAgentProfile,
-    sendAgentText,
-    listMessages,
+    updateAgentProfile,
+    refreshAgent,
+    listWindows,
+    bindWindow,
+    captureScreenshot,
+    sendUserTurn,
+    openChatStream,
+    closeChatStream,
   } from './api'
+  import { openChatEventSource, makeDeduper } from './chat-stream'
+  import type { ChunkState, Deduper } from './chat-stream'
   import { log, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
@@ -23,6 +31,7 @@
   import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
+  import ScreenshotModal from './components/ScreenshotModal.svelte'
 
   // --- Page state ---
   let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
@@ -37,13 +46,18 @@
     | 'connection_error'
     | 'agent_lost'
 
+  // ChatEntry is one rendered chat row. A content entry carries one or more
+  // Parts (a content frame's PartBlock.parts); a warn entry carries a control
+  // signal rendered as a warning bubble. mergeKind is an internal hint used to
+  // fold consecutive streaming text/thinking chunks into a single bubble.
   type ChatEntry = {
     messageId: string
     sender: FrameSender
-    type: 'thinking' | 'text' | 'warn'
-    content: string
     timestamp: string
     agentProfileName?: string
+    parts?: Part[]
+    warnMessage?: string
+    mergeKind?: 'text' | 'thinking' | 'mixed'
   }
 
   // --- App-level state ---
@@ -62,6 +76,19 @@
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
 
+  // --- SSE chat push state ---
+  // The chat dialog is delivered over a renderer-initiated EventSource (spec
+  // 016) instead of the host→webview `game:frame` channel, which silently
+  // dropped frames once the desktop window lost foreground. History replay and
+  // live streaming share this single channel.
+  let chatStreamHandoff: ChatStreamHandoff | null = $state(null)
+  let currentEventSource: EventSource | null = $state(null)
+  let openingPromise: Promise<void> | null = $state(null)
+  let deduper = $state(makeDeduper())
+  let chunkState: Map<string, ChunkState> = $state(new Map())
+  let consecutiveErrors = $state(0)
+  const ERROR_THRESHOLD = 3
+
   // --- Profile state ---
   let profiles: AgentProfile[] = $state([])
   let selectedProfile = $state('')
@@ -74,6 +101,20 @@
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
   let env = $state('')
+
+  // --- Window + Screenshot state ---
+  let windows: WindowRef[] = $state([])
+  let selectedWindowHandle: number | undefined = $state(undefined)
+  let pendingScreenshot: { dataUrl: string; data: string; widthPx: number; heightPx: number } | null = $state(null)
+  let capturing = $state(false)
+  let refreshing = $state(false)
+  let zoomedImageUrl: string | null = $state(null)
+
+  function resetPlayPageState() {
+    pendingScreenshot = null
+    selectedWindowHandle = undefined
+    windows = []
+  }
 
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
@@ -88,12 +129,17 @@
       handleRefresh()
     }
 
-    const runtime = window.runtime
-    if (runtime?.EventsOn) {
-      runtime.EventsOn('game:frame', (data: unknown) => {
-        handleAgentFrame(data as AgentFrame & { wait?: { reason?: string } })
-      })
+    function handleKeyDown(e: KeyboardEvent) {
+      if (page !== 'chat') return
+      if (selectedWindowHandle == null) return
+      if (e.ctrlKey && e.shiftKey && e.key.toUpperCase() === 'S') {
+        e.preventDefault()
+        handleCaptureScreenshot()
+      }
     }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
   })
 
   // --- Config handlers ---
@@ -158,6 +204,7 @@
   }
 
   async function handleSelectSession(session: Session) {
+    resetPlayPageState()
     selectedSession = session
     agent = null
     error = null
@@ -172,13 +219,14 @@
     }
 
     page = 'chat'
+    handleLoadWindows()
     playState = 'connecting'
-    if (connectionState !== 'connected') {
+    if ((connectionState as ConnectionState) !== 'connected') {
       await handleConnectAgent()
     }
 
-    if (connectionState === 'connected') {
-      await handleLoadMessages()
+    if ((connectionState as ConnectionState) === 'connected') {
+      await openSseStream()
     } else {
       playState = 'connection_error'
     }
@@ -230,122 +278,260 @@
     return FrameSender.SYSTEM
   }
 
-  function typeFromString(raw: string): 'thinking' | 'text' | 'warn' {
-    if (raw === 'thinking' || raw === 'text' || raw === 'warn') return raw
-    return 'text'
+  // resolveSender normalizes a frame/message sender, which arrives as the
+  // protojson enum name string (or, defensively, as a numeric enum).
+  function resolveSender(sender: FrameSender | string | undefined): FrameSender {
+    if (typeof sender === 'number') return sender
+    if (typeof sender === 'string') return senderFromString(sender)
+    return FrameSender.SYSTEM
   }
 
-  async function handleLoadMessages() {
-    if (!selectedSession) return
-    playState = 'loading_messages'
-    messagesError = null
+  // homogeneousStreamKind classifies a content frame's parts for the streaming
+  // merge decision: a frame of only TextParts or only ThinkingParts may fold
+  // into the preceding agent bubble; anything mixed starts a new entry.
+  function homogeneousStreamKind(parts: Part[]): 'text' | 'thinking' | 'mixed' {
+    if (parts.length === 0) return 'mixed'
+    if (parts.every(p => p.text != null)) return 'text'
+    if (parts.every(p => p.thinking != null)) return 'thinking'
+    return 'mixed'
+  }
+
+  // wireChatEventSource builds an EventSource for the chat push stream from a
+  // handoff and wires open/frame/error handlers. playState transitions to
+  // 'chat_ready' on open (R13 — even for an empty backlog on a first-ever
+  // session, since history replays as early chat events). After ERROR_THRESHOLD
+  // consecutive errors the stream is re-opened with a fresh token (R10).
+  function wireChatEventSource(handoff: ChatStreamHandoff, sessionID: string): EventSource {
+    return openChatEventSource(
+      handoff.endpoint,
+      sessionID,
+      handoff.token,
+      chunkState,
+      deduper,
+      {
+        onOpen() {
+          playState = 'chat_ready'
+          consecutiveErrors = 0
+        },
+        onFrame(frame) {
+          handleAgentFrame(frame)
+        },
+        onError() {
+          consecutiveErrors++
+          if (consecutiveErrors < ERROR_THRESHOLD) return
+          consecutiveErrors = 0
+          if (currentEventSource) {
+            currentEventSource.close()
+            currentEventSource = null
+          }
+          // R10: re-open with a fresh token. The deduper is intentionally kept
+          // so events replayed by the fresh EventSource (which carries no
+          // Last-Event-ID) that were already applied are ignored rather than
+          // duplicated.
+          void reopenChatStream(sessionID)
+        },
+      },
+    )
+  }
+
+  // openSseStream opens the chat push stream for the selected session. History
+  // replay and live streaming both arrive over this single channel, replacing
+  // the one-shot listMessages history fetch. Concurrent opens are collapsed
+  // into one in-flight open (C10).
+  async function openSseStream(): Promise<void> {
+    if (openingPromise) return openingPromise
+    const p = doOpenSseStream()
+    openingPromise = p
     try {
-      const entries = (await listMessages(selectedSession.sessionId)) ?? []
-      chatMessages = entries.map(entry => ({
-        messageId: entry.messageId,
-        sender: senderFromString(entry.sender),
-        type: typeFromString(entry.type),
-        content: entry.content,
-        timestamp: entry.createTime || new Date().toISOString(),
-      }))
-      playState = 'chat_ready'
-      log('info', 'chat', `Loaded ${entries.length} messages from history`)
-    } catch (e: unknown) {
-      const errStr = String(e)
-      messagesError = errStr
-      playState = 'chat_ready'
-      chatMessages = []
-      log('warn', 'chat', `Failed to load messages: ${errStr}`)
+      await p
+    } finally {
+      if (openingPromise === p) openingPromise = null
     }
   }
 
-  function handleAgentFrame(frame: AgentFrame & { wait?: { reason?: string } }) {
-    if (frame.thinking) {
-      const thinkingContent = frame.thinking.content || ''
-      if (!thinkingContent) return
+  async function doOpenSseStream(): Promise<void> {
+    if (!selectedSession) return
+    // Close any existing stream and reset state for a fresh session entry.
+    if (currentEventSource) {
+      currentEventSource.close()
+      currentEventSource = null
+    }
+    chunkState = new Map()
+    deduper = makeDeduper()
+    consecutiveErrors = 0
+    try {
+      const handoff = await openChatStream(selectedSession.sessionId)
+      chatStreamHandoff = handoff
+      currentEventSource = wireChatEventSource(handoff, selectedSession.sessionId)
+    } catch (e: unknown) {
+      log('error', 'chat', `Open SSE stream failed: ${String(e)}`)
+      playState = 'connection_error'
+    }
+  }
+
+  // reopenChatStream re-establishes the stream after repeated errors (R10).
+  // Partial chunk groups are cleared (the fresh EventSource replays them
+  // whole); dedup state is preserved so already-applied events are skipped.
+  async function reopenChatStream(sessionID: string): Promise<void> {
+    chunkState = new Map()
+    try {
+      const handoff = await openChatStream(sessionID)
+      chatStreamHandoff = handoff
+      currentEventSource = wireChatEventSource(handoff, sessionID)
+    } catch (e: unknown) {
+      log('error', 'chat', `SSE reopen failed: ${String(e)}`)
+      playState = 'connection_error'
+    }
+  }
+
+  // closeSseStream tears down the chat push stream on session leave (F5/F8).
+  function closeSseStream(): void {
+    if (currentEventSource) {
+      currentEventSource.close()
+      currentEventSource = null
+    }
+    // F8: evict any partial chunk groups so a never-completing group does
+    // not leak across sessions.
+    chunkState = new Map()
+    chatStreamHandoff = null
+    consecutiveErrors = 0
+  }
+
+  // handleContentPayload renders a content frame. One frameId maps to one chat
+  // entry containing ALL of the frame's parts (a user-turn frame carrying
+  // [TextPart, ImagePart] is a single grouped entry, never split per-part).
+  //
+  // Streaming exception: the agent emits many small text/thinking chunks as
+  // separate content frames. To preserve the legacy single-bubble streaming
+  // UX, consecutive agent content frames that are purely TextPart (or purely
+  // ThinkingPart) and share the same agentProfileName fold into the preceding
+  // entry by concatenating content onto the trailing same-kind part. Every
+  // other content frame (image, mouse, tool result, mixed) starts a new entry.
+  function handleContentPayload(frame: AgentFrame, block: { parts?: Part[] }, timestamp: string) {
+    const incomingParts = block.parts ?? []
+    // Graceful degradation: a content frame with zero parts is a no-op.
+    if (incomingParts.length === 0) return
+
+    const sender = resolveSender(frame.sender)
+    const profile = frame.agentProfileName
+    const kind = homogeneousStreamKind(incomingParts)
+
+    if (sender === FrameSender.AGENT && (kind === 'text' || kind === 'thinking')) {
       const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'thinking' && last.sender === FrameSender.AGENT
-          && last.agentProfileName === frame.agentProfileName) {
-        last.content += thinkingContent
+      if (last && last.sender === FrameSender.AGENT
+          && last.agentProfileName === profile
+          && last.mergeKind === kind
+          && last.parts && last.parts.length > 0) {
+        const trailing = last.parts[last.parts.length - 1]
+        const joined = incomingParts
+          .map(p => (kind === 'text' ? p.text?.content : p.thinking?.content) ?? '')
+          .join('')
+        if (kind === 'text' && trailing.text) {
+          trailing.text.content += joined
+        } else if (kind === 'thinking' && trailing.thinking) {
+          trailing.thinking.content += joined
+        }
         chatMessages = [...chatMessages]
-      } else {
-        chatMessages = [...chatMessages, {
-          messageId: frame.frameId,
-          sender: FrameSender.AGENT,
-          type: 'thinking',
-          content: thinkingContent,
-          timestamp: frame.createTime || new Date().toISOString(),
-          agentProfileName: frame.agentProfileName,
-        }]
+        return
       }
-    } else if (frame.text) {
-      const textContent = frame.text.content || ''
-      if (!textContent) return
-      const last = chatMessages[chatMessages.length - 1]
-      if (last && last.type === 'text' && last.sender === FrameSender.AGENT
-          && last.agentProfileName === frame.agentProfileName) {
-        last.content += textContent
-        chatMessages = [...chatMessages]
-      } else {
-        chatMessages = [...chatMessages, {
-          messageId: frame.frameId,
-          sender: FrameSender.AGENT,
-          type: 'text',
-          content: textContent,
-          timestamp: frame.createTime || new Date().toISOString(),
-          agentProfileName: frame.agentProfileName,
-        }]
-      }
-    } else if (frame.warn) {
-      chatMessages = [...chatMessages, {
-        messageId: frame.frameId,
-        sender: FrameSender.SYSTEM,
-        type: 'warn',
-        content: frame.warn.message,
-        timestamp: frame.createTime || new Date().toISOString(),
-      }]
+    }
+
+    chatMessages = [...chatMessages, {
+      messageId: frame.frameId ?? crypto.randomUUID(),
+      sender,
+      timestamp,
+      agentProfileName: profile,
+      parts: incomingParts,
+      mergeKind: kind,
+    }]
+  }
+
+  function handleAgentFrame(frame: AgentFrame) {
+    const timestamp = frame.createTime || new Date().toISOString()
+    // A frame carries exactly one payload (protojson flattens the oneof). The
+    // part kind — not a separate `type` field — discriminates content.
+    if (frame.content) {
+      handleContentPayload(frame, frame.content, timestamp)
     } else if (frame.wait) {
       processing = false
       if (playState === 'processing') playState = 'chat_ready'
+    } else if (frame.warn) {
+      chatMessages = [...chatMessages, {
+        messageId: frame.frameId ?? crypto.randomUUID(),
+        sender: FrameSender.SYSTEM,
+        timestamp,
+        warnMessage: frame.warn.message ?? '',
+      }]
+    } else if (frame.status) {
+      // Lifecycle status signal — no chat rendering.
     }
   }
 
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
-    // Auto-connect fallback if WS dropped (sendAgentText relies on the backend connection)
+    // Auto-connect fallback if WS dropped (sendUserTurn relies on the backend connection)
     const wasConnected = connectionState === 'connected'
     if (!wasConnected) {
       playState = 'connecting'
       await handleConnectAgent()
     }
     const nowConnected = connectionState === 'connected'
-    if (!wasConnected && nowConnected) {
-      await handleLoadMessages()
-    } else if (!nowConnected) {
+    if (!nowConnected) {
       playState = 'connection_error'
       messagesError = 'Connection failed. Retry to send your message.'
       return
     }
+    // The SSE chat stream auto-reconnects independently of the agent
+    // WebSocket; re-establishing the WS path needs no history re-fetch here.
+    const optimisticIds: string[] = []
     try {
-      chatMessages = [...chatMessages, {
-        messageId: crypto.randomUUID(),
-        sender: FrameSender.USER,
-        type: 'text',
-        content: text,
-        timestamp: new Date().toISOString(),
-      }]
+      // Optimistic user turn: mirror the backend's single user-turn frame,
+      // which carries [TextPart, ImagePart] as one PartBlock. One local id →
+      // one entry holding all submitted parts (text and/or screenshot).
+      const optimisticParts: Part[] = []
+      if (text.trim()) optimisticParts.push({ text: { content: text } })
+      if (pendingScreenshot) {
+        optimisticParts.push({
+          image: { data: pendingScreenshot.data, encoding: 'IMAGE_ENCODING_PNG' },
+        })
+      }
+      if (optimisticParts.length > 0) {
+        const msgId = crypto.randomUUID()
+        optimisticIds.push(msgId)
+        chatMessages = [...chatMessages, {
+          messageId: msgId,
+          sender: FrameSender.USER,
+          timestamp: new Date().toISOString(),
+          parts: optimisticParts,
+        }]
+      }
       processing = true
       playState = 'processing'
       queueCount++
-      await sendAgentText(selectedSession.sessionId, text, selectedProfile)
+      const screenshotData = pendingScreenshot?.data ?? ''
+      const screenshotWidthPx = pendingScreenshot?.widthPx ?? 0
+      const screenshotHeightPx = pendingScreenshot?.heightPx ?? 0
+      pendingScreenshot = null
       queueCount = Math.max(0, queueCount - 1)
-      log('info', 'chat', `Sent text to agent: ${text.substring(0, 60)}`)
+      await sendUserTurn(
+        selectedSession.sessionId,
+        text,
+        screenshotData,
+        screenshotWidthPx,
+        screenshotHeightPx,
+        selectedProfile,
+      )
+      log('info', 'chat', `Sent to agent: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
+      if (optimisticIds.length > 0) {
+        const idSet = new Set(optimisticIds)
+        chatMessages = chatMessages.filter(m => !idSet.has(m.messageId))
+      }
       error = String(e)
       processing = false
       queueCount = Math.max(0, queueCount - 1)
       if (playState === 'processing') playState = 'chat_ready'
-      log('error', 'chat', `Send text failed: ${String(e)}`)
+      log('error', 'chat', `Send failed: ${String(e)}`)
     }
   }
 
@@ -356,6 +542,10 @@
   async function handleBackToSessions() {
     error = null
     messagesError = null
+    const sessionId = selectedSession?.sessionId
+    // F5 ordering: tear down the SSE stream first, then the agent, then the
+    // chat-stream resource on the backend.
+    closeSseStream()
     if (connectionState === 'connected' || connectionState === 'connecting') {
       try {
         await closeAgent()
@@ -364,6 +554,14 @@
       }
       connectionState = 'disconnected'
     }
+    if (sessionId) {
+      try {
+        await closeChatStream(sessionId)
+      } catch {
+        // ignore close errors on teardown
+      }
+    }
+    resetPlayPageState()
     selectedSession = null
     agent = null
     chatMessages = []
@@ -373,9 +571,12 @@
 
   async function handleDeleteSession() {
     if (!selectedSession) return
+    const sessionId = selectedSession.sessionId
     try {
       loading = true
       error = null
+      // F5 ordering: SSE stream → agent → chat-stream resource.
+      closeSseStream()
       if (connectionState === 'connected') {
         try {
           await closeAgent()
@@ -384,8 +585,14 @@
         }
         connectionState = 'disconnected'
       }
-      await deleteSession(selectedSession.sessionId)
-      log('info', 'sessions', `Session deleted: ${selectedSession.sessionId}`)
+      try {
+        await closeChatStream(sessionId)
+      } catch {
+        // ignore close errors
+      }
+      resetPlayPageState()
+      await deleteSession(sessionId)
+      log('info', 'sessions', `Session deleted: ${sessionId}`)
       selectedSession = null
       agent = null
       chatMessages = []
@@ -435,11 +642,88 @@
   async function handleCreateProfile(req: CreateAgentProfileRequest) {
     await createAgentProfile(req)
     await handleRefreshProfiles()
+    const resp = await listAgentProfiles(50, '')
+    profiles = resp.agentProfiles
   }
 
   async function handleDeleteProfile(agentProfileName: string) {
     await deleteAgentProfile(agentProfileName)
     await handleRefreshProfiles()
+    const resp = await listAgentProfiles(50, '')
+    profiles = resp.agentProfiles
+  }
+
+  // --- Window + Screenshot handlers ---
+  async function handleLoadWindows() {
+    try {
+      windows = await listWindows()
+    } catch (e: unknown) {
+      log('warn', 'windows', `Failed to list windows: ${String(e)}`)
+    }
+  }
+
+  async function handleCaptureScreenshot() {
+    if (selectedWindowHandle == null) return
+    capturing = true
+    try {
+      await bindWindow(selectedWindowHandle)
+      const img = await captureScreenshot()
+      pendingScreenshot = {
+        dataUrl: 'data:image/png;base64,' + img.data,
+        data: img.data,
+        widthPx: img.widthPx,
+        heightPx: img.heightPx,
+      }
+    } catch (e: unknown) {
+      error = String(e)
+      log('error', 'screenshot', `Capture failed: ${String(e)}`)
+    } finally {
+      capturing = false
+    }
+  }
+
+  function handleRemoveScreenshot() {
+    pendingScreenshot = null
+  }
+
+  function handleZoom(url: string) {
+    zoomedImageUrl = url
+  }
+
+  async function handleUpdateProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]) {
+    await updateAgentProfile(agentProfileName, profile, updateMaskPaths)
+    const resp = await listAgentProfiles(100, '')
+    managedProfiles = resp.agentProfiles
+    profiles = resp.agentProfiles
+    // Auto-refresh (FR-026) — ISOLATED error handling
+    if (selectedSession && connectionState === 'connected' && playState !== 'processing') {
+      try {
+        await refreshAgent(selectedSession.sessionId)
+      } catch (e: unknown) {
+        log('warn', 'agent', `refresh failed (may be in-flight): ${String(e)}`)
+      }
+    }
+  }
+
+  async function handleRefreshAgent() {
+    if (!selectedSession) return
+    refreshing = true
+    try {
+      await refreshAgent(selectedSession.sessionId)
+      log('info', 'agent', 'Agent refreshed')
+    } catch (e: unknown) {
+      log('error', 'agent', `Refresh agent failed: ${String(e)}`)
+    } finally {
+      refreshing = false
+    }
+  }
+
+  function handleBackFromProfiles() {
+    if (selectedSession) {
+      page = 'chat'
+    } else {
+      page = 'sessions'
+    }
   }
 </script>
 
@@ -481,11 +765,22 @@
         onSelectProfile={handleSelectProfile}
         onDeleteSession={handleDeleteSession}
         onBack={handleBackToSessions}
+        onRefresh={handleRefreshAgent}
+        {refreshing}
         {loading}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
+          <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle}>
+            <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
+            {#each windows as w}
+              <option value={w.handle}>{w.title}</option>
+            {/each}
+          </select>
+          <button class="btn btn-small" data-testid="capture-btn" onclick={handleCaptureScreenshot} disabled={selectedWindowHandle == null || capturing}>
+            {capturing ? 'Capturing…' : 'Capture Screenshot'}
+          </button>
           {#if playState === 'connection_error'}
             <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>
           {:else if error}
@@ -499,6 +794,9 @@
           loadingMessages={playState === 'loading_messages'}
           messagesError={messagesError}
           onSend={handleSendChatText}
+          onZoom={handleZoom}
+          pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
+          onRemoveScreenshot={handleRemoveScreenshot}
         />
       </div>
     </div>
@@ -510,12 +808,17 @@
       onCreate={handleCreateProfile}
       onDelete={handleDeleteProfile}
       onRefresh={handleRefreshProfiles}
-      onBack={handleBackToSessions}
+      onUpdate={handleUpdateProfile}
+      onBack={handleBackFromProfiles}
     />
   {/if}
 
   <!-- Log Panel (bottom, always visible) -->
   <LogPanel logs={logEntries} onclear={handleClearLogs} />
+
+  {#if zoomedImageUrl}
+    <ScreenshotModal imageUrl={zoomedImageUrl} onClose={() => zoomedImageUrl = null} />
+  {/if}
 </div>
 
 <style>
@@ -551,6 +854,23 @@
 
   .session-label strong {
     color: #e0e0e0;
+  }
+
+  .window-select {
+    padding: 6px 8px;
+    font-size: 12px;
+    background: #0f3460;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+    max-width: 220px;
+    min-width: 120px;
+    flex-shrink: 1;
+  }
+
+  .window-select:focus {
+    outline: none;
+    border-color: #4a9eff;
   }
 
   .chat-error {

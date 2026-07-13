@@ -28,6 +28,10 @@ var (
 	procGetWindowRect            = user32.NewProc("GetWindowRect")
 	procIsWindow                 = user32.NewProc("IsWindow")
 	procIsIconic                 = user32.NewProc("IsIconic")
+	procShowWindow               = user32.NewProc("ShowWindow")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
+	procKeybdEvent               = user32.NewProc("keybd_event")
 	procDwmGetWindowAttribute    = dwmapi.NewProc("DwmGetWindowAttribute")
 )
 
@@ -106,4 +110,43 @@ func dwmGetExtendedFrameBounds(hwnd uintptr) (rect, error) {
 		return rect{}, err
 	}
 	return r, nil
+}
+
+// Win32 constants for forcing a window to the foreground.
+//
+// SW_RESTORE restores a minimized window (SetForegroundWindow alone does not
+// un-minimize). VK_MENU + KEYEVENTF_KEYUP drive the synthetic ALT keystroke
+// that satisfies the foreground-lock restriction, allowing a non-foreground
+// caller to take the foreground.
+const (
+	swRestore      uintptr = 9 // SW_RESTORE
+	vkMenu         uintptr = 0x12
+	keyeventfKeyup uintptr = 0x0002
+)
+
+// setForegroundReliably brings hwnd to the foreground. Windows consumes the
+// first pointer event that activates a background window, so the target of a
+// synthetic click (SendInput) must already be foreground before any button
+// event is dispatched — otherwise the click is eaten for activation and never
+// reaches the application.
+//
+// A minimized window is restored first, and a synthetic ALT keystroke bypasses
+// the foreground-lock restriction so the call takes effect even when the
+// caller is not the current foreground process. Returns true when
+// SetForegroundWindow reports success.
+func setForegroundReliably(hwnd uintptr) bool {
+	if isIconic(hwnd) {
+		procShowWindow.Call(hwnd, swRestore)
+	}
+	procKeybdEvent.Call(vkMenu, 0, 0, 0)
+	procKeybdEvent.Call(vkMenu, 0, keyeventfKeyup, 0)
+	ret, _, _ := procSetForegroundWindow.Call(hwnd)
+	return ret != 0
+}
+
+// getForegroundHwnd returns the handle of the current foreground window, or 0
+// if there is none.
+func getForegroundHwnd() uintptr {
+	ret, _, _ := procGetForegroundWindow.Call()
+	return ret
 }

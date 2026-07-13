@@ -32,26 +32,7 @@ export interface Agent {
   agentProfileName: string
 }
 
-export interface MessageEntry {
-  name: string
-  messageId: string
-  sender: string
-  type: string
-  content: string
-  createTime?: string
-}
-
 // ─── Enums ──────────────────────────────────────────────────────────────────
-
-export enum AgentMouseButton {
-  LEFT = 1,
-  RIGHT = 2,
-}
-
-export enum AgentMouseClickType {
-  SINGLE = 1,
-  DOUBLE = 2,
-}
 
 export enum FrameSender {
   UNSPECIFIED = 0,
@@ -60,51 +41,126 @@ export enum FrameSender {
   SYSTEM = 3,
 }
 
-// ─── Frame Types ───────────────────────────────────────────────────────────
-
-export interface AgentStatusFrame {
-  status: string
+export enum ImageEncoding {
+  UNSPECIFIED = 0,
+  PNG = 1,
 }
 
-export interface AgentEchoFrame {
-  data: string // base64-encoded bytes
+// MouseClickAction lists click types only. MOVE is expressed by MouseMovePart,
+// so a click part cannot carry a move action. Mirrors proto MouseClickAction.
+export enum MouseClickAction {
+  UNSPECIFIED = 0,
+  LEFT_CLICK = 1,
+  LEFT_DOUBLE_CLICK = 2,
+  RIGHT_CLICK = 3,
+  RIGHT_DOUBLE_CLICK = 4,
+  LEFT_RIGHT_PRESS = 5,
 }
 
-export interface AgentAckFrame {
-  ackFrameId: string
-  message: string
+// Outcome of an executed tool operation. Mirrors proto ToolResultStatus.
+export enum ToolResultStatus {
+  UNSPECIFIED = 0,
+  SUCCEEDED = 1,
+  FAILED = 2,
 }
 
-export interface AgentTextFrame {
+// ─── Content Part Model ────────────────────────────────────────────────────
+//
+// Part is one discriminated content block; PartBlock is the first-class
+// content unit carried by AgentFrame (as a payload case) and Message (as its
+// content). protojson flattens the Part.kind oneof, so exactly one of the
+// variant fields below is present on a Part object — the active field name is
+// the discriminator (see partKind). Live frames and persisted history share
+// the identical PartBlock shape, so live view and history render identically.
+
+export interface TextPart {
   content: string
 }
 
-export interface AgentThinkingFrame {
+export interface ThinkingPart {
   content: string
 }
 
-export interface AgentWarnFrame {
-  message: string
-  code: string
+// ImagePart arrives as protojson: encoding is the enum name string
+// (e.g. "IMAGE_ENCODING_PNG") and data is base64-encoded bytes.
+export interface ImagePart {
+  encoding?: ImageEncoding | string
+  data: string
+  widthPx?: number
+  heightPx?: number
+  scaleFactor?: number
+  windowTitle?: string
 }
 
-export interface AgentMouseOperation {
-  button: AgentMouseButton
-  clickType: AgentMouseClickType
+export interface MouseMovePart {
+  toolId?: string
   xPx: number
   yPx: number
 }
 
-export interface AgentKeyboardOperation {
-  keyCodes: string
+// MouseClickPart.click arrives as the proto enum name string
+// (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK") under protojson.
+export interface MouseClickPart {
+  toolId?: string
+  click?: MouseClickAction | string
 }
 
-export interface AgentOperationFrame {
-  operationId: string
-  screenshotId: string
-  sequence: number
-  mouse?: AgentMouseOperation
-  keyboard?: AgentKeyboardOperation
+export interface ToolResultPart {
+  toolId?: string
+  // status arrives as the proto enum name string
+  // (e.g. "TOOL_RESULT_STATUS_SUCCEEDED") under protojson.
+  status?: ToolResultStatus | string
+  message?: string
+  screenshot?: ImagePart
+}
+
+// Part is a single content block. Exactly one variant field is set; use
+// partKind() to read the active variant.
+export interface Part {
+  text?: TextPart
+  thinking?: ThinkingPart
+  image?: ImagePart
+  mouseMove?: MouseMovePart
+  mouseClick?: MouseClickPart
+  toolResult?: ToolResultPart
+}
+
+export interface PartBlock {
+  parts?: Part[]
+}
+
+// Active variant of a Part (the set oneof field), or undefined for an
+// empty/unknown part. Used to dispatch rendering by part kind.
+export type PartKind = 'text' | 'thinking' | 'image' | 'mouseMove' | 'mouseClick' | 'toolResult'
+
+export function partKind(part: Part): PartKind | undefined {
+  if (part.text) return 'text'
+  if (part.thinking) return 'thinking'
+  if (part.image) return 'image'
+  if (part.mouseMove) return 'mouseMove'
+  if (part.mouseClick) return 'mouseClick'
+  if (part.toolResult) return 'toolResult'
+  return undefined
+}
+
+// ─── Control Signals (frame-payload only; never persisted to history) ──────
+
+export interface WaitSignal {
+  reason?: string
+}
+
+export interface WarnSignal {
+  message?: string
+  code?: string
+}
+
+export type StatusSignalStatus =
+  | 'STATUS_SIGNAL_STATUS_UNSPECIFIED'
+  | 'STATUS_SIGNAL_STATUS_ACTIVE'
+  | 'STATUS_SIGNAL_STATUS_IDLE'
+
+export interface StatusSignal {
+  status?: StatusSignalStatus
 }
 
 export interface AgentProfile {
@@ -114,6 +170,7 @@ export interface AgentProfile {
   systemPrompt: string
   skillNames: string[]
   mcpNames: string[]
+  toolNames: string[]
   enabled: boolean
   createTime?: string
   updateTime?: string
@@ -128,33 +185,40 @@ export interface Skill {
   updateTime?: string
 }
 
-export interface AgentScreenshotFrame {
-  captureId: string
-  encoding: string
-  data: string // base64-encoded bytes
-  widthPx: number
-  heightPx: number
-  scaleFactor: number
-  windowTitle: string
-  captureTime: string
+// ─── Frame & Message Envelopes ─────────────────────────────────────────────
+
+// AgentFrame is the transport unit exchanged over WebSocket / gRPC streams.
+// A frame carries exactly one payload (protojson flattens the oneof): a
+// PartBlock of content, or a single control signal (wait / warn / status).
+// Removed dead metadata: invoke_id and sequence never existed on the wire.
+export interface AgentFrame {
+  sessionId?: string
+  frameId?: string
+  createTime?: string
+  sender?: FrameSender | string
+  agentProfileName?: string
+  content?: PartBlock
+  wait?: WaitSignal
+  warn?: WarnSignal
+  status?: StatusSignal
 }
 
-export interface AgentFrame {
-  sessionId: string
-  frameId: string
-  createTime: string
-  invokeId?: string
-  sequence?: number
-  status?: AgentStatusFrame
-  echo?: AgentEchoFrame
-  screenshot?: AgentScreenshotFrame
-  ack?: AgentAckFrame
-  text?: AgentTextFrame
-  thinking?: AgentThinkingFrame
-  operation?: AgentOperationFrame
-  warn?: AgentWarnFrame
-  sender: FrameSender
-  agentProfileName?: string
+// Message is one normalized conversation entry reconstructed from checkpoint
+// state (history). Its content is the same PartBlock shape as a live frame's
+// content payload, so history and live view render identically. Control
+// signals are frame-only and never appear here.
+export interface Message {
+  name?: string
+  messageId?: string
+  sender?: FrameSender | string
+  createTime?: string
+  content?: PartBlock
+}
+
+export interface ChatStreamHandoff {
+  endpoint: string
+  token: string
+  lastEventId: number
 }
 
 export interface ListSessionsResponse {
@@ -163,13 +227,6 @@ export interface ListSessionsResponse {
 }
 
 // ─── Operation Execution ─────────────────────────────────────────────────────
-
-export interface OperationResultView {
-  operationId: string
-  sequence: number
-  status: number
-  message: string
-}
 
 export interface WindowRef {
   handle: number
@@ -195,7 +252,14 @@ export interface CreateAgentProfileRequest {
   systemPrompt?: string
   skillNames?: string[]
   mcpNames?: string[]
+  toolNames?: string[]
   enabled?: boolean
+}
+
+export interface UpdateAgentProfileRequest {
+  agentProfileName: string
+  profile: AgentProfile
+  updateMask?: string[]
 }
 
 export interface ListAgentProfilesResponse {
@@ -222,38 +286,29 @@ interface WailsApp {
   GetSession(sessionID: string): Promise<Session>
   DeleteSession(sessionID: string): Promise<void>
   GetAgent(sessionID: string): Promise<Agent>
-  /** @deprecated Use chat-based interfaces instead. */
   ListWindows(): Promise<WindowRef[]>
-  /** @deprecated Use chat-based interfaces instead. */
   BindWindow(hwnd: number): Promise<void>
-  /** @deprecated Use chat-based interfaces instead. */
   CaptureScreenshot(): Promise<CapturedImage>
-  /** @deprecated Use chat-based interfaces instead. */
-  SendScreenshot(hwnd: number): Promise<AgentAckFrame>
   ConnectAgent(sessionID: string): Promise<void>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void>
-  ListMessages(sessionID: string): Promise<MessageEntry[]>
-  /** @deprecated Use chat-based interfaces instead. */
-  ExecuteOperation(
-    operationID: string, screenshotID: string, sequence: number,
-    button: number, clickType: number, xPx: number, yPx: number,
-    isMouse: boolean, keyCodes: string,
-    windowLeft: number, windowTop: number
-  ): Promise<OperationResultView>
-  /** @deprecated Use chat-based interfaces instead. */
-  SendNextScreenshot(): Promise<void>
+  SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
+  ListMessages(sessionID: string): Promise<Message[]>
+  CloseChatStream(sessionID: string): Promise<void>
+  OpenChatStream(sessionID: string): Promise<ChatStreamHandoff>
 
   // Prompt Service
   CreateAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile>
   GetAgentProfile(agentProfileName: string): Promise<AgentProfile>
   ListAgentProfiles(pageSize: number, pageToken: string): Promise<ListAgentProfilesResponse>
+  UpdateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile>
   DeleteAgentProfile(agentProfileName: string): Promise<void>
   CreateSkill(req: CreateSkillRequest): Promise<Skill>
   GetSkill(skillName: string): Promise<Skill>
   ListSkills(pageSize: number, pageToken: string): Promise<ListSkillsResponse>
   DeleteSkill(skillName: string): Promise<void>
+
+  RefreshAgent(sessionID: string): Promise<void>
 }
 
 function app(): WailsApp | undefined {
@@ -309,25 +364,16 @@ export async function listWindows(): Promise<WindowRef[]> {
   return a.ListWindows()
 }
 
-/** @deprecated Use chat-based interfaces instead. */
 export async function bindWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.BindWindow(hwnd)
 }
 
-/** @deprecated Use chat-based interfaces instead. */
 export async function captureScreenshot(): Promise<CapturedImage> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.CaptureScreenshot()
-}
-
-/** @deprecated Use chat-based interfaces instead. */
-export async function sendScreenshot(hwnd: number): Promise<AgentAckFrame> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.SendScreenshot(hwnd)
 }
 
 export async function connectAgent(sessionID: string): Promise<void> {
@@ -348,35 +394,35 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
-export async function sendAgentText(sessionId: string, text: string, agentProfileName: string): Promise<void> {
+export async function sendUserTurn(
+  sessionID: string,
+  text: string,
+  screenshotData: string,
+  screenshotWidth: number,
+  screenshotHeight: number,
+  agentProfileName: string,
+): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.SendAgentText(sessionId, text, agentProfileName)
+  return a.SendUserTurn(sessionID, text, screenshotData, screenshotWidth, screenshotHeight, agentProfileName)
 }
 
-export async function listMessages(sessionId: string): Promise<MessageEntry[]> {
+export async function listMessages(sessionId: string): Promise<Message[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ListMessages(sessionId)
 }
 
-/** @deprecated Use chat-based interfaces instead. */
-export async function executeOperation(
-  operationID: string, screenshotID: string, sequence: number,
-  button: number, clickType: number, xPx: number, yPx: number,
-  isMouse: boolean, keyCodes: string,
-  windowLeft: number, windowTop: number
-): Promise<OperationResultView> {
+export async function closeChatStream(sessionId: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.ExecuteOperation(operationID, screenshotID, sequence, button, clickType, xPx, yPx, isMouse, keyCodes, windowLeft, windowTop)
+  return a.CloseChatStream(sessionId)
 }
 
-/** @deprecated Use chat-based interfaces instead. */
-export async function sendNextScreenshot(): Promise<void> {
+export async function openChatStream(sessionId: string): Promise<ChatStreamHandoff> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.SendNextScreenshot()
+  return a.OpenChatStream(sessionId)
 }
 
 // ─── Prompt Service Wrappers ───────────────────────────────────────────────
@@ -427,4 +473,16 @@ export async function deleteSkill(skillName: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.DeleteSkill(skillName)
+}
+
+export async function updateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.UpdateAgentProfile(agentProfileName, profile, updateMaskPaths)
+}
+
+export async function refreshAgent(sessionID: string): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.RefreshAgent(sessionID)
 }

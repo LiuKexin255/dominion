@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	game "dominion/projects/game"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -46,6 +48,7 @@ func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentP
 		SkillNames:       req.GetSkillNames(),
 		MCPNames:         req.GetMcpNames(),
 		Enabled:          req.GetEnabled(),
+		ToolNames:        req.GetToolNames(),
 		CreateTime:       now,
 		UpdateTime:       now,
 	}
@@ -57,13 +60,45 @@ func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentP
 	return agentProfileToProto(profile), nil
 }
 
-// GetAgentProfile retrieves an AgentProfile by its profile name.
+// GetAgentProfile retrieves an AgentProfile by its resource name.
 func (h *Handler) GetAgentProfile(ctx context.Context, req *game.GetAgentProfileRequest) (*game.AgentProfile, error) {
-	profile, err := h.agentProfileRepo.GetAgentProfile(ctx, req.GetAgentProfileName())
+	profileID, err := gameconst.AgentProfileID(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	profile, err := h.agentProfileRepo.GetAgentProfile(ctx, profileID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 	return agentProfileToProto(profile), nil
+}
+
+// UpdateAgentProfile applies a partial update described by update_mask to an existing AgentProfile.
+// Paths in update_mask must reference writable AgentProfile fields. Unknown paths return
+// INVALID_ARGUMENT; missing profiles return NOT_FOUND.
+func (h *Handler) UpdateAgentProfile(ctx context.Context, req *game.UpdateAgentProfileRequest) (*game.AgentProfile, error) {
+	profileID, err := gameconst.AgentProfileID(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	existing, err := h.agentProfileRepo.GetAgentProfile(ctx, profileID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	updated, err := applyAgentProfileMask(existing, req.GetProfile(), req.GetUpdateMask())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	updated.UpdateTime = time.Now()
+
+	persisted, err := h.agentProfileRepo.UpdateAgentProfile(ctx, updated)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	return agentProfileToProto(persisted), nil
 }
 
 // ListAgentProfiles retrieves a paginated list of AgentProfile resources.
@@ -89,9 +124,13 @@ func (h *Handler) ListAgentProfiles(ctx context.Context, req *game.ListAgentProf
 	}, nil
 }
 
-// DeleteAgentProfile deletes an AgentProfile by its profile name.
+// DeleteAgentProfile deletes an AgentProfile by its resource name.
 func (h *Handler) DeleteAgentProfile(ctx context.Context, req *game.DeleteAgentProfileRequest) (*emptypb.Empty, error) {
-	if err := h.agentProfileRepo.DeleteAgentProfile(ctx, req.GetAgentProfileName()); err != nil {
+	profileID, err := gameconst.AgentProfileID(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := h.agentProfileRepo.DeleteAgentProfile(ctx, profileID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -118,9 +157,13 @@ func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest)
 	return skillToProto(skill), nil
 }
 
-// GetSkill retrieves a Skill by its skill name.
+// GetSkill retrieves a Skill by its resource name.
 func (h *Handler) GetSkill(ctx context.Context, req *game.GetSkillRequest) (*game.Skill, error) {
-	skill, err := h.skillRepo.GetSkill(ctx, req.GetSkillName())
+	skillID, err := gameconst.SkillID(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	skill, err := h.skillRepo.GetSkill(ctx, skillID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -150,9 +193,13 @@ func (h *Handler) ListSkills(ctx context.Context, req *game.ListSkillsRequest) (
 	}, nil
 }
 
-// DeleteSkill deletes a Skill by its skill name.
+// DeleteSkill deletes a Skill by its resource name.
 func (h *Handler) DeleteSkill(ctx context.Context, req *game.DeleteSkillRequest) (*emptypb.Empty, error) {
-	if err := h.skillRepo.DeleteSkill(ctx, req.GetSkillName()); err != nil {
+	skillID, err := gameconst.SkillID(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := h.skillRepo.DeleteSkill(ctx, skillID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
@@ -167,13 +214,13 @@ func agentProfileToProto(p *domain.AgentProfile) *game.AgentProfile {
 	}
 
 	pb := &game.AgentProfile{
-		Name:             gameconst.AgentProfileName(p.AgentProfileName),
-		AgentProfileName: p.AgentProfileName,
-		Model:            p.Model,
-		SystemPrompt:     p.SystemPrompt,
-		SkillNames:       p.SkillNames,
-		McpNames:         p.MCPNames,
-		Enabled:          p.Enabled,
+		Name:         gameconst.AgentProfileName(p.AgentProfileName),
+		Model:        p.Model,
+		SystemPrompt: p.SystemPrompt,
+		SkillNames:   p.SkillNames,
+		McpNames:     p.MCPNames,
+		Enabled:      p.Enabled,
+		ToolNames:    p.ToolNames,
 	}
 	if !p.CreateTime.IsZero() {
 		pb.CreateTime = timestamppb.New(p.CreateTime)
@@ -192,10 +239,9 @@ func skillToProto(s *domain.Skill) *game.Skill {
 	}
 
 	pb := &game.Skill{
-		Name:      gameconst.SkillName(s.SkillName),
-		SkillName: s.SkillName,
-		Content:   s.Content,
-		Enabled:   s.Enabled,
+		Name:    gameconst.SkillName(s.SkillName),
+		Content: s.Content,
+		Enabled: s.Enabled,
 	}
 	if !s.CreateTime.IsZero() {
 		pb.CreateTime = timestamppb.New(s.CreateTime)
@@ -205,6 +251,51 @@ func skillToProto(s *domain.Skill) *game.Skill {
 	}
 
 	return pb
+}
+
+// agentProfileMaskFields enumerates the writable AgentProfile fields addressable via update_mask.
+// Order is irrelevant; the slice is searched with slices.Contains.
+var agentProfileMaskFields = []string{
+	"model", "system_prompt", "skill_names", "mcp_names", "enabled", "tool_names",
+}
+
+// applyAgentProfileMask returns a copy of existing with the masked fields overwritten by patch.
+// An error is returned if update_mask references a path outside agentProfileMaskFields.
+// A nil update_mask (or one with no paths) leaves existing unchanged.
+func applyAgentProfileMask(existing *domain.AgentProfile, patch *game.AgentProfile, mask *fieldmaskpb.FieldMask) (*domain.AgentProfile, error) {
+	if mask == nil || len(mask.GetPaths()) == 0 {
+		return existing, nil
+	}
+
+	for _, path := range mask.GetPaths() {
+		if !slices.Contains(agentProfileMaskFields, path) {
+			return nil, fmt.Errorf("update_mask path %q is not a writable AgentProfile field", path)
+		}
+	}
+
+	updated := *existing
+	if patch == nil {
+		return &updated, nil
+	}
+
+	for _, path := range mask.GetPaths() {
+		switch path {
+		case "model":
+			updated.Model = patch.GetModel()
+		case "system_prompt":
+			updated.SystemPrompt = patch.GetSystemPrompt()
+		case "skill_names":
+			updated.SkillNames = patch.GetSkillNames()
+		case "mcp_names":
+			updated.MCPNames = patch.GetMcpNames()
+		case "enabled":
+			updated.Enabled = patch.GetEnabled()
+		case "tool_names":
+			updated.ToolNames = patch.GetToolNames()
+		}
+	}
+
+	return &updated, nil
 }
 
 // toStatusError maps domain errors to gRPC status errors.

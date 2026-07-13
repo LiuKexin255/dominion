@@ -39,8 +39,8 @@ function createMockAdapterFactory(): {
 }
 
 const PROFILES: Record<string, ProfileData> = {
-  alice: { model: "gpt-4o", systemPrompt: "You are Alice." },
-  bob: { model: "minimax-m1", systemPrompt: "You are Bob." },
+  alice: { model: "gpt-4o", systemPrompt: "You are Alice.", toolNames: [] },
+  bob: { model: "minimax-m1", systemPrompt: "You are Bob.", toolNames: [] },
 };
 
 function profileFetcherFor(

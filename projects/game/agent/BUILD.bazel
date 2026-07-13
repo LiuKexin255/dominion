@@ -38,6 +38,7 @@ ts_project(
         ":node_modules/@langchain/openai",
         ":node_modules/@types/node",
         ":node_modules/langchain",
+        ":node_modules/zod",
     ],
 )
 
@@ -139,6 +140,7 @@ js_test(
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
         ":node_modules/vitest",
+        ":node_modules/zod",
     ] + glob(
         ["src/**/*.test.ts"],
         allow_empty = True,

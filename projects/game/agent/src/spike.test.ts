@@ -334,9 +334,9 @@ describe("V4: Streaming and contentBlocks structure", () => {
     //   - "reasoning" → reasoning block (thinking)
     //   - "text" → text block (assistant response)
     //
-    // These map to frame types:
-    //   - reasoning → AgentFrame.payload = { $case: "thinking", thinking: ... }
-    //   - text → AgentFrame.payload = { $case: "text", text: ... }
+    // These map to content Parts:
+    //   - reasoning → Part.thinking = { content: ... }
+    //   - text → Part.text = { content: ... }
   });
 
   it("contentBlocks contain expected type names", async () => {
@@ -412,13 +412,13 @@ describe("V4: Streaming and contentBlocks structure", () => {
       .join("");
     expect(fullText).toBe("Part 1 of response. Part 2 of response.");
 
-    // Document: This filtering pattern is exactly what runtime.ts will use
-    // to separate AgentThinkingFrame from AgentTextFrame emissions.
+    // Document: This filtering pattern is exactly what the handler will use
+    // to build content frames carrying ThinkingPart vs TextPart.
     //
     // Pattern:
     //   for (const block of chunk.contentBlocks) {
-    //     if (block.type === "reasoning") { /* emit AgentThinkingFrame */ }
-    //     if (block.type === "text") { /* accumulate → emit AgentTextFrame */ }
+    //     if (block.type === "reasoning") { /* emit content Part { thinking } */ }
+    //     if (block.type === "text") { /* emit content Part { text } */ }
     //   }
   });
 

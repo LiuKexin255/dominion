@@ -27,6 +27,12 @@ description: |
     - Verify each profile's model is configured correctly
   Suite 7 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
     - Send two messages rapidly, verify FIFO processing order
+  Suite 8 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
+    - Text-plus-image turn (content PartBlock of [TextPart, ImagePart] processed end-to-end)
+    - Image-only turn accepted (empty text, random fallback acceptable)
+  Suite 9 (agent-operation): session + proxy + agent(test) + prompt + gateway.
+    - Successful operation_result frame does not break the connection
+    - Failed operation_result frame (e.g., out-of-bounds) is handled gracefully
 
 suites:
   - name: prompt
@@ -88,3 +94,21 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_checkpoint_test
+
+  - name: agent-multimodal
+    description: "Agent multimodal turns with fake-llm service: text+image content PartBlock processed end-to-end; image-only turn accepted"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_multimodal_test
+
+  - name: agent-operation
+    description: "Agent operation_result frame handling with fake-llm service: succeeded and failed results do not break the connection"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_operation_test

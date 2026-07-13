@@ -103,6 +103,24 @@ func (c *profileFakeCollection) DeleteOne(_ context.Context, filter interface{},
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
+func (c *profileFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
+	f, ok := filter.(agentProfileFilter)
+	if !ok {
+		return nil, errors.New("invalid filter type")
+	}
+	doc, ok := replacement.(*agentProfileDocument)
+	if !ok {
+		return nil, errors.New("invalid replacement type")
+	}
+	existing, exists := c.docs[f.AgentProfileName]
+	if !exists {
+		return &mongodriver.UpdateResult{MatchedCount: 0, ModifiedCount: 0}, nil
+	}
+	doc.ID = existing.ID
+	c.docs[f.AgentProfileName] = doc
+	return &mongodriver.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
+}
+
 func (c *profileFakeCollection) Indexes() mongodriver.IndexView {
 	return mongodriver.IndexView{}
 }
@@ -260,6 +278,10 @@ func (c *skillFakeCollection) DeleteOne(_ context.Context, filter interface{}, _
 		}
 	}
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
+}
+
+func (c *skillFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
+	return nil, errors.New("ReplaceOne not supported on skill collection in tests")
 }
 
 func (c *skillFakeCollection) Indexes() mongodriver.IndexView {
@@ -548,5 +570,92 @@ func TestAgentProfileDelete(t *testing.T) {
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("GetAgentProfile() after delete error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAgentProfileUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	// given - seed a profile with tool_names
+	repo := newTestRepo()
+	seed := &domain.AgentProfile{
+		AgentProfileName: "updatable",
+		Model:            "opencode-go/deepseek-v4-pro",
+		SystemPrompt:     "original prompt",
+		SkillNames:       []string{"skill-a"},
+		MCPNames:         []string{"mcp-a"},
+		Enabled:          true,
+		ToolNames:        []string{"mouse"},
+	}
+	if err := repo.CreateAgentProfile(ctx, seed); err != nil {
+		t.Fatalf("CreateAgentProfile() seed unexpected error: %v", err)
+	}
+
+	original, err := repo.GetAgentProfile(ctx, "updatable")
+	if err != nil {
+		t.Fatalf("GetAgentProfile() seed unexpected error: %v", err)
+	}
+
+	// when - replace tool_names with an empty slice
+	updated := *original
+	updated.Model = "opencode-go/deepseek-v4-pro"
+	updated.ToolNames = []string{}
+	updated.SystemPrompt = "edited prompt"
+	persisted, err := repo.UpdateAgentProfile(ctx, &updated)
+
+	// then
+	if err != nil {
+		t.Fatalf("UpdateAgentProfile() unexpected error: %v", err)
+	}
+	if persisted.SystemPrompt != "edited prompt" {
+		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q", persisted.SystemPrompt, "edited prompt")
+	}
+	if len(persisted.ToolNames) != 0 {
+		t.Fatalf("UpdateAgentProfile() tool_names = %v, want empty", persisted.ToolNames)
+	}
+	if !persisted.CreateTime.Equal(original.CreateTime) {
+		t.Fatalf("UpdateAgentProfile() create_time changed: got %v, want %v", persisted.CreateTime, original.CreateTime)
+	}
+
+	// when - re-read from repository
+	reread, err := repo.GetAgentProfile(ctx, "updatable")
+
+	// then - persisted value matches
+	if err != nil {
+		t.Fatalf("GetAgentProfile() after update unexpected error: %v", err)
+	}
+	if reread.SystemPrompt != "edited prompt" {
+		t.Fatalf("GetAgentProfile() after update system_prompt = %q, want %q", reread.SystemPrompt, "edited prompt")
+	}
+	if len(reread.ToolNames) != 0 {
+		t.Fatalf("GetAgentProfile() after update tool_names = %v, want empty", reread.ToolNames)
+	}
+	if reread.Model != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("GetAgentProfile() after update model = %q, want %q", reread.Model, "opencode-go/deepseek-v4-pro")
+	}
+	if len(reread.SkillNames) != 1 || reread.SkillNames[0] != "skill-a" {
+		t.Fatalf("GetAgentProfile() after update skill_names = %v, want [skill-a]", reread.SkillNames)
+	}
+}
+
+func TestAgentProfileUpdateNotFound(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newTestRepo()
+	profile := &domain.AgentProfile{
+		AgentProfileName: "ghost",
+		Model:            "opencode-go/deepseek-v4-pro",
+	}
+
+	// when
+	_, err := repo.UpdateAgentProfile(ctx, profile)
+
+	// then
+	if err == nil {
+		t.Fatalf("UpdateAgentProfile() expected error, got nil")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("UpdateAgentProfile() error = %v, want ErrNotFound", err)
 	}
 }

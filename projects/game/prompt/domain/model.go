@@ -17,6 +17,8 @@ type AgentProfile struct {
 	MCPNames []string
 	// Enabled indicates whether this profile is enabled.
 	Enabled bool
+	// ToolNames are names of tools referenced by this profile.
+	ToolNames []string
 	// CreateTime is the timestamp when this profile was created.
 	CreateTime time.Time
 	// UpdateTime is the timestamp when this profile was last updated.

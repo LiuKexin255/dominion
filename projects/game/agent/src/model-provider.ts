@@ -36,6 +36,8 @@ export function parseModelSpec(modelSpec: string): string {
  *
  * OpenCode Go exposes most models through an OpenAI-compatible endpoint,
  * but MiniMax and Qwen models use an Anthropic-compatible /messages endpoint.
+ * The caller is responsible for supplying the matching base URL for each
+ * provider family.
  */
 export function inferProvider(modelName: string): LLMProvider {
   const lower = modelName.toLowerCase();
@@ -96,7 +98,8 @@ export class ModelProviderCache {
   private cache = new Map<string, ChatModel>();
 
   constructor(
-    private readonly baseUrl: string,
+    private readonly openaiBaseUrl: string,
+    private readonly anthropicBaseUrl: string,
     private readonly providerSecret: string,
     private readonly factory: ProviderFactory = defaultProviderFactory,
   ) {}
@@ -109,11 +112,13 @@ export class ModelProviderCache {
     }
 
     const provider = inferProvider(bareModel);
+    const baseUrl =
+      provider === "openai" ? this.openaiBaseUrl : this.anthropicBaseUrl;
     info("creating model provider", { model: bareModel, provider });
     const chatModel = await this.factory(
       bareModel,
       provider,
-      this.baseUrl,
+      baseUrl,
       this.providerSecret,
     );
     this.cache.set(bareModel, chatModel);

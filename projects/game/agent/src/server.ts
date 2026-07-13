@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import { info } from "@dominion/common-js-logs";
+import { info, warn } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
 import {
   MemorySaver,
@@ -85,18 +85,33 @@ export async function startServer(
   );
 
   const promptClient = new PromptClient();
+  const promptReady = await promptClient.warmup();
+  if (promptReady) {
+    info("prompt service connection pre-warmed");
+  } else {
+    warn("prompt service not ready after warmup; deferring to first RPC");
+  }
 
   const checkpointer = new MemorySaver();
 
-  const baseUrl =
-    process.env.OPENCODE_BASE_URL || "https://opencode.ai/zen/go/v1";
-  const providerCache = new ModelProviderCache(baseUrl, providerSecret);
+  const openaiBaseUrl =
+    process.env.OPENCODE_OPENAI_BASE_URL ||
+    process.env.OPENCODE_BASE_URL ||
+    "https://opencode.ai/zen/go/v1";
+  const anthropicBaseUrl =
+    process.env.OPENCODE_ANTHROPIC_BASE_URL ||
+    "https://opencode.ai/zen/go";
+  const providerCache = new ModelProviderCache(
+    openaiBaseUrl,
+    anthropicBaseUrl,
+    providerSecret,
+  );
 
   const adapterFactory: AdapterFactory =
     adapterFactoryOverride ??
-    (async (getProvider, systemPrompt, cp) => {
+    (async (getProvider, systemPrompt, toolNames, bridge, cp) => {
       const chatModel = await getProvider();
-      return new AgentAdapterImpl(chatModel, systemPrompt, cp);
+      return new AgentAdapterImpl(chatModel, systemPrompt, toolNames, bridge, cp);
     });
 
   const sessionAgentStore = new SessionAgentStore(
@@ -114,7 +129,10 @@ export async function startServer(
   const credentials = buildCredentials();
   const tlsEnabled = fs.existsSync("/etc/tls/tls.crt") && fs.existsSync("/etc/tls/tls.key");
 
-  const server = new grpc.Server();
+  const server = new grpc.Server({
+    "grpc.max_receive_message_length": 8 * 1024 * 1024,
+    "grpc.max_send_message_length": 8 * 1024 * 1024,
+  });
   server.addService(
     proto.projects.game.AgentService.service,
     handler as any,

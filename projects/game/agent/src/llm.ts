@@ -11,9 +11,20 @@ import { info } from "@dominion/common-js-logs";
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
+import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
+import { DesktopDisconnectedError, type OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
+
+/**
+ * LangGraph recursion limit (super-steps) per agent turn. The framework
+ * default of 25 aborts a turn at ~12 model→tool rounds via
+ * GraphRecursionError; 1000 permits extended tool chains while still
+ * bounding runaway loops.
+ */
+const RECURSION_LIMIT = 1000;
 
 // ---------------------------------------------------------------------------
 // ContentBlock types (discriminated union matching LangChain block structure)
@@ -22,6 +33,41 @@ import type { ChatModel } from "./model-provider";
 export type ContentBlock =
 	| { type: "reasoning"; reasoning: string }
 	| { type: "text"; text: string };
+
+/**
+ * Per-turn user input for `generateTurn`.
+ *
+ * Only `text` and the `image*` fields become content blocks sent to the model.
+ * `imageWidthPx`/`imageHeightPx` are used to append a size-annotation text
+ * block so the model knows the exact pixel dimensions of the screenshot
+ * (mouse tool coordinates are interpreted relative to this pixel space).
+ */
+export interface TurnContent {
+	text?: string;
+	imageData?: string;
+	imageMimeType?: string;
+	imageWidthPx?: number;
+	imageHeightPx?: number;
+}
+
+/**
+ * Map profile `toolNames` entries to LangChain tool instances bound to the
+ * session-scoped bridge.  Unknown names are silently skipped.
+ */
+export function buildTools(
+	toolNames: string[],
+	bridge: OperationBridge,
+): StructuredToolInterface[] {
+	const tools: StructuredToolInterface[] = [];
+	for (const name of toolNames) {
+		if (name === "mouse_move") {
+			tools.push(createMouseMoveTool(bridge));
+		} else if (name === "mouse_click") {
+			tools.push(createMouseClickTool(bridge));
+		}
+	}
+	return tools;
+}
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -61,19 +107,19 @@ export interface AdapterStateSnapshot {
 
 export interface AgentAdapter {
 	/**
-	 * Generate a single conversational turn.
+	 * Generate a single conversational turn from multimodal user input.
 	 *
 	 * The adapter was compiled at construction time with a specific model,
-	 * systemPrompt, and checkpointer.  Only the threadId and userMessage
-	 * vary per turn.
+	 * systemPrompt, tools, and checkpointer.  Only the threadId and the
+	 * per-turn content vary.
 	 *
-	 * @param threadId    - Stable checkpoint thread identifier (sessionId).
-	 * @param userMessage - The user's message for this turn.
+	 * @param threadId - Stable checkpoint thread identifier (sessionId).
+	 * @param content  - Text and/or image blocks for this turn.
 	 * @returns Async iterable of ContentBlock in streaming order.
 	 */
 	generateTurn(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock>;
 
 	/**
@@ -94,12 +140,16 @@ export interface AgentAdapter {
 //
 // The factory receives a lazy getProvider callback rather than a pre-fetched
 // ChatModel.  The production factory calls getProvider() to obtain the shared
-// model; the test factory ignores it entirely.
+// model; the test factory ignores it entirely.  toolNames and bridge are
+// forwarded so the adapter can wire LangChain tools (e.g. mouse) at compile
+// time.
 // ---------------------------------------------------------------------------
 
 export type AdapterFactory = (
 	getProvider: () => Promise<ChatModel>,
 	systemPrompt: string,
+	toolNames: string[],
+	bridge: OperationBridge,
 	checkpointer: MemorySaver,
 ) => Promise<AgentAdapter>;
 
@@ -114,25 +164,47 @@ export class AgentAdapterImpl implements AgentAdapter {
 	constructor(
 		chatModel: ChatModel,
 		systemPrompt: string,
+		toolNames: string[],
+		bridge: OperationBridge,
 		checkpointer: MemorySaver,
 	) {
+		const tools = buildTools(toolNames, bridge);
+
+		// Abort tool execution when the desktop is disconnected. Throwing from
+		// wrapToolCall propagates as a middleware error — ToolNode re-throws it
+		// (bypassing defaultHandleToolErrors) so the stream errors out and the
+		// turn ends without feeding a tool-error ToolMessage back to the LLM.
+		const toolAbortOnDisconnect = createMiddleware({
+			name: "ToolAbortOnDisconnect",
+			wrapToolCall: async (_request, handler) => {
+				if (!bridge.hasSink()) {
+					throw new DesktopDisconnectedError(
+						"desktop disconnected: tool execution aborted",
+					);
+				}
+				return handler(_request);
+			},
+		});
+
 		info("compiling agent adapter", {
 			systemPromptLength: systemPrompt.length,
+			toolCount: tools.length,
 		});
 
 		this.agent = createAgent({
 			model: chatModel,
 			systemPrompt,
-			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
+			tools,
+			middleware: [beforeModelMiddleware, wrapModelCallMiddleware, toolAbortOnDisconnect],
 			checkpointer,
 		});
 	}
 
 	async *generateTurn(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock> {
-		yield* this.streamFromAgent(threadId, userMessage);
+		yield* this.streamFromAgent(threadId, content);
 	}
 
 	async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
@@ -149,16 +221,49 @@ export class AgentAdapterImpl implements AgentAdapter {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private async *streamFromAgent(
 		threadId: string,
-		userMessage: string,
+		content: TurnContent,
 	): AsyncIterable<ContentBlock> {
+		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
+		const hasImage = !!(content.imageData && content.imageMimeType);
+
+		// User text is required (enforced by desktop SendUserTurn). No
+		// synthetic default is injected when text is missing — the caller is
+		// responsible for providing meaningful instructions.
+		if (content.text) {
+			contentBlocks.push({ type: "text", text: content.text });
+		}
+		if (hasImage) {
+			contentBlocks.push({
+				type: "image_url",
+				image_url: {
+					url: `data:${content.imageMimeType};base64,${content.imageData}`,
+				},
+			});
+			// Append an explicit size-annotation text block so the model knows
+			// the screenshot's exact pixel dimensions. Mouse tool coordinates
+			// are interpreted relative to this pixel space, so telling the
+			// model the real width×height prevents it from guessing a
+			// different resolution and picking mis-targeted coordinates.
+			const w = content.imageWidthPx;
+			const h = content.imageHeightPx;
+			if (typeof w === "number" && typeof h === "number" && w > 0 && h > 0) {
+				contentBlocks.push({
+					type: "text",
+					text: `[图片像素尺寸：${w}×${h}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+				});
+			}
+		}
+
 		const stream = await this.agent.streamEvents(
 			{
-				messages: [new HumanMessage(userMessage)],
+				messages: [new HumanMessage({ content: contentBlocks })],
 			},
-			{
-				configurable: { thread_id: threadId },
-				version: "v3",
-			},
+		{
+			configurable: { thread_id: threadId },
+			metadata: { session_id: threadId },
+			version: "v3",
+			recursionLimit: RECURSION_LIMIT,
+		},
 		);
 
 		for await (const message of stream.messages) {

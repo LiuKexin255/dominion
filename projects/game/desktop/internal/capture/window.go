@@ -150,3 +150,16 @@ func formatRectError(prefix string, err error, r rect) string {
 	}
 	return fmt.Sprintf("%s: invalid rect left=%d top=%d right=%d bottom=%d", prefix, r.Left, r.Top, r.Right, r.Bottom)
 }
+
+// SetForeground brings hwnd to the foreground so synthetic input dispatched by
+// the caller (SendInput mouse events) is delivered to it instead of being
+// consumed for window activation. See setForegroundReliably for details.
+func SetForeground(hwnd uintptr) bool {
+	return setForegroundReliably(hwnd)
+}
+
+// ForegroundWindow returns the handle of the current foreground window, or 0
+// if there is none. Used for diagnostic logging alongside mouse operations.
+func ForegroundWindow() uintptr {
+	return getForegroundHwnd()
+}

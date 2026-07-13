@@ -56,6 +56,21 @@ func AgentName(sessionID string) string {
 	return SessionNamePrefix + sessionID + "/agent"
 }
 
+// ErrInvalidAgentName is returned when an agent name cannot be parsed.
+var ErrInvalidAgentName = errors.New("invalid agent name")
+
+const agentNameSuffix = "/agent"
+
+// AgentSessionID extracts the session ID from an agent resource name of the
+// form "sessions/{session}/agent". It returns ErrInvalidAgentName if the name
+// is malformed.
+func AgentSessionID(name string) (string, error) {
+	if !strings.HasSuffix(name, agentNameSuffix) {
+		return "", ErrInvalidAgentName
+	}
+	return SessionID(strings.TrimSuffix(name, agentNameSuffix))
+}
+
 // AgentProfileName returns the resource name for an agent profile.
 func AgentProfileName(profileID string) string {
 	return AgentProfileNamePrefix + profileID

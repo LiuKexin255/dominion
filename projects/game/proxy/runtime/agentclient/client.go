@@ -7,6 +7,7 @@ import (
 	game "dominion/projects/game"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // compile-time interface check
@@ -17,6 +18,7 @@ type Client interface {
 	GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error)
 	ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
+	RefreshAgent(ctx context.Context, req *game.RefreshAgentRequest) (*emptypb.Empty, error)
 }
 
 // ConnRef is a reference to an agent connection with its owner metadata.
@@ -49,4 +51,9 @@ func (c *AgentClient) ListMessages(ctx context.Context, req *game.ListMessagesRe
 // Connect establishes a bidirectional stream to the agent service.
 func (c *AgentClient) Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
 	return c.client.Connect(ctx, opts...)
+}
+
+// RefreshAgent forwards a RefreshAgent call to the agent service.
+func (c *AgentClient) RefreshAgent(ctx context.Context, req *game.RefreshAgentRequest) (*emptypb.Empty, error) {
+	return c.client.RefreshAgent(ctx, req)
 }

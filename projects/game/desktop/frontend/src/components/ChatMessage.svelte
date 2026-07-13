@@ -1,15 +1,19 @@
 <script lang="ts">
-  import { FrameSender } from '../api'
+  import { FrameSender, partKind } from '../api'
+  import type { Part } from '../api'
 
+  // ChatMessage renders a single Part as a simple bubble. It owns the
+  // "plain" bubble shapes: user text, agent/system text, and thinking. Complex
+  // part kinds (image, mouse move/click, tool result) are rendered inline by
+  // ChatView. The part kind — not a `type` field — is the discriminator.
   let {
-    message,
+    part,
+    sender,
+    timestamp,
   }: {
-    message: {
-      sender: FrameSender
-      type: 'thinking' | 'text' | 'warn'
-      content: string
-      timestamp: string
-    }
+    part: Part
+    sender: FrameSender
+    timestamp: string
   } = $props()
 
   let expanded = $state(false)
@@ -22,48 +26,42 @@
     }
   }
 
-  let isUser = $derived(message.sender === FrameSender.USER)
-  let isAgent = $derived(message.sender === FrameSender.AGENT)
-  let isSystem = $derived(message.sender === FrameSender.SYSTEM)
-  let isThinking = $derived(isAgent && message.type === 'thinking')
-  let isWarn = $derived(isSystem && message.type === 'warn')
-  let isAgentText = $derived(isAgent && message.type === 'text')
+  let kind = $derived(partKind(part))
+  let isUser = $derived(sender === FrameSender.USER)
+  let isUserText = $derived(kind === 'text' && isUser)
+  let isSystemText = $derived(kind === 'text' && !isUser)
+  let isThinking = $derived(kind === 'thinking')
 </script>
 
-<div class="msg-row" class:msg-user={isUser} class:msg-agent={isAgentText || isThinking} class:msg-warn={isWarn}>
-  {#if isUser}
+{#if isUserText}
+  <div class="msg-row msg-user">
     <div class="msg-bubble user-bubble">
       <div class="msg-sender">You</div>
-      <div class="msg-content">{message.content}</div>
-      <div class="msg-time">{formatTime(message.timestamp)}</div>
+      <div class="msg-content">{part.text?.content ?? ''}</div>
+      <div class="msg-time">{formatTime(timestamp)}</div>
     </div>
-  {:else if isThinking}
+  </div>
+{:else if isThinking}
+  <div class="msg-row msg-agent">
     <div class="msg-bubble thinking-bubble">
       <button class="thinking-toggle" onclick={() => expanded = !expanded}>
         <span class="thinking-icon">{expanded ? '▾' : '▸'}</span>
         <span class="thinking-label">Thinking…</span>
       </button>
       {#if expanded}
-        <pre class="thinking-content">{message.content}</pre>
+        <pre class="thinking-content">{part.thinking?.content ?? ''}</pre>
       {/if}
     </div>
-  {:else if isAgentText}
-    <div class="msg-bubble agent-bubble">
-      <div class="msg-sender">Agent</div>
-      <div class="msg-content">{message.content}</div>
-      <div class="msg-time">{formatTime(message.timestamp)}</div>
-    </div>
-  {:else if isWarn}
-    <div class="msg-bubble warn-bubble">
-      <span class="warn-icon">&#9888;</span>
-      <span class="msg-content">{message.content}</span>
-    </div>
-  {:else}
+  </div>
+{:else if isSystemText}
+  <div class="msg-row">
     <div class="msg-bubble system-bubble">
-      <span class="msg-content">{message.content}</span>
+      <span class="msg-content">{part.text?.content ?? ''}</span>
     </div>
-  {/if}
-</div>
+  </div>
+{:else}
+  <!-- Unhandled part kind: graceful degradation, render nothing. -->
+{/if}
 
 <style>
   .msg-row {
@@ -76,10 +74,6 @@
   }
 
   .msg-row.msg-agent {
-    justify-content: flex-start;
-  }
-
-  .msg-row.msg-warn {
     justify-content: flex-start;
   }
 
@@ -115,32 +109,6 @@
   }
 
   .user-bubble .msg-content {
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  /* ── Agent Text ── */
-  .agent-bubble {
-    background: #1a1a3e;
-    border: 1px solid #2a2a5e;
-    color: #e0e0e0;
-    border-bottom-left-radius: 2px;
-  }
-
-  .agent-bubble .msg-sender {
-    font-size: 10px;
-    font-weight: 600;
-    color: #50fa7b;
-    margin-bottom: 2px;
-  }
-
-  .agent-bubble .msg-time {
-    font-size: 10px;
-    color: rgba(80, 250, 123, 0.4);
-    margin-top: 4px;
-  }
-
-  .agent-bubble .msg-content {
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -195,28 +163,6 @@
     max-height: 200px;
     overflow-y: auto;
     line-height: 1.4;
-  }
-
-  /* ── Warning ── */
-  .warn-bubble {
-    background: rgba(255, 184, 108, 0.08);
-    border: 1px solid rgba(255, 184, 108, 0.3);
-    color: #ffb86c;
-    display: flex;
-    align-items: flex-start;
-    gap: 6px;
-    font-size: 12px;
-  }
-
-  .warn-icon {
-    font-size: 14px;
-    flex-shrink: 0;
-    line-height: 1.5;
-  }
-
-  .warn-bubble .msg-content {
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
   /* ── System fallback ── */

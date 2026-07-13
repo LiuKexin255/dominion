@@ -6,6 +6,11 @@
  *
  * The handler delegates adapter lifecycle to SessionAgentStore.  Each
  * SessionAgent owns its adapter and manages profile binding/switching.
+ *
+ * Frame contract (Part model): every AgentFrame carries exactly one payload —
+ * a PartBlock of content OR a single control signal (wait/warn/status).  User
+ * turns and agent output are both content frames distinguished only by
+ * `sender`; tool results are content frames carrying a ToolResultPart.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -17,16 +22,34 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { Part } from "../game_types/projects/game/Part";
+import type { ImagePart } from "../game_types/projects/game/ImagePart";
+import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
+import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
+import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
 import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
+import type { TurnContent } from "./llm";
 
+/**
+ * FrameSender enum values (proto string literals). Defined locally rather
+ * than imported as a value so the handler has no runtime dependency on the
+ * generated game_types modules (which are not resolvable from the test
+ * runfiles tree); all other game_types references are type-only.
+ */
 const FrameSender = {
   FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
   FRAME_SENDER_USER: "FRAME_SENDER_USER",
   FRAME_SENDER_AGENT: "FRAME_SENDER_AGENT",
   FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
+} as const;
+
+const StatusSignalStatus = {
+  STATUS_SIGNAL_STATUS_UNSPECIFIED: "STATUS_SIGNAL_STATUS_UNSPECIFIED",
+  STATUS_SIGNAL_STATUS_ACTIVE: "STATUS_SIGNAL_STATUS_ACTIVE",
+  STATUS_SIGNAL_STATUS_IDLE: "STATUS_SIGNAL_STATUS_IDLE",
 } as const;
 
 export class Handler implements AgentServiceHandlers {
@@ -35,6 +58,7 @@ export class Handler implements AgentServiceHandlers {
   private promptClient: PromptClient;
   private sessionAgentStore: SessionAgentStore;
   private mutexes: Map<string, Promise<void>>;
+  private heldMutexes: Set<string>;
 
   constructor(
     promptClient: PromptClient,
@@ -43,6 +67,7 @@ export class Handler implements AgentServiceHandlers {
     this.promptClient = promptClient;
     this.sessionAgentStore = sessionAgentStore;
     this.mutexes = new Map();
+    this.heldMutexes = new Set();
   }
 
   // -----------------------------------------------------------------------
@@ -57,12 +82,20 @@ export class Handler implements AgentServiceHandlers {
     });
     this.mutexes.set(sessionId, prev.then(() => next));
     await prev;
+    this.heldMutexes.add(sessionId);
     (this.mutexes as any)[`_release_${sessionId}`] = release;
   }
 
   private releaseMutex(sessionId: string): void {
     const release = (this.mutexes as any)[`_release_${sessionId}`];
-    if (release) release();
+    if (release) {
+      this.heldMutexes.delete(sessionId);
+      release();
+    }
+  }
+
+  private isMutexHeld(sessionId: string): boolean {
+    return this.heldMutexes.has(sessionId);
   }
 
   // -----------------------------------------------------------------------
@@ -88,66 +121,77 @@ export class Handler implements AgentServiceHandlers {
   };
 
   // -----------------------------------------------------------------------
+  // RefreshAgent
+  // -----------------------------------------------------------------------
+
+  RefreshAgent: grpc.handleUnaryCall<{ name?: string }, {}> = (
+    call,
+    callback,
+  ) => {
+    const sessionId = extractSessionId(call.request.name ?? "");
+    info("refresh agent requested", { sessionId });
+
+    if (this.isMutexHeld(sessionId)) {
+      warn("refresh agent rejected: turn in-flight", { sessionId });
+      callback({
+        code: grpc.status.FAILED_PRECONDITION,
+        details: "cannot refresh agent while a turn is in-flight",
+      } as grpc.ServiceError);
+      return;
+    }
+
+    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+    sessionAgent.invalidateAdapter();
+    info("refresh agent completed", { sessionId });
+
+    callback(null, {});
+  };
+
+  // -----------------------------------------------------------------------
   // Connect (bidirectional streaming)
   // -----------------------------------------------------------------------
 
-  Connect: grpc.handleBidiStreamingCall<
-    {
-      sessionId?: string;
-      frameId?: string;
-      invokeId?: string;
-      sequence?: number | string;
-      sender?: string | number;
-      payload?: string;
-      text?: { content?: string } | null;
-      status?: { status?: string } | null;
-      screenshot?: unknown;
-      echo?: unknown;
-      operation?: unknown;
-      agentProfileName?: string;
-    },
-    AgentFrame
-  > = (stream) => {
-    let currentInvokeId = "";
-    let sequence = 0;
-
-    const nextSequence = (invokeId: string): number => {
-      if (invokeId !== currentInvokeId) {
-        currentInvokeId = invokeId;
-        sequence = 0;
-      }
-      return sequence++;
-    };
-
+  Connect: grpc.handleBidiStreamingCall<AgentFrame, AgentFrame> = (stream) => {
     const buildFrame = (
       sessionId: string,
-      invokeId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
     ): AgentFrame => ({
       sessionId,
       frameId: randomUUID(),
-      invokeId,
-      sequence: nextSequence(invokeId),
       sender,
       createTime: timestampNow(),
       ...payload,
     });
 
+    // Track sessions whose bridge sink was registered on this stream. The
+    // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
+    const activeSessions = new Set<string>();
+    const cleanupSinks = () => {
+      for (const sid of activeSessions) {
+        try {
+          const sa = this.sessionAgentStore.getOrCreate(sid);
+          sa.getBridge().unregisterSink();
+        } catch {
+        }
+      }
+      activeSessions.clear();
+    };
+
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
-      const invokeId = frame.invokeId ?? "";
 
-      if (frame.payload === "status" || frame.status) {
+      if (frame.payload === "status") {
         const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
         const state = sessionAgent.getAdapterState();
         const statusFrame: AgentFrame = buildFrame(
           sessionId,
-          invokeId,
           FrameSender.FRAME_SENDER_SYSTEM,
           {
             status: {
-              status: state.isBound ? "idle" : "unknown",
+              status: state.isBound
+                ? StatusSignalStatus.STATUS_SIGNAL_STATUS_IDLE
+                : StatusSignalStatus.STATUS_SIGNAL_STATUS_UNSPECIFIED,
             },
           },
         );
@@ -155,59 +199,57 @@ export class Handler implements AgentServiceHandlers {
         return;
       }
 
-      if (frame.payload === "echo" || frame.echo) {
-        const echoData =
-          frame.echo && typeof frame.echo === "object" && "data" in frame.echo
-            ? (frame.echo as { data?: string }).data ?? ""
-            : "";
-        const echoFrame: AgentFrame = buildFrame(
-          sessionId,
-          invokeId,
-          FrameSender.FRAME_SENDER_SYSTEM,
-          {
-            echo: { data: echoData },
-          },
-        );
-        stream.write(echoFrame);
+      // Control signals that terminate a turn / flag a warning. The agent
+      // never initiates on these, so inbound wait/warn are acknowledged as
+      // no-ops (logged) rather than driving any turn state.
+      if (frame.payload === "wait") {
+        info("wait signal received from peer", { sessionId });
+        return;
+      }
+      if (frame.payload === "warn") {
+        const message = frame.warn?.message ?? "";
+        warn("warn signal received from peer", { sessionId, message });
         return;
       }
 
-      if (
-        frame.payload === "screenshot" ||
-        frame.screenshot ||
-        frame.payload === "operation" ||
-        frame.operation
-      ) {
-        return;
-      }
+      if (frame.payload === "content") {
+        const parts = frame.content?.parts ?? [];
 
-      const senderValue =
-        typeof frame.sender === "string"
-          ? frame.sender
-          : FrameSender.FRAME_SENDER_USER;
-      if (
-        (frame.payload === "text" || frame.text) &&
-        senderValue === FrameSender.FRAME_SENDER_USER
-      ) {
-        const userText = frame.text?.content ?? "";
+        // Tool results from the desktop arrive as content carrying
+        // ToolResultPart(s); route them to the bridge before any user-turn
+        // handling.
+        const toolResults = parts.filter((p: Part) => p.toolResult);
+        if (toolResults.length > 0) {
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+          for (const p of toolResults) {
+            sa.getBridge().handleResult(p.toolResult as ToolResultPart);
+          }
+          return;
+        }
+
+        // Only user-sent content drives a turn.
+        if (frame.sender !== FrameSender.FRAME_SENDER_USER) {
+          return;
+        }
+
+        const userText = parts
+          .map((p: Part) => p.text?.content ?? "")
+          .join("");
+        const imagePart = parts.map((p: Part) => p.image).find(Boolean);
 
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
-          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-          const state = sessionAgent.getAdapterState();
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+          const state = sa.getAdapterState();
           if (state.isBound && state.activeProfileName) {
             effectiveProfileName = state.activeProfileName;
           }
         }
 
         if (!effectiveProfileName) {
-          warn("no agent profile name for text frame", {
-            sessionId,
-            invokeId,
-          });
+          warn("no agent profile name for user content frame", { sessionId });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               warn: {
@@ -221,83 +263,78 @@ export class Handler implements AgentServiceHandlers {
 
         await this.acquireMutex(sessionId);
         try {
-          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
-          const adapter = await sessionAgent.getOrCreateAdapter(
+          sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
+            stream.write(contentEnvelope);
+          });
+          activeSessions.add(sessionId);
+
+          const adapter = await sa.getOrCreateAdapter(
             effectiveProfileName,
             () => this.promptClient.getProfile(effectiveProfileName),
           );
 
+          const turnContent: TurnContent = { text: userText };
+          if (imagePart?.data) {
+            turnContent.imageData = bytesToBase64String(imagePart.data);
+            turnContent.imageMimeType = encodingToMime(imagePart.encoding);
+            turnContent.imageWidthPx = imagePart.widthPx;
+            turnContent.imageHeightPx = imagePart.heightPx;
+          }
+
           let blockCount = 0;
           for await (const block of adapter.generateTurn(
             sessionId,
-            userText,
+            turnContent,
           )) {
             blockCount++;
             if (block.type === "reasoning") {
-              info("writing thinking frame", {
-                sessionId,
-                invokeId,
-                length: block.reasoning.length,
-              });
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
-                invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  thinking: { content: block.reasoning },
+                  content: {
+                    parts: [{ thinking: { content: block.reasoning } }],
+                  },
                 },
               );
               stream.write(thinkFrame);
             } else if (block.type === "text") {
-              info("writing text frame", {
-                sessionId,
-                invokeId,
-                length: block.text.length,
-                preview: block.text.slice(0, 100),
-              });
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
-                invokeId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  text: { content: block.text },
+                  content: {
+                    parts: [{ text: { content: block.text } }],
+                  },
                 },
               );
               stream.write(textFrame);
             }
           }
 
-          {
-            info("text processing completed", {
-              sessionId,
-              invokeId,
-              blockCount,
-            });
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              invokeId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                agentProfileName: effectiveProfileName,
-                wait: {},
-              },
-            );
-            stream.write(waitFrame);
-          }
+          info("user content processing completed", {
+            sessionId,
+            blockCount,
+          });
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              agentProfileName: effectiveProfileName,
+              wait: {},
+            },
+          );
+          stream.write(waitFrame);
         } catch (err: unknown) {
           const message =
             err instanceof Error ? err.message : "Processing error";
-          error("LLM processing failed", {
-            sessionId,
-            invokeId,
-            error: message,
-          });
+          error("LLM processing failed", { sessionId, error: message });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               warn: { message: `Processing error: ${message}` },
@@ -307,7 +344,6 @@ export class Handler implements AgentServiceHandlers {
 
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
-            invokeId,
             FrameSender.FRAME_SENDER_SYSTEM,
             { agentProfileName: effectiveProfileName, wait: {} },
           );
@@ -320,6 +356,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
+      cleanupSinks();
       try {
         stream.end();
       } catch {
@@ -329,6 +366,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
+      cleanupSinks();
     });
   };
 
@@ -359,6 +397,9 @@ export class Handler implements AgentServiceHandlers {
       const checkpointTs: string | undefined = state?.createdAt as
         | string
         | undefined;
+      const createTime = checkpointTs
+        ? timestampFromMs(new Date(checkpointTs).getTime())
+        : undefined;
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
@@ -368,70 +409,83 @@ export class Handler implements AgentServiceHandlers {
           continue;
         }
 
-        if (msgType !== "human" && msgType !== "ai") {
+        if (msgType !== "human" && msgType !== "ai" && msgType !== "tool") {
           continue;
         }
 
         const sender =
           msgType === "human"
             ? FrameSender.FRAME_SENDER_USER
-            : FrameSender.FRAME_SENDER_AGENT;
+            : msgType === "ai"
+              ? FrameSender.FRAME_SENDER_AGENT
+              : FrameSender.FRAME_SENDER_SYSTEM;
 
-        const segments: { type: string; content: string }[] = [];
+        const parts: Part[] = [];
 
-        if (typeof msg.content === "string") {
-          segments.push({ type: "text", content: msg.content });
-        } else if (Array.isArray(msg.content)) {
-          const reasoningBlocks = msg.content.filter(
-            (b: any) => b.type === "reasoning",
-          );
-          const textBlocks = msg.content.filter(
-            (b: any) => b.type === "text",
-          );
-
-          const reasoning = reasoningBlocks
-            .map((b: any) => b.reasoning ?? "")
-            .join("\n");
-          if (reasoning) {
-            segments.push({ type: "thinking", content: reasoning });
+        if (msgType === "tool") {
+          const toolResult = reconstructToolResult(msg.content);
+          if (toolResult) {
+            parts.push({ toolResult });
           }
+        } else {
+          if (typeof msg.content === "string") {
+            if (msg.content) {
+              parts.push({ text: { content: msg.content } });
+            }
+          } else if (Array.isArray(msg.content)) {
+            const reasoningBlocks = msg.content.filter(
+              (b: any) => b.type === "reasoning",
+            );
+            const textBlocks = msg.content.filter(
+              (b: any) => b.type === "text",
+            );
+            const imageBlocks = msg.content.filter(
+              (b: any) => b.type === "image" || b.type === "image_url",
+            );
 
-          const text = textBlocks
-            .map((b: any) => b.text ?? "")
-            .join("");
-          if (text) {
-            segments.push({ type: "text", content: text });
-          }
-
-          if (segments.length === 0) {
-            const fallback = msg.content
-              .map((b: any) => b.text ?? b.reasoning ?? "")
+            for (const b of reasoningBlocks) {
+              const reasoning = (b as any).reasoning ?? "";
+              if (reasoning) parts.push({ thinking: { content: reasoning } });
+            }
+            const text = textBlocks
+              .map((b: any) => b.text ?? "")
               .join("");
-            if (fallback) {
-              segments.push({ type: "text", content: fallback });
+            if (text) parts.push({ text: { content: text } });
+
+            for (const imgBlock of imageBlocks) {
+              const base64Data = extractBase64FromImageBlock(imgBlock);
+              if (base64Data) {
+                parts.push({
+                  image: {
+                    encoding: "IMAGE_ENCODING_PNG",
+                    data: base64Data,
+                  },
+                });
+              }
+            }
+          }
+
+          // AI tool_calls reconstruct as MouseMovePart / MouseClickPart parts
+          // so operation history renders identically to live tool dispatch.
+          if (msgType === "ai") {
+            for (const call of extractToolCalls(msg)) {
+              const part = toolCallToPart(call);
+              if (part) parts.push(part);
             }
           }
         }
 
-        for (const seg of segments) {
-          if (!seg.content && seg.type !== "text") continue;
-
-          const multi = segments.length > 1;
-          const segId = multi ? `${msg.id}-${seg.type}` : msg.id;
-
-          const createTime = checkpointTs
-            ? timestampFromMs(new Date(checkpointTs).getTime())
-            : undefined;
-
-          result.push({
-            name: `sessions/${sessionId}/agent/messages/${segId}`,
-            messageId: segId,
-            sender,
-            type: seg.type,
-            content: seg.content,
-            createTime,
-          });
+        if (parts.length === 0) {
+          continue;
         }
+
+        result.push({
+          name: `sessions/${sessionId}/agent/messages/${msg.id}`,
+          messageId: msg.id,
+          sender,
+          content: { parts },
+          createTime,
+        });
       }
 
       callback(null, { messages: result });
@@ -469,4 +523,179 @@ function timestampFromMs(ms: number): { seconds: number; nanos: number } {
 function extractSessionId(parent: string): string {
   const match = parent.match(/^sessions\/([^/]+?)(?:\/agent)?$/);
   return match ? match[1] : parent;
+}
+
+function bytesToBase64String(data: Uint8Array | string): string {
+  if (typeof data === "string") return data;
+  return Buffer.from(data).toString("base64");
+}
+
+function encodingToMime(encoding: unknown): string {
+  if (typeof encoding === "number") {
+    return encoding === 1 ? "image/png" : "image/png";
+  }
+  const subtype = String(encoding ?? "").replace(/^IMAGE_ENCODING_/, "").toLowerCase();
+  return `image/${subtype || "png"}`;
+}
+
+function stripDataUrlPrefix(value: string): string {
+  return value.replace(/^data:image\/[^;]+;base64,/, "");
+}
+
+function extractBase64FromImageBlock(block: any): string {
+  const rawCandidates: unknown[] = [
+    block?.data,
+    block?.image_url?.url,
+    block?.image,
+    block?.source?.data,
+  ];
+
+  for (const raw of rawCandidates) {
+    if (typeof raw === "string" && raw.length > 0) {
+      return stripDataUrlPrefix(raw);
+    }
+    if (raw instanceof Uint8Array && raw.length > 0) {
+      return Buffer.from(raw).toString("base64");
+    }
+    if (Buffer.isBuffer(raw) && raw.length > 0) {
+      return raw.toString("base64");
+    }
+  }
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Tool history reconstruction helpers
+//
+// ListMessages best-effort reconstructs MouseMovePart / MouseClickPart /
+// ToolResultPart from LangChain message state so operation history renders
+// identically to the live tool stream.
+// ---------------------------------------------------------------------------
+
+/** Minimal shape of a LangChain tool_call carried on an AIMessage. */
+interface ToolCallLike {
+  name?: string;
+  args?: Record<string, unknown>;
+  id?: string;
+}
+
+/** Matches the pixel-dimension annotation emitted by mouse tools. */
+const PIXEL_SIZE_PATTERN = /图片像素尺寸[：:]?\s*(\d+)\s*[×xX*]\s*(\d+)/;
+
+/** Extract tool_calls from a BaseMessage (AIMessage carries them directly). */
+function extractToolCalls(msg: BaseMessage): ToolCallLike[] {
+  const calls = (msg as unknown as { tool_calls?: unknown }).tool_calls;
+  return Array.isArray(calls) ? (calls as ToolCallLike[]) : [];
+}
+
+/** Coerce a tool argument value to a finite int32, defaulting to 0. */
+function toInt32(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/** Map a mouse_click click_type arg to the proto MouseClickAction string. */
+function clickTypeToAction(clickType: unknown): string {
+  if (typeof clickType !== "string" || !clickType) {
+    return "MOUSE_CLICK_ACTION_UNSPECIFIED";
+  }
+  return `MOUSE_CLICK_ACTION_${clickType.toUpperCase()}`;
+}
+
+/**
+ * Best-effort map a LangChain tool_call to a Part (MouseMovePart or
+ * MouseClickPart). Unknown tools return null (no Part emitted for them).
+ */
+function toolCallToPart(call: ToolCallLike): Part | null {
+  const name = call.name;
+  const args = call.args ?? {};
+  if (name === "mouse_move") {
+    const part: MouseMovePart = {
+      xPx: toInt32(args.x_px),
+      yPx: toInt32(args.y_px),
+    };
+    return { mouseMove: part };
+  }
+  if (name === "mouse_click") {
+    const part: MouseClickPart = {
+      click: clickTypeToAction(args.click_type) as MouseClickPart["click"],
+    };
+    return { mouseClick: part };
+  }
+  return null;
+}
+
+/** Infer ToolResultStatus from the result message text. */
+function inferToolResultStatus(message: string): string {
+  const lower = message.toLowerCase();
+  return lower.includes("ok") || lower.includes("succeeded")
+    ? "TOOL_RESULT_STATUS_SUCCEEDED"
+    : "TOOL_RESULT_STATUS_FAILED";
+}
+
+/**
+ * Best-effort reconstruct a ToolResultPart from a ToolMessage's content
+ * blocks.
+ *
+ * - text block (non-annotation) → message
+ * - image_url block → screenshot.data (base64, data-url prefix stripped)
+ * - pixel-size annotation text → screenshot widthPx / heightPx
+ * - status inferred from message ("ok"/"succeeded" → SUCCEEDED, else FAILED)
+ *
+ * String content (when the ToolMessage carries a plain string) is used as the
+ * message directly. tool_id is unknown from history, so it is left empty.
+ */
+function reconstructToolResult(
+  content: BaseMessage["content"],
+): ToolResultPart | null {
+  const blocks: { type?: string; text?: string; image_url?: { url?: string } }[] =
+    Array.isArray(content)
+      ? (content as { type?: string; text?: string; image_url?: { url?: string } }[])
+      : [];
+
+  let message = "";
+  let screenshotData = "";
+  let widthPx = 0;
+  let heightPx = 0;
+
+  for (const block of blocks) {
+    if (block.type === "text" && typeof block.text === "string") {
+      const dims = block.text.match(PIXEL_SIZE_PATTERN);
+      if (dims) {
+        widthPx = Number.parseInt(dims[1], 10) || 0;
+        heightPx = Number.parseInt(dims[2], 10) || 0;
+      } else if (!message) {
+        message = block.text;
+      }
+    } else if (block.type === "image_url" && block.image_url?.url) {
+      screenshotData = stripDataUrlPrefix(block.image_url.url);
+    }
+  }
+
+  if (!message && typeof content === "string") {
+    message = content;
+  }
+
+  const status = inferToolResultStatus(message) as ToolResultPart["status"];
+
+  const result: ToolResultPart = {
+    status,
+    message,
+  };
+  if (screenshotData) {
+    const screenshot: ImagePart = {
+      encoding: "IMAGE_ENCODING_PNG",
+      data: screenshotData,
+      widthPx,
+      heightPx,
+    };
+    result.screenshot = screenshot;
+  }
+  return result;
 }

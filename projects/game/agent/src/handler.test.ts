@@ -3,21 +3,27 @@
  *
  * Uses mocked PromptClient + SessionAgentStore, and REAL MemorySaver +
  * StateGraph for ListMessages round-trip tests.
+ *
+ * Part-model contract: user turns and agent output are content frames
+ * (PartBlock) distinguished by `sender`; tool results are content frames
+ * carrying a ToolResultPart. No invoke_id/sequence/echo machinery.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import * as grpc from "@grpc/grpc-js";
 
-import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import {
   MemorySaver,
   StateGraph,
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
-import type { AgentAdapter, ContentBlock, AdapterStateSnapshot } from "./llm";
+import type { AgentAdapter, AdapterFactory, ContentBlock, AdapterStateSnapshot, TurnContent } from "./llm";
 import { Handler } from "./handler";
+import { SessionAgent } from "./session-agent";
+import { OperationBridge } from "./operation-bridge";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -53,12 +59,12 @@ function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
 
 function createRecordingAdapter(blocks: ContentBlock[]): {
   adapter: AgentAdapter;
-  calls: Array<{ threadId: string; userMessage: string }>;
+  calls: Array<{ threadId: string; content: TurnContent }>;
 } {
-  const calls: Array<{ threadId: string; userMessage: string }> = [];
+  const calls: Array<{ threadId: string; content: TurnContent }> = [];
   const adapter: AgentAdapter = {
-    async *generateTurn(threadId, userMessage) {
-      calls.push({ threadId, userMessage });
+    async *generateTurn(threadId, content) {
+      calls.push({ threadId, content });
       for (const block of blocks) yield block;
     },
     async getState() { return null; },
@@ -66,10 +72,20 @@ function createRecordingAdapter(blocks: ContentBlock[]): {
   return { adapter, calls };
 }
 
+interface MockBridge {
+  registerSink: ReturnType<typeof vi.fn>;
+  unregisterSink: ReturnType<typeof vi.fn>;
+  handleResult: ReturnType<typeof vi.fn>;
+  dispatch: ReturnType<typeof vi.fn>;
+}
+
 interface MockSessionAgent {
   getOrCreateAdapter: ReturnType<typeof vi.fn>;
   getAdapterState: ReturnType<typeof vi.fn>;
   getAdapter: ReturnType<typeof vi.fn>;
+  invalidateAdapter: ReturnType<typeof vi.fn>;
+  getBridge: ReturnType<typeof vi.fn>;
+  bridge: MockBridge;
 }
 
 interface MockSessionAgentStore {
@@ -80,11 +96,21 @@ interface MockSessionAgentStore {
   _clear(): void;
 }
 
+function createMockBridge(): MockBridge {
+  return {
+    registerSink: vi.fn(),
+    unregisterSink: vi.fn(),
+    handleResult: vi.fn(),
+    dispatch: vi.fn(),
+  };
+}
+
 function createMockSessionAgentStore(): MockSessionAgentStore {
   const agents = new Map<string, MockSessionAgent>();
 
   function getAgent(sessionId: string): MockSessionAgent {
     if (!agents.has(sessionId)) {
+      const bridge = createMockBridge();
       agents.set(sessionId, {
         getOrCreateAdapter: vi.fn(),
         getAdapterState: vi.fn(() => ({
@@ -92,6 +118,9 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
           isBound: false,
         })),
         getAdapter: vi.fn(() => null),
+        invalidateAdapter: vi.fn(),
+        getBridge: vi.fn(() => bridge),
+        bridge,
       });
     }
     return agents.get(sessionId)!;
@@ -181,17 +210,37 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-function textFrame(
+/** Build an inbound user content frame (TextPart, sender USER). */
+function userContentFrame(
   sessionId: string,
-  invokeId: string,
-  content: string,
+  text: string,
   profileName?: string,
 ) {
   return {
     sessionId,
-    invokeId,
-    payload: "text",
-    text: { content },
+    payload: "content",
+    content: { parts: [{ text: { content: text } }] },
+    sender: FRAME_SENDER_USER,
+    ...(profileName ? { agentProfileName: profileName } : {}),
+  };
+}
+
+/** Build an inbound user content frame carrying text + image. */
+function userContentWithImageFrame(
+  sessionId: string,
+  text: string,
+  image: { data: Uint8Array | string; encoding: string },
+  profileName?: string,
+) {
+  return {
+    sessionId,
+    payload: "content",
+    content: {
+      parts: [
+        { text: { content: text } },
+        { image: { data: image.data, encoding: image.encoding } },
+      ],
+    },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
@@ -215,10 +264,10 @@ function createHandler(deps: HandlerDeps): Handler {
 }
 
 // ===========================================================================
-// Tests: Connect — text frame produces thinking/text/wait frames
+// Tests: Connect — user content frame produces thinking/text/wait frames
 // ===========================================================================
 
-describe("Handler.Connect text frame", () => {
+describe("Handler.Connect user content frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -232,7 +281,7 @@ describe("Handler.Connect text frame", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("produces thinking + text + wait frames for profile-bound text frame", async () => {
+  it("produces thinking + text + wait frames for profile-bound user content frame", async () => {
     const blocks: ContentBlock[] = [
       { type: "reasoning", reasoning: "Let me think..." },
       { type: "text", text: "The answer is 42." },
@@ -247,26 +296,28 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-1", "turn-1", "What is the answer?", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-1", "What is the answer?", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(3);
 
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f0.thinking).toEqual({ content: "Let me think..." });
-    expect(f0.invokeId).toBe("turn-1");
-    expect(f0.sequence).toBe(0);
+    expect(f0.payload).toBe("content");
+    expect(f0.content).toEqual({
+      parts: [{ thinking: { content: "Let me think..." } }],
+    });
 
     const f1 = stream.written[1] as Record<string, unknown>;
     expect(f1.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f1.text).toEqual({ content: "The answer is 42." });
-    expect(f1.sequence).toBe(1);
+    expect(f1.content).toEqual({
+      parts: [{ text: { content: "The answer is 42." } }],
+    });
 
     const f2 = stream.written[2] as Record<string, unknown>;
     expect(f2.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f2.payload).toBe("wait");
     expect(f2.wait).toEqual({});
-    expect(f2.sequence).toBe(2);
   });
 
   it("produces text + wait for response with no thinking", async () => {
@@ -280,37 +331,14 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-nt", "turn-2", "hello", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-nt", "hello", "helpful-assistant"));
     await flush();
 
     expect(stream.written).toHaveLength(2);
-    expect((stream.written[0] as Record<string, unknown>).text).toEqual({
-      content: "Direct answer",
+    expect((stream.written[0] as Record<string, unknown>).content).toEqual({
+      parts: [{ text: { content: "Direct answer" } }],
     });
     expect((stream.written[1] as Record<string, unknown>).wait).toEqual({});
-  });
-
-  it("resets sequence on new invokeId within same connection", async () => {
-    sessionAgentStore._setBinding(
-      "sess-seq",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "reply" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", textFrame("sess-seq", "turn-a", "msg-1", "helpful-assistant"));
-    await flush();
-    stream.emit("data", textFrame("sess-seq", "turn-b", "msg-2", "helpful-assistant"));
-    await flush();
-
-    expect(stream.written).toHaveLength(4);
-    expect((stream.written[0] as Record<string, unknown>).sequence).toBe(0);
-    expect((stream.written[0] as Record<string, unknown>).invokeId).toBe("turn-a");
-    expect((stream.written[2] as Record<string, unknown>).sequence).toBe(0);
-    expect((stream.written[2] as Record<string, unknown>).invokeId).toBe("turn-b");
   });
 
   it("generates unique frameId per frame", async () => {
@@ -327,7 +355,7 @@ describe("Handler.Connect text frame", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-uuid", "turn-u", "go", "helpful-assistant"));
+    stream.emit("data", userContentFrame("sess-uuid", "go", "helpful-assistant"));
     await flush();
 
     const frameIds = stream.written.map(
@@ -355,17 +383,17 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-missing", "inv-x", "hello"));
+    stream.emit("data", userContentFrame("sess-missing", "hello"));
     await flush();
 
     expect(stream.written).toHaveLength(1);
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f0.payload).toBe("warn");
     expect(f0.warn).toBeDefined();
     expect((f0.warn as Record<string, unknown>).message).toContain(
       "agent_profile_name",
     );
-    expect(f0.invokeId).toBe("inv-x");
   });
 
   it("does NOT call getOrCreateAdapter when profile is missing", async () => {
@@ -378,7 +406,7 @@ describe("Handler.Connect missing profile name", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-fresh", "inv-x", "hello"));
+    stream.emit("data", userContentFrame("sess-fresh", "hello"));
     await flush();
 
     expect(calls).toHaveLength(0);
@@ -417,10 +445,10 @@ describe("Handler.Connect profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-switch", "turn-1", "msg1", "profile-a"));
+    stream.emit("data", userContentFrame("sess-switch", "msg1", "profile-a"));
     await flush();
 
-    stream.emit("data", textFrame("sess-switch", "turn-2", "msg2", "profile-b"));
+    stream.emit("data", userContentFrame("sess-switch", "msg2", "profile-b"));
     await flush();
 
     expect(calls).toEqual(["profile-a", "profile-b"]);
@@ -429,13 +457,12 @@ describe("Handler.Connect profile switch", () => {
       .filter(
         (f) =>
           (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-          (f as Record<string, unknown>).text,
+          (f as Record<string, unknown>).payload === "content",
       )
-      .map(
-        (f) =>
-          ((f as Record<string, unknown>).text as Record<string, unknown>)
-            .content,
-      );
+      .map((f) => {
+        const parts = ((f as Record<string, unknown>).content as { parts: { text?: { content?: string } }[] }).parts;
+        return parts[0]?.text?.content ?? "";
+      });
     expect(texts).toEqual(["Response from A", "Response from B"]);
   });
 });
@@ -469,14 +496,14 @@ describe("Handler.Connect failed profile switch", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-fail", "turn-ok", "hello", "valid-profile"));
+    stream.emit("data", userContentFrame("sess-fail", "hello", "valid-profile"));
     await flush();
 
-    stream.emit("data", textFrame("sess-fail", "turn-fail", "switch me", "nonexistent-profile"));
+    stream.emit("data", userContentFrame("sess-fail", "switch me", "nonexistent-profile"));
     await flush();
 
     const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).warn,
+      (f) => (f as Record<string, unknown>).payload === "warn",
     );
     expect(warnFrames).toHaveLength(1);
     expect(
@@ -485,15 +512,15 @@ describe("Handler.Connect failed profile switch", () => {
     ).toContain("Agent profile not found");
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].userMessage).toBe("hello");
+    expect(calls[0].content.text).toBe("hello");
   });
 });
 
 // ===========================================================================
-// Tests: Connect — deprecated payloads silently ignored
+// Tests: Connect — ToolResultPart content frame dispatches to bridge.handleResult
 // ===========================================================================
 
-describe("Handler.Connect deprecated payloads", () => {
+describe("Handler.Connect tool result content frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -502,40 +529,198 @@ describe("Handler.Connect deprecated payloads", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  function setupStream() {
+  it("calls getBridge().handleResult when a ToolResultPart content frame arrives", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-    return stream;
-  }
 
-  it("silently ignores screenshot payload", async () => {
-    const stream = setupStream();
+    const toolResult = {
+      toolId: "tool-1",
+      status: "TOOL_RESULT_STATUS_SUCCEEDED",
+      message: "ok",
+    };
     stream.emit("data", {
-      sessionId: "sess-d",
-      invokeId: "inv-s",
-      payload: "screenshot",
-      sender: FRAME_SENDER_USER,
+      sessionId: "sess-or",
+      payload: "content",
+      content: { parts: [{ toolResult }] },
+      sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
-    expect(stream.written).toHaveLength(0);
+
+    const bridge = sessionAgentStore._getAgent("sess-or").bridge;
+    expect(bridge.handleResult).toHaveBeenCalledTimes(1);
+    expect(bridge.handleResult).toHaveBeenCalledWith(toolResult);
   });
 
-  it("silently ignores operation payload", async () => {
-    const stream = setupStream();
+  it("does not write any frame for a tool result content frame", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
     stream.emit("data", {
-      sessionId: "sess-d",
-      invokeId: "inv-o",
-      payload: "operation",
-      sender: FRAME_SENDER_USER,
+      sessionId: "sess-or2",
+      payload: "content",
+      content: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
+      sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
+
     expect(stream.written).toHaveLength(0);
   });
 });
 
 // ===========================================================================
-// Tests: Connect — status & echo probes
+// Tests: Connect — OperationBridge sink lifecycle (register/unregister)
+// ===========================================================================
+
+describe("Handler.Connect bridge lifecycle", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "helpful-assistant": {
+        model: "opencode-go/deepseek-v4",
+        systemPrompt: "You are helpful.",
+      },
+    });
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  it("registers bridge sink on user content frame", async () => {
+    sessionAgentStore._setBinding(
+      "sess-sink",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-sink", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-sink").bridge;
+    expect(bridge.registerSink).toHaveBeenCalledTimes(1);
+    expect(typeof bridge.registerSink.mock.calls[0][0]).toBe("function");
+  });
+
+  it("calls generateTurn with text+image TurnContent when both provided", async () => {
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "done" },
+    ]);
+    sessionAgentStore._setBinding("sess-tc", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+    stream.emit(
+      "data",
+      userContentWithImageFrame(
+        "sess-tc",
+        "look at this",
+        { data: pngBytes, encoding: "IMAGE_ENCODING_PNG" },
+        "helpful-assistant",
+      ),
+    );
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].content).toEqual({
+      text: "look at this",
+      imageData: pngBytes.toString("base64"),
+      imageMimeType: "image/png",
+    });
+  });
+
+  it("calls generateTurn with text-only TurnContent when no image", async () => {
+    const { adapter, calls } = createRecordingAdapter([
+      { type: "text", text: "done" },
+    ]);
+    sessionAgentStore._setBinding("sess-tc2", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-tc2", "plain text", "helpful-assistant"));
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].content).toEqual({ text: "plain text" });
+  });
+
+  it("unregisters bridge sink on stream end for active sessions", async () => {
+    sessionAgentStore._setBinding(
+      "sess-end",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-end", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-end").bridge;
+    expect(bridge.unregisterSink).not.toHaveBeenCalled();
+
+    stream.emit("end");
+    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
+  });
+
+  it("unregisters bridge sink on stream error", async () => {
+    sessionAgentStore._setBinding(
+      "sess-err-sink",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-err-sink", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-err-sink").bridge;
+    expect(bridge.unregisterSink).not.toHaveBeenCalled();
+
+    stream.emit("error", new Error("socket reset"));
+    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
+  });
+
+  it("sink callback writes content envelope to stream", async () => {
+    sessionAgentStore._setBinding(
+      "sess-write",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-write", "hi", "helpful-assistant"));
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-write").bridge;
+    const sinkFn = bridge.registerSink.mock.calls[0][0] as (f: unknown) => void;
+    const envelope = { payload: "content", content: { parts: [{ mouseMove: { toolId: "x", xPx: 1, yPx: 2 } }] } };
+    const before = stream.written.length;
+    sinkFn(envelope);
+    expect(stream.written.length).toBe(before + 1);
+    expect(stream.written[stream.written.length - 1]).toBe(envelope);
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — status probe
 // ===========================================================================
 
 describe("Handler.Connect probes", () => {
@@ -554,7 +739,6 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-status",
-      invokeId: "inv-st",
       payload: "status",
       sender: FRAME_SENDER_USER,
     });
@@ -563,6 +747,7 @@ describe("Handler.Connect probes", () => {
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f.payload).toBe("status");
     expect(f.status).toEqual({ status: "unknown" });
   });
 
@@ -579,7 +764,6 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-bound",
-      invokeId: "inv-st",
       payload: "status",
       sender: FRAME_SENDER_USER,
     });
@@ -588,25 +772,6 @@ describe("Handler.Connect probes", () => {
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.status).toEqual({ status: "idle" });
-  });
-
-  it("echoes echo payload back", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", {
-      sessionId: "sess-echo",
-      invokeId: "inv-ec",
-      payload: "echo",
-      echo: { data: "hello-echo" },
-      sender: FRAME_SENDER_USER,
-    });
-    await flush();
-
-    expect(stream.written).toHaveLength(1);
-    const f = stream.written[0] as Record<string, unknown>;
-    expect(f.echo).toEqual({ data: "hello-echo" });
   });
 });
 
@@ -640,14 +805,14 @@ describe("Handler.Connect LLM error", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-err", "turn-err", "break me", "error-profile"));
+    stream.emit("data", userContentFrame("sess-err", "break me", "error-profile"));
     await flush();
 
     expect(stream.written.length).toBeGreaterThanOrEqual(1);
     expect(stream.ended).toBe(false);
 
     const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).warn,
+      (f) => (f as Record<string, unknown>).payload === "warn",
     );
     expect(warnFrames.length).toBeGreaterThanOrEqual(1);
   });
@@ -658,7 +823,7 @@ describe("Handler.Connect LLM error", () => {
 // ===========================================================================
 
 describe("Handler.Connect same-session serialization", () => {
-  it("serializes concurrent text frames on same session (FIFO)", async () => {
+  it("serializes concurrent user content frames on same session (FIFO)", async () => {
     const promptClient = createMockPromptClient({
       "test-profile": { model: "m", systemPrompt: "s" },
     });
@@ -668,7 +833,8 @@ describe("Handler.Connect same-session serialization", () => {
     const processedMessages: string[] = [];
 
     const adapter: AgentAdapter = {
-      async *generateTurn(_threadId: string, userMessage: string) {
+      async *generateTurn(_threadId: string, content: TurnContent) {
+        const userMessage = content.text ?? "";
         concurrentCount++;
         maxConcurrent = Math.max(maxConcurrent, concurrentCount);
         processedMessages.push(userMessage);
@@ -689,8 +855,8 @@ describe("Handler.Connect same-session serialization", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", textFrame("sess-conc", "turn-a", "msg-1", "test-profile"));
-    stream.emit("data", textFrame("sess-conc", "turn-b", "msg-2", "test-profile"));
+    stream.emit("data", userContentFrame("sess-conc", "msg-1", "test-profile"));
+    stream.emit("data", userContentFrame("sess-conc", "msg-2", "test-profile"));
 
     await new Promise((r) => setTimeout(r, 100));
 
@@ -757,8 +923,190 @@ describe("Handler.GetAgent", () => {
 });
 
 // ===========================================================================
-// Tests: ListMessages — REAL MemorySaver round-trip
+// Tests: RefreshAgent
 // ===========================================================================
+
+describe("Handler.RefreshAgent", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient();
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  function refreshAgent(handler: Handler, sessionId: string) {
+    const call = createUnaryCall({ name: `sessions/${sessionId}/agent` });
+    const { callback, promise } = createCallback<{}>();
+    handler.RefreshAgent(call, callback);
+    return promise;
+  }
+
+  it("succeeds and invalidates adapter when no turn is in-flight", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const { error, response } = await refreshAgent(handler, "sess-refresh");
+
+    expect(error).toBeNull();
+    expect(response).toEqual({});
+
+    const agent = sessionAgentStore._getAgent("sess-refresh");
+    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns FAILED_PRECONDITION when a turn is in-flight", async () => {
+    const blocks: ContentBlock[] = [{ type: "text", text: "late reply" }];
+    const slowAdapter: AgentAdapter = {
+      async *generateTurn(): AsyncIterable<ContentBlock> {
+        await new Promise((r) => setTimeout(r, 50));
+        for (const block of blocks) yield block;
+      },
+      async getState() { return null; },
+    };
+    sessionAgentStore._setBinding(
+      "sess-busy",
+      "test-profile",
+      slowAdapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-busy", "hello", "test-profile"),
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const { error, response } = await refreshAgent(handler, "sess-busy");
+
+    expect(error).not.toBeNull();
+    expect(error!.code).toBe(grpc.status.FAILED_PRECONDITION);
+    expect(response).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-busy");
+    expect(agent.invalidateAdapter).not.toHaveBeenCalled();
+
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
+  it("releases mutex so subsequent RefreshAgent calls still succeed", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const first = await refreshAgent(handler, "sess-repeat");
+    expect(first.error).toBeNull();
+
+    const second = await refreshAgent(handler, "sess-repeat");
+    expect(second.error).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-repeat");
+    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not block subsequent Connect turns after RefreshAgent", async () => {
+    const adapter = createMockAdapter([
+      { type: "text", text: "after refresh" },
+    ]);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const refreshResult = await refreshAgent(handler, "sess-post");
+    expect(refreshResult.error).toBeNull();
+
+    const agent = sessionAgentStore._getAgent("sess-post");
+    agent.getOrCreateAdapter.mockResolvedValue(adapter);
+    agent.getAdapterState.mockReturnValue({
+      activeProfileName: "p",
+      isBound: true,
+    });
+
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userContentFrame("sess-post", "go", "p"),
+    );
+    await flush();
+
+    expect(stream.written.length).toBeGreaterThanOrEqual(1);
+    const textFrames = stream.written.filter(
+      (f) =>
+        (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
+        (f as Record<string, unknown>).payload === "content",
+    );
+    expect(textFrames).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// Tests: SessionAgent.invalidateAdapter + getBridge (integration)
+// ===========================================================================
+
+describe("SessionAgent.invalidateAdapter integration", () => {
+  it("nulls adapter so next getOrCreateAdapter rebuilds", async () => {
+    const created: AgentAdapter[] = [];
+    const factory: AdapterFactory = async () => {
+      const adapter = createMockAdapter([
+        { type: "text", text: `adapter-${created.length}` },
+      ]);
+      created.push(adapter);
+      return adapter;
+    };
+
+    const throwProvider = async () => {
+      throw new Error("not used");
+    };
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+
+    const fetcher = async () => ({
+      model: "m",
+      systemPrompt: "s",
+      toolNames: [],
+    });
+
+    const first = await agent.getOrCreateAdapter("p", fetcher);
+    expect(created).toHaveLength(1);
+    expect(agent.getAdapterState().isBound).toBe(true);
+
+    agent.invalidateAdapter();
+    expect(agent.getAdapter()).toBeNull();
+    expect(agent.getAdapterState()).toEqual({
+      activeProfileName: null,
+      isBound: false,
+    });
+
+    const second = await agent.getOrCreateAdapter("p", fetcher);
+    expect(second).not.toBe(first);
+    expect(created).toHaveLength(2);
+  });
+
+  it("invalidateAdapter on never-bound session is a no-op", () => {
+    const agent = new SessionAgent(
+      async () => { throw new Error("x"); },
+      async () => { throw new Error("x"); },
+      new MemorySaver(),
+    );
+
+    expect(() => agent.invalidateAdapter()).not.toThrow();
+    expect(agent.getAdapter()).toBeNull();
+  });
+
+  it("getBridge returns a stable OperationBridge instance", () => {
+    const agent = new SessionAgent(
+      async () => { throw new Error("x"); },
+      async () => { throw new Error("x"); },
+      new MemorySaver(),
+    );
+
+    const b1 = agent.getBridge();
+    const b2 = agent.getBridge();
+    expect(b1).toBe(b2);
+    expect(b1).toBeInstanceOf(OperationBridge);
+  });
+});
+
+
 
 describe("Handler.ListMessages (real MemorySaver)", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
@@ -801,7 +1149,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     graph: any,
     sessionId: string,
-    messages: Array<HumanMessage | AIMessage | SystemMessage>,
+    messages: Array<HumanMessage | AIMessage | SystemMessage | ToolMessage>,
   ) {
     await graph.invoke(
       { messages },
@@ -820,6 +1168,12 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     return promise;
   }
 
+  /** Extract the single Part's content string from a Message's PartBlock. */
+  function firstPartText(msg: Record<string, unknown>): string {
+    const parts = (msg.content as { parts: { text?: { content?: string } }[] }).parts;
+    return parts[0]?.text?.content ?? "";
+  }
+
   it("round-trips text messages (human + ai) in chronological order", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-text-rt", "test-profile", adapter);
@@ -836,15 +1190,13 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages).toHaveLength(2);
 
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    expect(response!.messages![0].type).toBe("text");
-    expect(response!.messages![0].content).toBe("Hello");
+    expect(firstPartText(response!.messages![0])).toBe("Hello");
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    expect(response!.messages![1].type).toBe("text");
-    expect(response!.messages![1].content).toBe("Hi there!");
+    expect(firstPartText(response!.messages![1])).toBe("Hi there!");
   });
 
-  it("maps AIMessage with only reasoning blocks to type 'thinking'", async () => {
+  it("maps AIMessage with only reasoning blocks to a ThinkingPart", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-think-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -862,11 +1214,11 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(response!.messages).toHaveLength(2);
 
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    expect(response!.messages![1].type).toBe("thinking");
-    expect(response!.messages![1].content).toBe("Let me analyze...");
+    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string } }[] }).parts;
+    expect(parts[0]?.thinking?.content).toBe("Let me analyze...");
   });
 
-  it("maps AIMessage with mixed reasoning + text to type 'text'", async () => {
+  it("maps AIMessage with mixed reasoning + text to both parts", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-mixed-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -885,7 +1237,69 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
-    expect(response!.messages![1].type).toBe("text");
+    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string }; text?: { content?: string } }[] }).parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0]?.thinking?.content).toBe("Step 1");
+    expect(parts[1]?.text?.content).toBe("The answer is 42.");
+  });
+
+  it("reconstructs image content blocks as an ImagePart alongside text", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-image-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-image-rt", [
+      new HumanMessage({
+        content: [
+          { type: "text", text: "What is in this image?" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,base64imagedata" },
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-image-rt");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(1);
+
+    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
+    const parts = (response!.messages![0].content as { parts: { text?: { content?: string }; image?: { data?: unknown; encoding?: string } }[] }).parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0]?.text?.content).toBe("What is in this image?");
+    expect(parts[1]?.image?.data).toBe("base64imagedata");
+    expect(parts[1]?.image?.encoding).toBe("IMAGE_ENCODING_PNG");
+  });
+
+  it("reconstructs image content blocks when data is a Uint8Array", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-image-uint8", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const expectedBase64 = Buffer.from(imageBytes).toString("base64");
+
+    await writeMessages(graph, "sess-image-uint8", [
+      new HumanMessage({
+        content: [
+          { type: "text", text: "look" },
+          {
+            type: "image",
+            data: imageBytes,
+            mime_type: "image/png",
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-image-uint8");
+
+    expect(error).toBeNull();
+    expect(response!.messages).toHaveLength(1);
+    const parts = (response!.messages![0].content as { parts: { image?: { data?: unknown } }[] }).parts;
+    expect(parts[1]?.image?.data).toBe(expectedBase64);
   });
 
   it("filters out SystemMessages from the result", async () => {
@@ -904,9 +1318,6 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(2);
-    for (const msg of response!.messages!) {
-      expect(msg.type).not.toBe("warn");
-    }
     expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
     expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
   });
@@ -934,9 +1345,165 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     expect(response!.messages).toHaveLength(4);
-    expect(response!.messages![0].content).toBe("first");
-    expect(response!.messages![1].content).toBe("second");
-    expect(response!.messages![2].content).toBe("third");
-    expect(response!.messages![3].content).toBe("fourth");
+    expect(firstPartText(response!.messages![0])).toBe("first");
+    expect(firstPartText(response!.messages![1])).toBe("second");
+    expect(firstPartText(response!.messages![2])).toBe("third");
+    expect(firstPartText(response!.messages![3])).toBe("fourth");
+  });
+
+  it("emits a MouseMovePart for AIMessage with a mouse_move tool_call", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-op-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-op-rt", [
+      new HumanMessage("click the button"),
+      new AIMessage({
+        content: "I'll move the mouse first.",
+        tool_calls: [
+          {
+            name: "mouse_move",
+            args: { x_px: 150, y_px: 250 },
+            id: "call-move-1",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-op-rt");
+
+    expect(error).toBeNull();
+    const opMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { mouseMove?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.mouseMove);
+    });
+    expect(opMsg).toBeDefined();
+    expect(opMsg!.sender).toBe(FRAME_SENDER_AGENT);
+    const movePart = (opMsg!.content as { parts: { mouseMove?: { xPx?: number; yPx?: number } }[] }).parts.find((p) => p.mouseMove)!.mouseMove;
+    expect(movePart?.xPx).toBe(150);
+    expect(movePart?.yPx).toBe(250);
+  });
+
+  it("emits a MouseClickPart for a mouse_click tool_call with click_type", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opclick-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opclick-rt", [
+      new HumanMessage("click here"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_click",
+            args: { click_type: "LEFT_CLICK" },
+            id: "call-click-1",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opclick-rt");
+
+    expect(error).toBeNull();
+    const opMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { mouseClick?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.mouseClick);
+    });
+    expect(opMsg).toBeDefined();
+    const clickPart = (opMsg!.content as { parts: { mouseClick?: { click?: string } }[] }).parts.find((p) => p.mouseClick)!.mouseClick;
+    expect(clickPart?.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
+  });
+
+  it("emits a ToolResultPart for a ToolMessage with reconstructed fields", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opres-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opres-rt", [
+      new HumanMessage("move the mouse"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_move",
+            args: { x_px: 10, y_px: 20 },
+            id: "call-2",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+      new ToolMessage({
+        content: [
+          { type: "text", text: "ok" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,screenshotdata" },
+          },
+          {
+            type: "text",
+            text: "[图片像素尺寸：800×600（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+          },
+        ],
+        tool_call_id: "call-2",
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opres-rt");
+
+    expect(error).toBeNull();
+
+    // The ToolMessage produces a Message carrying a ToolResultPart.
+    const resultMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolResult);
+    });
+    expect(resultMsg).toBeDefined();
+    expect(resultMsg!.sender).toBe(FRAME_SENDER_SYSTEM);
+    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string; message?: string; screenshot?: { data?: string; encoding?: string; widthPx?: number; heightPx?: number } } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    expect(tr?.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
+    expect(tr?.message).toBe("ok");
+    expect(tr?.screenshot).toBeDefined();
+    expect(tr?.screenshot?.data).toBe("screenshotdata");
+    expect(tr?.screenshot?.widthPx).toBe(800);
+    expect(tr?.screenshot?.heightPx).toBe(600);
+  });
+
+  it("infers FAILED status from ToolMessage message without ok/succeeded", async () => {
+    const { adapter, graph } = createStateAdapter();
+    sessionAgentStore._setBinding("sess-opfail-rt", "test-profile", adapter);
+    const handler = createHandler({ promptClient, sessionAgentStore });
+
+    await writeMessages(graph, "sess-opfail-rt", [
+      new HumanMessage("do something"),
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            name: "mouse_click",
+            args: { click_type: "RIGHT_CLICK" },
+            id: "call-3",
+            type: "tool_call" as const,
+          },
+        ],
+      }),
+      new ToolMessage({
+        content: [{ type: "text", text: "operation timed out" }],
+        tool_call_id: "call-3",
+      }),
+    ]);
+
+    const { error, response } = await listMessages(handler, "sess-opfail-rt");
+
+    expect(error).toBeNull();
+    const resultMsg = response!.messages!.find((m) => {
+      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolResult);
+    });
+    expect(resultMsg).toBeDefined();
+    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    expect(tr?.status).toBe("TOOL_RESULT_STATUS_FAILED");
   });
 });

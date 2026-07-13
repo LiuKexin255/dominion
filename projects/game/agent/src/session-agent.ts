@@ -11,12 +11,14 @@
 import { info } from "@dominion/common-js-logs";
 import { MemorySaver } from "@langchain/langgraph";
 
+import { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 import type { AgentAdapter, AdapterFactory } from "./llm";
 
 export interface ProfileData {
   model: string;
   systemPrompt: string;
+  toolNames: string[];
 }
 
 export type ProfileFetcher = () => Promise<ProfileData>;
@@ -30,12 +32,15 @@ export class SessionAgent {
   private adapter: AgentAdapter | null = null;
   private activeProfileName: string | null = null;
   private bindLock: Promise<void> = Promise.resolve();
+  private readonly bridge: OperationBridge;
 
   constructor(
     private readonly getProviderFn: ProviderLookupFn,
     private readonly adapterFactory: AdapterFactory,
     private readonly checkpointer: MemorySaver,
-  ) {}
+  ) {
+    this.bridge = new OperationBridge();
+  }
 
   async getOrCreateAdapter(
     profileName: string,
@@ -59,6 +64,29 @@ export class SessionAgent {
       activeProfileName: this.activeProfileName,
       isBound: this.adapter !== null,
     };
+  }
+
+  /**
+   * Drop the cached adapter so the next getOrCreateAdapter call rebuilds it
+   * (e.g. after tool_names changed).  Caller MUST reject concurrent turns via
+   * the per-session mutex; invalidateAdapter does not synchronize.
+   */
+  invalidateAdapter(): void {
+    if (!this.adapter) {
+      return;
+    }
+    const old = this.adapter;
+    const oldProfile = this.activeProfileName;
+    this.adapter = null;
+    this.activeProfileName = null;
+    setImmediate(() => {
+      old.cleanup?.();
+      info("adapter invalidated for refresh", { oldProfile });
+    });
+  }
+
+  getBridge(): OperationBridge {
+    return this.bridge;
   }
 
   private async serializeBind(
@@ -93,6 +121,8 @@ export class SessionAgent {
       const adapter = await this.adapterFactory(
         () => this.getProviderFn(profile.model),
         profile.systemPrompt,
+        profile.toolNames,
+        this.bridge,
         this.checkpointer,
       );
 
