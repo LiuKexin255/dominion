@@ -36,12 +36,10 @@
       "variant": "xhigh"
     },
     "atlas": {
-      "model": "opencode-go/deepseek-v4-pro",
-      "variant": "high"
+      "model": "zhipuai-coding-plan/glm-5.2"
     },
     "sisyphus-junior": {
-      "model": "opencode-go/deepseek-v4-pro",
-      "variant": "high"
+      "model": "zhipuai-coding-plan/glm-5.2"
     }
   },
   "categories": {
