@@ -115,11 +115,14 @@ export interface AgentAdapter {
 	 *
 	 * @param threadId - Stable checkpoint thread identifier (sessionId).
 	 * @param content  - Text and/or image blocks for this turn.
+	 * @param signal   - Optional AbortSignal; when aborted, LangGraph cancels
+	 *                   the in-flight run.
 	 * @returns Async iterable of ContentBlock in streaming order.
 	 */
 	generateTurn(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock>;
 
 	/**
@@ -203,8 +206,9 @@ export class AgentAdapterImpl implements AgentAdapter {
 	async *generateTurn(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock> {
-		yield* this.streamFromAgent(threadId, content);
+		yield* this.streamFromAgent(threadId, content, signal);
 	}
 
 	async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
@@ -222,6 +226,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 	private async *streamFromAgent(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock> {
 		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
 		const hasImage = !!(content.imageData && content.imageMimeType);
@@ -263,6 +268,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 			metadata: { session_id: threadId },
 			version: "v3",
 			recursionLimit: RECURSION_LIMIT,
+			signal,
 		},
 		);
 

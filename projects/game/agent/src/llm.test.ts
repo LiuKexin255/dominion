@@ -23,7 +23,10 @@ import { OperationBridge } from "./operation-bridge";
 
 type FakeStreamAgent = {
 	agent: {
-		streamEvents: (input?: { messages: BaseMessage[] }) => Promise<{
+		streamEvents: (
+			input?: { messages: BaseMessage[] },
+			config?: { signal?: AbortSignal; [k: string]: unknown },
+		) => Promise<{
 			messages: AsyncGenerator<{
 				reasoning: AsyncGenerator<string>;
 				text: AsyncGenerator<string>;
@@ -122,7 +125,7 @@ describe("AgentAdapterImpl constructor", () => {
 		expect(typeof adapter.generateTurn).toBe("function");
 	});
 
-	it("generateTurn accepts 2 parameters (threadId, content)", () => {
+	it("generateTurn accepts 3 parameters (threadId, content, signal)", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("hi"),
 			"prompt",
@@ -130,7 +133,7 @@ describe("AgentAdapterImpl constructor", () => {
 			noopBridge(),
 			new MemorySaver(),
 		);
-		expect(adapter.generateTurn.length).toBe(2);
+		expect(adapter.generateTurn.length).toBe(3);
 	});
 
 	it("constructs without error when toolNames includes the mouse tools", () => {
@@ -283,6 +286,67 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 
 		expect(blocks).toHaveLength(1);
 		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
+
+	it("generateTurn respects AbortSignal — stream stops on abort", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		let capturedSignal: AbortSignal | undefined;
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async (
+				_input?: { messages: BaseMessage[] },
+				config?: { signal?: AbortSignal; [k: string]: unknown },
+			) => {
+				const signal = config?.signal;
+				capturedSignal = signal;
+				return {
+					messages: (async function* () {
+						yield {
+							reasoning: (async function* () {})(),
+							text: (async function* () {
+								yield "first";
+								await new Promise<void>((resolve) => {
+									if (signal) {
+										if (signal.aborted) resolve();
+										else
+											signal.addEventListener(
+												"abort",
+												() => resolve(),
+												{ once: true },
+											);
+									} else {
+										resolve();
+									}
+								});
+							})(),
+						};
+					})(),
+				};
+			},
+		};
+
+		const controller = new AbortController();
+		const blocks: ContentBlock[] = [];
+		for await (const block of adapter.generateTurn(
+			"t-abort",
+			{ text: "hi" },
+			controller.signal,
+		)) {
+			blocks.push(block);
+			if (blocks.length === 1) {
+				controller.abort();
+			}
+		}
+
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toEqual({ type: "text", text: "first" });
+		expect(capturedSignal).toBeTruthy();
+		expect(capturedSignal?.aborted).toBe(true);
 	});
 });
 
