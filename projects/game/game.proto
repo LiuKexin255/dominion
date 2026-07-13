@@ -311,9 +311,21 @@ message WarnSignal {
   string code = 2;
 }
 
-// StatusSignal carries a connectivity / lifecycle status string.
+// StatusSignalStatus is the lifecycle / connectivity status of an agent turn.
+enum StatusSignalStatus {
+  STATUS_SIGNAL_STATUS_UNSPECIFIED = 0;
+  // ACTIVE: heartbeat sent every 5s while the agent is working (model
+  // invocation, tool execution) but has not yet started streaming output.
+  STATUS_SIGNAL_STATUS_ACTIVE = 1;
+  // IDLE: the agent is bound to a profile and ready for input.
+  STATUS_SIGNAL_STATUS_IDLE = 2;
+}
+
+// StatusSignal carries a connectivity / lifecycle status. The agent emits
+// ACTIVE heartbeats during a turn (before LLM output starts); the desktop
+// watches for them and considers the agent lost if none arrive within 10s.
 message StatusSignal {
-  string status = 1;
+  StatusSignalStatus status = 1;
 }
 
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────

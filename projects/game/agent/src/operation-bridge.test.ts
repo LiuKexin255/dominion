@@ -16,7 +16,7 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
-import { OperationBridge } from "./operation-bridge";
+import { OperationBridge, DesktopDisconnectedError } from "./operation-bridge";
 
 import type { Part } from "../game_types/projects/game/Part";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
@@ -77,17 +77,12 @@ describe("OperationBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Required scenario 2: no sink → dispatch → 5s timeout → FAILED
+  // Required scenario 2: no sink → dispatch → throws DesktopDisconnectedError
   // ------------------------------------------------------------------
-  it("no sink registered → dispatch → 5s timeout → FAILED", async () => {
+  it("no sink registered → dispatch → throws DesktopDisconnectedError", async () => {
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
-
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    const result = await promise;
-    expect(result.status).toBe(STATUS_FAILED);
-    expect(result.message).toContain("timed out");
+    await expect(bridge.dispatch(part)).rejects.toThrow(DesktopDisconnectedError);
+    await expect(bridge.dispatch(part)).rejects.toThrow("desktop disconnected");
   });
 
   // ------------------------------------------------------------------
@@ -116,6 +111,14 @@ describe("OperationBridge", () => {
   // ------------------------------------------------------------------
   // Additional coverage
   // ------------------------------------------------------------------
+
+  it("hasSink() reflects sink registration state", () => {
+    expect(bridge.hasSink()).toBe(false);
+    bridge.registerSink(() => {});
+    expect(bridge.hasSink()).toBe(true);
+    bridge.unregisterSink();
+    expect(bridge.hasSink()).toBe(false);
+  });
 
   it("sink throws during write → immediate FAILED", async () => {
     bridge.registerSink(() => {

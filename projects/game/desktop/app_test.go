@@ -58,7 +58,7 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 			FrameId:    "test-status-frame",
 			CreateTime: timestamppb.Now(),
 			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: "ok"},
+				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -965,5 +965,129 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 	}
 	if got := waitFrame.GetFrameId(); got != "turn-frame-id" {
 		t.Errorf("event 1 FrameId = %q, want %q (F13b: synthesized wait reuses turn frameID)", got, "turn-frame-id")
+	}
+}
+
+// TestRecvLoop_AppendsToolResultFromInboundOperation verifies that the result
+// of an auto-executed mouse operation is appended to the chatstream — not
+// only sent over WebSocket to the agent. Without the mirror-append the local
+// user never sees tool results via the live SSE stream; they only reappear
+// via SeedFromHistory after a session restart (the agent persists the result,
+// the desktop does not).
+func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
+	// given: mock WS server sends a content frame with a MouseClickPart, then
+	// a wait signal. It drains client-sent frames (the tool result) in the
+	// background so SendFrame does not block.
+	clickFrame := &game.AgentFrame{
+		SessionId: "op-session",
+		FrameId:   "srv-click-1",
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{
+				{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+					ToolId: "click-1",
+					Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				}}},
+			}},
+		},
+	}
+	waitFrame := &game.AgentFrame{
+		SessionId: "op-session",
+		FrameId:   "srv-wait-1",
+		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		go func() {
+			for {
+				if _, _, err := conn.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		for _, f := range []*game.AgentFrame{clickFrame, waitFrame} {
+			data, _ := protojson.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+				return
+			}
+		}
+		select {} // keep the connection open until teardown
+	})
+	defer srv.Close()
+
+	// given: App with a chatstream Registry (stream pre-opened). No window is
+	// bound, so executeAgentOperation fails fast with "no window bound" — the
+	// result frame is still produced and must still be appended.
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("op-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("op-session")
+
+	app.ws = &api.WSClient{}
+	if err := app.ws.Connect(context.Background(), srv.URL, "op-session", "test-env"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer app.ws.Close()
+
+	// when: run recvLoop (terminates on the wait signal)
+	app.recvDone = make(chan struct{})
+	go app.recvLoop("op-session", "user-frame-1")
+
+	select {
+	case <-app.recvDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recvLoop did not terminate within 3s")
+	}
+
+	// then: 3 events in order — agent click request, tool result, wait.
+	if got := stream.LastID(); got != 3 {
+		t.Fatalf("LastID = %d, want 3 (click request + tool result + wait)", got)
+	}
+	_, snap := stream.Subscribe(0)
+	if len(snap) != 3 {
+		t.Fatalf("snapshot length = %d, want 3", len(snap))
+	}
+
+	// event 1: the agent's mouse-click request.
+	reqContent := snap[0].Frame.GetContent()
+	if reqContent == nil {
+		t.Fatalf("snap[0] expected Content payload, got %T", snap[0].Frame.GetPayload())
+	}
+	if reqContent.GetParts()[0].GetMouseClick() == nil {
+		t.Errorf("snap[0] expected MouseClickPart, got %T", reqContent.GetParts()[0].GetKind())
+	}
+
+	// event 2: the desktop's tool result, mirrored into the chatstream.
+	// Sender is USER; status FAILED because no window is bound.
+	resContent := snap[1].Frame.GetContent()
+	if resContent == nil {
+		t.Fatalf("snap[1] expected Content payload, got %T", snap[1].Frame.GetPayload())
+	}
+	resultPart := resContent.GetParts()[0].GetToolResult()
+	if resultPart == nil {
+		t.Fatalf("snap[1] expected ToolResultPart, got %T", resContent.GetParts()[0].GetKind())
+	}
+	if resultPart.GetToolId() != "click-1" {
+		t.Errorf("tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
+	}
+	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Errorf("status = %v, want FAILED (no window bound)", resultPart.GetStatus())
+	}
+	if snap[1].Frame.GetSender() != game.FrameSender_FRAME_SENDER_USER {
+		t.Errorf("sender = %v, want FRAME_SENDER_USER", snap[1].Frame.GetSender())
+	}
+
+	// event 3: wait signal (turn terminus).
+	if snap[2].Frame.GetWait() == nil {
+		t.Errorf("snap[2] expected Wait payload, got %T", snap[2].Frame.GetPayload())
 	}
 }

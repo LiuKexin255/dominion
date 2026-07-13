@@ -183,7 +183,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
 			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: "echo-back"},
+				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -203,7 +203,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		SessionId: "test-session",
 		Payload: &game.AgentFrame_Status{
 			Status: &game.StatusSignal{
-				Status: "ping",
+				Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE,
 			},
 		},
 	}
@@ -224,8 +224,8 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	if statusPayload == nil {
 		t.Fatal("Status payload is nil, want non-nil")
 	}
-	if statusPayload.GetStatus() != "echo-back" {
-		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), "echo-back")
+	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
 			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: "content received"},
+				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -302,8 +302,8 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 	if statusPayload == nil {
 		t.Fatal("Status payload is nil, want non-nil")
 	}
-	if statusPayload.GetStatus() != "content received" {
-		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), "content received")
+	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 }
 
@@ -377,7 +377,7 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	err := ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "x",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "test"},
+				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 		},
 	})
 
@@ -476,7 +476,7 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	err = ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "test-session",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "ping"},
+				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 		},
 	})
 	if err != nil {

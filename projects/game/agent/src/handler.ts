@@ -46,6 +46,12 @@ const FrameSender = {
   FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
 } as const;
 
+const StatusSignalStatus = {
+  STATUS_SIGNAL_STATUS_UNSPECIFIED: "STATUS_SIGNAL_STATUS_UNSPECIFIED",
+  STATUS_SIGNAL_STATUS_ACTIVE: "STATUS_SIGNAL_STATUS_ACTIVE",
+  STATUS_SIGNAL_STATUS_IDLE: "STATUS_SIGNAL_STATUS_IDLE",
+} as const;
+
 export class Handler implements AgentServiceHandlers {
   [name: string]: any;
 
@@ -183,7 +189,9 @@ export class Handler implements AgentServiceHandlers {
           FrameSender.FRAME_SENDER_SYSTEM,
           {
             status: {
-              status: state.isBound ? "idle" : "unknown",
+              status: state.isBound
+                ? StatusSignalStatus.STATUS_SIGNAL_STATUS_IDLE
+                : StatusSignalStatus.STATUS_SIGNAL_STATUS_UNSPECIFIED,
             },
           },
         );

@@ -632,6 +632,10 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 		})
 		return fmt.Errorf("send user turn: operation result: %w", err)
 	}
+	// Mirror the result into the chatstream so the local user sees the tool
+	// outcome live; without this the result only reappears via SeedFromHistory
+	// after a session restart, since the agent — not the desktop — persists it.
+	a.chatStreams.Append(sessionID, resultFrame)
 	return nil
 }
 
@@ -1008,7 +1012,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 		FrameId:    probeFrameID,
 		CreateTime: timestamppb.Now(),
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "ping"},
+			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE},
 		},
 	}
 

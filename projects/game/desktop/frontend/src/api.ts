@@ -154,8 +154,13 @@ export interface WarnSignal {
   code?: string
 }
 
+export type StatusSignalStatus =
+  | 'STATUS_SIGNAL_STATUS_UNSPECIFIED'
+  | 'STATUS_SIGNAL_STATUS_ACTIVE'
+  | 'STATUS_SIGNAL_STATUS_IDLE'
+
 export interface StatusSignal {
-  status?: string
+  status?: StatusSignalStatus
 }
 
 export interface AgentProfile {

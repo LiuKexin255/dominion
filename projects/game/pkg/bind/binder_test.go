@@ -17,7 +17,7 @@ import (
 // payload-agnostic, so the concrete payload shape is irrelevant to coverage.
 func probeFrame() *game.AgentFrame {
 	return &game.AgentFrame{
-		Payload: &game.AgentFrame_Status{Status: &game.StatusSignal{Status: "probe"}},
+		Payload: &game.AgentFrame_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}},
 	}
 }
 

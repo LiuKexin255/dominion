@@ -62,6 +62,18 @@ export interface OperationResult {
   screenshot?: OperationScreenshot;
 }
 
+/**
+ * Thrown by {@link OperationBridge.dispatch} when no sink is registered — the
+ * desktop WebSocket has disconnected. Propagates through the tool → agent
+ * loop so the turn ends rather than feeding a failure back to the LLM.
+ */
+export class DesktopDisconnectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDisconnectedError";
+  }
+}
+
 interface PendingDispatch {
   resolve: (result: OperationResult) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -111,17 +123,27 @@ export class OperationBridge {
   }
 
   /**
+   * Report whether a sink is currently registered (desktop connected).
+   * Checked by the tool-abort middleware before each tool invocation so the
+   * turn ends immediately when the desktop disconnects, without feeding an
+   * error back to the LLM.
+   */
+  hasSink(): boolean {
+    return this.sink !== null;
+  }
+
+  /**
    * Dispatch a tool Part (MouseMovePart or MouseClickPart) to the desktop via
    * the registered sink and await the matching ToolResultPart.
    *
    * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
-   * carried by a content AgentFrame, and writes via the sink.  If no sink is
-   * registered the frame is not written but the dispatch still waits up to
-   * DISPATCH_TIMEOUT_MS before returning FAILED, giving the caller a
-   * consistent timeout contract regardless of sink state.
+   * carried by a content AgentFrame, and writes via the sink.  Throws when no
+   * sink is registered (desktop disconnected) so the tool error propagates
+   * and the agent turn ends rather than feeding a failure back to the LLM.
    *
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
-   *          missing sink, non-tool Part, or sink write error.
+   *          non-tool Part, or sink write error.
+   * @throws  When no sink is registered (desktop disconnected).
    */
   async dispatch(part: Part): Promise<OperationResult> {
     const toolPart: MouseMovePart | MouseClickPart | undefined =
@@ -129,6 +151,13 @@ export class OperationBridge {
     if (!toolPart) {
       warn("dispatch received a non-tool Part");
       return { status: STATUS_FAILED, message: "invalid tool part" };
+    }
+
+    const sink = this.sink;
+    if (!sink) {
+      throw new DesktopDisconnectedError(
+        "operation dispatch with no active sink (desktop disconnected)",
+      );
     }
 
     const toolId = randomUUID();
@@ -143,12 +172,6 @@ export class OperationBridge {
       }, DISPATCH_TIMEOUT_MS);
 
       this.pending.set(toolId, { resolve, timer });
-
-      const sink = this.sink;
-      if (!sink) {
-        warn("operation dispatch with no active sink", { toolId });
-        return;
-      }
 
       const envelope: AgentFrame = {
         payload: "content",

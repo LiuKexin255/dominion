@@ -259,7 +259,7 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Send valid AgentFrame JSON with an extra unknown field.
-	frameJSON := `{"sessionId":"","status":{"status":"ready"},"unknown_field":"should be discarded"}`
+	frameJSON := `{"sessionId":"","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"unknown_field":"should be discarded"}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -275,8 +275,8 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 		if sf == nil {
 			t.Fatal("payload oneof = nil, want status")
 		}
-		if sf.GetStatus() != "ready" {
-			t.Fatalf("status = %q, want %q", sf.GetStatus(), "ready")
+		if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+			t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for frame on gRPC server")
@@ -427,7 +427,7 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "err-session",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "ping"},
+			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 		},
 	}
 	msg, err := protojson.Marshal(sendFrame)
@@ -485,7 +485,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 
 	// Send a frame with a DIFFERENT session_id in JSON — gateway should
 	// overwrite it with the URL session_id.
-	frameJSON := `{"sessionId":"from-json","status":{"status":"ready"}}`
+	frameJSON := `{"sessionId":"from-json","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -508,7 +508,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 func TestProtojsonDiscardUnknown(t *testing.T) {
 	// Verify that protojson.UnmarshalOptions{DiscardUnknown: true} actually
 	// discards unknown fields without error.
-	input := []byte(`{"sessionId":"s1","status":{"status":"running"},"future_field":"ignored"}`)
+	input := []byte(`{"sessionId":"s1","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"future_field":"ignored"}`)
 
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	frame := new(game.AgentFrame)
@@ -523,15 +523,15 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	if sf == nil {
 		t.Fatal("payload oneof = nil, want status")
 	}
-	if sf.GetStatus() != "running" {
-		t.Fatalf("status = %q, want %q", sf.GetStatus(), "running")
+	if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 
 	// Verify the proto is valid.
 	want := &game.AgentFrame{
 		SessionId: "s1",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "running"},
+			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 		},
 	}
 	if !proto.Equal(frame, want) {
@@ -625,7 +625,7 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 			if err := stream.Send(&game.AgentFrame{
 				SessionId: frame.GetSessionId(),
 				Payload: &game.AgentFrame_Status{
-					Status: &game.StatusSignal{Status: "received"},
+					Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 				},
 			}); err != nil {
 				return err
@@ -736,8 +736,8 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	if status == nil {
 		t.Fatal("response payload oneof = nil, want status")
 	}
-	if status.GetStatus() != "received" {
-		t.Fatalf("status = %q, want %q", status.GetStatus(), "received")
+	if status.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Fatalf("status = %q, want %q", status.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 }
 

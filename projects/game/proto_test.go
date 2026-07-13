@@ -388,7 +388,7 @@ func TestAgentFrameStatusRoundtrip(t *testing.T) {
 	given := &game.AgentFrame{
 		SessionId: "sessions/test-status",
 		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: "ready"},
+			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
 		},
 	}
 
@@ -415,8 +415,8 @@ func TestAgentFrameStatusRoundtrip(t *testing.T) {
 	if status == nil {
 		t.Fatal("GetStatus() returned nil")
 	}
-	if status.GetStatus() != "ready" {
-		t.Errorf("status.status: got %q, want %q", status.GetStatus(), "ready")
+	if status.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("status.status: got %q, want %q", status.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 }
 
