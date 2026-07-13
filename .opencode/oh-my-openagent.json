@@ -9,8 +9,8 @@
       "variant": "medium"
     },
     "oracle": {
-      "model": "openai/gpt-5.6",
-      "variant": "high"
+      "model": "opencode-go/deepseek-v4-pro",
+      "variant": "max"
     },
     "explore": {
       "model": "opencode-go/deepseek-v4-flash",
