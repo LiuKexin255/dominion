@@ -15,7 +15,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
 import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
-import { DesktopDisconnectedError, type OperationBridge } from "./operation-bridge";
+import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
 /**
@@ -173,22 +173,6 @@ export class AgentAdapterImpl implements AgentAdapter {
 	) {
 		const tools = buildTools(toolNames, bridge);
 
-		// Abort tool execution when the desktop is disconnected. Throwing from
-		// wrapToolCall propagates as a middleware error — ToolNode re-throws it
-		// (bypassing defaultHandleToolErrors) so the stream errors out and the
-		// turn ends without feeding a tool-error ToolMessage back to the LLM.
-		const toolAbortOnDisconnect = createMiddleware({
-			name: "ToolAbortOnDisconnect",
-			wrapToolCall: async (_request, handler) => {
-				if (!bridge.hasSink()) {
-					throw new DesktopDisconnectedError(
-						"desktop disconnected: tool execution aborted",
-					);
-				}
-				return handler(_request);
-			},
-		});
-
 		info("compiling agent adapter", {
 			systemPromptLength: systemPrompt.length,
 			toolCount: tools.length,
@@ -198,7 +182,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 			model: chatModel,
 			systemPrompt,
 			tools,
-			middleware: [beforeModelMiddleware, wrapModelCallMiddleware, toolAbortOnDisconnect],
+			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
 			checkpointer,
 		});
 	}
