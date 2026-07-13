@@ -62,18 +62,6 @@ export interface OperationResult {
   screenshot?: OperationScreenshot;
 }
 
-/**
- * Thrown by {@link OperationBridge.dispatch} when no sink is registered — the
- * desktop WebSocket has disconnected. Propagates through the tool → agent
- * loop so the turn ends rather than feeding a failure back to the LLM.
- */
-export class DesktopDisconnectedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DesktopDisconnectedError";
-  }
-}
-
 interface PendingDispatch {
   resolve: (result: OperationResult) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -122,16 +110,6 @@ export class OperationBridge {
     info("operation bridge sink unregistered", {
       pendingCount: this.pending.size,
     });
-  }
-
-  /**
-   * Report whether a sink is currently registered (desktop connected).
-   * Checked by the tool-abort middleware before each tool invocation so the
-   * turn ends immediately when the desktop disconnects, without feeding an
-   * error back to the LLM.
-   */
-  hasSink(): boolean {
-    return this.sink !== null;
   }
 
   /**

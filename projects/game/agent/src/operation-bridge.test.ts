@@ -158,14 +158,6 @@ describe("OperationBridge", () => {
   // Additional coverage
   // ------------------------------------------------------------------
 
-  it("hasSink() reflects sink registration state", () => {
-    expect(bridge.hasSink()).toBe(false);
-    bridge.registerSink(() => {});
-    expect(bridge.hasSink()).toBe(true);
-    bridge.unregisterSink();
-    expect(bridge.hasSink()).toBe(false);
-  });
-
   it("sink throws during write → immediate FAILED", async () => {
     bridge.registerSink(() => {
       throw new Error("stream closed");
