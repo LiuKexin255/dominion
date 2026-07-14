@@ -25,10 +25,13 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	profileName := fmt.Sprintf("mm-tpi-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a multimodal test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a multimodal test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -72,10 +75,13 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	profileName := fmt.Sprintf("mm-img-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a multimodal test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a multimodal test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)

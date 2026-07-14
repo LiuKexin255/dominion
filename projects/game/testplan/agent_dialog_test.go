@@ -26,13 +26,16 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 
 	// Create profile, session
 	profile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
-	if profile.GetName() != "agentProfiles/"+profileName {
-		t.Errorf("profile name = %q, want %q", profile.GetName(), "agentProfiles/"+profileName)
+	if profile.GetName() != "prompts/agentProfiles/"+profileName {
+		t.Errorf("profile name = %q, want %q", profile.GetName(), "prompts/agentProfiles/"+profileName)
 	}
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -56,10 +59,13 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -113,10 +119,13 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -157,10 +166,13 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -206,10 +218,13 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -255,10 +270,13 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	profileName := fmt.Sprintf("ad-delp-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 

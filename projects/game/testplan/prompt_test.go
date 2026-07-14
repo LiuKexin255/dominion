@@ -25,19 +25,22 @@ func TestPromptProfileCreateGet(t *testing.T) {
 
 	// given: create the profile
 	createReq := &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		SkillNames:       []string{"navigation"},
-		McpNames:         []string{"screenshot-tool"},
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			SkillNames:   []string{"navigation"},
+			McpNames:     []string{"screenshot-tool"},
+			Enabled:      true,
+		},
 	}
 
 	created := createAgentProfile(t, sutHostURL, sutEnvName, createReq)
 
 	// then: verify created profile fields
-	if created.GetName() != "agentProfiles/"+profileName {
-		t.Errorf("created Name = %q, want %q", created.GetName(), "agentProfiles/"+profileName)
+	if created.GetName() != "prompts/agentProfiles/"+profileName {
+		t.Errorf("created Name = %q, want %q", created.GetName(), "prompts/agentProfiles/"+profileName)
 	}
 	if created.GetModel() != "gpt-4" {
 		t.Errorf("created Model = %q, want %q", created.GetModel(), "gpt-4")
@@ -50,8 +53,8 @@ func TestPromptProfileCreateGet(t *testing.T) {
 	fetched := getAgentProfile(t, sutHostURL, sutEnvName, profileName)
 
 	// then: verify fetched fields match
-	if fetched.GetName() != "agentProfiles/"+profileName {
-		t.Errorf("fetched Name = %q, want %q", fetched.GetName(), "agentProfiles/"+profileName)
+	if fetched.GetName() != "prompts/agentProfiles/"+profileName {
+		t.Errorf("fetched Name = %q, want %q", fetched.GetName(), "prompts/agentProfiles/"+profileName)
 	}
 	if fetched.GetModel() != "gpt-4" {
 		t.Errorf("fetched Model = %q, want %q", fetched.GetModel(), "gpt-4")
@@ -79,11 +82,14 @@ func TestPromptUpdateAgentProfileToolNames(t *testing.T) {
 
 	// given: tool-profile created with tool_names=["mouse"]
 	toolProfile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: toolProfileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "Tool-enabled profile.",
-		ToolNames:        []string{"mouse"},
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: toolProfileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Tool-enabled profile.",
+			ToolNames:    []string{"mouse"},
+			Enabled:      true,
+		},
 	})
 	if got := toolProfile.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
 		t.Fatalf("tool-profile tool_names = %v, want [mouse]", got)
@@ -91,10 +97,13 @@ func TestPromptUpdateAgentProfileToolNames(t *testing.T) {
 
 	// given: chat-profile created with no tool_names
 	chatProfile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: chatProfileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "Chat-only profile.",
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: chatProfileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Chat-only profile.",
+			Enabled:      true,
+		},
 	})
 	if got := chatProfile.GetToolNames(); len(got) != 0 {
 		t.Fatalf("chat-profile tool_names = %v, want empty", got)
@@ -124,16 +133,19 @@ func TestPromptSkillCreateGet(t *testing.T) {
 
 	// given: create the skill
 	createReq := &game.CreateSkillRequest{
-		SkillName: skillName,
-		Content:   skillContent,
-		Enabled:   true,
+		Parent:  "prompts",
+		SkillId: skillName,
+		Skill: &game.Skill{
+			Content: skillContent,
+			Enabled: true,
+		},
 	}
 
 	created := createSkill(t, sutHostURL, sutEnvName, createReq)
 
 	// then: verify created skill fields
-	if created.GetName() != "skills/"+skillName {
-		t.Errorf("created Name = %q, want %q", created.GetName(), "skills/"+skillName)
+	if created.GetName() != "prompts/skills/"+skillName {
+		t.Errorf("created Name = %q, want %q", created.GetName(), "prompts/skills/"+skillName)
 	}
 	if created.GetContent() != skillContent {
 		t.Errorf("created Content = %q, want %q", created.GetContent(), skillContent)
@@ -146,8 +158,8 @@ func TestPromptSkillCreateGet(t *testing.T) {
 	fetched := getSkill(t, sutHostURL, sutEnvName, skillName)
 
 	// then: verify fetched fields match
-	if fetched.GetName() != "skills/"+skillName {
-		t.Errorf("fetched Name = %q, want %q", fetched.GetName(), "skills/"+skillName)
+	if fetched.GetName() != "prompts/skills/"+skillName {
+		t.Errorf("fetched Name = %q, want %q", fetched.GetName(), "prompts/skills/"+skillName)
 	}
 	if fetched.GetContent() != skillContent {
 		t.Errorf("fetched Content = %q, want %q", fetched.GetContent(), skillContent)

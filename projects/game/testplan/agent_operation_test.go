@@ -35,11 +35,14 @@ func TestAgentOperationResultSuccess(t *testing.T) {
 	profileName := fmt.Sprintf("op-suc-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "Operation result test agent.",
-		ToolNames:        mouseSplitToolNames,
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Operation result test agent.",
+			ToolNames:    mouseSplitToolNames,
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -78,11 +81,14 @@ func TestAgentOperationResultFailed(t *testing.T) {
 	profileName := fmt.Sprintf("op-fail-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "Operation failure test agent.",
-		ToolNames:        mouseSplitToolNames,
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Operation failure test agent.",
+			ToolNames:    mouseSplitToolNames,
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -133,11 +139,14 @@ func TestAgentMouseSplitToolBinding(t *testing.T) {
 	profileName := fmt.Sprintf("mouse-split-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "Mouse split tool binding test agent.",
-		ToolNames:        mouseSplitToolNames,
-		Enabled:          true,
+		Parent:         "prompts",
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Mouse split tool binding test agent.",
+			ToolNames:    mouseSplitToolNames,
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
