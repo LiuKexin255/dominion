@@ -35,20 +35,30 @@ func NewHandler(agentProfileRepo domain.AgentProfileRepository, skillRepo domain
 	}
 }
 
+// promptsParent is the singleton-namespace parent of AgentProfile and Skill
+// resources (AIP-156). Create RPCs under prompts/ must carry this literal.
+const promptsParent = "prompts"
+
 // ─── AgentProfile RPCs ────────────────────────────────────────────────────
 
-// CreateAgentProfile creates a new AgentProfile resource.
+// CreateAgentProfile creates an AgentProfile under the prompts singleton
+// namespace (AIP-133: https://google.aip.dev/133). The resource body is read
+// from req.GetAgentProfile(); the caller-supplied ID from req.GetAgentProfileId().
 func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
+	if req.GetParent() != promptsParent {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parent must be %q, got %q", promptsParent, req.GetParent()))
+	}
+
 	now := time.Now()
-	profileName := req.GetAgentProfileName()
+	ap := req.GetAgentProfile()
 	profile := &domain.AgentProfile{
-		AgentProfileName: profileName,
-		Model:            req.GetModel(),
-		SystemPrompt:     req.GetSystemPrompt(),
-		SkillNames:       req.GetSkillNames(),
-		MCPNames:         req.GetMcpNames(),
-		Enabled:          req.GetEnabled(),
-		ToolNames:        req.GetToolNames(),
+		AgentProfileName: req.GetAgentProfileId(),
+		Model:            ap.GetModel(),
+		SystemPrompt:     ap.GetSystemPrompt(),
+		SkillNames:       ap.GetSkillNames(),
+		MCPNames:         ap.GetMcpNames(),
+		Enabled:          ap.GetEnabled(),
+		ToolNames:        ap.GetToolNames(),
 		CreateTime:       now,
 		UpdateTime:       now,
 	}
@@ -76,8 +86,10 @@ func (h *Handler) GetAgentProfile(ctx context.Context, req *game.GetAgentProfile
 // UpdateAgentProfile applies a partial update described by update_mask to an existing AgentProfile.
 // Paths in update_mask must reference writable AgentProfile fields. Unknown paths return
 // INVALID_ARGUMENT; missing profiles return NOT_FOUND.
+// AIP-134: https://google.aip.dev/134. Identity is carried on the resource itself
+// (AgentProfile.name), surfaced via req.GetAgentProfile().GetName().
 func (h *Handler) UpdateAgentProfile(ctx context.Context, req *game.UpdateAgentProfileRequest) (*game.AgentProfile, error) {
-	profileID, err := gameconst.AgentProfileID(req.GetName())
+	profileID, err := gameconst.AgentProfileID(req.GetAgentProfile().GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -87,7 +99,7 @@ func (h *Handler) UpdateAgentProfile(ctx context.Context, req *game.UpdateAgentP
 		return nil, toStatusError(err)
 	}
 
-	updated, err := applyAgentProfileMask(existing, req.GetProfile(), req.GetUpdateMask())
+	updated, err := applyAgentProfileMask(existing, req.GetAgentProfile(), req.GetUpdateMask())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -138,14 +150,20 @@ func (h *Handler) DeleteAgentProfile(ctx context.Context, req *game.DeleteAgentP
 
 // ─── Skill RPCs ───────────────────────────────────────────────────────────
 
-// CreateSkill creates a new Skill resource.
+// CreateSkill creates a Skill under the prompts singleton namespace
+// (AIP-133: https://google.aip.dev/133). The resource body is read from
+// req.GetSkill(); the caller-supplied ID from req.GetSkillId().
 func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest) (*game.Skill, error) {
+	if req.GetParent() != promptsParent {
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parent must be %q, got %q", promptsParent, req.GetParent()))
+	}
+
 	now := time.Now()
-	skillName := req.GetSkillName()
+	s := req.GetSkill()
 	skill := &domain.Skill{
-		SkillName:  skillName,
-		Content:    req.GetContent(),
-		Enabled:    req.GetEnabled(),
+		SkillName:  req.GetSkillId(),
+		Content:    s.GetContent(),
+		Enabled:    s.GetEnabled(),
 		CreateTime: now,
 		UpdateTime: now,
 	}
@@ -168,6 +186,36 @@ func (h *Handler) GetSkill(ctx context.Context, req *game.GetSkillRequest) (*gam
 		return nil, toStatusError(err)
 	}
 	return skillToProto(skill), nil
+}
+
+// UpdateSkill applies a partial update described by update_mask to an existing
+// Skill (AIP-134: https://google.aip.dev/134). Paths in update_mask must
+// reference writable Skill fields. Unknown paths return INVALID_ARGUMENT;
+// missing skills return NOT_FOUND. Identity is carried on the resource itself
+// (Skill.name), surfaced via req.GetSkill().GetName().
+func (h *Handler) UpdateSkill(ctx context.Context, req *game.UpdateSkillRequest) (*game.Skill, error) {
+	skillID, err := gameconst.SkillID(req.GetSkill().GetName())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	existing, err := h.skillRepo.GetSkill(ctx, skillID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	updated, err := applySkillMask(existing, req.GetSkill(), req.GetUpdateMask())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	updated.UpdateTime = time.Now()
+
+	persisted, err := h.skillRepo.UpdateSkill(ctx, updated)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	return skillToProto(persisted), nil
 }
 
 // ListSkills retrieves a paginated list of Skill resources.
@@ -292,6 +340,43 @@ func applyAgentProfileMask(existing *domain.AgentProfile, patch *game.AgentProfi
 			updated.Enabled = patch.GetEnabled()
 		case "tool_names":
 			updated.ToolNames = patch.GetToolNames()
+		}
+	}
+
+	return &updated, nil
+}
+
+// skillMaskFields enumerates the writable Skill fields addressable via update_mask.
+// Order is irrelevant; the slice is searched with slices.Contains.
+var skillMaskFields = []string{
+	"content", "enabled",
+}
+
+// applySkillMask returns a copy of existing with the masked fields overwritten by patch.
+// An error is returned if update_mask references a path outside skillMaskFields.
+// A nil update_mask (or one with no paths) leaves existing unchanged.
+func applySkillMask(existing *domain.Skill, patch *game.Skill, mask *fieldmaskpb.FieldMask) (*domain.Skill, error) {
+	if mask == nil || len(mask.GetPaths()) == 0 {
+		return existing, nil
+	}
+
+	for _, path := range mask.GetPaths() {
+		if !slices.Contains(skillMaskFields, path) {
+			return nil, fmt.Errorf("update_mask path %q is not a writable Skill field", path)
+		}
+	}
+
+	updated := *existing
+	if patch == nil {
+		return &updated, nil
+	}
+
+	for _, path := range mask.GetPaths() {
+		switch path {
+		case "content":
+			updated.Content = patch.GetContent()
+		case "enabled":
+			updated.Enabled = patch.GetEnabled()
 		}
 	}
 

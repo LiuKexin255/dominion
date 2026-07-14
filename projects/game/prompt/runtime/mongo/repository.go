@@ -232,6 +232,29 @@ func (r *Repository) GetSkill(ctx context.Context, skillName string) (*domain.Sk
 	return result.toDomain(), nil
 }
 
+// UpdateSkill replaces the stored Skill identified by skill.SkillName.
+// The _id and create_time of the existing document are preserved.
+func (r *Repository) UpdateSkill(ctx context.Context, skill *domain.Skill) (*domain.Skill, error) {
+	filter := skillFilter{SkillName: skill.SkillName}
+	existing := new(skillDocument)
+	if err := r.skills.FindOne(ctx, filter).Decode(existing); err != nil {
+		if errors.Is(err, mongodriver.ErrNoDocuments) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+
+	doc := skillDocumentFromDomain(skill)
+	doc.ID = existing.ID
+	doc.CreateTime = existing.CreateTime
+
+	if _, err := r.skills.ReplaceOne(ctx, filter, doc); err != nil {
+		return nil, err
+	}
+
+	return doc.toDomain(), nil
+}
+
 // ListSkills retrieves a page of Skills sorted by skill_name ascending.
 func (r *Repository) ListSkills(ctx context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
 	return listSkills(r.skills, ctx, pageSize, pageToken)
