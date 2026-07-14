@@ -2,6 +2,47 @@
 =====================================================================
 Sync Impact Report
 =====================================================================
+Version change: 2.2.0 → 2.3.0
+
+Modified principles:
+  - II. Code Style Precedence (代码规范优先): scope clarified to make the
+    read obligation explicitly per-executor and per-task (non-transferable
+    across agents), eliminating the "read the style guide once at setup"
+    anti-pattern that arises when later tasks are dispatched to different
+    agents. Enforcement reclassified: the former "Style gate in tasks"
+    mandatory sub-rule (which forced a per-task acceptance criterion or
+    inline note in every code task) is REMOVED and replaced with a
+    "dispatch-time precondition" framing — §II is now a baseline
+    precondition of task distribution, enforced at dispatch, not a
+    per-task documentation obligation.
+
+Added sections:
+  - None
+
+Removed sections:
+  - None (the "Style gate in tasks" mandatory sub-rule within §II is
+    removed; it is not a top-level section)
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md — ✅ updated (§II bullet rewritten
+    to the dispatch-time, per-executor framing)
+  - .specify/templates/tasks-template.md — ✅ updated (§II bullet rewritten
+    to the dispatch-time, per-executor framing)
+  - .specify/templates/spec-template.md — N/A (§II applies at plan/tasks
+    stage, not spec authoring)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (no §II references)
+
+Follow-up TODOs: existing feature artifacts (e.g. specs/*/plan.md and
+tasks.md §II bullets) authored under the prior 2.2.0 wording remain valid
+at their authoring date and are NOT retroactively rewritten; future
+artifacts generated from the updated templates use the new 2.3.0 framing.
+=====================================================================
+-->
+<!--
+=====================================================================
+Sync Impact Report
+=====================================================================
 Version change: 2.1.0 → 2.2.0
 
 Modified principles:
@@ -275,35 +316,51 @@ deterministic path back to the original source of truth.
 
 ### II. Code Style Precedence (代码规范优先)
 
-Every code-related task in `tasks.md` MUST reference the repository's code
-style guidelines before any source file is created or modified, and MUST
-read every external reference those guidelines cite.
+Before any agent creates or modifies a source file, that agent MUST read
+the repository's code style guidelines under `style/` (or the location
+designated by `AGENTS.md`) for the relevant language and project area,
+and MUST read every external reference those guidelines cite.
 
 **Mandatory rules**:
 
-- **Read-first rule**: an implementation task MUST NOT begin until the assignee
-  has read the style documents under `style/` (or the location designated by
-  `AGENTS.md`) for the relevant language and project area.
-- **External-reference reading rule**: when reading a style guideline under
-  `style/` (or the location designated by `AGENTS.md`), the assignee MUST
-  also read every external reference (link, citation, RFC, official
+- **Per-executor, per-task read rule**: the read obligation applies to
+  EVERY agent that executes a code-touching task, independently for EACH
+  task it executes, and it does NOT transfer across agents. Because tasks
+  in `tasks.md` may be dispatched to different agents, an agent MUST NOT
+  begin modifying code in a task until THAT agent has read the applicable
+  `style/` documents and their cited external references for that task —
+  regardless of whether any earlier agent (a setup or wave-0 task, the
+  plan author, or any other) already read the same documents. A single
+  shared "read the style guide once" step satisfies §II only for the agent
+  that performed it; it does not satisfy §II for any other agent or any
+  later task.
+- **External-reference reading rule**: when reading a style guideline
+  under `style/` (or the location designated by `AGENTS.md`), the agent
+  MUST also read every external reference (link, citation, RFC, official
   documentation URL, or standard) that the guideline itself cites. Reading
-  only the local guideline text while skipping its cited external references
-  is a violation, because the local guideline frequently delegates normative
-  detail — naming conventions, error-handling contracts, API style,
-  formatting rules — to those external authorities. This rule parallels §III
-  (which obligates reading dependency documentation) but governs the style
-  guidelines' own citations.
-- **Style gate in tasks**: every `tasks.md` implementation task that touches
-  code MUST include an acceptance criterion or inline note confirming the
-  relevant style guidelines AND their cited external references were
-  reviewed.
+  only the local guideline text while skipping its cited external
+  references is a violation, because the local guideline frequently
+  delegates normative detail — naming conventions, error-handling
+  contracts, API style, formatting rules — to those external authorities.
+  This rule parallels §III (which obligates reading dependency
+  documentation) but governs the style guidelines' own citations.
+- **Dispatch-time precondition, not a per-task documentation obligation**:
+  this principle is a baseline precondition of task distribution. It is
+  enforced at task-dispatch time — the orchestrator/worker MUST ensure the
+  executor has read the applicable style documents before any code edit in
+  that task — and therefore MUST NOT be enumerated as a separate workflow
+  step, a dedicated "read style guide" task, or a per-task acceptance
+  criterion or inline note in `tasks.md` or `plan.md`. The Constitution
+  Check gates and the `plan.md` / `tasks.md` templates MUST NOT require
+  per-task style-review confirmation, because that would duplicate the
+  dispatch-time precondition and invite the read-once anti-pattern this
+  principle forbids.
 - **Conflict resolution**: if a task's proposed approach conflicts with an
-  existing style rule, the style rule prevails unless the constitution itself
-  is amended.
-- **New conventions**: when a task introduces a pattern not covered by existing
-  style guidelines, the assignee MUST document the new convention in the
-  appropriate `style/` document or flag it for review before merging.
+  existing style rule, the style rule prevails unless the constitution
+  itself is amended.
+- **New conventions**: when a task introduces a pattern not covered by
+  existing style guidelines, the agent MUST document the new convention in
+  the appropriate `style/` document or flag it for review before merging.
 
 **Rationale**: reading style guidelines first prevents inconsistent formatting,
 redundant conventions, and rework; it ensures the codebase evolves coherently
@@ -494,10 +551,12 @@ This constitution applies to the following Spec Kit artifacts:
   plan-template "Constitution Check" gate MUST verify that `spec.md`,
   `plan.md`, and `tasks.md` contain a `## References` section when external
   material is cited, and that every inline claim has a matching link.
-  Implementation tasks in `tasks.md` MUST reference the applicable `style/`
-  documents and confirm they were reviewed before code changes begin, and
-  MUST confirm that every external reference cited within those `style/`
-  documents was also read (per §II).
+Every agent that executes a code-touching task in `tasks.md` MUST read
+the applicable `style/` documents and their cited external references
+before modifying code in that task (per §II); this read obligation is
+per-executor and per-task (non-transferable across agents), and is
+enforced as a dispatch-time precondition rather than a per-task
+documentation obligation.
   Every external dependency or component referenced in `plan.md` (and any
   new dependency introduced in `tasks.md`) MUST show evidence of
   documentation research per §III, with inline citations to the official
@@ -513,4 +572,4 @@ This constitution applies to the following Spec Kit artifacts:
   MUST be materialized in the feature's `contracts/` artifact, and MUST be
   inherited by the corresponding implementation tasks in `tasks.md`.
 
-**Version**: 2.2.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14
+**Version**: 2.3.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14

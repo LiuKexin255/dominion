@@ -34,10 +34,14 @@ description: "Task list template for feature implementation"
   include an inline `[description](URL)` link or explicitly cite the
   parent `spec.md`/`plan.md` source. A matching entry MUST appear in the
   `## References` section at the end of this file.
-- **Code Style Precedence (§II)**: every code-related task MUST reference
-  the applicable `style/` documents and confirm they were reviewed before
-  any source file is created or modified, and MUST confirm that every
-  external reference cited within those `style/` documents was also read.
+- **Code Style Precedence (§II)**: every agent that executes a
+  code-related task MUST read the applicable `style/` documents and their
+  cited external references before creating or modifying any source file
+  in that task. This read obligation is per-executor and per-task
+  (non-transferable across agents); it is enforced as a dispatch-time
+  precondition and MUST NOT be enumerated as a per-task acceptance
+  criterion, a dedicated "read style guide" task, or a separate workflow
+  step.
 - **External Dependency Research (§III)**: any task that introduces a NEW
   dependency, library, framework, service, or component not already
   researched in `plan.md` MUST perform the same documentation research

@@ -49,10 +49,14 @@
 - Version pins or commit SHAs MUST accompany any citation whose
   referenced state matters.
 - All cited links MUST resolve to publicly accessible resources.
-- **Code Style Precedence (§II)**: every implementation task exported to
-  `tasks.md` MUST reference the applicable `style/` documents and confirm
-  they are reviewed before code changes begin, and MUST confirm that every
-  external reference cited within those `style/` documents was also read.
+- **Code Style Precedence (§II)**: every agent that executes a
+  code-touching task exported to `tasks.md` MUST read the applicable
+  `style/` documents and their cited external references before modifying
+  code in that task. This read obligation is per-executor and per-task
+  (non-transferable across agents); it is enforced as a dispatch-time
+  precondition and MUST NOT be enumerated as a per-task acceptance
+  criterion, a dedicated "read style guide" task, or a separate workflow
+  step.
 - **External Dependency Research (§III)**: every external dependency,
   library, framework, service, or component referenced in this plan MUST
   be researched against its official documentation and source repository
