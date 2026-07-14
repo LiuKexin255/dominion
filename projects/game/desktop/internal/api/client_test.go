@@ -649,9 +649,9 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 				},
 			},
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"agentProfiles/my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","skillNames":["skill1"],"mcpNames":["mcp1"],"enabled":true}`,
+			respBody:   `{"name":"prompts/agentProfiles/my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","skillNames":["skill1"],"mcpNames":["mcp1"],"enabled":true}`,
 			wantErr:    false,
-			wantName:   "agentProfiles/my-agent",
+			wantName:   "prompts/agentProfiles/my-agent",
 		},
 		{
 			name: "conflict",
@@ -678,19 +678,20 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 					t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
 				}
 
-				body, _ := io.ReadAll(r.Body)
-				req := new(game.CreateAgentProfileRequest)
-				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
-					t.Fatalf("failed to parse request body: %v", err)
-				}
-			if req.GetAgentProfileId() != tt.req.GetAgentProfileId() {
-				t.Errorf("expected agent_profile_id %q, got %q", tt.req.GetAgentProfileId(), req.GetAgentProfileId())
+			body, _ := io.ReadAll(r.Body)
+			profile := new(game.AgentProfile)
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
 			}
-			if req.GetAgentProfile().GetModel() != tt.req.GetAgentProfile().GetModel() {
-				t.Errorf("expected model %q, got %q", tt.req.GetAgentProfile().GetModel(), req.GetAgentProfile().GetModel())
+			gotID := r.URL.Query().Get("agent_profile_id")
+			if gotID != tt.req.GetAgentProfileId() {
+				t.Errorf("expected agent_profile_id %q, got %q", tt.req.GetAgentProfileId(), gotID)
 			}
-			if req.GetAgentProfile().GetSystemPrompt() != tt.req.GetAgentProfile().GetSystemPrompt() {
-				t.Errorf("expected system_prompt %q, got %q", tt.req.GetAgentProfile().GetSystemPrompt(), req.GetAgentProfile().GetSystemPrompt())
+			if profile.GetModel() != tt.req.GetAgentProfile().GetModel() {
+				t.Errorf("expected model %q, got %q", tt.req.GetAgentProfile().GetModel(), profile.GetModel())
+			}
+			if profile.GetSystemPrompt() != tt.req.GetAgentProfile().GetSystemPrompt() {
+				t.Errorf("expected system_prompt %q, got %q", tt.req.GetAgentProfile().GetSystemPrompt(), profile.GetSystemPrompt())
 			}
 
 				w.WriteHeader(tt.statusCode)

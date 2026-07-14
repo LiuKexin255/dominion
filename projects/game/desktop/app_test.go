@@ -204,27 +204,28 @@ func TestCreateAgentProfile_Success(t *testing.T) {
 			t.Errorf("expected /api/v1/prompts/agentProfiles, got %s", r.URL.Path)
 		}
 		body, _ := io.ReadAll(r.Body)
-		req := new(game.CreateAgentProfileRequest)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+		profile := new(game.AgentProfile)
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
 			t.Fatalf("failed to parse request body: %v", err)
 		}
-		if req.GetAgentProfileId() != "test-agent" {
-			t.Errorf("expected agent_profile_id %q, got %q", "test-agent", req.GetAgentProfileId())
+		gotID := r.URL.Query().Get("agent_profile_id")
+		if gotID != "test-agent" {
+			t.Errorf("expected agent_profile_id %q, got %q", "test-agent", gotID)
 		}
-		if req.GetAgentProfile().GetModel() != "gpt-4" {
-			t.Errorf("expected model %q, got %q", "gpt-4", req.GetAgentProfile().GetModel())
+		if profile.GetModel() != "gpt-4" {
+			t.Errorf("expected model %q, got %q", "gpt-4", profile.GetModel())
 		}
-		if req.GetAgentProfile().GetSystemPrompt() != "You are a test assistant." {
-			t.Errorf("expected system_prompt %q, got %q", "You are a test assistant.", req.GetAgentProfile().GetSystemPrompt())
+		if profile.GetSystemPrompt() != "You are a test assistant." {
+			t.Errorf("expected system_prompt %q, got %q", "You are a test assistant.", profile.GetSystemPrompt())
 		}
-		if req.GetAgentProfile().GetEnabled() != true {
-			t.Errorf("expected enabled true, got %v", req.GetAgentProfile().GetEnabled())
+		if profile.GetEnabled() != true {
+			t.Errorf("expected enabled true, got %v", profile.GetEnabled())
 		}
-		if got := req.GetAgentProfile().GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+		if got := profile.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
 			t.Errorf("expected tool_names [\"mouse\"], got %v", got)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
+		fmt.Fprint(w, `{"name":"prompts/agentProfiles/test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
 	}))
 	defer srv.Close()
 
@@ -309,7 +310,7 @@ func TestGetAgentProfile_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"agentProfiles/test-agent","agentProfileName":"test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
+		fmt.Fprint(w, `{"name":"prompts/agentProfiles/test-agent","model":"gpt-4","systemPrompt":"You are a test assistant.","enabled":true,"toolNames":["mouse"]}`)
 	}))
 	defer srv.Close()
 
@@ -376,18 +377,18 @@ func TestCreateAgentProfile_ToolNamesRoundTrip(t *testing.T) {
 		switch r.Method {
 		case http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
-			req := new(game.CreateAgentProfileRequest)
-			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+			profile := new(game.AgentProfile)
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
 				t.Fatalf("failed to parse create body: %v", err)
 			}
-			if got := req.GetAgentProfile().GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+			if got := profile.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
 				t.Errorf("POST expected tool_names [\"mouse\"], got %v", got)
 			}
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["mouse"]}`)
+			fmt.Fprint(w, `{"name":"prompts/agentProfiles/tool-test","enabled":true,"toolNames":["mouse"]}`)
 		case http.MethodGet:
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, `{"name":"agentProfiles/tool-test","agentProfileName":"tool-test","enabled":true,"toolNames":["mouse"]}`)
+			fmt.Fprint(w, `{"name":"prompts/agentProfiles/tool-test","enabled":true,"toolNames":["mouse"]}`)
 		default:
 			t.Errorf("unexpected method %s", r.Method)
 		}
