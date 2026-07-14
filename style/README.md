@@ -3,6 +3,7 @@
 ## 代码
 
 * golang: `golang.md`
+* js/ts: `javascript.md`
 
 ## 数据库
 
@@ -16,8 +17,4 @@
 
 * API 接口：`api.md`
 
-## 引用
 
-> 外部的规范引用，可作为规范参考
-
-* [Google TypeScript Style](https://google.github.io/styleguide/tsguide.html)
