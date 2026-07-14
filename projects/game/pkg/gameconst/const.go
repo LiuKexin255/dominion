@@ -17,6 +17,12 @@ const (
 	AgentProfileNamePrefix = "prompts/agentProfiles/"
 	SkillNamePrefix        = "prompts/skills/"
 
+	// PromptsParent is the singleton-namespace parent for AgentProfile and
+	// Skill resources (AIP-156 https://google.aip.dev/156). It exists purely
+	// as a path-prefix segment; no Prompt resource message exists. Create
+	// RPCs under prompts/ carry this literal in their parent field.
+	PromptsParent = "prompts"
+
 	// Log field constants
 	LogFieldName       = "name"
 	LogFieldSessionID  = "session_id"

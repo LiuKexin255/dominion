@@ -165,15 +165,6 @@ service PromptService {
     };
     option (google.api.method_signature) = "name";
   }
-
-  // UpdateSkill updates a Skill. AIP-134: https://google.aip.dev/134
-  rpc UpdateSkill(UpdateSkillRequest) returns (Skill) {
-    option (google.api.http) = {
-      patch: "/api/v1/{skill.name=prompts/skills/*}"
-      body: "skill"
-    };
-    option (google.api.method_signature) = "skill,update_mask";
-  }
 }
 
 // ─── Shared Resources ──────────────────────────────────────────────────────
@@ -550,12 +541,6 @@ message UpdateAgentProfileRequest {
 
   AgentProfile agent_profile = 2 [(google.api.field_behavior) = REQUIRED];
   google.protobuf.FieldMask update_mask = 3;
-}
-
-// UpdateSkillRequest updates a Skill. AIP-134: https://google.aip.dev/134
-message UpdateSkillRequest {
-  Skill skill = 1 [(google.api.field_behavior) = REQUIRED];
-  google.protobuf.FieldMask update_mask = 2;
 }
 
 message GetAgentProfileRequest {

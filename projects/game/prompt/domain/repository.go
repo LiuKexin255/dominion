@@ -25,9 +25,6 @@ type SkillRepository interface {
 	CreateSkill(ctx context.Context, skill *Skill) error
 	// GetSkill retrieves a Skill by its skill name.
 	GetSkill(ctx context.Context, skillName string) (*Skill, error)
-	// UpdateSkill replaces the stored Skill identified by skill.SkillName.
-	// It returns ErrNotFound if no skill with the given name exists.
-	UpdateSkill(ctx context.Context, skill *Skill) (*Skill, error)
 	// ListSkills retrieves a page of Skills.
 	// pageSize controls the maximum number of results; pageToken is the cursor
 	// for the next page. Pass empty string for the first page.

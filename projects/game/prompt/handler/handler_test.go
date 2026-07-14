@@ -7,6 +7,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/prompt/domain"
 
 	"google.golang.org/grpc/codes"
@@ -107,19 +108,6 @@ func (r *inMemorySkillRepo) GetSkill(_ context.Context, skillName string) (*doma
 	return s, nil
 }
 
-func (r *inMemorySkillRepo) UpdateSkill(_ context.Context, skill *domain.Skill) (*domain.Skill, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	existing, ok := r.skills[skill.SkillName]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	clone := *skill
-	clone.CreateTime = existing.CreateTime
-	r.skills[skill.SkillName] = &clone
-	return &clone, nil
-}
-
 func (r *inMemorySkillRepo) ListSkills(_ context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -149,7 +137,7 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "test-profile",
 		AgentProfile: &game.AgentProfile{
 			Model:        "opencode-go/deepseek-v4-pro",
@@ -207,7 +195,7 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateSkillRequest{
-		Parent:  "prompts",
+		Parent:  gameconst.PromptsParent,
 		SkillId: "my-skill",
 		Skill: &game.Skill{
 			Content: "You know how to browse the web.",
@@ -268,7 +256,7 @@ func TestPromptService_CreateGetAgentProfileWithToolNames(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "tools-profile",
 		AgentProfile: &game.AgentProfile{
 			Model:        "opencode-go/deepseek-v4-pro",
@@ -312,7 +300,7 @@ func TestPromptService_UpdateAgentProfileToolNamesViaFieldMask(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "mask-profile",
 		AgentProfile: &game.AgentProfile{
 			Model:        "opencode-go/deepseek-v4-pro",
@@ -373,7 +361,7 @@ func TestPromptService_UpdateAgentProfileUnknownFieldMaskPath(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "unknown-path-profile",
 		AgentProfile: &game.AgentProfile{
 			Model: "opencode-go/deepseek-v4-pro",
@@ -425,7 +413,7 @@ func TestPromptService_UpdateAgentProfileMultipleFields(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "multi-mask",
 		AgentProfile: &game.AgentProfile{
 			Model:        "opencode-go/deepseek-v4-pro",
@@ -458,115 +446,6 @@ func TestPromptService_UpdateAgentProfileMultipleFields(t *testing.T) {
 	if updated.GetEnabled() {
 		t.Fatalf("UpdateAgentProfile() enabled = true, want false")
 	}
-}
-
-func TestPromptService_UpdateSkillViaFieldMask(t *testing.T) {
-	ctx := context.Background()
-
-	// given — seed skill
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	_, err := h.CreateSkill(ctx, &game.CreateSkillRequest{
-		Parent:  "prompts",
-		SkillId: "mask-skill",
-		Skill: &game.Skill{
-			Content: "original content",
-			Enabled: true,
-		},
-	})
-	assertStatusCode(t, err, codes.OK)
-
-	// when — update content + enabled via FieldMask
-	updateReq := &game.UpdateSkillRequest{
-		Skill: &game.Skill{
-			Name:    "prompts/skills/mask-skill",
-			Content: "updated content",
-			Enabled: false,
-		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content", "enabled"}},
-	}
-	updated, err := h.UpdateSkill(ctx, updateReq)
-
-	// then — masked fields updated
-	assertStatusCode(t, err, codes.OK)
-	if updated.GetContent() != "updated content" {
-		t.Fatalf("UpdateSkill() content = %q, want %q", updated.GetContent(), "updated content")
-	}
-	if updated.GetEnabled() {
-		t.Fatalf("UpdateSkill() enabled = true, want false")
-	}
-	if updated.GetUpdateTime() == nil {
-		t.Fatal("UpdateSkill() update_time is nil, want non-nil")
-	}
-	if updated.GetCreateTime() == nil {
-		t.Fatal("UpdateSkill() create_time is nil, want non-nil")
-	}
-
-	// when — re-fetch
-	got, err := h.GetSkill(ctx, &game.GetSkillRequest{Name: "prompts/skills/mask-skill"})
-
-	// then — persisted
-	assertStatusCode(t, err, codes.OK)
-	if got.GetContent() != "updated content" {
-		t.Fatalf("GetSkill() after update content = %q, want %q", got.GetContent(), "updated content")
-	}
-	if got.GetEnabled() {
-		t.Fatalf("GetSkill() after update enabled = true, want false")
-	}
-}
-
-func TestPromptService_UpdateSkillNotFound(t *testing.T) {
-	ctx := context.Background()
-
-	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	// when — update missing skill
-	updateReq := &game.UpdateSkillRequest{
-		Skill: &game.Skill{
-			Name:    "prompts/skills/ghost",
-			Content: "irrelevant",
-		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"content"}},
-	}
-	_, err := h.UpdateSkill(ctx, updateReq)
-
-	// then — returns NotFound
-	assertStatusCode(t, err, codes.NotFound)
-}
-
-func TestPromptService_UpdateSkillUnknownFieldMaskPath(t *testing.T) {
-	ctx := context.Background()
-
-	// given — seed skill
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	_, err := h.CreateSkill(ctx, &game.CreateSkillRequest{
-		Parent:  "prompts",
-		SkillId: "unknown-path-skill",
-		Skill: &game.Skill{
-			Content: "x",
-		},
-	})
-	assertStatusCode(t, err, codes.OK)
-
-	// when — update with unknown FieldMask path
-	updateReq := &game.UpdateSkillRequest{
-		Skill: &game.Skill{
-			Name: "prompts/skills/unknown-path-skill",
-		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
-	}
-	_, err = h.UpdateSkill(ctx, updateReq)
-
-	// then — returns InvalidArgument
-	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
 func Test_applyAgentProfileMask(t *testing.T) {
@@ -703,7 +582,7 @@ func TestPromptService_DeleteSuccess(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "to-delete",
 		AgentProfile: &game.AgentProfile{
 			Model:   "opencode-go/deepseek-v4-pro",

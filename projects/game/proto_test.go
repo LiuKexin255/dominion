@@ -6,6 +6,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -656,7 +657,7 @@ func TestSkillRoundtrip(t *testing.T) {
 func TestCreateAgentProfileRequestRoundtrip(t *testing.T) {
 	// given: an AIP-133 CreateAgentProfileRequest with nested agent_profile
 	given := &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: "default",
 		AgentProfile: &game.AgentProfile{
 			Name:         "prompts/agentProfiles/default",
@@ -679,8 +680,8 @@ func TestCreateAgentProfileRequestRoundtrip(t *testing.T) {
 	}
 
 	// then: verify parent + caller-supplied ID + nested resource preserved
-	if got.GetParent() != "prompts" {
-		t.Errorf("parent: got %q, want %q", got.GetParent(), "prompts")
+	if got.GetParent() != gameconst.PromptsParent {
+		t.Errorf("parent: got %q, want %q", got.GetParent(), gameconst.PromptsParent)
 	}
 	if got.GetAgentProfileId() != "default" {
 		t.Errorf("agentProfileId: got %q, want %q", got.GetAgentProfileId(), "default")
@@ -736,46 +737,5 @@ func TestUpdateAgentProfileRequestRoundtrip(t *testing.T) {
 	}
 	if !ap.GetEnabled() {
 		t.Errorf("agentProfile.enabled: got %v, want true", ap.GetEnabled())
-	}
-}
-
-// TestUpdateSkillRequestRoundtrip verifies the AIP-134 UpdateSkillRequest
-// shape with nested skill (carrying identity). The update_mask is left
-// unset here; its round-trip is covered by the prompt handler tests.
-func TestUpdateSkillRequestRoundtrip(t *testing.T) {
-	// given: an AIP-134 UpdateSkillRequest with nested skill
-	given := &game.UpdateSkillRequest{
-		Skill: &game.Skill{
-			Name:    "prompts/skills/navigation",
-			Content: "Navigate via landmarks.",
-			Enabled: true,
-		},
-	}
-
-	// when: marshal to protojson
-	jsonBytes, err := protojson.Marshal(given)
-	if err != nil {
-		t.Fatalf("protojson.Marshal() error: %v", err)
-	}
-
-	// when: unmarshal from protojson
-	got := new(game.UpdateSkillRequest)
-	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
-		t.Fatalf("protojson.Unmarshal() error: %v", err)
-	}
-
-	// then: verify identity lives on the resource
-	sk := got.GetSkill()
-	if sk == nil {
-		t.Fatal("GetSkill() returned nil")
-	}
-	if sk.GetName() != "prompts/skills/navigation" {
-		t.Errorf("skill.name: got %q, want %q", sk.GetName(), "prompts/skills/navigation")
-	}
-	if sk.GetContent() != "Navigate via landmarks." {
-		t.Errorf("skill.content: got %q, want %q", sk.GetContent(), "Navigate via landmarks.")
-	}
-	if !sk.GetEnabled() {
-		t.Errorf("skill.enabled: got %v, want true", sk.GetEnabled())
 	}
 }

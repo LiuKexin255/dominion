@@ -10,6 +10,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestAgentCheckpointResume verifies the full checkpoint-resume flow:
@@ -23,7 +24,7 @@ func TestAgentCheckpointResume(t *testing.T) {
 	profileName := fmt.Sprintf("ckpt-resume-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -143,7 +144,7 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	profileName := fmt.Sprintf("ckpt-verify-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -239,7 +240,7 @@ func TestAgentPerProfileModel(t *testing.T) {
 
 	// Create two profiles with different non-Anthropic models.
 	profile1 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profile1Name,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -252,7 +253,7 @@ func TestAgentPerProfileModel(t *testing.T) {
 	}
 
 	profile2 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profile2Name,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4-turbo",
@@ -327,7 +328,7 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 	profileName := fmt.Sprintf("conc-fifo-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -375,7 +376,7 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	profileBName := fmt.Sprintf("ckpt-xprof-b-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileAName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -384,7 +385,7 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 		},
 	})
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileBName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",

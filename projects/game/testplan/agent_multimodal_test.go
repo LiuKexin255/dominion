@@ -11,6 +11,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestAgentMultimodalTextPlusImageTurn verifies that a content frame whose
@@ -25,7 +26,7 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	profileName := fmt.Sprintf("mm-tpi-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -75,7 +76,7 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	profileName := fmt.Sprintf("mm-img-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",

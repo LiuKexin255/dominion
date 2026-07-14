@@ -12,6 +12,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -26,7 +27,7 @@ func TestAgentDialogCreateAndConnect(t *testing.T) {
 
 	// Create profile, session
 	profile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -59,7 +60,7 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -119,7 +120,7 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -166,7 +167,7 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -218,7 +219,7 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 
 	// Setup
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -270,7 +271,7 @@ func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
 	profileName := fmt.Sprintf("ad-delp-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",

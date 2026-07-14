@@ -10,6 +10,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // ─── Test 1: Prompt Profile Create → Get ─────────────────────────────────────
@@ -25,7 +26,7 @@ func TestPromptProfileCreateGet(t *testing.T) {
 
 	// given: create the profile
 	createReq := &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -82,7 +83,7 @@ func TestPromptUpdateAgentProfileToolNames(t *testing.T) {
 
 	// given: tool-profile created with tool_names=["mouse"]
 	toolProfile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: toolProfileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -97,7 +98,7 @@ func TestPromptUpdateAgentProfileToolNames(t *testing.T) {
 
 	// given: chat-profile created with no tool_names
 	chatProfile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: chatProfileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -133,7 +134,7 @@ func TestPromptSkillCreateGet(t *testing.T) {
 
 	// given: create the skill
 	createReq := &game.CreateSkillRequest{
-		Parent:  "prompts",
+		Parent:  gameconst.PromptsParent,
 		SkillId: skillName,
 		Skill: &game.Skill{
 			Content: skillContent,

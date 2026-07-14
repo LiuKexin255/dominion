@@ -12,6 +12,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestConnectWithoutCreate verifies that connecting to a session's WebSocket
@@ -24,7 +25,7 @@ func TestConnectWithoutCreate(t *testing.T) {
 	profileName := fmt.Sprintf("life-nocreate-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -92,7 +93,7 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	profileBName := fmt.Sprintf("life-pswitch-b-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileAName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -101,7 +102,7 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 		},
 	})
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileBName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -156,7 +157,7 @@ func TestConnectionConcurrentSerialization(t *testing.T) {
 	profileName := fmt.Sprintf("life-serial-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -203,7 +204,7 @@ func TestGetAgentNeverConnected(t *testing.T) {
 	profileName := fmt.Sprintf("life-neverconn-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -235,7 +236,7 @@ func TestDisconnectReconnectHistory(t *testing.T) {
 	profileName := fmt.Sprintf("life-disc-hist-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",

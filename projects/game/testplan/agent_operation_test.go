@@ -16,6 +16,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // mouseSplitToolNames is the post-015 mouse tool surface: mouse_move
@@ -35,7 +36,7 @@ func TestAgentOperationResultSuccess(t *testing.T) {
 	profileName := fmt.Sprintf("op-suc-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -81,7 +82,7 @@ func TestAgentOperationResultFailed(t *testing.T) {
 	profileName := fmt.Sprintf("op-fail-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
@@ -139,7 +140,7 @@ func TestAgentMouseSplitToolBinding(t *testing.T) {
 	profileName := fmt.Sprintf("mouse-split-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         "prompts",
+		Parent:         gameconst.PromptsParent,
 		AgentProfileId: profileName,
 		AgentProfile: &game.AgentProfile{
 			Model:        "gpt-4",
