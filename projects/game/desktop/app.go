@@ -256,12 +256,17 @@ func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView,
 		"correlation_id":     corrID,
 		"agent_profile_name": req.AgentProfileName,
 	})
+	// "prompts" is the AIP-156 singleton-namespace parent literal bound by
+	// the proto URI template {parent=prompts}; no Prompt resource exists.
 	protoReq := &game.CreateAgentProfileRequest{
-		AgentProfileName: req.AgentProfileName,
-		Model:            req.Model,
-		SystemPrompt:     req.SystemPrompt,
-		Enabled:          req.Enabled,
-		ToolNames:        req.ToolNames,
+		Parent:         "prompts",
+		AgentProfileId: req.AgentProfileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        req.Model,
+			SystemPrompt: req.SystemPrompt,
+			Enabled:      req.Enabled,
+			ToolNames:    req.ToolNames,
+		},
 	}
 	profile, err := a.client.CreateAgentProfile(ctx, protoReq)
 	if err != nil {

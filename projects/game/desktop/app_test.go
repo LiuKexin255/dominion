@@ -208,19 +208,19 @@ func TestCreateAgentProfile_Success(t *testing.T) {
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
 			t.Fatalf("failed to parse request body: %v", err)
 		}
-		if req.GetAgentProfileName() != "test-agent" {
-			t.Errorf("expected agent_profile_name %q, got %q", "test-agent", req.GetAgentProfileName())
+		if req.GetAgentProfileId() != "test-agent" {
+			t.Errorf("expected agent_profile_id %q, got %q", "test-agent", req.GetAgentProfileId())
 		}
-		if req.GetModel() != "gpt-4" {
-			t.Errorf("expected model %q, got %q", "gpt-4", req.GetModel())
+		if req.GetAgentProfile().GetModel() != "gpt-4" {
+			t.Errorf("expected model %q, got %q", "gpt-4", req.GetAgentProfile().GetModel())
 		}
-		if req.GetSystemPrompt() != "You are a test assistant." {
-			t.Errorf("expected system_prompt %q, got %q", "You are a test assistant.", req.GetSystemPrompt())
+		if req.GetAgentProfile().GetSystemPrompt() != "You are a test assistant." {
+			t.Errorf("expected system_prompt %q, got %q", "You are a test assistant.", req.GetAgentProfile().GetSystemPrompt())
 		}
-		if req.GetEnabled() != true {
-			t.Errorf("expected enabled true, got %v", req.GetEnabled())
+		if req.GetAgentProfile().GetEnabled() != true {
+			t.Errorf("expected enabled true, got %v", req.GetAgentProfile().GetEnabled())
 		}
-		if got := req.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+		if got := req.GetAgentProfile().GetToolNames(); len(got) != 1 || got[0] != "mouse" {
 			t.Errorf("expected tool_names [\"mouse\"], got %v", got)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -380,7 +380,7 @@ func TestCreateAgentProfile_ToolNamesRoundTrip(t *testing.T) {
 			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
 				t.Fatalf("failed to parse create body: %v", err)
 			}
-			if got := req.GetToolNames(); len(got) != 1 || got[0] != "mouse" {
+			if got := req.GetAgentProfile().GetToolNames(); len(got) != 1 || got[0] != "mouse" {
 				t.Errorf("POST expected tool_names [\"mouse\"], got %v", got)
 			}
 			w.WriteHeader(http.StatusOK)

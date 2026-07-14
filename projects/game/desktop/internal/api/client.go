@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	game "dominion/projects/game"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/desktop/internal/trace"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -257,13 +258,21 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.List
 }
 
 // CreateAgentProfile creates an agent profile via POST to /api/v1/prompts/agentProfiles.
+// Per AIP-133 + grpc-gateway body binding ("body: agent_profile"), the HTTP body
+// is the AgentProfile JSON (extracted from the request's agent_profile field)
+// while parent and agent_profile_id come from the URI path / query string.
 func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
 	body, err := protojson.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
 
-	httpReq, err := c.newRequest(ctx, http.MethodPost, "/api/v1/prompts/agentProfiles", bytes.NewReader(body))
+	path := "/api/v1/prompts/agentProfiles"
+	if id := req.GetAgentProfileId(); id != "" {
+		path += "?agent_profile_id=" + id
+	}
+
+	httpReq, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
@@ -286,9 +295,9 @@ func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentPr
 	return profile, nil
 }
 
-// GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileName}.
+// GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileID}.
 func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (*game.AgentProfile, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/"+gameconst.AgentProfileName(agentProfileName), nil)
 	if err != nil {
 		return nil, fmt.Errorf("get agent profile: %w", err)
 	}
@@ -311,9 +320,9 @@ func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (
 	return profile, nil
 }
 
-// DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileName}.
+// DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileID}.
 func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
+	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/"+gameconst.AgentProfileName(agentProfileName), nil)
 	if err != nil {
 		return fmt.Errorf("delete agent profile: %w", err)
 	}
@@ -332,16 +341,18 @@ func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string
 }
 
 // UpdateAgentProfile partially updates an agent profile via PATCH to
-// /api/v1/prompts/agentProfiles/{agentProfileName}. The update_mask paths are
-// sent as the repeated update_mask.paths query parameter per grpc-gateway
-// FieldMask binding.
+// /api/v1/prompts/agentProfiles/{agentProfileID}. Per AIP-134 + grpc-gateway
+// body binding ("body: agent_profile" with path variable {agent_profile.name}),
+// the AgentProfile JSON is sent as the PATCH body and the resource name is
+// taken from the URI path. update_mask paths are sent as the repeated
+// update_mask.paths query parameter per grpc-gateway FieldMask binding.
 func (c *Client) UpdateAgentProfile(ctx context.Context, agentProfileName string, profile *game.AgentProfile, updateMaskPaths []string) (*game.AgentProfile, error) {
 	body, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(profile)
 	if err != nil {
 		return nil, fmt.Errorf("update agent profile: %w", err)
 	}
 
-	path := "/api/v1/prompts/agentProfiles/" + agentProfileName
+	path := "/api/v1/" + gameconst.AgentProfileName(agentProfileName)
 	if len(updateMaskPaths) > 0 {
 		path += "?update_mask=" + strings.Join(updateMaskPaths, ",")
 	}
