@@ -8,14 +8,14 @@ import (
 
 // gRPC target constants
 const (
-	SessionTarget  = "game/session:grpc"
-	ProxyTarget    = "game/proxy:grpc"
-	AgentTarget    = "game/agent:grpc"
-	PromptTarget   = "game/prompt:grpc"
+	SessionTarget = "game/session:grpc"
+	ProxyTarget   = "game/proxy:grpc"
+	AgentTarget   = "game/agent:grpc"
+	PromptTarget  = "game/prompt:grpc"
 
 	SessionNamePrefix      = "sessions/"
-	AgentProfileNamePrefix = "agentProfiles/"
-	SkillNamePrefix        = "skills/"
+	AgentProfileNamePrefix = "prompts/agentProfiles/"
+	SkillNamePrefix        = "prompts/skills/"
 
 	// Log field constants
 	LogFieldName       = "name"
