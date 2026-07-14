@@ -51,7 +51,8 @@
 - All cited links MUST resolve to publicly accessible resources.
 - **Code Style Precedence (§II)**: every implementation task exported to
   `tasks.md` MUST reference the applicable `style/` documents and confirm
-  they are reviewed before code changes begin.
+  they are reviewed before code changes begin, and MUST confirm that every
+  external reference cited within those `style/` documents was also read.
 - **External Dependency Research (§III)**: every external dependency,
   library, framework, service, or component referenced in this plan MUST
   be researched against its official documentation and source repository

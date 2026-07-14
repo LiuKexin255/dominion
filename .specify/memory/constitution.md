@@ -1,4 +1,35 @@
 <!--
+=====================================================================
+Sync Impact Report
+=====================================================================
+Version change: 2.1.0 → 2.2.0
+
+Modified principles:
+  - II. Code Style Precedence (代码规范优先): scope expanded to require
+    reading every external reference cited within the `style/` documents,
+    not just the local guideline text.
+
+Added principles:
+  - None
+
+Added sections:
+  - None
+
+Removed sections:
+  - None
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
+    §II bullet now references the external-reference reading obligation)
+  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
+    §II bullet now references the external-reference reading obligation)
+  - .specify/templates/spec-template.md — ✅ verified (spec authoring
+    precedes planning; §II applies at plan/tasks stage, no change needed)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (directory does not exist)
+
+Follow-up TODOs: none
+=====================================================================
 Sync Impact Report
 =====================================================================
 Version change: 2.0.0 → 2.1.0
@@ -244,17 +275,29 @@ deterministic path back to the original source of truth.
 
 ### II. Code Style Precedence (代码规范优先)
 
-Every code-related task in `tasks.md` MUST reference the repository's code style
-guidelines before any source file is created or modified.
+Every code-related task in `tasks.md` MUST reference the repository's code
+style guidelines before any source file is created or modified, and MUST
+read every external reference those guidelines cite.
 
 **Mandatory rules**:
 
 - **Read-first rule**: an implementation task MUST NOT begin until the assignee
   has read the style documents under `style/` (or the location designated by
   `AGENTS.md`) for the relevant language and project area.
+- **External-reference reading rule**: when reading a style guideline under
+  `style/` (or the location designated by `AGENTS.md`), the assignee MUST
+  also read every external reference (link, citation, RFC, official
+  documentation URL, or standard) that the guideline itself cites. Reading
+  only the local guideline text while skipping its cited external references
+  is a violation, because the local guideline frequently delegates normative
+  detail — naming conventions, error-handling contracts, API style,
+  formatting rules — to those external authorities. This rule parallels §III
+  (which obligates reading dependency documentation) but governs the style
+  guidelines' own citations.
 - **Style gate in tasks**: every `tasks.md` implementation task that touches
   code MUST include an acceptance criterion or inline note confirming the
-  relevant style guidelines were reviewed.
+  relevant style guidelines AND their cited external references were
+  reviewed.
 - **Conflict resolution**: if a task's proposed approach conflicts with an
   existing style rule, the style rule prevails unless the constitution itself
   is amended.
@@ -265,7 +308,11 @@ guidelines before any source file is created or modified.
 **Rationale**: reading style guidelines first prevents inconsistent formatting,
 redundant conventions, and rework; it ensures the codebase evolves coherently
 and that each contributor understands the project's engineering expectations
-before writing code.
+before writing code. Requiring the cited external references to be read as
+well prevents the local guideline from acting as a lossy summary — style
+rules are frequently pointers to authoritative external standards (language
+guides, RFCs, framework conventions), and skipping the referenced source
+reproduces exactly the staleness §III guards against for dependencies.
 
 ### III. External Dependency Research (外部依赖研读)
 
@@ -448,7 +495,9 @@ This constitution applies to the following Spec Kit artifacts:
   `plan.md`, and `tasks.md` contain a `## References` section when external
   material is cited, and that every inline claim has a matching link.
   Implementation tasks in `tasks.md` MUST reference the applicable `style/`
-  documents and confirm they were reviewed before code changes begin.
+  documents and confirm they were reviewed before code changes begin, and
+  MUST confirm that every external reference cited within those `style/`
+  documents was also read (per §II).
   Every external dependency or component referenced in `plan.md` (and any
   new dependency introduced in `tasks.md`) MUST show evidence of
   documentation research per §III, with inline citations to the official
@@ -464,4 +513,4 @@ This constitution applies to the following Spec Kit artifacts:
   MUST be materialized in the feature's `contracts/` artifact, and MUST be
   inherited by the corresponding implementation tasks in `tasks.md`.
 
-**Version**: 2.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14
+**Version**: 2.2.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14

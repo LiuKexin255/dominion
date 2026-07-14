@@ -36,7 +36,8 @@ description: "Task list template for feature implementation"
   `## References` section at the end of this file.
 - **Code Style Precedence (§II)**: every code-related task MUST reference
   the applicable `style/` documents and confirm they were reviewed before
-  any source file is created or modified.
+  any source file is created or modified, and MUST confirm that every
+  external reference cited within those `style/` documents was also read.
 - **External Dependency Research (§III)**: any task that introduces a NEW
   dependency, library, framework, service, or component not already
   researched in `plan.md` MUST perform the same documentation research
