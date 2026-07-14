@@ -1,6 +1,41 @@
 <!--
 Sync Impact Report
 =====================================================================
+Version change: 2.0.0 → 2.1.0
+
+Modified principles:
+  - None (existing §I, §II, §III, §IV unchanged)
+
+Added principles:
+  - V. Interface Design Coverage (接口设计覆盖): every solution design
+    in `plan.md` that introduces or modifies an externally callable
+    boundary MUST include an explicit interface design covering all
+    interface types touched (including but not limited to gRPC and
+    HTTP/REST), and the design MUST comply with the repository's
+    interface specification under `style/api.md`. The design MUST be
+    materialized in the feature's `contracts/` artifact and inherited
+    by implementation tasks.
+
+Added sections:
+  - Core Principles → V. Interface Design Coverage
+
+Removed sections:
+  - None
+
+Templates requiring updates:
+  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
+    now references §V interface-design + style/api.md compliance gate)
+  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
+    now references §V inheritance from plan.md / contracts/)
+  - .specify/templates/spec-template.md — ✅ verified (spec authoring
+    precedes planning; §V applies at plan/tasks stage, no change needed)
+  - .specify/templates/checklist-template.md — N/A (operational artifact)
+  - .specify/templates/commands/*.md — N/A (directory does not exist)
+
+Follow-up TODOs: none
+======================================================================
+Sync Impact Report
+=====================================================================
 Version change: 1.4.0 → 2.0.0
 
 Modified principles:
@@ -332,6 +367,56 @@ until a future "refactor pass" that never arrives. This complements §II
 research), which governs what is chosen; this principle governs how the
 plan describes change itself.
 
+### V. Interface Design Coverage (接口设计覆盖)
+
+Every solution design in `plan.md` that introduces or modifies an
+externally callable boundary MUST include an explicit interface design
+covering all interface types the change touches (including but not
+limited to gRPC and HTTP/REST). The interface design MUST comply with
+the repository's interface specification under `style/api.md`.
+
+**Mandatory rules**:
+
+- **Coverage rule**: when a change in `plan.md` introduces or modifies
+  any service, module, or component that exposes an external boundary
+  (RPC service, HTTP endpoint, message subscriber, event producer, etc.),
+  the plan MUST enumerate every interface surface it adds or changes —
+  for each surface, the protocol (e.g., gRPC, HTTP/REST), the service
+  and method names, the request/response (or resource/message) shapes,
+  and the error codes. A change that crosses an external boundary but
+  records no interface design is a violation.
+- **Compliance with repo interface spec**: every interface designed in
+  `plan.md` MUST comply with `style/api.md`. The constitution does NOT
+  restate the rules of `style/api.md` here — `style/api.md` is the
+  single source of truth for interface conventions, and the plan MUST
+  conform to whatever it currently requires. Conflicts between a plan's
+  proposed interface and `style/api.md` MUST be resolved in favor of the
+  repo spec unless the constitution itself is amended.
+- **Style gate in plan**: the plan MUST reference `style/api.md`
+  (inline, per §I) and confirm it was reviewed before any interface
+  design is recorded. This gate parallels §II for code style but is
+  enforced at planning time, before code is written.
+- **Materialization in contracts**: the interface design MUST be
+  materialized in the feature's `contracts/` artifact (e.g., `.proto`
+  files, OpenAPI specs) as part of the plan's design output, so that
+  downstream implementation tasks reference a concrete contract rather
+  than prose.
+- **Inheritance to tasks**: implementation tasks in `tasks.md` that
+  touch an interface MUST inherit the design from `plan.md` and
+  reference the corresponding `contracts/` source, rather than
+  restating or inventing interface shapes at implementation time.
+
+**Rationale**: an interface is a public contract — once callers depend
+on it, fixing inconsistencies is far more expensive than designing it
+correctly up front. Forcing every interface-affecting change to carry
+an explicit, repo-spec-compliant design at planning time prevents
+divergent APIs, undocumented endpoints, and the silent drift between a
+service's declared contract and its implementation. This principle
+complements §II (code style) and §IV (refactoring discipline) by
+governing how interfaces are described before any code is written, and
+complements §III (external dependency research) when the design imports
+upstream API patterns.
+
 ## Spec Artifact Scope
 
 This constitution applies to the following Spec Kit artifacts:
@@ -372,6 +457,11 @@ This constitution applies to the following Spec Kit artifacts:
   with 修改 changes implemented as refactors and every 修改 / 删除
   change carrying an explicit verdict on whether the existing design and
   layering still serve the new goal; outdated designs MUST be updated
-  within the same change, never deferred as "out of scope".
+  within the same change, never deferred as "out of scope". Every change
+  in `plan.md` that introduces or modifies an externally callable boundary
+  MUST include an explicit interface design per §V covering all interface
+  types touched, MUST comply with `style/api.md` (cited inline per §I),
+  MUST be materialized in the feature's `contracts/` artifact, and MUST be
+  inherited by the corresponding implementation tasks in `tasks.md`.
 
-**Version**: 2.0.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-25
+**Version**: 2.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14

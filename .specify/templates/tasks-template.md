@@ -60,6 +60,17 @@ description: "Task list template for feature implementation"
   outdated design in place. A task is not complete until the design
   artifacts (`spec.md` / `plan.md` / `data-model.md` / `contracts/` /
   `style/`) and the implementation agree.
+- **Interface Design Coverage (§V)**: any implementation task that
+  touches an externally callable boundary (RPC service, HTTP endpoint,
+  message subscriber, event producer, etc.) MUST inherit its interface
+  design from `plan.md` and reference the corresponding `contracts/`
+  source (e.g., `.proto` file, OpenAPI spec) rather than restating or
+  inventing interface shapes at implementation time. The implemented
+  interface MUST comply with `style/api.md` — that file is the single
+  source of truth for interface conventions and the implementation MUST
+  conform to whatever it currently requires; a divergence between the
+  contract and the implementation MUST be resolved before the task is
+  complete.
 
 ## Path Conventions
 

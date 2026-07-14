@@ -75,6 +75,23 @@
   back into coherence in the same version. "Out of scope" MUST NOT be
   used to carry an outdated design forward. The task list exported to
   `tasks.md` MUST inherit and preserve these classifications.
+- **Interface Design Coverage (§V)**: every change in this plan that
+  introduces or modifies an externally callable boundary (RPC service,
+  HTTP endpoint, message subscriber, event producer, etc.) MUST include
+  an explicit interface design enumerating every interface surface it
+  adds or changes — for each, the protocol (e.g., gRPC, HTTP/REST), the
+  service and method names, the request/response (or resource/message)
+  shapes, and the error codes. Every interface designed here MUST comply
+  with `style/api.md`; the constitution does not restate that file's
+  rules — `style/api.md` is the single source of truth for interface
+  conventions and the plan MUST conform to whatever it currently
+  requires. This plan MUST reference `style/api.md` inline (per §I) and
+  confirm it was reviewed before any interface design is recorded. The
+  interface design MUST be materialized in the feature's `contracts/`
+  artifact (e.g., `.proto` files, OpenAPI specs) as part of this plan's
+  design output, and the implementation tasks exported to `tasks.md`
+  MUST inherit the design and reference the corresponding `contracts/`
+  source rather than restating interface shapes at implementation time.
 
 ## Project Structure
 
