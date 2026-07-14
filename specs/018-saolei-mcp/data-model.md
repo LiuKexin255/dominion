@@ -209,7 +209,7 @@ ProfileData {
   toolNames:    string[]         // existing
   skillNames:   string[]         // 新增 (e.g. ["saolei"])
   mcpNames:     string[]         // 新增 (e.g. ["saolei"])
-  skillContents: string[]        // 新增 (fetched Skill.body for each skillNames entry)
+  skillContents: string[]        // 新增 (fetched Skill.content for each skillNames entry)
 }
 ```
 
