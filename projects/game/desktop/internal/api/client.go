@@ -262,7 +262,7 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.List
 // is the AgentProfile JSON (extracted from the request's agent_profile field)
 // while parent and agent_profile_id come from the URI path / query string.
 func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
-	body, err := protojson.Marshal(req)
+	body, err := protojson.Marshal(req.GetAgentProfile())
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
