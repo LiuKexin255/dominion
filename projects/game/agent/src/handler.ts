@@ -102,16 +102,17 @@ export class Handler implements AgentServiceHandlers {
   // GetAgent
   // -----------------------------------------------------------------------
 
-  GetAgent: grpc.handleUnaryCall<{ sessionId?: string }, AgentMessage> = (
+  GetAgent: grpc.handleUnaryCall<{ name?: string }, AgentMessage> = (
     call,
     callback,
   ) => {
-    const sessionId = call.request.sessionId ?? "";
+    const name = call.request.name ?? "";
+    const sessionId = extractSessionId(name);
     const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
     const state = sessionAgent.getAdapterState();
 
     const agent: AgentMessage = {
-      name: `sessions/${sessionId}/agent`,
+      name,
       sessionId,
       agentProfileName: state.activeProfileName ?? "",
       createTime: timestampNow(),
@@ -401,9 +402,11 @@ export class Handler implements AgentServiceHandlers {
   // ListMessages
   // -----------------------------------------------------------------------
 
+  // TODO: implement true pagination — currently returns all messages with
+  // empty nextPageToken.
   ListMessages: grpc.handleUnaryCall<
-    { parent?: string },
-    { messages?: MessageProto[] }
+    { parent?: string; pageSize?: number; pageToken?: string },
+    { messages?: MessageProto[]; nextPageToken?: string }
   > = async (call, callback) => {
     const parent = call.request.parent ?? "";
 
@@ -414,7 +417,7 @@ export class Handler implements AgentServiceHandlers {
       const adapter = sessionAgent?.getAdapter();
 
       if (!adapter) {
-        callback(null, { messages: [] });
+        callback(null, { messages: [], nextPageToken: "" });
         return;
       }
 
@@ -515,7 +518,7 @@ export class Handler implements AgentServiceHandlers {
         });
       }
 
-      callback(null, { messages: result });
+      callback(null, { messages: result, nextPageToken: "" });
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to list messages";

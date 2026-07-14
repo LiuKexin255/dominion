@@ -144,7 +144,7 @@ export class PromptClient {
       deadline.setSeconds(deadline.getSeconds() + 10);
 
       (this.client as any).getAgentProfile(
-        { name: `agentProfiles/${profileName}` },
+        { name: `prompts/agentProfiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {
