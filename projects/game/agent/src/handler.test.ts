@@ -1044,7 +1044,7 @@ describe("Handler.GetAgent", () => {
 
     const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const call = createUnaryCall({ sessionId: "sess-bound" });
+    const call = createUnaryCall({ name: "sessions/sess-bound/agent" });
     const { callback, promise } = createCallback<{
       name: string;
       sessionId: string;
@@ -1067,7 +1067,7 @@ describe("Handler.GetAgent", () => {
 
     const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const call = createUnaryCall({ sessionId: "never-connected" });
+    const call = createUnaryCall({ name: "sessions/never-connected/agent" });
     const { callback, promise } = createCallback<{
       agentProfileName: string;
     }>();
