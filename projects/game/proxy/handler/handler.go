@@ -68,7 +68,7 @@ func (h *ProxyHandler) GetAgent(ctx context.Context, req *game.GetAgentRequest) 
 		return nil, err
 	}
 
-	agent, err := client.GetAgent(ctx, &game.AgentGetRequest{SessionId: sessionID})
+	agent, err := client.GetAgent(ctx, &game.GetAgentRequest{Name: gameconst.AgentName(sessionID)})
 	if err != nil {
 		logs.Error(ctx, "get agent: downstream call failed",
 			event.String("session_id", sessionID),

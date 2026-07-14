@@ -15,7 +15,7 @@ var _ Client = (*AgentClient)(nil)
 
 // Client is the interface for agent service operations.
 type Client interface {
-	GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error)
+	GetAgent(ctx context.Context, req *game.GetAgentRequest) (*game.Agent, error)
 	ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.AgentService_ConnectClient, error)
 	RefreshAgent(ctx context.Context, req *game.RefreshAgentRequest) (*emptypb.Empty, error)
@@ -39,7 +39,7 @@ var NewAgentClient = func(conn *grpc.ClientConn) Client {
 }
 
 // GetAgent returns the current agent in a session.
-func (c *AgentClient) GetAgent(ctx context.Context, req *game.AgentGetRequest) (*game.Agent, error) {
+func (c *AgentClient) GetAgent(ctx context.Context, req *game.GetAgentRequest) (*game.Agent, error) {
 	return c.client.GetAgent(ctx, req)
 }
 
