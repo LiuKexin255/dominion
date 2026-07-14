@@ -258,7 +258,7 @@ export interface CreateAgentProfileRequest {
 
 export interface UpdateAgentProfileRequest {
   agentProfileName: string
-  profile: AgentProfile
+  agentProfile: AgentProfile
   updateMask?: string[]
 }
 
