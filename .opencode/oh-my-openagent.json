@@ -26,7 +26,7 @@
     },
     "prometheus": {
       "model": "zhipuai-coding-plan/glm-5.2",
-      "prompt_append": "Read `constitution.md` before you generate any documents. With one exception, you can edit the 'specs' directory when necessary for those who use the spec-kit as an sdd framework."
+      "prompt_append": "Read `constitution.md` before you generate any documents. With one exception, you can edit the 'specs' directory when necessary for those who use the spec-kit as an sdd framework. During the design, the requirements of the construction for the plan and task should also be followed. The tasks of the OMO plan also need to comply with the requirements of the SDD specification. After the completion of the plan, the review should also include the inspection required by the construction."
     },
     "metis": {
       "model": "zhipuai-coding-plan/glm-5.2"

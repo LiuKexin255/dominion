@@ -36,7 +36,14 @@ description: "Task list template for feature implementation"
   "None" explicitly for any empty category. The feature's design docs
   under `specs/[###-feature]/` are NOT re-listed here — they are
   declared once in the "Required Spec Docs" section and read by every
-  task. A task without this declaration MUST NOT be started.
+  task. A task without this declaration MUST NOT be started. **Planner
+  diligence (§V)**: before authoring each declaration, the planner MUST
+  read the in-repo documents the task touches and follow their IN-REPO
+  file references, so the declaration enumerates every in-repo file the
+  executor needs — not only the file at the edit site. External
+  references cited by in-repo docs are governed by §II and MUST NOT be
+  re-chased here; the planner MUST apply materiality and enumerate only
+  in-repo files genuinely relevant to the unit of change.
 - Include exact file paths in descriptions
 
 ## Constitution Check
@@ -106,7 +113,16 @@ description: "Task list template for feature implementation"
   explicitly for any empty category, and a task missing the declaration
   MUST NOT be started. The feature's own design docs under
   `specs/[###-feature]/` are NOT listed here — see the "Required Spec
-  Docs" section below. Suggested inline format:
+  Docs" section below. **Planner-side transitive reading (§V)**: the
+  author of this `tasks.md` MUST, before writing each task's Required
+  Reading, read the in-repo documents the task touches and follow the
+  IN-REPO file references they cite, so the declaration enumerates
+  every in-repo file the executor needs rather than only the edit-site
+  file. This is scoped to in-repo references only (external references
+  remain governed by §II and MUST NOT be re-chased), binds the planner
+  only (the executor inherits the enumeration verbatim), and demands
+  materiality (only in-repo files genuinely relevant to the unit of
+  change — not the entire transitively reachable graph). Suggested inline format:
 
   ```
   Required Reading:

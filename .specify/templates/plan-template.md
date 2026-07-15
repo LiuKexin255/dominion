@@ -111,7 +111,14 @@
   declare once as required reading for every task rather than repeating
   per task. The task list exported to `tasks.md` MUST carry a per-task
   Required Reading declaration that inherits this plan's documented
-  reading and adds task-specific items.
+  reading and adds task-specific items. When authoring those per-task
+  declarations, the task planner MUST read the in-repo documents each
+  task touches and follow their IN-REPO file references so each
+  declaration enumerates every in-repo file the executor needs — not
+  only the edit-site file; external references cited by in-repo docs
+  remain governed by §II (transitive reading at plan time) and MUST
+  NOT be re-chased at task-planning time, and the planner MUST apply
+  materiality to avoid reference-graph bloat.
 
 ## Project Structure
 

@@ -1,6 +1,53 @@
 <!--
 Sync Impact Report
 ==================
+Constitution version: 3.2.0 → 3.3.0
+Bump type: MINOR (materially expanded guidance in an existing principle)
+
+Modified principles:
+- §V. Documentation First — added a new mandatory rule,
+  "Planner must read in-repo docs transitively before declaring",
+  requiring the task planner to read the in-repo documents a task
+  touches AND follow the in-repo file references those docs cite before
+  authoring the task's Required Reading declaration, so the declaration
+  enumerates every in-repo file the executor needs — not only the file
+  at the edit site. Lazy planning (declaring one in-repo file while
+  omitting the in-repo files it references) is a violation. The rule is
+  scoped three ways to prevent over-expansion: (1) IN-REPO references
+  only — external references cited by in-repo docs remain governed by
+  §II's transitive-reading rule at plan time and MUST NOT be re-chased
+  here; (2) the PLANNER only — the task executor inherits the planner's
+  enumeration and has no obligation to re-derive referenced files;
+  (3) MATERIALITY — only in-repo files genuinely relevant to the task's
+  unit of change are enumerated, not every transitively reachable file.
+  This complements §II (external transitive research at plan time) and
+  the existing §V "Inheritance from plan" rule (tasks inherit the
+  plan's documented research).
+
+Added sections:
+- None (new rule within existing §V).
+
+Removed sections:
+- None.
+
+Templates requiring updates:
+- ✅ .specify/templates/tasks-template.md — updated §V Constitution
+  Check entry and Required Reading Format spec to require the planner
+  to read in-repo docs and follow in-repo references before declaring.
+- ✅ .specify/templates/plan-template.md — updated §V Constitution
+  Check entry to note the task planner must read in-repo docs and
+  follow their in-repo references when exporting the per-task Required
+  Reading to tasks.md.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
 Constitution version: 3.1.0 → 3.2.0
 Bump type: MINOR (materially expanded guidance in an existing principle)
 
@@ -343,6 +390,31 @@ the narrow slice the task directly touches.
   downstream tasks. Tasks MUST inherit this list and MAY extend it with
   task-specific items; tasks MUST NOT silently drop a document the plan
   declared relevant to the unit being changed.
+- **Planner must read in-repo docs transitively before declaring**: the
+  Required Reading declaration is authored by the task planner, and the
+  planner MUST, BEFORE writing the declaration, read the in-repo
+  documents the task touches (the 规范文档 under `style/*`, the
+  feature's design docs under `specs/[###-feature]/`, and any other
+  in-repo doc relevant to the unit of change) in full and follow the
+  IN-REPO file references they cite — so the declaration enumerates
+  every in-repo file the executor will need, not only the file at the
+  edit site. Declaring a single in-repo file while omitting the in-repo
+  files it transitively references is lazy planning and a violation.
+  This rule is scoped three ways to prevent work bloat:
+  1. **In-repo references only.** Only references that resolve to a
+     file inside this repository MUST be followed. External references
+     (URLs to off-repo docs, RFCs, AIPs, upstream repos) cited by
+     in-repo docs are governed by §II's transitive-reading rule at
+     plan time and MUST NOT be re-chased by the task planner.
+  2. **Planner only.** The rule binds the author of `tasks.md`. The
+     task executor inherits the planner's enumeration verbatim and has
+     NO obligation to re-derive referenced files; the executor reads
+     exactly what the planner declared.
+  3. **Materiality.** The planner MUST apply judgment and enumerate
+     only in-repo files genuinely relevant to the task's unit of
+     change — not every transitively reachable file. Chasing the full
+     reference graph indiscriminately is itself a violation of this
+     scoping.
 - **No-empty rule**: when a category genuinely has no applicable
   document for a given task, the declaration MUST state "None" for that
   category explicitly, so the absence is a deliberate decision rather
@@ -375,7 +447,17 @@ design docs as a one-time declaration avoids redundant repetition while
 keeping them mandatory; this principle also complements §III
 (refactoring discipline), since a sound refactor requires understanding
 the existing unit's design — exactly the context this declaration forces
-into view.
+into view. The planner-side transitive-reading rule closes the gap
+between "the declaration exists" and "the declaration is complete": an
+in-repo doc that looks self-contained routinely cites other in-repo
+files (a `style/*.md` that defers to a sibling, a design doc that
+references a `contracts/` artifact or another spec), and a planner who
+reads only the top-level file produces a declaration that is
+syntactically present but materially incomplete. Forcing the planner to
+follow in-repo references — while explicitly exempting external ones
+(§II's job) and demanding materiality (to avoid reference-graph bloat) —
+makes the declaration a faithful map of the context the executor
+actually needs.
 
 ## Spec Artifact Scope
 
@@ -432,6 +514,13 @@ This constitution applies to the following Spec Kit artifacts:
   "None" explicitly for any empty category, and a task missing the
   declaration MUST NOT be started. The feature's design docs under
   `specs/[###-feature]/` MUST be declared once at the top of `tasks.md`
-  as required reading for every task, not repeated per task.
+  as required reading for every task, not repeated per task. The author
+  of `tasks.md` MUST, before writing each task's Required Reading, read
+  the in-repo documents the task touches and follow their IN-REPO file
+  references so the declaration enumerates every in-repo file the
+  executor needs (not only the edit-site file); external references
+  cited by in-repo docs remain governed by §II and MUST NOT be
+  re-chased, and the planner MUST apply materiality so only in-repo
+  files genuinely relevant to the unit of change are enumerated.
 
-**Version**: 3.2.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
+**Version**: 3.3.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
