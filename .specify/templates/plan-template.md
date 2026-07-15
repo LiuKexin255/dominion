@@ -54,9 +54,15 @@
   be researched against its official documentation and source repository
   BEFORE the plan is finalized. Research MUST cover purpose, supported
   versions, the relevant public API surface, known constraints or
-  deprecations, and licensing terms. The plan MUST record the
-  documentation URLs consulted as inline citations (per §I) with a
-  one-line summary of the finding, and pin the version or version range
+  deprecations, and licensing terms. Research is NOT limited to the
+  dependency's top-level docs: when the official docs or source repo
+  cite other references (linked sub-pages, RFCs, AIPs, upstream design
+  docs, relevant source sections), the planner MUST follow and read
+  them transitively to a depth sufficient to justify the design
+  decision — transitive reading is expected at the plan/design stage.
+  The plan MUST record every documentation URL consulted (including
+  transitive references) as inline citations (per §I) with a one-line
+  summary of the finding, and pin the version or version range
   researched. Relying on memory or prior assumptions is a violation.
 - **Refactoring-Oriented Changes (§III)**: every change described in this
   plan MUST be explicitly classified as 新增 (Add), 修改 (Modify), or

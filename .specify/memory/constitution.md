@@ -1,6 +1,42 @@
 <!--
 Sync Impact Report
 ==================
+Constitution version: 3.1.0 → 3.2.0
+Bump type: MINOR (materially expanded guidance in an existing principle)
+
+Modified principles:
+- §II. External Dependency Research — added a new mandatory rule,
+  "Transitive reading of cited references", requiring the planner to
+  follow and read references cited by a dependency's official docs /
+  source repo (linked sub-pages, RFCs, AIPs, upstream design docs,
+  source sections) to a depth sufficient to justify the design
+  decision. Transitive reading is scoped to the PLAN/design stage; it
+  complements §V, which requires the planner to distill that research
+  into an explicit per-task reading list rather than pushing transitive
+  reading onto task executors.
+
+Added sections:
+- None (new rule within existing §II).
+
+Removed sections:
+- None.
+
+Templates requiring updates:
+- ✅ .specify/templates/plan-template.md — updated §II Constitution
+  Check entry to require transitive reading of cited references.
+- ⚠ .specify/templates/tasks-template.md — §II "same research" language
+  already inherits the new rule for new-dependency tasks; no further
+  change required.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
 Constitution version: 3.0.0 → 3.1.0
 Bump type: MINOR (new principle added)
 
@@ -104,6 +140,21 @@ official documentation and source repository BEFORE the plan is finalized.
 - **Scope of research**: research MUST cover, at minimum, the dependency's
   purpose, supported versions, the public API surface relevant to the plan,
   known constraints or deprecations, and licensing terms.
+- **Transitive reading of cited references**: at the planning/design
+  stage, research is NOT limited to the dependency's top-level
+  documentation. When the official documentation or source repository
+  cites other references — linked sub-pages, referenced RFCs or
+  standards, related AIPs, upstream design docs, or relevant sections of
+  the source code — the author MUST follow and read those references to
+  a depth sufficient to justify the design decision. Transitive reading
+  is expected at plan time because the planner is building the
+  authoritative research record that everything downstream depends on;
+  findings from followed references MUST be recorded as inline citations
+  (per §I) and surface in the plan's `## References` section. This rule
+  is the complement of §V: §II performs the transitive research ONCE at
+  plan time, and §V requires the planner to distill that research into
+  an explicit, enumerated per-task reading list rather than imposing an
+  implicit "follow the links yourself" obligation on the task executor.
 - **Evidence in plan**: the plan MUST record the documentation URLs consulted
   as inline citations (per §I) alongside a one-line summary of the finding
   that informed the decision. A bare dependency name without supporting
@@ -124,7 +175,12 @@ change, versions deprecate, and constraints shift. Reading authoritative
 sources before committing to a design ensures plans are grounded in current
 reality, complements §I (which obligates citing sources) by obligating the
 actual reading of them, and gives reviewers verifiable evidence rather than
-trust.
+trust. Following cited references transitively is reasonable at plan time
+because the planner has the context to judge which references matter and is
+building the single research record the rest of the feature relies on; this
+is precisely why §V forbids pushing that same transitive obligation onto
+task executors and instead requires the planner to enumerate the distilled
+reading list explicitly.
 
 ### III. Refactoring-Oriented Changes (重构式变更)
 
@@ -354,7 +410,9 @@ This constitution applies to the following Spec Kit artifacts:
   Every external dependency or component referenced in `plan.md` (and any
   new dependency introduced in `tasks.md`) MUST show evidence of
   documentation research per §II, with inline citations to the official
-  sources consulted. Every change in `plan.md` and every implementation
+  sources consulted, including transitive reading of references cited by
+  those sources (linked sub-pages, RFCs, AIPs, upstream design docs)
+  recorded as inline citations at the plan/design stage. Every change in `plan.md` and every implementation
   task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §III,
   with 修改 changes implemented as refactors and every 修改 / 删除
   change carrying an explicit verdict on whether the existing design and
@@ -376,4 +434,4 @@ This constitution applies to the following Spec Kit artifacts:
   `specs/[###-feature]/` MUST be declared once at the top of `tasks.md`
   as required reading for every task, not repeated per task.
 
-**Version**: 3.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
+**Version**: 3.2.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
