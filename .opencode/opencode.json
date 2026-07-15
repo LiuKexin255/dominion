@@ -3,7 +3,7 @@
   "model": "opencode-go/deepseek-v4-pro",
   "small_model": "opencode-go/deepseek-v4-flash",
   "plugin": [
-    "oh-my-openagent@4.13.0"
+    "oh-my-openagent@4.18.1"
   ],
   "lsp": {
     "bazel": {

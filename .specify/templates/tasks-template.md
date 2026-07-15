@@ -17,12 +17,26 @@ description: "Task list template for feature implementation"
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- **[新增|修改|删除]**: Change classification per Constitution §IV —
+- **[新增|修改|删除]**: Change classification per Constitution §III —
   新增 only for modules/files/types/design elements that did not
   previously exist; 修改 for any change to an existing unit (including
   adding a function to an existing class); 删除 for removal of an
   existing unit. 修改 / 删除 tasks MUST record a design-applicability
   review before implementation begins.
+- **Required Reading**: every implementation task MUST carry a
+  "Required Reading" declaration per Constitution §V enumerating the
+  specific documents the executor MUST read before editing code, grouped
+  by category. Any category may contain both in-repo docs and external
+  links. **规范文档** = code style/spec docs (mainly `style/*`, plus the
+  external standards they cite — e.g. AIPs, RFCs); **官方文档** =
+  official docs of external dependencies/components/tools, upstream
+  READMEs; **技术文章** = blogs, GitHub issues/PRs, RFCs, talks. The
+  declaration MUST cover context broader than the edit site, MUST
+  inherit the plan's documented research (per §II), and MUST state
+  "None" explicitly for any empty category. The feature's design docs
+  under `specs/[###-feature]/` are NOT re-listed here — they are
+  declared once in the "Required Spec Docs" section and read by every
+  task. A task without this declaration MUST NOT be started.
 - Include exact file paths in descriptions
 
 ## Constitution Check
@@ -34,22 +48,14 @@ description: "Task list template for feature implementation"
   include an inline `[description](URL)` link or explicitly cite the
   parent `spec.md`/`plan.md` source. A matching entry MUST appear in the
   `## References` section at the end of this file.
-- **Code Style Precedence (§II)**: every agent that executes a
-  code-related task MUST read the applicable `style/` documents and their
-  cited external references before creating or modifying any source file
-  in that task. This read obligation is per-executor and per-task
-  (non-transferable across agents); it is enforced as a dispatch-time
-  precondition and MUST NOT be enumerated as a per-task acceptance
-  criterion, a dedicated "read style guide" task, or a separate workflow
-  step.
-- **External Dependency Research (§III)**: any task that introduces a NEW
+- **External Dependency Research (§II)**: any task that introduces a NEW
   dependency, library, framework, service, or component not already
   researched in `plan.md` MUST perform the same documentation research
   (official docs + source repository) and cite the findings inline (per
   §I) before implementation begins. Dependencies inherited from
   `plan.md` MUST explicitly reference the plan's research rather than
   restating decisions without provenance.
-- **Refactoring-Oriented Changes (§IV)**: every implementation task MUST
+- **Refactoring-Oriented Changes (§III)**: every implementation task MUST
   carry the 新增 / 修改 / 删除 (Add / Modify / Delete) classification
   inherited from `plan.md`, where 新增 applies ONLY to modules, files,
   types, or design elements that did not previously exist (adding a
@@ -65,7 +71,7 @@ description: "Task list template for feature implementation"
   outdated design in place. A task is not complete until the design
   artifacts (`spec.md` / `plan.md` / `data-model.md` / `contracts/` /
   `style/`) and the implementation agree.
-- **Interface Design Coverage (§V)**: any implementation task that
+- **Interface Design Coverage (§IV)**: any implementation task that
   touches an externally callable boundary (RPC service, HTTP endpoint,
   message subscriber, event producer, etc.) MUST inherit its interface
   design from `plan.md` and reference the corresponding `contracts/`
@@ -76,6 +82,48 @@ description: "Task list template for feature implementation"
   conform to whatever it currently requires; a divergence between the
   contract and the implementation MUST be resolved before the task is
   complete.
+- **Documentation First (§V)**: every implementation task MUST carry a
+  Required Reading declaration enumerating, across three categories,
+  the specific documents the executor MUST read before editing code.
+  Any category may contain both in-repo docs and external links — the
+  internal/external axis is identical across all three:
+  - **规范文档 (Code style/spec docs)** — code conventions and
+    standards docs, mainly files under `style/`. External standards
+    referenced by these docs (e.g., AIPs, RFCs, language style guides)
+    belong in THIS category, not in the other two.
+  - **官方文档 (Official docs)** — official documentation of external
+    dependencies, components, frameworks, tools, or services the task
+    touches, plus the README of any upstream codebase relied upon.
+  - **技术文章 (Technical articles)** — technical blog posts, GitHub
+    issues/PRs, design RFCs, or other secondary sources clarifying
+    non-obvious behavior.
+
+  External links in any category MUST carry inline citations per §I.
+  The declaration MUST cover context broader than the task's direct
+  edit site (at minimum the governing code style docs and the existing
+  code/modules the change interacts with), MUST inherit the plan's
+  documented research (per §II) and MAY extend it, MUST state "None"
+  explicitly for any empty category, and a task missing the declaration
+  MUST NOT be started. The feature's own design docs under
+  `specs/[###-feature]/` are NOT listed here — see the "Required Spec
+  Docs" section below. Suggested inline format:
+
+  ```
+  Required Reading:
+  - 规范文档: style/api.md; [AIP-2 AIP Numbering](https://google.aip.dev/2); [refer docs](URL)
+  - 官方文档: [dependency docs](URL) — version; [upstream README](URL)
+  - 技术文章: [issue/discussion/blog](URL)
+  ```
+
+## Required Spec Docs *(declared once per Constitution §V)*
+
+Every task executor MUST read the feature's design docs under
+`specs/[###-feature-name]/` BEFORE starting any task — including but
+not limited to the main files below. The planner declares this
+directory once here; it is NOT repeated in individual task declarations.
+
+- `specs/[###-feature-name]/spec.md`
+- `specs/[###-feature-name]/plan.md`
 
 ## Path Conventions
 

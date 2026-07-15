@@ -49,15 +49,7 @@
 - Version pins or commit SHAs MUST accompany any citation whose
   referenced state matters.
 - All cited links MUST resolve to publicly accessible resources.
-- **Code Style Precedence (§II)**: every agent that executes a
-  code-touching task exported to `tasks.md` MUST read the applicable
-  `style/` documents and their cited external references before modifying
-  code in that task. This read obligation is per-executor and per-task
-  (non-transferable across agents); it is enforced as a dispatch-time
-  precondition and MUST NOT be enumerated as a per-task acceptance
-  criterion, a dedicated "read style guide" task, or a separate workflow
-  step.
-- **External Dependency Research (§III)**: every external dependency,
+- **External Dependency Research (§II)**: every external dependency,
   library, framework, service, or component referenced in this plan MUST
   be researched against its official documentation and source repository
   BEFORE the plan is finalized. Research MUST cover purpose, supported
@@ -66,7 +58,7 @@
   documentation URLs consulted as inline citations (per §I) with a
   one-line summary of the finding, and pin the version or version range
   researched. Relying on memory or prior assumptions is a violation.
-- **Refactoring-Oriented Changes (§IV)**: every change described in this
+- **Refactoring-Oriented Changes (§III)**: every change described in this
   plan MUST be explicitly classified as 新增 (Add), 修改 (Modify), or
   删除 (Delete), where 新增 applies ONLY to modules, files, types, or
   design elements that did not previously exist (adding a function to an
@@ -80,7 +72,7 @@
   back into coherence in the same version. "Out of scope" MUST NOT be
   used to carry an outdated design forward. The task list exported to
   `tasks.md` MUST inherit and preserve these classifications.
-- **Interface Design Coverage (§V)**: every change in this plan that
+- **Interface Design Coverage (§IV)**: every change in this plan that
   introduces or modifies an externally callable boundary (RPC service,
   HTTP endpoint, message subscriber, event producer, etc.) MUST include
   an explicit interface design enumerating every interface surface it
@@ -97,6 +89,23 @@
   design output, and the implementation tasks exported to `tasks.md`
   MUST inherit the design and reference the corresponding `contracts/`
   source rather than restating interface shapes at implementation time.
+- **Documentation First (§V)**: while §V is enforced at task level, this
+  plan MUST seed the Required Reading that downstream `tasks.md` items
+  inherit. The research recorded under §II (official docs + source repos
+  of every external dependency) flows into the task-level 官方文档
+  category; the governing code style docs referenced under §I/§III/§IV
+  (`style/*`, including the external standards they cite) flow into the
+  task-level 规范文档 category; and any non-obvious external pattern
+  (blog, issue, RFC) the plan depends on MUST be cited inline (per §I)
+  so it flows into the task-level 技术文章 category. The plan is also the
+  authoritative source for the feature's design doc set under
+  `specs/[###-feature]/` (including but not limited to `spec.md`,
+  `plan.md`, and other design docs such as `data-model.md`,
+  `contracts/`, `quickstart.md`), which the exported `tasks.md` MUST
+  declare once as required reading for every task rather than repeating
+  per task. The task list exported to `tasks.md` MUST carry a per-task
+  Required Reading declaration that inherits this plan's documented
+  reading and adds task-specific items.
 
 ## Project Structure
 

@@ -1,267 +1,40 @@
 <!--
-=====================================================================
 Sync Impact Report
-=====================================================================
-Version change: 2.2.0 → 2.3.0
+==================
+Constitution version: 3.0.0 → 3.1.0
+Bump type: MINOR (new principle added)
 
 Modified principles:
-  - II. Code Style Precedence (代码规范优先): scope clarified to make the
-    read obligation explicitly per-executor and per-task (non-transferable
-    across agents), eliminating the "read the style guide once at setup"
-    anti-pattern that arises when later tasks are dispatched to different
-    agents. Enforcement reclassified: the former "Style gate in tasks"
-    mandatory sub-rule (which forced a per-task acceptance criterion or
-    inline note in every code task) is REMOVED and replaced with a
-    "dispatch-time precondition" framing — §II is now a baseline
-    precondition of task distribution, enforced at dispatch, not a
-    per-task documentation obligation.
+- None renamed or redefined.
 
 Added sections:
-  - None
+- §V. Documentation First (文档优先) — new principle requiring every
+  implementation task in tasks.md to declare, as part of the task
+  itself, the documents (classified as 规范文档 / 官方文档 / 技术文章,
+  each of which may be in-repo or external) that MUST be read BEFORE
+  any code in that task is edited. 规范文档 = code style/spec docs
+  (mainly style/*) plus the external standards they cite. The feature's
+  own design docs under specs/[###-feature]/ are declared once at the
+  top of tasks.md as required reading for every task. Goal: ensure the
+  executor builds full context before editing, not just the narrow
+  slice the task touches.
 
 Removed sections:
-  - None (the "Style gate in tasks" mandatory sub-rule within §II is
-    removed; it is not a top-level section)
+- None.
 
 Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (§II bullet rewritten
-    to the dispatch-time, per-executor framing)
-  - .specify/templates/tasks-template.md — ✅ updated (§II bullet rewritten
-    to the dispatch-time, per-executor framing)
-  - .specify/templates/spec-template.md — N/A (§II applies at plan/tasks
-    stage, not spec authoring)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (no §II references)
+- ✅ .specify/templates/tasks-template.md — added §V Constitution Check
+  entry; added Required Reading to task Format spec; added a
+  "Required Spec Docs" section (feature design docs declared once).
+- ✅ .specify/templates/plan-template.md — added §V Constitution Check
+  entry (plan seeds the reading list inherited by tasks).
+- ⚠ .specify/templates/spec-template.md — no change required; §V is a
+  task-level principle and spec-template has no Constitution Check gate.
+- ⚠ .specify/templates/checklist-template.md — not modified; operational
+  artifact, no principle-driven change expected.
 
-Follow-up TODOs: existing feature artifacts (e.g. specs/*/plan.md and
-tasks.md §II bullets) authored under the prior 2.2.0 wording remain valid
-at their authoring date and are NOT retroactively rewritten; future
-artifacts generated from the updated templates use the new 2.3.0 framing.
-=====================================================================
--->
-<!--
-=====================================================================
-Sync Impact Report
-=====================================================================
-Version change: 2.1.0 → 2.2.0
-
-Modified principles:
-  - II. Code Style Precedence (代码规范优先): scope expanded to require
-    reading every external reference cited within the `style/` documents,
-    not just the local guideline text.
-
-Added principles:
-  - None
-
-Added sections:
-  - None
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    §II bullet now references the external-reference reading obligation)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    §II bullet now references the external-reference reading obligation)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §II applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
-Sync Impact Report
-=====================================================================
-Version change: 2.0.0 → 2.1.0
-
-Modified principles:
-  - None (existing §I, §II, §III, §IV unchanged)
-
-Added principles:
-  - V. Interface Design Coverage (接口设计覆盖): every solution design
-    in `plan.md` that introduces or modifies an externally callable
-    boundary MUST include an explicit interface design covering all
-    interface types touched (including but not limited to gRPC and
-    HTTP/REST), and the design MUST comply with the repository's
-    interface specification under `style/api.md`. The design MUST be
-    materialized in the feature's `contracts/` artifact and inherited
-    by implementation tasks.
-
-Added sections:
-  - Core Principles → V. Interface Design Coverage
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §V interface-design + style/api.md compliance gate)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §V inheritance from plan.md / contracts/)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §V applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-======================================================================
-Sync Impact Report
-=====================================================================
-Version change: 1.4.0 → 2.0.0
-
-Modified principles:
-  - V. Refactoring-Oriented Changes → renumbered to IV. Refactoring-
-    Oriented Changes (no content change beyond cross-reference updates)
-
-Added principles:
-  - None
-
-Removed sections:
-  - Core Principles → IV. Implementation Checkpointing (实现检查点插入):
-    the principle mandating check-task insertion at phase boundaries in
-    `tasks.md`. Removed entirely; check-task insertion is no longer
-    constitutionally mandated.
-
-Templates requiring updates:
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    §IV bullet removed; sample `> §IV check task` callouts and `CHECK`
-    task examples removed; §V references renumbered to §IV; closing
-    "Check tasks are §IV checkpoints" note removed)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    §IV bullet removed; §V reference renumbered to §IV)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §IV applies at tasks.md stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-===================================================================
-
-Version change: 1.3.0 → 1.4.0
-
-Modified principles:
-  - None (existing §I, §II, §III, §IV unchanged)
-
-Added principles:
-  - V. Refactoring-Oriented Changes (重构式变更): every change in
-    `plan.md`/`tasks.md` MUST be classified as 新增 / 修改 / 删除
-    (Add / Modify / Delete), where 新增 applies ONLY to modules, files,
-    types, or design elements that did not previously exist (adding a
-    function to an existing class is 修改, not 新增). 修改 MUST be done
-    as a refactor, not logic stacking. 修改 and 删除 MUST review the
-    existing design and layering and explicitly verdict whether it still
-    serves the new goal; outdated designs MUST be updated in the same
-    change. "Out of scope" MUST NOT carry stale designs forward.
-
-Added sections:
-  - Core Principles → V. Refactoring-Oriented Changes
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §V classification + design-review obligation)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §V; Format header extended to carry the A/M/D label)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §V applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-====================================================================
-
-Version change: 1.2.0 → 1.3.0
-
-Modified principles:
-  - None (existing §I, §II, §III unchanged)
-
-Added principles:
-  - IV. Implementation Checkpointing (实现检查点插入): when tasks.md
-    contains many tasks, check tasks MUST be inserted at appropriate
-    positions to verify the implementation has not deviated from the
-    task plan and plan.md, and that code is correctly committed.
-    Deviations MUST be fixed promptly.
-
-Added sections:
-  - Core Principles → IV. Implementation Checkpointing
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §IV; check task examples inserted at phase checkpoints)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §IV checkpointing obligation)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes task planning; §IV applies at tasks.md stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
-
-Version change: 1.1.0 → 1.2.0
-
-Modified principles:
-  - None (existing §I and §II unchanged)
-
-Added principles:
-  - III. External Dependency Research (外部依赖研读): when authoring
-    plan.md (and tasks that introduce new dependencies), every external
-    dependency or component MUST be researched against its official
-    documentation and source repository BEFORE the plan is finalized.
-
-Added sections:
-  - Core Principles → III. External Dependency Research
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §III research-before-plan obligation)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §III inheritance for tasks introducing new dependencies)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §III applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
-
-Version change: 1.0.0 → 1.1.0
-
-Modified principles:
-  - I. Citation Provenance (引用溯源): scope expanded from spec.md/plan.md
-    to include tasks.md; added task-level provenance rule.
-
-Added principles:
-  - II. Code Style Precedence (代码规范优先): implementation tasks MUST read
-    repository style guidelines before modifying code.
-
-Added sections:
-  - Core Principles → II. Code Style Precedence
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/spec-template.md — ✅ verified (References section already
-    covers spec.md; no change required because tasks.md inherits from parent docs)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check now
-    references tasks.md citation and style review requirements)
-  - .specify/templates/tasks-template.md — ✅ updated (added Constitution Check
-    gate and References section placeholder)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
+Follow-up TODOs:
+- None. All placeholders resolved.
 -->
 
 # Dominion Spec Constitution
@@ -314,64 +87,7 @@ against authoritative sources, prevent hallucinated or outdated claims
 from entering the spec pipeline, and give future maintainers a
 deterministic path back to the original source of truth.
 
-### II. Code Style Precedence (代码规范优先)
-
-Before any agent creates or modifies a source file, that agent MUST read
-the repository's code style guidelines under `style/` (or the location
-designated by `AGENTS.md`) for the relevant language and project area,
-and MUST read every external reference those guidelines cite.
-
-**Mandatory rules**:
-
-- **Per-executor, per-task read rule**: the read obligation applies to
-  EVERY agent that executes a code-touching task, independently for EACH
-  task it executes, and it does NOT transfer across agents. Because tasks
-  in `tasks.md` may be dispatched to different agents, an agent MUST NOT
-  begin modifying code in a task until THAT agent has read the applicable
-  `style/` documents and their cited external references for that task —
-  regardless of whether any earlier agent (a setup or wave-0 task, the
-  plan author, or any other) already read the same documents. A single
-  shared "read the style guide once" step satisfies §II only for the agent
-  that performed it; it does not satisfy §II for any other agent or any
-  later task.
-- **External-reference reading rule**: when reading a style guideline
-  under `style/` (or the location designated by `AGENTS.md`), the agent
-  MUST also read every external reference (link, citation, RFC, official
-  documentation URL, or standard) that the guideline itself cites. Reading
-  only the local guideline text while skipping its cited external
-  references is a violation, because the local guideline frequently
-  delegates normative detail — naming conventions, error-handling
-  contracts, API style, formatting rules — to those external authorities.
-  This rule parallels §III (which obligates reading dependency
-  documentation) but governs the style guidelines' own citations.
-- **Dispatch-time precondition, not a per-task documentation obligation**:
-  this principle is a baseline precondition of task distribution. It is
-  enforced at task-dispatch time — the orchestrator/worker MUST ensure the
-  executor has read the applicable style documents before any code edit in
-  that task — and therefore MUST NOT be enumerated as a separate workflow
-  step, a dedicated "read style guide" task, or a per-task acceptance
-  criterion or inline note in `tasks.md` or `plan.md`. The Constitution
-  Check gates and the `plan.md` / `tasks.md` templates MUST NOT require
-  per-task style-review confirmation, because that would duplicate the
-  dispatch-time precondition and invite the read-once anti-pattern this
-  principle forbids.
-- **Conflict resolution**: if a task's proposed approach conflicts with an
-  existing style rule, the style rule prevails unless the constitution
-  itself is amended.
-- **New conventions**: when a task introduces a pattern not covered by
-  existing style guidelines, the agent MUST document the new convention in
-  the appropriate `style/` document or flag it for review before merging.
-
-**Rationale**: reading style guidelines first prevents inconsistent formatting,
-redundant conventions, and rework; it ensures the codebase evolves coherently
-and that each contributor understands the project's engineering expectations
-before writing code. Requiring the cited external references to be read as
-well prevents the local guideline from acting as a lossy summary — style
-rules are frequently pointers to authoritative external standards (language
-guides, RFCs, framework conventions), and skipping the referenced source
-reproduces exactly the staleness §III guards against for dependencies.
-
-### III. External Dependency Research (外部依赖研读)
+### II. External Dependency Research (外部依赖研读)
 
 When authoring `plan.md`, every external dependency, library, framework,
 service, or component referenced in the design MUST be researched against its
@@ -410,7 +126,7 @@ reality, complements §I (which obligates citing sources) by obligating the
 actual reading of them, and gives reviewers verifiable evidence rather than
 trust.
 
-### IV. Refactoring-Oriented Changes (重构式变更)
+### III. Refactoring-Oriented Changes (重构式变更)
 
 Every code change described in `plan.md` and `tasks.md` MUST be expressed
 as a refactor of the affected unit, not as logic stacked on top of it.
@@ -467,11 +183,10 @@ affected design makes that drift visible at planning time, when it is
 cheapest to fix. Requiring synchronous updates keeps the design and the
 code as one artifact across versions, instead of letting them diverge
 until a future "refactor pass" that never arrives. This complements §II
-(style), which governs how code is written, and §III (dependency
-research), which governs what is chosen; this principle governs how the
-plan describes change itself.
+(dependency research), which governs what is chosen; this principle
+governs how the plan describes change itself.
 
-### V. Interface Design Coverage (接口设计覆盖)
+### IV. Interface Design Coverage (接口设计覆盖)
 
 Every solution design in `plan.md` that introduces or modifies an
 externally callable boundary MUST include an explicit interface design
@@ -498,8 +213,8 @@ the repository's interface specification under `style/api.md`.
   repo spec unless the constitution itself is amended.
 - **Style gate in plan**: the plan MUST reference `style/api.md`
   (inline, per §I) and confirm it was reviewed before any interface
-  design is recorded. This gate parallels §II for code style but is
-  enforced at planning time, before code is written.
+  design is recorded. This gate is enforced at planning time, before
+  code is written.
 - **Materialization in contracts**: the interface design MUST be
   materialized in the feature's `contracts/` artifact (e.g., `.proto`
   files, OpenAPI specs) as part of the plan's design output, so that
@@ -516,10 +231,95 @@ correctly up front. Forcing every interface-affecting change to carry
 an explicit, repo-spec-compliant design at planning time prevents
 divergent APIs, undocumented endpoints, and the silent drift between a
 service's declared contract and its implementation. This principle
-complements §II (code style) and §IV (refactoring discipline) by
-governing how interfaces are described before any code is written, and
-complements §III (external dependency research) when the design imports
-upstream API patterns.
+complements §III (refactoring discipline) by governing how interfaces
+are described before any code is written, and complements §II (external
+dependency research) when the design imports upstream API patterns.
+
+### V. Documentation First (文档优先)
+
+Every implementation task in `tasks.md` MUST explicitly declare, as part
+of the task itself, the documents that MUST be read BEFORE any code in
+that task is edited. The declaration is mandatory — not optional, not
+deferred to the executor's judgment. The goal is to ensure the task
+executor understands the full context surrounding the change, not just
+the narrow slice the task directly touches.
+
+**Mandatory rules**:
+
+- **Pre-read declaration**: every implementation task MUST carry a
+  "Required Reading" declaration enumerating the specific documents
+  the executor MUST read before editing code. A task without this
+  declaration is a violation and MUST NOT be started.
+- **Coverage scope**: the declaration MUST cover context broader than
+  the task's direct target — at minimum the code style docs that govern
+  the affected unit and the existing code or modules the change
+  interacts with. Declaring only the single file being edited is a
+  violation — the purpose is full context, not just the edit site.
+- **Three document categories**: every declared document MUST be
+  classified into one of three categories, and each category MUST appear
+  in the declaration. Any category may contain both repository-internal
+  documents and external links — the internal/external axis is identical
+  across all three:
+  - **规范文档 (Code style/spec docs)** — code conventions and
+    standards documents, primarily files under `style/`. External
+    standards referenced by these docs (e.g., AIPs, RFCs, language
+    style guides) are listed in THIS category, not in 官方文档 or
+    技术文章, because they are part of understanding the governing code
+    convention.
+  - **官方文档 (Official docs)** — official documentation of external
+    dependencies, components, frameworks, tools, or services the task
+    touches, plus the README of any upstream codebase relied upon.
+  - **技术文章 (Technical articles)** — technical blog posts, GitHub
+    issues or PRs, design RFCs, conference talks, or other secondary
+    sources that clarify non-obvious behavior or design intent.
+  External links in any category MUST carry inline citations per §I.
+- **Uniform spec-doc requirement (declared once)**: the feature's own
+  design artifacts under `specs/[###-feature]/` (including but not
+  limited to `spec.md`, `plan.md`, and other design docs such as
+  `data-model.md`, `contracts/`, `quickstart.md`) are required reading
+  for EVERY task. Rather than repeating them per task, the planner MUST
+  declare this directory once at the top of `tasks.md` (a "Required
+  Spec Docs" section), and every task executor MUST read those design
+  docs alongside the task-specific Required Reading. Individual task
+  declarations do NOT re-list these feature design docs.
+- **Inheritance from plan**: the documentation research recorded in
+  `plan.md` (per §II) seeds the 官方文档 and 技术文章 categories for
+  downstream tasks. Tasks MUST inherit this list and MAY extend it with
+  task-specific items; tasks MUST NOT silently drop a document the plan
+  declared relevant to the unit being changed.
+- **No-empty rule**: when a category genuinely has no applicable
+  document for a given task, the declaration MUST state "None" for that
+  category explicitly, so the absence is a deliberate decision rather
+  than an oversight.
+- **Planning-time gate**: the Required Reading declaration is a
+  planning-time gate, enforced in `tasks.md` before implementation
+  begins. Implementation MUST NOT start on a task whose declaration is
+  missing or incomplete.
+
+**Example per-task declaration**:
+
+```
+Required Reading:
+- 规范文档: style/api.md; [AIP-2 AIP Numbering](https://google.aip.dev/2); [refer docs](URL)
+- 官方文档: [dependency docs](URL) — version; [upstream README](URL)
+- 技术文章: [issue/discussion/blog](URL)
+```
+
+**Rationale**: an executor who edits code without reading the governing
+code conventions (and the external standards those conventions cite) or
+the upstream dependency docs produces changes that are locally plausible
+but globally inconsistent — they drift from the repo's conventions or
+re-implement behavior a dependency already provides. Forcing every task
+to declare its reading list at planning time makes the required context
+explicit, concrete, and reviewable, ensures the executor builds full
+context before touching code rather than discovering it mid-edit, and
+complements §II (which obligates reading at plan time) by extending the
+same discipline to every implementation task. Centralizing the feature
+design docs as a one-time declaration avoids redundant repetition while
+keeping them mandatory; this principle also complements §III
+(refactoring discipline), since a sound refactor requires understanding
+the existing unit's design — exactly the context this declaration forces
+into view.
 
 ## Spec Artifact Scope
 
@@ -532,7 +332,7 @@ This constitution applies to the following Spec Kit artifacts:
 | `research.md` | YES — inherently research-driven; every finding needs a source link |
 | `data-model.md` | YES — schema designs referencing standards or upstream contracts |
 | `contracts/` | WHEN APPLICABLE — cite the spec or RFC an API contract derives from |
-| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions |
+| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions; MUST also declare Required Reading per §V |
 | `checklist.md` | NO — operational artifact, not a citation source |
 
 ## Governance
@@ -551,25 +351,29 @@ This constitution applies to the following Spec Kit artifacts:
   plan-template "Constitution Check" gate MUST verify that `spec.md`,
   `plan.md`, and `tasks.md` contain a `## References` section when external
   material is cited, and that every inline claim has a matching link.
-Every agent that executes a code-touching task in `tasks.md` MUST read
-the applicable `style/` documents and their cited external references
-before modifying code in that task (per §II); this read obligation is
-per-executor and per-task (non-transferable across agents), and is
-enforced as a dispatch-time precondition rather than a per-task
-documentation obligation.
   Every external dependency or component referenced in `plan.md` (and any
   new dependency introduced in `tasks.md`) MUST show evidence of
-  documentation research per §III, with inline citations to the official
+  documentation research per §II, with inline citations to the official
   sources consulted. Every change in `plan.md` and every implementation
-  task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §IV,
+  task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §III,
   with 修改 changes implemented as refactors and every 修改 / 删除
   change carrying an explicit verdict on whether the existing design and
   layering still serve the new goal; outdated designs MUST be updated
   within the same change, never deferred as "out of scope". Every change
   in `plan.md` that introduces or modifies an externally callable boundary
-  MUST include an explicit interface design per §V covering all interface
+  MUST include an explicit interface design per §IV covering all interface
   types touched, MUST comply with `style/api.md` (cited inline per §I),
   MUST be materialized in the feature's `contracts/` artifact, and MUST be
   inherited by the corresponding implementation tasks in `tasks.md`.
+  Every implementation task in `tasks.md` MUST carry a Required Reading
+  declaration per §V enumerating, across the three categories (规范文档 /
+  官方文档 / 技术文章 — each of which may contain both in-repo docs and
+  external links), the specific documents the executor MUST read before
+  editing code; the declaration MUST cover context broader than the edit
+  site, MUST inherit the plan's documented research (per §II), MUST state
+  "None" explicitly for any empty category, and a task missing the
+  declaration MUST NOT be started. The feature's design docs under
+  `specs/[###-feature]/` MUST be declared once at the top of `tasks.md`
+  as required reading for every task, not repeated per task.
 
-**Version**: 2.3.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-14
+**Version**: 3.1.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
