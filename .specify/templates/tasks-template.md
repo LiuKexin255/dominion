@@ -17,30 +17,36 @@ description: "Task list template for feature implementation"
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- **Required Reading**: `tasks.md` MUST carry a single "Required Reading"
-  declaration per Constitution §V enumerating the specific documents the
-  executor MUST read before editing code, grouped by category. Any
-  category may contain both in-repo docs and external links. **规范文档**
-  = code style/spec docs (mainly `style/*`, plus the external standards
-  they cite — e.g. AIPs, RFCs); **官方文档** = official docs of external
+- **Required Reading**: per Constitution §V, `tasks.md` MUST declare a
+  Required Reading block INSIDE EACH phase section (`## Phase N: ...`)
+  enumerating the specific documents the executor MUST read before
+  editing code in that phase — there is no single global declaration and
+  no implicit cross-phase inheritance, so a document relevant to
+  multiple phases MUST appear in each. Any category may contain both
+  in-repo docs and external links. **规范文档** = code style/spec docs
+  (mainly `style/*`, plus the external standards they cite — e.g. AIPs,
+  RFCs); **官方文档** = official docs of external
   dependencies/components/tools, upstream READMEs; **技术文章** = blogs,
-  GitHub issues/PRs, RFCs, talks. Every entry MUST resolve to a concrete
-  file path or link — never a description or summary — and every external
-  entry MUST carry its own inline `[description](URL)` link even if the
-  same source is cited elsewhere. The declaration MUST cover context
-  broader than the edit sites, MUST inherit the plan's documented
-  research (per §II), and MUST state "None" explicitly for any empty
-  category. The feature's own design docs under `specs/[###-feature]/`
-  are NOT listed here — they are loaded by the implementation workflow.
-  Implementation MUST NOT start while the declaration is missing or
-  incomplete. **Planner diligence (§V)**: before authoring the
-  declaration, the planner MUST read the in-repo documents the change
-  touches and follow their IN-REPO file references, so the declaration
-  enumerates every in-repo file the executor needs — not only the files
-  at the edit sites. External references cited by in-repo docs are
-  governed by §II and MUST NOT be re-chased here; the planner MUST apply
-  materiality and enumerate only in-repo files genuinely relevant to the
-  unit of change.
+  GitHub issues/PRs, RFCs, talks. Each phase's declaration MUST include
+  all three categories (state "None" explicitly when a category is
+  empty). Every entry MUST resolve to a concrete file path or link —
+  never a description or summary — and every external entry MUST carry
+  its own inline `[description](URL)` link even if the same source is
+  cited elsewhere. Each phase's declaration MUST cover context broader
+  than that phase's edit sites and MUST inherit the subset of the plan's
+  documented research (per §II) relevant to that phase. The feature's
+  own design docs under `specs/[###-feature]/` are NOT listed here —
+  they are loaded by the implementation workflow; `AGENTS.md` is also
+  NOT listed here. Implementation of any
+  task within a phase MUST NOT start while that phase's declaration is
+  missing or incomplete. **Planner diligence (§V)**: before authoring a
+  phase's declaration, the planner MUST read the in-repo documents that
+  phase's change touches and follow their IN-REPO file references, so
+  the phase declaration enumerates every in-repo file the executor
+  needs for that phase — not only the files at the edit sites. External
+  references cited by in-repo docs are governed by §II and MUST NOT be
+  re-chased here; the planner MUST apply materiality and enumerate only
+  in-repo files genuinely relevant to that phase's unit of change.
 - Include exact file paths in descriptions
 
 ## Constitution Check
@@ -85,17 +91,21 @@ description: "Task list template for feature implementation"
   conform to whatever it currently requires; a divergence between the
   contract and the implementation MUST be resolved before the task is
   complete.
-- **Documentation First (§V)**: `tasks.md` MUST carry a single Required
-  Reading declaration enumerating, across three categories, the specific
-  documents the executor MUST read before editing code. Any category may
-  contain both in-repo docs and external links — the internal/external
-  axis is identical across all three:
+- **Documentation First (§V)**: `tasks.md` MUST declare a Required
+  Reading block INSIDE EACH phase section (`## Phase N: ...`) — not a
+  single global section. There is no implicit cross-phase inheritance:
+  a document relevant to multiple phases MUST appear in each phase's
+  declaration. Every phase declaration enumerates, across three
+  categories, the specific documents the executor MUST read before
+  editing code in that phase. Any category may contain both in-repo
+  docs and external links — the internal/external axis is identical
+  across all three:
   - **规范文档 (Code style/spec docs)** — code conventions and
     standards docs, mainly files under `style/`. External standards
     referenced by these docs (e.g., AIPs, RFCs, language style guides)
     belong in THIS category, not in the other two.
   - **官方文档 (Official docs)** — official documentation of external
-    dependencies, components, frameworks, tools, or services the change
+    dependencies, components, frameworks, tools, or services the phase
     touches, plus the README of any upstream codebase relied upon.
   - **技术文章 (Technical articles)** — technical blog posts, GitHub
     issues/PRs, design RFCs, or other secondary sources clarifying
@@ -104,26 +114,33 @@ description: "Task list template for feature implementation"
   Every entry MUST resolve to a concrete file path or link, never a
   description or summary; every external entry MUST carry its own inline
   `[description](URL)` link (per §I) even if the same source is cited
-  elsewhere in the design artifacts. The declaration MUST cover context
-  broader than the edit sites (at minimum the governing code style docs
-  and the existing code/modules the change interacts with), MUST inherit
-  the plan's documented research (per §II) and MAY extend it, MUST state
-  "None" explicitly for any empty category, and implementation MUST NOT
-  start while the declaration is missing or incomplete. The feature's
-  own design docs under `specs/[###-feature]/` are NOT declared here —
-  they are loaded by the implementation workflow. **Planner-side
-  transitive reading (§V)**: the author of this `tasks.md` MUST, before
-  writing the declaration, read the in-repo documents the change touches
-  and follow the IN-REPO file references they cite, so the declaration
-  enumerates every in-repo file the executor needs rather than only the
-  edit-site files. This is scoped to in-repo references only (external
-  references remain governed by §II and MUST NOT be re-chased), binds
-  the planner only (the executor inherits the enumeration verbatim), and
-  demands materiality (only in-repo files genuinely relevant to the unit
-  of change — not the entire transitively reachable graph). Suggested
-  inline format:
+  elsewhere in the design artifacts. Each phase's declaration MUST
+  cover context broader than that phase's edit sites (at minimum the
+  governing code style docs and the existing code/modules the phase
+  interacts with), MUST inherit the subset of the plan's documented
+  research (per §II) relevant to that phase and MAY extend it with
+  phase-specific items, MUST include all three categories (stating
+  "None" explicitly for any empty one), and implementation of any task
+  within the phase MUST NOT start while that phase's declaration is
+  missing or incomplete. The feature's own design docs under
+  `specs/[###-feature]/` are NOT declared here — they are loaded by
+  the implementation workflow; `AGENTS.md` is also NOT declared here.
+  **Planner-side transitive reading (§V)**:
+  the author of this `tasks.md` MUST, before writing each phase's
+  declaration, read the in-repo documents that phase's change touches
+  and follow the IN-REPO file references they cite, so the phase
+  declaration enumerates every in-repo file the executor needs for that
+  phase rather than only the edit-site files. This is scoped to in-repo
+  references only (external references remain governed by §II and MUST
+  NOT be re-chased), binds the planner only (the executor inherits the
+  enumeration verbatim), and demands materiality (only in-repo files
+  genuinely relevant to that phase's unit of change — not the entire
+  transitively reachable graph). Suggested inline format, placed at the
+  TOP of each phase section:
 
   ```
+  ## Phase 2: Foundational (Blocking Prerequisites)
+
   Required Reading:
   - 规范文档: style/api.md; [AIP-2 AIP Numbering](https://google.aip.dev/2); [refer docs](URL)
   - 官方文档: [dependency docs](URL) — version; [upstream README](URL)

@@ -1,323 +1,74 @@
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.6.0 → 3.7.0
-Bump type: MINOR (materially expanded guidance in an existing principle)
-
-Modified principles:
-- §VI. Test Verification Granularity — added a new mandatory rule,
-  "No separate build/unit-test tasks; large tests may be separate",
-  stating that build and unit-test verification MUST be embedded inside
-  the code-changing task they verify and MUST NOT be materialized as
-  standalone sibling tasks, because splitting them off decouples the
-  per-change gate from the change it validates and lets a change be
-  declared "done" before its verification runs. Large-test
-  verification, by contrast, MAY be a separate standalone task, since
-  it is scoped to feature/requirement acceptance rather than to any
-  single code change. The "Materialization in artifacts" rule was
-  rewritten to express the embedding: build and unit-test verification
-  MUST live inside each code-changing task (never as separate
-  standalone tasks), while large-test verification MAY be a separate
-  standalone task scoped to feature-level acceptance. The rationale
-  paragraph and the Governance compliance review §VI clause were
-  extended to record why embedding matters (per-change gate stays
-  attached to the change; large tests run on a different cadence).
-
-Added sections:
-- None (new rule within existing §VI).
-
-Removed sections:
-- None.
-
-Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — §VI Constitution Check entry
-  extended to state build + unit-test verification MUST be embedded
-  inside each code-changing task (never separate tasks) and large-test
-  verification MAY be a separate task.
-- ✅ .specify/templates/tasks-template.md — §VI Constitution Check entry
-  extended likewise; "Tests" note clarified to distinguish embedded
-  build/unit verification from separate large/integration test tasks.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.5.0 → 3.6.0
-Bump type: MINOR (new principle added)
-
-Modified principles:
-- None renamed or redefined.
-
-Added sections:
-- §VI. Test Verification Granularity (测试验证颗粒度) — new principle
-  requiring every code change to be verified on a granularity ladder that
-  ascends from smallest to largest (build → unit tests → large tests),
-  with execution frequency inversely proportional to granularity: the
-  smallest layers (build, unit tests) run on every change as per-change
-  validation, while the largest layer (large tests) runs only at
-  feature/requirement milestones. Mandatory rules cover the granularity
-  ladder ordering, frequency-vs-granularity mapping, build as the first
-  gate, unit tests as the per-change validation, large tests as
-  feature/requirement validation, no-skipping/no-inversion, and
-  materialization of the ladder in `plan.md` / `tasks.md`. The principle
-  is authored as a pure normative discipline: it intentionally does NOT
-  reference specific files, commands, or tooling (those live in
-  `AGENTS.md` and the `style/` docs, which retain supremacy over runtime
-  practice); it governs only ordering, frequency, and how the ladder is
-  declared in the Spec Kit artifacts.
-
-Removed sections:
-- None.
-
-Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — added §VI Constitution Check
-  entry requiring the plan to declare the verification layers (build,
-  unit-test, and large-test scope) and the small-to-large ordering.
-- ✅ .specify/templates/tasks-template.md — added §VI Constitution Check
-  entry requiring every code-changing task to carry build + unit-test
-  per-change verification, with large-test verification scoped to
-  feature-level checkpoints.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-- ⚠ .specify/templates/checklist-template.md — operational artifact,
-  no principle-driven change expected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.4.0 → 3.5.0
-Bump type: MINOR (materially changed guidance in an existing principle)
-
-Modified principles:
-- §III. Refactoring-Oriented Changes — removed the documentation-format
-  requirements (the 新增 / 修改 / 删除 classification) and reframed the
-  principle purely as a design and development discipline. The core
-  refactoring obligations are retained: refactor-not-stack, design
-  review, synchronous design update, and design-implementation
-  coherence. Removed rules:
-  (1) "Change classification" — every change/task MUST be labeled
-      新增 / 修改 / 删除.
-  (2) "Classification accuracy" — the rules distinguishing 新增 from
-      修改 from 删除.
-  The remaining rules were de-scoped from "changes classified as 修改 /
-  删除" to "a change that touches an existing unit", so the obligation
-  is expressed in design/development terms without any reference to the
-  removed format. The intro paragraph no longer requires each change to
-  be classified. Governance compliance review and the plan/tasks
-  templates were updated to match — no artifact now carries or inherits
-  a 新增 / 修改 / 删除 label.
-
-Added sections:
-- None.
-
-Removed sections:
-- "Change classification" rule within §III.
-- "Classification accuracy" rule within §III.
-- All 新增 / 修改 / 删除 label references from the Governance
-  compliance review, plan-template Constitution Check, and
-  tasks-template Format spec + Constitution Check.
-
-Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — §III Constitution Check entry
-  rewritten to drop the classification requirement; reframed as a
-  refactor discipline for changes touching an existing unit.
-- ✅ .specify/templates/tasks-template.md — Format line dropped the
-  [新增|修改|删除] token; removed the classification bullet from the
-  Format spec; §III Constitution Check entry rewritten to drop the
-  classification requirement.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.3.0 → 3.4.0
-Bump type: MINOR (materially refined and expanded guidance in an existing principle)
-
-Modified principles:
-- §V. Documentation First — three changes:
-  (1) Restructured the Required Reading declaration from a PER-TASK
-  obligation (every implementation task carries its own declaration) to
-  a SINGLE unified declaration covering the whole `tasks.md`. The
-  per-task framing and per-task-specific language were removed; the
-  declaration is now authored once for the feature.
-  (2) Removed the "Uniform spec-doc requirement (declared once)" rule,
-  which required the feature's own design docs under
-  `specs/[###-feature]/` (`spec.md`, `plan.md`, `data-model.md`,
-  `contracts/`, `quickstart.md`) to be declared as required reading in
-  `tasks.md`. This duplicated context loading already performed by the
-  implementation command (`/speckit.implement` step 3 — "Load and
-  analyze the implementation context"), so it is now out of scope for
-  §V; §V focuses on the documents that workflow does not already load
-  (code style docs, external dependency docs, technical articles). A
-  short scope-exclusion note records this so the design docs are not
-  re-added.
-  (3) Added two specificity rules: every declared entry MUST resolve to
-  a concrete file path or link (never a description, category name, or
-  summary), and every external entry MUST carry its own inline
-  `[description](URL)` link even if the same source is cited elsewhere
-  in the design artifacts, so each Required Reading entry is
-  self-contained and verifiable.
-
-Added sections:
-- None (new rules within existing §V).
-
-Removed sections:
-- "Uniform spec-doc requirement (declared once)" rule within §V.
-- Per-task Required Reading framing throughout §V.
-
-Templates requiring updates:
-- ✅ .specify/templates/tasks-template.md — converted Format spec
-  "Required Reading" entry and Constitution Check §V entry to the
-  unified declaration; added concrete-entry and external-link rules;
-  removed the "Required Spec Docs" section (design-doc loading overlaps
-  with /speckit.implement step 3).
-- ✅ .specify/templates/plan-template.md — converted §V Constitution
-  Check entry to seed the unified declaration; removed design-doc-
-  declared-once language; added concrete-entry and external-link rules.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.2.0 → 3.3.0
-Bump type: MINOR (materially expanded guidance in an existing principle)
-
-Modified principles:
-- §V. Documentation First — added a new mandatory rule,
-  "Planner must read in-repo docs transitively before declaring",
-  requiring the task planner to read the in-repo documents a task
-  touches AND follow the in-repo file references those docs cite before
-  authoring the task's Required Reading declaration, so the declaration
-  enumerates every in-repo file the executor needs — not only the file
-  at the edit site. Lazy planning (declaring one in-repo file while
-  omitting the in-repo files it references) is a violation. The rule is
-  scoped three ways to prevent over-expansion: (1) IN-REPO references
-  only — external references cited by in-repo docs remain governed by
-  §II's transitive-reading rule at plan time and MUST NOT be re-chased
-  here; (2) the PLANNER only — the task executor inherits the planner's
-  enumeration and has no obligation to re-derive referenced files;
-  (3) MATERIALITY — only in-repo files genuinely relevant to the task's
-  unit of change are enumerated, not every transitively reachable file.
-  This complements §II (external transitive research at plan time) and
-  the existing §V "Inheritance from plan" rule (tasks inherit the
-  plan's documented research).
-
-Added sections:
-- None (new rule within existing §V).
-
-Removed sections:
-- None.
-
-Templates requiring updates:
-- ✅ .specify/templates/tasks-template.md — updated §V Constitution
-  Check entry and Required Reading Format spec to require the planner
-  to read in-repo docs and follow in-repo references before declaring.
-- ✅ .specify/templates/plan-template.md — updated §V Constitution
-  Check entry to note the task planner must read in-repo docs and
-  follow their in-repo references when exporting the per-task Required
-  Reading to tasks.md.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.1.0 → 3.2.0
-Bump type: MINOR (materially expanded guidance in an existing principle)
-
-Modified principles:
-- §II. External Dependency Research — added a new mandatory rule,
-  "Transitive reading of cited references", requiring the planner to
-  follow and read references cited by a dependency's official docs /
-  source repo (linked sub-pages, RFCs, AIPs, upstream design docs,
-  source sections) to a depth sufficient to justify the design
-  decision. Transitive reading is scoped to the PLAN/design stage; it
-  complements §V, which requires the planner to distill that research
-  into an explicit per-task reading list rather than pushing transitive
-  reading onto task executors.
-
-Added sections:
-- None (new rule within existing §II).
-
-Removed sections:
-- None.
-
-Templates requiring updates:
-- ✅ .specify/templates/plan-template.md — updated §II Constitution
-  Check entry to require transitive reading of cited references.
-- ⚠ .specify/templates/tasks-template.md — §II "same research" language
-  already inherits the new rule for new-dependency tasks; no further
-  change required.
-- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
-  not affected.
-
-Follow-up TODOs:
-- None.
--->
-
-<!--
-Sync Impact Report
-==================
-Constitution version: 3.0.0 → 3.1.0
-Bump type: MINOR (new principle added)
-
-Modified principles:
-- None renamed or redefined.
-
-Added sections:
-- §V. Documentation First (文档优先) — new principle requiring every
-  implementation task in tasks.md to declare, as part of the task
-  itself, the documents (classified as 规范文档 / 官方文档 / 技术文章,
-  each of which may be in-repo or external) that MUST be read BEFORE
-  any code in that task is edited. 规范文档 = code style/spec docs
-  (mainly style/*) plus the external standards they cite. The feature's
-  own design docs under specs/[###-feature]/ are declared once at the
-  top of tasks.md as required reading for every task. Goal: ensure the
-  executor builds full context before editing, not just the narrow
-  slice the task touches.
-
-Removed sections:
-- None.
-
-Templates requiring updates:
-- ✅ .specify/templates/tasks-template.md — added §V Constitution Check
-  entry; added Required Reading to task Format spec; added a
-  "Required Spec Docs" section (feature design docs declared once).
-- ✅ .specify/templates/plan-template.md — added §V Constitution Check
-  entry (plan seeds the reading list inherited by tasks).
-- ⚠ .specify/templates/spec-template.md — no change required; §V is a
-  task-level principle and spec-template has no Constitution Check gate.
-- ⚠ .specify/templates/checklist-template.md — not modified; operational
-  artifact, no principle-driven change expected.
-
-Follow-up TODOs:
-- None. All placeholders resolved.
--->
-
 # Dominion Spec Constitution
+
+<!--
+============================================================================
+Sync Impact Report
+============================================================================
+Version change: 4.0.0 → 4.0.1 (PATCH)
+
+Modified principles:
+- §V Documentation First (文档优先) — `AGENTS.md` added to the Required
+  Reading exclusion list (it is auto-injected to every agent, so
+  declaring it adds noise). No other §V text changed.
+
+Cross-references updated in this file:
+- §V "Scope excludes" rule: now "feature design docs and `AGENTS.md`".
+- Governance §V compliance paragraph: "`AGENTS.md` is also NOT declared
+  here".
+
+Templates requiring updates:
+- ✅ .specify/templates/tasks-template.md — updated
+- ✅ .specify/templates/plan-template.md — updated
+- N/A .specify/templates/spec-template.md — no §V references present
+============================================================================
+
+Version change: 3.7.0 → 4.0.0 (MAJOR)
+
+Modified principles:
+- §V Documentation First (文档优先) — redefined the Required Reading
+  declaration from a SINGLE GLOBAL section into PER-PHASE declarations,
+  one inside each `## Phase N: ...` section. The mandatory rule
+  "Unified declaration" was removed and replaced with its inverse,
+  "Per-phase declaration". This is a backward-incompatible redefinition:
+  a tasks.md compliant under v3.x (one top-level Required Reading
+  section) is non-compliant under v4.0.0 (one declaration per phase,
+  no global section).
+
+Renamed rules:
+- "Unified declaration" → "Per-phase declaration"
+- "Coverage scope" → "Per-phase coverage scope"
+- "Inheritance from plan" → "Per-phase inheritance from plan"
+- "Planner must read in-repo docs transitively before declaring" —
+  scoped the obligation to each phase's unit of change.
+
+Added sections: none
+Removed sections: none (the single/global "Unified declaration" rule
+was removed, not the principle).
+
+Cross-references updated in this file:
+- §II complement note now reads "explicit, per-phase enumerated reading
+  lists".
+- Spec Artifact Scope table: tasks.md row now reads "per-phase Required
+  Reading declaration per §V".
+- Governance §V compliance paragraph rewritten for per-phase scoping.
+
+Templates requiring updates:
+- ✅ .specify/templates/tasks-template.md — updated
+- ✅ .specify/templates/plan-template.md — updated
+- N/A .specify/templates/spec-template.md — no §V references present
+
+Follow-up TODOs:
+- specs/018-saolei-mcp/plan.md references the "unified Required Reading
+  declaration" in its Constitution Check; it MUST be updated to describe
+  per-phase declarations.
+- specs/018-saolei-mcp/tasks.md currently uses a single global
+  `## Required Reading` section; it MUST be migrated to per-phase
+  declarations to comply with v4.0.0.
+- The other specs/*/tasks.md files (003, 004, 005, 014, 015) declare
+  no Required Reading section at all; when next edited they MUST gain
+  per-phase declarations per §V.
+============================================================================
+-->
 
 This constitution governs the authoring and maintenance of specification,
 planning, and implementation task artifacts produced by Spec Kit (`spec.md`,
@@ -397,7 +148,7 @@ official documentation and source repository BEFORE the plan is finalized.
   (per §I) and surface in the plan's `## References` section. This rule
   is the complement of §V: §II performs the transitive research ONCE at
   plan time, and §V requires the planner to distill that research into
-  an   explicit, enumerated reading list rather than imposing an
+  explicit, per-phase enumerated reading lists rather than imposing an
   implicit "follow the links yourself" obligation on the task executor.
 - **Evidence in plan**: the plan MUST record the documentation URLs consulted
   as inline citations (per §I) alongside a one-line summary of the finding
@@ -525,26 +276,34 @@ dependency research) when the design imports upstream API patterns.
 
 ### V. Documentation First (文档优先)
 
-`tasks.md` MUST declare a "Required Reading" section enumerating the
-specific documents that MUST be read BEFORE any implementation code is
-edited. The declaration is mandatory — not optional, not deferred to
-the executor's judgment. The goal is to ensure the executor understands
-the full context surrounding the change, not just the narrow slice each
-task directly touches.
+`tasks.md` MUST declare a per-phase "Required Reading" list: each phase
+section (`## Phase N: ...`) MUST enumerate the specific documents the
+executor MUST read BEFORE editing any code within that phase. The
+declaration is mandatory — not optional, not deferred to the executor's
+judgment. The goal is to ensure the executor understands the full
+context surrounding each phase's changes, scoped to that phase's actual
+work, rather than carrying a single global list that dilutes
+phase-specific relevance into a sprawling up-front checklist.
 
 **Mandatory rules**:
 
-- **Unified declaration**: `tasks.md` MUST carry a single "Required
-  Reading" section enumerating the specific documents the executor MUST
-  read before editing code. Implementation MUST NOT start while this
-  section is missing or incomplete.
-- **Scope excludes feature design docs**: the feature's own design
-  artifacts under `specs/[###-feature]/` (`spec.md`, `plan.md`,
-  `data-model.md`, `contracts/`, `quickstart.md`, etc.) are loaded by
-  the implementation workflow itself and are NOT declared here. This
-  declaration covers the documents that workflow does not already load
-  — the governing code style docs, the official docs of external
-  dependencies, and the relevant technical articles.
+- **Per-phase declaration**: instead of a single global "Required
+  Reading" section, `tasks.md` MUST declare a "Required Reading" block
+  inside EACH phase section (`## Phase N: ...`), enumerating the
+  specific documents the executor MUST read before editing code in that
+  phase. Implementation of any task within a phase MUST NOT start while
+  that phase's declaration is missing or incomplete. A document relevant
+  to multiple phases MUST be declared in each phase where it is
+  relevant — there is no single global declaration and no implicit
+  cross-phase inheritance.
+- **Scope excludes feature design docs and `AGENTS.md`**: the feature's
+  own design artifacts under `specs/[###-feature]/` (`spec.md`,
+  `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`, etc.) are
+  loaded by the implementation workflow itself and are NOT declared
+  here. `AGENTS.md` is also NOT declared here. This declaration covers
+  only the documents that workflow does not already load — the governing
+  code style docs, the official docs of external dependencies, and the
+  relevant technical articles.
 - **Concrete entries only**: every declared document MUST be a concrete
   file path or a concrete link — never a description, category name, or
   summary. An entry such as "the style docs" or "dependency
@@ -552,21 +311,23 @@ task directly touches.
   `style/api.md`) or an exact URL (e.g.,
   `[AIP-2](https://google.aip.dev/2)`).
 - **External links are mandatory and never inherited by omission**:
-  every external document declared in any category MUST carry an inline
-  `[description](URL)` link (per §I). An external document MUST NOT be
-  referenced by description alone on the assumption that it was cited
-  elsewhere in the design artifacts — each Required Reading entry MUST
-  include the link so the entry is self-contained and verifiable.
-- **Coverage scope**: the declaration MUST cover context broader than
-  the edit sites — at minimum the code style docs that govern the
-  affected units and the existing code or modules the change interacts
-  with. Declaring only the files directly being edited is a violation
-  — the purpose is full context, not just the edit site.
+  every external document declared in any phase's category MUST carry
+  an inline `[description](URL)` link (per §I). An external document
+  MUST NOT be referenced by description alone on the assumption that it
+  was cited elsewhere in the design artifacts — each Required Reading
+  entry MUST include the link so the entry is self-contained and
+  verifiable.
+- **Per-phase coverage scope**: each phase's declaration MUST cover
+  context broader than the edit sites of that phase's tasks — at
+  minimum the code style docs that govern the affected units and the
+  existing code or modules that phase interacts with. Declaring only
+  the files directly being edited by a phase is a violation — the
+  purpose is full context for that phase, not just the edit site.
 - **Three document categories**: every declared document MUST be
-  classified into one of three categories, and each category MUST appear
-  in the declaration. Any category may contain both repository-internal
-  documents and external links — the internal/external axis is identical
-  across all three:
+  classified into one of three categories, and each category MUST
+  appear in EVERY phase's declaration. Any category may contain both
+  repository-internal documents and external links — the
+  internal/external axis is identical across all three:
   - **规范文档 (Code style/spec docs)** — code conventions and
     standards documents, primarily files under `style/`. External
     standards referenced by these docs (e.g., AIPs, RFCs, language
@@ -574,24 +335,26 @@ task directly touches.
     技术文章, because they are part of understanding the governing code
     convention.
   - **官方文档 (Official docs)** — official documentation of external
-    dependencies, components, frameworks, tools, or services the change
+    dependencies, components, frameworks, tools, or services the phase
     touches, plus the README of any upstream codebase relied upon.
   - **技术文章 (Technical articles)** — technical blog posts, GitHub
     issues or PRs, design RFCs, conference talks, or other secondary
     sources that clarify non-obvious behavior or design intent.
-- **Inheritance from plan**: the documentation research recorded in
-  `plan.md` (per §II) seeds the 官方文档 and 技术文章 categories. The
-  declaration MUST inherit this list and MAY extend it with
-  feature-specific items; it MUST NOT silently drop a document the plan
-  declared relevant to the change.
-- **Planner must read in-repo docs transitively before declaring**: the
-  Required Reading declaration is authored by the task planner, and the
-  planner MUST, BEFORE writing the declaration, read the in-repo
-  documents the change touches (the 规范文档 under `style/*` and any
-  other in-repo doc relevant to the unit of change) in full and follow
-  the IN-REPO file references they cite — so the declaration enumerates
-  every in-repo file the executor will need, not only the file at the
-  edit site. Declaring a single in-repo file while omitting the in-repo
+- **Per-phase inheritance from plan**: the documentation research
+  recorded in `plan.md` (per §II) seeds the 官方文档 and 技术文章
+  categories. Each phase's declaration MUST inherit the subset of that
+  research relevant to the phase's tasks and MAY extend it with
+  phase-specific items; it MUST NOT silently drop a document the plan
+  declared relevant to that phase's change.
+- **Planner must read in-repo docs transitively before declaring**:
+  each phase's Required Reading declaration is authored by the task
+  planner, and the planner MUST, BEFORE writing a phase's declaration,
+  read the in-repo documents that phase's change touches (the 规范文档
+  under `style/*` and any other in-repo doc relevant to that phase's
+  unit of change) in full and follow the IN-REPO file references they
+  cite — so the phase declaration enumerates every in-repo file the
+  executor will need for that phase, not only the file at the edit
+  site. Declaring a single in-repo file while omitting the in-repo
   files it transitively references is lazy planning and a violation.
   This rule is scoped three ways to prevent work bloat:
   1. **In-repo references only.** Only references that resolve to a
@@ -602,37 +365,49 @@ task directly touches.
   2. **Planner only.** The rule binds the author of `tasks.md`. The
      task executor inherits the planner's enumeration verbatim and has
      NO obligation to re-derive referenced files; the executor reads
-     exactly what the planner declared.
+     exactly what the planner declared for that phase.
   3. **Materiality.** The planner MUST apply judgment and enumerate
-     only in-repo files genuinely relevant to the unit of change — not
-     every transitively reachable file. Chasing the full reference
-     graph indiscriminately is itself a violation of this scoping.
+     only in-repo files genuinely relevant to that phase's unit of
+     change — not every transitively reachable file. Chasing the full
+     reference graph indiscriminately is itself a violation of this
+     scoping.
 - **No-empty rule**: when a category genuinely has no applicable
-  document for the change, the declaration MUST state "None" for that
-  category explicitly, so the absence is a deliberate decision rather
-  than an oversight.
-- **Planning-time gate**: the Required Reading declaration is a
-  planning-time gate, enforced in `tasks.md` before implementation
-  begins. Implementation MUST NOT start while the declaration is
-  missing or incomplete.
+  document for a phase, that phase's declaration MUST state "None" for
+  that category explicitly, so the absence is a deliberate decision
+  rather than an oversight.
+- **Planning-time gate**: each phase's Required Reading declaration is
+  a planning-time gate, enforced in `tasks.md` before implementation of
+  that phase begins. Implementation of any task within a phase MUST NOT
+  start while that phase's declaration is missing or incomplete.
 
-**Example declaration**:
+**Example declaration** (placed inside a phase section):
 
 ```
+## Phase 2: Foundational (Blocking Prerequisites)
+
 Required Reading:
 - 规范文档: style/api.md; [AIP-2 AIP Numbering](https://google.aip.dev/2); [refer docs](URL)
 - 官方文档: [dependency docs](URL) — version; [upstream README](URL)
 - 技术文章: [issue/discussion/blog](URL)
+
+### Implementation
+- [ ] T004 ...
 ```
 
 **Rationale**: an executor who edits code without reading the governing
 code conventions (and the external standards those conventions cite) or
 the upstream dependency docs produces changes that are locally plausible
 but globally inconsistent — they drift from the repo's conventions or
-re-implement behavior a dependency already provides. Forcing `tasks.md`
-to declare its reading list at planning time makes the required context
-explicit, concrete, and reviewable, and ensures the executor builds full
-context before touching code rather than discovering it mid-edit.
+re-implement behavior a dependency already provides. Scoping the
+declaration per phase — rather than as a single global list — ensures
+the reading list matches the work actually being done in that phase: a
+global list forces the executor to ingest everything up front regardless
+of relevance, diluting focus and making the checklist easy to skim past,
+whereas a per-phase list is actionable and phase-relevant. Forcing each
+phase in `tasks.md` to declare its own reading list at planning time
+makes the required context explicit, concrete, and reviewable, and
+ensures the executor builds full context before touching code rather
+than discovering it mid-edit.
 Requiring every entry to resolve to a concrete file path or link — and
 forbidding description-only external references that lean on citations
 made elsewhere — keeps the declaration self-contained and verifiable
@@ -746,7 +521,7 @@ This constitution applies to the following Spec Kit artifacts:
 | `research.md` | YES — inherently research-driven; every finding needs a source link |
 | `data-model.md` | YES — schema designs referencing standards or upstream contracts |
 | `contracts/` | WHEN APPLICABLE — cite the spec or RFC an API contract derives from |
-| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions; MUST also carry a unified Required Reading declaration per §V and a per-task verification ladder per §VI |
+| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions; MUST also carry a per-phase Required Reading declaration per §V and a per-task verification ladder per §VI |
 | `checklist.md` | NO — operational artifact, not a citation source |
 
 ## Governance
@@ -781,27 +556,31 @@ This constitution applies to the following Spec Kit artifacts:
   types touched, MUST comply with `style/api.md` (cited inline per §I),
   MUST be materialized in the feature's `contracts/` artifact, and MUST be
   inherited by the corresponding implementation tasks in `tasks.md`.
-  Every `tasks.md` MUST carry a single Required Reading declaration
-  per §V enumerating, across the three categories (规范文档 /
-  官方文档 / 技术文章 — each of which may contain both in-repo docs and
-  external links), the specific documents the executor MUST read before
-  editing code. Every entry MUST resolve to a concrete file path or
-  link (never a description, category name, or summary), and every
-  external entry MUST carry its own inline `[description](URL)` link
-  even if the same source is cited elsewhere; the declaration MUST
-  cover context broader than the edit sites, MUST inherit the plan's
-  documented research (per §II), MUST state "None" explicitly for any
-  empty category, and implementation MUST NOT start while the
-  declaration is missing or incomplete. The feature's own design docs
+  Every phase section in `tasks.md` MUST carry a per-phase Required
+  Reading declaration per §V enumerating, across the three categories
+  (规范文档 / 官方文档 / 技术文章 — each of which may contain both
+  in-repo docs and external links), the specific documents the executor
+  MUST read before editing code in that phase; there is no single
+  global declaration and no implicit cross-phase inheritance, so a
+  document relevant to multiple phases MUST appear in each. Every entry
+  MUST resolve to a concrete file path or link (never a description,
+  category name, or summary), and every external entry MUST carry its
+  own inline `[description](URL)` link even if the same source is cited
+  elsewhere; each phase's declaration MUST cover context broader than
+  that phase's edit sites, MUST inherit the subset of the plan's
+  documented research (per §II) relevant to that phase, MUST state
+  "None" explicitly for any empty category, and implementation of any
+  task within a phase MUST NOT start while that phase's declaration is
+  missing or incomplete. The feature's own design docs
   under `specs/[###-feature]/` are NOT declared here — they are loaded
-  by the implementation workflow. The author of `tasks.md` MUST,
-  before writing the declaration, read the in-repo documents the change
-  touches and follow their IN-REPO file references so the declaration
-  enumerates every in-repo file the executor needs (not only the
-  edit-site files); external references cited by in-repo docs remain
-  governed by §II and MUST NOT be re-chased, and the planner MUST
-  apply materiality so only in-repo files genuinely relevant to the
-  unit of change are enumerated. Every feature's `plan.md` MUST declare
+  by the implementation workflow; `AGENTS.md` is also NOT declared here. The author of `tasks.md` MUST,
+  before writing each phase's declaration, read the in-repo documents
+  that phase's change touches and follow their IN-REPO file references
+  so the phase declaration enumerates every in-repo file the executor
+  needs for that phase (not only the edit-site files); external
+  references cited by in-repo docs remain governed by §II and MUST NOT
+  be re-chased, and the planner MUST apply materiality so only in-repo
+  files genuinely relevant to that phase's unit of change are enumerated. Every feature's `plan.md` MUST declare
   its verification layers per §VI — build scope, unit-test scope, and
   (when applicable) large-test scope — together with the
   small-to-large ordering, and every code-changing task in `tasks.md`
@@ -816,4 +595,4 @@ This constitution applies to the following Spec Kit artifacts:
   scoped to feature-level acceptance; the concrete build/test commands
   and tooling remain defined by `AGENTS.md` and the repo's style docs.
 
-**Version**: 3.7.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-16
+**Version**: 4.0.1 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-16

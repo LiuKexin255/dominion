@@ -97,29 +97,34 @@
   source rather than restating interface shapes at implementation time.
 - **Documentation First (§V)**: while §V is enforced at the `tasks.md`
   level, this plan MUST seed the Required Reading that the exported
-  `tasks.md` inherits. The research recorded under §II (official docs +
-  source repos of every external dependency) flows into the 官方文档
-  category; the governing code style docs referenced under §I/§III/§IV
-  (`style/*`, including the external standards they cite) flow into the
-  规范文档 category; and any non-obvious external pattern (blog, issue,
-  RFC) the plan depends on MUST be cited inline (per §I) so it flows
-  into the 技术文章 category. The exported `tasks.md` MUST carry a
-  single unified Required Reading declaration that inherits this plan's
-  documented reading and adds feature-specific items. Every entry in
-  that declaration MUST resolve to a concrete file path or link (never
-  a description or summary), and every external entry MUST carry its
-  own inline `[description](URL)` link even if cited elsewhere. The
-  feature's own design docs under `specs/[###-feature]/` (including but
-  not limited to `spec.md`, `plan.md`, `data-model.md`, `contracts/`,
-  `quickstart.md`) are NOT part of that declaration — they are loaded
-  by the implementation workflow. When authoring the declaration, the
-  task planner MUST read the in-repo documents the change touches and
-  follow their IN-REPO file references so the declaration enumerates
-  every in-repo file the executor needs — not only the edit-site files;
-  external references cited by in-repo docs remain governed by §II
-  (transitive reading at plan time) and MUST NOT be re-chased at
-  task-planning time, and the planner MUST apply materiality to avoid
-  reference-graph bloat.
+  `tasks.md` inherits per phase. The research recorded under §II
+  (official docs + source repos of every external dependency) flows
+  into the 官方文档 category; the governing code style docs referenced
+  under §I/§III/§IV (`style/*`, including the external standards they
+  cite) flow into the 规范文档 category; and any non-obvious external
+  pattern (blog, issue, RFC) the plan depends on MUST be cited inline
+  (per §I) so it flows into the 技术文章 category. The exported
+  `tasks.md` MUST declare a Required Reading block INSIDE EACH phase
+  section (`## Phase N: ...`) — not a single global declaration. Each
+  phase declaration inherits the subset of this plan's documented
+  reading relevant to that phase's work and MAY add phase-specific
+  items; a document relevant to multiple phases MUST appear in each
+  phase where it is relevant (no implicit cross-phase inheritance).
+  Every entry in a phase declaration MUST resolve to a concrete file
+  path or link (never a description or summary), and every external
+  entry MUST carry its own inline `[description](URL)` link even if
+  cited elsewhere. The feature's own design docs under
+  `specs/[###-feature]/` (including but not limited to `spec.md`,
+  `plan.md`, `data-model.md`, `contracts/`, `quickstart.md`) are NOT
+  part of any phase declaration — they are loaded by the implementation
+  workflow; `AGENTS.md` is also NOT part of any phase declaration. When authoring a phase's declaration, the task planner MUST
+  read the in-repo documents that phase's change touches and follow
+  their IN-REPO file references so the phase declaration enumerates
+  every in-repo file the executor needs for that phase — not only the
+  edit-site files; external references cited by in-repo docs remain
+  governed by §II (transitive reading at plan time) and MUST NOT be
+  re-chased at task-planning time, and the planner MUST apply
+  materiality to avoid reference-graph bloat.
 - **Test Verification Granularity (§VI)**: this plan MUST declare the
   verification layers the feature uses — build scope, unit-test scope,
   and (when applicable) large-test scope — together with the
