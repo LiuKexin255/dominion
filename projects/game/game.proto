@@ -233,6 +233,26 @@ enum ToolResultStatus {
   TOOL_RESULT_STATUS_FAILED = 2;
 }
 
+// InputDelivery tells the desktop how to realize a mouse operation. A Part
+// declares the operation; the desktop implements it per the declared delivery.
+//
+// Unset (INPUT_DELIVERY_UNSPECIFIED) is treated as SIMULATE by consumers, so
+// existing tools that leave delivery unset keep the current physical-cursor
+// behavior (backward compatible). See contracts/input-delivery.md §1.
+enum InputDelivery {
+  INPUT_DELIVERY_UNSPECIFIED = 0;
+  INPUT_DELIVERY_SIMULATE = 1;
+  INPUT_DELIVERY_WINDOW_MESSAGE = 2;
+}
+
+// KeyAction enumerates key-press operations the desktop can realize. The
+// desktop implements each via PostMessage WM_KEYDOWN/WM_KEYUP to the bound
+// window. Extensible. See contracts/input-delivery.md §2.
+enum KeyAction {
+  KEY_ACTION_UNSPECIFIED = 0;
+  KEY_ACTION_F2 = 1;
+}
+
 // ─── Content Part Model ────────────────────────────────────────────────────
 //
 // Part is one content block. PartBlock is the first-class content unit shared
@@ -259,6 +279,7 @@ message Part {
     MouseMovePart  mouse_move  = 4;
     MouseClickPart mouse_click = 5;
     ToolResultPart tool_result = 6;
+    KeyPart        key_press   = 7;
   }
 }
 
@@ -284,23 +305,45 @@ message ImagePart {
 
 // MouseMovePart requests the desktop move the cursor to image-relative
 // coordinates. tool_id links the request to its ToolResultPart.
+//
+// delivery selects the realization: SIMULATE (default, existing physical
+// cursor path) or WINDOW_MESSAGE (no cursor move; supplies the target
+// coordinate for a message-based click in the same PartBlock). Unset is
+// treated as SIMULATE. See contracts/input-delivery.md §1.
 message MouseMovePart {
   string tool_id = 1;
   int32 x_px = 2;
   int32 y_px = 3;
+  InputDelivery delivery = 4;
 }
 
 // MouseClickPart requests the desktop perform a click at the current cursor
 // position. tool_id links the request to its ToolResultPart.
+//
+// delivery selects the realization: SIMULATE (default, click at the current
+// physical cursor position) or WINDOW_MESSAGE (PostMessage WM_*BUTTON* at the
+// coordinate supplied by a companion MouseMovePart in the same PartBlock).
+// Unset is treated as SIMULATE. See contracts/input-delivery.md §1.
 message MouseClickPart {
   string tool_id = 1;
   MouseClickAction click = 2;
+  InputDelivery delivery = 3;
+}
+
+// KeyPart declares a generic key-press operation. tool_id links it to its
+// ToolResultPart. The desktop owns the implementation (PostMessage
+// WM_KEYDOWN/WM_KEYUP to the bound window). No delivery field: if a future
+// key needs physical simulation, it can be added as an additive field.
+// See contracts/input-delivery.md §2.
+message KeyPart {
+  string tool_id = 1;
+  KeyAction key = 2;
 }
 
 // ToolResultPart carries the outcome of an executed tool operation, reported
 // by the desktop. tool_id matches the originating MouseMovePart /
-// MouseClickPart. Generic across tools: move and click results are
-// shape-identical (status + message + screenshot).
+// MouseClickPart / KeyPart. Generic across tools: move, click, and key
+// results are shape-identical (status + message + screenshot).
 message ToolResultPart {
   string tool_id = 1;
   ToolResultStatus status = 2;

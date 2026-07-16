@@ -248,6 +248,144 @@ func TestAgentFrameContentMouseClickRoundtrip(t *testing.T) {
 	}
 }
 
+// TestMouseMovePartDeliveryRoundtrip covers the InputDelivery field added to
+// MouseMovePart (018 Phase 2): an explicit WINDOW_MESSAGE value survives a
+// protojson round-trip, and an unset delivery reads as the proto3 zero value
+// (INPUT_DELIVERY_UNSPECIFIED) — the consumer treats UNSPECIFIED as SIMULATE.
+func TestMouseMovePartDeliveryRoundtrip(t *testing.T) {
+	// given: a MouseMovePart with delivery = WINDOW_MESSAGE
+	given := &game.Part{
+		Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{
+			ToolId:   "tool-move-wm",
+			XPx:      40,
+			YPx:      216,
+			Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+		}},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// then: the delivery enum is serialized as its STRING name
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, "INPUT_DELIVERY_WINDOW_MESSAGE") {
+		t.Errorf("JSON output missing delivery enum string name, got: %s", jsonStr)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.Part)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the WINDOW_MESSAGE delivery survived
+	move := got.GetMouseMove()
+	if move == nil {
+		t.Fatal("part is not a MouseMovePart")
+	}
+	if move.GetDelivery() != game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE {
+		t.Errorf("delivery: got %v, want %v", move.GetDelivery(), game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE)
+	}
+
+	// then: an unset delivery reads as the proto3 zero (UNSPECIFIED), which
+	// consumers treat as SIMULATE (backward compatible with the existing
+	// mouse tool that leaves delivery unset).
+	unset := &game.MouseMovePart{ToolId: "legacy", XPx: 1, YPx: 2}
+	if unset.GetDelivery() != game.InputDelivery_INPUT_DELIVERY_UNSPECIFIED {
+		t.Errorf("unset delivery: got %v, want %v", unset.GetDelivery(), game.InputDelivery_INPUT_DELIVERY_UNSPECIFIED)
+	}
+}
+
+// TestMouseClickPartDeliveryRoundtrip covers the InputDelivery field added to
+// MouseClickPart (018 Phase 2): a SIMULATE value round-trips, mirroring the
+// move-part coverage.
+func TestMouseClickPartDeliveryRoundtrip(t *testing.T) {
+	// given: a MouseClickPart with delivery = SIMULATE
+	given := &game.Part{
+		Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+			ToolId:   "tool-click-sim",
+			Click:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+			Delivery: game.InputDelivery_INPUT_DELIVERY_SIMULATE,
+		}},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// then: the delivery enum is serialized as its STRING name
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, "INPUT_DELIVERY_SIMULATE") {
+		t.Errorf("JSON output missing delivery enum string name, got: %s", jsonStr)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.Part)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the SIMULATE delivery survived
+	click := got.GetMouseClick()
+	if click == nil {
+		t.Fatal("part is not a MouseClickPart")
+	}
+	if click.GetDelivery() != game.InputDelivery_INPUT_DELIVERY_SIMULATE {
+		t.Errorf("delivery: got %v, want %v", click.GetDelivery(), game.InputDelivery_INPUT_DELIVERY_SIMULATE)
+	}
+}
+
+// TestKeyPartRoundtrip covers the KeyPart message + the key_press member of
+// the Part.kind oneof (018 Phase 2): a KeyPart carrying F2 survives a
+// protojson round-trip and serializes under the keyPress discriminator.
+func TestKeyPartRoundtrip(t *testing.T) {
+	// given: a Part whose kind is a KeyPart with key = F2
+	given := &game.Part{
+		Kind: &game.Part_KeyPress{KeyPress: &game.KeyPart{
+			ToolId: "tool-key-f2",
+			Key:    game.KeyAction_KEY_ACTION_F2,
+		}},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// then: the keyPress discriminator and F2 enum string name are present
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"keyPress"`) {
+		t.Errorf("JSON output missing keyPress discriminator, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, "KEY_ACTION_F2") {
+		t.Errorf("JSON output missing key enum string name, got: %s", jsonStr)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.Part)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: the KeyPart fields survived
+	key := got.GetKeyPress()
+	if key == nil {
+		t.Fatal("part is not a KeyPart")
+	}
+	if key.GetToolId() != "tool-key-f2" {
+		t.Errorf("toolId: got %q, want %q", key.GetToolId(), "tool-key-f2")
+	}
+	if key.GetKey() != game.KeyAction_KEY_ACTION_F2 {
+		t.Errorf("key: got %v, want %v", key.GetKey(), game.KeyAction_KEY_ACTION_F2)
+	}
+}
+
 func TestAgentFrameContentToolResultRoundtrip(t *testing.T) {
 	// given: an AgentFrame whose content PartBlock holds a ToolResultPart
 	// with a nested ImagePart screenshot (the desktop-reported outcome of
@@ -435,37 +573,43 @@ func TestPartKindDiscriminatorFlattening(t *testing.T) {
 			name:        "text",
 			part:        &game.Part{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hi"}}},
 			wantKey:     `"text"`,
-			wantMissing: []string{`"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
+			wantMissing: []string{`"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`, `"keyPress"`},
 		},
 		{
 			name:        "thinking",
 			part:        &game.Part{Kind: &game.Part_Thinking{Thinking: &game.ThinkingPart{Content: "hmm"}}},
 			wantKey:     `"thinking"`,
-			wantMissing: []string{`"text"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
+			wantMissing: []string{`"text"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`, `"keyPress"`},
 		},
 		{
 			name:        "image",
 			part:        &game.Part{Kind: &game.Part_Image{Image: &game.ImagePart{Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG}}},
 			wantKey:     `"image"`,
-			wantMissing: []string{`"text"`, `"thinking"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
+			wantMissing: []string{`"text"`, `"thinking"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`, `"keyPress"`},
 		},
 		{
 			name:        "mouse_move",
 			part:        &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{ToolId: "t1", XPx: 1, YPx: 2}}},
 			wantKey:     `"mouseMove"`,
-			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseClick"`, `"toolResult"`},
+			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseClick"`, `"toolResult"`, `"keyPress"`},
 		},
 		{
 			name:        "mouse_click",
 			part:        &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{ToolId: "t2", Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK}}},
 			wantKey:     `"mouseClick"`,
-			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"toolResult"`},
+			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"toolResult"`, `"keyPress"`},
 		},
 		{
 			name:        "tool_result",
 			part:        &game.Part{Kind: &game.Part_ToolResult{ToolResult: &game.ToolResultPart{ToolId: "t3", Status: game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED}}},
 			wantKey:     `"toolResult"`,
-			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`},
+			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"keyPress"`},
+		},
+		{
+			name:        "key_press",
+			part:        &game.Part{Kind: &game.Part_KeyPress{KeyPress: &game.KeyPart{ToolId: "t4", Key: game.KeyAction_KEY_ACTION_F2}}},
+			wantKey:     `"keyPress"`,
+			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
 		},
 	}
 

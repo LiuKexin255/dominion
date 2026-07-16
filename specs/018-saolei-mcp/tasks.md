@@ -68,9 +68,9 @@ Required Reading:
 - 官方文档: None
 - 技术文章: None
 
-- [ ] T002 Add `InputDelivery` enum (`INPUT_DELIVERY_UNSPECIFIED`/`SIMULATE`/`WINDOW_MESSAGE`) and `InputDelivery delivery` field on `MouseMovePart` (field 4) and `MouseClickPart` (field 3) in `projects/game/game.proto` per [contracts/input-delivery.md](./contracts/input-delivery.md) §1 and [data-model.md](./data-model.md) §5a (default `SIMULATE` → backward compatible)
-- [ ] T003 Add `KeyAction` enum (`KEY_ACTION_UNSPECIFIED`/`KEY_ACTION_F2`) and `KeyPart` message (`tool_id`,`key`) plus the `key_press` member (field 7) in the `Part.kind` oneof in `projects/game/game.proto` per [contracts/input-delivery.md](./contracts/input-delivery.md) §2 and [data-model.md](./data-model.md) §5b
-- [ ] T004 Regenerate Go and TypeScript proto bindings and update BUILD files via `bazel run //:gazelle`, then `bazel build //projects/game/...` to confirm both bindings compile against the new `InputDelivery`/`KeyPart`
+- [X] T002 Add `InputDelivery` enum (`INPUT_DELIVERY_UNSPECIFIED`/`SIMULATE`/`WINDOW_MESSAGE`) and `InputDelivery delivery` field on `MouseMovePart` (field 4) and `MouseClickPart` (field 3) in `projects/game/game.proto` per [contracts/input-delivery.md](./contracts/input-delivery.md) §1 and [data-model.md](./data-model.md) §5a (default `SIMULATE` → backward compatible)
+- [X] T003 Add `KeyAction` enum (`KEY_ACTION_UNSPECIFIED`/`KEY_ACTION_F2`) and `KeyPart` message (`tool_id`,`key`) plus the `key_press` member (field 7) in the `Part.kind` oneof in `projects/game/game.proto` per [contracts/input-delivery.md](./contracts/input-delivery.md) §2 and [data-model.md](./data-model.md) §5b
+- [X] T004 Regenerate Go and TypeScript proto bindings and update BUILD files via `bazel run //:gazelle`, then `bazel build //projects/game/...` to confirm both bindings compile against the new `InputDelivery`/`KeyPart`
 
 **Checkpoint**: proto contract landed and compiles — Phase 3 may begin.
 

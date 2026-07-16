@@ -27,6 +27,7 @@ go_unittest(
     deps = [
         "//projects/game",
         "//projects/game/pkg/bind",
+        "//projects/game/pkg/gameconst",
         "//projects/game/proxy/domain",
         "//projects/game/proxy/runtime/agentclient",
         "@org_golang_google_grpc//:grpc",
