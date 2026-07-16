@@ -23,6 +23,8 @@ tools:
 （其他你认为需要的补充）
 ```
 
+> 关键：委派任务时，禁止对规划中的 `Required Reading` 部分文档进行删减或总结，应当确保 developer 在执行前按照要求阅读需要的文件。例如 `task.md` 要求阅读某规范文件 style/xxx.md 和引用外部文件 [xxx](URL)，委托时只要求阅读仓库内文件而忽略引用的仓库外文件。选择需要参考那些文件已经在规划阶段完成，执行阶段不应当再进行缩减。
+
 3. 回收 developer 结果并检查：1. developer 的反馈与代码仓库是否一致（例如 developer 声明修改的文件是否被更改、新增的文件是否存在）。2. 检查 developer 工作内容是否与 spec/plan/task 要求一致。
 4. 为 phase 分配 reviewer 进行进行代码检查，并且应当向 reviewer **显式** 说明参考文档与需要 review 的代码文件列表。
 
