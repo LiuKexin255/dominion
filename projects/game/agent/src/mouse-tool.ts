@@ -84,7 +84,7 @@ export function createMouseMoveTool(
       const part: Part = {
         mouseMove: { xPx: x_px, yPx: y_px },
       };
-      const result = await bridge.dispatch(part, signal);
+      const result = await bridge.dispatch([part], signal);
       return buildResultBlocks(result);
     },
     {
@@ -121,7 +121,7 @@ export function createMouseClickTool(
           click: CLICK_TYPE_TO_PROTO[click_type],
         },
       };
-      const result = await bridge.dispatch(part, signal);
+      const result = await bridge.dispatch([part], signal);
       return buildResultBlocks(result);
     },
     {

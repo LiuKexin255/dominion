@@ -12,6 +12,7 @@ import { info } from "@dominion/common-js-logs";
 import { MemorySaver } from "@langchain/langgraph";
 
 import { OperationBridge } from "./operation-bridge";
+import { SaoleiMcp } from "./mcp/saolei/saolei-mcp";
 import type { ChatModel } from "./model-provider";
 import type { AgentAdapter, AdapterFactory } from "./llm";
 
@@ -19,6 +20,8 @@ export interface ProfileData {
   model: string;
   systemPrompt: string;
   toolNames: string[];
+  /** MCP bundle names declared on the profile (proto field `mcp_names`). */
+  mcpNames: string[];
 }
 
 export type ProfileFetcher = () => Promise<ProfileData>;
@@ -33,6 +36,12 @@ export class SessionAgent {
   private activeProfileName: string | null = null;
   private bindLock: Promise<void> = Promise.resolve();
   private readonly bridge: OperationBridge;
+  /**
+   * Per-session saolei MCP instance (FR-025a). Lazily created when a bound
+   * profile declares the `saolei` mcp; dropped on adapter rebuild so a fresh
+   * instance starts at `uninitialized` (FR-025c). Null otherwise.
+   */
+  private saoleiMcp: SaoleiMcp | null = null;
 
   constructor(
     private readonly getProviderFn: ProviderLookupFn,
@@ -79,6 +88,9 @@ export class SessionAgent {
     const oldProfile = this.activeProfileName;
     this.adapter = null;
     this.activeProfileName = null;
+    // Discard the per-session MCP instance: a rebuilt adapter starts a fresh
+    // MCP at `uninitialized` with no carry-over board (FR-025c).
+    this.saoleiMcp = null;
     setImmediate(() => {
       old.cleanup?.();
       info("adapter invalidated for refresh", { oldProfile });
@@ -110,6 +122,9 @@ export class SessionAgent {
         const oldProfile = this.activeProfileName;
         this.adapter = null;
         this.activeProfileName = null;
+        // Drop the old MCP instance — the new adapter gets a fresh one
+        // (FR-025c).
+        this.saoleiMcp = null;
         setImmediate(() => {
           old.cleanup?.();
           info("old adapter cleaned up", { oldProfile });
@@ -118,11 +133,21 @@ export class SessionAgent {
 
       const profile = await profileFetcher();
 
+      // Lazily create the per-session saolei MCP instance when the profile
+      // declares it (FR-025a). Each SessionAgent has at most one; it is
+      // confined to this session (FR-025b) and discarded on rebuild (above).
+      const mcpNames = profile.mcpNames ?? [];
+      if (mcpNames.includes("saolei")) {
+        this.saoleiMcp = new SaoleiMcp();
+      }
+
       const adapter = await this.adapterFactory(
         () => this.getProviderFn(profile.model),
         profile.systemPrompt,
         profile.toolNames,
+        mcpNames,
         this.bridge,
+        this.saoleiMcp,
         this.checkpointer,
       );
 

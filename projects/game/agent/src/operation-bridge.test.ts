@@ -62,7 +62,7 @@ describe("OperationBridge", () => {
     });
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     expect(part.mouseMove!.toolId).toBeDefined();
     expect(part.mouseMove!.toolId).toHaveLength(36);
@@ -81,7 +81,7 @@ describe("OperationBridge", () => {
   // ------------------------------------------------------------------
   it("no sink registered → dispatch → resolves FAILED", async () => {
     const part = makeMovePart();
-    const result = await bridge.dispatch(part);
+    const result = await bridge.dispatch([part]);
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toContain("desktop disconnected");
   });
@@ -96,7 +96,7 @@ describe("OperationBridge", () => {
     });
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     expect(written).toHaveLength(1);
 
@@ -117,7 +117,7 @@ describe("OperationBridge", () => {
     const controller = new AbortController();
     controller.abort();
     const part = makeMovePart();
-    const result = await bridge.dispatch(part, controller.signal);
+    const result = await bridge.dispatch([part], controller.signal);
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toBe("aborted");
   });
@@ -126,7 +126,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, controller.signal);
+    const promise = bridge.dispatch([part], controller.signal);
 
     await vi.advanceTimersByTimeAsync(1_000);
     controller.abort();
@@ -144,7 +144,7 @@ describe("OperationBridge", () => {
     });
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, controller.signal);
+    const promise = bridge.dispatch([part], controller.signal);
 
     bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
     const result = await promise;
@@ -164,7 +164,7 @@ describe("OperationBridge", () => {
     });
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
@@ -175,7 +175,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
 
@@ -194,9 +194,9 @@ describe("OperationBridge", () => {
     });
 
     const promises = [
-      bridge.dispatch(makeMovePart()),
-      bridge.dispatch(makeMovePart()),
-      bridge.dispatch(makeMovePart()),
+      bridge.dispatch([makeMovePart()]),
+      bridge.dispatch([makeMovePart()]),
+      bridge.dispatch([makeMovePart()]),
     ];
 
     await vi.advanceTimersByTimeAsync(5_000);
@@ -211,8 +211,8 @@ describe("OperationBridge", () => {
 
     const partA = makeMovePart();
     const partB = makeMovePart();
-    const pA = bridge.dispatch(partA);
-    const pB = bridge.dispatch(partB);
+    const pA = bridge.dispatch([partA]);
+    const pB = bridge.dispatch([partB]);
 
     bridge.handleResult(makeResult(partB.mouseMove!.toolId!, STATUS_SUCCEEDED, "b-done"));
     bridge.handleResult(makeResult(partA.mouseMove!.toolId!, STATUS_FAILED, "a-fail"));
@@ -233,7 +233,7 @@ describe("OperationBridge", () => {
     });
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED));
     await promise;
@@ -256,7 +256,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
     bridge.handleResult({
@@ -283,7 +283,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     bridge.handleResult({
       toolId: part.mouseMove!.toolId!,
@@ -307,11 +307,78 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
 
     const part = makeMovePart();
-    const promise = bridge.dispatch(part);
+    const promise = bridge.dispatch([part]);
 
     bridge.handleResult(makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;
     expect(result.screenshot).toBeUndefined();
+  });
+
+  // ------------------------------------------------------------------
+  // PartBlock multi-part dispatch (T011, data-model.md §5c)
+  // ------------------------------------------------------------------
+
+  it("dispatch stamps one tool_id on every operation part in a multi-part block", async () => {
+    let capturedParts: Part[] | undefined;
+    bridge.registerSink((frame) => {
+      capturedParts = (frame as { content?: { parts?: Part[] } }).content?.parts;
+    });
+
+    // A saolei-style WINDOW_MESSAGE move+click combo: two parts, one block.
+    const block: Part[] = [
+      { mouseMove: { xPx: 40, yPx: 216 } },
+      { mouseClick: { click: "MOUSE_CLICK_ACTION_LEFT_CLICK" } },
+    ];
+    const promise = bridge.dispatch(block);
+
+    expect(capturedParts).toHaveLength(2);
+    const moveId = capturedParts![0].mouseMove!.toolId;
+    const clickId = capturedParts![1].mouseClick!.toolId;
+    expect(moveId).toBeDefined();
+    expect(clickId).toBeDefined();
+    // Same tool_id across both parts — one atomic dispatch, one result.
+    expect(moveId).toBe(clickId);
+
+    bridge.handleResult(makeResult(moveId!, STATUS_SUCCEEDED, "ok"));
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+  });
+
+  it("dispatch stamps a KeyPart with the shared tool_id", async () => {
+    let capturedParts: Part[] | undefined;
+    bridge.registerSink((frame) => {
+      capturedParts = (frame as { content?: { parts?: Part[] } }).content?.parts;
+    });
+
+    const block: Part[] = [{ keyPress: { key: "KEY_ACTION_F2" } }];
+    const promise = bridge.dispatch(block);
+
+    expect(capturedParts).toHaveLength(1);
+    const keyId = capturedParts![0].keyPress!.toolId;
+    expect(keyId).toBeDefined();
+
+    bridge.handleResult(makeResult(keyId!, STATUS_SUCCEEDED, "ok"));
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+  });
+
+  it("dispatch of a block with no operation part resolves FAILED", async () => {
+    bridge.registerSink(() => {});
+
+    const block: Part[] = [{ text: { content: "not an operation" } }];
+    const result = await bridge.dispatch(block);
+
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toBe("invalid tool part");
+  });
+
+  it("dispatch of an empty block resolves FAILED", async () => {
+    bridge.registerSink(() => {});
+
+    const result = await bridge.dispatch([]);
+
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toBe("invalid tool part");
   });
 });

@@ -569,13 +569,15 @@ func (a *App) recvLoop(sessionID, frameID string) {
 
 		switch payload := resp.GetPayload().(type) {
 		case *game.AgentFrame_Content:
-			// Auto-execute tool requests (mousemove/mouseclick) and report
-			// each result with a post-action screenshot (FR-007, FR-013).
-			for _, part := range payload.Content.GetParts() {
-				if part.GetMouseMove() == nil && part.GetMouseClick() == nil {
-					continue
-				}
-				if err := a.handleInboundOperation(sessionID, part); err != nil {
+			// Auto-execute tool requests (mousemove/mouseclick/keypress) and
+			// report each result with a post-action screenshot (FR-007,
+			// FR-013). A PartBlock carries one or more operation parts
+			// sharing a single tool_id (data-model.md §5c): a saolei
+			// WINDOW_MESSAGE move+click combo is one atomic group; the
+			// existing single-part mouse tools are one-element groups.
+			groups := groupOperationPartsByToolID(payload.Content.GetParts())
+			for _, group := range groups {
+				if err := a.handleInboundOperation(sessionID, group); err != nil {
 					a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
 						"session_id":  sessionID,
 						"frame_count": frameCount,
@@ -596,14 +598,14 @@ func (a *App) recvLoop(sessionID, frameID string) {
 	}
 }
 
-// handleInboundOperation executes an inbound tool-request Part
-// (MouseMovePart/MouseClickPart) and sends the matching ToolResultPart back
-// over the WebSocket wrapped in a content frame. The result part carries the
-// same tool_id and a SUCCEEDED/FAILED status; it is never carried by an ack
-// (FR-013). A post-action screenshot is attached when the bound window can
+// handleInboundOperation executes one atomic tool-request group (one or more
+// operation Parts sharing a tool_id) and sends the matching ToolResultPart
+// back over the WebSocket wrapped in a content frame. The result part carries
+// the group's tool_id and a SUCCEEDED/FAILED status; it is never carried by an
+// ack (FR-013). A post-action screenshot is attached when the bound window can
 // be captured (FR-007).
-func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
-	result := a.executeAgentOperation(part)
+func (a *App) handleInboundOperation(sessionID string, parts []*game.Part) error {
+	result := a.executeAgentOperation(parts)
 
 	resultFrameID, err := randomHex(8)
 	if err != nil {
@@ -644,28 +646,95 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 	return nil
 }
 
-// executeAgentOperation runs an inbound tool-request Part (MouseMovePart or
-// MouseClickPart) via the split move/click executor and returns the matching
-// ToolResultPart. A move part captures the bound window's bounds, converts
-// the screenshot-relative target to screen-absolute coordinates, and
-// repositions the cursor; a click part dispatches button events at the
-// cursor's current position with no coordinate conversion.
+// groupOperationPartsByToolID collects the operation-bearing parts (mouse
+// move, mouse click, key press) from a content PartBlock and groups them by
+// tool_id, preserving first-appearance order. Non-operation parts (text,
+// image, thinking, tool-result) are ignored. Each group is one atomic desktop
+// operation producing one ToolResultPart (data-model.md §5c).
+//
+// One bridge dispatch stamps every part in its PartBlock with the same
+// tool_id, so a saolei WINDOW_MESSAGE block [MouseMovePart, MouseClickPart]
+// forms one group; the existing single-part mouse tools form one-element
+// groups. Grouping by tool_id generalizes both and stays correct if a frame
+// ever carries multiple tool_ids.
+func groupOperationPartsByToolID(parts []*game.Part) [][]*game.Part {
+	groups := make(map[string][]*game.Part)
+	var order []string
+	for _, part := range parts {
+		toolID := operationToolID(part)
+		if toolID == "" {
+			continue
+		}
+		if _, ok := groups[toolID]; !ok {
+			order = append(order, toolID)
+		}
+		groups[toolID] = append(groups[toolID], part)
+	}
+	result := make([][]*game.Part, 0, len(order))
+	for _, id := range order {
+		result = append(result, groups[id])
+	}
+	return result
+}
+
+// operationToolID returns the tool_id carried by an operation Part
+// (MouseMovePart / MouseClickPart / KeyPart), or "" for non-operation parts.
+func operationToolID(part *game.Part) string {
+	if part == nil {
+		return ""
+	}
+	if m := part.GetMouseMove(); m != nil {
+		return m.GetToolId()
+	}
+	if c := part.GetMouseClick(); c != nil {
+		return c.GetToolId()
+	}
+	if k := part.GetKeyPress(); k != nil {
+		return k.GetToolId()
+	}
+	return ""
+}
+
+// mouseDelivery resolves the InputDelivery for a mouse operation group. Per
+// contracts/input-delivery.md §1, all parts in a block SHOULD share the same
+// delivery; the click part is authoritative when present, otherwise the move
+// part. Either way unset collapses to SIMULATE via operation.IsWindowMessage.
+func mouseDelivery(move *game.MouseMovePart, click *game.MouseClickPart) game.InputDelivery {
+	if click != nil {
+		return click.GetDelivery()
+	}
+	if move != nil {
+		return move.GetDelivery()
+	}
+	return game.InputDelivery_INPUT_DELIVERY_UNSPECIFIED
+}
+
+// executeAgentOperation runs one atomic tool-request group (the operation
+// Parts in a PartBlock sharing a tool_id) and returns the matching
+// ToolResultPart. The group is realized per the declared InputDelivery
+// (contracts/input-delivery.md §4):
+//
+//   - KeyPart → PostMessage WM_KEYDOWN/WM_KEYUP (no cursor involvement).
+//   - WINDOW_MESSAGE mouse → PostMessage WM_*BUTTON* at the client coordinate
+//     carried by the companion MouseMovePart in the group; the OS cursor is
+//     never moved (occlusion-free, FR-014/SC-003). Requires a MouseMovePart
+//     (coordinate source) and a MouseClickPart (action) in the group.
+//   - SIMULATE mouse (default) → the existing physical-cursor path: a move
+//     part repositions the cursor at screen-absolute coords; a click part
+//     dispatches button events at the current position. A combined
+//     move+click group moves then clicks.
 //
 // After the action phase — regardless of whether it succeeded — a follow-up
 // screenshot of the bound window is captured (FR-007). The screenshot is
 // attached to the result part when capture and sizing succeed; otherwise
 // the capture failure is recorded in the result message. Status always
 // reflects the ACTION outcome (never SUCCEEDED when the action failed).
-// Precondition failures (no tool payload, no window bound) return early
+// Precondition failures (no operation part, no window bound) return early
 // since no screenshot is possible without a bound window.
-func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
-	move := part.GetMouseMove()
-	click := part.GetMouseClick()
-	var toolID string
-	if move != nil {
-		toolID = move.GetToolId()
-	} else if click != nil {
-		toolID = click.GetToolId()
+func (a *App) executeAgentOperation(parts []*game.Part) *game.ToolResultPart {
+	toolID := ""
+	if len(parts) > 0 {
+		toolID = operationToolID(parts[0])
 	}
 
 	corrSuffix, err := randomHex(8)
@@ -689,64 +758,108 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		}
 	}
 
-	if move == nil && click == nil {
-		return failed("unsupported operation: only mouse operations are supported")
+	if len(parts) == 0 {
+		return failed("unsupported operation: no operation part")
 	}
 
 	if a.boundWin.Handle == 0 {
 		return failed("no window bound")
 	}
 
+	// Partition the group by part kind so a WINDOW_MESSAGE move+click combo
+	// is realized as one atomic operation.
+	var move *game.MouseMovePart
+	var click *game.MouseClickPart
+	var keyPart *game.KeyPart
+	for _, p := range parts {
+		if m := p.GetMouseMove(); m != nil {
+			move = m
+		}
+		if c := p.GetMouseClick(); c != nil {
+			click = c
+		}
+		if k := p.GetKeyPress(); k != nil {
+			keyPart = k
+		}
+	}
+
 	// Action phase: accumulate errors instead of early-returning so the
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
-	//
-	// MouseMovePart captures the bound window's bounds to translate the
-	// screenshot-relative target into screen-absolute coordinates, then moves
-	// the cursor. MouseClickPart dispatches button events at the cursor's
-	// current position and performs no coordinate conversion or cursor
-	// repositioning.
 	var actionErr error
 	var screenX, screenY int32
 	var bounds capture.WindowBounds
 	var actionLabel string
-	if move != nil {
-		actionLabel = "move"
-		var bErr error
-		bounds, bErr = capture.CaptureWindowBounds(a.boundWin.Handle)
-		if bErr != nil {
-			actionErr = fmt.Errorf("capture window bounds: %w", bErr)
+
+	switch {
+	case keyPart != nil:
+		actionLabel = fmt.Sprintf("key:%s", keyPart.GetKey().String())
+		if eErr := operation.ExecuteKeyMessage(a.boundWin.Handle, keyPart.GetKey()); eErr != nil {
+			actionErr = fmt.Errorf("key action: %w", eErr)
+		}
+	case operation.IsWindowMessage(mouseDelivery(move, click)):
+		// Occlusion-free PostMessage path (FR-014, SC-003): no SetCursorPos,
+		// no SendInput. The MouseMovePart supplies the client coordinate and
+		// the MouseClickPart supplies the action (contracts/input-delivery.md
+		// §4 — a WINDOW_MESSAGE click MUST be accompanied by a coordinate
+		// source in the same block).
+		if click == nil {
+			actionErr = fmt.Errorf("window message delivery requires a MouseClickPart action in the same block")
+		} else if move == nil {
+			actionErr = fmt.Errorf("window message click requires a coordinate source (MouseMovePart) in the same block")
 		} else {
-			var cErr error
-			screenX, screenY, cErr = operation.ScreenshotToScreenCoords(move.GetXPx(), move.GetYPx(), int32(bounds.Left), int32(bounds.Top))
-			if cErr != nil {
-				actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
-			} else if eErr := operation.MoveCursor(screenX, screenY); eErr != nil {
-				actionErr = fmt.Errorf("move cursor: %w", eErr)
+			actionLabel = fmt.Sprintf("window-message:%s", click.GetClick().String())
+			screenX = move.GetXPx()
+			screenY = move.GetYPx()
+			if eErr := operation.ExecuteWindowMessageMouse(a.boundWin.Handle, move.GetXPx(), move.GetYPx(), click.GetClick()); eErr != nil {
+				actionErr = fmt.Errorf("window message click: %w", eErr)
 			}
 		}
-	} else {
-		// Synthetic clicks (SendInput) are consumed by Windows for window
-		// activation when the target is not the foreground window, so the
-		// bound window must be foreground before the button event fires —
-		// otherwise the click lands as an activation gesture with no
-		// application-level effect. The cursor position from the preceding
-		// mouse_move is preserved by SetForeground.
-		actionLabel = click.GetClick().String()
-		fgBefore := capture.ForegroundWindow()
-		fgOk := capture.SetForeground(a.boundWin.Handle)
-		fgAfter := capture.ForegroundWindow()
-		a.logger.Info("backend", "click: foreground state", map[string]any{
-			"tool_id":           toolID,
-			"correlation_id":    corrID,
-			"window_handle":     a.boundWin.Handle,
-			"window_title":      a.boundWin.Title,
-			"foreground_before": fgBefore,
-			"set_foreground_ok": fgOk,
-			"foreground_after":  fgAfter,
-		})
-		if eErr := operation.ExecuteClickAtCurrentPos(click.GetClick()); eErr != nil {
-			actionErr = fmt.Errorf("click action: %w", eErr)
+	default:
+		// SIMULATE (default, existing physical-cursor path). A move part
+		// captures the bound window's bounds to translate the
+		// screenshot-relative target into screen-absolute coordinates, then
+		// moves the cursor. A click part dispatches button events at the
+		// cursor's current position (the position left by a preceding move).
+		if move != nil {
+			actionLabel = "move"
+			var bErr error
+			bounds, bErr = capture.CaptureWindowBounds(a.boundWin.Handle)
+			if bErr != nil {
+				actionErr = fmt.Errorf("capture window bounds: %w", bErr)
+			} else {
+				var cErr error
+				screenX, screenY, cErr = operation.ScreenshotToScreenCoords(move.GetXPx(), move.GetYPx(), int32(bounds.Left), int32(bounds.Top))
+				if cErr != nil {
+					actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
+				} else if eErr := operation.MoveCursor(screenX, screenY); eErr != nil {
+					actionErr = fmt.Errorf("move cursor: %w", eErr)
+				}
+			}
+		}
+		if click != nil && actionErr == nil {
+			// Synthetic clicks (SendInput) are consumed by Windows for window
+			// activation when the target is not the foreground window, so the
+			// bound window must be foreground before the button event fires —
+			// otherwise the click lands as an activation gesture with no
+			// application-level effect. The cursor position from the preceding
+			// mouse_move is preserved by SetForeground.
+			actionLabel = click.GetClick().String()
+			fgBefore := capture.ForegroundWindow()
+			fgOk := capture.SetForeground(a.boundWin.Handle)
+			fgAfter := capture.ForegroundWindow()
+			a.logger.Info("backend", "click: foreground state", map[string]any{
+				"tool_id":           toolID,
+				"correlation_id":    corrID,
+				"window_handle":     a.boundWin.Handle,
+				"window_title":      a.boundWin.Title,
+				"foreground_before": fgBefore,
+				"set_foreground_ok": fgOk,
+				"foreground_after":  fgAfter,
+			})
+			if eErr := operation.ExecuteClickAtCurrentPos(click.GetClick()); eErr != nil {
+				actionErr = fmt.Errorf("click action: %w", eErr)
+			}
 		}
 	}
 

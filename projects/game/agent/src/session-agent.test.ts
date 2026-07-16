@@ -28,7 +28,12 @@ function createMockAdapterFactory(): {
   created: AgentAdapter[];
 } {
   const created: AgentAdapter[] = [];
-  const factory: AdapterFactory = async () => {
+  const factory: AdapterFactory = async (...args) => {
+    // Capture the mcpNames + saoleiMcp the SessionAgent threaded through so
+    // T015 wiring is observable. The last positional arg before checkpointer
+    // is saoleiMcp; mcpNames is the 4th arg (index 3).
+    lastMcpNames = args[3];
+    lastSaoleiMcp = args[5];
     const adapter = createMockAdapter([
       { type: "text", text: `adapter-${created.length}` },
     ]);
@@ -38,9 +43,19 @@ function createMockAdapterFactory(): {
   return { factory, created };
 }
 
+// Side-channel capturing the most recent factory invocation's mcp/saolei args.
+let lastMcpNames: string[] = [];
+let lastSaoleiMcp: { getBoard(): unknown } | null = null;
+
 const PROFILES: Record<string, ProfileData> = {
-  alice: { model: "gpt-4o", systemPrompt: "You are Alice.", toolNames: [] },
-  bob: { model: "minimax-m1", systemPrompt: "You are Bob.", toolNames: [] },
+  alice: { model: "gpt-4o", systemPrompt: "You are Alice.", toolNames: [], mcpNames: [] },
+  bob: { model: "minimax-m1", systemPrompt: "You are Bob.", toolNames: [], mcpNames: [] },
+  saoleiPlayer: {
+    model: "gpt-4o",
+    systemPrompt: "You play Minesweeper.",
+    toolNames: [],
+    mcpNames: ["saolei"],
+  },
 };
 
 function profileFetcherFor(
@@ -140,6 +155,47 @@ describe("SessionAgent", () => {
 
     expect(a1).toBe(a2);
     expect(created).toHaveLength(1);
+  });
+});
+
+// T015: SessionAgent owns the per-session SaoleiMcp and threads mcpNames +
+// saoleiMcp to the adapter factory.
+describe("SessionAgent saolei MCP ownership (T015)", () => {
+  it("creates a saolei MCP instance and passes mcpNames when the profile declares saolei", async () => {
+    const { factory } = createMockAdapterFactory();
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+
+    await agent.getOrCreateAdapter("saoleiPlayer", profileFetcherFor("saoleiPlayer"));
+
+    expect(lastMcpNames).toEqual(["saolei"]);
+    expect(lastSaoleiMcp).not.toBeNull();
+  });
+
+  it("passes a null saoleiMcp and empty mcpNames when the profile declares no saolei", async () => {
+    const { factory } = createMockAdapterFactory();
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+
+    await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
+
+    expect(lastMcpNames).toEqual([]);
+    expect(lastSaoleiMcp).toBeNull();
+  });
+
+  it("drops the saolei MCP instance on adapter rebuild (FR-025c)", async () => {
+    const { factory } = createMockAdapterFactory();
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+
+    await agent.getOrCreateAdapter("saoleiPlayer", profileFetcherFor("saoleiPlayer"));
+    const firstMcp = lastSaoleiMcp;
+
+    // Switch to a different profile (rebuild), then back to saolei.
+    await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
+    expect(lastSaoleiMcp).toBeNull();
+
+    await agent.getOrCreateAdapter("saoleiPlayer", profileFetcherFor("saoleiPlayer"));
+    // A fresh instance — not the same reference as the first (no carry-over).
+    expect(lastSaoleiMcp).not.toBeNull();
+    expect(lastSaoleiMcp).not.toBe(firstMcp);
   });
 });
 

@@ -700,6 +700,235 @@ func TestListMessages_Error(t *testing.T) {
 	}
 }
 
+// Test_groupOperationPartsByToolID covers the T010 PartBlock grouping logic:
+// operation parts (move/click/key) are grouped by tool_id preserving order,
+// non-operation parts are ignored, and a saolei WINDOW_MESSAGE move+click
+// combo forms one atomic group (data-model.md §5c).
+func Test_groupOperationPartsByToolID(t *testing.T) {
+	// given: a content block mixing a text part, a saolei move+click pair
+	// (same tool_id), and a key part (separate tool_id).
+	textPart := &game.Part{Kind: &game.Part_Text{Text: &game.TextPart{Content: "thinking..."}}}
+	movePart := &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{
+		ToolId:   "saolei-click-1",
+		XPx:      40,
+		YPx:      216,
+		Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+	}}}
+	clickPart := &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+		ToolId:   "saolei-click-1",
+		Click:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+		Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+	}}}
+	keyPart := &game.Part{Kind: &game.Part_KeyPress{KeyPress: &game.KeyPart{
+		ToolId: "saolei-init-1",
+		Key:    game.KeyAction_KEY_ACTION_F2,
+	}}}
+	parts := []*game.Part{textPart, movePart, clickPart, keyPart}
+
+	// when
+	groups := groupOperationPartsByToolID(parts)
+
+	// then: two groups in first-appearance order; the text part is dropped.
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(groups))
+	}
+	if len(groups[0]) != 2 {
+		t.Fatalf("group 0 (saolei-click-1): expected 2 parts (move+click), got %d", len(groups[0]))
+	}
+	if groups[0][0] != movePart || groups[0][1] != clickPart {
+		t.Errorf("group 0: expected [move, click], got [%v, %v]", groups[0][0], groups[0][1])
+	}
+	if len(groups[1]) != 1 || groups[1][0] != keyPart {
+		t.Errorf("group 1: expected [key], got %v", groups[1])
+	}
+}
+
+// Test_groupOperationPartsByToolID_IgnoresEmptyToolID verifies that parts
+// without a tool_id (e.g. malformed/non-dispatch parts) are skipped rather
+// than grouped under "".
+func Test_groupOperationPartsByToolID_IgnoresEmptyToolID(t *testing.T) {
+	moveNoID := &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{
+		XPx: 1, YPx: 2,
+	}}}
+	clickWithID := &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+		ToolId: "t1",
+		Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+	}}}
+
+	groups := groupOperationPartsByToolID([]*game.Part{moveNoID, clickWithID})
+
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group (empty tool_id skipped), got %d", len(groups))
+	}
+	if len(groups[0]) != 1 || groups[0][0] != clickWithID {
+		t.Errorf("expected only the tool_id'd click, got %v", groups[0])
+	}
+}
+
+// Test_operationToolID verifies each operation part kind yields its tool_id
+// and non-operation parts yield "".
+func Test_operationToolID(t *testing.T) {
+	tests := []struct {
+		name string
+		part *game.Part
+		want string
+	}{
+		{
+			name: "mouse move yields tool id",
+			part: &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{ToolId: "m1"}}},
+			want: "m1",
+		},
+		{
+			name: "mouse click yields tool id",
+			part: &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{ToolId: "c1"}}},
+			want: "c1",
+		},
+		{
+			name: "key press yields tool id",
+			part: &game.Part{Kind: &game.Part_KeyPress{KeyPress: &game.KeyPart{ToolId: "k1"}}},
+			want: "k1",
+		},
+		{
+			name: "text part yields empty",
+			part: &game.Part{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hi"}}},
+			want: "",
+		},
+		{
+			name: "nil part yields empty",
+			part: nil,
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := operationToolID(tt.part); got != tt.want {
+				t.Errorf("operationToolID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Test_mouseDelivery verifies the click part is authoritative for delivery,
+// falling back to the move part, then UNSPECIFIED.
+func Test_mouseDelivery(t *testing.T) {
+	t.Run("click authoritative", func(t *testing.T) {
+		move := &game.MouseMovePart{Delivery: game.InputDelivery_INPUT_DELIVERY_SIMULATE}
+		click := &game.MouseClickPart{Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE}
+		if got := mouseDelivery(move, click); got != game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE {
+			t.Errorf("expected WINDOW_MESSAGE from click, got %v", got)
+		}
+	})
+	t.Run("move fallback when no click", func(t *testing.T) {
+		move := &game.MouseMovePart{Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE}
+		if got := mouseDelivery(move, nil); got != game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE {
+			t.Errorf("expected WINDOW_MESSAGE from move, got %v", got)
+		}
+	})
+	t.Run("unspecified when neither present", func(t *testing.T) {
+		if got := mouseDelivery(nil, nil); got != game.InputDelivery_INPUT_DELIVERY_UNSPECIFIED {
+			t.Errorf("expected UNSPECIFIED, got %v", got)
+		}
+	})
+}
+
+// Test_executeAgentOperation_WindowMessageClickRequiresCoordinate verifies
+// the contracts/input-delivery.md §4 precondition: a WINDOW_MESSAGE click
+// without a companion MouseMovePart (coordinate source) in the same block is
+// rejected before any window input is attempted.
+func Test_executeAgentOperation_WindowMessageClickRequiresCoordinate(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{Handle: 1, Title: "stub", ScaleFactor: 1.0}
+
+	clickOnly := &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+		ToolId:   "wm-click-no-coord",
+		Click:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+		Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+	}}}
+
+	result := app.executeAgentOperation([]*game.Part{clickOnly})
+
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED for message-mode click with no coordinate source, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "coordinate source") {
+		t.Errorf("expected message to mention 'coordinate source', got %q", result.GetMessage())
+	}
+}
+
+// Test_executeAgentOperation_WindowMessageDispatchesPostMessagePath verifies
+// that a WINDOW_MESSAGE move+click block routes to the message-based path
+// (operation.ExecuteWindowMessageMouse) rather than the SIMULATE SetCursorPos
+// path. On the Linux build host ExecuteWindowMessageMouse returns "not
+// supported", which proves the dispatch selected the window-message path; a
+// SIMULATE click would instead fail inside ExecuteClickAtCurrentPos with
+// "click action".
+func Test_executeAgentOperation_WindowMessageDispatchesPostMessagePath(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{Handle: 1, Title: "stub", ScaleFactor: 1.0}
+
+	move := &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{
+		ToolId:   "wm-1",
+		XPx:      40,
+		YPx:      216,
+		Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+	}}}
+	click := &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+		ToolId:   "wm-1",
+		Click:    game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+		Delivery: game.InputDelivery_INPUT_DELIVERY_WINDOW_MESSAGE,
+	}}}
+
+	result := app.executeAgentOperation([]*game.Part{move, click})
+
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED (Linux stub), got %s", got)
+	}
+	// The window-message path wraps the executor error as "window message
+	// click: ..."; the SIMULATE path would wrap it as "click action: ...".
+	// Asserting the window-message label proves routing selected the PostMessage
+	// realization (SC-003 occlusion-free path).
+	if !strings.Contains(result.GetMessage(), "window message click") {
+		t.Errorf("expected window-message path error, got %q", result.GetMessage())
+	}
+	if strings.Contains(result.GetMessage(), "capture window bounds") {
+		t.Errorf("window-message path must not capture window bounds (SIMULATE-only), got %q", result.GetMessage())
+	}
+	if result.GetToolId() != "wm-1" {
+		t.Errorf("expected tool_id %q, got %q", "wm-1", result.GetToolId())
+	}
+}
+
+// Test_executeAgentOperation_KeyPartRoutesToKeyMessage verifies a KeyPart
+// block dispatches operation.ExecuteKeyMessage (PostMessage WM_KEYDOWN/UP)
+// rather than any mouse path. On Linux the stub returns "not supported".
+func Test_executeAgentOperation_KeyPartRoutesToKeyMessage(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{Handle: 1, Title: "stub", ScaleFactor: 1.0}
+
+	keyPart := &game.Part{Kind: &game.Part_KeyPress{KeyPress: &game.KeyPart{
+		ToolId: "init-1",
+		Key:    game.KeyAction_KEY_ACTION_F2,
+	}}}
+
+	result := app.executeAgentOperation([]*game.Part{keyPart})
+
+	// On the Linux build host the key-message stub returns "not supported";
+	// the action error is wrapped as "key action: ...", proving the key path
+	// was selected over the mouse path.
+	if !strings.Contains(result.GetMessage(), "key action") {
+		t.Errorf("expected key-action path error, got %q", result.GetMessage())
+	}
+	if result.GetToolId() != "init-1" {
+		t.Errorf("expected tool_id %q, got %q", "init-1", result.GetToolId())
+	}
+}
+
 // Test_executeAgentOperation_NoWindowBound verifies Rule 6: when no window is
 // bound the result is FAILED with "no window bound" and no screenshot is
 // attached (precondition early-return — no screenshot is possible without a
@@ -720,7 +949,7 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	}
 
 	// when
-	result := app.executeAgentOperation(op)
+	result := app.executeAgentOperation([]*game.Part{op})
 
 	// then: FAILED precondition, no screenshot
 	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
@@ -771,7 +1000,7 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 	}
 
 	// when
-	result := app.executeAgentOperation(op)
+	result := app.executeAgentOperation([]*game.Part{op})
 
 	// then: status FAILED (action outcome), screenshot nil (capture failed),
 	// and the message records BOTH the click action failure and the screenshot

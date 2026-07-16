@@ -22,6 +22,12 @@ vi.mock("langchain", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("langchain")>();
 	return {
 		createMiddleware: actual.createMiddleware,
+		// `tool` must be passed through so AgentAdapterImpl's buildTools can
+		// construct mouse/saolei tools under this mock. Without it, vi.mock
+		// returns an object with no `tool` export and every tool factory call
+		// throws, which made createAgent unreachable (called 0 times) — masking
+		// the real wiring under a confusing assertion failure.
+		tool: actual.tool,
 		createAgent: (...args: unknown[]) => {
 			createAgentMock(...args);
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -41,7 +47,9 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			["mouse_move", "mouse_click"],
+			[],
 			new OperationBridge(),
+			null,
 			new MemorySaver(),
 		);
 
@@ -60,7 +68,9 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			[],
+			[],
 			new OperationBridge(),
+			null,
 			new MemorySaver(),
 		);
 
@@ -76,7 +86,9 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			["mouse_move", "nonexistent"],
+			[],
 			new OperationBridge(),
+			null,
 			new MemorySaver(),
 		);
 

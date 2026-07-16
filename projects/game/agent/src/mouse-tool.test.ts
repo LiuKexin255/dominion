@@ -74,7 +74,9 @@ describe("createMouseMoveTool", () => {
     await mouseTool.invoke({ x_px: 100, y_px: 200 });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    const part = bridge.dispatch.mock.calls[0][0] as Part;
+    const block = bridge.dispatch.mock.calls[0][0] as Part[];
+    expect(block).toHaveLength(1);
+    const part = block[0];
     expect(part.mouseMove).toBeDefined();
     expect(part.mouseMove!.xPx).toBe(100);
     expect(part.mouseMove!.yPx).toBe(200);
@@ -215,7 +217,9 @@ describe("createMouseClickTool", () => {
     await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    const part = bridge.dispatch.mock.calls[0][0] as Part;
+    const block = bridge.dispatch.mock.calls[0][0] as Part[];
+    expect(block).toHaveLength(1);
+    const part = block[0];
     expect(part.mouseClick).toBeDefined();
     expect(part.mouseClick!.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
     // A click part carries no coordinates — desktop clicks at the current
@@ -313,8 +317,8 @@ describe("createMouseClickTool", () => {
 
     await mouseTool.invoke({ click_type: clickType });
 
-    const part = bridge.dispatch.mock.calls[0][0] as Part;
-    expect(part.mouseClick!.click).toBe(protoValue);
+    const block = bridge.dispatch.mock.calls[0][0] as Part[];
+    expect(block[0].mouseClick!.click).toBe(protoValue);
   });
 
   it("has name 'mouse_click' for profile.tool_names matching", () => {

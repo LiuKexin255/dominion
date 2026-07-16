@@ -43,6 +43,8 @@ export interface ProfileResult {
   systemPrompt: string;
   /** Tool names declared on the profile (proto field `tool_names`). */
   toolNames: string[];
+  /** MCP bundle names declared on the profile (proto field `mcp_names`). */
+  mcpNames: string[];
 }
 
 function buildClientCredentials(): grpc.ChannelCredentials {
@@ -156,6 +158,7 @@ export class PromptClient {
             model: response.model,
             systemPrompt: response.systemPrompt,
             toolNames: response.toolNames ?? [],
+            mcpNames: response.mcpNames ?? [],
           });
         },
       );
