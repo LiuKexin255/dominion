@@ -56,7 +56,7 @@ All build/test entry points go through Bazel; BUILD files are regenerated with `
 
 **Purpose**: Establish a known-green starting point before feature work.
 
-- [ ] T001 Establish green baseline by running `bazel build //projects/game/agent/... //projects/game/desktop/...` and `bazel test //projects/game/agent/... //projects/game/desktop/...` from repo root; record any pre-existing failures before changes begin
+- [X] T001 Establish green baseline by running `bazel build //projects/game/agent/... //projects/game/desktop/...` and `bazel test //projects/game/agent/... //projects/game/desktop/...` from repo root; record any pre-existing failures before changes begin
 
 ---
 
