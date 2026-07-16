@@ -1,6 +1,203 @@
 <!--
 Sync Impact Report
 ==================
+Constitution version: 3.6.0 → 3.7.0
+Bump type: MINOR (materially expanded guidance in an existing principle)
+
+Modified principles:
+- §VI. Test Verification Granularity — added a new mandatory rule,
+  "No separate build/unit-test tasks; large tests may be separate",
+  stating that build and unit-test verification MUST be embedded inside
+  the code-changing task they verify and MUST NOT be materialized as
+  standalone sibling tasks, because splitting them off decouples the
+  per-change gate from the change it validates and lets a change be
+  declared "done" before its verification runs. Large-test
+  verification, by contrast, MAY be a separate standalone task, since
+  it is scoped to feature/requirement acceptance rather than to any
+  single code change. The "Materialization in artifacts" rule was
+  rewritten to express the embedding: build and unit-test verification
+  MUST live inside each code-changing task (never as separate
+  standalone tasks), while large-test verification MAY be a separate
+  standalone task scoped to feature-level acceptance. The rationale
+  paragraph and the Governance compliance review §VI clause were
+  extended to record why embedding matters (per-change gate stays
+  attached to the change; large tests run on a different cadence).
+
+Added sections:
+- None (new rule within existing §VI).
+
+Removed sections:
+- None.
+
+Templates requiring updates:
+- ✅ .specify/templates/plan-template.md — §VI Constitution Check entry
+  extended to state build + unit-test verification MUST be embedded
+  inside each code-changing task (never separate tasks) and large-test
+  verification MAY be a separate task.
+- ✅ .specify/templates/tasks-template.md — §VI Constitution Check entry
+  extended likewise; "Tests" note clarified to distinguish embedded
+  build/unit verification from separate large/integration test tasks.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
+Constitution version: 3.5.0 → 3.6.0
+Bump type: MINOR (new principle added)
+
+Modified principles:
+- None renamed or redefined.
+
+Added sections:
+- §VI. Test Verification Granularity (测试验证颗粒度) — new principle
+  requiring every code change to be verified on a granularity ladder that
+  ascends from smallest to largest (build → unit tests → large tests),
+  with execution frequency inversely proportional to granularity: the
+  smallest layers (build, unit tests) run on every change as per-change
+  validation, while the largest layer (large tests) runs only at
+  feature/requirement milestones. Mandatory rules cover the granularity
+  ladder ordering, frequency-vs-granularity mapping, build as the first
+  gate, unit tests as the per-change validation, large tests as
+  feature/requirement validation, no-skipping/no-inversion, and
+  materialization of the ladder in `plan.md` / `tasks.md`. The principle
+  is authored as a pure normative discipline: it intentionally does NOT
+  reference specific files, commands, or tooling (those live in
+  `AGENTS.md` and the `style/` docs, which retain supremacy over runtime
+  practice); it governs only ordering, frequency, and how the ladder is
+  declared in the Spec Kit artifacts.
+
+Removed sections:
+- None.
+
+Templates requiring updates:
+- ✅ .specify/templates/plan-template.md — added §VI Constitution Check
+  entry requiring the plan to declare the verification layers (build,
+  unit-test, and large-test scope) and the small-to-large ordering.
+- ✅ .specify/templates/tasks-template.md — added §VI Constitution Check
+  entry requiring every code-changing task to carry build + unit-test
+  per-change verification, with large-test verification scoped to
+  feature-level checkpoints.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+- ⚠ .specify/templates/checklist-template.md — operational artifact,
+  no principle-driven change expected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
+Constitution version: 3.4.0 → 3.5.0
+Bump type: MINOR (materially changed guidance in an existing principle)
+
+Modified principles:
+- §III. Refactoring-Oriented Changes — removed the documentation-format
+  requirements (the 新增 / 修改 / 删除 classification) and reframed the
+  principle purely as a design and development discipline. The core
+  refactoring obligations are retained: refactor-not-stack, design
+  review, synchronous design update, and design-implementation
+  coherence. Removed rules:
+  (1) "Change classification" — every change/task MUST be labeled
+      新增 / 修改 / 删除.
+  (2) "Classification accuracy" — the rules distinguishing 新增 from
+      修改 from 删除.
+  The remaining rules were de-scoped from "changes classified as 修改 /
+  删除" to "a change that touches an existing unit", so the obligation
+  is expressed in design/development terms without any reference to the
+  removed format. The intro paragraph no longer requires each change to
+  be classified. Governance compliance review and the plan/tasks
+  templates were updated to match — no artifact now carries or inherits
+  a 新增 / 修改 / 删除 label.
+
+Added sections:
+- None.
+
+Removed sections:
+- "Change classification" rule within §III.
+- "Classification accuracy" rule within §III.
+- All 新增 / 修改 / 删除 label references from the Governance
+  compliance review, plan-template Constitution Check, and
+  tasks-template Format spec + Constitution Check.
+
+Templates requiring updates:
+- ✅ .specify/templates/plan-template.md — §III Constitution Check entry
+  rewritten to drop the classification requirement; reframed as a
+  refactor discipline for changes touching an existing unit.
+- ✅ .specify/templates/tasks-template.md — Format line dropped the
+  [新增|修改|删除] token; removed the classification bullet from the
+  Format spec; §III Constitution Check entry rewritten to drop the
+  classification requirement.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
+Constitution version: 3.3.0 → 3.4.0
+Bump type: MINOR (materially refined and expanded guidance in an existing principle)
+
+Modified principles:
+- §V. Documentation First — three changes:
+  (1) Restructured the Required Reading declaration from a PER-TASK
+  obligation (every implementation task carries its own declaration) to
+  a SINGLE unified declaration covering the whole `tasks.md`. The
+  per-task framing and per-task-specific language were removed; the
+  declaration is now authored once for the feature.
+  (2) Removed the "Uniform spec-doc requirement (declared once)" rule,
+  which required the feature's own design docs under
+  `specs/[###-feature]/` (`spec.md`, `plan.md`, `data-model.md`,
+  `contracts/`, `quickstart.md`) to be declared as required reading in
+  `tasks.md`. This duplicated context loading already performed by the
+  implementation command (`/speckit.implement` step 3 — "Load and
+  analyze the implementation context"), so it is now out of scope for
+  §V; §V focuses on the documents that workflow does not already load
+  (code style docs, external dependency docs, technical articles). A
+  short scope-exclusion note records this so the design docs are not
+  re-added.
+  (3) Added two specificity rules: every declared entry MUST resolve to
+  a concrete file path or link (never a description, category name, or
+  summary), and every external entry MUST carry its own inline
+  `[description](URL)` link even if the same source is cited elsewhere
+  in the design artifacts, so each Required Reading entry is
+  self-contained and verifiable.
+
+Added sections:
+- None (new rules within existing §V).
+
+Removed sections:
+- "Uniform spec-doc requirement (declared once)" rule within §V.
+- Per-task Required Reading framing throughout §V.
+
+Templates requiring updates:
+- ✅ .specify/templates/tasks-template.md — converted Format spec
+  "Required Reading" entry and Constitution Check §V entry to the
+  unified declaration; added concrete-entry and external-link rules;
+  removed the "Required Spec Docs" section (design-doc loading overlaps
+  with /speckit.implement step 3).
+- ✅ .specify/templates/plan-template.md — converted §V Constitution
+  Check entry to seed the unified declaration; removed design-doc-
+  declared-once language; added concrete-entry and external-link rules.
+- ⚠ .specify/templates/spec-template.md — no Constitution Check gate;
+  not affected.
+
+Follow-up TODOs:
+- None.
+-->
+
+<!--
+Sync Impact Report
+==================
 Constitution version: 3.2.0 → 3.3.0
 Bump type: MINOR (materially expanded guidance in an existing principle)
 
@@ -200,7 +397,7 @@ official documentation and source repository BEFORE the plan is finalized.
   (per §I) and surface in the plan's `## References` section. This rule
   is the complement of §V: §II performs the transitive research ONCE at
   plan time, and §V requires the planner to distill that research into
-  an explicit, enumerated per-task reading list rather than imposing an
+  an   explicit, enumerated reading list rather than imposing an
   implicit "follow the links yourself" obligation on the task executor.
 - **Evidence in plan**: the plan MUST record the documentation URLs consulted
   as inline citations (per §I) alongside a one-line summary of the finding
@@ -231,42 +428,30 @@ reading list explicitly.
 
 ### III. Refactoring-Oriented Changes (重构式变更)
 
-Every code change described in `plan.md` and `tasks.md` MUST be expressed
-as a refactor of the affected unit, not as logic stacked on top of it.
-Each change MUST be explicitly classified as 新增 (Add), 修改 (Modify),
-or 删除 (Delete), and the plan MUST keep the design and the
-implementation coherent — outdated designs MUST NOT survive into the new
-version under the excuse of "out of scope".
+Every code change MUST be carried out as a refactor of the affected unit
+— a natural extension of a still-coherent design — rather than as logic
+stacked on top of an existing unit. The design and the implementation
+MUST stay coherent across the change; outdated designs MUST NOT survive
+into the new version under the excuse of "out of scope".
 
 **Mandatory rules**:
 
-- **Change classification**: every change recorded in `plan.md` and every
-  implementation task in `tasks.md` MUST be labeled as one of 新增 /
-  修改 / 删除 (Add / Modify / Delete). The label MUST describe what is
-  happening to the unit of code being touched.
-- **Classification accuracy**: 新增 applies ONLY to a module, file,
-  type, or design element that did not previously exist. Adding a
-  function to an existing class, a field to an existing struct, a method
-  to an existing interface, or a branch to an existing function is 修改
-  — not 新增 — because the enclosing unit already existed. 删除 applies
-  when an existing module, file, type, function, field, or design
-  element is being removed.
-- **Refactor-not-stack rule**: changes classified as 修改 MUST be
-  carried out by refactoring the existing unit so the new behavior is a
-  natural extension of a still-coherent design. Appending logic onto an
-  existing unit without revisiting its structure — so the unit accrues
+- **Refactor-not-stack rule**: when an existing unit (module, file,
+  type, function, or design element) is touched, the change MUST be
+  carried out by refactoring that unit so the new behavior is a natural
+  extension of a still-coherent design. Appending logic onto an existing
+  unit without revisiting its structure — so the unit accrues
   conditional branches, parallel code paths, or responsibilities it was
   never designed for — is a violation, even when the new behavior is
   correct.
-- **Design review for 修改 and 删除**: every 修改 or 删除 change MUST be
-  accompanied in `plan.md` by a review of (a) the existing design,
-  architecture, and code layering of the affected unit and (b) an
-  explicit verdict on whether that design still serves the new goal.
-  "The existing design still applies" is an acceptable verdict when
-  true; when it does not, the change MUST be expanded to bring the
-  design back into coherence with the new goal.
-- **Synchronous design update**: when a 修改 or 删除 change reveals that
-  the surrounding design, architecture, layering, or documentation is
+- **Design review**: when a change touches an existing unit, the plan
+  MUST review (a) the existing design, architecture, and code layering
+  of the affected unit and (b) give an explicit verdict on whether that
+  design still serves the new goal. "The existing design still applies"
+  is an acceptable verdict when true; when it does not, the change MUST
+  be expanded to bring the design back into coherence with the new goal.
+- **Synchronous design update**: when a change reveals that the
+  surrounding design, architecture, layering, or documentation is
   outdated or no longer applicable, the change MUST be expanded to
   update those elements in the same version. Carrying a stale design
   into a new version on the grounds that fixing it is "out of scope" or
@@ -281,13 +466,13 @@ version under the excuse of "out of scope".
 them is how codebases accrue accidental complexity — a class gains a
 third responsibility, a function gains a seventh branch, a layer gains a
 third caller pattern, and the original design silently stops describing
-the code. Forcing every change to be classified and to revisit the
-affected design makes that drift visible at planning time, when it is
-cheapest to fix. Requiring synchronous updates keeps the design and the
-code as one artifact across versions, instead of letting them diverge
-until a future "refactor pass" that never arrives. This complements §II
-(dependency research), which governs what is chosen; this principle
-governs how the plan describes change itself.
+the code. Requiring each change that touches an existing unit to revisit
+the affected design makes that drift visible at planning time, when it
+is cheapest to fix. Requiring synchronous updates keeps the design and
+the code as one artifact across versions, instead of letting them
+diverge until a future "refactor pass" that never arrives. This
+complements §II (dependency research), which governs what is chosen;
+this principle governs how change itself is carried out.
 
 ### IV. Interface Design Coverage (接口设计覆盖)
 
@@ -340,24 +525,43 @@ dependency research) when the design imports upstream API patterns.
 
 ### V. Documentation First (文档优先)
 
-Every implementation task in `tasks.md` MUST explicitly declare, as part
-of the task itself, the documents that MUST be read BEFORE any code in
-that task is edited. The declaration is mandatory — not optional, not
-deferred to the executor's judgment. The goal is to ensure the task
-executor understands the full context surrounding the change, not just
-the narrow slice the task directly touches.
+`tasks.md` MUST declare a "Required Reading" section enumerating the
+specific documents that MUST be read BEFORE any implementation code is
+edited. The declaration is mandatory — not optional, not deferred to
+the executor's judgment. The goal is to ensure the executor understands
+the full context surrounding the change, not just the narrow slice each
+task directly touches.
 
 **Mandatory rules**:
 
-- **Pre-read declaration**: every implementation task MUST carry a
-  "Required Reading" declaration enumerating the specific documents
-  the executor MUST read before editing code. A task without this
-  declaration is a violation and MUST NOT be started.
+- **Unified declaration**: `tasks.md` MUST carry a single "Required
+  Reading" section enumerating the specific documents the executor MUST
+  read before editing code. Implementation MUST NOT start while this
+  section is missing or incomplete.
+- **Scope excludes feature design docs**: the feature's own design
+  artifacts under `specs/[###-feature]/` (`spec.md`, `plan.md`,
+  `data-model.md`, `contracts/`, `quickstart.md`, etc.) are loaded by
+  the implementation workflow itself and are NOT declared here. This
+  declaration covers the documents that workflow does not already load
+  — the governing code style docs, the official docs of external
+  dependencies, and the relevant technical articles.
+- **Concrete entries only**: every declared document MUST be a concrete
+  file path or a concrete link — never a description, category name, or
+  summary. An entry such as "the style docs" or "dependency
+  documentation" is a violation; it MUST resolve to an exact file (e.g.,
+  `style/api.md`) or an exact URL (e.g.,
+  `[AIP-2](https://google.aip.dev/2)`).
+- **External links are mandatory and never inherited by omission**:
+  every external document declared in any category MUST carry an inline
+  `[description](URL)` link (per §I). An external document MUST NOT be
+  referenced by description alone on the assumption that it was cited
+  elsewhere in the design artifacts — each Required Reading entry MUST
+  include the link so the entry is self-contained and verifiable.
 - **Coverage scope**: the declaration MUST cover context broader than
-  the task's direct target — at minimum the code style docs that govern
-  the affected unit and the existing code or modules the change
-  interacts with. Declaring only the single file being edited is a
-  violation — the purpose is full context, not just the edit site.
+  the edit sites — at minimum the code style docs that govern the
+  affected units and the existing code or modules the change interacts
+  with. Declaring only the files directly being edited is a violation
+  — the purpose is full context, not just the edit site.
 - **Three document categories**: every declared document MUST be
   classified into one of three categories, and each category MUST appear
   in the declaration. Any category may contain both repository-internal
@@ -370,33 +574,22 @@ the narrow slice the task directly touches.
     技术文章, because they are part of understanding the governing code
     convention.
   - **官方文档 (Official docs)** — official documentation of external
-    dependencies, components, frameworks, tools, or services the task
+    dependencies, components, frameworks, tools, or services the change
     touches, plus the README of any upstream codebase relied upon.
   - **技术文章 (Technical articles)** — technical blog posts, GitHub
     issues or PRs, design RFCs, conference talks, or other secondary
     sources that clarify non-obvious behavior or design intent.
-  External links in any category MUST carry inline citations per §I.
-- **Uniform spec-doc requirement (declared once)**: the feature's own
-  design artifacts under `specs/[###-feature]/` (including but not
-  limited to `spec.md`, `plan.md`, and other design docs such as
-  `data-model.md`, `contracts/`, `quickstart.md`) are required reading
-  for EVERY task. Rather than repeating them per task, the planner MUST
-  declare this directory once at the top of `tasks.md` (a "Required
-  Spec Docs" section), and every task executor MUST read those design
-  docs alongside the task-specific Required Reading. Individual task
-  declarations do NOT re-list these feature design docs.
 - **Inheritance from plan**: the documentation research recorded in
-  `plan.md` (per §II) seeds the 官方文档 and 技术文章 categories for
-  downstream tasks. Tasks MUST inherit this list and MAY extend it with
-  task-specific items; tasks MUST NOT silently drop a document the plan
-  declared relevant to the unit being changed.
+  `plan.md` (per §II) seeds the 官方文档 and 技术文章 categories. The
+  declaration MUST inherit this list and MAY extend it with
+  feature-specific items; it MUST NOT silently drop a document the plan
+  declared relevant to the change.
 - **Planner must read in-repo docs transitively before declaring**: the
   Required Reading declaration is authored by the task planner, and the
   planner MUST, BEFORE writing the declaration, read the in-repo
-  documents the task touches (the 规范文档 under `style/*`, the
-  feature's design docs under `specs/[###-feature]/`, and any other
-  in-repo doc relevant to the unit of change) in full and follow the
-  IN-REPO file references they cite — so the declaration enumerates
+  documents the change touches (the 规范文档 under `style/*` and any
+  other in-repo doc relevant to the unit of change) in full and follow
+  the IN-REPO file references they cite — so the declaration enumerates
   every in-repo file the executor will need, not only the file at the
   edit site. Declaring a single in-repo file while omitting the in-repo
   files it transitively references is lazy planning and a violation.
@@ -411,20 +604,19 @@ the narrow slice the task directly touches.
      NO obligation to re-derive referenced files; the executor reads
      exactly what the planner declared.
   3. **Materiality.** The planner MUST apply judgment and enumerate
-     only in-repo files genuinely relevant to the task's unit of
-     change — not every transitively reachable file. Chasing the full
-     reference graph indiscriminately is itself a violation of this
-     scoping.
+     only in-repo files genuinely relevant to the unit of change — not
+     every transitively reachable file. Chasing the full reference
+     graph indiscriminately is itself a violation of this scoping.
 - **No-empty rule**: when a category genuinely has no applicable
-  document for a given task, the declaration MUST state "None" for that
+  document for the change, the declaration MUST state "None" for that
   category explicitly, so the absence is a deliberate decision rather
   than an oversight.
 - **Planning-time gate**: the Required Reading declaration is a
   planning-time gate, enforced in `tasks.md` before implementation
-  begins. Implementation MUST NOT start on a task whose declaration is
+  begins. Implementation MUST NOT start while the declaration is
   missing or incomplete.
 
-**Example per-task declaration**:
+**Example declaration**:
 
 ```
 Required Reading:
@@ -437,27 +629,111 @@ Required Reading:
 code conventions (and the external standards those conventions cite) or
 the upstream dependency docs produces changes that are locally plausible
 but globally inconsistent — they drift from the repo's conventions or
-re-implement behavior a dependency already provides. Forcing every task
+re-implement behavior a dependency already provides. Forcing `tasks.md`
 to declare its reading list at planning time makes the required context
-explicit, concrete, and reviewable, ensures the executor builds full
-context before touching code rather than discovering it mid-edit, and
-complements §II (which obligates reading at plan time) by extending the
-same discipline to every implementation task. Centralizing the feature
-design docs as a one-time declaration avoids redundant repetition while
-keeping them mandatory; this principle also complements §III
-(refactoring discipline), since a sound refactor requires understanding
-the existing unit's design — exactly the context this declaration forces
-into view. The planner-side transitive-reading rule closes the gap
-between "the declaration exists" and "the declaration is complete": an
-in-repo doc that looks self-contained routinely cites other in-repo
-files (a `style/*.md` that defers to a sibling, a design doc that
-references a `contracts/` artifact or another spec), and a planner who
-reads only the top-level file produces a declaration that is
-syntactically present but materially incomplete. Forcing the planner to
-follow in-repo references — while explicitly exempting external ones
-(§II's job) and demanding materiality (to avoid reference-graph bloat) —
-makes the declaration a faithful map of the context the executor
-actually needs.
+explicit, concrete, and reviewable, and ensures the executor builds full
+context before touching code rather than discovering it mid-edit.
+Requiring every entry to resolve to a concrete file path or link — and
+forbidding description-only external references that lean on citations
+made elsewhere — keeps the declaration self-contained and verifiable
+rather than a vague pointer. This principle complements §II (which
+obligates reading at plan time) by extending the same discipline to
+implementation, and complements §III (refactoring discipline), since a
+sound refactor requires understanding the existing unit's design —
+exactly the context this declaration forces into view. The planner-side
+transitive-reading rule closes the gap between "the declaration exists"
+and "the declaration is complete": an in-repo doc that looks
+self-contained routinely cites other in-repo files (a `style/*.md` that
+defers to a sibling), and a planner who reads only the top-level file
+produces a declaration that is syntactically present but materially
+incomplete. Forcing the planner to follow in-repo references — while
+explicitly exempting external ones (§II's job) and demanding
+materiality (to avoid reference-graph bloat) — makes the declaration a
+faithful map of the context the executor actually needs.
+
+### VI. Test Verification Granularity (测试验证颗粒度)
+
+Every code change MUST be verified on a granularity ladder that ascends
+from smallest to largest — build, then unit tests, then (when
+applicable) large tests — with execution frequency inversely
+proportional to granularity: the smallest layers run on every change as
+per-change validation, the largest run only as feature/requirement
+validation. This principle is a normative discipline: it governs
+verification ordering, frequency, and how the ladder is declared in the
+Spec Kit artifacts. It intentionally does NOT reference specific files,
+commands, or tooling — those live in `AGENTS.md` and the repo's style
+docs, which retain supremacy over runtime practice.
+
+**Mandatory rules**:
+
+- **Granularity ladder rule**: verification MUST proceed in ascending
+  granularity order — build → unit tests → large tests. A verifier MUST
+  NOT advance to a larger-granularity layer for a change while a smaller
+  layer covering that same change is failing or unrun; each layer gates
+  the next.
+- **Frequency inversely proportional to granularity**: the smaller the
+  granularity, the higher the execution frequency. Build and unit tests
+  are the default per-change verification and MUST run after every code
+  change. Large tests run less frequently — only at feature/requirement
+  milestones or on demand — never as a per-change gate.
+- **Build is the first gate**: a successful build of the affected units
+  MUST precede any test layer. A build failure blocks and invalidates
+  all subsequent verification for that change.
+- **Unit tests are the per-change validation**: after a successful
+  build, the unit tests covering the changed units MUST pass. Build and
+  unit tests together constitute the mandatory per-change verification;
+  a change is not verified until both pass.
+- **Large tests are feature/requirement validation**: large tests
+  validate whole features or systems end-to-end. They are NOT required
+  after every code change; they are scoped to feature-level acceptance.
+- **No skipping, no inversion**: a change MUST NOT be declared verified
+  by running only a large test while skipping build and unit tests, nor
+  by running a large test before the smaller layers for that change
+  pass. Conversely, when a large test exists for a feature,
+  build-and-unit-only verification does not by itself satisfy feature
+  acceptance. Each layer validates a distinct concern; layers do not
+  substitute for one another.
+- **No separate build/unit-test tasks; large tests may be separate**:
+  build and unit-test verification MUST NOT be materialized as
+  standalone tasks separate from the code change they verify. They are
+  an integral, inseparable part of the code-changing task — that task
+  is not complete until both its build and its unit-test verification
+  pass. Splitting build or unit-test verification into a sibling task
+  decouples the per-change gate from the change it validates, lets a
+  change be declared "done" before its verification runs, and MUST NOT
+  be done. Large-test verification, by contrast, MAY be materialized as
+  a separate standalone task, because it is scoped to
+  feature/requirement acceptance rather than to any single code change
+  and is not a per-change gate.
+- **Materialization in artifacts**: `plan.md` MUST declare the
+  verification layers the feature uses — build scope, unit-test scope,
+  and (when applicable) large-test scope — together with the
+  small-to-large ordering. `tasks.md` MUST materialize the ladder as
+  follows: build and unit-test verification MUST be embedded inside
+  each code-changing task as its per-change gate (never as separate
+  standalone tasks; see the preceding rule), while large-test
+  verification, when applicable, MAY be a separate standalone task
+  scoped to feature-level acceptance rather than repeated per
+  code-changing task.
+
+**Rationale**: running only coarse-grained tests after every change is
+slow and gives late, unfocused feedback, while running only
+fine-grained tests never proves the feature works end-to-end. Ordering
+verification from small to large — and matching frequency to
+granularity — makes each change fail fast at the cheapest layer (a
+broken build or a red unit test) while reserving the expensive
+end-to-end layer for the moments where it actually carries new
+information: feature and requirement acceptance. Requiring the artifacts
+to declare the ladder explicitly turns verification from an ad-hoc habit
+ into a reviewable part of the design, complementing §III (a change is
+not complete until verified) and §IV (an externally callable boundary
+is not accepted until its end-to-end coverage passes). Requiring build
+and unit-test verification to live inside the code-changing task —
+rather than as a detached sibling task — keeps the per-change gate
+attached to the change it validates, so no change can slip through as
+"done" before its smallest-layer verification has actually run;
+allowing large tests their own task reflects that they are a separate
+concern (feature acceptance) operating on a different cadence.
 
 ## Spec Artifact Scope
 
@@ -470,7 +746,7 @@ This constitution applies to the following Spec Kit artifacts:
 | `research.md` | YES — inherently research-driven; every finding needs a source link |
 | `data-model.md` | YES — schema designs referencing standards or upstream contracts |
 | `contracts/` | WHEN APPLICABLE — cite the spec or RFC an API contract derives from |
-| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions; MUST also declare Required Reading per §V |
+| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions; MUST also carry a unified Required Reading declaration per §V and a per-task verification ladder per §VI |
 | `checklist.md` | NO — operational artifact, not a citation source |
 
 ## Governance
@@ -494,33 +770,50 @@ This constitution applies to the following Spec Kit artifacts:
   documentation research per §II, with inline citations to the official
   sources consulted, including transitive reading of references cited by
   those sources (linked sub-pages, RFCs, AIPs, upstream design docs)
-  recorded as inline citations at the plan/design stage. Every change in `plan.md` and every implementation
-  task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §III,
-  with 修改 changes implemented as refactors and every 修改 / 删除
-  change carrying an explicit verdict on whether the existing design and
-  layering still serve the new goal; outdated designs MUST be updated
-  within the same change, never deferred as "out of scope". Every change
+  recorded as inline citations at the plan/design stage. Every change in `plan.md` (and every implementation task in `tasks.md`) that touches an
+  existing unit MUST be carried out as a refactor per §III — not as
+  logic appended on top — and MUST carry an explicit verdict on whether
+  the existing design and layering still serve the goal of the change;
+  outdated designs MUST be updated within the same change, never
+  deferred as "out of scope". Every change
   in `plan.md` that introduces or modifies an externally callable boundary
   MUST include an explicit interface design per §IV covering all interface
   types touched, MUST comply with `style/api.md` (cited inline per §I),
   MUST be materialized in the feature's `contracts/` artifact, and MUST be
   inherited by the corresponding implementation tasks in `tasks.md`.
-  Every implementation task in `tasks.md` MUST carry a Required Reading
-  declaration per §V enumerating, across the three categories (规范文档 /
+  Every `tasks.md` MUST carry a single Required Reading declaration
+  per §V enumerating, across the three categories (规范文档 /
   官方文档 / 技术文章 — each of which may contain both in-repo docs and
   external links), the specific documents the executor MUST read before
-  editing code; the declaration MUST cover context broader than the edit
-  site, MUST inherit the plan's documented research (per §II), MUST state
-  "None" explicitly for any empty category, and a task missing the
-  declaration MUST NOT be started. The feature's design docs under
-  `specs/[###-feature]/` MUST be declared once at the top of `tasks.md`
-  as required reading for every task, not repeated per task. The author
-  of `tasks.md` MUST, before writing each task's Required Reading, read
-  the in-repo documents the task touches and follow their IN-REPO file
-  references so the declaration enumerates every in-repo file the
-  executor needs (not only the edit-site file); external references
-  cited by in-repo docs remain governed by §II and MUST NOT be
-  re-chased, and the planner MUST apply materiality so only in-repo
-  files genuinely relevant to the unit of change are enumerated.
+  editing code. Every entry MUST resolve to a concrete file path or
+  link (never a description, category name, or summary), and every
+  external entry MUST carry its own inline `[description](URL)` link
+  even if the same source is cited elsewhere; the declaration MUST
+  cover context broader than the edit sites, MUST inherit the plan's
+  documented research (per §II), MUST state "None" explicitly for any
+  empty category, and implementation MUST NOT start while the
+  declaration is missing or incomplete. The feature's own design docs
+  under `specs/[###-feature]/` are NOT declared here — they are loaded
+  by the implementation workflow. The author of `tasks.md` MUST,
+  before writing the declaration, read the in-repo documents the change
+  touches and follow their IN-REPO file references so the declaration
+  enumerates every in-repo file the executor needs (not only the
+  edit-site files); external references cited by in-repo docs remain
+  governed by §II and MUST NOT be re-chased, and the planner MUST
+  apply materiality so only in-repo files genuinely relevant to the
+  unit of change are enumerated. Every feature's `plan.md` MUST declare
+  its verification layers per §VI — build scope, unit-test scope, and
+  (when applicable) large-test scope — together with the
+  small-to-large ordering, and every code-changing task in `tasks.md`
+  MUST materialize that ladder: build and unit-test verification as the
+  per-change gate, with large-test verification scoped to feature-level
+  checkpoints rather than repeated per task, and verification MUST
+  proceed in ascending granularity order (build → unit tests → large
+  tests) with frequency inversely proportional to granularity. Build
+  and unit-test verification MUST be embedded inside each code-changing
+  task (never as separate standalone tasks), while large-test
+  verification, when applicable, MAY be a separate standalone task
+  scoped to feature-level acceptance; the concrete build/test commands
+  and tooling remain defined by `AGENTS.md` and the repo's style docs.
 
-**Version**: 3.3.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-15
+**Version**: 3.7.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-07-16

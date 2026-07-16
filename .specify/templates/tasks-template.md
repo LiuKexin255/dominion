@@ -9,41 +9,38 @@ description: "Task list template for feature implementation"
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification.
+**Tests**: The examples below include test tasks. Tests are OPTIONAL - only include them if explicitly requested in the feature specification. Per Constitution §VI, build and unit-test verification MUST be embedded inside each code-changing task (never as separate standalone tasks); only large/integration test verification MAY be its own separate task scoped to feature-level acceptance.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
-## Format: `[ID] [P?] [Story] [新增|修改|删除] Description`
+## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
 - **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3)
-- **[新增|修改|删除]**: Change classification per Constitution §III —
-  新增 only for modules/files/types/design elements that did not
-  previously exist; 修改 for any change to an existing unit (including
-  adding a function to an existing class); 删除 for removal of an
-  existing unit. 修改 / 删除 tasks MUST record a design-applicability
-  review before implementation begins.
-- **Required Reading**: every implementation task MUST carry a
-  "Required Reading" declaration per Constitution §V enumerating the
-  specific documents the executor MUST read before editing code, grouped
-  by category. Any category may contain both in-repo docs and external
-  links. **规范文档** = code style/spec docs (mainly `style/*`, plus the
-  external standards they cite — e.g. AIPs, RFCs); **官方文档** =
-  official docs of external dependencies/components/tools, upstream
-  READMEs; **技术文章** = blogs, GitHub issues/PRs, RFCs, talks. The
-  declaration MUST cover context broader than the edit site, MUST
-  inherit the plan's documented research (per §II), and MUST state
-  "None" explicitly for any empty category. The feature's design docs
-  under `specs/[###-feature]/` are NOT re-listed here — they are
-  declared once in the "Required Spec Docs" section and read by every
-  task. A task without this declaration MUST NOT be started. **Planner
-  diligence (§V)**: before authoring each declaration, the planner MUST
-  read the in-repo documents the task touches and follow their IN-REPO
-  file references, so the declaration enumerates every in-repo file the
-  executor needs — not only the file at the edit site. External
-  references cited by in-repo docs are governed by §II and MUST NOT be
-  re-chased here; the planner MUST apply materiality and enumerate only
-  in-repo files genuinely relevant to the unit of change.
+- **Required Reading**: `tasks.md` MUST carry a single "Required Reading"
+  declaration per Constitution §V enumerating the specific documents the
+  executor MUST read before editing code, grouped by category. Any
+  category may contain both in-repo docs and external links. **规范文档**
+  = code style/spec docs (mainly `style/*`, plus the external standards
+  they cite — e.g. AIPs, RFCs); **官方文档** = official docs of external
+  dependencies/components/tools, upstream READMEs; **技术文章** = blogs,
+  GitHub issues/PRs, RFCs, talks. Every entry MUST resolve to a concrete
+  file path or link — never a description or summary — and every external
+  entry MUST carry its own inline `[description](URL)` link even if the
+  same source is cited elsewhere. The declaration MUST cover context
+  broader than the edit sites, MUST inherit the plan's documented
+  research (per §II), and MUST state "None" explicitly for any empty
+  category. The feature's own design docs under `specs/[###-feature]/`
+  are NOT listed here — they are loaded by the implementation workflow.
+  Implementation MUST NOT start while the declaration is missing or
+  incomplete. **Planner diligence (§V)**: before authoring the
+  declaration, the planner MUST read the in-repo documents the change
+  touches and follow their IN-REPO file references, so the declaration
+  enumerates every in-repo file the executor needs — not only the files
+  at the edit sites. External references cited by in-repo docs are
+  governed by §II and MUST NOT be re-chased here; the planner MUST apply
+  materiality and enumerate only in-repo files genuinely relevant to the
+  unit of change.
 - Include exact file paths in descriptions
 
 ## Constitution Check
@@ -62,22 +59,21 @@ description: "Task list template for feature implementation"
   §I) before implementation begins. Dependencies inherited from
   `plan.md` MUST explicitly reference the plan's research rather than
   restating decisions without provenance.
-- **Refactoring-Oriented Changes (§III)**: every implementation task MUST
-  carry the 新增 / 修改 / 删除 (Add / Modify / Delete) classification
-  inherited from `plan.md`, where 新增 applies ONLY to modules, files,
-  types, or design elements that did not previously exist (adding a
-  function to an existing class, a field to an existing struct, or a
-  branch to an existing function is 修改, not 新增). 修改 tasks MUST be
-  implemented as refactors of the existing unit, not as logic appended
-  on top. Every 修改 or 删除 task that touches an existing unit MUST,
-  before implementation begins, record a brief review of whether the
-  existing design, architecture, and layering of that unit still serve
-  the goal of the change; if they do not, the task MUST be expanded (or
-  split into a companion task) to bring the design back into coherence
-  in the same change set. "Out of scope" MUST NOT be used to leave an
-  outdated design in place. A task is not complete until the design
-  artifacts (`spec.md` / `plan.md` / `data-model.md` / `contracts/` /
-  `style/`) and the implementation agree.
+- **Refactoring-Oriented Changes (§III)**: any implementation task that
+  touches an existing unit MUST be carried out as a refactor of that
+  unit — a natural extension of a still-coherent design — not as logic
+  appended on top; appending logic without revisiting the unit's
+  structure (so it accrues branches, parallel code paths, or
+  responsibilities it was never designed for) is a violation even when
+  the behavior is correct. Before implementation begins, such a task
+  MUST record a brief review of whether the existing design,
+  architecture, and layering of that unit still serve the goal of the
+  change; if they do not, the task MUST be expanded (or split into a
+  companion task) to bring the design back into coherence in the same
+  change set. "Out of scope" MUST NOT be used to leave an outdated
+  design in place. A task is not complete until the design artifacts
+  (`spec.md` / `plan.md` / `data-model.md` / `contracts/` / `style/`)
+  and the implementation agree.
 - **Interface Design Coverage (§IV)**: any implementation task that
   touches an externally callable boundary (RPC service, HTTP endpoint,
   message subscriber, event producer, etc.) MUST inherit its interface
@@ -89,40 +85,43 @@ description: "Task list template for feature implementation"
   conform to whatever it currently requires; a divergence between the
   contract and the implementation MUST be resolved before the task is
   complete.
-- **Documentation First (§V)**: every implementation task MUST carry a
-  Required Reading declaration enumerating, across three categories,
-  the specific documents the executor MUST read before editing code.
-  Any category may contain both in-repo docs and external links — the
-  internal/external axis is identical across all three:
+- **Documentation First (§V)**: `tasks.md` MUST carry a single Required
+  Reading declaration enumerating, across three categories, the specific
+  documents the executor MUST read before editing code. Any category may
+  contain both in-repo docs and external links — the internal/external
+  axis is identical across all three:
   - **规范文档 (Code style/spec docs)** — code conventions and
     standards docs, mainly files under `style/`. External standards
     referenced by these docs (e.g., AIPs, RFCs, language style guides)
     belong in THIS category, not in the other two.
   - **官方文档 (Official docs)** — official documentation of external
-    dependencies, components, frameworks, tools, or services the task
+    dependencies, components, frameworks, tools, or services the change
     touches, plus the README of any upstream codebase relied upon.
   - **技术文章 (Technical articles)** — technical blog posts, GitHub
     issues/PRs, design RFCs, or other secondary sources clarifying
     non-obvious behavior.
 
-  External links in any category MUST carry inline citations per §I.
-  The declaration MUST cover context broader than the task's direct
-  edit site (at minimum the governing code style docs and the existing
-  code/modules the change interacts with), MUST inherit the plan's
-  documented research (per §II) and MAY extend it, MUST state "None"
-  explicitly for any empty category, and a task missing the declaration
-  MUST NOT be started. The feature's own design docs under
-  `specs/[###-feature]/` are NOT listed here — see the "Required Spec
-  Docs" section below. **Planner-side transitive reading (§V)**: the
-  author of this `tasks.md` MUST, before writing each task's Required
-  Reading, read the in-repo documents the task touches and follow the
-  IN-REPO file references they cite, so the declaration enumerates
-  every in-repo file the executor needs rather than only the edit-site
-  file. This is scoped to in-repo references only (external references
-  remain governed by §II and MUST NOT be re-chased), binds the planner
-  only (the executor inherits the enumeration verbatim), and demands
-  materiality (only in-repo files genuinely relevant to the unit of
-  change — not the entire transitively reachable graph). Suggested inline format:
+  Every entry MUST resolve to a concrete file path or link, never a
+  description or summary; every external entry MUST carry its own inline
+  `[description](URL)` link (per §I) even if the same source is cited
+  elsewhere in the design artifacts. The declaration MUST cover context
+  broader than the edit sites (at minimum the governing code style docs
+  and the existing code/modules the change interacts with), MUST inherit
+  the plan's documented research (per §II) and MAY extend it, MUST state
+  "None" explicitly for any empty category, and implementation MUST NOT
+  start while the declaration is missing or incomplete. The feature's
+  own design docs under `specs/[###-feature]/` are NOT declared here —
+  they are loaded by the implementation workflow. **Planner-side
+  transitive reading (§V)**: the author of this `tasks.md` MUST, before
+  writing the declaration, read the in-repo documents the change touches
+  and follow the IN-REPO file references they cite, so the declaration
+  enumerates every in-repo file the executor needs rather than only the
+  edit-site files. This is scoped to in-repo references only (external
+  references remain governed by §II and MUST NOT be re-chased), binds
+  the planner only (the executor inherits the enumeration verbatim), and
+  demands materiality (only in-repo files genuinely relevant to the unit
+  of change — not the entire transitively reachable graph). Suggested
+  inline format:
 
   ```
   Required Reading:
@@ -130,16 +129,31 @@ description: "Task list template for feature implementation"
   - 官方文档: [dependency docs](URL) — version; [upstream README](URL)
   - 技术文章: [issue/discussion/blog](URL)
   ```
-
-## Required Spec Docs *(declared once per Constitution §V)*
-
-Every task executor MUST read the feature's design docs under
-`specs/[###-feature-name]/` BEFORE starting any task — including but
-not limited to the main files below. The planner declares this
-directory once here; it is NOT repeated in individual task declarations.
-
-- `specs/[###-feature-name]/spec.md`
-- `specs/[###-feature-name]/plan.md`
+- **Test Verification Granularity (§VI)**: every task that changes code
+  MUST materialize the verification ladder inherited from `plan.md`.
+  Verification proceeds in ascending granularity order — build → unit
+  tests → large tests — with frequency inversely proportional to
+  granularity. Each code-changing task MUST specify build + unit-test
+  verification as its per-change gate, and that verification MUST live
+  INSIDE the code-changing task itself — it MUST NOT be split off into
+  separate standalone build or unit-test tasks, because that would
+  decouple the per-change gate from the change it validates and let a
+  change be declared "done" before its verification runs (build is the
+  first gate; a build failure blocks and invalidates all subsequent
+  verification; after a successful build the unit tests covering the
+  changed units MUST pass). Large-test verification is
+  feature/requirement validation: it is NOT required after every code
+  change, MUST NOT be used as a per-change gate, and MAY (unlike
+  build/unit verification) be materialized as its own separate
+  standalone task; when applicable it is scoped to feature-level
+  checkpoints (e.g., the feature's large-test plan) rather than
+  repeated per task. No
+  skipping and no inversion: a task MUST NOT be declared verified by
+  running only a large test, nor by running a large test before the
+  build and unit layers for that change pass; conversely, when a large
+  test exists for the feature, build+unit-only verification does not by
+  itself satisfy feature acceptance. The concrete build/test commands
+  and tooling are defined by `AGENTS.md` and the repo's style docs.
 
 ## Path Conventions
 

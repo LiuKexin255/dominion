@@ -64,20 +64,20 @@
   transitive references) as inline citations (per §I) with a one-line
   summary of the finding, and pin the version or version range
   researched. Relying on memory or prior assumptions is a violation.
-- **Refactoring-Oriented Changes (§III)**: every change described in this
-  plan MUST be explicitly classified as 新增 (Add), 修改 (Modify), or
-  删除 (Delete), where 新增 applies ONLY to modules, files, types, or
-  design elements that did not previously exist (adding a function to an
-  existing class, a field to an existing struct, or a branch to an
-  existing function is 修改, not 新增). 修改 changes MUST be implemented
-  as refactors of the existing unit, not as logic appended on top. Every
-  修改 or 删除 change MUST be accompanied by a review of the existing
-  design, architecture, and layering of the affected unit, with an
-  explicit verdict on whether that design still serves the new goal;
-  when it does not, the change MUST be expanded to bring the design
-  back into coherence in the same version. "Out of scope" MUST NOT be
-  used to carry an outdated design forward. The task list exported to
-  `tasks.md` MUST inherit and preserve these classifications.
+- **Refactoring-Oriented Changes (§III)**: every change in this plan that
+  touches an existing unit MUST be carried out as a refactor of that unit
+  — a natural extension of a still-coherent design — not as logic
+  appended on top. Appending logic without revisiting the unit's
+  structure (so it accrues conditional branches, parallel code paths, or
+  responsibilities it was never designed for) is a violation even when
+  the new behavior is correct. Every such change MUST be accompanied by a
+  review of the existing design, architecture, and code layering of the
+  affected unit, with an explicit verdict on whether that design still
+  serves the new goal; when it does not, the change MUST be expanded to
+  bring the design back into coherence in the same version. "Out of
+  scope" MUST NOT be used to carry an outdated design forward. The change
+  is not complete until the design artifacts and the implementation
+  agree.
 - **Interface Design Coverage (§IV)**: every change in this plan that
   introduces or modifies an externally callable boundary (RPC service,
   HTTP endpoint, message subscriber, event producer, etc.) MUST include
@@ -95,30 +95,56 @@
   design output, and the implementation tasks exported to `tasks.md`
   MUST inherit the design and reference the corresponding `contracts/`
   source rather than restating interface shapes at implementation time.
-- **Documentation First (§V)**: while §V is enforced at task level, this
-  plan MUST seed the Required Reading that downstream `tasks.md` items
-  inherit. The research recorded under §II (official docs + source repos
-  of every external dependency) flows into the task-level 官方文档
+- **Documentation First (§V)**: while §V is enforced at the `tasks.md`
+  level, this plan MUST seed the Required Reading that the exported
+  `tasks.md` inherits. The research recorded under §II (official docs +
+  source repos of every external dependency) flows into the 官方文档
   category; the governing code style docs referenced under §I/§III/§IV
   (`style/*`, including the external standards they cite) flow into the
-  task-level 规范文档 category; and any non-obvious external pattern
-  (blog, issue, RFC) the plan depends on MUST be cited inline (per §I)
-  so it flows into the task-level 技术文章 category. The plan is also the
-  authoritative source for the feature's design doc set under
-  `specs/[###-feature]/` (including but not limited to `spec.md`,
-  `plan.md`, and other design docs such as `data-model.md`,
-  `contracts/`, `quickstart.md`), which the exported `tasks.md` MUST
-  declare once as required reading for every task rather than repeating
-  per task. The task list exported to `tasks.md` MUST carry a per-task
-  Required Reading declaration that inherits this plan's documented
-  reading and adds task-specific items. When authoring those per-task
-  declarations, the task planner MUST read the in-repo documents each
-  task touches and follow their IN-REPO file references so each
-  declaration enumerates every in-repo file the executor needs — not
-  only the edit-site file; external references cited by in-repo docs
-  remain governed by §II (transitive reading at plan time) and MUST
-  NOT be re-chased at task-planning time, and the planner MUST apply
-  materiality to avoid reference-graph bloat.
+  规范文档 category; and any non-obvious external pattern (blog, issue,
+  RFC) the plan depends on MUST be cited inline (per §I) so it flows
+  into the 技术文章 category. The exported `tasks.md` MUST carry a
+  single unified Required Reading declaration that inherits this plan's
+  documented reading and adds feature-specific items. Every entry in
+  that declaration MUST resolve to a concrete file path or link (never
+  a description or summary), and every external entry MUST carry its
+  own inline `[description](URL)` link even if cited elsewhere. The
+  feature's own design docs under `specs/[###-feature]/` (including but
+  not limited to `spec.md`, `plan.md`, `data-model.md`, `contracts/`,
+  `quickstart.md`) are NOT part of that declaration — they are loaded
+  by the implementation workflow. When authoring the declaration, the
+  task planner MUST read the in-repo documents the change touches and
+  follow their IN-REPO file references so the declaration enumerates
+  every in-repo file the executor needs — not only the edit-site files;
+  external references cited by in-repo docs remain governed by §II
+  (transitive reading at plan time) and MUST NOT be re-chased at
+  task-planning time, and the planner MUST apply materiality to avoid
+  reference-graph bloat.
+- **Test Verification Granularity (§VI)**: this plan MUST declare the
+  verification layers the feature uses — build scope, unit-test scope,
+  and (when applicable) large-test scope — together with the
+  small-to-large ordering (build → unit tests → large tests) and the
+  frequency rule (build and unit tests as per-change validation;
+  large tests only at feature/requirement milestones, never as a
+  per-change gate). Each smaller layer gates the next: a build failure
+  blocks unit tests, and build+unit MUST pass before a large test is
+  run for the feature. Large tests are feature/requirement validation,
+  not per-change validation; when a feature exposes an externally
+  callable boundary that the repo requires to be large-tested, the
+  large-test scope is declared here and scoped to feature-level
+  acceptance, not repeated per task. The exported `tasks.md` MUST
+  materialize this ladder so that every code-changing task carries
+  build + unit-test per-change verification, with large-test
+  verification scoped to feature-level checkpoints. Build and
+  unit-test verification MUST be embedded INSIDE each code-changing
+  task — they MUST NOT be materialized as separate standalone tasks,
+  because splitting them off detaches the per-change gate from the
+  change it validates and lets a change be declared "done" before its
+  verification runs. Large-test verification, by contrast, MAY be a
+  separate standalone task scoped to feature-level acceptance. The concrete
+  build/test commands and tooling are defined by `AGENTS.md` and the
+  repo's style docs; this section governs only the ordering, the
+  frequency, and how the ladder is declared.
 
 ## Project Structure
 

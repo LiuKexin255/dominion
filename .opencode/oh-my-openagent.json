@@ -36,7 +36,7 @@
     },
     "atlas": {
       "model": "zhipuai-coding-plan/glm-5.2",
-      "prompt_append": "The documents required to be read in the task should be accurately passed to the executor, and the executor should read them before editing the code. It is forbidden to replace actual documents and process specifications with 'experience' and 'understanding'."
+      "prompt_append": "The documents required to be read (including doc repo-in and external links) in the task should be accurately passed to the executor, and the executor should read them before editing the code. It is forbidden to replace actual documents and process specifications with 'experience' and 'understanding'."
     },
     "sisyphus-junior": {
       "model": "zhipuai-coding-plan/glm-5.2"

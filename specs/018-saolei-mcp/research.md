@@ -1,8 +1,8 @@
 # Research: LangChain.js MCP & Skill Integration + deep-agents Reference
 
-**Feature**: 018-saolei-mcp | **Date**: 2026-07-14 | **Phase**: 0 (Constitution §III — External Dependency Research)
+**Feature**: 018-saolei-mcp | **Date**: 2026-07-14 | **Phase**: 0 (Constitution §II — External Dependency Research)
 
-**Scope**: this is the first time the codebase introduces MCP and skill concepts. Per Constitution §III, the LangChain.js MCP/skill support, the MCP TypeScript SDK in-process transport, and deep-agents' skill/MCP patterns were researched against official documentation and source repositories before this plan was finalized. This document records the decisions (D-1, D-2 from [plan.md](./plan.md)), their rationale, the alternatives evaluated, and the citations.
+**Scope**: this is the first time the codebase introduces MCP and skill concepts. Per Constitution §II, the LangChain.js MCP/skill support, the MCP TypeScript SDK in-process transport, and deep-agents' skill/MCP patterns were researched against official documentation and source repositories before this plan was finalized. This document records the decisions (D-1, D-2 from [plan.md](./plan.md)), their rationale, the alternatives evaluated, and the citations.
 
 ## R-1 — MCP integration: in-process MCP server ⇒ ordinary LangChain tools, no new dependency
 
@@ -55,7 +55,7 @@ The spec's terminology note (and the user's correction) holds: this *is* the [Mo
 | **D-1** MCP integration | Confirmed — plain LangChain tools (`tool()` + zod), grouped as `"saolei"` mcp | **No** |
 | **D-2** Skill injection | Confirmed — skill markdown concatenated into `systemPrompt`; adopt `SKILL.md` format | **No** |
 
-The §III gate in [plan.md](./plan.md) is now satisfiable: every external dependency referenced (LangChain v1, `@langchain/mcp-adapters`, `@modelcontextprotocol/sdk`, deep agents, the Agent Skills spec) has been researched against its official docs/source with version/commit pins below, and the decision introduces **no new runtime dependency**.
+The §II gate in [plan.md](./plan.md) is now satisfiable: every external dependency referenced (LangChain v1, `@langchain/mcp-adapters`, `@modelcontextprotocol/sdk`, deep agents, the Agent Skills spec) has been researched against its official docs/source with version/commit pins below, and the decision introduces **no new runtime dependency**.
 
 ## References
 

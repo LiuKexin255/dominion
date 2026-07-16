@@ -153,4 +153,4 @@ const saolei_update = tool(
 
 ## Selection rule
 
-These five tools are added to the agent's tool set **iff** the active profile's `mcp_names` contains `"saolei"` (resolved by the refactored `buildTools` registry, [plan.md Change Classification](../plan.md#change-classification)). Unknown `mcp_names` are ignored with a warning (FR-035), consistent with existing unknown-`tool_names` handling.
+These five tools are added to the agent's tool set **iff** the active profile's `mcp_names` contains `"saolei"` (resolved by the refactored `buildTools` registry, [plan.md](../plan.md#changes)). Unknown `mcp_names` are ignored with a warning (FR-035), consistent with existing unknown-`tool_names` handling.

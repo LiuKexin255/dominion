@@ -47,18 +47,18 @@ message UpdateAgentProfileRequest {
 }
 ```
 
-## UI → Wails view-model (修改 — close the dormant gap)
+## UI → Wails view-model (close the dormant gap)
 
 `projects/game/desktop/view_model.go` — `CreateAgentProfileView` currently **omits** `SkillNames`/`McpNames` (the dormant gap FR-033 closes). The contract:
 
 | View-model field | Type | Notes |
 |---|---|---|
-| `CreateAgentProfileView.SkillNames` | `[]string` | **新增** (was omitted); JSON `skillNames` |
-| `CreateAgentProfileView.McpNames` | `[]string` | **新增** (was omitted); JSON `mcpNames` |
+| `CreateAgentProfileView.SkillNames` | `[]string` | was omitted (now added); JSON `skillNames` |
+| `CreateAgentProfileView.McpNames` | `[]string` | was omitted (now added); JSON `mcpNames` |
 
 (`AgentProfileView` already carries `SkillNames`/`McpNames` — only the create path needs the fix.)
 
-## Frontend (Svelte) — `ProfileManagement.svelte` (修改)
+## Frontend (Svelte) — `ProfileManagement.svelte`
 
 Add MCP + skill selection to **both** the create and edit forms, mirroring the existing `toolNames` chip pattern (`VALID_TOOL_VALUES` + `toggleTool`):
 
@@ -69,11 +69,11 @@ Add MCP + skill selection to **both** the create and edit forms, mirroring the e
 
 **Unknown values**: names not in the valid sets are filtered out on load (like `filterValidTools`) and surfaced as a warning (FR-035).
 
-## Frontend API — `api.ts` (修改)
+## Frontend API — `api.ts`
 
 `AgentProfile` (api.ts) already carries `skillNames`/`mcpNames` — the read path is sound. The **create** path needs work: api.ts's hand-maintained `CreateAgentProfileRequest` interface is the *pre-refactor* flat shape (`agentProfileName`/`model`/`skillNames`/...) and no longer matches the AIP-133 nested proto (`{parent, agent_profile_id, agent_profile}`). Because the Wails Go binding (`app.go`) mediates between the TS view and the generated proto, the create-path wiring task MUST reconcile this: either align the TS interface to the nested shape, or keep the flat view-shape and let `app.go` assemble the nested `AgentProfile` (the latter is the smaller change — see the `app.go` mapping below). The `updateAgentProfile` wrapper already takes a full `AgentProfile` + `updateMaskPaths` — ensure the mask includes the two new paths.
 
-## Go mapping — `app.go` `CreateAgentProfile` (修改 — closes FR-033 create gap)
+## Go mapping — `app.go` `CreateAgentProfile` (closes FR-033 create gap)
 
 `app.go`'s `CreateAgentProfile` already maps the Wails `CreateAgentProfileView` → the nested AIP-133 `game.CreateAgentProfileRequest{Parent, AgentProfileId, AgentProfile}`. Today that nested `AgentProfile` sets only `Model/SystemPrompt/Enabled/ToolNames` — **`SkillNames`/`McpNames` are dropped on the create path** (the FR-033 gap). Once `CreateAgentProfileView` carries the two new fields (above), this mapping MUST set `AgentProfile.SkillNames`/`AgentProfile.McpNames` so the selections reach the persisted profile. The **update** path (`app.go` `UpdateAgentProfile`) already sets `SkillNames`/`McpNames` on the proto `AgentProfile` — no change needed there.
 
@@ -83,16 +83,16 @@ Add MCP + skill selection to **both** the create and edit forms, mirroring the e
 Operator (ProfileManagement.svelte)
   │  toggles saolei mcp + saolei skill chips
   ▼
-CreateAgentProfileView  (view_model.go — 修改: += SkillNames/McpNames)
+CreateAgentProfileView  (view_model.go — += SkillNames/McpNames)
   │  skillNames, mcpNames now carried (FR-033)
   ▼
-app.go CreateAgentProfile  (修改: map view → nested AgentProfile{SkillNames,McpNames,...})
+app.go CreateAgentProfile  (map view → nested AgentProfile{SkillNames,McpNames,...})
   │  AIP-133 CreateAgentProfileRequest{Parent, AgentProfileId, AgentProfile}
   ▼
 PromptService.CreateAgentProfile  (game.proto) → persisted AgentProfile
   │  skill_names, mcp_names stored
   ▼
-prompt-client.ts getProfile()  (修改: also GetSkill for each skill_name → skillContents)
+prompt-client.ts getProfile()  (also GetSkill for each skill_name → skillContents)
   │  ProfileData { toolNames, skillNames, mcpNames, skillContents }
   ▼
 AdapterFactory → AgentAdapterImpl  (llm.ts)

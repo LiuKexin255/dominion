@@ -34,7 +34,7 @@ message KeyPart { string tool_id = 1; KeyAction key = 2; }
 
 `OperationBridge.dispatch` is generalized to dispatch a **`PartBlock`** (one or more parts) as a single operation and await one `ToolResultPart`. A move+click combo is one block → one atomic desktop operation → one result (so the LLM/tool sends one dispatch, not two calls). The single-part path is the one-element block.
 
-The existing dispatch was already PartBlock-shaped (`envelope.content = { parts: [part] }`); the refactor accepts multiple parts and correlates by a single `tool_id` + 5s timeout (existing-design verdict in [plan.md](../plan.md#change-classification)).
+The existing dispatch was already PartBlock-shaped (`envelope.content = { parts: [part] }`); the refactor accepts multiple parts and correlates by a single `tool_id` + 5s timeout (existing-design verdict in [plan.md](../plan.md#changes)).
 
 ## 4. Desktop execution by delivery (Go / Wails, Win32)
 
@@ -49,7 +49,7 @@ For `WINDOW_MESSAGE` mouse, the desktop reads the coordinate from the `MouseMove
 
 After delivery, the desktop captures a screenshot of the bound window (same path as the mouse tool, spec 014) and returns one `ToolResultPart{ tool_id, status (SUCCEEDED/FAILED), message, screenshot? }`.
 
-**Reuse**: this **extends** the existing input executor (honors `InputDelivery`) — it is not a separate parallel executor, and it does not modify the `SIMULATE` path the existing mouse tool relies on (existing-design verdict, [plan.md](../plan.md#change-classification)).
+**Reuse**: this **extends** the existing input executor (honors `InputDelivery`) — it is not a separate parallel executor, and it does not modify the `SIMULATE` path the existing mouse tool relies on (existing-design verdict, [plan.md](../plan.md#changes)).
 
 ## 5. Bound-window precondition
 

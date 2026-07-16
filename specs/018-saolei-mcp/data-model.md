@@ -77,7 +77,7 @@ The saolei MCP instance is owned by the `SessionAgent`, mirroring the existing p
 SessionAgent (per session)
  ├── OperationBridge         (existing; agent → desktop operation channel)
  ├── checkpointer            (existing)
- └── saoleiMcp?: SaoleiMcp   (新增; created lazily when profile declares mcp_names=["saolei"])
+ └── saoleiMcp?: SaoleiMcp   (created lazily when profile declares mcp_names=["saolei"])
 ```
 
 - **Creation**: lazily, when the session's profile declares the `saolei` mcp, at adapter bind time. Each `SessionAgent` has at most one saolei MCP instance.
@@ -109,7 +109,7 @@ All coordinates are **window-client-relative pixels** (the same space the existi
 
 **Principle** (user direction): a `Part` declares the **operation** (mouse move, mouse click, key press) and is **tool-agnostic**; the desktop owns the **implementation**. We do NOT add tool-specific parts. Instead: (a) the existing mouse parts gain an `InputDelivery` enum so the same part serves every tool and both delivery paths; (b) a new generic `KeyPart` declares key-press operations; (c) the bridge dispatches a `PartBlock` (one or more parts) so a move+click combo is one atomic operation. Occlusion-free input (FR-014) is achieved via `WINDOW_MESSAGE` delivery — the desktop PostMessages the bound window without moving the OS cursor.
 
-### 5a. New `InputDelivery` enum + delivery field on mouse parts (修改)
+### 5a. New `InputDelivery` enum + delivery field on mouse parts
 
 ```proto
 // InputDelivery tells the desktop HOW to realize a mouse operation.
@@ -147,7 +147,7 @@ message MouseClickPart {
 
 **Backward compatibility**: the existing mouse tool leaves `delivery` unset → `SIMULATE` → current physical behavior. No change to existing consumers.
 
-### 5b. New generic `KeyPart` + `KeyAction` enum (新增 — additive to `Part.kind`)
+### 5b. New generic `KeyPart` + `KeyAction` enum (additive to `Part.kind`)
 
 ```proto
 // KeyAction enumerates key-press operations the desktop can realize.
@@ -176,14 +176,14 @@ message Part {
     MouseMovePart   mouse_move    = 4;
     MouseClickPart  mouse_click   = 5;
     ToolResultPart  tool_result   = 6;
-    KeyPart         key_press     = 7;   // 新增 (generic key-press operation)
+    KeyPart         key_press     = 7;   // generic key-press operation
   }
 }
 ```
 
 > `KeyPart` declares the operation only — per user direction, the desktop decides the implementation (PostMessage to the bound window). A `delivery` field is intentionally omitted from `KeyPart`; if a future key needs physical simulation, it can be added as an additive field.
 
-### 5c. `PartBlock` multi-part dispatch (bridge 修改)
+### 5c. `PartBlock` multi-part dispatch (bridge refactor)
 
 The `OperationBridge.dispatch` is generalized to accept a **`PartBlock`** (one or more parts) and return one `ToolResultPart`. A move+click combo is dispatched as one block (e.g. `[MouseMovePart{x,y,WINDOW_MESSAGE}, MouseClickPart{LEFT_CLICK,WINDOW_MESSAGE}]`) → one atomic desktop operation → one result. The single-part path is the one-element block.
 
@@ -198,7 +198,7 @@ The `OperationBridge.dispatch` is generalized to accept a **`PartBlock`** (one o
 
 **Result**: the existing generic `ToolResultPart { tool_id, status, message, screenshot }` is reused unchanged — the bridge correlates by `tool_id` regardless of part types in the block.
 
-## 6. Profile Data Extensions (修改)
+## 6. Profile Data Extensions
 
 `ProfileData` (`session-agent.ts`) gains the skill/mcp names + resolved skill contents, alongside the existing `toolNames`:
 
@@ -207,9 +207,9 @@ ProfileData {
   model:        string           // existing
   systemPrompt: string           // existing (base)
   toolNames:    string[]         // existing
-  skillNames:   string[]         // 新增 (e.g. ["saolei"])
-  mcpNames:     string[]         // 新增 (e.g. ["saolei"])
-  skillContents: string[]        // 新增 (fetched Skill.content for each skillNames entry)
+  skillNames:   string[]         // e.g. ["saolei"]
+  mcpNames:     string[]         // e.g. ["saolei"]
+  skillContents: string[]        // fetched Skill.content for each skillNames entry
 }
 ```
 
@@ -220,9 +220,9 @@ AdapterFactory(
   getProvider,
   systemPrompt,
   toolNames,
-  skillNames,        // 新增
-  mcpNames,          // 新增
-  skillContents,     // 新增
+  skillNames,
+  mcpNames,
+  skillContents,
   bridge,
   checkpointer,
 ) => AgentAdapter
@@ -236,7 +236,7 @@ effectiveSystemPrompt = systemPrompt
   + skillContents.join(SEPARATOR)
 ```
 
-where `SEPARATOR` is a stable delimiter (e.g. `"\n\n---\n\n"`). This is the single place prompt composition happens (existing design verdict in plan.md Change Classification).
+where `SEPARATOR` is a stable delimiter (e.g. `"\n\n---\n\n"`). This is the single place prompt composition happens (existing design verdict in [plan.md](./plan.md) Changes).
 
 **Tool resolution** (plan D-1, existing `buildTools` refactor): `buildTools` becomes a registry that resolves both `toolNames` (existing tools) and `mcpNames` (mcp-bundled tool sets) into a flat `StructuredToolInterface[]`. For `"saolei"` mcp, it calls the saolei tool factory, binding the session-scoped `SaoleiMcp` instance + `OperationBridge`.
 
