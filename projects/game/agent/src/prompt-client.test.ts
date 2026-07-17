@@ -1,75 +1,21 @@
 /**
  * Tests for PromptClient.
  *
- * Uses dependency injection to pass a mock gRPC client, verifying the
- * PromptClient correctly wraps the GetAgentProfile RPC call.
+ * Reliable pattern (FR-009): the PromptClient ctor accepts an injected gRPC
+ * client (DI seam), so getProfile/close/warmup tests pass a `vi.fn()`-backed
+ * client and need NO module-level `vi.mock`. The channel-option tests use the
+ * exported `buildChannelOptionsForTest()` factory seam. Previously this file
+ * relied on module-level `vi.mock` of `@grpc/grpc-js` / `node:fs` /
+ * `@grpc/proto-loader` / `@dominion/common-js-grpc-resolver`, which the
+ * pre-compiled `:lib` bypasses under Bazel js_test (see research.md §2 and
+ * style/javascript.md §测试). `registerDominionResolver` now runs only on the
+ * real-construction path, so DI-seamed construction no longer triggers it.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PromptClient } from "./prompt-client";
-
-// ---------------------------------------------------------------------------
-// Mock the modules that PromptClient imports during construction
-// ---------------------------------------------------------------------------
-
-// For dependency injection we construct PromptClient with a mock client,
-// but we still mock the modules so the constructor doesn't throw when
-// loading proto files etc.
-const { MockClient } = vi.hoisted(() => {
-  const MockClient = vi.fn(
-    (_target: string, _creds: unknown, _options: Record<string, unknown>) => ({
-      getAgentProfile: vi.fn(),
-      close: vi.fn(),
-    }),
-  );
-  return { MockClient };
-});
-
-vi.mock("@grpc/grpc-js", () => {
-  // A simple constructor that accepts (target, credentials) and returns
-  // an object with a mockable getAgentProfile method.
-  return {
-    Client: MockClient,
-    loadPackageDefinition: vi.fn(() => ({
-      projects: {
-        game: {
-          PromptService: MockClient,
-        },
-      },
-    })),
-    credentials: {
-      createInsecure: vi.fn(() => ({ type: "insecure" })),
-      createSsl: vi.fn(() => ({ type: "ssl" })),
-    },
-    status: {
-      NOT_FOUND: 5,
-      OK: 0,
-      UNAVAILABLE: 14,
-    },
-    connectivityState: {
-      IDLE: 0,
-      CONNECTING: 1,
-      READY: 2,
-      TRANSIENT_FAILURE: 3,
-      SHUTDOWN: 4,
-    },
-  };
-});
-
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => true),
-  readFileSync: vi.fn(() => Buffer.from("fake-ca-cert")),
-}));
-
-vi.mock("@grpc/proto-loader", () => ({
-  loadSync: vi.fn(() => ({})),
-}));
-
-vi.mock("@dominion/common-js-grpc-resolver", () => ({
-  registerDominionResolver: vi.fn(),
-  createDeployClient: vi.fn(() => ({
-    getServiceEndpoints: vi.fn(),
-  })),
-}));
+import {
+  PromptClient,
+  buildChannelOptionsForTest,
+} from "./prompt-client";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -87,7 +33,6 @@ describe("PromptClient", () => {
       getAgentProfile: vi.fn(),
       close: vi.fn(),
     };
-    MockClient.mockClear();
   });
 
   describe("getProfile", () => {
@@ -250,14 +195,11 @@ describe("PromptClient", () => {
   });
 
   describe("channel construction", () => {
-    beforeEach(() => {
-      MockClient.mockClear();
-    });
-
+    // Factory seam (FR-009): assert channel options directly via the exported
+    // builder instead of intercepting the grpc.Client constructor with a
+    // module-level vi.mock.
     it("configures keepalive and reconnect-backoff channel options", () => {
-      new PromptClient();
-
-      const options = MockClient.mock.calls[0]?.[2];
+      const options = buildChannelOptionsForTest();
       expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
       expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
       expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
@@ -266,9 +208,7 @@ describe("PromptClient", () => {
     });
 
     it("configures round_robin load balancing via grpc.service_config", () => {
-      new PromptClient();
-
-      const options = MockClient.mock.calls[0]?.[2];
+      const options = buildChannelOptionsForTest();
       const serviceConfig = JSON.parse(
         options?.["grpc.service_config"] as string,
       );

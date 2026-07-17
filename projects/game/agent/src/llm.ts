@@ -203,6 +203,14 @@ export class AgentAdapterImpl implements AgentAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly agent: any;
 
+  /**
+   * @param createAgentFn Optional factory overriding `langchain`'s `createAgent`
+   *   (dependency-injection seam). Tests inject a `vi.fn()` spy to assert the
+   *   `tools`/options passed without relying on module-level `vi.mock("langchain")`,
+   *   which the pre-compiled `:lib` bypasses under Bazel `js_test` (see
+   *   `style/javascript.md` §测试 and research.md §2). Defaults to the real
+   *   `createAgent`.
+   */
   constructor(
     chatModel: ChatModel,
     systemPrompt: string,
@@ -211,6 +219,8 @@ export class AgentAdapterImpl implements AgentAdapter {
     bridge: OperationBridge,
     saoleiMcp: SaoleiMcp | null,
     checkpointer: MemorySaver,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    createAgentFn?: (config: any) => any,
   ) {
     const tools = buildTools(toolNames, mcpNames, bridge, saoleiMcp);
 
@@ -220,7 +230,7 @@ export class AgentAdapterImpl implements AgentAdapter {
       mcpNames: mcpNames.join(","),
     });
 
-		this.agent = createAgent({
+		this.agent = (createAgentFn ?? createAgent)({
 			model: chatModel,
 			systemPrompt,
 			tools,

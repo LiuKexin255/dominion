@@ -72,12 +72,25 @@ export class OTelReporter implements Reporter {
   private logger: OTelLogger | null = null;
   private name: string;
 
-  constructor(name: string) {
+  /**
+   * @param name   Logger name used to obtain an OTel Logger when no logger is injected.
+   * @param logger Optional injected Logger (dependency-injection seam). When omitted,
+   *               the global OTel LoggerProvider is consulted via `logs.getLogger`.
+   *               Tests inject a `vi.fn()`-backed logger so emit assertions do not
+   *               depend on module-level `vi.mock` interception (which is bypassed by
+   *               the pre-compiled `:lib` under Bazel `js_test` — see
+   *               `style/javascript.md` §测试).
+   */
+  constructor(name: string, logger?: OTelLogger) {
     this.name = name;
-    try {
-      this.logger = logs.getLogger(name);
-    } catch {
-      this.logger = null;
+    if (logger !== undefined) {
+      this.logger = logger;
+    } else {
+      try {
+        this.logger = logs.getLogger(name);
+      } catch {
+        this.logger = null;
+      }
     }
   }
 
