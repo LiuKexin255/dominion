@@ -36,6 +36,10 @@ describe("PromptClient", () => {
   });
 
   describe("getProfile", () => {
+    // The real gRPC stub contract (prompt-client.ts getProfile) is
+    // getAgentProfile(request, metadata, options, callback) with request
+    // { name: "prompts/agentProfiles/<profile>" }. Mocks must match that
+    // 4-arg shape so the 4th positional arg is the callback (FR-012).
     it("returns model and systemPrompt for a valid profile", async () => {
       const profileName = "my-profile";
       const expectedModel = "opencode-go/deepseek-v4-pro";
@@ -43,7 +47,9 @@ describe("PromptClient", () => {
 
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (err: null, response: { model: string; systemPrompt: string; toolNames: string[] }) => void,
         ) => {
           cb(null, {
@@ -61,6 +67,7 @@ describe("PromptClient", () => {
         model: expectedModel,
         systemPrompt: expectedSystemPrompt,
         toolNames: ["mouse_move"],
+        mcpNames: [],
       });
     });
 
@@ -74,7 +81,9 @@ describe("PromptClient", () => {
 
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (err: Error, response: null) => void,
         ) => {
           cb(notFoundError, null);
@@ -95,7 +104,9 @@ describe("PromptClient", () => {
 
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (
             err: null,
             response: { model: string; systemPrompt: string; toolNames: string[] },
@@ -114,7 +125,9 @@ describe("PromptClient", () => {
 
       expect(mockClient.getAgentProfile).toHaveBeenCalledTimes(1);
       expect(mockClient.getAgentProfile).toHaveBeenCalledWith(
-        { agentProfileName: profileName },
+        { name: `prompts/agentProfiles/${profileName}` },
+        expect.any(Object),
+        expect.any(Object),
         expect.any(Function),
       );
     });
@@ -129,7 +142,9 @@ describe("PromptClient", () => {
 
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (err: Error, response: null) => void,
         ) => {
           cb(error, null);
@@ -146,7 +161,9 @@ describe("PromptClient", () => {
     it("extracts toolNames from the response", async () => {
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (
             err: null,
             response: { model: string; systemPrompt: string; toolNames: string[] },
@@ -169,7 +186,9 @@ describe("PromptClient", () => {
     it("defaults toolNames to empty array when absent in response", async () => {
       mockClient.getAgentProfile.mockImplementation(
         (
-          _req: { agentProfileName: string },
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
           cb: (
             err: null,
             response: { model: string; systemPrompt: string; toolNames?: string[] },
@@ -200,9 +219,13 @@ describe("PromptClient", () => {
     // module-level vi.mock.
     it("configures keepalive and reconnect-backoff channel options", () => {
       const options = buildChannelOptionsForTest();
-      expect(options?.["grpc.keepalive_time_ms"]).toBe(30_000);
+      // KEEPALIVE_OPTIONS in prompt-client.ts deliberately sets a 5-min
+      // keepalive interval (grpc-go rejects pings more frequent than 5 min)
+      // and disables ping-without-calls. The test asserts that documented
+      // intent, not a stale 30s/1 value.
+      expect(options?.["grpc.keepalive_time_ms"]).toBe(300_000);
       expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
-      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(1);
+      expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(0);
       expect(options?.["grpc.initial_reconnect_backoff_ms"]).toBe(1_000);
       expect(options?.["grpc.max_reconnect_backoff_ms"]).toBe(15_000);
     });

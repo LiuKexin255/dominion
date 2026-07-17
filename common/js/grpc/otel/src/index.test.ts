@@ -50,13 +50,15 @@ async function getSpans(
 ): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const finished = exporter.getFinishedSpanItems();
+    // InMemorySpanExporter exposes getFinishedSpans(), not getFinishedSpanItems()
+    // (https://github.com/open-telemetry/opentelemetry-js — sdk-trace-base InMemorySpanExporter).
+    const finished = exporter.getFinishedSpans();
     if (finished.length >= minCount) {
       return finished;
     }
     await new Promise((r) => setTimeout(r, 50));
   }
-  const last = exporter.getFinishedSpanItems();
+  const last = exporter.getFinishedSpans();
   return last;
 }
 
