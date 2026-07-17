@@ -60,16 +60,21 @@ describe("createResolver", () => {
     expect(result).toEqual(["10.0.0.1:50051", "10.0.0.2:50051"]);
   });
 
-  it("resolves named port via ports map (quickstart scenario 1)", async () => {
+  it("resolves a numeric port target (residual ports map ignored)", async () => {
+    // Named-port resolution via a ports map was REMOVED: the grpc-js resolver
+    // cannot identify the name part of a target, so `parseTarget` rejects
+    // non-numeric ports (target.ts:28-29 "Named ports are not supported").
+    // A residual `ports` field in the deploy response is ignored for numeric
+    // targets; this verifies numeric filtering is unaffected by it.
     const fetch = fakeFetchReturning({
-      endpoints: ["10.0.0.1:1234", "10.0.0.2:1234"],
+      endpoints: ["10.0.0.1:50051", "10.0.0.2:50051"],
       ports: { grpc: 50051 },
       isStateful: false,
       statefulInstances: [],
     });
 
     const resolver = createResolver({ env: TEST_ENV, fetch });
-    const result = await resolver.resolve("myapp/myservice:grpc");
+    const result = await resolver.resolve("myapp/myservice:50051");
 
     expect(result).toEqual(["10.0.0.1:50051", "10.0.0.2:50051"]);
   });
@@ -165,10 +170,10 @@ describe("createResolver", () => {
     expect(result).toEqual(["10.0.0.1:50051"]);
   });
 
-  it("propagates error for named port missing from ports map", async () => {
+  it("rejects a named port target with InvalidTargetError (named ports not supported)", async () => {
     const fetch = fakeFetchReturning({
       endpoints: ["10.0.0.1:1234"],
-      ports: {}, // no "grpc" entry
+      ports: {}, // irrelevant: parseTarget rejects non-numeric ports before any port lookup
       isStateful: false,
       statefulInstances: [],
     });

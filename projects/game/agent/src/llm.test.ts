@@ -685,7 +685,18 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 			const systemMsgs = call.messages.filter(
 				(m: any) => m._getType?.() === "system",
 			);
-			expect(systemMsgs).toHaveLength(0);
+			// Per 011 (research.md L117-126) createAgent injects the current
+			// profile's systemPrompt as a SystemMessage each turn; the middleware
+			// strips only STALE cross-profile SystemMessages (plan.md L255), so
+			// the current systemPrompt remains. Same profile ("system-prompt-1")
+			// both turns ⇒ exactly one SystemMessage carrying the current prompt,
+			// with no stale/duplicate contamination.
+			expect(systemMsgs).toHaveLength(1);
+			// createAgent injects the systemPrompt as a SystemMessage whose
+			// content is a text content-block array.
+			expect(systemMsgs[0].content).toEqual([
+				{ type: "text", text: "system-prompt-1" },
+			]);
 		}
 	});
 });

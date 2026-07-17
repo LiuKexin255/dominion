@@ -29,18 +29,24 @@ const TEST_ENV = {
 };
 
 /**
- * Quickstart scenario 3: fake deploy response for a stateful service
- * with 3 instances and named port `grpc: 50051`.
+ * Quickstart scenario 3: fake deploy response for a stateful service with 3
+ * instances. Endpoints are published on the numeric target port directly.
+ *
+ * NOTE: an earlier revision used a named port (`grpc`) with a `ports` remap
+ * (`1234` → `50051`). Named-port support was REMOVED because the grpc-js
+ * resolver cannot identify the name part of a target, so `parseTarget`
+ * rejects non-numeric ports (see `target.ts:28-29` "Named ports are not
+ * supported"). Tests therefore exercise numeric ports only.
  */
 function statefulDeployBody() {
   return {
     isStateful: true,
     statefulInstances: [
-      { index: 0, endpoints: ["10.0.0.10:1234"] },
-      { index: 1, endpoints: ["10.0.0.11:1234"] },
-      { index: 2, endpoints: ["10.0.0.12:1234"] },
+      { index: 0, endpoints: ["10.0.0.10:50051"] },
+      { index: 1, endpoints: ["10.0.0.11:50051"] },
+      { index: 2, endpoints: ["10.0.0.12:50051"] },
     ],
-    ports: { grpc: 50051 },
+    ports: {},
   };
 }
 
@@ -52,7 +58,7 @@ describe("createStatefulResolver", () => {
     });
 
     const endpoints = await resolver.resolveInstance(
-      "myapp/myservice:grpc",
+      "myapp/myservice:50051",
       1,
     );
 
@@ -66,7 +72,7 @@ describe("createStatefulResolver", () => {
     });
 
     await expect(
-      resolver.resolveInstance("myapp/myservice:grpc", 99),
+      resolver.resolveInstance("myapp/myservice:50051", 99),
     ).rejects.toThrow(StatefulInstanceNotFoundError);
   });
 
@@ -78,7 +84,7 @@ describe("createStatefulResolver", () => {
         { index: 1, endpoints: [] },
         { index: 2, endpoints: ["10.0.0.12:1234"] },
       ],
-      ports: { grpc: 50051 },
+      ports: {},
     };
 
     const resolver = createStatefulResolver({
@@ -87,7 +93,7 @@ describe("createStatefulResolver", () => {
     });
 
     await expect(
-      resolver.resolveInstance("myapp/myservice:grpc", 1),
+      resolver.resolveInstance("myapp/myservice:50051", 1),
     ).rejects.toThrow(StatefulInstanceNoReadyEndpointsError);
   });
 
@@ -95,7 +101,7 @@ describe("createStatefulResolver", () => {
     const body = {
       isStateful: false,
       endpoints: ["10.0.0.1:50051"],
-      ports: { grpc: 50051 },
+      ports: {},
       statefulInstances: [],
     };
 
@@ -105,11 +111,11 @@ describe("createStatefulResolver", () => {
     });
 
     await expect(
-      resolver.resolveInstance("myapp/myservice:grpc", 0),
+      resolver.resolveInstance("myapp/myservice:50051", 0),
     ).rejects.toThrow(ServiceNotStatefulError);
   });
 
-  it("resolves named port on a stateful instance correctly", async () => {
+  it("resolves a numeric port on a multi-port stateful instance", async () => {
     const body = {
       isStateful: true,
       statefulInstances: [
@@ -118,7 +124,7 @@ describe("createStatefulResolver", () => {
           endpoints: ["10.0.0.10:8080", "10.0.0.10:9090"],
         },
       ],
-      ports: { http: 8080, metrics: 9090 },
+      ports: {},
     };
 
     const resolver = createStatefulResolver({
@@ -126,7 +132,7 @@ describe("createStatefulResolver", () => {
       fetch: fakeFetch(body),
     });
 
-    // Numeric port 9090 — should match the endpoint with port 9090
+    // Numeric port 9090 — filters the instance endpoints by exact port match.
     const endpoints = await resolver.resolveInstance(
       "myapp/myservice:9090",
       0,
@@ -151,7 +157,7 @@ describe("createStatefulResolver", () => {
 
     // Target app "myapp" does not match SERVICE_APP "otherapp"
     await expect(
-      resolver.resolveInstance("myapp/myservice:grpc", 0),
+      resolver.resolveInstance("myapp/myservice:50051", 0),
     ).rejects.toThrow(InvalidTargetError);
 
     expect(fetchCalled).toBe(false);
@@ -174,7 +180,7 @@ describe("createStatefulResolver", () => {
       deployBaseUrl: "http://custom-deploy.example.com",
     });
 
-    await resolver.resolveInstance("myapp/myservice:grpc", 1);
+    await resolver.resolveInstance("myapp/myservice:50051", 1);
 
     expect(calledUrl).toBe(
       "http://custom-deploy.example.com/v1/deploy/scopes/dev/environments/alpha/apps/myapp/services/myservice/endpoints",
@@ -188,7 +194,7 @@ describe("createStatefulResolver", () => {
     });
 
     await expect(
-      resolver.resolveInstance("myapp/myservice:grpc", 0),
+      resolver.resolveInstance("myapp/myservice:50051", 0),
     ).rejects.toThrow(MissingEnvironmentError);
   });
 

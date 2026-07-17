@@ -328,22 +328,31 @@ describe("DominionStatefulResolver", () => {
   });
 
   it("stateful scheme: resolves instance endpoints from dominion-stateful:///app/svc:port?instance=N", async () => {
+    // Named-port targets were REMOVED (grpc-js resolver cannot identify the
+    // name part; parseTarget rejects non-numeric ports — target.ts:28-29), so
+    // the target uses a numeric port and the fixture endpoints are published
+    // on that port directly. A spy scheduler is injected so the resolver's
+    // repeating setInterval does not loop vi.runAllTimersAsync.
     const fetch = fakeFetchReturning({
       endpoints: [],
-      ports: { grpc: 50051 },
+      ports: {},
       isStateful: true,
       statefulInstances: [
         {
           index: 1,
-          endpoints: ["10.0.0.1:1234", "10.0.0.2:1234"],
+          endpoints: ["10.0.0.1:50051", "10.0.0.2:50051"],
           hostname: "instance-1",
         },
       ],
     });
     const listener = mockListener();
-    const target = statefulTarget("myapp/myservice:grpc?instance=1");
+    const target = statefulTarget("myapp/myservice:50051?instance=1");
 
-    new DominionStatefulResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    new DominionStatefulResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
 
     expect(listener).toHaveBeenCalledOnce();

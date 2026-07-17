@@ -36,13 +36,21 @@ The package manifest should use catalog references, for example:
 
 ## Validation scenario 1: Direct resolver call
 
+> **Named-port targets are not supported.** An earlier revision resolved a
+> named port (`:grpc`) via a deploy-response `ports` map. Named-port support
+> was REMOVED because the grpc-js resolver cannot identify the name part of a
+> target, so `parseTarget` rejects non-numeric ports
+> (`common/js/resolver/src/target.ts:28-29` "Named ports are not supported").
+> Targets use numeric ports; endpoints are published on the target port
+> directly (no `ports` remap).
+
 Create a Vitest case that injects fake environment and fake fetch values:
 
 1. Set injected env to `{ DOMINION_ENVIRONMENT: "dev.alpha" }`.
-2. Resolve `myapp/myservice:grpc`.
+2. Resolve `myapp/myservice:50051`.
 3. Assert the fake fetch receives:
    `GET http://infra.liukexin.com/v1/deploy/scopes/dev/environments/alpha/apps/myapp/services/myservice/endpoints`.
-4. Return deploy JSON containing `endpoints: ["10.0.0.1:1234", "10.0.0.2:1234"]` and `ports: { "grpc": 50051 }`.
+4. Return deploy JSON containing `endpoints: ["10.0.0.1:50051", "10.0.0.2:50051"]`.
 5. Expect the resolver to return `["10.0.0.1:50051", "10.0.0.2:50051"]`.
 
 ## Validation scenario 2: grpc-js resolver update
@@ -58,11 +66,11 @@ Create a Vitest case around the grpc-js integration seam:
 
 ## Validation scenario 3: Stateful instance resolution
 
-Create a Vitest case for `dominion-stateful:///myapp/myservice:grpc?instance=1`:
+Create a Vitest case for `dominion-stateful:///myapp/myservice:50051?instance=1` (numeric port — named ports are not supported; see scenario 1 note):
 
 1. Fake deploy JSON marks `isStateful: true`.
 2. Include instances with indices `0`, `1`, and `2`.
-3. Instance `1` has endpoint `10.0.0.11:1234`; `ports.grpc` is `50051`.
+3. Instance `1` has endpoint `10.0.0.11:50051` (published on the target port directly).
 4. Expect only `["10.0.0.11:50051"]`.
 5. Add negative cases for non-stateful service, missing instance, and no ready endpoints.
 

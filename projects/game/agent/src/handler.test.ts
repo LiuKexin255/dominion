@@ -906,7 +906,10 @@ describe("Handler.Connect probes", () => {
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(f.payload).toBe("status");
-    expect(f.status).toEqual({ status: "unknown" });
+    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
+    // as the full proto name (game.proto:368 STATUS_SIGNAL_STATUS_*); the handler
+    // emits the UNSPECIFIED variant for an unbound session.
+    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_UNSPECIFIED" });
   });
 
   it("responds to status probe with 'idle' for bound session", async () => {
@@ -929,7 +932,10 @@ describe("Handler.Connect probes", () => {
 
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
-    expect(f.status).toEqual({ status: "idle" });
+    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
+    // as the full proto name (game.proto:374 STATUS_SIGNAL_STATUS_IDLE); the
+    // handler emits the IDLE variant for a bound session.
+    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
   });
 });
 

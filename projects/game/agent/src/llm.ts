@@ -110,22 +110,35 @@ export function buildTools(
 // ---------------------------------------------------------------------------
 
 /**
- * Strips all SystemMessage entries from state.messages before the model
- * invocation.  This prevents profile-switch contamination when the same
- * thread_id is used across different systemPrompts.
+ * Strips STALE SystemMessage entries from the model prompt to prevent
+ * cross-profile contamination when the same thread_id is shared across
+ * profiles.
+ *
+ * Per `specs/011-agent-adapter-decouple/research.md` L117-126, createAgent
+ * injects the current profile's `systemPrompt` each turn, and conversation
+ * history is shared across profiles on the same thread_id (L137-139). When the
+ * thread is reused after a profile switch, the prompt may carry a prior
+ * profile's SystemMessage; this middleware removes those stale entries so only
+ * the current systemPrompt reaches the model. The current systemPrompt is
+ * retained because createAgent re-injects it via `request.systemPrompt`
+ * (`specs/011-.../plan.md` L255 — wrapModelCall thread_id isolation).
+ *
+ * The filter targets `request.messages` (the prompt the model actually
+ * receives — langchain `ModelRequest`, agents/nodes/types.d.ts), NOT
+ * `request.state.messages` (the checkpoint state); filtering the latter leaves
+ * the prompt untouched.
  */
 const wrapModelCallMiddleware = createMiddleware({
-	name: "StripSystemMessages",
+	name: "StripStaleSystemMessages",
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	wrapModelCall: async (request: any, handler: any) => {
-		const state = request?.state;
-		if (state?.messages && Array.isArray(state.messages)) {
-			const filtered = state.messages.filter(
-				(m: any) => m._getType?.() !== "system",
-			);
+		const messages = request?.messages;
+		if (Array.isArray(messages)) {
 			return handler({
 				...request,
-				state: { ...state, messages: filtered },
+				messages: messages.filter(
+					(m: any) => m._getType?.() !== "system",
+				),
 			});
 		}
 		return handler(request);
