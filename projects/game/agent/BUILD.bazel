@@ -1,8 +1,9 @@
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("//tools/dev/js:ts_proto_library.bzl", "ts_proto_library")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
 
 npm_link_all_packages(name = "node_modules")
@@ -121,16 +122,9 @@ artifact_image(
     visibility = ["//visibility:public"],
 )
 
-# Small bootstrap script that invokes vitest programmatically.
-# vitest.mjs is a bin file not exposed by npm_link_all_packages,
-# so we use vitest's programmatic API instead.
-js_test(
+vitest_test(
     name = "lib_test",
     size = "small",
-    args = [
-        "run",
-        "src/",
-    ],
     data = [
         ":lib",
         ":node_modules/@dominion/common-js-grpc-resolver",
@@ -139,11 +133,9 @@ js_test(
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@types/node",
-        ":node_modules/vitest",
         ":node_modules/zod",
     ] + glob(
         ["src/**/*.test.ts"],
         allow_empty = True,
     ),
-    entry_point = "run_vitest.mjs",
 )
