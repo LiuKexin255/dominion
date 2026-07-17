@@ -51,4 +51,4 @@ main().catch((err) => {
 
 ## Consumers
 
-All six `js_test` targets: `//projects/game/agent:lib_test`, `//common/js/{logs,resolver,otel}:lib_test`, `//common/js/grpc/{otel,resolver}:lib_test`. Each sets `entry_point = "//tools/dev/js:run_vitest.mjs"`.
+All six `js_test` targets: `//projects/game/agent:lib_test`, `//common/js/{logs,resolver,otel}:lib_test`, `//common/js/grpc/{otel,resolver}:lib_test`. Each target is declared via the `vitest_test` macro (`tools/dev/js/vitest_test.bzl`); the macro internally `genrule`-copies the canonical source `tools/dev/js/run_vitest.mjs` into the consuming package and sets that local copy as the target's `entry_point`. A cross-package `entry_point = "//tools/dev/js:run_vitest.mjs"` is **not** viable — it fails at Bazel analysis (the aspect_rules_js `copy_to_bin` constraint) and at runtime (Node resolves `vitest` from the entry_point's location, but `tools/dev/js` is not a pnpm-workspace package) — see [plan.md — Architecture Revision](../plan.md#architecture-revision-execution-discovery) and [research.md](../research.md) §3; the per-package macro-generated copy is therefore the delivery mechanism.

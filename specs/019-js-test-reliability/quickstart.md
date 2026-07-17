@@ -30,8 +30,13 @@ Proves the shim exits non-zero on failure, on multiple packages.
 
 For each formerly-fragile file (`reporter.test.ts`, `llm-tools.test.ts`, `prompt-client.test.ts`) and the audit set:
 
-1. `bazel run //projects/game/agent:vitest -- run src/llm-tools.test.ts` (direct vitest CLI) — record pass/fail.
-2. `bazel test //projects/game/agent:lib_test` (Bazel, package `.ts` source via the same single Vite pipeline) — record pass/fail.
+1. Direct vitest CLI (transpile-on-the-fly), invoked via the bazel-managed pnpm — `--dir` is the absolute package path per [AGENTS.md](../../AGENTS.md) (`<repo>` below = absolute path to the repo root):
+   - `bazel run @pnpm -- --dir <repo>/common/js/logs exec vitest run src/reporter.test.ts`
+   - `bazel run @pnpm -- --dir <repo>/projects/game/agent exec vitest run src/llm-tools.test.ts`
+   - `bazel run @pnpm -- --dir <repo>/projects/game/agent exec vitest run src/prompt-client.test.ts`
+
+   Record pass/fail for each. (There is no `name = "vitest"` binary target in the repo; the bazel-managed pnpm call is the supported CLI entry.)
+2. `bazel test` on the matching `:lib_test` target — `//common/js/logs:lib_test` for `reporter.test.ts`, `//projects/game/agent:lib_test` for `llm-tools.test.ts` / `prompt-client.test.ts` (Bazel, package `.ts` source via the same single Vite pipeline) — record pass/fail.
 3. **Expected**: identical results (both modes now transform the same source the same way — Fix B); the mocked code path is exercised (assert mock was called — FR-010).
 
 ## Scenario 4 — Full green baseline [SC-001, FR-014]
