@@ -127,3 +127,51 @@ Once the shared shim ships and reports honestly, run `bazel test` on every `js_t
 2. Zero silent deferrals: every skipped test has a tracked justification (SC-004).
 
 The exact failure inventory is discovered at execution time (the spec deliberately does not enumerate it); tasks.md (Phase 2) will group fixes by the categories above.
+
+## 6. Why do `instanceof` checks and module singletons fail under Bazel `js_test` but pass under the vitest CLI? (discovered during US3 execution)
+
+> **Added 2026-07-17 (post-execution).** US3 (Phase 4) triage surfaced ~50+
+> failures that share a root cause NOT covered by §5's five categories. This
+> section records the verified mechanism, the official vitest basis, and the
+> selected fix (Fix B — test against source). Full evidence is in
+> [plan.md — Module-Identity Revision](plan.md#module-identity-revision-execution-discovery).
+
+### Findings (root cause)
+
+Every `js_test` target's runfiles `src/` directory contains BOTH the **pre-compiled CJS `:lib`** output (`errors.js`, `target.js`, … — `tsconfig` pins `"module": "commonjs"`, so `ts_project`+`swc` emit `module.exports`) AND the **raw `.test.ts`** files. The two are loaded by different module systems:
+
+- The **test file** (`.ts`) is transformed by vitest's Vite pipeline. Its `import { InvalidTargetError } from "./errors"` is served through Vite → **instance A**.
+- The **pre-compiled `target.js`** is CJS. Its internal `require("./errors")` is **NOT intercepted by vitest** (Vite SSR does not rewrite `require()` inside already-compiled CJS) → Node loads `errors.js` natively → **instance B**.
+
+So when `parseTarget` (in `:lib`) throws `new InvalidTargetError(...)`, it throws instance B; the test's `expect(err).toBeInstanceOf(InvalidTargetError)` checks against instance A → **fails**, even though the object's `name`+`message` are correct. The same split breaks module-level singletons (the reporter/default-logger/OTel-global-tracer registered by the test's instance is invisible to `:lib`'s instance).
+
+This is the **same root-cause family as §2** (pre-compiled `:lib` bypasses vitest's module system) — manifesting as `instanceof`/identity divergence rather than `vi.mock` interception. It is therefore categorically distinct from §5's five triage categories and cannot be fixed per-test (you cannot refactor away `expect(err).toBeInstanceOf(X)`); the only fix is to make production code and tests share one module instance.
+
+### Verified evidence
+
+1. **Empirical (CLI vs Bazel):** `target.test.ts` — Bazel `js_test` reports `instanceof InvalidTargetError` failures; the vitest CLI (which transforms ALL package `.ts` through one pipeline) reports **25/25 passed**, including every `instanceof` test. Reproduced: `(cd common/js/resolver && vitest run src/target.test.ts)` → `Tests 25 passed`.
+2. **Runfiles layout:** `bazel-bin/common/js/resolver/lib_test_/lib_test.runfiles/_main/common/js/resolver/src/` contains `errors.js` + `target.js` (CJS from `:lib`) alongside `*.test.ts` (raw source).
+3. **vitest maintainer confirmation** (the CJS-not-intercepted behavior is "expected"):
+   - [vitest#7591 — instanceof not working in monorepo](https://github.com/vitest-dev/vitest/issues/7591): *"because `require("...")` is not intercepted by Vitest, so the module is different … Cjs support is limited at Vite SSR level … current behavior is expected."* Recommends aliasing to the original `.ts`/ESM source.
+   - [vitest#5601 — instanceof fails with peerDeps](https://github.com/vitest-dev/vitest/issues/5601): canonical fix `server.deps.inline: ["pkg"]`.
+   - [vitest#6494 — loads same module twice](https://github.com/vitest-dev/vitest/issues/6494): inverse lever `test.server.deps.external`.
+   - [vitest#9147 — singletons don't work for CJS](https://github.com/vitest-dev/vitest/issues/9147): *"User code is expected to be ESM on Vite paradigm, so CJS is effectively not supported and this is expected behavior."*
+   - [vitest migration guide](https://vitest.dev/guide/migration): `server.deps.inline` is the explicit configuration entry.
+
+### Decision (Fix B — test against source)
+
+Make each `js_test` target run against the **raw package `.ts` source** (production + tests) instead of the pre-compiled `:lib`. Concretely: each `vitest_test` caller's `data` changes from `[":lib"] + glob(["src/**/*.test.ts"])` to `glob(["src/**/*.ts"])` (all source incl. tests; `:lib` dropped from the test's data). vitest then transforms the entire package through a single Vite pipeline → one module instance → `instanceof`/singletons behave identically to the (passing) CLI mode (SC-003 holds trivially).
+
+`deps.inline` (Fix A) and ESM conversion (Fix C) were rejected:
+
+- **Fix A (`server.deps.inline`)**: preserves "test the compiled `:lib`" but the inline pattern must match each package's own pre-compiled `src/*.js` in runfiles — path-dependent and fragile; vitest upgrades may shift the mechanism. Rejected for fragility.
+- **Fix C (convert `:lib` to ESM)**: vitest fully supports ESM (single instance) but the blast radius is the entire production build (server packaging, all consumers, pnpm package `exports`, swc config) — out of scope and too risky for a test-infrastructure feature. Rejected.
+- **Inverse (`server.deps.external`)**: would force Node to load everything natively, re-introducing the §2 `vi.mock` interception gap that US2 just removed. Wrong direction. Rejected.
+
+### Trade-off acknowledged (Fix B)
+
+The test no longer executes the **swc-compiled `:lib` artifact** at runtime; it executes vitest's on-the-fly transpilation of the source. Compile/type correctness is NOT lost: `:lib` (`ts_project`) is still built as a dependency of `server_pkg` (and the existing `lib_typecheck_test`), so `bazel build //...:server_pkg` still type-checks and compiles the artifact. What changes is only what the *test* sees — and SC-001/SC-003 (honest signal + CLI/Bazel agreement) are better served by single-pipeline source transform.
+
+### Scope impact
+
+This is infrastructure-level (touches the `vitest_test` macro contract + all six callers' `data`), not a per-failure surgical fix. It is therefore delivered as a **new phase preceding US3** (see [tasks.md](tasks.md) Phase 4). After it lands, ~50+ dual-instance failures are expected to resolve; US3 (Phase 5) then re-triages whatever genuine failures remain.

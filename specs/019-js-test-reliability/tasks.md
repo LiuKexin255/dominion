@@ -14,6 +14,14 @@
 > The macro internally `genrule`-copies the canonical source `//tools/dev/js:run_vitest.mjs` into
 > each consuming package and wires the `js_test`; callers pass only the code under test + the
 > test-file glob. Phase 2 implements the macro and rewires all six targets through it.
+>
+> **Module-identity note (read before Phase 4 — Fix B).** Phase 2 wired callers with `data = [":lib"]`
+> (the pre-compiled CJS artifact). US3 execution proved this causes a dual-module-instance root cause
+> (`instanceof`/singleton divergence — vitest does not intercept `require()` inside the compiled `:lib`;
+> see [plan.md — Module-Identity Revision](plan.md#module-identity-revision-execution-discovery) and
+> [research.md](research.md) §6). Phase 4 (Fix B) changes each caller's `data` to the package's raw
+> `.ts` source (`glob(["src/**/*.ts"])`), dropping `:lib`, so vitest transforms the whole package
+> through one pipeline → single module instance (== CLI). After Phase 4, callers pass source, not `:lib`.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -93,7 +101,39 @@ AGENTS.md and the spec/plan files are mandatory and not repeated below. **Each p
 
 ---
 
-## Phase 4: User Story 3 — Pre-Existing Failure Fixes (Priority: P2)
+## Phase 4: Module-Identity Infrastructure (Fix B — test against source) — 🆕 inserted post-execution
+
+**Purpose**: Eliminate the dual-module-instance root cause (discovered during US3 execution — see [research.md](research.md) §6 and [plan.md — Module-Identity Revision](plan.md#module-identity-revision-execution-discovery)) so that `instanceof` checks and module singletons behave identically under Bazel `js_test` and the vitest CLI. **Prerequisite for US3's full-green goal (SC-001)**: ~50+ failures share this root cause and cannot be fixed per-test.
+
+**Goal**: Each `js_test` target runs against the **raw package `.ts` source** (production + tests) instead of the pre-compiled CJS `:lib`, so vitest transforms the whole package through a single Vite pipeline → one module instance (== CLI mode, SC-003 holds by construction).
+
+**Independent Test**: `bazel test //common/js/resolver:lib_test` → the ~41 `instanceof InvalidTargetError` failures (and the logs/agent singleton failures) are gone; resolver/logs/agent/grpc-otel targets report no module-identity failures.
+
+**Required reading (§V)**:
+- [research.md](research.md) §6 (root cause + empirical CLI-vs-Bazel evidence + Fix B decision + vitest maintainer citations #7591/#5601/#6494/#9147)
+- [plan.md](plan.md) — **Module-Identity Revision (Execution Discovery)** (the corrected design + caller sketch + trade-off + alternatives rejected)
+- vitest official basis: [vitest#7591 instanceof not working in monorepo](https://github.com/vitest-dev/vitest/issues/7591) and [vitest#5601 instanceof fails](https://github.com/vitest-dev/vitest/issues/5601) (the CJS-`require`-not-intercepted behavior + `server.deps.inline` lever)
+- [style/javascript.md](../../style/javascript.md) §测试 (the conventions this phase updates)
+- `tools/dev/js/vitest_test.bzl` (the macro whose caller contract changes)
+
+> **Fix B mechanic**: change each `vitest_test` caller's `data` from `[":lib"] + glob(["src/**/*.test.ts"])` to `glob(["src/**/*.ts"])` (drop `:lib`; keep explicit `:node_modules/*` deps + proto data). `:lib` must NOT also be present (ambiguity between `errors.js` and `errors.ts` re-creates the dual instance). The `vitest_test` macro itself is unchanged (forwards `data`, auto-injects `:node_modules/vitest`).
+
+- [ ] T025 [infra] Update the `vitest_test` macro docstring in `tools/dev/js/vitest_test.bzl` to document the new caller contract: `data` MUST be the package's raw `.ts` source (production + tests), NOT `:lib`; explain why (dual-module-instance — vitest does not intercept `require()` inside the pre-compiled CJS `:lib`, so production code and the test resolve shared modules to two instances → `instanceof`/singleton divergence; see research.md §6). The macro body is unchanged.
+- [ ] T026 [US1.5] Rewire all six `vitest_test` callers to source-based `data` (drop `:lib`; keep each target's existing `:node_modules/*` deps and any proto `data`):
+  - `projects/game/agent/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True) + [":node_modules/@dominion/common-js-grpc-resolver", ":node_modules/@dominion/common-js-logs", ":node_modules/@dominion/common-js-resolver", ":node_modules/@grpc/grpc-js", ":node_modules/@grpc/proto-loader", ":node_modules/@types/node", ":node_modules/zod"]`. Verify `bazel test //projects/game/agent:lib_test`.
+  - `common/js/logs/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True)`. Verify `bazel test //common/js/logs:lib_test`.
+  - `common/js/resolver/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True) + [":node_modules/@types/node"]`. Verify `bazel test //common/js/resolver:lib_test`.
+  - `common/js/otel/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True)` (subsumes the prior explicit `src/index.test.ts`; `:lib` dropped). Verify `bazel test //common/js/otel:lib_test`.
+  - `common/js/grpc/otel/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True) + ["src/test_service.proto", ":node_modules/@grpc/grpc-js", ":node_modules/@grpc/proto-loader", ":node_modules/@opentelemetry/instrumentation", ":node_modules/@opentelemetry/sdk-trace-base", ":node_modules/@opentelemetry/sdk-trace-node"]`. Verify `bazel test //common/js/grpc/otel:lib_test`.
+  - `common/js/grpc/resolver/BUILD.bazel`: `data = glob(["src/**/*.ts"], allow_empty = True) + [":node_modules/@dominion/common-js-resolver", ":node_modules/@grpc/grpc-js", ":node_modules/@types/node"]`. Verify `bazel test //common/js/grpc/resolver:lib_test`.
+- [ ] T027 Verify the dual-instance root cause is resolved: run `bazel test` on all six targets; confirm the `instanceof InvalidTargetError`/singleton failures (resolver ~41, logs 6, agent handler/OperationBridge/ChatOpenAI, grpc/otel OTel-tracer) are GONE (not merely masked). Record the new per-target pass/fail counts — this is the input to Phase 5 (US3) re-triage. Confirm a deliberate failing assertion still surfaces FAILED (runner honesty preserved).
+- [ ] T028 Update `style/javascript.md` §测试: the execution-model table changes — in BOTH modes vitest now transforms the package `.ts` source through a single Vite pipeline (the "pre-compiled `:lib` vs vitest-CLI transpile-on-the-fly" contrast is retired); the dual-instance root cause is recorded as removed at the infrastructure level (tests no longer consume `:lib`); the §2 `vi.mock` interception gap note is updated to reflect that the gap no longer arises for the package's own code once `:lib` is not in test `data`. State the trade-off: tests execute source, not the swc-compiled artifact; compile/type correctness is retained via `:lib`'s build.
+
+**Checkpoint**: All six `js_test` targets run against source via the `vitest_test` macro; module-identity failures are gone; both modes agree by construction. US3 (Phase 5) can re-triage the (much smaller) genuine failure set.
+
+---
+
+## Phase 5: User Story 3 — Pre-Existing Failure Fixes (Priority: P2)
 
 **Goal**: Every pre-existing failure surfaced by the honest runner is fixed, or explicitly deferred with a tracked justification (zero silent reds).
 
@@ -104,9 +144,11 @@ AGENTS.md and the spec/plan files are mandatory and not repeated below. **Each p
 - [spec.md](spec.md) Edge Cases and FR-011…FR-014
 - [quickstart.md](quickstart.md) Scenario 4
 
-> **Depends on US1** (honest runner) and **benefits from US2** (the `mock-interception` category reuses the Phase 3 DI approach). T016–T020 are driven by the failure list produced in T015; the exact set is discovered at execution time ([spec.md](spec.md) Assumptions). The Phase 2 verification run already surfaced 26 failures in `//projects/game/agent:lib_test` (26 failed | 250 passed) — that is the starting inventory.
+> **Depends on Phase 4 (Fix B)** — the module-identity infrastructure MUST land first: it removes ~50+ dual-instance failures so the genuine failure set is small enough to triage. **Benefits from US2** (Phase 3 — the `mock-interception` category reuses the DI approach). T016–T020 are driven by the failure list produced in T015; the exact set is discovered at execution time ([spec.md](spec.md) Assumptions).
+>
+> **First-pass triage already executed (commit `76549cf`)**: T015 produced an 84-failure inventory; T016 (mock-contract) fixed grpc/otel `getFinishedSpanItems`→`getFinishedSpans` + prompt-client getProfile 4-arg contract; T019 (production-bug) fixed the prompt-client keepalive stale assertion (300_000/0). These are committed. The remaining ~77 failures were dominated by the dual-instance root cause (now Phase 4) plus a few genuine items (named-port resolution, grpc/resolver fake-timer loop, handler empty frames, enum serialization) — **re-triage after Phase 4** (T015-redo).
 
-- [ ] T015 [US3] Triage: run `bazel test` on all six `js_test` targets (`//projects/game/agent:lib_test`, `//common/js/{logs,resolver,otel}:lib_test`, `//common/js/grpc/{otel,resolver}:lib_test`) and record every failure as a list — target + file + test name + root-cause category (`mock-contract` | `proto-path` | `mock-interception` | `production-bug` | `out-of-scope`). This list drives T016–T020.
+- [X] T015 [US3] Triage (FIRST PASS — done, commit `76549cf`): ran `bazel test` on all six `js_test` targets; recorded an 84-failure inventory (otel 0; agent 22; logs 6; resolver 45; grpc/otel 4; grpc/resolver 7) classified by category, with ~50+ sharing the dual-instance root cause. **After Phase 4 (Fix B) lands, RE-RUN this triage** (`T015-redo`): the dual-instance failures should be gone; re-classify the (much smaller) remaining set into `mock-contract` | `proto-path` | `mock-interception` | `production-bug` | `out-of-scope`. This re-triage list drives the remainder of T016–T020.
 - [ ] T016 [P] [US3] Fix all `mock-contract` failures: correct each mock to faithfully match the real API's invocation contract (gRPC stub callback signatures, method shapes) — do NOT weaken the test's assertions (FR-012).
 - [ ] T017 [P] [US3] Fix all `proto-path` failures using runfiles-aware `__dirname`-relative resolution (FR-013); in particular verify `common/js/grpc/otel/src/index.test.ts` `path.join(__dirname, "test_service.proto")` (L36) resolves under the Bazel sandbox.
 - [ ] T018 [US3] Fix all `mock-interception` failures by applying the US2 dependency-injection refactor (coordinate with Phase 3 tasks T011–T013); ensure the resulting mock is asserted-called (FR-010).
@@ -117,7 +159,7 @@ AGENTS.md and the spec/plan files are mandatory and not repeated below. **Each p
 
 ---
 
-## Phase 5: Polish & Cross-Cutting Concerns
+## Phase 6: Polish & Cross-Cutting Concerns
 
 **Purpose**: Repository-wide verification and consistency after all stories land.
 
@@ -137,10 +179,11 @@ AGENTS.md and the spec/plan files are mandatory and not repeated below. **Each p
 ### Phase Dependencies
 
 - **Setup (Phase 1)**: ✅ DONE (committed `cbf9ce7`). Produces `//tools/dev/js:run_vitest.mjs` (the canonical source the macro consumes).
-- **US1 (Phase 2)**: Depends on Phase 1. **BLOCKS US2 and US3** — without an honest runner delivered via the macro, mock fragility and failures cannot be detected through Bazel.
-- **US2 (Phase 3)**: Depends on US1 (Phase 2). Provides the DI approach reused by US3's `mock-interception` fixes.
-- **US3 (Phase 4)**: Depends on US1 (Phase 2); benefits from US2 (Phase 3) for the `mock-interception` category.
-- **Polish (Phase 5)**: Depends on US1–US3 being complete.
+- **US1 (Phase 2)**: ✅ DONE. Depends on Phase 1. **BLOCKS US2, US3, and the module-identity phase** — without an honest runner delivered via the macro, nothing downstream is detectable through Bazel.
+- **US2 (Phase 3)**: ✅ DONE. Depends on US1 (Phase 2). Provides the DI approach reused by US3's `mock-interception` fixes.
+- **Module-Identity Infrastructure (Phase 4)**: 🆕 Depends on Phase 2. Removes the dual-instance root cause (~50+ failures) by switching test `data` from `:lib` to source. **BLOCKS US3's full-green goal** — US3 cannot reach SC-001 until this lands.
+- **US3 (Phase 5)**: Depends on Phase 4 (re-triage after Fix B) and benefits from Phase 3 (`mock-interception` category). First-pass triage + 2 in-scope fixes already committed (`76549cf`).
+- **Polish (Phase 6)**: Depends on Phase 4 + US3 (Phase 5) being complete.
 
 ### User Story Dependencies
 
@@ -159,8 +202,9 @@ AGENTS.md and the spec/plan files are mandatory and not repeated below. **Each p
 - Phase 1: DONE.
 - Phase 2: T003 (macro + agent reference consumer) is sequential and establishes the pattern; T004–T008 are all `[P]` (distinct package BUILD files + shims) once T003 lands; T009 runs after all wiring.
 - Phase 3: T011 & T012 are `[P]` (distinct files); T013 then T014 (validation) last.
-- Phase 4: T016 & T017 are `[P]` (distinct categories/files); T018–T020 are category-driven.
-- Phase 5: T022, T023, T024 are `[P]` (read-only checks).
+- Phase 4 (module-identity): T025 (docstring) + T026 (six caller rewires) then T027 (verify) then T028 (conventions). The six caller rewires in T026 are `[P]` (distinct BUILD files) but grouped under one task for coherence.
+- Phase 5 (US3): T015-redo drives T016 & T017 (`[P]`, distinct categories/files); T018–T020 category-driven.
+- Phase 6: T022, T023, T024 are `[P]` (read-only checks).
 
 ---
 
@@ -189,18 +233,18 @@ Task: "Rewire common/js/grpc/resolver:lib_test via vitest_test macro + delete ru
 ### Incremental Delivery
 
 1. ✅ Phase 1 → canonical shim ready.
-2. Phase 2 (US1) → honest runner via macro; validate independently (MVP).
-3. Phase 3 (US2) → reliable mocks + conventions; validate both-mode equivalence.
-4. Phase 4 (US3) → green baseline; validate full-green + zero unjustified skips.
-5. Phase 5 → polish; run full quickstart suite.
+2. ✅ Phase 2 (US1) → honest runner via macro; validated independently (MVP).
+3. ✅ Phase 3 (US2) → reliable mocks + conventions; validated both-mode equivalence.
+4. Phase 4 (module-identity) → switch test `data` to source (Fix B); validate dual-instance failures gone.
+5. Phase 5 (US3) → green baseline; validate full-green + zero unjustified skips.
+6. Phase 6 → polish; run full quickstart suite.
 
 ### Parallel Team Strategy
 
-With multiple developers:
-1. Team completes Phase 1 + US1 (Phase 2) together (US1 is the foundation).
-2. Once US1 is done:
-   - Developer A: US2 (Phase 3) — conventions + the three fragile-file refactors.
-   - Developer B: US3 (Phase 4) triage + non-mock fixes (T016/T017/T019/T020); T018 (`mock-interception`) coordinates with Developer A.
+With multiple developers (Phases 1–3 are complete):
+1. Team completed Phase 1 + US1 (Phase 2) + US2 (Phase 3).
+2. Phase 4 (module-identity, Fix B) is a single coherent infra change — done by one developer (T025→T028).
+3. Once Phase 4 lands, US3 (Phase 5) re-triages (T015-redo) and fixes the remaining genuine failures; the `mock-interception` category (T018) reuses the Phase 3 DI approach.
 
 ---
 

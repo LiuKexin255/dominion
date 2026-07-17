@@ -199,6 +199,50 @@ This is the **honest runner working**: vitest executed (276 tests, 6.24s), the 2
 - **Make `tools/dev/js` a pnpm workspace package**: rejected as over-engineering (adds `package.json` + `pnpm-workspace.yaml` + lock churn) for a 30-line shim.
 - **`no_copy_to_bin` exception**: addresses the *analysis* constraint only, not the *runtime* resolution blocker. Insufficient alone.
 
+## Module-Identity Revision (Execution Discovery)
+
+This section records a second correction, forced by US3 (Phase 4) execution. Whereas the [Architecture Revision](#architecture-revision-execution-discovery) corrected the shim *delivery mechanism*, this revision corrects the **what the test executes** — the pre-compiled `:lib` artifact vs. the package source. Full evidence and official vitest basis are in [research.md §6](research.md#6-why-do-instanceof-checks-and-module-singletons-fail-under-bazel-js_test-but-pass-under-the-vitest-cli-discovered-during-us3-execution).
+
+### What execution surfaced
+
+US3 triage (T015) found ~50+ of the pre-existing failures share a root cause outside §5's five categories: **dual-module-instance `instanceof`/singleton divergence**. They pass under the vitest CLI and fail under Bazel `js_test`, with the thrown objects having correct `name`+`message` but failing `instanceof` (resolver ~41, logs 6, agent ~2–9, possibly grpc/otel OTel-tracer split 4). This blocks SC-001 (full green).
+
+### Verified findings
+
+1. **Runfiles mix two module systems.** Each `js_test` target's runfiles `src/` contains the **pre-compiled CJS `:lib`** (`tsconfig` `"module": "commonjs"` → `ts_project`+`swc` emit `module.exports`) **alongside** the raw `.test.ts`. The test is vitest-Vite-transformed; the pre-compiled CJS's internal `require()` is **not intercepted** by vitest (Vite SSR does not rewrite CJS `require`), so the production code and the test resolve the *same* source file to **two different module instances** → `instanceof`/singleton state diverge.
+2. **Empirical proof (CLI == single pipeline == pass).** `target.test.ts`: Bazel `js_test` fails every `instanceof InvalidTargetError`; the vitest CLI (transforms all package `.ts` through one Vite pipeline) reports **25/25 passed**. Reproduced `(cd common/js/resolver && vitest run src/target.test.ts)`.
+3. **vitest maintainers confirm this is expected CJS behavior**, not a bug — see the issue citations in [research.md §6](research.md) (#7591, #5601, #6494, #9147, migration guide). The supported fixes are configuration (`server.deps.inline`), aliasing to `.ts`/ESM source, or ESM conversion.
+
+### The corrected design (Fix B — test against source)
+
+Each `vitest_test` caller's `data` changes from `[":lib"] + glob(["src/**/*.test.ts"])` to **`glob(["src/**/*.ts"])`** (all package source, production + tests; the compiled `:lib` is dropped from the test's data). vitest then transforms the entire package through a single Vite pipeline → one module instance → `instanceof`/singletons behave identically to the (passing) CLI mode. SC-003 (CLI == Bazel) holds trivially because both modes now transform the same source the same way.
+
+Caller side becomes:
+
+```starlark
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+
+vitest_test(
+    name = "lib_test",
+    data = glob(["src/**/*.ts"], allow_empty = True),   # source, NOT :lib
+    size = "small",
+)
+```
+
+**Why drop `:lib` rather than keep both**: if both the compiled `errors.js` and the source `errors.ts` are present in runfiles, module resolution becomes ambiguous (Node/vitest may prefer `.js`), re-creating the dual instance. Test data must contain **only** the `.ts` source for the package's own code, so vitest resolves every relative import to `.ts` and transforms it once.
+
+**Trade-off (acknowledged):** the test no longer exercises the swc-compiled artifact at runtime. Compile/type correctness is retained — `:lib` (`ts_project`) is still built as a dependency of `server_pkg` (and the existing `lib_typecheck_test`), so `bazel build //projects/game/agent:server_pkg` still type-checks and compiles. SC-001/SC-003 are better served by single-pipeline source transform. The `vitest_test` macro itself is unchanged (it still forwards `data` and auto-injects `:node_modules/vitest`); only the **caller's `data`** and the **documented contract** change.
+
+### Alternatives considered (and why rejected)
+
+- **Fix A — `server.deps.inline` (process `:lib` through Vite):** preserves "test the compiled artifact" but the inline pattern must match each package's own pre-compiled `src/*.js` in runfiles — runfiles-path-dependent and fragile; vitest upgrades may shift the mechanism. Rejected for fragility vs. Fix B's simplicity.
+- **Fix C — convert `:lib` to ESM (`module`→ESM, `type:module`):** vitest fully supports ESM (single instance), but the blast radius is the entire production build (server packaging, all consumers, pnpm `exports`, swc config). Out of scope and too risky for a test-infrastructure feature. Rejected.
+- **Inverse — `server.deps.external` (force native load for all):** would re-introduce the §2 `vi.mock` interception gap that US2 (Phase 3) just removed. Wrong direction. Rejected.
+
+### Placement
+
+Delivered as a **new Phase 4 (Module-Identity Infrastructure)** preceding US3 (which becomes Phase 5); Polish becomes Phase 6. It is a prerequisite for US3's full-green goal: after Fix B lands, the ~50+ dual-instance failures are expected to resolve, and US3 re-triages whatever genuine failures remain.
+
 ## Stale-Doc Cascade (must update before execution resumes)
 
 The execution revision changes Phase 2's mechanism. The following docs still encode the disproven cross-package-`entry_point` assumption and **MUST be corrected for coherence** (Constitution §I — citations must be accurate):
@@ -208,6 +252,16 @@ The execution revision changes Phase 2's mechanism. The following docs still enc
 - [data-model.md](data-model.md) `JsTestTarget` entity — update the `entry_point` attribute (macro-generated local copy) and add the `vitest_test` macro relationship.
 - [tasks.md](tasks.md) Phase 2 (T002, T003–T009) — replace "switch `entry_point` to `//tools/dev/js:run_vitest.mjs`" with "add `tools/dev/js/vitest_test.bzl` macro; each package calls `vitest_test(name="lib_test", data=[...])`"; T002's `exports_files` stays (consumed by the macro's internal genrule); the per-package shim deletions stay.
 
+### Module-Identity cascade (Fix B)
+
+The Module-Identity Revision changes the test's execution subject (source, not `:lib`). The following docs encode the "pre-compiled `:lib`" assumption and **MUST be corrected for coherence** (Constitution §I):
+
+- [research.md](research.md) §6 — added (root cause + evidence + Fix B decision).
+- [style/javascript.md](../../style/javascript.md) §测试 — the execution-model table must change: in BOTH modes vitest now transforms the package `.ts` source through a single pipeline; the "pre-compiled `:lib` vs vitest-CLI transpile-on-the-fly" contrast and the dual-instance root cause are reframed (the `vi.mock` interception gap of §2 is removed at the infrastructure level once tests no longer consume `:lib`).
+- [data-model.md](data-model.md) `JsTestTarget.definition` — `data` is source glob, not `:lib`; note the trade-off (test executes source, not compiled artifact; compile correctness retained via `:lib` build).
+- [quickstart.md](quickstart.md) Scenario 2/3 — update the data shape (`glob(["src/**/*.ts"])`, no `:lib`) and note both modes now agree by construction.
+- [tasks.md](tasks.md) — insert new Phase 4 (Module-Identity Infrastructure); US3 becomes Phase 5; Polish becomes Phase 6.
+
 ## Complexity Tracking
 
-No Constitution violations require justification. §VI (large-test acceptance) is N/A by project type (test infrastructure, not a service) — documented in the Constitution Check table above, not a complexity exception. The [Architecture Revision](#architecture-revision-execution-discovery) records the one design correction (forced by verified aspect_rules_js constraints) and its provenance; the `vitest_test` macro preserves the §II single-source-of-truth intent (for both shim content and wiring) while conforming to the package-local execution model.
+No Constitution violations require justification. §VI (large-test acceptance) is N/A by project type (test infrastructure, not a service) — documented in the Constitution Check table above, not a complexity exception. The [Architecture Revision](#architecture-revision-execution-discovery) records the one design correction (forced by verified aspect_rules_js constraints) and its provenance; the `vitest_test` macro preserves the §II single-source-of-truth intent (for both shim content and wiring) while conforming to the package-local execution model. The [Module-Identity Revision](#module-identity-revision-execution-discovery) records a second correction (forced by vitest's expected CJS-handling limit, verified empirically + by vitest maintainers) — Fix B (test against source) preserves SC-001/SC-003 while removing the dual-instance root cause at the infrastructure level; §II (single source of truth for the test execution model) is upheld since all six targets adopt the same source-based `data` via the unchanged `vitest_test` macro.
