@@ -10,10 +10,12 @@ describe("buildResolverAwareChatModel", () => {
 		};
 		const model = await buildResolverAwareChatModel(resolver);
 		expect(model).toBeInstanceOf(ChatOpenAI);
-		const config =
-			(model as { configuration?: { baseURL?: string } }).configuration ??
-			(model as { config?: { baseURL?: string } }).config;
-		expect(config?.baseURL).toBe("http://10.0.0.9:8080/v1");
+		// ChatOpenAI stores the resolved client options (incl. baseURL) on
+		// `clientConfig` (the OpenAI ClientOptions), not on the `configuration`
+		// input field — see @langchain/openai BaseChatOpenAI.clientConfig.
+		const clientConfig = (model as { clientConfig?: { baseURL?: string } })
+			.clientConfig;
+		expect(clientConfig?.baseURL).toBe("http://10.0.0.9:8080/v1");
 	});
 
 	it("throws when resolver returns empty array", async () => {

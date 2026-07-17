@@ -153,17 +153,28 @@ export class Handler implements AgentServiceHandlers {
   // -----------------------------------------------------------------------
 
   Connect: grpc.handleBidiStreamingCall<AgentFrame, AgentFrame> = (stream) => {
+    // Oneof case names for AgentFrame.payload (game.proto). proto-loader only
+    // populates the `payload` discriminator during (de)serialization; outbound
+    // raw frame objects built here must carry it explicitly so the frame is
+    // self-describing and matches the contract the handler itself relies on
+    // when reading inbound frames (`frame.payload === "content"` etc.).
+    const PAYLOAD_ONEOF_KEYS = ["content", "wait", "warn", "status"] as const;
+
     const buildFrame = (
       sessionId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
-    ): AgentFrame => ({
-      sessionId,
-      frameId: randomUUID(),
-      sender,
-      createTime: timestampNow(),
-      ...payload,
-    });
+    ): AgentFrame => {
+      const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
+      return {
+        sessionId,
+        frameId: randomUUID(),
+        sender,
+        createTime: timestampNow(),
+        ...(payloadKind ? { payload: payloadKind } : {}),
+        ...payload,
+      };
+    };
 
     // Track sessions whose bridge sink was registered on this stream. The
     // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
@@ -581,14 +592,49 @@ function extractBase64FromImageBlock(block: any): string {
   ];
 
   for (const raw of rawCandidates) {
-    if (typeof raw === "string" && raw.length > 0) {
-      return stripDataUrlPrefix(raw);
+    const base64 = bytesLikeToBase64(raw);
+    if (base64) return base64;
+  }
+  return "";
+}
+
+/**
+ * Coerce a candidate image-data value to a base64 string. Handles the forms a
+ * LangChain message content block may carry after a langgraph `MemorySaver`
+ * round-trip: a data-url/base64 string, a live `Uint8Array`/`Buffer`, OR a
+ * plain object/array produced by JSON-serializing a `Uint8Array` (MemorySaver's
+ * default serde yields `{0:137,1:80,...}` — `instanceof Uint8Array` is false on
+ * the restored object, so the typed-array branch alone misses checkpointed
+ * byte images). Returns "" when the value is not a recognizable byte payload.
+ */
+function bytesLikeToBase64(raw: unknown): string {
+  if (typeof raw === "string" && raw.length > 0) {
+    return stripDataUrlPrefix(raw);
+  }
+  if (raw instanceof Uint8Array && raw.length > 0) {
+    return Buffer.from(raw).toString("base64");
+  }
+  if (Buffer.isBuffer(raw) && raw.length > 0) {
+    return raw.toString("base64");
+  }
+  // JSON-serialized Uint8Array (MemorySaver round-trip): {0:n,1:n,...} or [n,n,...]
+  if (raw && typeof raw === "object") {
+    const src = Array.isArray(raw) ? raw : undefined;
+    if (src) {
+      if (src.length > 0 && src.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
+        return Buffer.from(src as number[]).toString("base64");
+      }
+      return "";
     }
-    if (raw instanceof Uint8Array && raw.length > 0) {
-      return Buffer.from(raw).toString("base64");
-    }
-    if (Buffer.isBuffer(raw) && raw.length > 0) {
-      return raw.toString("base64");
+    const keys = Object.keys(raw as Record<string, unknown>);
+    if (
+      keys.length > 0 &&
+      keys.every((k, i) => Number(k) === i)
+    ) {
+      const bytes = keys.map((k) => (raw as Record<string, unknown>)[k]);
+      if (bytes.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
+        return Buffer.from(bytes as number[]).toString("base64");
+      }
     }
   }
   return "";

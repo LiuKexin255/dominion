@@ -349,10 +349,30 @@ describe("createMouseClickTool", () => {
 // ─── signal abort wiring (real OperationBridge) ────────────────────────────
 
 describe("mouse tool abort signal", () => {
-  it("tool result is FAILED when signal is already aborted", async () => {
+  // SKIPPED (FR-014 / SC-004): langchain's DynamicStructuredTool.invoke(input,
+  // { signal }) hangs — neither resolves nor rejects — when the signal is
+  // already aborted before invoke (Runnable._callWithConfig's abort listener
+  // fires but leaves the wrapping promise pending; reproduced & diagnosed in
+  // Phase 5 triage against @langchain/core 1.2.0). The production dispatch
+  // abort short-circuit (operation-bridge.ts:195) is correct and is covered
+  // DIRECTLY — without the langchain tool.invoke layer — by operation-bridge
+  // .test.ts ("signal already aborted → dispatch resolves FAILED 'aborted'").
+  // This integration test cannot exercise the path until langchain's
+  // pre-aborted-signal handling is addressed; tracked as an out-of-scope
+  // dependency (langchain framework), not a defect in our dispatch code.
+  it.skip("tool result is FAILED when signal is already aborted", async () => {
     // Use a real OperationBridge so the abort path runs through the actual
     // dispatch logic — sink registered so the no-sink check is bypassed and
-    // the signal-abort short-circuit at operation-bridge.ts:173 is reached.
+    // the signal-abort short-circuit at operation-bridge.ts:195 is reached.
+    //
+    // NOTE: langchain's DynamicStructuredTool.invoke(input, { signal }) hangs
+    // (neither resolves nor rejects) when the signal is already aborted before
+    // invoke — the abort listener inside Runnable._callWithConfig fires but
+    // leaves the wrapping promise pending. The production dispatch abort
+    // short-circuit itself is correct and is covered directly by
+    // operation-bridge.test.ts ("signal already aborted → dispatch resolves
+    // FAILED 'aborted'"). This integration test is skipped pending a langchain
+    // workaround; see specs/019-js-test-reliability (Phase 5 triage).
     const bridge = new OperationBridge();
     bridge.registerSink(() => {
       throw new Error("sink must not be called when signal is already aborted");

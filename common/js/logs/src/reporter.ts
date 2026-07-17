@@ -228,3 +228,16 @@ export function setDefault(logger: Logger): void {
 export function getDefault(): Logger | null {
   return _defaultLogger;
 }
+
+/**
+ * Force-clears the installed Reporter singleton (test-only isolation helper).
+ *
+ * `installReporter`'s uninstall restores the *previous* reporter, so once any
+ * test leaves a reporter installed, the `installReporter(temp); temp()`
+ * reset idiom propagates the leak instead of clearing it. Tests reset to a
+ * known-null baseline via this helper rather than depending on prior test
+ * cleanup. Not intended for production use.
+ */
+export function resetReporterForTesting(): void {
+  _reporter = null;
+}

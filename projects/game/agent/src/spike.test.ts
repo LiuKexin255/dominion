@@ -468,11 +468,11 @@ describe("V5: systemPrompt persistence with createAgent", () => {
     );
 
     // Step 4: Read checkpoint state via agentB
-    // getState is typed as `never` but delegates to CompiledStateGraph.getState at runtime
+    // getState is async (returns Promise<State>); await it before reading .values
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const state = (agentB as any).getState({
+    const state = (await (agentB as any).getState({
       configurable: { thread_id: "t1" },
-    }) as { values: { messages: Array<{ constructor?: { name: string }; _getType?: () => string; content: unknown }> } };
+    })) as { values: { messages: Array<{ constructor?: { name: string }; _getType?: () => string; content: unknown }> } };
     expect(state).toBeDefined();
     expect(state.values).toBeDefined();
     expect(Array.isArray(state.values.messages)).toBe(true);

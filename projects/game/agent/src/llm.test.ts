@@ -49,23 +49,34 @@ async function collect(
 	return blocks;
 }
 
-function fakeTextModel(text: string) {
-	return fakeModel().respond(
-		new AIMessage({
-			content: [{ type: "text", text }],
-		}),
-	);
+function fakeTextModel(text: string, turns = 1) {
+	// fakeModel().respond() queues one response consumed per model invocation;
+	// a multi-turn test must queue one response per turn or FakeModel throws
+	// "no response queued for invocation N".
+	let model = fakeModel();
+	for (let i = 0; i < turns; i++) {
+		model = model.respond(
+			new AIMessage({
+				content: [{ type: "text", text }],
+			}),
+		);
+	}
+	return model;
 }
 
-function fakeThinkingModel(reasoning: string, text: string) {
-	return fakeModel().respond(
-		new AIMessage({
-			content: [
-				{ type: "reasoning", reasoning },
-				{ type: "text", text },
-			],
-		}),
-	);
+function fakeThinkingModel(reasoning: string, text: string, turns = 1) {
+	let model = fakeModel();
+	for (let i = 0; i < turns; i++) {
+		model = model.respond(
+			new AIMessage({
+				content: [
+					{ type: "reasoning", reasoning },
+					{ type: "text", text },
+				],
+			}),
+		);
+	}
+	return model;
 }
 
 beforeEach(() => {
@@ -620,7 +631,7 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 	});
 
 	it("getState returns accumulated messages after multiple turns", async () => {
-		const model = fakeTextModel("response");
+		const model = fakeTextModel("response", 2);
 		const cp = new MemorySaver();
 		const adapter = new AgentAdapterImpl(
 			model,
@@ -648,9 +659,13 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 
 describe("AgentAdapterImpl WrapModelCall middleware", () => {
 	it("strips SystemMessages from state before model invocation", async () => {
-		const model = fakeModel().respond(
-			new AIMessage({ content: [{ type: "text", text: "OK" }] }),
-		);
+		const model = fakeModel()
+			.respond(
+				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+			)
+			.respond(
+				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+			);
 		const cp = new MemorySaver();
 
 		const adapter = new AgentAdapterImpl(

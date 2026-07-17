@@ -5,12 +5,14 @@ import {
   installReporter,
   createOTelReporter,
   getReporter,
+  resetReporterForTesting,
 } from "./reporter";
 
-// Reset reporter state before each test
+// Reset reporter singleton to a known-null baseline before each test.
+// `installReporter(temp); temp()` only restores the *previous* value, so once
+// any test leaks a reporter the idiom propagates the leak; force-clear instead.
 beforeEach(() => {
-  const temp = installReporter(new ConsoleReporter());
-  temp(); // uninstall
+  resetReporterForTesting();
 });
 
 describe("ConsoleReporter", () => {
