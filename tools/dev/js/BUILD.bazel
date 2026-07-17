@@ -6,6 +6,8 @@ exports_files([
     "vite.bzl",
 ])
 
+exports_files(["run_vitest.mjs"])
+
 sh_binary(
     name = "pnpm",
     srcs = ["pnpm.sh"],
