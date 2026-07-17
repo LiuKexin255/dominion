@@ -2,7 +2,15 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "zhipuai-coding-plan/glm-5.2",
   "small_model": "opencode-go/deepseek-v4-flash",
-  "instructions": [".specify/memory/constitution.md"],
+  "instructions": [
+    ".specify/memory/constitution.md"
+  ],
+  "agent": {
+    "explore": {
+      "model": "opencode-go/deepseek-v4-flash",
+      "reasoningEffort": "max"
+    },
+  },
   "lsp": {
     "bazel": {
       "command": [
