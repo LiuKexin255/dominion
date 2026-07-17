@@ -66,6 +66,16 @@ Do not add comments that restate what the code already expresses. Only add comme
 
 * 持续的、及时的升级依赖版本，避免版本差异太大导致与最新文档不一致，也避免版本差异过大导致未来升级困难。
 
+## 信息检索
+
+充分使用各种工具和 sub-agent 获取所需的信息，避免即兴设计、盲目开发。
+
+* 使用 `webfetch` 工具读取 web URL 内容。
+* 使用 `websearch` 工具在网络上检索信息。
+* 加载 `context7-mcp` SKILL，使用 `context7` MCP 检索某个项目或者代码库的文档。
+* 使用 `grep.app` MCP 检索 `github` 代码。
+* 使用 `explore` sub-agent 探索代码仓库。
+
 ## 其他
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。

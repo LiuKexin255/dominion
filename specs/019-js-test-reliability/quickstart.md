@@ -20,11 +20,11 @@ Proves the shim exits non-zero on failure, on multiple packages.
 5. Revert the injected assertion; `bazel test //projects/game/agent:lib_test` → **PASSED**.
 6. Empty-suite check: temporarily point a target's filter at a non-matching path → **PASSED** (vacuous), not a crash.
 
-## Scenario 2 — Shared shim is the single entry point [FR-005]
+## Scenario 2 — Shared shim is the single source of truth [FR-005]
 
-1. Confirm exactly one canonical shim exists: `ls tools/dev/js/run_vitest.mjs` and that the six per-package `run_vitest.mjs` files are gone.
-2. `grep -rn 'entry_point'` across the six `BUILD.bazel` `js_test` blocks → each is `entry_point = "//tools/dev/js:run_vitest.mjs"`.
-3. `bazel test //common/js/...` → all `lib_test` targets run via the shared shim.
+1. Confirm exactly one canonical SOURCE shim exists: `ls tools/dev/js/run_vitest.mjs`. The six per-package `run_vitest.mjs` SOURCE files are gone — each package obtains the shim through the `vitest_test` macro, which internally `genrule`-copies the canonical source into the package (see [plan.md — Architecture Revision](plan.md#architecture-revision-execution-discovery) for why a cross-package `entry_point` is infeasible).
+2. Each of the six `BUILD.bazel` `js_test` packages calls the macro: `load("//tools/dev/js:vitest_test.bzl", "vitest_test")` then `vitest_test(name = "lib_test", data = [...])`. No package writes a raw `genrule`/`entry_point`/`:node_modules/vitest` itself — those are macro internals.
+3. `bazel test //common/js/...` → all `lib_test` targets run via a macro-generated copy of the shared canonical shim.
 
 ## Scenario 3 — Mock-based tests agree in both modes [SC-003, FR-007/FR-010]
 

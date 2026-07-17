@@ -64,19 +64,48 @@ All other ~27 test files use only `vi.fn()` / `vi.spyOn()` passed as constructor
 
 ## 3. Can the six `run_vitest.mjs` copies become one shared shim? (FR-005)
 
-### Findings
+> **Revised post-execution (2026-07-17).** The original §3 (below the line) asserted a
+> cross-package `entry_point` label works. Execution of Phase 2 **empirically disproved** both
+> supporting claims. This section now records the verified mechanism and decision; the
+> superseded text is retained at the end for provenance. Full evidence is in
+> [plan.md — Architecture Revision](plan.md#architecture-revision-execution-discovery).
 
-- `js_test`'s `entry_point` attribute is a **`Label`** ("This must be a target that provides a single file…") per the aspect_rules_js `js_binary`/`js_test` docs ([aspect_rules_js — docs/js_binary.md](https://github.com/aspect-build/rules_js/blob/main/docs/js_binary.md); BCR mirror [registry.bazel.build/docs/aspect_rules_js](https://registry.bazel.build/docs/aspect_rules_js)). The implementation `_create_launcher` reads `ctx.files.entry_point[0].short_path` and adds `entry_point` to the runfiles `data_files` ([js/private/js_binary.bzl](https://github.com/aspect-build/rules_js/blob/main/js/private/js_binary.bzl)).
-- Therefore a cross-package label `entry_point = "//tools/dev/js:run_vitest.mjs"` is supported: the file is exported via `exports_files` and auto-included in each target's runfiles. Each `js_test` still supplies its own `:node_modules/vitest` so `import { startVitest } from "vitest/node"` resolves.
-- `tools/dev/js/` already holds shared JS build helpers ([tools/dev/js/BUILD.bazel](../../tools/dev/js/BUILD.bazel): `vite.bzl`, `ts_proto_library.bzl`, `pnpm.sh`) — the natural home.
+### Verified findings (each reproduced with `--discard_analysis_cache`)
 
-### Decision
+1. **Cross-package file-label `entry_point` FAILS at analysis.** `entry_point = "//tools/dev/js:run_vitest.mjs"` on `//projects/game/agent:lib_test` fails with `Expected to find source file run_vitest.mjs in '//projects/game/agent', but instead it is in '//tools/dev/js'` — the `aspect_rules_js` `copy_to_bin` constraint (source: `copy_js_file_to_bin_action` in [js/private/js_helpers.bzl](https://github.com/aspect-build/rules_js/blob/main/js/private/js_helpers.bzl)). `entry_point` does accept a `Label` ([js/private/js_binary.bzl](https://github.com/aspect-build/rules_js/blob/main/js/private/js_binary.bzl)), but a *source file* must be in the same package or wrapped.
 
-Create ONE canonical `tools/dev/js/run_vitest.mjs` (the hardened shim from §1), `exports_files(["run_vitest.mjs"])`, and repoint all six `js_test` targets' `entry_point` to `//tools/dev/js:run_vitest.mjs`. Delete the six per-package copies. This satisfies FR-005 ("a single, shared, well-documented approach") and Constitution §II (refactor over patch).
+2. **A `js_library` wrapper passes analysis but FAILS at runtime.** Wrapping the shim and pointing `entry_point` at the wrapper lets analysis succeed, but the test then fails: `Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'vitest' imported from …/run_vitest.mjs`. Node resolves `import { startVitest } from "vitest/node"` by walking up from the **entry_point file's location** (`tools/dev/js/`), not the consuming target's package. `vitest` is only resolvable where an `npm_link_all_packages(name = "node_modules")` link root exists ([aspect_rules_js — docs/pnpm.md](https://github.com/aspect-build/rules_js/blob/main/docs/pnpm.md): "dependencies from the current directory's BUILD file and above").
 
-### Alternatives considered
+3. **`tools/dev/js` CANNOT host an npm-link root.** `npm_link_all_packages()` there fails: it "may only be called in bazel packages that correspond to the pnpm root package or pnpm workspace projects" — `tools/dev/js` is a Starlark tooling directory, not a pnpm workspace package.
 
-- **Six byte-identical copies + a "keep in sync" comment**: rejected — drift is exactly the current problem (5/6 are still broken); a single source of truth removes the failure mode.
+4. **Runfiles layout confirms the model.** In a working per-package target, `_main/node_modules` holds only `.aspect_rules_js` (the store); `vitest` is reachable only via the per-package symlink `…/<pkg>/node_modules/vitest → …/node_modules/.aspect_rules_js/vitest@3.2.6_…/node_modules/vitest`. No top-level `vitest` is resolvable from `tools/dev/js/`.
+
+### Decision (revised)
+
+Keep ONE canonical hardened shim at `tools/dev/js/run_vitest.mjs` (the §1 logic), exported via `exports_files(["run_vitest.mjs"])` so it is consumable as a `genrule` input. Deliver it to each `js_test` package **through a single macro `vitest_test`** (`tools/dev/js/vitest_test.bzl`), the stable external surface every package uses. The macro internally `genrule`-copies the canonical source into the consuming package and wires the `js_test` (`entry_point` → the local generated copy; `:node_modules/vitest` auto-injected into `data`). The `genrule` is an **internal implementation detail of the macro** — callers pass only `name`, `data` (the lib under test + test-file glob), and optional `args`; they never see the copy, the `entry_point`, or the `vitest` dependency. Because the copy lands in the consuming package's runfiles tree, Node resolves `vitest` from that package's `node_modules`. The six per-package SOURCE shims are deleted; the macro-generated copies are mechanical outputs of the single canonical source, so **drift is impossible**. This satisfies FR-005 ("a single, shared, well-documented approach … no package's test runner silently drifts") with a true single source of truth for BOTH shim content and wiring (Constitution §II).
+
+Why a macro (not a custom rule, not bare genrules): it expands to the proven `genrule + js_test` native rules with zero new provider/runfiles code, while giving callers the same experience as a custom rule; bare `genrule`s repeated in six BUILD files would re-expose the details this design exists to hide and cannot be statically enforced. Prerequisite (documented on the macro): the calling package must already run `npm_link_all_packages(name = "node_modules")` so `:node_modules/vitest` resolves — all six target packages already do.
+
+**Verification**: the macro's underlying mechanism (a `genrule` copy of the canonical shim → local `entry_point` + `:node_modules/vitest`) was run end-to-end — `bazel test //projects/game/agent:lib_test` executed 276 tests in 6.24s and honestly reported `26 failed | 250 passed` (Exit 1); the 26 are the US3 backlog, not a regression.
+
+### Alternatives considered (revised)
+
+- **Per-package hand-maintained identical source files** (FR-005's literal "identically-structured per-package script" wording): works, but relies on *convention* to keep six copies identical — the exact failure mode that left 5/6 buggy. Rejected in favour of mechanical generation inside the macro, which achieves FR-005 without convention.
+- **Bare `genrule` repeated per BUILD file** (no macro): same mechanism, but re-exposes `entry_point`/`outs`/`vitest`-injection at every call site, cannot be enforced, needs per-site comments. Rejected — the macro fixes these details in one place.
+- **A custom Bazel rule** (not a macro): re-implements provider/runfiles plumbing for "copy a file + forward `js_test`". Over-engineering; the macro expands to proven native rules with identical caller experience. Rejected.
+- **`DirectoryPathInfo` entry_point** (the canonical cross-package pattern in [`npm/private/npm_import.bzl`](https://github.com/aspect-build/rules_js/blob/main/npm/private/npm_import.bzl)): that pattern targets npm *bin* files whose store directory carries `node_modules`; it does not solve `vitest` resolution for a hand-written shim in a non-workspace directory. Rejected.
+- **Make `tools/dev/js` a pnpm workspace package**: rejected as over-engineering for a 30-line shim.
+- **`no_copy_to_bin` exception**: addresses the analysis constraint only, not the runtime resolution blocker. Insufficient alone.
+
+---
+
+### Superseded original §3 (retained for provenance — DO NOT rely on these claims)
+
+> ~~`js_test`'s `entry_point` attribute is a **`Label`** … Therefore a cross-package label `entry_point = "//tools/dev/js:run_vitest.mjs"` is supported … Each `js_test` still supplies its own `:node_modules/vitest` so `import { startVitest } from "vitest/node"` resolves.~~
+>
+> ~~Decision: Create ONE canonical `tools/dev/js/run_vitest.mjs` … repoint all six `js_test` targets' `entry_point` to `//tools/dev/js:run_vitest.mjs`.~~
+
+These two claims are **false** (verified findings 1 & 2 above). The single-source-of-truth *intent* is preserved by the `vitest_test`-macro decision; only the *delivery mechanism* changed.
 
 ## 4. How are `.proto` fixture paths resolved under the Bazel sandbox? (FR-013)
 

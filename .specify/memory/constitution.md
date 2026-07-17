@@ -2,46 +2,34 @@
 ==============================================================================
 Sync Impact Report
 ==============================================================================
-Version change: (none) → 1.0.0
-Rationale: Initial ratification. The constitution was a blank template
-  ([PROJECT_NAME], [PRINCIPLE_*], … placeholders never filled); adopting the
-  template's first concrete content is an initial adoption → MAJOR 1.0.0.
+Version change: 1.0.0 → 1.1.0
+Rationale: Principle V (Read Before Code) materially expanded — added a
+  concrete example to the "不做引用传递" (no citation transitivity) rule and
+  added a new mandatory rule "规划即阅读" (planner must actually read listed
+  docs before assigning them). Both strengthen planning discipline without
+  removing or redefining any principle → MINOR 1.1.0.
 
 Modified principles:
-  - [PRINCIPLE_1_NAME]        → I.  引用溯源 (Citation & Provenance) — 通用
-  - [PRINCIPLE_2_NAME]        → II. 重构式变更 (Refactoring Over Patching) — 设计
-  - [PRINCIPLE_3_NAME]        → III.接口优先设计 (Interface-First Design) — 设计
-  - [PRINCIPLE_4_NAME]        → IV. 测试颗粒度与执行频率 (Test Granularity & Cadence) — 流程
-  - [PRINCIPLE_5_NAME]        → V.  编码前阅读文档 (Read Before Code) — 流程
-  - (added)                   → VI. 服务型应用大型测试验收 (Large Test Acceptance for Services) — 流程
+  - V. 编码前阅读文档 (Read Before Code) — 流程: expanded with example +
+    new mandatory rule (planner-must-read-before-listing).
 
-Added sections:
-  - 技术约束与规范 (Additional Constraints)
-  - 开发流程与质量门禁 (Development Workflow & Quality Gates)
-  - Governance (concrete amendment / versioning / compliance rules)
+Added sections: none (rule-level expansion within an existing principle).
 
-Removed sections: none (Section_2/Section_3/Governance placeholders were filled
-  with concrete content; no structural removal).
+Removed sections: none.
 
 Templates requiring updates:
   - .specify/templates/plan-template.md   — ✅ no change (Constitution Check
         reads this file dynamically; gates are derived per-feature).
   - .specify/templates/spec-template.md   — ✅ no change (scope/requirements
         unaffected).
-  - .specify/templates/tasks-template.md  — ⚠ pending follow-up: template shows
-        unit/integration tests as OPTIONAL, separate checkboxes ("Tests are
-        OPTIONAL", "write tests FIRST"). Under Principle IV, build+unit tests
-        are part of each dev task (NOT separate tasks) and Principle VI makes
-        large tests a service-app acceptance gate. The template self-corrects
-        ("MUST replace with actual tasks based on … constitution"), but the
-        "OPTIONAL" framing is now misleading. Recommend manual review of whether
-        to adjust the upstream speckit template vs. relying on the
-        constitution-driven override at task-generation time.
+  - .specify/templates/tasks-template.md  — ✅ no change (task structure
+        unaffected; the document-reading rule constrains how tasks.md is
+        authored, not its template layout).
   - .specify/workflows/speckit/workflow.yml — ✅ no change (integration-agnostic).
 
 Follow-up TODOs:
-  - Decide tasks-template test-framing adjustment (see ⚠ above).
-  - No deferred placeholders remain; all [TOKEN]s resolved.
+  - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
+    open/pending manual review; no new TODOs introduced by this amendment.
 ==============================================================================
 -->
 
@@ -96,10 +84,12 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - 仓库内文档用相对路径，仓库外文档用完整 URL；所列文档地址 MUST 直接包含实际内容，无需二次跳转。
 - agent 编码前 MUST 完整阅读所有声明文档，然后再编码。
 - 不做引用传递：所有文档（含间接引用的文件）MUST 在 tasks.md 规划时一次性明确列出，避免不确定性。
+  - **示例**：若 `a.md` 引用了 [b](URL1) 与 [c](URL2)，而某 phase 需要阅读 b 的内容，则 MUST 显式列出 `a.md` 与 [b](URL1)，不能只列出 `a.md`。
+- 规划即阅读：规划 tasks.md 确定需阅读的文档列表时，规划者 MUST 实际阅读列表中每个文档，确认其包含该 phase 所需的实际内容（部分文档可能只是引用索引，仅有链接而无具体内容）。禁止在未阅读的情况下，凭"理解"或"惰性思维"分配文档列表。
 - 文档分类：**代码规范文档**、**官方文档**（第三方组件/依赖的官方文档或 GitHub 仓库 README）、**技术文章**；所列文档 MUST 与该 phase 开发任务相关或作为参考。
 - AGENTS.md 与 spec 相关文件是代码开发必读内容，无需在 tasks.md 中重复列出。
 
-**Rationale**：明确、完整的文档清单消除"该读什么"的不确定性，避免基于错误假设编码。
+**Rationale**：明确、完整的文档清单消除"该读什么"的不确定性，避免基于错误假设编码；规划阶段即验证文档实际内容，防止列出空索引或无关文档导致下游 agent 阅读无效。
 
 ### VI. 服务型应用大型测试验收 (Large Test Acceptance for Services) — 流程
 
@@ -136,4 +126,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-16
+**Version**: 1.1.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-17
