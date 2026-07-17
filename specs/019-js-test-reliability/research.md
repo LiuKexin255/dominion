@@ -175,3 +175,33 @@ The test no longer executes the **swc-compiled `:lib` artifact** at runtime; it 
 ### Scope impact
 
 This is infrastructure-level (touches the `vitest_test` macro contract + all six callers' `data`), not a per-failure surgical fix. It is therefore delivered as a **new phase preceding US3** (see [tasks.md](tasks.md) Phase 4). After it lands, ~50+ dual-instance failures are expected to resolve; US3 (Phase 5) then re-triages whatever genuine failures remain.
+
+## 7. Why does `@opentelemetry/instrumentation-grpc` produce zero spans under vitest? (resolved post-execution)
+
+> **Added 2026-07-17 (post-completion investigation).** The 4 `gRPC Instrumentation` span-assertion tests in `common/js/grpc/otel/src/index.test.ts` were deferred (SC-004 justified skip) during Phase 5 with the hypothesis "OTel module-patching interacting with vitest/Vite source transpilation." This section records the verified root cause and the applied fix.
+
+### Root cause
+
+`@opentelemetry/instrumentation-grpc` patches `@grpc/grpc-js` at runtime via **`require-in-the-middle`**, which hooks Node's `Module._load`. When `registerInstrumentations()` is called, it installs the hook; the next `require("@grpc/grpc-js")` triggers the hook and the module exports are monkey-patched (`Server.prototype.register`, `Client.prototype.makeUnaryRequest`, `loadPackageDefinition`, etc.).
+
+**vitest's `import()` for CJS node_modules bypasses `Module._load` entirely** — Vite's SSR module loader resolves and loads externalized deps through its own path, not through the hooked `Module._load`. So `await import("@grpc/grpc-js")` loads the module **unpatched**. The RPC itself succeeds (the patched code never runs), but zero spans reach the `InMemorySpanExporter`.
+
+This is the **same root-cause family as §6** (vitest's module system diverges from Node's native module system), manifesting as a bypassed instrumentation hook rather than an `instanceof` split.
+
+### Verified evidence
+
+1. **Empirical:** `import("@grpc/grpc-js")` after `registerInstrumentations()` → `loadPackageDefinition.name === "loadPackageDefinition"` (unpatched), 0 spans. `require("@grpc/grpc-js")` after `registerInstrumentations()` → `loadPackageDefinition.name === "patchedLoadPackageDefinition"`, 2 spans (client + server). ([OTel instrumentation-grpc source](https://github.com/open-telemetry/opentelemetry-js/blob/main/experimental/packages/opentelemetry-instrumentation-grpc/src/instrumentation.ts) — `InstrumentationNodeModuleDefinition('@grpc/grpc-js', ...)` uses `require-in-the-middle`.)
+2. **grpc-js closure capture:** `@grpc/grpc-js@1.14.4` captures `Client.prototype.makeUnaryRequest` in a module-level `requesterFuncs` object at load time ([make-client.ts:27-31](https://github.com/grpc/grpc-node/blob/master/packages/grpc-js/src/make-client.ts#L27-L31)). Generated client methods call the captured reference, not the prototype lookup — so even when `Client.prototype.makeUnaryRequest` IS patched, the generated methods bypass it. The span is only created via the `loadPackageDefinition` → `_patchLoadedPackage` path, which wraps the high-level method names (`unaryCall`, etc.) directly.
+
+### Fix
+
+In the test, load `@grpc/grpc-js` via **`require()`** (not `import()`) **after** `registerInstrumentations()`:
+
+```typescript
+provider.register();
+registerInstrumentations({ instrumentations: [createGrpcInstrumentation()] });
+// require() goes through Module._load → hook fires → module patched.
+const grpc: typeof import("@grpc/grpc-js") = require("@grpc/grpc-js");
+```
+
+This is a **test-only** concern. Production server code is compiled to CJS by swc (`"module": "commonjs"`), so production `import()` is transpiled to `require()` and the hook fires naturally. The vitest SSR loader is the only context where `import()` bypasses `Module._load`.

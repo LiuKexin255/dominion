@@ -137,3 +137,18 @@ is expected"；[vitest#5601](https://github.com/vitest-dev/vitest/issues/5601)�
 | `projects/game/agent/src/llm-tools.test.ts` | `langchain`（spy `createAgent`） | Fragile | ✅ 已重构：`AgentAdapterImpl` ctor 接受可选 `createAgent` 工厂（DI seam），测试注入 `vi.fn()`（US2 / T012） |
 | `projects/game/agent/src/prompt-client.test.ts` | `@grpc/grpc-js`、`node:fs`、`@grpc/proto-loader`、`@dominion/common-js-grpc-resolver` | Fragile | ✅ 已重构：保留 ctor `client` DI seam；`registerDominionResolver` 移入真实构造分支；导出 `buildChannelOptions()` 作为 channel-option 的 factory seam，移除全部模块级 `vi.mock`（US2 / T013） |
 | 其余 ~27 个 `*.test.ts` | 仅 `vi.fn()` / `vi.spyOn()`（构造器参数或局部工厂注入） | Reliable | 无需改动（先例：`handler.test.ts`、`grpc-js-resolver.test.ts`、`build-tools.test.ts`） |
+
+### 规则：`require()` for require-in-the-middle instrumented packages
+
+某些 npm 包（如 `@opentelemetry/instrumentation-grpc`）通过 **`require-in-the-middle`** 在 Node 的 `Module._load` 上安装 hook 来运行时 monkey-patch 目标模块（如 `@grpc/grpc-js`）。vitest 的 `import()` 走 Vite SSR 加载器，**绕过 `Module._load`**，导致 hook 不触发、模块加载未被 patch。
+
+**测试中使用此类 instrumentation 时，必须用 `require()`（而非 `import()`）加载被 instrument 的包，且 `require()` 必须在 `registerInstrumentations()` 之后调用：**
+
+```typescript
+provider.register();
+registerInstrumentations({ instrumentations: [createGrpcInstrumentation()] });
+// require() goes through Module._load → hook fires → module patched
+const grpc: typeof import("@grpc/grpc-js") = require("@grpc/grpc-js");
+```
+
+这是**仅测试环境**的问题：生产代码由 swc 编译为 CJS（`"module": "commonjs"`），`import()` 被转译为 `require()`，hook 正常触发。详见 `specs/019-js-test-reliability/research.md` §7。

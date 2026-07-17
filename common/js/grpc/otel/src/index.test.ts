@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type * as grpcType from "@grpc/grpc-js";
-import type * as protoLoaderType from "@grpc/proto-loader";
 import * as path from "node:path";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
@@ -11,10 +9,14 @@ import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { createGrpcInstrumentation } from "./index";
 
 // ============================================================================
-// CRITICAL: Register instrumentation BEFORE any @grpc/grpc-js usage
-// (i.e., before creating server/client instances). The import itself is
-// fine; the patching happens at registration time and applies to all
-// subsequently created instances.
+// CRITICAL LOAD ORDER: registerInstrumentations() MUST run BEFORE
+// require("@grpc/grpc-js"). The instrumentation installs a require-in-the-
+// middle hook on Node's Module._load; the subsequent require() triggers that
+// hook so the module is patched.
+//
+// vitest's import() bypasses Module._load entirely (Vite SSR loader), so the
+// module would load UNPATCHED and produce zero spans. Only require() goes
+// through the hook. See specs/019-js-test-reliability/research.md §6.
 // ============================================================================
 const exporter = new InMemorySpanExporter();
 const provider = new NodeTracerProvider({
@@ -26,9 +28,9 @@ registerInstrumentations({
   instrumentations: [createGrpcInstrumentation()],
 });
 
-// ---- Late-bound grpc imports (populated in beforeAll AFTER registration) ---
-let grpc: typeof grpcType;
-let protoLoader: typeof protoLoaderType;
+// Loaded via require() AFTER registration so the hook fires and patches it.
+const grpc: typeof import("@grpc/grpc-js") = require("@grpc/grpc-js");
+const protoLoader: typeof import("@grpc/proto-loader") = require("@grpc/proto-loader");
 
 // ---- Proto & service setup --------------------------------------------------
 
@@ -88,17 +90,11 @@ const testService = {
 
 // ---- Server & client lifecycle ----------------------------------------------
 
-let server: grpcType.Server;
+let server: import("@grpc/grpc-js").Server;
 let client: any;
 
 beforeAll(async () => {
   exporter.reset();
-
-  // Dynamic import AFTER instrumentation is registered (top-level code above runs first)
-  [grpc, protoLoader] = await Promise.all([
-    import("@grpc/grpc-js"),
-    import("@grpc/proto-loader"),
-  ]);
 
   const proto = getProtoPackage();
   server = new grpc.Server();
@@ -107,7 +103,7 @@ beforeAll(async () => {
     server.bindAsync(
       "0.0.0.0:0",
       grpc.ServerCredentials.createInsecure(),
-      (err, port) => {
+      (err: any, port: number) => {
         if (err) reject(err);
         else resolve(port);
       },
@@ -141,7 +137,8 @@ function collectRpcAttributes(spans: any[]): any[] {
       rpcService: s.attributes["rpc.service"],
       rpcMethod: s.attributes["rpc.method"],
       statusCode: s.attributes["rpc.grpc.status_code"],
-      parentSpanId: s.parentSpanId,
+      parentSpanId: s.parentSpanContext?.spanId,
+      spanId: s.spanContext().spanId,
     }));
 }
 
@@ -149,18 +146,12 @@ function collectRpcAttributes(spans: any[]): any[] {
 // Tests
 // ============================================================================
 
-// SKIPPED (FR-014 / SC-004): after the Fix B switch to source-transform
-// execution (specs/019 Phase 4), the OTel GrpcInstrumentation registers on a
-// single module instance but produces ZERO spans at the InMemorySpanExporter —
-// the in-process gRPC RPC itself succeeds (response verified), yet no
-// client/server span is captured. Root cause is under separate investigation
-// (likely OTel module-patching interacting with vitest/Vite source
-// transpilation, or an OTel instrumentation-grpc version-compatibility issue).
-// Tracked as: "grpc/otel OTel 0-spans 单独调查". Skipping the four span-
-// assertion cases until that lands; the instrumentation wiring
-// (createGrpcInstrumentation + registerInstrumentations) remains exercised by
-// the module-level setup above.
-describe.skip("gRPC Instrumentation", () => {
+// Root cause of the original 0-spans failure (specs/019): vitest's import()
+// for CJS node_modules bypasses Node's Module._load, where OTel's
+// require-in-the-middle installs its monkey-patch hook. The module loaded
+// unpatched → zero spans. Fix: use require() AFTER registerInstrumentations()
+// so the hook fires. See research.md §6.
+describe("gRPC Instrumentation", () => {
   describe("UnaryCall", () => {
     it("creates client and server spans with correct attributes", async () => {
       exporter.reset();
@@ -193,12 +184,9 @@ describe.skip("gRPC Instrumentation", () => {
       expect(serverSpan!.rpcMethod).toBe("UnaryCall");
       expect(serverSpan!.statusCode).toBe(0);
 
-      // Verify parent-child linkage: server span should have the client span
-      // as its parent (client span injects trace context into metadata)
-      expect(serverSpan!.parentSpanId).toBe(clientSpan!.parentSpanId !== undefined
-        ? clientSpan!.parentSpanId  // both children of root → not parent-child
-        : undefined
-      );
+      // Verify parent-child linkage: the server span's parent should be the
+      // client span (client injects trace context into gRPC metadata).
+      expect(serverSpan!.parentSpanId).toBe(clientSpan!.spanId);
     });
   });
 
