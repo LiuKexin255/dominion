@@ -125,17 +125,31 @@ artifact_image(
 vitest_test(
     name = "lib_test",
     size = "small",
-    data = [
-        ":lib",
+    # Fix B: test against the package's raw .ts source (NOT the compiled :lib).
+    # vitest transforms the whole package through one Vite pipeline so production
+    # code and tests share one module instance (instanceof/singletons behave as
+    # in the CLI). The node_modules mirror the :lib deps (dropping :lib removed
+    # their transitive runfiles carry-in); external npm packages have no .ts
+    # source in runfiles, so adding them does NOT re-create the dual instance.
+    # :game_types_lib is NOT needed — agent source imports it via `import type`
+    # only (erased at runtime). See vitest_test.bzl docstring + research.md §6.
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
+        ":node_modules/@langchain/anthropic",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
         ":node_modules/@types/node",
+        ":node_modules/langchain",
         ":node_modules/zod",
-    ] + glob(
-        ["src/**/*.test.ts"],
-        allow_empty = True,
-    ),
+    ],
 )

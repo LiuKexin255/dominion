@@ -56,10 +56,17 @@ js_runtime_library(
 vitest_test(
     name = "lib_test",
     size = "small",
-    data = [
-        ":lib",
-    ] + glob(
-        ["src/**/*.test.ts"],
+    # Fix B: test against the package's raw .ts source (NOT the compiled :lib).
+    # The node_modules mirror the :lib deps (dropping :lib removed their
+    # transitive runfiles carry-in); external npm packages have no .ts source in
+    # runfiles, so adding them does NOT re-create the dual instance.
+    # See tools/dev/js/vitest_test.bzl docstring + research.md §6.
+    data = glob(
+        ["src/**/*.ts"],
         allow_empty = True,
-    ),
+    ) + [
+        ":node_modules/@opentelemetry/api",
+        ":node_modules/@opentelemetry/api-logs",
+        ":node_modules/@types/node",
+    ],
 )

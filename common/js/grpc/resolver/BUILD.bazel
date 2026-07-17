@@ -57,13 +57,14 @@ js_runtime_library(
 vitest_test(
     name = "lib_test",
     size = "small",
-    data = [
-        ":lib",
+    # Fix B: test against the package's raw .ts source (NOT the compiled :lib).
+    # See tools/dev/js/vitest_test.bzl docstring + research.md §6.
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
-    ] + glob(
-        ["src/**/*.test.ts"],
-        allow_empty = True,
-    ),
+    ],
 )

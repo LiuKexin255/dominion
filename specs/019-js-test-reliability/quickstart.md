@@ -23,16 +23,16 @@ Proves the shim exits non-zero on failure, on multiple packages.
 ## Scenario 2 — Shared shim is the single source of truth [FR-005]
 
 1. Confirm exactly one canonical SOURCE shim exists: `ls tools/dev/js/run_vitest.mjs`. The six per-package `run_vitest.mjs` SOURCE files are gone — each package obtains the shim through the `vitest_test` macro, which internally `genrule`-copies the canonical source into the package (see [plan.md — Architecture Revision](plan.md#architecture-revision-execution-discovery) for why a cross-package `entry_point` is infeasible).
-2. Each of the six `BUILD.bazel` `js_test` packages calls the macro: `load("//tools/dev/js:vitest_test.bzl", "vitest_test")` then `vitest_test(name = "lib_test", data = [...])`. No package writes a raw `genrule`/`entry_point`/`:node_modules/vitest` itself — those are macro internals.
-3. `bazel test //common/js/...` → all `lib_test` targets run via a macro-generated copy of the shared canonical shim.
+2. Each of the six `BUILD.bazel` `js_test` packages calls the macro: `load("//tools/dev/js:vitest_test.bzl", "vitest_test")` then `vitest_test(name = "lib_test", data = glob(["src/**/*.ts"], allow_empty = True) + [...mirrored :node_modules/* deps...])`. The `data` is the package's **raw `.ts` source** (NOT `:lib`) plus the `:node_modules/*` that mirror that package's `:lib` `deps` (Fix B — see [plan.md — Module-Identity Revision](plan.md#module-identity-revision-execution-discovery) and [research.md](research.md) §6). No package writes a raw `genrule`/`entry_point`/`:node_modules/vitest` itself — those are macro internals.
+3. `bazel test //common/js/...` → all `lib_test` targets run via a macro-generated copy of the shared canonical shim, transforming the package source through one Vite pipeline.
 
 ## Scenario 3 — Mock-based tests agree in both modes [SC-003, FR-007/FR-010]
 
 For each formerly-fragile file (`reporter.test.ts`, `llm-tools.test.ts`, `prompt-client.test.ts`) and the audit set:
 
 1. `bazel run //projects/game/agent:vitest -- run src/llm-tools.test.ts` (direct vitest CLI) — record pass/fail.
-2. `bazel test //projects/game/agent:lib_test` (Bazel, pre-compiled `:lib`) — record pass/fail.
-3. **Expected**: identical results; the mocked code path is exercised (assert mock was called — FR-010).
+2. `bazel test //projects/game/agent:lib_test` (Bazel, package `.ts` source via the same single Vite pipeline) — record pass/fail.
+3. **Expected**: identical results (both modes now transform the same source the same way — Fix B); the mocked code path is exercised (assert mock was called — FR-010).
 
 ## Scenario 4 — Full green baseline [SC-001, FR-014]
 
