@@ -17,11 +17,13 @@ option go_package = "dominion/projects/game";
 //
 // Prefix Path: /api/v1/sessions
 service SessionService {
+  // CreateSession creates a new Session. AIP-133: https://google.aip.dev/133
   rpc CreateSession(CreateSessionRequest) returns (Session) {
     option (google.api.http) = {
       post: "/api/v1/sessions"
-      body: "*"
+      body: "session"
     };
+    option (google.api.method_signature) = "session,session_id";
   }
 
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
@@ -83,75 +85,83 @@ service ProxyService {
 //
 // Prefix Path: /api/v1/agents
 service AgentService {
-  rpc GetAgent(AgentGetRequest) returns (Agent);
+  rpc GetAgent(GetAgentRequest) returns (Agent);
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
   rpc Connect(stream AgentFrame) returns (stream AgentFrame);
   rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
 }
 
 // PromptService manages AgentProfile and Skill resources for agent
-// configuration.
+// configuration. Resources live under the `prompts/` singleton namespace
+// (AIP-156 https://google.aip.dev/156 — collection-less container used purely
+// as a path prefix; no Prompt resource message exists).
 //
 // Prefix Path: /api/v1/prompts
 service PromptService {
+  // CreateAgentProfile creates a new AgentProfile under prompts.
+  // AIP-133: https://google.aip.dev/133
   rpc CreateAgentProfile(CreateAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
-      post: "/api/v1/prompts/agentProfiles"
-      body: "*"
+      post: "/api/v1/{parent=prompts}/agentProfiles"
+      body: "agent_profile"
     };
+    option (google.api.method_signature) = "parent,agent_profile,agent_profile_id";
   }
 
   rpc GetAgentProfile(GetAgentProfileRequest) returns (AgentProfile) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/{name=agentProfiles/*}"
+      get: "/api/v1/{name=prompts/agentProfiles/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
   rpc ListAgentProfiles(ListAgentProfilesRequest) returns (ListAgentProfilesResponse) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/agentProfiles"
+      get: "/api/v1/{parent=prompts}/agentProfiles"
     };
   }
 
   rpc DeleteAgentProfile(DeleteAgentProfileRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/prompts/{name=agentProfiles/*}"
+      delete: "/api/v1/{name=prompts/agentProfiles/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
+  // UpdateAgentProfile updates an AgentProfile. AIP-134: https://google.aip.dev/134
+  rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
+    option (google.api.http) = {
+      patch: "/api/v1/{agent_profile.name=prompts/agentProfiles/*}"
+      body: "agent_profile"
+    };
+    option (google.api.method_signature) = "agent_profile,update_mask";
+  }
+
+  // CreateSkill creates a new Skill under prompts. AIP-133: https://google.aip.dev/133
   rpc CreateSkill(CreateSkillRequest) returns (Skill) {
     option (google.api.http) = {
-      post: "/api/v1/prompts/skills"
-      body: "*"
+      post: "/api/v1/{parent=prompts}/skills"
+      body: "skill"
     };
+    option (google.api.method_signature) = "parent,skill,skill_id";
   }
 
   rpc GetSkill(GetSkillRequest) returns (Skill) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/{name=skills/*}"
+      get: "/api/v1/{name=prompts/skills/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
   rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
     option (google.api.http) = {
-      get: "/api/v1/prompts/skills"
+      get: "/api/v1/{parent=prompts}/skills"
     };
   }
 
   rpc DeleteSkill(DeleteSkillRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/prompts/{name=skills/*}"
-    };
-    option (google.api.method_signature) = "name";
-  }
-
-  rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
-    option (google.api.http) = {
-      patch: "/api/v1/prompts/{name=agentProfiles/*}"
-      body: "profile"
+      delete: "/api/v1/{name=prompts/skills/*}"
     };
     option (google.api.method_signature) = "name";
   }
@@ -382,21 +392,30 @@ message Message {
   reserved "type", "image_data", "operation", "operation_result";
 }
 
-// ListMessagesRequest is the request to list Messages for an agent.
+// ListMessagesRequest lists Messages under a Session's agent.
+// AIP-132: https://google.aip.dev/132
 message ListMessagesRequest {
-  string parent = 1;
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Message"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
 }
 
 // ListMessagesResponse is the response for listing Messages.
 message ListMessagesResponse {
   repeated Message messages = 1;
+  string next_page_token = 2;
 }
 
 // AgentProfile describes the configuration for creating an agent.
 message AgentProfile {
   option (google.api.resource) = {
     type: "game.liukexin.com/AgentProfile"
-    pattern: "agentProfiles/{agent_profile}"
+    pattern: "prompts/agentProfiles/{agent_profile}"
     plural: "agentProfiles"
     singular: "agentProfile"
   };
@@ -419,7 +438,7 @@ message AgentProfile {
 message Skill {
   option (google.api.resource) = {
     type: "game.liukexin.com/Skill"
-    pattern: "skills/{skill}"
+    pattern: "prompts/skills/{skill}"
     plural: "skills"
     singular: "skill"
   };
@@ -434,9 +453,14 @@ message Skill {
   google.protobuf.Timestamp update_time = 6;
 }
 
-// ─── Request Messages (unchanged) ──────────────────────────────────────────
+// ─── Request Messages ──────────────────────────────────────────────────────
 
-message CreateSessionRequest {}
+// CreateSessionRequest creates a Session. AIP-133: https://google.aip.dev/133
+// session_id is empty when the caller defers ID generation to the server.
+message CreateSessionRequest {
+  Session session = 1 [(google.api.field_behavior) = REQUIRED];
+  string session_id = 2;
+}
 
 message ListSessionsRequest {
   int32 page_size = 1;
@@ -475,31 +499,6 @@ message GetAgentRequest {
   ];
 }
 
-message AgentGetRequest {
-  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
-}
-
-message CreateAgentProfileRequest {
-  string agent_profile_name = 1 [(google.api.field_behavior) = REQUIRED];
-  string model = 2;
-  string system_prompt = 3;
-  repeated string skill_names = 4;
-  repeated string mcp_names = 5;
-  bool enabled = 6;
-  repeated string tool_names = 7;
-}
-
-message UpdateAgentProfileRequest {
-  string name = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      type: "game.liukexin.com/AgentProfile"
-    }
-  ];
-  AgentProfile profile = 2;
-  google.protobuf.FieldMask update_mask = 3;
-}
-
 message RefreshAgentRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
@@ -507,6 +506,41 @@ message RefreshAgentRequest {
       type: "game.liukexin.com/Agent"
     }
   ];
+}
+
+// CreateAgentProfileRequest creates an AgentProfile under prompts.
+// AIP-133: https://google.aip.dev/133
+message CreateAgentProfileRequest {
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/AgentProfile"
+    }
+  ];
+  string agent_profile_id = 2 [(google.api.field_behavior) = REQUIRED];
+  AgentProfile agent_profile = 3 [(google.api.field_behavior) = REQUIRED];
+
+  // Former flat fields (model/system_prompt/skill_names/mcp_names/enabled/
+  // tool_names/agent_profile_name) moved onto the AgentProfile message at
+  // field 3, per AIP-133's "the resource field carries the request body"
+  // template.
+  reserved 4, 5, 6, 7;
+  reserved "model", "system_prompt", "skill_names", "mcp_names", "enabled", "tool_names", "agent_profile_name";
+}
+
+// UpdateAgentProfileRequest updates an AgentProfile. AIP-134: https://google.aip.dev/134
+// The resource's name field (AgentProfile.name, pattern
+// prompts/agentProfiles/{agent_profile}) is the target identity, surfaced in
+// the HTTP path via {agent_profile.name=...}. The standalone `name` field at
+// proto field 1 is removed (AIP-134 carries identity on the resource itself).
+// Field 2 (now agent_profile) keeps its number for wire compatibility with
+// the prior `profile` field.
+message UpdateAgentProfileRequest {
+  reserved 1;
+  reserved "name";
+
+  AgentProfile agent_profile = 2 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 3;
 }
 
 message GetAgentProfileRequest {
@@ -518,9 +552,17 @@ message GetAgentProfileRequest {
   ];
 }
 
+// ListAgentProfilesRequest lists AgentProfiles under prompts.
+// AIP-132: https://google.aip.dev/132
 message ListAgentProfilesRequest {
-  int32 page_size = 1;
-  string page_token = 2;
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/AgentProfile"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
 }
 
 message ListAgentProfilesResponse {
@@ -537,10 +579,18 @@ message DeleteAgentProfileRequest {
   ];
 }
 
+// CreateSkillRequest creates a Skill under prompts. AIP-133: https://google.aip.dev/133
 message CreateSkillRequest {
-  string skill_name = 1 [(google.api.field_behavior) = REQUIRED];
-  string content = 2;
-  bool enabled = 3;
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Skill"
+    }
+  ];
+  string skill_id = 2 [(google.api.field_behavior) = REQUIRED];
+  Skill skill = 3 [(google.api.field_behavior) = REQUIRED];
+
+  reserved "skill_name", "content", "enabled";
 }
 
 message GetSkillRequest {
@@ -553,8 +603,14 @@ message GetSkillRequest {
 }
 
 message ListSkillsRequest {
-  int32 page_size = 1;
-  string page_token = 2;
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Skill"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
 }
 
 message ListSkillsResponse {

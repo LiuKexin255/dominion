@@ -19,8 +19,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
+import { OperationBridge } from "./operation-bridge";
 
-import type { OperationBridge } from "./operation-bridge";
 import type { Part } from "../game_types/projects/game/Part";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
@@ -172,6 +172,32 @@ describe("createMouseMoveTool", () => {
     expect(mouseTool.description).toBeTruthy();
     expect(mouseTool.description.length).toBeGreaterThan(10);
   });
+
+  it("passes signal from tool context to dispatch", async () => {
+    const mouseTool = createMouseMoveTool(bridge);
+    const controller = new AbortController();
+
+    await mouseTool.invoke(
+      { x_px: 100, y_px: 200 },
+      { signal: controller.signal },
+    );
+
+    expect(bridge.dispatch).toHaveBeenCalledTimes(1);
+    expect(bridge.dispatch.mock.calls[0][1]).toBe(controller.signal);
+  });
+
+  it("forwards undefined signal when no config is provided", async () => {
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_SUCCEEDED,
+      message: "ok",
+    });
+    const mouseTool = createMouseMoveTool(bridge);
+
+    await mouseTool.invoke({ x_px: 1, y_px: 2 });
+
+    expect(bridge.dispatch).toHaveBeenCalledTimes(1);
+    expect(bridge.dispatch.mock.calls[0][1]).toBeUndefined();
+  });
 });
 
 // ─── mouse_click ───────────────────────────────────────────────────────────
@@ -300,5 +326,65 @@ describe("createMouseClickTool", () => {
     const mouseTool = createMouseClickTool(bridge);
     expect(mouseTool.description).toBeTruthy();
     expect(mouseTool.description.length).toBeGreaterThan(10);
+  });
+
+  it("passes signal from tool context to dispatch", async () => {
+    const mouseTool = createMouseClickTool(bridge);
+    const controller = new AbortController();
+
+    await mouseTool.invoke(
+      { click_type: "LEFT_CLICK" },
+      { signal: controller.signal },
+    );
+
+    expect(bridge.dispatch).toHaveBeenCalledTimes(1);
+    expect(bridge.dispatch.mock.calls[0][1]).toBe(controller.signal);
+  });
+});
+
+// ─── signal abort wiring (real OperationBridge) ────────────────────────────
+
+describe("mouse tool abort signal", () => {
+  // SKIPPED (FR-014 / SC-004): langchain's DynamicStructuredTool.invoke(input,
+  // { signal }) hangs — neither resolves nor rejects — when the signal is
+  // already aborted before invoke (Runnable._callWithConfig's abort listener
+  // fires but leaves the wrapping promise pending; reproduced & diagnosed in
+  // Phase 5 triage against @langchain/core 1.2.0). The production dispatch
+  // abort short-circuit (operation-bridge.ts:151) is correct and is covered
+  // DIRECTLY — without the langchain tool.invoke layer — by operation-bridge
+  // .test.ts ("signal already aborted → dispatch resolves FAILED 'aborted'").
+  // This integration test cannot exercise the path until langchain's
+  // pre-aborted-signal handling is addressed; tracked as an out-of-scope
+  // dependency (langchain framework), not a defect in our dispatch code.
+  it.skip("tool result is FAILED when signal is already aborted", async () => {
+    // Use a real OperationBridge so the abort path runs through the actual
+    // dispatch logic — sink registered so the no-sink check is bypassed and
+    // the signal-abort short-circuit at operation-bridge.ts:151 is reached.
+    //
+    // NOTE: langchain's DynamicStructuredTool.invoke(input, { signal }) hangs
+    // (neither resolves nor rejects) when the signal is already aborted before
+    // invoke — the abort listener inside Runnable._callWithConfig fires but
+    // leaves the wrapping promise pending. The production dispatch abort
+    // short-circuit itself is correct and is covered directly by
+    // operation-bridge.test.ts ("signal already aborted → dispatch resolves
+    // FAILED 'aborted'"). This integration test is skipped pending a langchain
+    // workaround; see specs/019-js-test-reliability (Phase 5 triage).
+    const bridge = new OperationBridge();
+    bridge.registerSink(() => {
+      throw new Error("sink must not be called when signal is already aborted");
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    const mouseTool = createMouseMoveTool(bridge);
+    const result = asBlocks(
+      await mouseTool.invoke(
+        { x_px: 1, y_px: 2 },
+        { signal: controller.signal },
+      ),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ type: "text", text: "aborted" });
   });
 });

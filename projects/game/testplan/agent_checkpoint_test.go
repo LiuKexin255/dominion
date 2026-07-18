@@ -10,6 +10,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestAgentCheckpointResume verifies the full checkpoint-resume flow:
@@ -23,10 +24,13 @@ func TestAgentCheckpointResume(t *testing.T) {
 	profileName := fmt.Sprintf("ckpt-resume-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
@@ -140,10 +144,13 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	profileName := fmt.Sprintf("ckpt-verify-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 
@@ -233,20 +240,26 @@ func TestAgentPerProfileModel(t *testing.T) {
 
 	// Create two profiles with different non-Anthropic models.
 	profile1 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profile1Name,
-		Model:            "gpt-4",
-		SystemPrompt:     "GPT-4 test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profile1Name,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "GPT-4 test agent.",
+			Enabled:      true,
+		},
 	})
 	if profile1.GetModel() != "gpt-4" {
 		t.Errorf("profile1 Model = %q, want %q", profile1.GetModel(), "gpt-4")
 	}
 
 	profile2 := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profile2Name,
-		Model:            "gpt-4-turbo",
-		SystemPrompt:     "GPT-4 Turbo test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profile2Name,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4-turbo",
+			SystemPrompt: "GPT-4 Turbo test agent.",
+			Enabled:      true,
+		},
 	})
 	if profile2.GetModel() != "gpt-4-turbo" {
 		t.Errorf("profile2 Model = %q, want %q", profile2.GetModel(), "gpt-4-turbo")
@@ -315,10 +328,13 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 	profileName := fmt.Sprintf("conc-fifo-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
@@ -360,16 +376,22 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	profileBName := fmt.Sprintf("ckpt-xprof-b-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileAName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are profile A.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileAName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile A.",
+			Enabled:      true,
+		},
 	})
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileBName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are profile B.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileBName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile B.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)

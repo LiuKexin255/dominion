@@ -212,16 +212,19 @@ func deleteSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http
 // ─── Profile/Skill Helpers (proto-based) ────────────────────────────────────
 
 // createAgentProfile creates an agent profile via HTTP POST and returns the
-// parsed response. Calls t.Fatal on any error.
+// parsed response. Per AIP-133 + grpc-gateway body binding ("body:
+// agent_profile"), the HTTP body is the AgentProfile JSON (extracted from the
+// request's agent_profile field) while parent comes from the URI path and
+// agent_profile_id comes from the query string. Calls t.Fatal on any error.
 func createAgentProfile(t *testing.T, sutHostURL, sutEnvName string, req *game.CreateAgentProfileRequest) *game.AgentProfile {
 	t.Helper()
 
-	body, err := protojson.Marshal(req)
+	body, err := protojson.Marshal(req.GetAgentProfile())
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateAgentProfileRequest: %v", err)
+		t.Fatalf("protojson.Marshal AgentProfile: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "prompts/agentProfiles")
+	reqURL := fmt.Sprintf("%s%s%s?agent_profile_id=%s", sutHostURL, pathPrefix, "prompts/agentProfiles", req.GetAgentProfileId())
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -268,16 +271,18 @@ func deleteAgentProfile(t *testing.T, sutHostURL, sutEnvName, profileName string
 }
 
 // createSkill creates a skill via HTTP POST and returns the parsed response.
-// Calls t.Fatal on any error.
+// Per AIP-133 + grpc-gateway body binding ("body: skill"), the HTTP body is
+// the Skill JSON while parent comes from the URI path and skill_id comes from
+// the query string. Calls t.Fatal on any error.
 func createSkill(t *testing.T, sutHostURL, sutEnvName string, req *game.CreateSkillRequest) *game.Skill {
 	t.Helper()
 
-	body, err := protojson.Marshal(req)
+	body, err := protojson.Marshal(req.GetSkill())
 	if err != nil {
-		t.Fatalf("protojson.Marshal CreateSkillRequest: %v", err)
+		t.Fatalf("protojson.Marshal Skill: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "prompts/skills")
+	reqURL := fmt.Sprintf("%s%s%s?skill_id=%s", sutHostURL, pathPrefix, "prompts/skills", req.GetSkillId())
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -608,7 +613,7 @@ func updateAgentProfileTools(t *testing.T, sutHostURL, sutEnvName, profileName s
 	t.Helper()
 
 	patchProfile := &game.AgentProfile{
-		Name:      "agentProfiles/" + profileName,
+		Name:      "prompts/agentProfiles/" + profileName,
 		ToolNames: toolNames,
 	}
 	body, err := protojson.Marshal(patchProfile)

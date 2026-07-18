@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
@@ -41,11 +42,19 @@ func NewSessionHandler(repo domain.SessionRepository, idGenerator domain.IDGener
 	}
 }
 
-// CreateSession creates a new Session resource with a server-generated ID.
-func (h *SessionHandler) CreateSession(ctx context.Context, _ *game.CreateSessionRequest) (*game.Session, error) {
-	sessionID, err := h.idGenerator.NewID(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "generate session id: %v", err)
+// CreateSession creates a new Session resource. A caller-supplied session_id
+// (AIP-133) is used when present; otherwise the server generates one.
+func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSessionRequest) (*game.Session, error) {
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		var err error
+		sessionID, err = h.idGenerator.NewID(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "generate session id: %v", err)
+		}
+	}
+	if strings.Contains(sessionID, "/") {
+		return nil, status.Error(codes.InvalidArgument, "session_id must not contain '/'")
 	}
 
 	s, err := h.sessionRepo.Create(ctx, &domain.Session{

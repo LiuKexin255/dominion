@@ -62,21 +62,10 @@ export interface OperationResult {
   screenshot?: OperationScreenshot;
 }
 
-/**
- * Thrown by {@link OperationBridge.dispatch} when no sink is registered — the
- * desktop WebSocket has disconnected. Propagates through the tool → agent
- * loop so the turn ends rather than feeding a failure back to the LLM.
- */
-export class DesktopDisconnectedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "DesktopDisconnectedError";
-  }
-}
-
 interface PendingDispatch {
   resolve: (result: OperationResult) => void;
   timer: ReturnType<typeof setTimeout>;
+  cleanup?: () => void;
 }
 
 /**
@@ -112,8 +101,9 @@ export class OperationBridge {
 
   /**
    * Clear the registered sink.  Called by the Connect handler on stream end
-   * or error.  In-flight dispatches are left to time out naturally (5s cap)
-   * so the bridge survives reconnect without spurious resolve/reject churn.
+   * or error.  In-flight dispatches whose per-turn AbortController fires
+   * resolve immediately with FAILED "aborted"; the 5s timeout remains as a
+   * fallback for dispatches without a signal.
    */
   unregisterSink(): void {
     this.sink = null;
@@ -123,29 +113,26 @@ export class OperationBridge {
   }
 
   /**
-   * Report whether a sink is currently registered (desktop connected).
-   * Checked by the tool-abort middleware before each tool invocation so the
-   * turn ends immediately when the desktop disconnects, without feeding an
-   * error back to the LLM.
-   */
-  hasSink(): boolean {
-    return this.sink !== null;
-  }
-
-  /**
    * Dispatch a tool Part (MouseMovePart or MouseClickPart) to the desktop via
    * the registered sink and await the matching ToolResultPart.
    *
    * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
-   * carried by a content AgentFrame, and writes via the sink.  Throws when no
-   * sink is registered (desktop disconnected) so the tool error propagates
-   * and the agent turn ends rather than feeding a failure back to the LLM.
+   * carried by a content AgentFrame, and writes via the sink.  When no sink
+   * is registered (desktop disconnected), resolves FAILED immediately rather
+   * than throwing.  When the optional `signal` is already aborted, or aborts
+   * while the dispatch is pending, resolves FAILED "aborted" immediately —
+   * abort is a third race participant alongside the 5s timeout and
+   * handleResult, whichever fires first wins.
    *
+   * @param part   - Tool Part to dispatch.
+   * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
-   *          non-tool Part, or sink write error.
-   * @throws  When no sink is registered (desktop disconnected).
+   *          abort, non-tool Part, no-sink, or sink write error.
    */
-  async dispatch(part: Part): Promise<OperationResult> {
+  async dispatch(
+    part: Part,
+    signal?: AbortSignal,
+  ): Promise<OperationResult> {
     const toolPart: MouseMovePart | MouseClickPart | undefined =
       part.mouseMove ?? (part.mouseClick ?? undefined);
     if (!toolPart) {
@@ -155,9 +142,14 @@ export class OperationBridge {
 
     const sink = this.sink;
     if (!sink) {
-      throw new DesktopDisconnectedError(
-        "operation dispatch with no active sink (desktop disconnected)",
-      );
+      return {
+        status: STATUS_FAILED,
+        message: "desktop disconnected",
+      };
+    }
+
+    if (signal?.aborted) {
+      return { status: STATUS_FAILED, message: "aborted" };
     }
 
     const toolId = randomUUID();
@@ -166,12 +158,29 @@ export class OperationBridge {
     return new Promise<OperationResult>((resolve) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(toolId)) {
+          signal?.removeEventListener("abort", onAbort);
           warn("operation dispatch timed out", { toolId });
           resolve({ status: STATUS_FAILED, message: "operation timed out" });
         }
       }, DISPATCH_TIMEOUT_MS);
 
-      this.pending.set(toolId, { resolve, timer });
+      const onAbort = () => {
+        if (this.pending.delete(toolId)) {
+          clearTimeout(timer);
+          resolve({ status: STATUS_FAILED, message: "aborted" });
+        }
+      };
+      if (signal) {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      this.pending.set(toolId, {
+        resolve,
+        timer,
+        cleanup: signal
+          ? () => signal.removeEventListener("abort", onAbort)
+          : undefined,
+      });
 
       const envelope: AgentFrame = {
         payload: "content",
@@ -182,6 +191,7 @@ export class OperationBridge {
       } catch (err) {
         if (this.pending.delete(toolId)) {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           const msg = err instanceof Error ? err.message : "sink write error";
           warn("operation dispatch sink threw", { toolId, error: msg });
           resolve({ status: STATUS_FAILED, message: msg });
@@ -210,6 +220,7 @@ export class OperationBridge {
 
     this.pending.delete(toolId);
     clearTimeout(pending.timer);
+    pending.cleanup?.();
 
     const status = result.status ?? STATUS_UNSPECIFIED;
     const message = result.message ?? "";

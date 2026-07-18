@@ -8,14 +8,20 @@ import (
 
 // gRPC target constants
 const (
-	SessionTarget  = "game/session:grpc"
-	ProxyTarget    = "game/proxy:grpc"
-	AgentTarget    = "game/agent:grpc"
-	PromptTarget   = "game/prompt:grpc"
+	SessionTarget = "game/session:grpc"
+	ProxyTarget   = "game/proxy:grpc"
+	AgentTarget   = "game/agent:grpc"
+	PromptTarget  = "game/prompt:grpc"
 
 	SessionNamePrefix      = "sessions/"
-	AgentProfileNamePrefix = "agentProfiles/"
-	SkillNamePrefix        = "skills/"
+	AgentProfileNamePrefix = "prompts/agentProfiles/"
+	SkillNamePrefix        = "prompts/skills/"
+
+	// PromptsParent is the singleton-namespace parent for AgentProfile and
+	// Skill resources (AIP-156 https://google.aip.dev/156). It exists purely
+	// as a path-prefix segment; no Prompt resource message exists. Create
+	// RPCs under prompts/ carry this literal in their parent field.
+	PromptsParent = "prompts"
 
 	// Log field constants
 	LogFieldName       = "name"

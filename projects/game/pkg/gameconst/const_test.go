@@ -161,7 +161,7 @@ func TestAgentProfileID(t *testing.T) {
 	}{
 		{
 			name:    "valid agent profile name returns ID",
-			input:   "agentProfiles/abc",
+			input:   "prompts/agentProfiles/abc",
 			want:    "abc",
 			wantErr: nil,
 		},
@@ -172,14 +172,20 @@ func TestAgentProfileID(t *testing.T) {
 			wantErr: gameconst.ErrInvalidAgentProfileName,
 		},
 		{
+			name:    "old single-segment prefix returns ErrInvalidAgentProfileName",
+			input:   "agentProfiles/abc",
+			want:    "",
+			wantErr: gameconst.ErrInvalidAgentProfileName,
+		},
+		{
 			name:    "prefix only (empty ID) returns ErrInvalidAgentProfileName",
-			input:   "agentProfiles/",
+			input:   "prompts/agentProfiles/",
 			want:    "",
 			wantErr: gameconst.ErrInvalidAgentProfileName,
 		},
 		{
 			name:    "extra slashes in ID returns ErrInvalidAgentProfileName",
-			input:   "agentProfiles/abc/extra",
+			input:   "prompts/agentProfiles/abc/extra",
 			want:    "",
 			wantErr: gameconst.ErrInvalidAgentProfileName,
 		},
@@ -219,12 +225,12 @@ func TestAgentProfileName(t *testing.T) {
 		{
 			name:      "valid profile ID returns prefixed name",
 			profileID: "abc",
-			want:      "agentProfiles/abc",
+			want:      "prompts/agentProfiles/abc",
 		},
 		{
 			name:      "empty profile ID returns prefix only",
 			profileID: "",
-			want:      "agentProfiles/",
+			want:      "prompts/agentProfiles/",
 		},
 	}
 
@@ -253,7 +259,7 @@ func TestSkillID(t *testing.T) {
 	}{
 		{
 			name:    "valid skill name returns ID",
-			input:   "skills/abc",
+			input:   "prompts/skills/abc",
 			want:    "abc",
 			wantErr: nil,
 		},
@@ -264,14 +270,20 @@ func TestSkillID(t *testing.T) {
 			wantErr: gameconst.ErrInvalidSkillName,
 		},
 		{
+			name:    "old single-segment prefix returns ErrInvalidSkillName",
+			input:   "skills/abc",
+			want:    "",
+			wantErr: gameconst.ErrInvalidSkillName,
+		},
+		{
 			name:    "prefix only (empty ID) returns ErrInvalidSkillName",
-			input:   "skills/",
+			input:   "prompts/skills/",
 			want:    "",
 			wantErr: gameconst.ErrInvalidSkillName,
 		},
 		{
 			name:    "extra slashes in ID returns ErrInvalidSkillName",
-			input:   "skills/abc/extra",
+			input:   "prompts/skills/abc/extra",
 			want:    "",
 			wantErr: gameconst.ErrInvalidSkillName,
 		},
@@ -304,19 +316,19 @@ func TestSkillID(t *testing.T) {
 
 func TestSkillName(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		skillID string
-		want   string
+		want    string
 	}{
 		{
 			name:    "valid skill ID returns prefixed name",
 			skillID: "abc",
-			want:    "skills/abc",
+			want:    "prompts/skills/abc",
 		},
 		{
 			name:    "empty skill ID returns prefix only",
 			skillID: "",
-			want:    "skills/",
+			want:    "prompts/skills/",
 		},
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	game "dominion/projects/game"
 	"dominion/projects/game/pkg/bind"
+	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
 
@@ -109,13 +110,15 @@ type mockAgentClient struct {
 	lastRefreshReq     *game.RefreshAgentRequest
 }
 
-func (c *mockAgentClient) GetAgent(_ context.Context, req *game.AgentGetRequest) (*game.Agent, error) {
+func (c *mockAgentClient) GetAgent(_ context.Context, req *game.GetAgentRequest) (*game.Agent, error) {
 	if c.getAgentErr != nil {
 		return nil, c.getAgentErr
 	}
+	name := req.GetName()
+	sessionID, _ := gameconst.AgentSessionID(name)
 	return &game.Agent{
-		Name:      "sessions/" + req.GetSessionId() + "/agent",
-		SessionId: req.GetSessionId(),
+		Name:      name,
+		SessionId: sessionID,
 	}, nil
 }
 

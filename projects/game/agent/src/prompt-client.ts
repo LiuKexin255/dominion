@@ -89,6 +89,17 @@ function buildChannelOptions(): grpc.ChannelOptions {
 }
 
 /**
+ * Exposes the channel-options construction as a factory seam (FR-009). Tests
+ * assert the keepalive / load-balancing options directly without constructing a
+ * real gRPC client — which previously required fragile module-level `vi.mock`
+ * of `@grpc/grpc-js` / `@grpc/proto-loader` (bypassed by the pre-compiled `:lib`
+ * under Bazel js_test — see research.md §2 and style/javascript.md §测试).
+ */
+export function buildChannelOptionsForTest(): grpc.ChannelOptions {
+  return buildChannelOptions();
+}
+
+/**
  * Client for the PromptService gRPC API.
  *
  * Registers the dominion resolver on construction, loads the game.proto
@@ -103,13 +114,19 @@ export class PromptClient {
 
   /**
    * @param client Optional pre-configured gRPC client (for testing).
+   *
+   * `registerDominionResolver` is only invoked on the real-construction path
+   * (no injected client): an injected client already owns its channel, so it
+   * neither needs the dominion URI resolver nor the proto-loader/fs side
+   * effects. This lets DI-seamed tests run without module-level mocks of
+   * `@dominion/common-js-grpc-resolver` / `@grpc/proto-loader` (FR-009).
    */
   constructor(client?: grpc.Client) {
-    registerDominionResolver();
-
     if (client) {
       this.client = client;
     } else {
+      registerDominionResolver();
+
       const packageDefinition = protoLoader.loadSync(
         PROTO_PATH,
         PROTO_OPTIONS,
@@ -144,7 +161,7 @@ export class PromptClient {
       deadline.setSeconds(deadline.getSeconds() + 10);
 
       (this.client as any).getAgentProfile(
-        { name: `agentProfiles/${profileName}` },
+        { name: `prompts/agentProfiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {

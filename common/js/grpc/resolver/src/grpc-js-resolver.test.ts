@@ -89,7 +89,11 @@ describe("DominionResolver", () => {
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
 
     expect(listener).toHaveBeenCalledOnce();
@@ -132,7 +136,11 @@ describe("DominionResolver", () => {
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
     expect(listener).toHaveBeenCalledTimes(1);
 
@@ -144,35 +152,12 @@ describe("DominionResolver", () => {
   });
 
   it("refresh failure with previous state (LKG): listener called with ok=false, last endpoints retained", async () => {
-    const goodFetch = fakeFetchReturning({
-      endpoints: ["10.0.0.1:50051"],
-      ports: {},
-      isStateful: false,
-      statefulInstances: [],
-    });
-    const failFetch = vi.fn(async () => {
-      throw new Error("network error");
-    });
-
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: goodFetch });
-    await vi.runAllTimersAsync();
-    expect(listener).toHaveBeenCalledTimes(1);
-    const firstCall = listener.mock.calls[0];
-    expect(firstCall[0].ok).toBe(true);
-
-    // Now inject failure for periodic refresh
-    listener.mockClear();
-    const resolver2 = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: goodFetch });
-    await vi.runAllTimersAsync();
-    expect(listener).toHaveBeenCalledTimes(1);
-    listener.mockClear();
-
-    // Cannot mutate private fields. Instead, create new resolver that
-    // first succeeds, then fails on refresh.
-    // Approach: use a fetch that succeeds once, then fails.
+    // A fetch that succeeds once, then fails on refresh. The first refresh
+    // (initial resolution) succeeds; the second (triggered via
+    // updateResolution) fails, exercising the LKG-with-error path.
     let callCount = 0;
     const togglingFetch = vi.fn(async () => {
       callCount++;
@@ -193,24 +178,32 @@ describe("DominionResolver", () => {
       throw new Error("network error");
     });
 
+    // Inject a spy scheduler so the repeating setInterval does not loop
+    // vi.runAllTimersAsync; refresh is driven explicitly via updateResolution
+    // (which schedules a one-shot setImmediate that runAllTimersAsync drains).
     const lkgResolver = new DominionResolver(
       target,
       listener,
       {},
-      { env: TEST_ENV, fetch: togglingFetch },
+      { env: TEST_ENV, fetch: togglingFetch, scheduler: spyScheduler() },
     );
     await vi.runAllTimersAsync();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener.mock.calls[0][0].ok).toBe(true);
     listener.mockClear();
 
-    // Trigger refresh interval
-    await vi.advanceTimersByTimeAsync(30_000);
+    // Trigger a refresh that fails.
+    lkgResolver.updateResolution();
+    await vi.runAllTimersAsync();
     expect(listener).toHaveBeenCalledTimes(1);
     const lkgCall = listener.mock.calls[0];
     expect(lkgCall[0].ok).toBe(false);
     expect(lkgCall[0].error.code).toBe(Status.UNAVAILABLE);
-    expect(lkgCall[0].error.details).toBe("network error");
+    // deploy-client wraps network errors as DeployServiceError with a
+    // "deploy service request failed: " prefix (deploy-client.ts:61).
+    expect(lkgCall[0].error.details).toBe(
+      "deploy service request failed: network error",
+    );
   });
 
   it("initial failure: listener called with ok=false, no endpoint data", async () => {
@@ -220,14 +213,22 @@ describe("DominionResolver", () => {
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch: failFetch });
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch: failFetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
 
     expect(listener).toHaveBeenCalledOnce();
     const call = listener.mock.calls[0];
     expect(call[0].ok).toBe(false);
     expect(call[0].error.code).toBe(Status.UNAVAILABLE);
-    expect(call[0].error.details).toBe("initial failure");
+    // deploy-client wraps network errors as DeployServiceError with a
+    // "deploy service request failed: " prefix (deploy-client.ts:61).
+    expect(call[0].error.details).toBe(
+      "deploy service request failed: initial failure",
+    );
   });
 
   it("timer cleanup on destroy: no further listener calls after destroy()", async () => {
@@ -250,7 +251,11 @@ describe("DominionResolver", () => {
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    const resolver = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
     expect(listener).toHaveBeenCalledTimes(1);
     listener.mockClear();
@@ -272,7 +277,11 @@ describe("DominionResolver", () => {
     const listener = mockListener();
     const target = dominionTarget("myapp/myservice:50051");
 
-    const resolver = new DominionResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
     expect(listener).toHaveBeenCalledTimes(1);
     listener.mockClear();
@@ -319,22 +328,31 @@ describe("DominionStatefulResolver", () => {
   });
 
   it("stateful scheme: resolves instance endpoints from dominion-stateful:///app/svc:port?instance=N", async () => {
+    // Named-port targets were REMOVED (grpc-js resolver cannot identify the
+    // name part; parseTarget rejects non-numeric ports — target.ts:28-29), so
+    // the target uses a numeric port and the fixture endpoints are published
+    // on that port directly. A spy scheduler is injected so the resolver's
+    // repeating setInterval does not loop vi.runAllTimersAsync.
     const fetch = fakeFetchReturning({
       endpoints: [],
-      ports: { grpc: 50051 },
+      ports: {},
       isStateful: true,
       statefulInstances: [
         {
           index: 1,
-          endpoints: ["10.0.0.1:1234", "10.0.0.2:1234"],
+          endpoints: ["10.0.0.1:50051", "10.0.0.2:50051"],
           hostname: "instance-1",
         },
       ],
     });
     const listener = mockListener();
-    const target = statefulTarget("myapp/myservice:grpc?instance=1");
+    const target = statefulTarget("myapp/myservice:50051?instance=1");
 
-    new DominionStatefulResolver(target, listener, {}, { env: TEST_ENV, fetch });
+    new DominionStatefulResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+    });
     await vi.runAllTimersAsync();
 
     expect(listener).toHaveBeenCalledOnce();

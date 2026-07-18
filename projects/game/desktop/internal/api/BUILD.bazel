@@ -12,6 +12,7 @@ go_library(
     deps = [
         "//projects/game",
         "//projects/game/desktop/internal/trace",
+        "//projects/game/pkg/gameconst",
         "@com_github_coder_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
     ],

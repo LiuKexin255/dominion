@@ -102,16 +102,17 @@ export class Handler implements AgentServiceHandlers {
   // GetAgent
   // -----------------------------------------------------------------------
 
-  GetAgent: grpc.handleUnaryCall<{ sessionId?: string }, AgentMessage> = (
+  GetAgent: grpc.handleUnaryCall<{ name?: string }, AgentMessage> = (
     call,
     callback,
   ) => {
-    const sessionId = call.request.sessionId ?? "";
+    const name = call.request.name ?? "";
+    const sessionId = extractSessionId(name);
     const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
     const state = sessionAgent.getAdapterState();
 
     const agent: AgentMessage = {
-      name: `sessions/${sessionId}/agent`,
+      name,
       sessionId,
       agentProfileName: state.activeProfileName ?? "",
       createTime: timestampNow(),
@@ -152,17 +153,28 @@ export class Handler implements AgentServiceHandlers {
   // -----------------------------------------------------------------------
 
   Connect: grpc.handleBidiStreamingCall<AgentFrame, AgentFrame> = (stream) => {
+    // Oneof case names for AgentFrame.payload (game.proto). proto-loader only
+    // populates the `payload` discriminator during (de)serialization; outbound
+    // raw frame objects built here must carry it explicitly so the frame is
+    // self-describing and matches the contract the handler itself relies on
+    // when reading inbound frames (`frame.payload === "content"` etc.).
+    const PAYLOAD_ONEOF_KEYS = ["content", "wait", "warn", "status"] as const;
+
     const buildFrame = (
       sessionId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
-    ): AgentFrame => ({
-      sessionId,
-      frameId: randomUUID(),
-      sender,
-      createTime: timestampNow(),
-      ...payload,
-    });
+    ): AgentFrame => {
+      const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
+      return {
+        sessionId,
+        frameId: randomUUID(),
+        sender,
+        createTime: timestampNow(),
+        ...(payloadKind ? { payload: payloadKind } : {}),
+        ...payload,
+      };
+    };
 
     // Track sessions whose bridge sink was registered on this stream. The
     // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
@@ -176,6 +188,19 @@ export class Handler implements AgentServiceHandlers {
         }
       }
       activeSessions.clear();
+    };
+
+    // Per-turn AbortControllers for sessions with an in-flight generateTurn.
+    // Cleared in finally after the turn resolves OR aborted by abortAllTurns
+    // on stream end/error.
+    const activeTurns = new Map<string, AbortController>();
+    const abortAllTurns = () => {
+      // Snapshot values first: finally blocks will asynchronously delete
+      // entries as each aborted turn unwinds.
+      for (const controller of [...activeTurns.values()]) {
+        controller.abort();
+      }
+      activeTurns.clear();
     };
 
     stream.on("data", async (frame) => {
@@ -262,6 +287,8 @@ export class Handler implements AgentServiceHandlers {
         }
 
         await this.acquireMutex(sessionId);
+        const controller = new AbortController();
+        activeTurns.set(sessionId, controller);
         try {
           const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
@@ -287,6 +314,7 @@ export class Handler implements AgentServiceHandlers {
           for await (const block of adapter.generateTurn(
             sessionId,
             turnContent,
+            controller.signal,
           )) {
             blockCount++;
             if (block.type === "reasoning") {
@@ -316,39 +344,48 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          info("user content processing completed", {
-            sessionId,
-            blockCount,
-          });
-          const waitFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            {
-              agentProfileName: effectiveProfileName,
-              wait: {},
-            },
-          );
-          stream.write(waitFrame);
+          if (controller.signal.aborted) {
+            info("turn aborted on desktop disconnect", { sessionId });
+          } else {
+            info("user content processing completed", {
+              sessionId,
+              blockCount,
+            });
+            const waitFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                agentProfileName: effectiveProfileName,
+                wait: {},
+              },
+            );
+            stream.write(waitFrame);
+          }
         } catch (err: unknown) {
-          const message =
-            err instanceof Error ? err.message : "Processing error";
-          error("LLM processing failed", { sessionId, error: message });
-          const warnFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            {
-              warn: { message: `Processing error: ${message}` },
-            },
-          );
-          stream.write(warnFrame);
+          if (controller.signal.aborted) {
+            info("turn aborted on desktop disconnect", { sessionId });
+          } else {
+            const message =
+              err instanceof Error ? err.message : "Processing error";
+            error("LLM processing failed", { sessionId, error: message });
+            const warnFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              {
+                warn: { message: `Processing error: ${message}` },
+              },
+            );
+            stream.write(warnFrame);
 
-          const waitFrame: AgentFrame = buildFrame(
-            sessionId,
-            FrameSender.FRAME_SENDER_SYSTEM,
-            { agentProfileName: effectiveProfileName, wait: {} },
-          );
-          stream.write(waitFrame);
+            const waitFrame: AgentFrame = buildFrame(
+              sessionId,
+              FrameSender.FRAME_SENDER_SYSTEM,
+              { agentProfileName: effectiveProfileName, wait: {} },
+            );
+            stream.write(waitFrame);
+          }
         } finally {
+          activeTurns.delete(sessionId);
           this.releaseMutex(sessionId);
         }
       }
@@ -356,6 +393,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
+      abortAllTurns();
       cleanupSinks();
       try {
         stream.end();
@@ -366,6 +404,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
+      abortAllTurns();
       cleanupSinks();
     });
   };
@@ -374,9 +413,11 @@ export class Handler implements AgentServiceHandlers {
   // ListMessages
   // -----------------------------------------------------------------------
 
+  // TODO: implement true pagination — currently returns all messages with
+  // empty nextPageToken.
   ListMessages: grpc.handleUnaryCall<
-    { parent?: string },
-    { messages?: MessageProto[] }
+    { parent?: string; pageSize?: number; pageToken?: string },
+    { messages?: MessageProto[]; nextPageToken?: string }
   > = async (call, callback) => {
     const parent = call.request.parent ?? "";
 
@@ -387,7 +428,7 @@ export class Handler implements AgentServiceHandlers {
       const adapter = sessionAgent?.getAdapter();
 
       if (!adapter) {
-        callback(null, { messages: [] });
+        callback(null, { messages: [], nextPageToken: "" });
         return;
       }
 
@@ -488,7 +529,7 @@ export class Handler implements AgentServiceHandlers {
         });
       }
 
-      callback(null, { messages: result });
+      callback(null, { messages: result, nextPageToken: "" });
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to list messages";
@@ -551,14 +592,49 @@ function extractBase64FromImageBlock(block: any): string {
   ];
 
   for (const raw of rawCandidates) {
-    if (typeof raw === "string" && raw.length > 0) {
-      return stripDataUrlPrefix(raw);
+    const base64 = bytesLikeToBase64(raw);
+    if (base64) return base64;
+  }
+  return "";
+}
+
+/**
+ * Coerce a candidate image-data value to a base64 string. Handles the forms a
+ * LangChain message content block may carry after a langgraph `MemorySaver`
+ * round-trip: a data-url/base64 string, a live `Uint8Array`/`Buffer`, OR a
+ * plain object/array produced by JSON-serializing a `Uint8Array` (MemorySaver's
+ * default serde yields `{0:137,1:80,...}` — `instanceof Uint8Array` is false on
+ * the restored object, so the typed-array branch alone misses checkpointed
+ * byte images). Returns "" when the value is not a recognizable byte payload.
+ */
+function bytesLikeToBase64(raw: unknown): string {
+  if (typeof raw === "string" && raw.length > 0) {
+    return stripDataUrlPrefix(raw);
+  }
+  if (raw instanceof Uint8Array && raw.length > 0) {
+    return Buffer.from(raw).toString("base64");
+  }
+  if (Buffer.isBuffer(raw) && raw.length > 0) {
+    return raw.toString("base64");
+  }
+  // JSON-serialized Uint8Array (MemorySaver round-trip): {0:n,1:n,...} or [n,n,...]
+  if (raw && typeof raw === "object") {
+    const src = Array.isArray(raw) ? raw : undefined;
+    if (src) {
+      if (src.length > 0 && src.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
+        return Buffer.from(src as number[]).toString("base64");
+      }
+      return "";
     }
-    if (raw instanceof Uint8Array && raw.length > 0) {
-      return Buffer.from(raw).toString("base64");
-    }
-    if (Buffer.isBuffer(raw) && raw.length > 0) {
-      return raw.toString("base64");
+    const keys = Object.keys(raw as Record<string, unknown>);
+    if (
+      keys.length > 0 &&
+      keys.every((k, i) => Number(k) === i)
+    ) {
+      const bytes = keys.map((k) => (raw as Record<string, unknown>)[k]);
+      if (bytes.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
+        return Buffer.from(bytes as number[]).toString("base64");
+      }
     }
   }
   return "";

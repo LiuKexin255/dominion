@@ -7,6 +7,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/prompt/domain"
 
 	"google.golang.org/grpc/codes"
@@ -136,12 +137,15 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateAgentProfileRequest{
-		AgentProfileName: "test-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "You are a helpful assistant.",
-		SkillNames:       []string{"skill-a"},
-		McpNames:         []string{"mcp-server-1"},
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "test-profile",
+		AgentProfile: &game.AgentProfile{
+			Model:        "opencode-go/deepseek-v4-pro",
+			SystemPrompt: "You are a helpful assistant.",
+			SkillNames:   []string{"skill-a"},
+			McpNames:     []string{"mcp-server-1"},
+			Enabled:      true,
+		},
 	}
 
 	// when — create
@@ -149,8 +153,8 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 
 	// then — create succeeds
 	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "agentProfiles/test-profile" {
-		t.Fatalf("CreateAgentProfile() name = %q, want %q", created.GetName(), "agentProfiles/test-profile")
+	if created.GetName() != "prompts/agentProfiles/test-profile" {
+		t.Fatalf("CreateAgentProfile() name = %q, want %q", created.GetName(), "prompts/agentProfiles/test-profile")
 	}
 	if created.GetModel() != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("CreateAgentProfile() model = %q, want %q", created.GetModel(), "opencode-go/deepseek-v4-pro")
@@ -169,7 +173,7 @@ func TestPromptService_CreateGetAgentProfile(t *testing.T) {
 	}
 
 	// when — get
-	getReq := &game.GetAgentProfileRequest{Name: "agentProfiles/test-profile"}
+	getReq := &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/test-profile"}
 	got, err := h.GetAgentProfile(ctx, getReq)
 
 	// then — get returns same profile
@@ -191,9 +195,12 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateSkillRequest{
-		SkillName: "my-skill",
-		Content:   "You know how to browse the web.",
-		Enabled:   true,
+		Parent:  gameconst.PromptsParent,
+		SkillId: "my-skill",
+		Skill: &game.Skill{
+			Content: "You know how to browse the web.",
+			Enabled: true,
+		},
 	}
 
 	// when — create
@@ -201,8 +208,8 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 
 	// then — create succeeds
 	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "skills/my-skill" {
-		t.Fatalf("CreateSkill() name = %q, want %q", created.GetName(), "skills/my-skill")
+	if created.GetName() != "prompts/skills/my-skill" {
+		t.Fatalf("CreateSkill() name = %q, want %q", created.GetName(), "prompts/skills/my-skill")
 	}
 	if created.GetContent() != "You know how to browse the web." {
 		t.Fatalf("CreateSkill() content = %q, want %q", created.GetContent(), "You know how to browse the web.")
@@ -212,7 +219,7 @@ func TestPromptService_CreateGetSkill(t *testing.T) {
 	}
 
 	// when — get
-	getReq := &game.GetSkillRequest{Name: "skills/my-skill"}
+	getReq := &game.GetSkillRequest{Name: "prompts/skills/my-skill"}
 	got, err := h.GetSkill(ctx, getReq)
 
 	// then — get returns same skill
@@ -234,7 +241,7 @@ func TestPromptService_ProfileNotFound(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	// when — get missing profile
-	_, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/nonexistent"})
+	_, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/nonexistent"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
@@ -249,11 +256,14 @@ func TestPromptService_CreateGetAgentProfileWithToolNames(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	createReq := &game.CreateAgentProfileRequest{
-		AgentProfileName: "tools-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "You can click things.",
-		ToolNames:        []string{"mouse", "keyboard"},
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "tools-profile",
+		AgentProfile: &game.AgentProfile{
+			Model:        "opencode-go/deepseek-v4-pro",
+			SystemPrompt: "You can click things.",
+			ToolNames:    []string{"mouse", "keyboard"},
+			Enabled:      true,
+		},
 	}
 
 	// when — create
@@ -269,7 +279,7 @@ func TestPromptService_CreateGetAgentProfileWithToolNames(t *testing.T) {
 	}
 
 	// when — get
-	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/tools-profile"})
+	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/tools-profile"})
 
 	// then — tool_names persisted and returned
 	assertStatusCode(t, err, codes.OK)
@@ -290,18 +300,21 @@ func TestPromptService_UpdateAgentProfileToolNamesViaFieldMask(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		AgentProfileName: "mask-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "original prompt",
-		ToolNames:        []string{"mouse"},
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "mask-profile",
+		AgentProfile: &game.AgentProfile{
+			Model:        "opencode-go/deepseek-v4-pro",
+			SystemPrompt: "original prompt",
+			ToolNames:    []string{"mouse"},
+			Enabled:      true,
+		},
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update tool_names to [] via FieldMask
 	updateReq := &game.UpdateAgentProfileRequest{
-		Name: "agentProfiles/mask-profile",
-		Profile: &game.AgentProfile{
+		AgentProfile: &game.AgentProfile{
+			Name:      "prompts/agentProfiles/mask-profile",
 			ToolNames: []string{},
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
@@ -330,7 +343,7 @@ func TestPromptService_UpdateAgentProfileToolNamesViaFieldMask(t *testing.T) {
 	}
 
 	// when — re-fetch
-	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/mask-profile"})
+	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/mask-profile"})
 
 	// then — persisted
 	assertStatusCode(t, err, codes.OK)
@@ -348,15 +361,19 @@ func TestPromptService_UpdateAgentProfileUnknownFieldMaskPath(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		AgentProfileName: "unknown-path-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "unknown-path-profile",
+		AgentProfile: &game.AgentProfile{
+			Model: "opencode-go/deepseek-v4-pro",
+		},
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update with unknown FieldMask path
 	updateReq := &game.UpdateAgentProfileRequest{
-		Name:     "agentProfiles/unknown-path-profile",
-		Profile:  &game.AgentProfile{},
+		AgentProfile: &game.AgentProfile{
+			Name: "prompts/agentProfiles/unknown-path-profile",
+		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
 	}
 	_, err = h.UpdateAgentProfile(ctx, updateReq)
@@ -375,8 +392,8 @@ func TestPromptService_UpdateAgentProfileNotFound(t *testing.T) {
 
 	// when — update missing profile
 	updateReq := &game.UpdateAgentProfileRequest{
-		Name: "agentProfiles/ghost",
-		Profile: &game.AgentProfile{
+		AgentProfile: &game.AgentProfile{
+			Name:  "prompts/agentProfiles/ghost",
 			Model: "opencode-go/deepseek-v4-pro",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"model"}},
@@ -396,17 +413,20 @@ func TestPromptService_UpdateAgentProfileMultipleFields(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		AgentProfileName: "multi-mask",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "before",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "multi-mask",
+		AgentProfile: &game.AgentProfile{
+			Model:        "opencode-go/deepseek-v4-pro",
+			SystemPrompt: "before",
+			Enabled:      true,
+		},
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update model + system_prompt + enabled simultaneously
 	updateReq := &game.UpdateAgentProfileRequest{
-		Name: "agentProfiles/multi-mask",
-		Profile: &game.AgentProfile{
+		AgentProfile: &game.AgentProfile{
+			Name:         "prompts/agentProfiles/multi-mask",
 			Model:        "opencode-go/gpt-5",
 			SystemPrompt: "after",
 			Enabled:      false,
@@ -562,20 +582,23 @@ func TestPromptService_DeleteSuccess(t *testing.T) {
 	h := NewHandler(profileRepo, skillRepo)
 
 	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		AgentProfileName: "to-delete",
-		Model:            "opencode-go/deepseek-v4-pro",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "to-delete",
+		AgentProfile: &game.AgentProfile{
+			Model:   "opencode-go/deepseek-v4-pro",
+			Enabled: true,
+		},
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — delete
-	_, err = h.DeleteAgentProfile(ctx, &game.DeleteAgentProfileRequest{Name: "agentProfiles/to-delete"})
+	_, err = h.DeleteAgentProfile(ctx, &game.DeleteAgentProfileRequest{Name: "prompts/agentProfiles/to-delete"})
 
 	// then — delete succeeds
 	assertStatusCode(t, err, codes.OK)
 
 	// when — get deleted profile
-	_, err = h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "agentProfiles/to-delete"})
+	_, err = h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/to-delete"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
@@ -643,7 +666,7 @@ func Test_agentProfileToProto(t *testing.T) {
 				UpdateTime:       time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
 			wantNil:  false,
-			wantName: "agentProfiles/test",
+			wantName: "prompts/agentProfiles/test",
 		},
 		{
 			name: "profile with zero times has no timestamps",
@@ -651,7 +674,7 @@ func Test_agentProfileToProto(t *testing.T) {
 				AgentProfileName: "notime",
 			},
 			wantNil:  false,
-			wantName: "agentProfiles/notime",
+			wantName: "prompts/agentProfiles/notime",
 		},
 	}
 
@@ -695,7 +718,7 @@ func Test_skillToProto(t *testing.T) {
 				CreateTime: time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
 			wantNil:  false,
-			wantName: "skills/test",
+			wantName: "prompts/skills/test",
 		},
 	}
 

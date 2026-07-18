@@ -1,7 +1,8 @@
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library")
 load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
 load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
@@ -49,28 +50,26 @@ js_runtime_library(
     runtime_deps = [],
 )
 
-# Small bootstrap script that invokes vitest programmatically.
-# vitest.mjs is a bin file not exposed by npm_link_all_packages,
-# so we use vitest's programmatic API instead.
-js_test(
+vitest_test(
     name = "lib_test",
     size = "small",
-    args = [
-        "run",
-        "src/",
-    ],
-    data = [
+    # Fix B: test against the package's raw .ts source (NOT the compiled :lib).
+    # The node_modules mirror the :lib deps (dropping :lib removed their
+    # transitive runfiles carry-in); external npm packages have no .ts source in
+    # runfiles, so adding them does NOT re-create the dual instance.
+    # See tools/dev/js/vitest_test.bzl docstring + research.md §6.
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
         "src/test_service.proto",
-        ":lib",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
+        ":node_modules/@opentelemetry/api",
         ":node_modules/@opentelemetry/instrumentation",
+        ":node_modules/@opentelemetry/instrumentation-grpc",
         ":node_modules/@opentelemetry/sdk-trace-base",
         ":node_modules/@opentelemetry/sdk-trace-node",
-        ":node_modules/vitest",
-    ] + glob(
-        ["src/**/*.test.ts"],
-        allow_empty = True,
-    ),
-    entry_point = "run_vitest.mjs",
+        ":node_modules/@types/node",
+    ],
 )

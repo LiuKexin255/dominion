@@ -12,6 +12,7 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestConnectWithoutCreate verifies that connecting to a session's WebSocket
@@ -24,10 +25,13 @@ func TestConnectWithoutCreate(t *testing.T) {
 	profileName := fmt.Sprintf("life-nocreate-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -89,16 +93,22 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	profileBName := fmt.Sprintf("life-pswitch-b-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileAName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are profile A.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileAName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile A.",
+			Enabled:      true,
+		},
 	})
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileBName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are profile B.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileBName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile B.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -147,10 +157,13 @@ func TestConnectionConcurrentSerialization(t *testing.T) {
 	profileName := fmt.Sprintf("life-serial-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -191,10 +204,13 @@ func TestGetAgentNeverConnected(t *testing.T) {
 	profileName := fmt.Sprintf("life-neverconn-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
@@ -220,10 +236,13 @@ func TestDisconnectReconnectHistory(t *testing.T) {
 	profileName := fmt.Sprintf("life-disc-hist-%s", uniqueSuffix())
 
 	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		AgentProfileName: profileName,
-		Model:            "gpt-4",
-		SystemPrompt:     "You are a test agent.",
-		Enabled:          true,
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
 	})
 
 	sessionID, _ := createSession(t, sutHostURL, sutEnvName)

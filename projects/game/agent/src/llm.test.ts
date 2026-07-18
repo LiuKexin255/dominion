@@ -23,7 +23,10 @@ import { OperationBridge } from "./operation-bridge";
 
 type FakeStreamAgent = {
 	agent: {
-		streamEvents: (input?: { messages: BaseMessage[] }) => Promise<{
+		streamEvents: (
+			input?: { messages: BaseMessage[] },
+			config?: { signal?: AbortSignal; [k: string]: unknown },
+		) => Promise<{
 			messages: AsyncGenerator<{
 				reasoning: AsyncGenerator<string>;
 				text: AsyncGenerator<string>;
@@ -46,23 +49,34 @@ async function collect(
 	return blocks;
 }
 
-function fakeTextModel(text: string) {
-	return fakeModel().respond(
-		new AIMessage({
-			content: [{ type: "text", text }],
-		}),
-	);
+function fakeTextModel(text: string, turns = 1) {
+	// fakeModel().respond() queues one response consumed per model invocation;
+	// a multi-turn test must queue one response per turn or FakeModel throws
+	// "no response queued for invocation N".
+	let model = fakeModel();
+	for (let i = 0; i < turns; i++) {
+		model = model.respond(
+			new AIMessage({
+				content: [{ type: "text", text }],
+			}),
+		);
+	}
+	return model;
 }
 
-function fakeThinkingModel(reasoning: string, text: string) {
-	return fakeModel().respond(
-		new AIMessage({
-			content: [
-				{ type: "reasoning", reasoning },
-				{ type: "text", text },
-			],
-		}),
-	);
+function fakeThinkingModel(reasoning: string, text: string, turns = 1) {
+	let model = fakeModel();
+	for (let i = 0; i < turns; i++) {
+		model = model.respond(
+			new AIMessage({
+				content: [
+					{ type: "reasoning", reasoning },
+					{ type: "text", text },
+				],
+			}),
+		);
+	}
+	return model;
 }
 
 beforeEach(() => {
@@ -122,7 +136,7 @@ describe("AgentAdapterImpl constructor", () => {
 		expect(typeof adapter.generateTurn).toBe("function");
 	});
 
-	it("generateTurn accepts 2 parameters (threadId, content)", () => {
+	it("generateTurn accepts 3 parameters (threadId, content, signal)", () => {
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("hi"),
 			"prompt",
@@ -130,7 +144,7 @@ describe("AgentAdapterImpl constructor", () => {
 			noopBridge(),
 			new MemorySaver(),
 		);
-		expect(adapter.generateTurn.length).toBe(2);
+		expect(adapter.generateTurn.length).toBe(3);
 	});
 
 	it("constructs without error when toolNames includes the mouse tools", () => {
@@ -283,6 +297,67 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 
 		expect(blocks).toHaveLength(1);
 		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
+	});
+
+	it("generateTurn respects AbortSignal — stream stops on abort", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		let capturedSignal: AbortSignal | undefined;
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async (
+				_input?: { messages: BaseMessage[] },
+				config?: { signal?: AbortSignal; [k: string]: unknown },
+			) => {
+				const signal = config?.signal;
+				capturedSignal = signal;
+				return {
+					messages: (async function* () {
+						yield {
+							reasoning: (async function* () {})(),
+							text: (async function* () {
+								yield "first";
+								await new Promise<void>((resolve) => {
+									if (signal) {
+										if (signal.aborted) resolve();
+										else
+											signal.addEventListener(
+												"abort",
+												() => resolve(),
+												{ once: true },
+											);
+									} else {
+										resolve();
+									}
+								});
+							})(),
+						};
+					})(),
+				};
+			},
+		};
+
+		const controller = new AbortController();
+		const blocks: ContentBlock[] = [];
+		for await (const block of adapter.generateTurn(
+			"t-abort",
+			{ text: "hi" },
+			controller.signal,
+		)) {
+			blocks.push(block);
+			if (blocks.length === 1) {
+				controller.abort();
+			}
+		}
+
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0]).toEqual({ type: "text", text: "first" });
+		expect(capturedSignal).toBeTruthy();
+		expect(capturedSignal?.aborted).toBe(true);
 	});
 });
 
@@ -532,7 +607,7 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 	});
 
 	it("getState returns accumulated messages after multiple turns", async () => {
-		const model = fakeTextModel("response");
+		const model = fakeTextModel("response", 2);
 		const cp = new MemorySaver();
 		const adapter = new AgentAdapterImpl(
 			model,
@@ -558,9 +633,13 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 
 describe("AgentAdapterImpl WrapModelCall middleware", () => {
 	it("strips SystemMessages from state before model invocation", async () => {
-		const model = fakeModel().respond(
-			new AIMessage({ content: [{ type: "text", text: "OK" }] }),
-		);
+		const model = fakeModel()
+			.respond(
+				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+			)
+			.respond(
+				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
+			);
 		const cp = new MemorySaver();
 
 		const adapter = new AgentAdapterImpl(
@@ -578,7 +657,18 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 			const systemMsgs = call.messages.filter(
 				(m: any) => m._getType?.() === "system",
 			);
-			expect(systemMsgs).toHaveLength(0);
+			// Per 011 (research.md L117-126) createAgent injects the current
+			// profile's systemPrompt as a SystemMessage each turn; the middleware
+			// strips only STALE cross-profile SystemMessages (plan.md L255), so
+			// the current systemPrompt remains. Same profile ("system-prompt-1")
+			// both turns ⇒ exactly one SystemMessage carrying the current prompt,
+			// with no stale/duplicate contamination.
+			expect(systemMsgs).toHaveLength(1);
+			// createAgent injects the systemPrompt as a SystemMessage whose
+			// content is a text content-block array.
+			expect(systemMsgs[0].content).toEqual([
+				{ type: "text", text: "system-prompt-1" },
+			]);
 		}
 	});
 });

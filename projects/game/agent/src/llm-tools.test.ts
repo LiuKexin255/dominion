@@ -2,8 +2,13 @@
  * llm-tools.test.ts — Verifies AgentAdapterImpl passes the correct tools
  * array to createAgent based on profile.toolNames.
  *
- * Uses vi.hoisted + vi.mock to spy on createAgent calls while preserving
- * the real implementation (pass-through).
+ * Reliable pattern (FR-009): injects a `vi.fn()` createAgent spy through the
+ * AgentAdapterImpl ctor DI seam instead of a module-level `vi.mock("langchain")`.
+ * The module mock is fragile under Bazel js_test — the pre-compiled :lib's
+ * import of langchain bypasses vitest's mock registry, so the spy was never
+ * installed and createAgentMock was called 0 times (see research.md §2 and
+ * style/javascript.md §测试). The injected spy works identically under the
+ * vitest CLI and Bazel.
  */
 
 import { MemorySaver } from "@langchain/langgraph";
@@ -14,28 +19,14 @@ import { fakeModel } from "@langchain/core/testing";
 import { AgentAdapterImpl } from "./llm";
 import { OperationBridge } from "./operation-bridge";
 
-const { createAgentMock } = vi.hoisted(() => ({
-	createAgentMock: vi.fn(),
-}));
-
-vi.mock("langchain", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("langchain")>();
-	return {
-		createMiddleware: actual.createMiddleware,
-		createAgent: (...args: unknown[]) => {
-			createAgentMock(...args);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			return (actual.createAgent as any)(...args);
-		},
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	} as any;
-});
-
-beforeEach(() => {
-	createAgentMock.mockClear();
-});
-
 describe("AgentAdapterImpl createAgent tools wiring", () => {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let createAgentMock: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		createAgentMock = vi.fn(() => ({}));
+	});
+
 	it("passes mouse_move and mouse_click tools when toolNames includes them", () => {
 		new AgentAdapterImpl(
 			fakeModel(),
@@ -43,6 +34,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			["mouse_move", "mouse_click"],
 			new OperationBridge(),
 			new MemorySaver(),
+			createAgentMock,
 		);
 
 		expect(createAgentMock).toHaveBeenCalledTimes(1);
@@ -62,6 +54,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			[],
 			new OperationBridge(),
 			new MemorySaver(),
+			createAgentMock,
 		);
 
 		expect(createAgentMock).toHaveBeenCalledTimes(1);
@@ -78,6 +71,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			["mouse_move", "nonexistent"],
 			new OperationBridge(),
 			new MemorySaver(),
+			createAgentMock,
 		);
 
 		const opts = createAgentMock.mock.calls[0][0] as {

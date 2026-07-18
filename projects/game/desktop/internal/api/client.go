@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	game "dominion/projects/game"
 	"dominion/projects/game/desktop/internal/trace"
+	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -88,19 +90,16 @@ func (c *Client) CreateSession(ctx context.Context) (*game.Session, error) {
 // ListSessions lists all sessions via GET to /api/v1/sessions.
 // Query parameters page_size and page_token control pagination.
 func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken string) (*game.ListSessionsResponse, error) {
-	path := "/api/v1/sessions"
-	params := []string{}
+	q := url.Values{}
 	if pageSize > 0 {
-		params = append(params, fmt.Sprintf("page_size=%d", pageSize))
+		q.Set("page_size", fmt.Sprintf("%d", pageSize))
 	}
 	if pageToken != "" {
-		params = append(params, fmt.Sprintf("page_token=%s", pageToken))
+		q.Set("page_token", pageToken)
 	}
-	if len(params) > 0 {
-		path += "?" + strings.Join(params, "&")
-	}
+	u := &url.URL{Path: "/api/v1/sessions", RawQuery: q.Encode()}
 
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -125,7 +124,12 @@ func (c *Client) ListSessions(ctx context.Context, pageSize int32, pageToken str
 
 // GetSession retrieves a session by ID via GET to /api/v1/sessions/{sessionID}.
 func (c *Client) GetSession(ctx context.Context, sessionID string) (*game.Session, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID, nil)
+	path, err := url.JoinPath("/api/v1/sessions", sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
@@ -150,7 +154,12 @@ func (c *Client) GetSession(ctx context.Context, sessionID string) (*game.Sessio
 
 // DeleteSession deletes a session by ID via DELETE to /api/v1/sessions/{sessionID}.
 func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/sessions/"+sessionID, nil)
+	path, err := url.JoinPath("/api/v1/sessions", sessionID)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
@@ -170,19 +179,16 @@ func (c *Client) DeleteSession(ctx context.Context, sessionID string) error {
 
 // ListAgentProfiles lists agent profiles via GET to /api/v1/prompts/agentProfiles.
 func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToken string) (*game.ListAgentProfilesResponse, error) {
-	path := "/api/v1/prompts/agentProfiles"
-	params := []string{}
+	q := url.Values{}
 	if pageSize > 0 {
-		params = append(params, fmt.Sprintf("page_size=%d", pageSize))
+		q.Set("page_size", fmt.Sprintf("%d", pageSize))
 	}
 	if pageToken != "" {
-		params = append(params, fmt.Sprintf("page_token=%s", pageToken))
+		q.Set("page_token", pageToken)
 	}
-	if len(params) > 0 {
-		path += "?" + strings.Join(params, "&")
-	}
+	u := &url.URL{Path: "/api/v1/prompts/agentProfiles", RawQuery: q.Encode()}
 
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("list agent profiles: %w", err)
 	}
@@ -207,7 +213,12 @@ func (c *Client) ListAgentProfiles(ctx context.Context, pageSize int32, pageToke
 
 // GetAgent retrieves the agent for a session via GET to /api/v1/sessions/{sessionID}/agent.
 func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/agent", nil)
+	path, err := url.JoinPath("/api/v1/sessions", sessionID, "agent")
+	if err != nil {
+		return nil, fmt.Errorf("get agent: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get agent: %w", err)
 	}
@@ -233,7 +244,12 @@ func (c *Client) GetAgent(ctx context.Context, sessionID string) (*game.Agent, e
 // ListMessages lists all messages for a session via GET to
 // /api/v1/sessions/{sessionID}/messages.
 func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.ListMessagesResponse, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/sessions/"+sessionID+"/messages", nil)
+	path, err := url.JoinPath("/api/v1/sessions", sessionID, "messages")
+	if err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
@@ -257,13 +273,22 @@ func (c *Client) ListMessages(ctx context.Context, sessionID string) (*game.List
 }
 
 // CreateAgentProfile creates an agent profile via POST to /api/v1/prompts/agentProfiles.
+// Per AIP-133 + grpc-gateway body binding ("body: agent_profile"), the HTTP body
+// is the AgentProfile JSON (extracted from the request's agent_profile field)
+// while parent and agent_profile_id come from the URI path / query string.
 func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
-	body, err := protojson.Marshal(req)
+	body, err := protojson.Marshal(req.GetAgentProfile())
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
 
-	httpReq, err := c.newRequest(ctx, http.MethodPost, "/api/v1/prompts/agentProfiles", bytes.NewReader(body))
+	q := url.Values{}
+	if id := req.GetAgentProfileId(); id != "" {
+		q.Set("agent_profile_id", id)
+	}
+	u := &url.URL{Path: "/api/v1/prompts/agentProfiles", RawQuery: q.Encode()}
+
+	httpReq, err := c.newRequest(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create agent profile: %w", err)
 	}
@@ -286,9 +311,14 @@ func (c *Client) CreateAgentProfile(ctx context.Context, req *game.CreateAgentPr
 	return profile, nil
 }
 
-// GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileName}.
+// GetAgentProfile retrieves an agent profile via GET to /api/v1/prompts/agentProfiles/{agentProfileID}.
 func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (*game.AgentProfile, error) {
-	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
+	path, err := url.JoinPath("/api/v1", gameconst.AgentProfileName(agentProfileName))
+	if err != nil {
+		return nil, fmt.Errorf("get agent profile: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("get agent profile: %w", err)
 	}
@@ -311,9 +341,14 @@ func (c *Client) GetAgentProfile(ctx context.Context, agentProfileName string) (
 	return profile, nil
 }
 
-// DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileName}.
+// DeleteAgentProfile deletes an agent profile via DELETE to /api/v1/prompts/agentProfiles/{agentProfileID}.
 func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string) error {
-	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/prompts/agentProfiles/"+agentProfileName, nil)
+	path, err := url.JoinPath("/api/v1", gameconst.AgentProfileName(agentProfileName))
+	if err != nil {
+		return fmt.Errorf("delete agent profile: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("delete agent profile: %w", err)
 	}
@@ -332,21 +367,28 @@ func (c *Client) DeleteAgentProfile(ctx context.Context, agentProfileName string
 }
 
 // UpdateAgentProfile partially updates an agent profile via PATCH to
-// /api/v1/prompts/agentProfiles/{agentProfileName}. The update_mask paths are
-// sent as the repeated update_mask.paths query parameter per grpc-gateway
-// FieldMask binding.
+// /api/v1/prompts/agentProfiles/{agentProfileID}. Per AIP-134 + grpc-gateway
+// body binding ("body: agent_profile" with path variable {agent_profile.name}),
+// the AgentProfile JSON is sent as the PATCH body and the resource name is
+// taken from the URI path. update_mask paths are sent as the repeated
+// update_mask.paths query parameter per grpc-gateway FieldMask binding.
 func (c *Client) UpdateAgentProfile(ctx context.Context, agentProfileName string, profile *game.AgentProfile, updateMaskPaths []string) (*game.AgentProfile, error) {
 	body, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(profile)
 	if err != nil {
 		return nil, fmt.Errorf("update agent profile: %w", err)
 	}
 
-	path := "/api/v1/prompts/agentProfiles/" + agentProfileName
-	if len(updateMaskPaths) > 0 {
-		path += "?update_mask=" + strings.Join(updateMaskPaths, ",")
+	path, err := url.JoinPath("/api/v1", gameconst.AgentProfileName(agentProfileName))
+	if err != nil {
+		return nil, fmt.Errorf("update agent profile: %w", err)
 	}
+	q := url.Values{}
+	if len(updateMaskPaths) > 0 {
+		q.Set("update_mask", strings.Join(updateMaskPaths, ","))
+	}
+	u := &url.URL{Path: path, RawQuery: q.Encode()}
 
-	httpReq, err := c.newRequest(ctx, http.MethodPatch, path, bytes.NewReader(body))
+	httpReq, err := c.newRequest(ctx, http.MethodPatch, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("update agent profile: %w", err)
 	}
@@ -373,7 +415,12 @@ func (c *Client) UpdateAgentProfile(ctx context.Context, agentProfileName string
 // /api/v1/sessions/{sessionID}/agent:refresh. Used after a profile update so
 // the agent reloads its adapter with the new configuration.
 func (c *Client) RefreshAgent(ctx context.Context, sessionID string) error {
-	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/sessions/"+sessionID+"/agent:refresh", bytes.NewReader([]byte(`{}`)))
+	path, err := url.JoinPath("/api/v1/sessions", sessionID, "agent:refresh")
+	if err != nil {
+		return fmt.Errorf("refresh agent: %w", err)
+	}
+
+	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader([]byte(`{}`)))
 	if err != nil {
 		return fmt.Errorf("refresh agent: %w", err)
 	}

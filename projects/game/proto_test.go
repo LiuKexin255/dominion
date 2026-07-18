@@ -6,6 +6,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -443,27 +444,27 @@ func TestPartKindDiscriminatorFlattening(t *testing.T) {
 			wantMissing: []string{`"text"`, `"image"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
 		},
 		{
-			name: "image",
-			part: &game.Part{Kind: &game.Part_Image{Image: &game.ImagePart{Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG}}},
-			wantKey: `"image"`,
+			name:        "image",
+			part:        &game.Part{Kind: &game.Part_Image{Image: &game.ImagePart{Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG}}},
+			wantKey:     `"image"`,
 			wantMissing: []string{`"text"`, `"thinking"`, `"mouseMove"`, `"mouseClick"`, `"toolResult"`},
 		},
 		{
-			name: "mouse_move",
-			part: &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{ToolId: "t1", XPx: 1, YPx: 2}}},
-			wantKey: `"mouseMove"`,
+			name:        "mouse_move",
+			part:        &game.Part{Kind: &game.Part_MouseMove{MouseMove: &game.MouseMovePart{ToolId: "t1", XPx: 1, YPx: 2}}},
+			wantKey:     `"mouseMove"`,
 			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseClick"`, `"toolResult"`},
 		},
 		{
-			name: "mouse_click",
-			part: &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{ToolId: "t2", Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK}}},
-			wantKey: `"mouseClick"`,
+			name:        "mouse_click",
+			part:        &game.Part{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{ToolId: "t2", Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK}}},
+			wantKey:     `"mouseClick"`,
 			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"toolResult"`},
 		},
 		{
-			name: "tool_result",
-			part: &game.Part{Kind: &game.Part_ToolResult{ToolResult: &game.ToolResultPart{ToolId: "t3", Status: game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED}}},
-			wantKey: `"toolResult"`,
+			name:        "tool_result",
+			part:        &game.Part{Kind: &game.Part_ToolResult{ToolResult: &game.ToolResultPart{ToolId: "t3", Status: game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED}}},
+			wantKey:     `"toolResult"`,
 			wantMissing: []string{`"text"`, `"thinking"`, `"image"`, `"mouseMove"`, `"mouseClick"`},
 		},
 	}
@@ -577,12 +578,12 @@ func TestEmptyCreateSessionRequest(t *testing.T) {
 func TestAgentProfileRoundtrip(t *testing.T) {
 	// given: an AgentProfile with all fields populated
 	given := &game.AgentProfile{
-		Name:        "agentProfiles/default",
-		Model:       "gpt-4",
+		Name:         "prompts/agentProfiles/default",
+		Model:        "gpt-4",
 		SystemPrompt: "You are a helpful game agent.",
-		SkillNames:  []string{"gameplay-basics", "navigation"},
-		McpNames:    []string{"screenshot-tool"},
-		Enabled:     true,
+		SkillNames:   []string{"gameplay-basics", "navigation"},
+		McpNames:     []string{"screenshot-tool"},
+		Enabled:      true,
 	}
 
 	// when: marshal to protojson
@@ -598,8 +599,8 @@ func TestAgentProfileRoundtrip(t *testing.T) {
 	}
 
 	// then: verify all fields preserved
-	if got.GetName() != "agentProfiles/default" {
-		t.Errorf("name: got %q, want %q", got.GetName(), "agentProfiles/default")
+	if got.GetName() != "prompts/agentProfiles/default" {
+		t.Errorf("name: got %q, want %q", got.GetName(), "prompts/agentProfiles/default")
 	}
 	if got.GetModel() != "gpt-4" {
 		t.Errorf("model: got %q, want %q", got.GetModel(), "gpt-4")
@@ -621,7 +622,7 @@ func TestAgentProfileRoundtrip(t *testing.T) {
 func TestSkillRoundtrip(t *testing.T) {
 	// given: a Skill with all fields populated
 	given := &game.Skill{
-		Name:    "skills/navigation",
+		Name:    "prompts/skills/navigation",
 		Content: "Navigate efficiently through the game world.",
 		Enabled: true,
 	}
@@ -639,13 +640,102 @@ func TestSkillRoundtrip(t *testing.T) {
 	}
 
 	// then: verify all fields preserved
-	if got.GetName() != "skills/navigation" {
-		t.Errorf("name: got %q, want %q", got.GetName(), "skills/navigation")
+	if got.GetName() != "prompts/skills/navigation" {
+		t.Errorf("name: got %q, want %q", got.GetName(), "prompts/skills/navigation")
 	}
 	if got.GetContent() != "Navigate efficiently through the game world." {
 		t.Errorf("content: got %q, want %q", got.GetContent(), "Navigate efficiently through the game world.")
 	}
 	if got.GetEnabled() != true {
 		t.Errorf("enabled: got %v, want %v", got.GetEnabled(), true)
+	}
+}
+
+// TestCreateAgentProfileRequestRoundtrip verifies the AIP-133 request shape
+// where the resource body lives in a nested agent_profile field rather than
+// flat top-level fields.
+func TestCreateAgentProfileRequestRoundtrip(t *testing.T) {
+	// given: an AIP-133 CreateAgentProfileRequest with nested agent_profile
+	given := &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: "default",
+		AgentProfile: &game.AgentProfile{
+			Name:         "prompts/agentProfiles/default",
+			Model:        "gpt-4",
+			SystemPrompt: "You are a helpful game agent.",
+			Enabled:      true,
+		},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.CreateAgentProfileRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: verify parent + caller-supplied ID + nested resource preserved
+	if got.GetParent() != gameconst.PromptsParent {
+		t.Errorf("parent: got %q, want %q", got.GetParent(), gameconst.PromptsParent)
+	}
+	if got.GetAgentProfileId() != "default" {
+		t.Errorf("agentProfileId: got %q, want %q", got.GetAgentProfileId(), "default")
+	}
+	ap := got.GetAgentProfile()
+	if ap == nil {
+		t.Fatal("GetAgentProfile() returned nil")
+	}
+	if ap.GetName() != "prompts/agentProfiles/default" {
+		t.Errorf("agentProfile.name: got %q, want %q", ap.GetName(), "prompts/agentProfiles/default")
+	}
+	if ap.GetModel() != "gpt-4" {
+		t.Errorf("agentProfile.model: got %q, want %q", ap.GetModel(), "gpt-4")
+	}
+}
+
+// TestUpdateAgentProfileRequestRoundtrip verifies the AIP-134 request shape
+// where identity lives on the nested agent_profile.name (no standalone name
+// field). The update_mask is left unset here; its round-trip is covered by
+// the prompt handler integration tests.
+func TestUpdateAgentProfileRequestRoundtrip(t *testing.T) {
+	// given: an AIP-134 UpdateAgentProfileRequest with nested agent_profile
+	given := &game.UpdateAgentProfileRequest{
+		AgentProfile: &game.AgentProfile{
+			Name:         "prompts/agentProfiles/default",
+			SystemPrompt: "Updated prompt.",
+			Enabled:      true,
+		},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.UpdateAgentProfileRequest)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: verify identity lives on the resource, not a standalone name field
+	ap := got.GetAgentProfile()
+	if ap == nil {
+		t.Fatal("GetAgentProfile() returned nil")
+	}
+	if ap.GetName() != "prompts/agentProfiles/default" {
+		t.Errorf("agentProfile.name: got %q, want %q", ap.GetName(), "prompts/agentProfiles/default")
+	}
+	if ap.GetSystemPrompt() != "Updated prompt." {
+		t.Errorf("agentProfile.systemPrompt: got %q, want %q", ap.GetSystemPrompt(), "Updated prompt.")
+	}
+	if !ap.GetEnabled() {
+		t.Errorf("agentProfile.enabled: got %v, want true", ap.GetEnabled())
 	}
 }

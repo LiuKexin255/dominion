@@ -15,7 +15,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
 import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
-import { DesktopDisconnectedError, type OperationBridge } from "./operation-bridge";
+import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
 /**
@@ -74,22 +74,35 @@ export function buildTools(
 // ---------------------------------------------------------------------------
 
 /**
- * Strips all SystemMessage entries from state.messages before the model
- * invocation.  This prevents profile-switch contamination when the same
- * thread_id is used across different systemPrompts.
+ * Strips STALE SystemMessage entries from the model prompt to prevent
+ * cross-profile contamination when the same thread_id is shared across
+ * profiles.
+ *
+ * Per `specs/011-agent-adapter-decouple/research.md` L117-126, createAgent
+ * injects the current profile's `systemPrompt` each turn, and conversation
+ * history is shared across profiles on the same thread_id (L137-139). When the
+ * thread is reused after a profile switch, the prompt may carry a prior
+ * profile's SystemMessage; this middleware removes those stale entries so only
+ * the current systemPrompt reaches the model. The current systemPrompt is
+ * retained because createAgent re-injects it via `request.systemPrompt`
+ * (`specs/011-.../plan.md` L255 — wrapModelCall thread_id isolation).
+ *
+ * The filter targets `request.messages` (the prompt the model actually
+ * receives — langchain `ModelRequest`, agents/nodes/types.d.ts), NOT
+ * `request.state.messages` (the checkpoint state); filtering the latter leaves
+ * the prompt untouched.
  */
 const wrapModelCallMiddleware = createMiddleware({
-	name: "StripSystemMessages",
+	name: "StripStaleSystemMessages",
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	wrapModelCall: async (request: any, handler: any) => {
-		const state = request?.state;
-		if (state?.messages && Array.isArray(state.messages)) {
-			const filtered = state.messages.filter(
-				(m: any) => m._getType?.() !== "system",
-			);
+		const messages = request?.messages;
+		if (Array.isArray(messages)) {
 			return handler({
 				...request,
-				state: { ...state, messages: filtered },
+				messages: messages.filter(
+					(m: any) => m._getType?.() !== "system",
+				),
 			});
 		}
 		return handler(request);
@@ -115,11 +128,14 @@ export interface AgentAdapter {
 	 *
 	 * @param threadId - Stable checkpoint thread identifier (sessionId).
 	 * @param content  - Text and/or image blocks for this turn.
+	 * @param signal   - Optional AbortSignal; when aborted, LangGraph cancels
+	 *                   the in-flight run.
 	 * @returns Async iterable of ContentBlock in streaming order.
 	 */
 	generateTurn(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock>;
 
 	/**
@@ -161,41 +177,35 @@ export class AgentAdapterImpl implements AgentAdapter {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private readonly agent: any;
 
+	/**
+	 * @param createAgentFn Optional factory overriding `langchain`'s `createAgent`
+	 *   (dependency-injection seam). Tests inject a `vi.fn()` spy to assert the
+	 *   `tools`/options passed without relying on module-level `vi.mock("langchain")`,
+	 *   which the pre-compiled `:lib` bypasses under Bazel `js_test` (see
+	 *   `style/javascript.md` §测试 and research.md §2). Defaults to the real
+	 *   `createAgent`.
+	 */
 	constructor(
 		chatModel: ChatModel,
 		systemPrompt: string,
 		toolNames: string[],
 		bridge: OperationBridge,
 		checkpointer: MemorySaver,
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		createAgentFn?: (config: any) => any,
 	) {
 		const tools = buildTools(toolNames, bridge);
-
-		// Abort tool execution when the desktop is disconnected. Throwing from
-		// wrapToolCall propagates as a middleware error — ToolNode re-throws it
-		// (bypassing defaultHandleToolErrors) so the stream errors out and the
-		// turn ends without feeding a tool-error ToolMessage back to the LLM.
-		const toolAbortOnDisconnect = createMiddleware({
-			name: "ToolAbortOnDisconnect",
-			wrapToolCall: async (_request, handler) => {
-				if (!bridge.hasSink()) {
-					throw new DesktopDisconnectedError(
-						"desktop disconnected: tool execution aborted",
-					);
-				}
-				return handler(_request);
-			},
-		});
 
 		info("compiling agent adapter", {
 			systemPromptLength: systemPrompt.length,
 			toolCount: tools.length,
 		});
 
-		this.agent = createAgent({
+		this.agent = (createAgentFn ?? createAgent)({
 			model: chatModel,
 			systemPrompt,
 			tools,
-			middleware: [beforeModelMiddleware, wrapModelCallMiddleware, toolAbortOnDisconnect],
+			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
 			checkpointer,
 		});
 	}
@@ -203,8 +213,9 @@ export class AgentAdapterImpl implements AgentAdapter {
 	async *generateTurn(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock> {
-		yield* this.streamFromAgent(threadId, content);
+		yield* this.streamFromAgent(threadId, content, signal);
 	}
 
 	async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
@@ -222,6 +233,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 	private async *streamFromAgent(
 		threadId: string,
 		content: TurnContent,
+		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock> {
 		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
 		const hasImage = !!(content.imageData && content.imageMimeType);
@@ -263,6 +275,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 			metadata: { session_id: threadId },
 			version: "v3",
 			recursionLimit: RECURSION_LIMIT,
+			signal,
 		},
 		);
 

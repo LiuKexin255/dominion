@@ -306,4 +306,10 @@ func TestParseOptions(t *testing.T) {
 
 > 外部的规范引用，可作为规范参考
 
-* [Google Go Style](https://google.github.io/styleguide/go/)
+### [Google Go Style](https://google.github.io/styleguide/go/) （入口索引）
+
+Google Go Style Guide 由以下三份文档组成，可直接跳转到对应文档：
+
+* [Style Guide](https://google.github.io/styleguide/go/guide) — Go 风格规范的基石；规范（normative）+ 权威（canonical），所有作者与评审者必读。
+* [Style Decisions](https://google.github.io/styleguide/go/decisions) — 针对具体风格点的决策与论证；规范（normative），主要面向 readability mentor。
+* [Best Practices](https://google.github.io/styleguide/go/best-practices) — 实践中沉淀的最佳模式；非规范，但鼓励遵循以保持代码统一。

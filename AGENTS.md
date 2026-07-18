@@ -50,11 +50,11 @@ Python 依赖更新步骤：
 
 ## 代码规范 
 
-参阅 `style` 目录下的文档，**任何**编辑代码前应当先阅读代码规范要求。
+1. 参阅 `style` 目录下的文档，**任何**编辑代码前应当先阅读代码规范要求。
 
 ## 调试与大型测试
 
-* 要求为服务编写大型测试的测试计划，大型测试保存在 `testplan` 目录下。使用 `testplan` SKILL 执行大型测试的测试计划。
+* 大型测试保存在 `testplan` 目录下。使用 `testplan` SKILL 执行大型测试的测试计划。
 * 遇到测试失败或需要排查运行时问题，可以使用 `signoz` skill 查询日志与 traces。
 * 编写/执行大型测试的测试计划之前，要求阅读 `style/large_test.md`。
 
@@ -62,12 +62,27 @@ Python 依赖更新步骤：
 
 Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
 
+## 依赖
+
+* 持续的、及时的升级依赖版本，避免版本差异太大导致与最新文档不一致，也避免版本差异过大导致未来升级困难。
+
+## 信息检索
+
+充分使用各种工具和 sub-agent 获取所需的信息，避免即兴设计、盲目开发。
+
+* 使用 `webfetch` 工具读取 web URL 内容。
+* 使用 `websearch` 工具在网络上检索信息。
+* 加载 `context7-mcp` SKILL，使用 `context7` MCP 检索某个项目或者代码库的文档。
+* 使用 `grep.app` MCP 检索 `github` 代码。
+* 使用 `explore` sub-agent 探索代码仓库。
+
 ## 其他
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
+* **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at `specs/016-desktop-sse-chat-push/plan.md`
+at `specs/018-saolei-mcp/plan.md`
 <!-- SPECKIT END -->

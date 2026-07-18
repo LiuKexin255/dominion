@@ -1,377 +1,129 @@
 <!--
+==============================================================================
 Sync Impact Report
-=====================================================================
-Version change: 1.4.0 → 2.0.0
-
-Modified principles:
-  - V. Refactoring-Oriented Changes → renumbered to IV. Refactoring-
-    Oriented Changes (no content change beyond cross-reference updates)
-
-Added principles:
-  - None
-
-Removed sections:
-  - Core Principles → IV. Implementation Checkpointing (实现检查点插入):
-    the principle mandating check-task insertion at phase boundaries in
-    `tasks.md`. Removed entirely; check-task insertion is no longer
-    constitutionally mandated.
-
-Templates requiring updates:
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    §IV bullet removed; sample `> §IV check task` callouts and `CHECK`
-    task examples removed; §V references renumbered to §IV; closing
-    "Check tasks are §IV checkpoints" note removed)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    §IV bullet removed; §V reference renumbered to §IV)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §IV applies at tasks.md stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-===================================================================
-
-Version change: 1.3.0 → 1.4.0
-
-Modified principles:
-  - None (existing §I, §II, §III, §IV unchanged)
-
-Added principles:
-  - V. Refactoring-Oriented Changes (重构式变更): every change in
-    `plan.md`/`tasks.md` MUST be classified as 新增 / 修改 / 删除
-    (Add / Modify / Delete), where 新增 applies ONLY to modules, files,
-    types, or design elements that did not previously exist (adding a
-    function to an existing class is 修改, not 新增). 修改 MUST be done
-    as a refactor, not logic stacking. 修改 and 删除 MUST review the
-    existing design and layering and explicitly verdict whether it still
-    serves the new goal; outdated designs MUST be updated in the same
-    change. "Out of scope" MUST NOT carry stale designs forward.
-
-Added sections:
-  - Core Principles → V. Refactoring-Oriented Changes
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §V classification + design-review obligation)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §V; Format header extended to carry the A/M/D label)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §V applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-====================================================================
-
-Version change: 1.2.0 → 1.3.0
-
-Modified principles:
-  - None (existing §I, §II, §III unchanged)
-
-Added principles:
-  - IV. Implementation Checkpointing (实现检查点插入): when tasks.md
-    contains many tasks, check tasks MUST be inserted at appropriate
-    positions to verify the implementation has not deviated from the
-    task plan and plan.md, and that code is correctly committed.
-    Deviations MUST be fixed promptly.
-
-Added sections:
-  - Core Principles → IV. Implementation Checkpointing
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §IV; check task examples inserted at phase checkpoints)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §IV checkpointing obligation)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes task planning; §IV applies at tasks.md stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
-
-Version change: 1.1.0 → 1.2.0
-
-Modified principles:
-  - None (existing §I and §II unchanged)
-
-Added principles:
-  - III. External Dependency Research (外部依赖研读): when authoring
-    plan.md (and tasks that introduce new dependencies), every external
-    dependency or component MUST be researched against its official
-    documentation and source repository BEFORE the plan is finalized.
-
-Added sections:
-  - Core Principles → III. External Dependency Research
-
-Removed sections:
-  - None
-
-Templates requiring updates:
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check
-    now references §III research-before-plan obligation)
-  - .specify/templates/tasks-template.md — ✅ updated (Constitution Check
-    now references §III inheritance for tasks introducing new dependencies)
-  - .specify/templates/spec-template.md — ✅ verified (spec authoring
-    precedes planning; §III applies at plan/tasks stage, no change needed)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
-
-Follow-up TODOs: none
-=====================================================================
-
+==============================================================================
 Version change: 1.0.0 → 1.1.0
+Rationale: Principle V (Read Before Code) materially expanded — added a
+  concrete example to the "不做引用传递" (no citation transitivity) rule and
+  added a new mandatory rule "规划即阅读" (planner must actually read listed
+  docs before assigning them). Both strengthen planning discipline without
+  removing or redefining any principle → MINOR 1.1.0.
 
 Modified principles:
-  - I. Citation Provenance (引用溯源): scope expanded from spec.md/plan.md
-    to include tasks.md; added task-level provenance rule.
+  - V. 编码前阅读文档 (Read Before Code) — 流程: expanded with example +
+    new mandatory rule (planner-must-read-before-listing).
 
-Added principles:
-  - II. Code Style Precedence (代码规范优先): implementation tasks MUST read
-    repository style guidelines before modifying code.
+Added sections: none (rule-level expansion within an existing principle).
 
-Added sections:
-  - Core Principles → II. Code Style Precedence
-
-Removed sections:
-  - None
+Removed sections: none.
 
 Templates requiring updates:
-  - .specify/templates/spec-template.md — ✅ verified (References section already
-    covers spec.md; no change required because tasks.md inherits from parent docs)
-  - .specify/templates/plan-template.md — ✅ updated (Constitution Check now
-    references tasks.md citation and style review requirements)
-  - .specify/templates/tasks-template.md — ✅ updated (added Constitution Check
-    gate and References section placeholder)
-  - .specify/templates/checklist-template.md — N/A (operational artifact)
-  - .specify/templates/commands/*.md — N/A (directory does not exist)
+  - .specify/templates/plan-template.md   — ✅ no change (Constitution Check
+        reads this file dynamically; gates are derived per-feature).
+  - .specify/templates/spec-template.md   — ✅ no change (scope/requirements
+        unaffected).
+  - .specify/templates/tasks-template.md  — ✅ no change (task structure
+        unaffected; the document-reading rule constrains how tasks.md is
+        authored, not its template layout).
+  - .specify/workflows/speckit/workflow.yml — ✅ no change (integration-agnostic).
 
-Follow-up TODOs: none
-=====================================================================
+Follow-up TODOs:
+  - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
+    open/pending manual review; no new TODOs introduced by this amendment.
+==============================================================================
 -->
 
-# Dominion Spec Constitution
-
-This constitution governs the authoring and maintenance of specification,
-planning, and implementation task artifacts produced by Spec Kit (`spec.md`,
-`plan.md`, `tasks.md`, and related design documents). It does not duplicate
-engineering conventions already covered in `AGENTS.md`, which retains supremacy
-over runtime code and build practices.
+# Dominion Constitution
 
 ## Core Principles
 
-### I. Citation Provenance (引用溯源)
+本宪章按三类组织原则：**通用**（跨领域约束）、**设计**（架构与方案）、**流程**（开发与测试纪律）。所有原则为声明式、可校验的强制规则。
 
-Every factual claim, design decision, API specification, or technical detail in
-`spec.md`, `plan.md`, or `tasks.md` that originates from external material MUST
-carry a traceable link to its source.
+### I. 引用溯源 (Citation & Provenance) — 通用
 
-**Mandatory rules**:
+代码或文档中引用任何内容（无论来自本仓库还是外部）MUST 包含可追溯的引用来源：
 
-- **Inline citation**: each referenced fact MUST use Markdown link syntax
-  inline at the point of use — `[description](URL)`.
-- **Acceptable source types**: official documentation, source code
-  repositories (e.g., GitHub/GitLab commit, file, or issue URLs),
-  published technical articles and blog posts, RFCs, and standards
-  documents.
-- **Version pinning**: when a citation depends on a specific version of
-  a document, package, or revision, the version number or commit SHA
-  MUST accompany the link so the referenced state is deterministic.
-- **Public accessibility**: cited links MUST resolve to publicly
-  reachable resources. Private or paywalled sources MUST be accompanied
-  by a publicly accessible alternative or an archived snapshot (e.g.,
-  `web.archive.org`).
-- **Consolidated References section**: every `spec.md`, `plan.md`, and
-  `tasks.md` MUST end with a `## References` section enumerating all cited URLs,
-  grouped by category (Official Documentation / Repositories / Articles
-  & RFCs). Documents that cite no external material MUST still include
-  the section with a note stating "No external references."
-- **Task-level provenance**: when a `tasks.md` item depends on an external
-  library, tool, command, or documented pattern, the task description MUST
-  include or link to the authoritative source. Inherited provenance from
-  `spec.md` or `plan.md` MUST be referenced explicitly when the task restates
-  a design decision.
-- **No bare claims**: statements presented as external fact without a
-  citation are treated as assumptions and MUST be relocated to the
-  `## Assumptions` section of the artifact.
+- **仓库内引用**：MUST 使用相对于仓库根目录的路径（如 `src/foo/bar.go:42`、`style/golang.md`）。
+- **仓库外引用**：MUST 使用完整 URL 链接（官方文档、GitHub 仓库 README、技术文章等）。
+- 不允许"裸引用"（仅描述而无来源指针）。
 
-**Rationale**: traceable citations let reviewers verify design decisions
-against authoritative sources, prevent hallucinated or outdated claims
-from entering the spec pipeline, and give future maintainers a
-deterministic path back to the original source of truth.
+**Rationale**：可追溯性是协作与审计的基础；新成员或 agent 凭引用即可定位原始依据，避免知识断层与误读。
 
-### II. Code Style Precedence (代码规范优先)
+### II. 重构式变更 (Refactoring Over Patching) — 设计
 
-Every code-related task in `tasks.md` MUST reference the repository's code style
-guidelines before any source file is created or modified.
+进行代码变更时 MUST 评估现有架构设计与代码分层是否仍符合新的目标/需求：
 
-**Mandatory rules**:
+- 当现有架构相对新需求**过度设计**时，MUST 简化、收缩 scope 以保持简洁；不能仅堆叠代码。
+- 当现有架构**无法满足**需求时，MUST 扩展或重构，在设计层面满足需要，而非通过打"补丁"绕过。
+- 架构调整 MUST 与功能变更同步进行，二者作为同一变更的产物交付。
 
-- **Read-first rule**: an implementation task MUST NOT begin until the assignee
-  has read the style documents under `style/` (or the location designated by
-  `AGENTS.md`) for the relevant language and project area.
-- **Style gate in tasks**: every `tasks.md` implementation task that touches
-  code MUST include an acceptance criterion or inline note confirming the
-  relevant style guidelines were reviewed.
-- **Conflict resolution**: if a task's proposed approach conflicts with an
-  existing style rule, the style rule prevails unless the constitution itself
-  is amended.
-- **New conventions**: when a task introduces a pattern not covered by existing
-  style guidelines, the assignee MUST document the new convention in the
-  appropriate `style/` document or flag it for review before merging.
+**Rationale**：单纯堆叠代码导致架构腐化；打补丁掩盖问题并积累技术债。让设计随需求演化才能维持长期可维护性。
 
-**Rationale**: reading style guidelines first prevents inconsistent formatting,
-redundant conventions, and rework; it ensures the codebase evolves coherently
-and that each contributor understands the project's engineering expectations
-before writing code.
+### III. 接口优先设计 (Interface-First Design) — 设计
 
-### III. External Dependency Research (外部依赖研读)
+技术方案设计 MUST 包含接口设计，包括但不限于 RPC、HTTP（REST/gRPC）、内部模块 API：
 
-When authoring `plan.md`, every external dependency, library, framework,
-service, or component referenced in the design MUST be researched against its
-official documentation and source repository BEFORE the plan is finalized.
+- 接口设计 MUST 在实现前明确：契约、输入/输出 schema、错误码与语义、版本化策略。
+- 服务间或模块间通信 MUST 以接口契约为先——先定契约，再实现。
 
-**Mandatory rules**:
+**Rationale**：接口是协作边界与变更隔离点；先定接口使并行开发、契约测试与向后兼容成为可能。
 
-- **Research-before-plan rule**: before a technical decision involving an
-  external dependency or component is recorded in `plan.md`, the author MUST
-  retrieve and read the dependency's official documentation and source
-  repository (README, documentation site, API reference, CHANGELOG) to a depth
-  sufficient to justify the decision. Relying on memory or prior assumptions
-  about the dependency is a violation.
-- **Scope of research**: research MUST cover, at minimum, the dependency's
-  purpose, supported versions, the public API surface relevant to the plan,
-  known constraints or deprecations, and licensing terms.
-- **Evidence in plan**: the plan MUST record the documentation URLs consulted
-  as inline citations (per §I) alongside a one-line summary of the finding
-  that informed the decision. A bare dependency name without supporting
-  documentation evidence is a violation.
-- **Version grounding**: the specific version or version range researched MUST
-  be pinned in the plan. If the latest released version differs from what the
-  plan targets, the plan MUST note the delta and the reason for the choice.
-- **Conflicting signals**: when official documentation and observed repository
-  behavior diverge, the plan MUST flag the discrepancy and record which source
-  was trusted and why.
-- **Inheritance to tasks**: tasks in `tasks.md` that introduce NEW dependencies
-  not already researched in `plan.md` MUST perform the same research and cite
-  the findings before implementation begins.
+### IV. 测试颗粒度与执行频率 (Test Granularity & Cadence) — 流程
 
-**Rationale**: planning against stale memory or unverified assumptions about
-external dependencies produces designs that break on implementation — APIs
-change, versions deprecate, and constraints shift. Reading authoritative
-sources before committing to a design ensures plans are grounded in current
-reality, complements §I (which obligates citing sources) by obligating the
-actual reading of them, and gives reviewers verifiable evidence rather than
-trust.
+测试遵循"先小颗粒度、后大规模"的执行顺序；测试颗粒度越小，执行频率越高：
 
-### IV. Refactoring-Oriented Changes (重构式变更)
+- 编译与单测属于小规模测试，MUST 在每次代码变更时执行，并作为代码开发任务的一部分——**不单独分配 task**。
+- 大型测试（如有）作为功能/需求验收，在功能或需求完成后进行验证；大型测试 MAY 单独分配 task 作为验收环节。
 
-Every code change described in `plan.md` and `tasks.md` MUST be expressed
-as a refactor of the affected unit, not as logic stacked on top of it.
-Each change MUST be explicitly classified as 新增 (Add), 修改 (Modify),
-or 删除 (Delete), and the plan MUST keep the design and the
-implementation coherent — outdated designs MUST NOT survive into the new
-version under the excuse of "out of scope".
+**Rationale**：编译+单测构成快速反馈循环，回归捕获成本最低；大型测试验证端到端价值但成本高，应低频执行。
 
-**Mandatory rules**:
+### V. 编码前阅读文档 (Read Before Code) — 流程
 
-- **Change classification**: every change recorded in `plan.md` and every
-  implementation task in `tasks.md` MUST be labeled as one of 新增 /
-  修改 / 删除 (Add / Modify / Delete). The label MUST describe what is
-  happening to the unit of code being touched.
-- **Classification accuracy**: 新增 applies ONLY to a module, file,
-  type, or design element that did not previously exist. Adding a
-  function to an existing class, a field to an existing struct, a method
-  to an existing interface, or a branch to an existing function is 修改
-  — not 新增 — because the enclosing unit already existed. 删除 applies
-  when an existing module, file, type, function, field, or design
-  element is being removed.
-- **Refactor-not-stack rule**: changes classified as 修改 MUST be
-  carried out by refactoring the existing unit so the new behavior is a
-  natural extension of a still-coherent design. Appending logic onto an
-  existing unit without revisiting its structure — so the unit accrues
-  conditional branches, parallel code paths, or responsibilities it was
-  never designed for — is a violation, even when the new behavior is
-  correct.
-- **Design review for 修改 and 删除**: every 修改 or 删除 change MUST be
-  accompanied in `plan.md` by a review of (a) the existing design,
-  architecture, and code layering of the affected unit and (b) an
-  explicit verdict on whether that design still serves the new goal.
-  "The existing design still applies" is an acceptable verdict when
-  true; when it does not, the change MUST be expanded to bring the
-  design back into coherence with the new goal.
-- **Synchronous design update**: when a 修改 or 删除 change reveals that
-  the surrounding design, architecture, layering, or documentation is
-  outdated or no longer applicable, the change MUST be expanded to
-  update those elements in the same version. Carrying a stale design
-  into a new version on the grounds that fixing it is "out of scope" or
-  "belongs to a separate task" is a violation.
-- **Design-implementation coherence is part of the change**: the change
-  is not complete until the design (in `spec.md` / `plan.md` /
-  `data-model.md` / `contracts/` / `style/` as applicable) and the
-  implementation agree. A divergence between design and implementation
-  knowingly left in place counts as an incomplete change.
+tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 
-**Rationale**: stacking logic onto existing units without refactoring
-them is how codebases accrue accidental complexity — a class gains a
-third responsibility, a function gains a seventh branch, a layer gains a
-third caller pattern, and the original design silently stops describing
-the code. Forcing every change to be classified and to revisit the
-affected design makes that drift visible at planning time, when it is
-cheapest to fix. Requiring synchronous updates keeps the design and the
-code as one artifact across versions, instead of letting them diverge
-until a future "refactor pass" that never arrives. This complements §II
-(style), which governs how code is written, and §III (dependency
-research), which governs what is chosen; this principle governs how the
-plan describes change itself.
+- 仓库内文档用相对路径，仓库外文档用完整 URL；所列文档地址 MUST 直接包含实际内容，无需二次跳转。
+- agent 编码前 MUST 完整阅读所有声明文档，然后再编码。
+- 不做引用传递：所有文档（含间接引用的文件）MUST 在 tasks.md 规划时一次性明确列出，避免不确定性。
+  - **示例**：若 `a.md` 引用了 [b](URL1) 与 [c](URL2)，而某 phase 需要阅读 b 的内容，则 MUST 显式列出 `a.md` 与 [b](URL1)，不能只列出 `a.md`。
+- 规划即阅读：规划 tasks.md 确定需阅读的文档列表时，规划者 MUST 实际阅读列表中每个文档，确认其包含该 phase 所需的实际内容（部分文档可能只是引用索引，仅有链接而无具体内容）。禁止在未阅读的情况下，凭"理解"或"惰性思维"分配文档列表。
+- 文档分类：**代码规范文档**、**官方文档**（第三方组件/依赖的官方文档或 GitHub 仓库 README）、**技术文章**；所列文档 MUST 与该 phase 开发任务相关或作为参考。
+- AGENTS.md 与 spec 相关文件是代码开发必读内容，无需在 tasks.md 中重复列出。
 
-## Spec Artifact Scope
+**Rationale**：明确、完整的文档清单消除"该读什么"的不确定性，避免基于错误假设编码；规划阶段即验证文档实际内容，防止列出空索引或无关文档导致下游 agent 阅读无效。
 
-This constitution applies to the following Spec Kit artifacts:
+### VI. 服务型应用大型测试验收 (Large Test Acceptance for Services) — 流程
 
-| Artifact | Citations Required |
-|----------|-------------------|
-| `spec.md` | YES — all external facts, requirement rationale, and domain context |
-| `plan.md` | YES — all technical decisions, dependency choices, and design references |
-| `research.md` | YES — inherently research-driven; every finding needs a source link |
-| `data-model.md` | YES — schema designs referencing standards or upstream contracts |
-| `contracts/` | WHEN APPLICABLE — cite the spec or RFC an API contract derives from |
-| `tasks.md` | YES — task descriptions that cite external libraries, tools, commands, patterns, or inherited design decisions |
-| `checklist.md` | NO — operational artifact, not a citation source |
+服务类应用代码 MUST 同时具备单测与大型测试（large test），大型测试通过作为验证标准之一：
+
+- 大型测试 MUST 覆盖关键服务行为（接口契约、端到端流程、跨服务通信等）。
+- 大型测试通过 testplan skill（`tools/test/guitar`）执行，相关规范见 `style/large_test.md`。
+
+**Rationale**：单测验证内部逻辑正确性；大型测试验证服务在真实集成环境下的行为，两者互补才能构成服务型应用的完整验收。
+
+## 技术约束与规范 (Additional Constraints)
+
+- 本仓库采用 **SDD 架构**，以 **speckit** 作为 SDD 框架；需求规划、方案设计、计划制定与代码开发 MUST 遵守本宪章。
+- 编译与测试入口为 **bazel**（`bazel build //...` / `bazel test //...`）；大型测试通过 **testplan** skill 执行。具体操作命令见 `AGENTS.md`。
+- 代码规范文档位于 `style/` 目录（`style/golang.md`、`style/javascript.md`、`style/api.md`、`style/large_test.md` 等）；编辑对应语言代码前 MUST 先阅读相关规范。
+- 依赖管理：TS/JS 依赖版本统一在 `pnpm-workspace.yaml` 的 catalog 中管理；Go/Python/Bazel 依赖通过各自锁文件管理（详见 `AGENTS.md`）。
+- 排查服务问题时 MUST 优先查看 tracing 与 log（提供 trace id 时尤其如此），通过 signoz skill 查询。
+
+## 开发流程与质量门禁 (Development Workflow & Quality Gates)
+
+按以下顺序执行质量门禁（各门禁对应的声明式原则见上文）：
+
+1. **文档阅读门禁**（原则 V）：每个 phase 开始前，MUST 完整阅读 tasks.md 声明的全部文档。
+2. **实现门禁**（原则 II / III）：变更以重构式进行；服务/模块变更 MUST 先有接口设计。
+3. **编译 + 单测门禁**（原则 IV）：每次代码变更 MUST 通过 `bazel build` + `bazel test`（相关 target），作为开发任务的一部分，不单列 task。
+4. **引用门禁**（原则 I）：产出的代码与文档 MUST 包含引用来源。
+5. **大型测试验收门禁**（原则 VI）：服务型应用在功能/需求完成后，MUST 通过大型测试作为验收；该步骤 MAY 单独分配 task。
 
 ## Governance
 
-- **Supremacy**: within the scope of Spec Kit artifact authoring, this
-  constitution supersedes ad-hoc practices. It does not override
-  `AGENTS.md`, which governs runtime engineering conventions.
-- **Amendment procedure**: any principle addition, removal, or
-  redefinition MUST be recorded as a Sync Impact Report prepended to
-  this file, accompanied by a semantic version increment and an ISO
-  8601-dated amendment entry.
-- **Versioning policy**: MAJOR for principle removals or incompatible
-  redefinitions; MINOR for new principles or materially expanded
-  guidance; PATCH for clarifications, wording, and typo fixes.
-- **Compliance review**: the `/speckit.analyze` command and the
-  plan-template "Constitution Check" gate MUST verify that `spec.md`,
-  `plan.md`, and `tasks.md` contain a `## References` section when external
-  material is cited, and that every inline claim has a matching link.
-  Implementation tasks in `tasks.md` MUST reference the applicable `style/`
-  documents and confirm they were reviewed before code changes begin.
-  Every external dependency or component referenced in `plan.md` (and any
-  new dependency introduced in `tasks.md`) MUST show evidence of
-  documentation research per §III, with inline citations to the official
-  sources consulted. Every change in `plan.md` and every implementation
-  task in `tasks.md` MUST be classified as 新增 / 修改 / 删除 per §IV,
-  with 修改 changes implemented as refactors and every 修改 / 删除
-  change carrying an explicit verdict on whether the existing design and
-  layering still serve the new goal; outdated designs MUST be updated
-  within the same change, never deferred as "out of scope".
+- 本宪章是最高治理文档，supersedes 其他实践；当 `AGENTS.md` 或其他规范与本宪章冲突时，以本宪章为准（除非本宪章明确让位）。
+- **修订程序**：修订 MUST 记录变更内容、说明版本号变更依据；涉及原则移除或语义变更时 MUST 提供迁移说明。
+- **版本化**：`MAJOR.MINOR.PATCH` 语义化版本——MAJOR（移除/重定义原则或向后不兼容的治理变更）、MINOR（新增原则或实质性扩展）、PATCH（措辞澄清、typo、非语义细化）。
+- **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
+- 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 2.0.0 | **Ratified**: 2026-06-18 | **Last Amended**: 2026-06-25
+**Version**: 1.1.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-17

@@ -720,6 +720,164 @@ describe("Handler.Connect bridge lifecycle", () => {
 });
 
 // ===========================================================================
+// Tests: Connect — desktop disconnect aborts in-flight turn
+// ===========================================================================
+
+describe("Handler.Connect abort lifecycle", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "helpful-assistant": {
+        model: "opencode-go/deepseek-v4",
+        systemPrompt: "You are helpful.",
+      },
+    });
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  // Adapter that captures the signal passed to generateTurn and parks the
+  // generator on the signal's abort event after each yield, so a test can
+  // emit stream end/error mid-turn and observe the abort.
+  function createAbortAwareAdapter(blocks: ContentBlock[]): {
+    adapter: AgentAdapter;
+    capturedSignal: () => AbortSignal | undefined;
+    yieldedCount: () => number;
+  } {
+    let signal: AbortSignal | undefined;
+    let count = 0;
+    const adapter: AgentAdapter = {
+      async *generateTurn(_threadId, _content, sig) {
+        signal = sig;
+        for (const block of blocks) {
+          if (sig?.aborted) return;
+          count++;
+          yield block;
+          if (sig) {
+            await new Promise<void>((resolve) => {
+              if (sig.aborted) {
+                resolve();
+                return;
+              }
+              sig.addEventListener("abort", () => resolve(), { once: true });
+            });
+          }
+        }
+      },
+      async getState() { return null; },
+    };
+    return { adapter, capturedSignal: () => signal, yieldedCount: () => count };
+  }
+
+  it("stream end aborts in-flight turn via AbortController", async () => {
+    const blocks: ContentBlock[] = [
+      { type: "text", text: "chunk-1" },
+      { type: "text", text: "chunk-2" },
+      { type: "text", text: "chunk-3" },
+    ];
+    const { adapter, capturedSignal, yieldedCount } =
+      createAbortAwareAdapter(blocks);
+    sessionAgentStore._setBinding(
+      "sess-abort-end",
+      "helpful-assistant",
+      adapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-abort-end", "hi", "helpful-assistant"),
+    );
+    await flush();
+
+    stream.emit("end");
+    await flush();
+
+    const signal = capturedSignal();
+    expect(signal).toBeDefined();
+    expect(signal!.aborted).toBe(true);
+    expect(yieldedCount()).toBeLessThan(blocks.length);
+
+    const waitWarnFrames = stream.written.filter(
+      (f) =>
+        (f as { payload?: string }).payload === "wait" ||
+        (f as { payload?: string }).payload === "warn",
+    );
+    expect(waitWarnFrames).toHaveLength(0);
+  });
+
+  it("stream error aborts in-flight turn", async () => {
+    const blocks: ContentBlock[] = [
+      { type: "text", text: "chunk-1" },
+      { type: "text", text: "chunk-2" },
+      { type: "text", text: "chunk-3" },
+    ];
+    const { adapter, capturedSignal, yieldedCount } =
+      createAbortAwareAdapter(blocks);
+    sessionAgentStore._setBinding(
+      "sess-abort-err",
+      "helpful-assistant",
+      adapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-abort-err", "hi", "helpful-assistant"),
+    );
+    await flush();
+
+    stream.emit("error", new Error("socket reset"));
+    await flush();
+
+    const signal = capturedSignal();
+    expect(signal).toBeDefined();
+    expect(signal!.aborted).toBe(true);
+    expect(yieldedCount()).toBeLessThan(blocks.length);
+
+    const waitWarnFrames = stream.written.filter(
+      (f) =>
+        (f as { payload?: string }).payload === "wait" ||
+        (f as { payload?: string }).payload === "warn",
+    );
+    expect(waitWarnFrames).toHaveLength(0);
+  });
+
+  it("turn boundary disconnect: abort is a no-op on empty map", async () => {
+    sessionAgentStore._setBinding(
+      "sess-boundary",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "done" }]),
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-boundary", "hi", "helpful-assistant"),
+    );
+    await flush();
+
+    const bridge = sessionAgentStore._getAgent("sess-boundary").bridge;
+    expect(bridge.unregisterSink).not.toHaveBeenCalled();
+
+    // Turn already completed: finally block deleted the controller from
+    // activeTurns. abortAllTurns must be a no-op, not throw.
+    stream.emit("end");
+    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
 // Tests: Connect — status probe
 // ===========================================================================
 
@@ -748,7 +906,10 @@ describe("Handler.Connect probes", () => {
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(f.payload).toBe("status");
-    expect(f.status).toEqual({ status: "unknown" });
+    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
+    // as the full proto name (game.proto:368 STATUS_SIGNAL_STATUS_*); the handler
+    // emits the UNSPECIFIED variant for an unbound session.
+    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_UNSPECIFIED" });
   });
 
   it("responds to status probe with 'idle' for bound session", async () => {
@@ -771,7 +932,10 @@ describe("Handler.Connect probes", () => {
 
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
-    expect(f.status).toEqual({ status: "idle" });
+    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
+    // as the full proto name (game.proto:374 STATUS_SIGNAL_STATUS_IDLE); the
+    // handler emits the IDLE variant for a bound session.
+    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
   });
 });
 
@@ -886,7 +1050,7 @@ describe("Handler.GetAgent", () => {
 
     const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const call = createUnaryCall({ sessionId: "sess-bound" });
+    const call = createUnaryCall({ name: "sessions/sess-bound/agent" });
     const { callback, promise } = createCallback<{
       name: string;
       sessionId: string;
@@ -909,7 +1073,7 @@ describe("Handler.GetAgent", () => {
 
     const handler = createHandler({ promptClient, sessionAgentStore });
 
-    const call = createUnaryCall({ sessionId: "never-connected" });
+    const call = createUnaryCall({ name: "sessions/never-connected/agent" });
     const { callback, promise } = createCallback<{
       agentProfileName: string;
     }>();
