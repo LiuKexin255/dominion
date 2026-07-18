@@ -7,7 +7,7 @@
  * the threadId and userMessage.
  */
 
-import { info, warn } from "@dominion/common-js-logs";
+import { info } from "@dominion/common-js-logs";
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
@@ -15,8 +15,6 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
 import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
-import { createSaoleiTools } from "./mcp/saolei/saolei-tools";
-import type { SaoleiMcp } from "./mcp/saolei/saolei-mcp";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
@@ -53,56 +51,22 @@ export interface TurnContent {
 }
 
 /**
- * Resolve profile `toolNames` AND `mcpNames` into a flat LangChain tool array
- * bound to the session-scoped bridge (and, for MCPs, the session-scoped state).
- *
- * This is a name→factory registry (plan.md Changes verdict): individual tools
- * are looked up by name, and each declared MCP contributes its bundled tool
- * set. Adding the saolei MCP adds one registry entry, not a seventh branch.
- * Unknown tool names are silently skipped; unknown MCP names are warned and
- * skipped (FR-035), consistent with existing unknown-tool_names handling.
- *
- * @param toolNames  - Individual tool names (e.g. "mouse_move").
- * @param mcpNames   - MCP bundle names (e.g. "saolei").
- * @param bridge     - The session-scoped OperationBridge.
- * @param saoleiMcp  - The session-scoped SaoleiMcp instance, or null when the
- *                     profile does not declare the saolei MCP.
+ * Map profile `toolNames` entries to LangChain tool instances bound to the
+ * session-scoped bridge.  Unknown names are silently skipped.
  */
 export function buildTools(
-  toolNames: string[],
-  mcpNames: string[],
-  bridge: OperationBridge,
-  saoleiMcp: SaoleiMcp | null,
+	toolNames: string[],
+	bridge: OperationBridge,
 ): StructuredToolInterface[] {
-  const tools: StructuredToolInterface[] = [];
-
-  // Individual-tool name → factory registry. Each entry binds the bridge.
-  const toolFactories: Record<string, () => StructuredToolInterface> = {
-    mouse_move: () => createMouseMoveTool(bridge),
-    mouse_click: () => createMouseClickTool(bridge),
-  };
-  for (const name of toolNames) {
-    const factory = toolFactories[name];
-    if (factory) {
-      tools.push(factory());
-    }
-  }
-
-  // MCP name → bundled tool set. "saolei" contributes its five tools bound to
-  // the session-scoped SaoleiMcp + bridge.
-  for (const name of mcpNames) {
-    if (name === "saolei") {
-      if (saoleiMcp) {
-        tools.push(...createSaoleiTools(saoleiMcp, bridge));
-      } else {
-        warn("saolei mcp declared but no instance provided", { mcpName: name });
-      }
-    } else {
-      warn("unknown mcp name ignored", { mcpName: name });
-    }
-  }
-
-  return tools;
+	const tools: StructuredToolInterface[] = [];
+	for (const name of toolNames) {
+		if (name === "mouse_move") {
+			tools.push(createMouseMoveTool(bridge));
+		} else if (name === "mouse_click") {
+			tools.push(createMouseClickTool(bridge));
+		}
+	}
+	return tools;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,20 +156,17 @@ export interface AgentAdapter {
 //
 // The factory receives a lazy getProvider callback rather than a pre-fetched
 // ChatModel.  The production factory calls getProvider() to obtain the shared
-// model; the test factory ignores it entirely.  toolNames, mcpNames, the
-// bridge, and the session-scoped SaoleiMcp (null when the profile declares no
-// saolei MCP) are forwarded so the adapter can wire LangChain tools at compile
+// model; the test factory ignores it entirely.  toolNames and bridge are
+// forwarded so the adapter can wire LangChain tools (e.g. mouse) at compile
 // time.
 // ---------------------------------------------------------------------------
 
 export type AdapterFactory = (
-  getProvider: () => Promise<ChatModel>,
-  systemPrompt: string,
-  toolNames: string[],
-  mcpNames: string[],
-  bridge: OperationBridge,
-  saoleiMcp: SaoleiMcp | null,
-  checkpointer: MemorySaver,
+	getProvider: () => Promise<ChatModel>,
+	systemPrompt: string,
+	toolNames: string[],
+	bridge: OperationBridge,
+	checkpointer: MemorySaver,
 ) => Promise<AgentAdapter>;
 
 // ---------------------------------------------------------------------------
@@ -213,35 +174,32 @@ export type AdapterFactory = (
 // ---------------------------------------------------------------------------
 
 export class AgentAdapterImpl implements AgentAdapter {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readonly agent: any;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private readonly agent: any;
 
-  /**
-   * @param createAgentFn Optional factory overriding `langchain`'s `createAgent`
-   *   (dependency-injection seam). Tests inject a `vi.fn()` spy to assert the
-   *   `tools`/options passed without relying on module-level `vi.mock("langchain")`,
-   *   which the pre-compiled `:lib` bypasses under Bazel `js_test` (see
-   *   `style/javascript.md` §测试 and research.md §2). Defaults to the real
-   *   `createAgent`.
-   */
-  constructor(
-    chatModel: ChatModel,
-    systemPrompt: string,
-    toolNames: string[],
-    mcpNames: string[],
-    bridge: OperationBridge,
-    saoleiMcp: SaoleiMcp | null,
-    checkpointer: MemorySaver,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    createAgentFn?: (config: any) => any,
-  ) {
-    const tools = buildTools(toolNames, mcpNames, bridge, saoleiMcp);
+	/**
+	 * @param createAgentFn Optional factory overriding `langchain`'s `createAgent`
+	 *   (dependency-injection seam). Tests inject a `vi.fn()` spy to assert the
+	 *   `tools`/options passed without relying on module-level `vi.mock("langchain")`,
+	 *   which the pre-compiled `:lib` bypasses under Bazel `js_test` (see
+	 *   `style/javascript.md` §测试 and research.md §2). Defaults to the real
+	 *   `createAgent`.
+	 */
+	constructor(
+		chatModel: ChatModel,
+		systemPrompt: string,
+		toolNames: string[],
+		bridge: OperationBridge,
+		checkpointer: MemorySaver,
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		createAgentFn?: (config: any) => any,
+	) {
+		const tools = buildTools(toolNames, bridge);
 
-    info("compiling agent adapter", {
-      systemPromptLength: systemPrompt.length,
-      toolCount: tools.length,
-      mcpNames: mcpNames.join(","),
-    });
+		info("compiling agent adapter", {
+			systemPromptLength: systemPrompt.length,
+			toolCount: tools.length,
+		});
 
 		this.agent = (createAgentFn ?? createAgent)({
 			model: chatModel,

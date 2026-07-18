@@ -89,31 +89,31 @@ beforeEach(() => {
 
 describe("buildTools", () => {
 	it("returns a mouse_move tool when toolNames includes 'mouse_move'", () => {
-		const tools = buildTools(["mouse_move"], [], noopBridge(), null);
+		const tools = buildTools(["mouse_move"], noopBridge());
 		expect(tools).toHaveLength(1);
 		expect(tools[0].name).toBe("mouse_move");
 	});
 
 	it("returns a mouse_click tool when toolNames includes 'mouse_click'", () => {
-		const tools = buildTools(["mouse_click"], [], noopBridge(), null);
+		const tools = buildTools(["mouse_click"], noopBridge());
 		expect(tools).toHaveLength(1);
 		expect(tools[0].name).toBe("mouse_click");
 	});
 
 	it("returns empty array when toolNames is empty", () => {
-		expect(buildTools([], [], noopBridge(), null)).toEqual([]);
+		expect(buildTools([], noopBridge())).toEqual([]);
 	});
 
 	it("silently skips unknown tool names", () => {
-		expect(buildTools(["unknown-tool"], [], noopBridge(), null)).toEqual([]);
+		expect(buildTools(["unknown-tool"], noopBridge())).toEqual([]);
 	});
 
 	it("does not register the legacy 'mouse' name", () => {
-		expect(buildTools(["mouse"], [], noopBridge(), null)).toEqual([]);
+		expect(buildTools(["mouse"], noopBridge())).toEqual([]);
 	});
 
 	it("maps multiple known tool names", () => {
-		const tools = buildTools(["mouse_move", "mouse_click"], [], noopBridge(), null);
+		const tools = buildTools(["mouse_move", "mouse_click"], noopBridge());
 		expect(tools).toHaveLength(2);
 		expect(tools[0].name).toBe("mouse_move");
 		expect(tools[1].name).toBe("mouse_click");
@@ -130,9 +130,7 @@ describe("AgentAdapterImpl constructor", () => {
 			fakeTextModel("hi"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		expect(typeof adapter.generateTurn).toBe("function");
@@ -143,9 +141,7 @@ describe("AgentAdapterImpl constructor", () => {
 			fakeTextModel("hi"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		expect(adapter.generateTurn.length).toBe(3);
@@ -158,9 +154,7 @@ describe("AgentAdapterImpl constructor", () => {
 					fakeTextModel("hi"),
 					"prompt",
 					["mouse_move", "mouse_click"],
-					[],
 					noopBridge(),
-					null,
 					new MemorySaver(),
 				),
 		).not.toThrow();
@@ -178,9 +172,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		const blocks = await collect(
@@ -199,9 +191,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		const blocks = await collect(
@@ -231,9 +221,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		const blocks = await collect(
@@ -250,9 +238,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			fakeTextModel("unused"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 
@@ -288,9 +274,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			fakeTextModel("unused"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 
@@ -320,9 +304,7 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			fakeTextModel("unused"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		let capturedSignal: AbortSignal | undefined;
@@ -392,9 +374,7 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 			fakeTextModel("unused"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		const capturedMessages: BaseMessage[] = [];
@@ -558,9 +538,7 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 			fakeTextModel("unused"),
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 		let capturedConfig: Record<string, unknown> | undefined;
@@ -607,9 +585,7 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			cp,
 		);
 
@@ -637,9 +613,7 @@ describe("AgentAdapterImpl checkpoint persistence", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			cp,
 		);
 
@@ -672,9 +646,7 @@ describe("AgentAdapterImpl WrapModelCall middleware", () => {
 			model,
 			"system-prompt-1",
 			[],
-			[],
 			noopBridge(),
-			null,
 			cp,
 		);
 
@@ -712,9 +684,7 @@ describe("AgentAdapterImpl.generateTurn error propagation", () => {
 			model,
 			"prompt",
 			[],
-			[],
 			noopBridge(),
-			null,
 			new MemorySaver(),
 		);
 

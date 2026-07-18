@@ -109,9 +109,9 @@ export async function startServer(
 
   const adapterFactory: AdapterFactory =
     adapterFactoryOverride ??
-    (async (getProvider, systemPrompt, toolNames, mcpNames, bridge, saoleiMcp, cp) => {
+    (async (getProvider, systemPrompt, toolNames, bridge, cp) => {
       const chatModel = await getProvider();
-      return new AgentAdapterImpl(chatModel, systemPrompt, toolNames, mcpNames, bridge, saoleiMcp, cp);
+      return new AgentAdapterImpl(chatModel, systemPrompt, toolNames, bridge, cp);
     });
 
   const sessionAgentStore = new SessionAgentStore(

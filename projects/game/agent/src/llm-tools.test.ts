@@ -3,12 +3,12 @@
  * array to createAgent based on profile.toolNames.
  *
  * Reliable pattern (FR-009): injects a `vi.fn()` createAgent spy through the
- * AgentAdapterImpl ctor DI seam (per the build-tools.test.ts precedent) instead
- * of a module-level `vi.mock("langchain")`. The module mock is fragile under
- * Bazel js_test — the pre-compiled :lib's import of langchain bypasses vitest's
- * mock registry, so the spy was never installed and createAgentMock was called
- * 0 times (see research.md §2 and style/javascript.md §测试). The injected spy
- * works identically under the vitest CLI and Bazel.
+ * AgentAdapterImpl ctor DI seam instead of a module-level `vi.mock("langchain")`.
+ * The module mock is fragile under Bazel js_test — the pre-compiled :lib's
+ * import of langchain bypasses vitest's mock registry, so the spy was never
+ * installed and createAgentMock was called 0 times (see research.md §2 and
+ * style/javascript.md §测试). The injected spy works identically under the
+ * vitest CLI and Bazel.
  */
 
 import { MemorySaver } from "@langchain/langgraph";
@@ -32,9 +32,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			["mouse_move", "mouse_click"],
-			[],
 			new OperationBridge(),
-			null,
 			new MemorySaver(),
 			createAgentMock,
 		);
@@ -54,9 +52,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			[],
-			[],
 			new OperationBridge(),
-			null,
 			new MemorySaver(),
 			createAgentMock,
 		);
@@ -73,9 +69,7 @@ describe("AgentAdapterImpl createAgent tools wiring", () => {
 			fakeModel(),
 			"prompt",
 			["mouse_move", "nonexistent"],
-			[],
 			new OperationBridge(),
-			null,
 			new MemorySaver(),
 			createAgentMock,
 		);

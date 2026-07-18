@@ -74,9 +74,7 @@ describe("createMouseMoveTool", () => {
     await mouseTool.invoke({ x_px: 100, y_px: 200 });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    const block = bridge.dispatch.mock.calls[0][0] as Part[];
-    expect(block).toHaveLength(1);
-    const part = block[0];
+    const part = bridge.dispatch.mock.calls[0][0] as Part;
     expect(part.mouseMove).toBeDefined();
     expect(part.mouseMove!.xPx).toBe(100);
     expect(part.mouseMove!.yPx).toBe(200);
@@ -217,9 +215,7 @@ describe("createMouseClickTool", () => {
     await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    const block = bridge.dispatch.mock.calls[0][0] as Part[];
-    expect(block).toHaveLength(1);
-    const part = block[0];
+    const part = bridge.dispatch.mock.calls[0][0] as Part;
     expect(part.mouseClick).toBeDefined();
     expect(part.mouseClick!.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
     // A click part carries no coordinates — desktop clicks at the current
@@ -317,8 +313,8 @@ describe("createMouseClickTool", () => {
 
     await mouseTool.invoke({ click_type: clickType });
 
-    const block = bridge.dispatch.mock.calls[0][0] as Part[];
-    expect(block[0].mouseClick!.click).toBe(protoValue);
+    const part = bridge.dispatch.mock.calls[0][0] as Part;
+    expect(part.mouseClick!.click).toBe(protoValue);
   });
 
   it("has name 'mouse_click' for profile.tool_names matching", () => {
@@ -354,7 +350,7 @@ describe("mouse tool abort signal", () => {
   // already aborted before invoke (Runnable._callWithConfig's abort listener
   // fires but leaves the wrapping promise pending; reproduced & diagnosed in
   // Phase 5 triage against @langchain/core 1.2.0). The production dispatch
-  // abort short-circuit (operation-bridge.ts:195) is correct and is covered
+  // abort short-circuit (operation-bridge.ts:151) is correct and is covered
   // DIRECTLY — without the langchain tool.invoke layer — by operation-bridge
   // .test.ts ("signal already aborted → dispatch resolves FAILED 'aborted'").
   // This integration test cannot exercise the path until langchain's
@@ -363,7 +359,7 @@ describe("mouse tool abort signal", () => {
   it.skip("tool result is FAILED when signal is already aborted", async () => {
     // Use a real OperationBridge so the abort path runs through the actual
     // dispatch logic — sink registered so the no-sink check is bypassed and
-    // the signal-abort short-circuit at operation-bridge.ts:195 is reached.
+    // the signal-abort short-circuit at operation-bridge.ts:151 is reached.
     //
     // NOTE: langchain's DynamicStructuredTool.invoke(input, { signal }) hangs
     // (neither resolves nor rejects) when the signal is already aborted before

@@ -67,7 +67,6 @@ describe("PromptClient", () => {
         model: expectedModel,
         systemPrompt: expectedSystemPrompt,
         toolNames: ["mouse_move"],
-        mcpNames: [],
       });
     });
 

@@ -11,7 +11,6 @@ import type { AdapterFactory } from "./llm";
 import { AgentAdapterImpl } from "./llm";
 import type { ChatModel } from "./model-provider";
 import type { OperationBridge } from "./operation-bridge";
-import type { SaoleiMcp } from "./mcp/saolei/saolei-mcp";
 import { buildResolverAwareChatModel } from "./resolver-provider";
 
 async function main() {
@@ -31,9 +30,7 @@ async function main() {
 		_getProvider: () => Promise<ChatModel>,
 		systemPrompt: string,
 		toolNames: string[],
-		_mcpNames: string[],
 		bridge: OperationBridge,
-		_saoleiMcp: SaoleiMcp | null,
 		checkpointer: MemorySaver,
 	) => {
 		const chatModel = await buildResolverAwareChatModel(resolver);
@@ -41,9 +38,7 @@ async function main() {
 			chatModel,
 			systemPrompt,
 			toolNames,
-			_mcpNames,
 			bridge,
-			_saoleiMcp,
 			checkpointer,
 		);
 	};

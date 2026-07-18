@@ -4,19 +4,17 @@
  *
  * OperationBridge is owned by SessionAgent and survives stream reconnects.
  * The Connect handler registers a sink callback on stream open and unregisters
- * it on stream end/error.  LangChain tools (e.g. mouse, saolei) call dispatch()
- * to send a tool PartBlock to the desktop and await the matching ToolResultPart.
+ * it on stream end/error.  LangChain tools (e.g. mouse) call dispatch() to
+ * send a tool Part to the desktop and await the matching ToolResultPart.
  *
  * The bridge never holds a reference to a specific stream instance — only a
  * write callback — so a new stream can re-register its sink without recreating
  * the bridge or losing track of in-flight dispatches.
  *
- * Part-model contract: a tool request is a PartBlock (one or more operation
- * Parts sharing a single tool_id) carried by a content AgentFrame. The desktop
- * replies with a content frame whose ToolResultPart.tool_id matches the
- * request. tool_id is the single correlation key (no invoke_id/sequence). A
- * move+click combo (saolei WINDOW_MESSAGE) is dispatched as one block → one
- * atomic desktop operation → one result (data-model.md §5c).
+ * Part-model contract: a tool request is a Part (MouseMovePart or
+ * MouseClickPart) wrapped in a PartBlock carried by a content AgentFrame. The
+ * desktop replies with a content frame whose ToolResultPart.tool_id matches the
+ * request. tool_id is the single correlation key (no invoke_id/sequence).
  */
 
 import { randomUUID } from "node:crypto";
@@ -28,7 +26,6 @@ import type { Part } from "../game_types/projects/game/Part";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
 import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
-import type { KeyPart } from "../game_types/projects/game/KeyPart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
@@ -89,43 +86,6 @@ function toOperationScreenshot(source: ImagePart): OperationScreenshot {
   };
 }
 
-/**
- * Count the operation-bearing parts (MouseMovePart / MouseClickPart / KeyPart)
- * in a block. Used to reject a block that carries no dispatchable operation.
- */
-function countOperationParts(parts: Part[]): number {
-  let count = 0;
-  for (const part of parts) {
-    if (part.mouseMove || part.mouseClick || part.keyPress) {
-      count++;
-    }
-  }
-  return count;
-}
-
-/**
- * Stamp `toolId` onto every operation-bearing part in the block so the desktop
- * can correlate the whole block with one ToolResultPart. A multi-part block
- * (e.g. a WINDOW_MESSAGE move+click combo) shares one tool_id across its
- * parts (data-model.md §5c).
- */
-function stampOperationToolIds(parts: Part[], toolId: string): void {
-  for (const part of parts) {
-    const move = part.mouseMove as MouseMovePart | undefined;
-    if (move) {
-      move.toolId = toolId;
-    }
-    const click = part.mouseClick as MouseClickPart | undefined;
-    if (click) {
-      click.toolId = toolId;
-    }
-    const key = part.keyPress as KeyPart | undefined;
-    if (key) {
-      key.toolId = toolId;
-    }
-  }
-}
-
 export class OperationBridge {
   private sink: OperationSink | null = null;
   private readonly pending = new Map<string, PendingDispatch>();
@@ -153,34 +113,30 @@ export class OperationBridge {
   }
 
   /**
-   * Dispatch a tool PartBlock (one or more operation Parts) to the desktop via
-   * the registered sink and await the single matching ToolResultPart.
+   * Dispatch a tool Part (MouseMovePart or MouseClickPart) to the desktop via
+   * the registered sink and await the matching ToolResultPart.
    *
-   * Generates one UUID tool_id, stamps it on EVERY operation-bearing part in
-   * the block (MouseMovePart / MouseClickPart / KeyPart), wraps the block in a
-   * PartBlock carried by a content AgentFrame, and writes via the sink. A
-   * multi-part block (e.g. a saolei WINDOW_MESSAGE move+click combo) is one
-   * atomic dispatch → one desktop operation → one result; a single-part caller
-   * passes a one-element block (data-model.md §5c).
+   * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
+   * carried by a content AgentFrame, and writes via the sink.  When no sink
+   * is registered (desktop disconnected), resolves FAILED immediately rather
+   * than throwing.  When the optional `signal` is already aborted, or aborts
+   * while the dispatch is pending, resolves FAILED "aborted" immediately —
+   * abort is a third race participant alongside the 5s timeout and
+   * handleResult, whichever fires first wins.
    *
-   * When no sink is registered (desktop disconnected), resolves FAILED
-   * immediately rather than throwing.  When the optional `signal` is already
-   * aborted, or aborts while the dispatch is pending, resolves FAILED "aborted"
-   * immediately — abort is a third race participant alongside the 5s timeout
-   * and handleResult, whichever fires first wins. A block with no
-   * operation-bearing part resolves FAILED "invalid tool part".
-   *
-   * @param parts  - Operation Parts to dispatch as one atomic block.
+   * @param part   - Tool Part to dispatch.
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
-   *          abort, non-tool block, no-sink, or sink write error.
+   *          abort, non-tool Part, no-sink, or sink write error.
    */
   async dispatch(
-    parts: Part[],
+    part: Part,
     signal?: AbortSignal,
   ): Promise<OperationResult> {
-    if (countOperationParts(parts) === 0) {
-      warn("dispatch received a block with no operation part");
+    const toolPart: MouseMovePart | MouseClickPart | undefined =
+      part.mouseMove ?? (part.mouseClick ?? undefined);
+    if (!toolPart) {
+      warn("dispatch received a non-tool Part");
       return { status: STATUS_FAILED, message: "invalid tool part" };
     }
 
@@ -197,7 +153,7 @@ export class OperationBridge {
     }
 
     const toolId = randomUUID();
-    stampOperationToolIds(parts, toolId);
+    toolPart.toolId = toolId;
 
     return new Promise<OperationResult>((resolve) => {
       const timer = setTimeout(() => {
@@ -228,7 +184,7 @@ export class OperationBridge {
 
       const envelope: AgentFrame = {
         payload: "content",
-        content: { parts },
+        content: { parts: [part] },
       };
       try {
         sink(envelope);
