@@ -2,16 +2,24 @@
 ==============================================================================
 Sync Impact Report
 ==============================================================================
-Version change: 1.0.0 → 1.1.0
-Rationale: Principle V (Read Before Code) materially expanded — added a
-  concrete example to the "不做引用传递" (no citation transitivity) rule and
-  added a new mandatory rule "规划即阅读" (planner must actually read listed
-  docs before assigning them). Both strengthen planning discipline without
-  removing or redefining any principle → MINOR 1.1.0.
+Version change: 1.1.0 → 1.2.0
+Rationale: Principle V (Read Before Code) — the "文档分类" rule elevated from a
+  descriptive note into a MANDATORY FORMAT REQUIREMENT: tasks.md MUST now
+  organize each phase's document list under three explicit categories
+  (代码规范文档 / 官方文档 / 技术文章), with concrete documents listed under
+  each category, and an explicit "无" placeholder required when a category has
+  no documents (omission forbidden). Each category also gets an explicit
+  definition of which documents it contains. This materially strengthens
+  planning discipline and makes the format auditable → MINOR 1.2.0.
 
 Modified principles:
-  - V. 编码前阅读文档 (Read Before Code) — 流程: expanded with example +
-    new mandatory rule (planner-must-read-before-listing).
+  - V. 编码前阅读文档 (Read Before Code) — 流程: "文档分类" upgraded from
+    descriptive bullet to mandatory format requirement with per-category
+    document definitions + "无"-placeholder rule. "代码规范文档" category
+    covers both repo-internal `style/` docs AND referenced external code
+    specs (official style guides, AIP/API design specs) that a phase needs
+    to read. Rationale extended to cover comparability/auditability of doc
+    coverage across phases.
 
 Added sections: none (rule-level expansion within an existing principle).
 
@@ -22,14 +30,18 @@ Templates requiring updates:
         reads this file dynamically; gates are derived per-feature).
   - .specify/templates/spec-template.md   — ✅ no change (scope/requirements
         unaffected).
-  - .specify/templates/tasks-template.md  — ✅ no change (task structure
-        unaffected; the document-reading rule constrains how tasks.md is
-        authored, not its template layout).
+  - .specify/templates/tasks-template.md  — ⚠ pending (optional): consider
+        adding a per-phase "文档清单" example organized under the three
+        mandatory categories (代码规范文档 / 官方文档 / 技术文章) to make the
+        new format requirement concrete for planners. Not strictly required
+        since the constitution now mandates the format; left to manual review.
   - .specify/workflows/speckit/workflow.yml — ✅ no change (integration-agnostic).
 
 Follow-up TODOs:
+  - tasks-template.md: optionally add a per-phase document-list example
+    organized by the three mandatory categories to demonstrate the format.
   - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
-    open/pending manual review; no new TODOs introduced by this amendment.
+    open/pending manual review.
 ==============================================================================
 -->
 
@@ -86,10 +98,14 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - 不做引用传递：所有文档（含间接引用的文件）MUST 在 tasks.md 规划时一次性明确列出，避免不确定性。
   - **示例**：若 `a.md` 引用了 [b](URL1) 与 [c](URL2)，而某 phase 需要阅读 b 的内容，则 MUST 显式列出 `a.md` 与 [b](URL1)，不能只列出 `a.md`。
 - 规划即阅读：规划 tasks.md 确定需阅读的文档列表时，规划者 MUST 实际阅读列表中每个文档，确认其包含该 phase 所需的实际内容（部分文档可能只是引用索引，仅有链接而无具体内容）。禁止在未阅读的情况下，凭"理解"或"惰性思维"分配文档列表。
-- 文档分类：**代码规范文档**、**官方文档**（第三方组件/依赖的官方文档或 GitHub 仓库 README）、**技术文章**；所列文档 MUST 与该 phase 开发任务相关或作为参考。
+- **文档分类格式（强制）**：tasks.md 中每个 phase 的文档清单 MUST 按以下三个分类组织呈现，每个分类下显式列出该 phase 需阅读的具体文档（仓库内用相对路径、仓库外用完整 URL）；某分类本 phase 无相关文档时 MUST 显式标注"无"，禁止省略分类：
+  - **代码规范文档**：仓库内 `style/` 目录下的代码规范文档（如 `style/golang.md`、`style/javascript.md`、`style/api.md`、`style/large_test.md` 等），以及这些规范引用的、本 phase 需要阅读的外部代码规范文档（如官方语言/框架风格指南、AIP/API 设计规范等，仓库外用完整 URL）；按本 phase 涉及的语言/领域选取相关项。
+  - **官方文档**：第三方组件/依赖的官方文档或其 GitHub 仓库 README（仓库外，MUST 使用完整 URL）。
+  - **技术文章**：其他外部技术参考资料（博客、设计文章、RFC 等，仓库外，MUST 使用完整 URL）。
+  - 所列文档 MUST 与该 phase 开发任务相关或作为参考。
 - AGENTS.md 与 spec 相关文件是代码开发必读内容，无需在 tasks.md 中重复列出。
 
-**Rationale**：明确、完整的文档清单消除"该读什么"的不确定性，避免基于错误假设编码；规划阶段即验证文档实际内容，防止列出空索引或无关文档导致下游 agent 阅读无效。
+**Rationale**：明确、完整的文档清单消除"该读什么"的不确定性，避免基于错误假设编码；规划阶段即验证文档实际内容，防止列出空索引或无关文档导致下游 agent 阅读无效；按统一的三分类格式组织文档清单，使 phase 间的文档覆盖范围可比较、可审查，并避免遗漏代码规范或官方文档类参考。
 
 ### VI. 服务型应用大型测试验收 (Large Test Acceptance for Services) — 流程
 
@@ -126,4 +142,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-17
+**Version**: 1.2.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-18

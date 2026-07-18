@@ -75,6 +75,7 @@ Do not add comments that restate what the code already expresses. Only add comme
 * 加载 `context7-mcp` SKILL，使用 `context7` MCP 检索某个项目或者代码库的文档。
 * 使用 `grep.app` MCP 检索 `github` 代码。
 * 使用 `explore` sub-agent 探索代码仓库。
+* 使用 `general` sub-agent 研究复杂问题。
 
 ## 其他
 
