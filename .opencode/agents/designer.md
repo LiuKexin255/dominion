@@ -56,7 +56,8 @@ tools:
 ```
 // xyz.md 
 ## section - a 
-refer [doc](URL)
+refer [doc1](URL1) ———— // 与 phase 有关，需要阅读
+refer [doc2](URL2) ———— // 与 phase 无关
 
 ... 
 
@@ -64,15 +65,15 @@ refer [doc](URL)
 
 Required Reading :
 * xyz.md 
-* [doc](URL) 
+* [doc1](URL1) 
 
-同时列出 xyz.md 和 [doc](URL)，确保稳定的阅读结果
+同时列出 xyz.md 和 [doc1](URL1)，确保稳定的阅读结果
 
 // bad case 
 Required Reading:
 * xyz.md 
 
-只列出 xyz.md，无法保证 phase 执行时会阅读 [doc](URL)
+只列出 xyz.md，无法保证 phase 执行时会阅读 [doc1](URL1)
 
 ```
 
