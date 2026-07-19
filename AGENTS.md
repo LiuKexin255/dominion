@@ -82,30 +82,6 @@ Do not add comments that restate what the code already expresses. Only add comme
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
 
-```
-// xyz.md 
-
-## section - a 
-refer [doc1](URL1)
-refer [doc2](URL2)
-
-... 
-
-// 阅读要求
-
-* 阅读 xyz.md 
-* 阅读 [doc1](URL1)
-
-// good case
-
-按照要求阅读 xyz.md 和 [doc1](URL1)
-
-// bad case 
-
-只阅读 xyz.md，没有按照要求阅读 [doc1](URL1)。阅读 xyz.md 不代表阅读了其引用的 [doc1](URL1)。[doc1](URL1) 需要自己主动阅读。
-
-```
-
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
