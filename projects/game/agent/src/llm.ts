@@ -14,7 +14,8 @@ import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
 import { beforeModelMiddleware } from "./context-middleware";
-import { createMouseClickTool, createMouseMoveTool } from "./mouse-tool";
+import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
+import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 
