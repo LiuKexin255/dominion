@@ -693,3 +693,141 @@ describe("AgentAdapterImpl.generateTurn error propagation", () => {
 		).rejects.toThrow();
 	});
 });
+
+// ===========================================================================
+// AgentAdapterImpl.create — saolei MCP integration (spec 018-saolei-mcp T011)
+// ===========================================================================
+//
+// The async factory merges MCP-client tools (FR-002b) with mouse-filtered
+// native tools (FR-012). Tests inject a fake `mcpClientFactory` so no real
+// HTTP loopback is required (style/javascript.md §测试 — DI seam).
+
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { McpClientFactory } from "./llm";
+
+function fakeTool(name: string): StructuredToolInterface {
+	// Minimal StructuredToolInterface stub; only `name` is observed by the
+	// tests in this block.
+	return { name } as unknown as StructuredToolInterface;
+}
+
+describe("AgentAdapterImpl.create saolei integration", () => {
+	it("non-saolei profile: skips MCP client, keeps mouse tools (backward-compat)", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>();
+
+		const adapter = await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"prompt",
+			["mouse_move", "mouse_click"],
+			noopBridge(),
+			new MemorySaver(),
+			[], // mcpNames — no saolei
+			"sess-no-mcp",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		expect(adapter).toBeInstanceOf(AgentAdapterImpl);
+		// No MCP client is built for non-saolei profiles.
+		expect(mcpClientFactory).not.toHaveBeenCalled();
+		// Mouse tools are kept verbatim (no FR-012 filtering).
+		const config = createAgentFn.mock.calls[0][0];
+		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
+		expect(toolNames).toEqual(["mouse_move", "mouse_click"]);
+	});
+
+	it("saolei profile: excludes mouse tools (FR-012)", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>(async (_config) => ({
+			getTools: async () => [],
+		}));
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"prompt",
+			["mouse_move", "mouse_click"],
+			noopBridge(),
+			new MemorySaver(),
+			["saolei"], // mcpNames — saolei
+			"sess-saolei",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		const config = createAgentFn.mock.calls[0][0];
+		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
+		// FR-012: mouse tools MUST NOT be exposed for saolei profiles.
+		expect(toolNames).not.toContain("mouse_move");
+		expect(toolNames).not.toContain("mouse_click");
+	});
+
+	it("saolei profile: builds MCP client at the per-session URL (FR-002b)", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>(async (config) => {
+			// Assert the URL passed to MultiServerMCPClient matches the
+			// per-session endpoint form (FR-001 / FR-002b).
+			const entry = (config as { saolei?: { url?: string } }).saolei;
+			expect(entry?.url).toBe(
+				"http://localhost:9999/internal/mcp/sess-url-test",
+			);
+			return {
+				getTools: async () => [
+					fakeTool("saolei_init"),
+					fakeTool("saolei_click"),
+					fakeTool("saolei_flag"),
+					fakeTool("saolei_chord_click"),
+					fakeTool("saolei_update"),
+				],
+			};
+		});
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+			["saolei"],
+			"sess-url-test",
+			{ createAgentFn, mcpClientFactory, mcpPort: 9999 },
+		);
+
+		// The MCP client was constructed exactly once with the per-session URL.
+		expect(mcpClientFactory).toHaveBeenCalledTimes(1);
+	});
+
+	it("saolei profile: getTools() output is fed to createAgent", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const saoleiTools = [
+			fakeTool("saolei_init"),
+			fakeTool("saolei_click"),
+			fakeTool("saolei_flag"),
+			fakeTool("saolei_chord_click"),
+			fakeTool("saolei_update"),
+		];
+		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
+			getTools: async () => saoleiTools,
+		}));
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"prompt",
+			["mouse_move"], // present in toolNames but must be filtered out
+			noopBridge(),
+			new MemorySaver(),
+			["saolei"],
+			"sess-tools",
+			{ createAgentFn, mcpClientFactory, mcpPort: 12345 },
+		);
+
+		const config = createAgentFn.mock.calls[0][0];
+		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
+		// The five saolei tools are present; mouse_move is absent.
+		expect(toolNames).toEqual([
+			"saolei_init",
+			"saolei_click",
+			"saolei_flag",
+			"saolei_chord_click",
+			"saolei_update",
+		]);
+	});
+});

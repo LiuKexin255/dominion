@@ -50,12 +50,13 @@ describe("PromptClient", () => {
           _req: { name: string },
           _metadata: unknown,
           _options: { deadline: Date },
-          cb: (err: null, response: { model: string; systemPrompt: string; toolNames: string[] }) => void,
+          cb: (err: null, response: { model: string; systemPrompt: string; toolNames: string[]; mcpNames?: string[] }) => void,
         ) => {
           cb(null, {
             model: expectedModel,
             systemPrompt: expectedSystemPrompt,
             toolNames: ["mouse_move"],
+            mcpNames: ["saolei"],
           });
         },
       );
@@ -67,6 +68,7 @@ describe("PromptClient", () => {
         model: expectedModel,
         systemPrompt: expectedSystemPrompt,
         toolNames: ["mouse_move"],
+        mcpNames: ["saolei"],
       });
     });
 
@@ -201,6 +203,56 @@ describe("PromptClient", () => {
       const result = await client.getProfile("no-tools");
 
       expect(result.toolNames).toEqual([]);
+    });
+
+    // Spec 018-saolei-mcp FR-021 / data-model.md §9: mcpNames carries the
+    // profile's MCP integrations (e.g. "saolei"). The field defaults to []
+    // for older profiles that omit it on the wire.
+    it("extracts mcpNames from the response", async () => {
+      mockClient.getAgentProfile.mockImplementation(
+        (
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
+          cb: (
+            err: null,
+            response: { model: string; systemPrompt: string; toolNames: string[]; mcpNames: string[] },
+          ) => void,
+        ) => {
+          cb(null, {
+            model: "m",
+            systemPrompt: "s",
+            toolNames: [],
+            mcpNames: ["saolei"],
+          });
+        },
+      );
+
+      const client = new PromptClient(mockClient as any);
+      const result = await client.getProfile("mcp-profile");
+
+      expect(result.mcpNames).toEqual(["saolei"]);
+    });
+
+    it("defaults mcpNames to empty array when absent in response", async () => {
+      mockClient.getAgentProfile.mockImplementation(
+        (
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
+          cb: (
+            err: null,
+            response: { model: string; systemPrompt: string; toolNames?: string[] },
+          ) => void,
+        ) => {
+          cb(null, { model: "m", systemPrompt: "s" });
+        },
+      );
+
+      const client = new PromptClient(mockClient as any);
+      const result = await client.getProfile("no-mcp");
+
+      expect(result.mcpNames).toEqual([]);
     });
   });
 

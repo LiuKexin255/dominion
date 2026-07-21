@@ -25,6 +25,7 @@ import { AgentAdapterImpl } from "./llm";
 import type { AdapterFactory } from "./llm";
 import { SessionAgentStore } from "./session-agent";
 import { Handler } from "./handler";
+import { startMcpHost } from "./mcp-host";
 
 // ---------------------------------------------------------------------------
 // Proto loading
@@ -109,9 +110,25 @@ export async function startServer(
 
   const adapterFactory: AdapterFactory =
     adapterFactoryOverride ??
-    (async (getProvider, systemPrompt, toolNames, bridge, cp) => {
+    (async (
+      getProvider,
+      systemPrompt,
+      toolNames,
+      bridge,
+      cp,
+      mcpNames,
+      sessionId,
+    ) => {
       const chatModel = await getProvider();
-      return new AgentAdapterImpl(chatModel, systemPrompt, toolNames, bridge, cp);
+      return AgentAdapterImpl.create(
+        chatModel,
+        systemPrompt,
+        toolNames,
+        bridge,
+        cp,
+        mcpNames,
+        sessionId,
+      );
     });
 
   const sessionAgentStore = new SessionAgentStore(
@@ -124,6 +141,14 @@ export async function startServer(
     promptClient,
     sessionAgentStore,
   );
+
+  // FR-001: start the localhost MCP HTTP host alongside the gRPC server.
+  // The host looks sessions up via `SessionAgentStore.get` and lazily
+  // builds a session-bound saolei McpServer per request.
+  startMcpHost((sessionId: string) => {
+    const agent = sessionAgentStore.get(sessionId);
+    return agent ? { bridge: agent.getBridge() } : undefined;
+  });
 
   const proto = loadProto();
   const credentials = buildCredentials();

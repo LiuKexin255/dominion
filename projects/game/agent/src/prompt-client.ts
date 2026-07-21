@@ -43,6 +43,13 @@ export interface ProfileResult {
   systemPrompt: string;
   /** Tool names declared on the profile (proto field `tool_names`). */
   toolNames: string[];
+  /**
+   * MCP integrations declared on the profile (proto field `mcp_names`).
+   * Spec 018-saolei-mcp FR-021 / data-model.md §9: a saolei-enabled
+   * profile carries `["saolei"]`. Defaults to `[]` when the field is
+   * absent on the wire (older profiles).
+   */
+  mcpNames: string[];
 }
 
 function buildClientCredentials(): grpc.ChannelCredentials {
@@ -173,6 +180,7 @@ export class PromptClient {
             model: response.model,
             systemPrompt: response.systemPrompt,
             toolNames: response.toolNames ?? [],
+            mcpNames: response.mcpNames ?? [],
           });
         },
       );

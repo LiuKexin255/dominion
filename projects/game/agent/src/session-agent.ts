@@ -19,6 +19,12 @@ export interface ProfileData {
   model: string;
   systemPrompt: string;
   toolNames: string[];
+  /**
+   * MCP integrations enabled on the profile (spec 018-saolei-mcp FR-021).
+   * Forwarded to the AdapterFactory so it can build MCP-client tools and
+   * exclude raw mouse tools for saolei profiles (FR-012).
+   */
+  mcpNames: string[];
 }
 
 export type ProfileFetcher = () => Promise<ProfileData>;
@@ -33,13 +39,16 @@ export class SessionAgent {
   private activeProfileName: string | null = null;
   private bindLock: Promise<void> = Promise.resolve();
   private readonly bridge: OperationBridge;
+  private readonly sessionId: string;
 
   constructor(
     private readonly getProviderFn: ProviderLookupFn,
     private readonly adapterFactory: AdapterFactory,
     private readonly checkpointer: MemorySaver,
+    sessionId: string,
   ) {
     this.bridge = new OperationBridge();
+    this.sessionId = sessionId;
   }
 
   async getOrCreateAdapter(
@@ -124,6 +133,8 @@ export class SessionAgent {
         profile.toolNames,
         this.bridge,
         this.checkpointer,
+        profile.mcpNames,
+        this.sessionId,
       );
 
       this.adapter = adapter;
@@ -161,6 +172,7 @@ export class SessionAgentStore {
         this.getProviderFn,
         this.adapterFactory,
         this.checkpointer,
+        sessionId,
       );
       this.agents.set(sessionId, agent);
     }

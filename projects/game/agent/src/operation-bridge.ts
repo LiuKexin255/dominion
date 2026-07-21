@@ -26,6 +26,8 @@ import type { Part } from "../game_types/projects/game/Part";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
 import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
+import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart";
+import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
@@ -113,8 +115,9 @@ export class OperationBridge {
   }
 
   /**
-   * Dispatch a tool Part (MouseMovePart or MouseClickPart) to the desktop via
-   * the registered sink and await the matching ToolResultPart.
+   * Dispatch a tool Part (MouseMovePart, MouseClickPart, KeyboardPressPart,
+   * or MouseMoveAndClickPart) to the desktop via the registered sink and
+   * await the matching ToolResultPart.
    *
    * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
    * carried by a content AgentFrame, and writes via the sink.  When no sink
@@ -123,6 +126,11 @@ export class OperationBridge {
    * while the dispatch is pending, resolves FAILED "aborted" immediately —
    * abort is a third race participant alongside the 5s timeout and
    * handleResult, whichever fires first wins.
+   *
+   * Spec 018-saolei-mcp FR-004a/b: `KeyboardPressPart` (F2 new game) and
+   * `MouseMoveAndClickPart` (window-message cell operations) are stamped with
+   * `tool_id` here exactly like the existing mouse parts; the desktop replies
+   * with the same correlation key.
    *
    * @param part   - Tool Part to dispatch.
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
@@ -133,8 +141,17 @@ export class OperationBridge {
     part: Part,
     signal?: AbortSignal,
   ): Promise<OperationResult> {
-    const toolPart: MouseMovePart | MouseClickPart | undefined =
-      part.mouseMove ?? (part.mouseClick ?? undefined);
+    const toolPart:
+      | MouseMovePart
+      | MouseClickPart
+      | KeyboardPressPart
+      | MouseMoveAndClickPart
+      | undefined =
+      part.mouseMove ??
+      part.mouseClick ??
+      part.keyboardPress ??
+      part.mouseMoveAndClick ??
+      undefined;
     if (!toolPart) {
       warn("dispatch received a non-tool Part");
       return { status: STATUS_FAILED, message: "invalid tool part" };

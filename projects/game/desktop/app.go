@@ -266,6 +266,7 @@ func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView,
 			SystemPrompt: req.SystemPrompt,
 			Enabled:      req.Enabled,
 			ToolNames:    req.ToolNames,
+			McpNames:     req.McpNames,
 		},
 	}
 	profile, err := a.client.CreateAgentProfile(ctx, protoReq)

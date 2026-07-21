@@ -13,11 +13,13 @@ import { HumanMessage } from "@langchain/core/messages";
 import type { MemorySaver } from "@langchain/langgraph";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { createAgent, createMiddleware } from "langchain";
+import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { beforeModelMiddleware } from "./context-middleware";
 import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
 import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
+import { DEFAULT_MCP_PORT } from "./mcp-host";
 
 /**
  * LangGraph recursion limit (super-steps) per agent turn. The framework
@@ -52,8 +54,19 @@ export interface TurnContent {
 }
 
 /**
+ * Raw mouse tool names that are excluded from a saolei-enabled profile
+ * (spec 018-saolei-mcp FR-012). When the profile's `mcp_names` includes
+ * `saolei`, the saolei MCP tools replace the raw mouse tools as the
+ * LLM-facing operation channel.
+ */
+export const MOUSE_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"mouse_move",
+	"mouse_click",
+]);
+
+/**
  * Map profile `toolNames` entries to LangChain tool instances bound to the
- * session-scoped bridge.  Unknown names are silently skipped.
+ * session-scoped bridge. Unknown names are silently skipped.
  */
 export function buildTools(
 	toolNames: string[],
@@ -168,23 +181,97 @@ export type AdapterFactory = (
 	toolNames: string[],
 	bridge: OperationBridge,
 	checkpointer: MemorySaver,
+	/**
+	 * MCP integrations enabled on the profile (spec 018-saolei-mcp FR-021).
+	 * When `saolei` is present the factory builds MCP-client tools and
+	 * excludes raw mouse tools (FR-012); otherwise it preserves the
+	 * existing mouse-tools behaviour.
+	 */
+	mcpNames: string[],
+	/**
+	 * The dominion session id (used to build the per-session MCP endpoint
+	 * URL `http://localhost:${MCP_PORT}/internal/mcp/${sessionId}`, FR-001).
+	 */
+	sessionId: string,
 ) => Promise<AgentAdapter>;
 
 // ---------------------------------------------------------------------------
 // AgentAdapterImpl — production implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * The `MultiServerMCPClient` constructor type. Exported so tests can inject
+ * a fake factory (`research.md` D2 / `style/javascript.md` §测试 — DI seam)
+ * without depending on `vi.mock("@langchain/mcp-adapters")` (which the
+ * pre-compiled `:lib` bypasses under Bazel `js_test`).
+ */
+export type McpClientFactory = (
+	config: Record<string, unknown>,
+) => Promise<{ getTools(): Promise<StructuredToolInterface[]> }>;
+
+/**
+ * Production default for `McpClientFactory`: a thin async wrapper over the
+ * real `MultiServerMCPClient`. The wrapper is async to match the
+ * `Promise<...>` return type — construction itself is sync in the SDK, but
+ * wrapping it async gives tests a natural place to inject a stub that
+ * resolves on the next tick.
+ *
+ * Spec 018-saolei-mcp FR-002b / `research.md` D2: the loopback client is
+ * the official `@langchain/mcp-adapters` `MultiServerMCPClient`.
+ */
+const defaultMcpClientFactory: McpClientFactory = async (config) => {
+	return new MultiServerMCPClient(config as ConstructorParameters<
+		typeof MultiServerMCPClient
+	>[0]);
+};
+
+/**
+ * Build the per-session MCP-client tools for a saolei profile (FR-002b).
+ *
+ * Constructs a `MultiServerMCPClient` over the loopback streamable-HTTP
+ * transport pointing at this session's MCP endpoint and returns its
+ * `getTools()` output (LangChain `DynamicStructuredTool[]`). The MCP server
+ * bound at `/internal/mcp/{sessionId}` (`mcp-host.ts`) supplies the five
+ * saolei tools.
+ *
+ * @param sessionId   The dominion session id (path segment of the MCP URL).
+ * @param mcpPort     The MCP host port (default `DEFAULT_MCP_PORT`).
+ * @param clientFactory DI seam — defaults to the real
+ *   `MultiServerMCPClient`. Tests inject a `vi.fn()` to assert the URL and
+ *   to short-circuit the HTTP round-trip.
+ */
+async function buildSaoleiMcpTools(
+	sessionId: string,
+	mcpPort: number,
+	clientFactory: McpClientFactory,
+): Promise<StructuredToolInterface[]> {
+	const client = await clientFactory({
+		saolei: {
+			transport: "http",
+			url: `http://localhost:${mcpPort}/internal/mcp/${sessionId}`,
+		},
+	});
+	return client.getTools();
+}
+
 export class AgentAdapterImpl implements AgentAdapter {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	private readonly agent: any;
 
 	/**
+	 * Sync constructor: compiles the LangGraph agent eagerly. Used for the
+	 * non-saolei code path (mouse tools) and as the tail of the async
+	 * `create()` factory after MCP tools are resolved.
+	 *
 	 * @param createAgentFn Optional factory overriding `langchain`'s `createAgent`
 	 *   (dependency-injection seam). Tests inject a `vi.fn()` spy to assert the
 	 *   `tools`/options passed without relying on module-level `vi.mock("langchain")`,
 	 *   which the pre-compiled `:lib` bypasses under Bazel `js_test` (see
 	 *   `style/javascript.md` §测试 and research.md §2). Defaults to the real
 	 *   `createAgent`.
+	 * @param tools Pre-built tool list (defaults to `buildTools(toolNames, bridge)`).
+	 *   The async `create()` factory supplies this when the saolei profile
+	 *   merges MCP-client tools with the (mouse-filtered) native tool list.
 	 */
 	constructor(
 		chatModel: ChatModel,
@@ -194,21 +281,105 @@ export class AgentAdapterImpl implements AgentAdapter {
 		checkpointer: MemorySaver,
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		createAgentFn?: (config: any) => any,
+		tools?: StructuredToolInterface[],
 	) {
-		const tools = buildTools(toolNames, bridge);
+		const resolvedTools = tools ?? buildTools(toolNames, bridge);
 
 		info("compiling agent adapter", {
 			systemPromptLength: systemPrompt.length,
-			toolCount: tools.length,
+			toolCount: resolvedTools.length,
 		});
 
 		this.agent = (createAgentFn ?? createAgent)({
 			model: chatModel,
 			systemPrompt,
-			tools,
+			tools: resolvedTools,
 			middleware: [beforeModelMiddleware, wrapModelCallMiddleware],
 			checkpointer,
 		});
+	}
+
+	/**
+	 * Async factory that resolves the saolei MCP-client tools (when the
+	 * profile has `mcp_names` including `saolei`) and then constructs the
+	 * adapter with the merged tool list. For non-saolei profiles this
+	 * delegates straight to the sync constructor (existing mouse-tools
+	 * behaviour, unchanged — FR-012 backward compatibility).
+	 *
+	 * Spec 018-saolei-mcp FR-002b / FR-012:
+	 *   - When `mcpNames` contains `"saolei"`: mouse tools are excluded
+	 *     from the native tool list and saolei tools come from the MCP
+	 *     client (the loopback `MultiServerMCPClient`).
+	 *   - Otherwise: native mouse tools are added as today; no MCP client
+	 *     is built.
+	 *
+	 * @param clientFactory DI seam for the MCP client (see `McpClientFactory`).
+	 *   Defaults to a wrapper over the real `MultiServerMCPClient`. Tests
+	 *   inject a `vi.fn()` to assert the URL and stub `getTools()`.
+	 */
+	static async create(
+		chatModel: ChatModel,
+		systemPrompt: string,
+		toolNames: string[],
+		bridge: OperationBridge,
+		checkpointer: MemorySaver,
+		mcpNames: string[],
+		sessionId: string,
+		opts: {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			createAgentFn?: (config: any) => any;
+			mcpClientFactory?: McpClientFactory;
+			mcpPort?: number;
+		} = {},
+	): Promise<AgentAdapterImpl> {
+		const isSaolei = mcpNames.includes("saolei");
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const createAgentFn = opts.createAgentFn;
+
+		if (!isSaolei) {
+			// Backward-compatible path: existing mouse tools, no MCP client.
+			return new AgentAdapterImpl(
+				chatModel,
+				systemPrompt,
+				toolNames,
+				bridge,
+				checkpointer,
+				createAgentFn,
+			);
+		}
+
+		// FR-012: exclude mouse tools for saolei profiles.
+		const filteredToolNames = toolNames.filter(
+			(n) => !MOUSE_TOOL_NAMES.has(n),
+		);
+		const nativeTools = buildTools(filteredToolNames, bridge);
+
+		// FR-002b: fetch saolei tools from the loopback MCP client.
+		const factory =
+			opts.mcpClientFactory ?? defaultMcpClientFactory;
+		const port = opts.mcpPort ?? DEFAULT_MCP_PORT;
+		const mcpTools = await buildSaoleiMcpTools(
+			sessionId,
+			port,
+			factory,
+		);
+
+		info("saolei profile adapter", {
+			sessionId,
+			mcpPort: port,
+			nativeToolCount: nativeTools.length,
+			mcpToolCount: mcpTools.length,
+		});
+
+		return new AgentAdapterImpl(
+			chatModel,
+			systemPrompt,
+			filteredToolNames,
+			bridge,
+			checkpointer,
+			createAgentFn,
+			[...nativeTools, ...mcpTools],
+		);
 	}
 
 	async *generateTurn(

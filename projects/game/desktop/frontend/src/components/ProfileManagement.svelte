@@ -25,6 +25,15 @@
 
   const VALID_TOOL_VALUES = new Set(TOOL_OPTIONS.map((t) => t.value))
 
+  // MCP integrations selectable on a profile (spec 018-saolei-mcp FR-020).
+  // Today only `saolei` ships; the chip UI mirrors TOOL_OPTIONS so future
+  // integrations append here without touching the form layout.
+  const MCP_OPTIONS: { value: string; label: string }[] = [
+    { value: 'saolei', label: 'saolei' },
+  ]
+
+  const VALID_MCP_VALUES = new Set(MCP_OPTIONS.map((m) => m.value))
+
   let {
     profiles,
     loading,
@@ -55,6 +64,7 @@
   let formSystemPrompt = $state('')
   let formEnabled = $state(true)
   let formToolNames = $state<string[]>([])
+  let formMcpNames = $state<string[]>([])
   let createError = $state<string | null>(null)
   let creating = $state(false)
 
@@ -67,6 +77,7 @@
   let editSystemPrompt = $state('')
   let editEnabled = $state(true)
   let editToolNames = $state<string[]>([])
+  let editMcpNames = $state<string[]>([])
   let editError = $state<string | null>(null)
   let saving = $state(false)
 
@@ -84,6 +95,7 @@
     formSystemPrompt = ''
     formEnabled = true
     formToolNames = []
+    formMcpNames = []
   }
 
   function cancelCreateForm() {
@@ -104,6 +116,7 @@
         systemPrompt: formSystemPrompt || undefined,
         enabled: formEnabled,
         toolNames: formToolNames,
+        mcpNames: formMcpNames,
       })
       resetForm()
       showCreateForm = false
@@ -124,12 +137,17 @@
     return (names ?? []).filter((n) => VALID_TOOL_VALUES.has(n))
   }
 
+  function filterValidMcps(names: string[] | undefined): string[] {
+    return (names ?? []).filter((n) => VALID_MCP_VALUES.has(n))
+  }
+
   function startEdit(profile: AgentProfile) {
     editingName = profile.agentProfileName
     editModel = profile.model || ''
     editSystemPrompt = profile.systemPrompt || ''
     editEnabled = profile.enabled
     editToolNames = filterValidTools(profile.toolNames)
+    editMcpNames = filterValidMcps(profile.mcpNames)
     editError = null
   }
 
@@ -150,11 +168,13 @@
         systemPrompt: editSystemPrompt,
         enabled: editEnabled,
         toolNames: editToolNames,
+        mcpNames: editMcpNames,
       }
       await onUpdate(profile.agentProfileName, updated, [
         'model',
         'system_prompt',
         'tool_names',
+        'mcp_names',
         'enabled',
       ])
       editingName = null
@@ -275,6 +295,22 @@
             </div>
           </div>
 
+          <div class="form-field">
+            <span class="field-label">MCP</span>
+            <div class="tool-chips">
+              {#each MCP_OPTIONS as mcp}
+                <button
+                  type="button"
+                  class="tool-chip"
+                  class:active={formMcpNames.includes(mcp.value)}
+                  onclick={() => (formMcpNames = toggleTool(formMcpNames, mcp.value))}
+                >
+                  {mcp.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+
           <div class="form-buttons">
             <button type="submit" class="btn btn-primary" disabled={!canSubmit}>
               {creating ? 'Creating...' : 'Create'}
@@ -359,6 +395,9 @@
                 {#if filterValidTools(profile.toolNames).length > 0}
                   <span class="badge badge-tools">tools: {filterValidTools(profile.toolNames).join(', ')}</span>
                 {/if}
+                {#if filterValidMcps(profile.mcpNames).length > 0}
+                  <span class="badge badge-mcp">mcp: {filterValidMcps(profile.mcpNames).join(', ')}</span>
+                {/if}
               </div>
 
               {#if profile.systemPrompt}
@@ -421,6 +460,22 @@
                           onclick={() => (editToolNames = toggleTool(editToolNames, tool.value))}
                         >
                           {tool.label}
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <div class="form-field">
+                    <span class="field-label">MCP</span>
+                    <div class="tool-chips">
+                      {#each MCP_OPTIONS as mcp}
+                        <button
+                          type="button"
+                          class="tool-chip"
+                          class:active={editMcpNames.includes(mcp.value)}
+                          onclick={() => (editMcpNames = toggleTool(editMcpNames, mcp.value))}
+                        >
+                          {mcp.label}
                         </button>
                       {/each}
                     </div>
@@ -737,6 +792,11 @@
   .badge-tools {
     background: rgba(80, 250, 123, 0.12);
     color: #50fa7b;
+  }
+
+  .badge-mcp {
+    background: rgba(255, 184, 108, 0.12);
+    color: #ffb86c;
   }
 
   .edit-form {

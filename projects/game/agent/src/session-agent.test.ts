@@ -19,6 +19,7 @@ function createMockAdapter(blocks: ContentBlock[] = []): AgentAdapter {
     async *generateTurn(): AsyncIterable<ContentBlock> {
       for (const b of blocks) yield b;
     },
+    getState: vi.fn(async () => null),
     cleanup: vi.fn(),
   };
 }
@@ -28,7 +29,15 @@ function createMockAdapterFactory(): {
   created: AgentAdapter[];
 } {
   const created: AgentAdapter[] = [];
-  const factory: AdapterFactory = async () => {
+  const factory: AdapterFactory = async (
+    _getProvider,
+    _systemPrompt,
+    _toolNames,
+    _bridge,
+    _checkpointer,
+    _mcpNames,
+    _sessionId,
+  ) => {
     const adapter = createMockAdapter([
       { type: "text", text: `adapter-${created.length}` },
     ]);
@@ -39,8 +48,8 @@ function createMockAdapterFactory(): {
 }
 
 const PROFILES: Record<string, ProfileData> = {
-  alice: { model: "gpt-4o", systemPrompt: "You are Alice.", toolNames: [] },
-  bob: { model: "minimax-m1", systemPrompt: "You are Bob.", toolNames: [] },
+  alice: { model: "gpt-4o", systemPrompt: "You are Alice.", toolNames: [], mcpNames: [] },
+  bob: { model: "minimax-m1", systemPrompt: "You are Bob.", toolNames: [], mcpNames: [] },
 };
 
 function profileFetcherFor(
@@ -61,7 +70,7 @@ const throwProvider = async (_modelSpec: string): Promise<ChatModel> => {
 describe("SessionAgent", () => {
   it("creates adapter on first getOrCreateAdapter", async () => {
     const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     expect(agent.getAdapterState()).toEqual({
       activeProfileName: null,
@@ -82,7 +91,7 @@ describe("SessionAgent", () => {
 
   it("reuses same adapter for identical profile (fast path)", async () => {
     const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     const first = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
     const second = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
@@ -93,7 +102,7 @@ describe("SessionAgent", () => {
 
   it("creates new adapter on profile switch and cleans up old", async () => {
     const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     const aliceAdapter = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
     const bobAdapter = await agent.getOrCreateAdapter("bob", profileFetcherFor("bob"));
@@ -108,7 +117,7 @@ describe("SessionAgent", () => {
 
   it("A→B→A creates new adapter for A each time", async () => {
     const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     const aliceFirst = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
     await agent.getOrCreateAdapter("bob", profileFetcherFor("bob"));
@@ -120,7 +129,7 @@ describe("SessionAgent", () => {
 
   it("returns null adapter and unbound state before first bind", () => {
     const { factory } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     expect(agent.getAdapter()).toBeNull();
     expect(agent.getAdapterState()).toEqual({
@@ -131,7 +140,7 @@ describe("SessionAgent", () => {
 
   it("serializes concurrent binds for same agent", async () => {
     const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     const [a1, a2] = await Promise.all([
       agent.getOrCreateAdapter("alice", profileFetcherFor("alice")),

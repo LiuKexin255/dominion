@@ -128,13 +128,15 @@ func protoToJSONMap(m proto.Message) map[string]any {
 }
 
 // CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
-// Per UI contract FR-004, SkillNames and McpNames are omitted in this version.
+// McpNames carries selected MCP integrations (e.g. "saolei") per spec
+// 018-saolei-mcp FR-021.
 type CreateAgentProfileView struct {
 	AgentProfileName string   `json:"agentProfileName"`
 	Model            string   `json:"model"`
 	SystemPrompt     string   `json:"systemPrompt"`
 	Enabled          bool     `json:"enabled"`
 	ToolNames        []string `json:"toolNames"`
+	McpNames         []string `json:"mcpNames"`
 }
 
 // AgentProfileView is the Wails view model for game.AgentProfile.
