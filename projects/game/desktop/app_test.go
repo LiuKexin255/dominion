@@ -1092,3 +1092,434 @@ func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
 		t.Errorf("snap[2] expected Wait payload, got %T", snap[2].Frame.GetPayload())
 	}
 }
+
+// TestRecvLoop_AppendsToolResultForNewPartKinds is the regression guard for
+// the recvLoop filter: it must admit KeyboardPressPart and
+// MouseMoveAndClickPart (the two Part kinds added by spec 018-saolei-mcp
+// FR-004a/FR-004b), not just MouseMovePart/MouseClickPart. Before the fix
+// the filter was a two-clause nil check that silently dropped every new
+// Part, starving OperationBridge of the matching ToolResultPart and causing
+// the calling agent to time out.
+//
+// Each subtest sends one Part kind through recvLoop with no window bound, so
+// executeAgentOperation fails fast at the "no window bound" precondition —
+// but a ToolResultPart is still produced and appended. If the filter
+// regresses, no ToolResultPart is appended and the snapshot contains only
+// the request frame and the wait signal (length 2, not 3).
+func TestRecvLoop_AppendsToolResultForNewPartKinds(t *testing.T) {
+	tests := []struct {
+		name   string
+		part   *game.Part
+		toolID string
+	}{
+		{
+			name: "KeyboardPressPart (saolei_init F2 dispatch)",
+			part: &game.Part{Kind: &game.Part_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{
+				ToolId: "kb-1",
+				Key:    game.KeyboardKey_KEYBOARD_KEY_F2,
+			}}},
+			toolID: "kb-1",
+		},
+		{
+			name: "MouseMoveAndClickPart (saolei cell operations)",
+			part: &game.Part{Kind: &game.Part_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{
+				ToolId: "wm-click-1",
+				XPx:    40,
+				YPx:    216,
+				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+			}}},
+			toolID: "wm-click-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runRecvLoopFilterAdmissionTest(t, tt.part, tt.toolID)
+		})
+	}
+}
+
+// runRecvLoopFilterAdmissionTest verifies op passes the recvLoop filter and
+// reaches executeAgentOperation by asserting a ToolResultPart with toolID is
+// appended to the chat stream. The setup mirrors
+// TestRecvLoop_AppendsToolResultFromInboundOperation but is intentionally
+// minimal — this is a regression guard for filter admission, not a full
+// recvLoop behavior test.
+func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.Part, toolID string) {
+	t.Helper()
+
+	// given: a content frame carrying the op Part, followed by a wait signal
+	// that terminates recvLoop. The server drains client-sent frames in the
+	// background so SendFrame (the tool-result send) does not block.
+	contentFrame := &game.AgentFrame{
+		SessionId: "filter-session",
+		FrameId:   "srv-content-1",
+		Payload: &game.AgentFrame_Content{
+			Content: &game.PartBlock{Parts: []*game.Part{op}},
+		},
+	}
+	waitFrame := &game.AgentFrame{
+		SessionId: "filter-session",
+		FrameId:   "srv-wait-1",
+		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+	}
+	srv := mockWSServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		go func() {
+			for {
+				if _, _, err := conn.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
+			data, _ := protojson.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+				return
+			}
+		}
+		select {}
+	})
+	defer srv.Close()
+
+	// given: App with a chatstream Registry. No window is bound, so
+	// executeAgentOperation fails fast — but the ToolResultPart must still be
+	// produced and appended (proving the filter admitted op).
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.cfg = api.Config{GatewayURL: srv.URL}
+
+	reg := chatstream.NewRegistry(logger)
+	app.chatStreams = reg
+	stream, err := reg.Open("filter-session", func() ([]*game.Message, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("reg.Open: %v", err)
+	}
+	defer reg.Close("filter-session")
+
+	app.ws = &api.WSClient{}
+	if err := app.ws.Connect(context.Background(), srv.URL, "filter-session", "test-env"); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer app.ws.Close()
+
+	// when: run recvLoop (terminates on the wait signal)
+	app.recvDone = make(chan struct{})
+	go app.recvLoop("filter-session", "user-frame-1")
+
+	select {
+	case <-app.recvDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recvLoop did not terminate within 3s")
+	}
+
+	// then: 3 events in order — agent request, tool result, wait. If the
+	// filter dropped op, the snapshot would have length 2 (request + wait)
+	// with no ToolResultPart, which is the exact regression this test
+	// guards.
+	_, snap := stream.Subscribe(0)
+	if len(snap) != 3 {
+		t.Fatalf("snapshot length = %d, want 3 (request + tool result + wait); "+
+			"length < 3 means the recvLoop filter dropped the Part", len(snap))
+	}
+
+	resContent := snap[1].Frame.GetContent()
+	if resContent == nil {
+		t.Fatalf("snap[1] expected Content payload, got %T", snap[1].Frame.GetPayload())
+	}
+	resultPart := resContent.GetParts()[0].GetToolResult()
+	if resultPart == nil {
+		t.Fatalf("snap[1] expected ToolResultPart, got %T", resContent.GetParts()[0].GetKind())
+	}
+	if resultPart.GetToolId() != toolID {
+		t.Errorf("tool_id = %q, want %q", resultPart.GetToolId(), toolID)
+	}
+	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Errorf("status = %v, want FAILED (no window bound — expected precondition failure, not filter rejection)",
+			resultPart.GetStatus())
+	}
+}
+
+// Test_executeAgentOperation_KeyboardPressPart_RoutesToKeyboardExecutor
+// verifies the FR-004a routing: a KeyboardPressPart with KEY_F2 (saolei_init)
+// reaches ExecuteKeyboardPress. On the Linux test host the Win32 stub returns
+// "not supported", so the result must be FAILED with a message containing
+// "keyboard press" — proving the keyboard path was taken rather than the
+// mouse path.
+func Test_executeAgentOperation_KeyboardPressPart_RoutesToKeyboardExecutor(t *testing.T) {
+	// given: App with a bound window (Linux stubs make every executor fail,
+	// but the bound handle lets executeAgentOperation proceed to the action
+	// phase rather than short-circuiting at "no window bound").
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	}
+
+	op := &game.Part{
+		Kind: &game.Part_KeyboardPress{
+			KeyboardPress: &game.KeyboardPressPart{
+				ToolId: "kb-f2",
+				Key:    game.KeyboardKey_KEYBOARD_KEY_F2,
+			},
+		},
+	}
+
+	// when
+	result := app.executeAgentOperation(op)
+
+	// then: FAILED with a "keyboard press" routing error, and no mouse-path
+	// artifact (no "capture window bounds" — the keyboard path does not
+	// capture window bounds).
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "keyboard press") {
+		t.Errorf("expected message to mention 'keyboard press' (routing proof), got %q", result.GetMessage())
+	}
+	if strings.Contains(result.GetMessage(), "capture window bounds") {
+		t.Errorf("keyboard path must not capture window bounds, but message mentions it: %q", result.GetMessage())
+	}
+	if result.GetToolId() != "kb-f2" {
+		t.Errorf("expected tool_id %q, got %q", "kb-f2", result.GetToolId())
+	}
+}
+
+// Test_executeAgentOperation_MouseMoveAndClickPart_WindowMessageRoutes
+// verifies FR-004d routing: a MouseMoveAndClickPart with WINDOW_MESSAGE
+// method reaches the window-message PostMessage path (no OS cursor movement,
+// no screen-coordinate conversion). On the Linux stub the executor returns
+// "not supported"; the message must mention "window-message" and must NOT
+// mention "capture window bounds" (that step only runs for SIMULATED).
+func Test_executeAgentOperation_MouseMoveAndClickPart_WindowMessageRoutes(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	}
+
+	op := &game.Part{
+		Kind: &game.Part_MouseMoveAndClick{
+			MouseMoveAndClick: &game.MouseMoveAndClickPart{
+				ToolId: "wm-click",
+				XPx:    40,
+				YPx:    216,
+				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+			},
+		},
+	}
+
+	result := app.executeAgentOperation(op)
+
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "window-message") {
+		t.Errorf("expected message to mention 'window-message' (routing proof), got %q", result.GetMessage())
+	}
+	if strings.Contains(result.GetMessage(), "capture window bounds") {
+		t.Errorf("WINDOW_MESSAGE path must not capture window bounds, but message mentions it: %q", result.GetMessage())
+	}
+	if result.GetToolId() != "wm-click" {
+		t.Errorf("expected tool_id %q, got %q", "wm-click", result.GetToolId())
+	}
+}
+
+// Test_executeAgentOperation_MouseMoveAndClickPart_SimulatedRoutes verifies
+// FR-004c routing: a MouseMoveAndClickPart with SIMULATED method (and the
+// implicit UNSPECIFIED→SIMULATED fallback) reaches the existing
+// SetCursorPos+SendInput path. The Linux CaptureWindowBounds stub fails
+// first, so the message must mention "capture window bounds" — proving the
+// SIMULATED path was taken rather than the WINDOW_MESSAGE path.
+func Test_executeAgentOperation_MouseMoveAndClickPart_SimulatedRoutes(t *testing.T) {
+	tests := []struct {
+		name   string
+		method game.MouseInputMethod
+	}{
+		{
+			name:   "explicit SIMULATED",
+			method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED,
+		},
+		{
+			// FR-004c: UNSPECIFIED must be treated as SIMULATED so legacy
+			// callers (who omit the field) keep the prior behavior.
+			name:   "UNSPECIFIED collapses to SIMULATED",
+			method: game.MouseInputMethod_MOUSE_INPUT_METHOD_UNSPECIFIED,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := applog.NewLogger()
+			app := NewApp(logger)
+			app.SetContext(context.Background())
+			app.boundWin = capture.WindowRef{
+				Handle:      1,
+				Title:       "stub-window",
+				ScaleFactor: 1.0,
+			}
+
+			op := &game.Part{
+				Kind: &game.Part_MouseMoveAndClick{
+					MouseMoveAndClick: &game.MouseMoveAndClickPart{
+						ToolId: "sim-click",
+						XPx:    400,
+						YPx:    300,
+						Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+						Method: tt.method,
+					},
+				},
+			}
+
+			result := app.executeAgentOperation(op)
+
+			if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+				t.Fatalf("expected FAILED status, got %s", got)
+			}
+			if !strings.Contains(result.GetMessage(), "capture window bounds") {
+				t.Errorf("expected SIMULATED path to capture window bounds (routing proof), got %q", result.GetMessage())
+			}
+			if strings.Contains(result.GetMessage(), "window-message") {
+				t.Errorf("SIMULATED path must not invoke window-message executor, but message mentions it: %q", result.GetMessage())
+			}
+		})
+	}
+}
+
+// Test_executeAgentOperation_MouseMovePart_WindowMessageRoutes verifies the
+// MouseMovePart WINDOW_MESSAGE branch: it reaches the WM_MOUSEMOVE stub
+// (returns "window-message move") without capturing window bounds.
+func Test_executeAgentOperation_MouseMovePart_WindowMessageRoutes(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	}
+
+	op := &game.Part{
+		Kind: &game.Part_MouseMove{
+			MouseMove: &game.MouseMovePart{
+				ToolId: "wm-move",
+				XPx:    100,
+				YPx:    100,
+				Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+			},
+		},
+	}
+
+	result := app.executeAgentOperation(op)
+
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "window-message") {
+		t.Errorf("expected message to mention 'window-message' (routing proof), got %q", result.GetMessage())
+	}
+	if strings.Contains(result.GetMessage(), "capture window bounds") {
+		t.Errorf("WINDOW_MESSAGE path must not capture window bounds, but message mentions it: %q", result.GetMessage())
+	}
+}
+
+// Test_executeAgentOperation_MouseClickPart_WindowMessageRejected verifies
+// the protocol-level guard: a standalone MouseClickPart with WINDOW_MESSAGE
+// method is rejected because MouseClickPart carries no coordinates to pack
+// into lParam. The model expresses window-message clicks via
+// MouseMoveAndClickPart (FR-004b), never via standalone MouseClickPart.
+func Test_executeAgentOperation_MouseClickPart_WindowMessageRejected(t *testing.T) {
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.boundWin = capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	}
+
+	op := &game.Part{
+		Kind: &game.Part_MouseClick{
+			MouseClick: &game.MouseClickPart{
+				ToolId: "wm-click-bad",
+				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+				Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+			},
+		},
+	}
+
+	result := app.executeAgentOperation(op)
+
+	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+		t.Fatalf("expected FAILED status, got %s", got)
+	}
+	if !strings.Contains(result.GetMessage(), "WINDOW_MESSAGE method is not supported") {
+		t.Errorf("expected rejection of MouseClickPart+WINDOW_MESSAGE, got %q", result.GetMessage())
+	}
+	if strings.Contains(result.GetMessage(), "click action") {
+		t.Errorf("must not invoke click executor (rejection is synchronous), but message mentions 'click action': %q", result.GetMessage())
+	}
+}
+
+// Test_executeAgentOperation_MouseClickPart_SimulatedUnchangedBehavior
+// verifies FR-004c's backward-compat guarantee: an explicit MouseClickPart
+// with SIMULATED method (and the implicit UNSPECIFIED→SIMULATED fallback)
+// must keep taking the existing click path. On Linux the click executor
+// returns "not supported"; the message must mention "click action" (the
+// existing SIMULATED path's error wrapping) and must NOT mention
+// "WINDOW_MESSAGE method is not supported" (the rejection message).
+func Test_executeAgentOperation_MouseClickPart_SimulatedUnchangedBehavior(t *testing.T) {
+	tests := []struct {
+		name   string
+		method game.MouseInputMethod
+	}{
+		{name: "explicit SIMULATED", method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED},
+		{name: "UNSPECIFIED collapses to SIMULATED", method: game.MouseInputMethod_MOUSE_INPUT_METHOD_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := applog.NewLogger()
+			app := NewApp(logger)
+			app.SetContext(context.Background())
+			app.boundWin = capture.WindowRef{
+				Handle:      1,
+				Title:       "stub-window",
+				ScaleFactor: 1.0,
+			}
+
+			op := &game.Part{
+				Kind: &game.Part_MouseClick{
+					MouseClick: &game.MouseClickPart{
+						ToolId: "sim-click-only",
+						Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+						Method: tt.method,
+					},
+				},
+			}
+
+			result := app.executeAgentOperation(op)
+
+			if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+				t.Fatalf("expected FAILED status, got %s", got)
+			}
+			if !strings.Contains(result.GetMessage(), "click action") {
+				t.Errorf("SIMULATED path must invoke click executor (existing behavior), got %q", result.GetMessage())
+			}
+			if strings.Contains(result.GetMessage(), "WINDOW_MESSAGE method is not supported") {
+				t.Errorf("SIMULATED path must not hit WINDOW_MESSAGE rejection, got %q", result.GetMessage())
+			}
+		})
+	}
+}

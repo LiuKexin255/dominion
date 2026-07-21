@@ -569,10 +569,15 @@ func (a *App) recvLoop(sessionID, frameID string) {
 
 		switch payload := resp.GetPayload().(type) {
 		case *game.AgentFrame_Content:
-			// Auto-execute tool requests (mousemove/mouseclick) and report
-			// each result with a post-action screenshot (FR-007, FR-013).
+			// Auto-execute tool-request Parts (mouse move/click, keyboard
+			// press, atomic move-and-click) and report each result with a
+			// post-action screenshot (FR-007, FR-013). All other Part kinds
+			// (text, image, tool_result, ...) are non-operation payloads and
+			// are skipped here — they are still appended to the chat stream
+			// above for UI rendering.
 			for _, part := range payload.Content.GetParts() {
-				if part.GetMouseMove() == nil && part.GetMouseClick() == nil {
+				if part.GetMouseMove() == nil && part.GetMouseClick() == nil &&
+					part.GetKeyboardPress() == nil && part.GetMouseMoveAndClick() == nil {
 					continue
 				}
 				if err := a.handleInboundOperation(sessionID, part); err != nil {
@@ -644,12 +649,22 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 	return nil
 }
 
-// executeAgentOperation runs an inbound tool-request Part (MouseMovePart or
-// MouseClickPart) via the split move/click executor and returns the matching
-// ToolResultPart. A move part captures the bound window's bounds, converts
-// the screenshot-relative target to screen-absolute coordinates, and
-// repositions the cursor; a click part dispatches button events at the
-// cursor's current position with no coordinate conversion.
+// executeAgentOperation runs an inbound tool-request Part via the appropriate
+// executor and returns the matching ToolResultPart. The Part kinds handled
+// are: MouseMovePart, MouseClickPart, KeyboardPressPart, and
+// MouseMoveAndClickPart. Each mouse Part carries a MouseInputMethod that
+// selects the desktop execution path (spec 018-saolei-mcp FR-004c):
+//
+//   - SIMULATED (the default, including UNSPECIFIED) is the existing
+//     behavior: screenshot-relative coords are converted to screen-absolute
+//     via the bound window's bounds, the OS cursor is repositioned with
+//     SetCursorPos, and button events are dispatched via SendInput.
+//   - WINDOW_MESSAGE posts WM_* messages to the bound window's HWND with
+//     window-client coordinates packed into lParam and does NOT move the OS
+//     cursor (FR-004d).
+//
+// KeyboardPressPart is method-agnostic: it posts WM_KEYDOWN/WM_KEYUP to the
+// bound HWND (FR-004a).
 //
 // After the action phase — regardless of whether it succeeded — a follow-up
 // screenshot of the bound window is captured (FR-007). The screenshot is
@@ -661,11 +676,18 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 	move := part.GetMouseMove()
 	click := part.GetMouseClick()
+	keyboard := part.GetKeyboardPress()
+	moveClick := part.GetMouseMoveAndClick()
 	var toolID string
-	if move != nil {
+	switch {
+	case move != nil:
 		toolID = move.GetToolId()
-	} else if click != nil {
+	case click != nil:
 		toolID = click.GetToolId()
+	case keyboard != nil:
+		toolID = keyboard.GetToolId()
+	case moveClick != nil:
+		toolID = moveClick.GetToolId()
 	}
 
 	corrSuffix, err := randomHex(8)
@@ -689,8 +711,8 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		}
 	}
 
-	if move == nil && click == nil {
-		return failed("unsupported operation: only mouse operations are supported")
+	if move == nil && click == nil && keyboard == nil && moveClick == nil {
+		return failed("unsupported operation: only mouse and keyboard operations are supported")
 	}
 
 	if a.boundWin.Handle == 0 {
@@ -701,53 +723,27 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
 	//
-	// MouseMovePart captures the bound window's bounds to translate the
-	// screenshot-relative target into screen-absolute coordinates, then moves
-	// the cursor. MouseClickPart dispatches button events at the cursor's
-	// current position and performs no coordinate conversion or cursor
-	// repositioning.
+	// Each Part kind dispatches to the matching executor, with mouse Parts
+	// further routing on their MouseInputMethod field. WINDOW_MESSAGE mouse
+	// ops post WM_* messages to the HWND with window-client coordinates and
+	// skip the screenshot-relative → screen-absolute conversion; SIMULATED
+	// ops reuse the existing SetCursorPos + SendInput path.
 	var actionErr error
 	var screenX, screenY int32
 	var bounds capture.WindowBounds
 	var actionLabel string
-	if move != nil {
-		actionLabel = "move"
-		var bErr error
-		bounds, bErr = capture.CaptureWindowBounds(a.boundWin.Handle)
-		if bErr != nil {
-			actionErr = fmt.Errorf("capture window bounds: %w", bErr)
-		} else {
-			var cErr error
-			screenX, screenY, cErr = operation.ScreenshotToScreenCoords(move.GetXPx(), move.GetYPx(), int32(bounds.Left), int32(bounds.Top))
-			if cErr != nil {
-				actionErr = fmt.Errorf("coordinate conversion: %w", cErr)
-			} else if eErr := operation.MoveCursor(screenX, screenY); eErr != nil {
-				actionErr = fmt.Errorf("move cursor: %w", eErr)
-			}
+	switch {
+	case keyboard != nil:
+		actionLabel = "keyboard_press:" + keyboard.GetKey().String()
+		if eErr := operation.ExecuteKeyboardPress(a.boundWin.Handle, keyboard.GetKey()); eErr != nil {
+			actionErr = fmt.Errorf("keyboard press: %w", eErr)
 		}
-	} else {
-		// Synthetic clicks (SendInput) are consumed by Windows for window
-		// activation when the target is not the foreground window, so the
-		// bound window must be foreground before the button event fires —
-		// otherwise the click lands as an activation gesture with no
-		// application-level effect. The cursor position from the preceding
-		// mouse_move is preserved by SetForeground.
-		actionLabel = click.GetClick().String()
-		fgBefore := capture.ForegroundWindow()
-		fgOk := capture.SetForeground(a.boundWin.Handle)
-		fgAfter := capture.ForegroundWindow()
-		a.logger.Info("backend", "click: foreground state", map[string]any{
-			"tool_id":           toolID,
-			"correlation_id":    corrID,
-			"window_handle":     a.boundWin.Handle,
-			"window_title":      a.boundWin.Title,
-			"foreground_before": fgBefore,
-			"set_foreground_ok": fgOk,
-			"foreground_after":  fgAfter,
-		})
-		if eErr := operation.ExecuteClickAtCurrentPos(click.GetClick()); eErr != nil {
-			actionErr = fmt.Errorf("click action: %w", eErr)
-		}
+	case moveClick != nil:
+		actionLabel, actionErr, screenX, screenY, bounds = a.runMouseMoveAndClick(moveClick, corrID)
+	case move != nil:
+		actionLabel, actionErr, screenX, screenY, bounds = a.runMouseMove(move, corrID)
+	case click != nil:
+		actionLabel, actionErr = a.runMouseClick(click, corrID)
 	}
 
 	actionStatus := game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED

@@ -9,6 +9,7 @@ go_library(
     name = "desktop_lib",
     srcs = [
         "app.go",
+        "app_operation.go",
         "main.go",
         "main_other.go",
         "main_windows.go",

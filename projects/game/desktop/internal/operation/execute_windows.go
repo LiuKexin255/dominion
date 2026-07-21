@@ -72,14 +72,6 @@ func ExecuteMouseClick(screenX, screenY int32, button int32, clickType int32) er
 	return nil
 }
 
-// ExecuteKeyPress performs a keyboard key press.
-// keyCodes is a string representation of key codes.
-func ExecuteKeyPress(keyCodes string) error {
-	// Stub for step3.a — real implementation uses SendInput with keyboard events.
-	_ = keyCodes
-	return nil
-}
-
 // sendMouseClick sends a single click (down + up) at the given coordinates.
 //
 // NOTE: this legacy helper uses MOUSEEVENTF_ABSOLUTE without virtual-desk
