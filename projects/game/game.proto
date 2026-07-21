@@ -233,6 +233,30 @@ enum ToolResultStatus {
   TOOL_RESULT_STATUS_FAILED = 2;
 }
 
+// MouseInputMethod selects the desktop's mouse-execution path for a mouse
+// Part (AIP-126 enumeration; values prefixed with the enum name to avoid
+// package-level collisions). SIMULATED moves the OS cursor (SetCursorPos)
+// and injects button events via SendInput with screen-absolute coordinates.
+// WINDOW_MESSAGE posts WM_* button messages to the bound window's HWND
+// without moving the cursor, using window-client coordinates packed into
+// lParam. UNSPECIFIED is treated as SIMULATED so existing mouse Parts keep
+// their prior behavior (spec 018-saolei-mcp FR-004c; AIP-180 — a new
+// client-populated field defaults to the pre-existing behavior).
+enum MouseInputMethod {
+  MOUSE_INPUT_METHOD_UNSPECIFIED = 0;
+  MOUSE_INPUT_METHOD_SIMULATED = 1;
+  MOUSE_INPUT_METHOD_WINDOW_MESSAGE = 2;
+}
+
+// KeyboardKey lists the keys accepted by KeyboardPressPart (AIP-126
+// enumeration; values prefixed with the enum name). The set starts with F2 —
+// the minesweeper new-game shortcut — and is extensible as future tools
+// require additional keys.
+enum KeyboardKey {
+  KEYBOARD_KEY_UNSPECIFIED = 0;
+  KEYBOARD_KEY_F2 = 1;
+}
+
 // ─── Content Part Model ────────────────────────────────────────────────────
 //
 // Part is one content block. PartBlock is the first-class content unit shared
@@ -253,12 +277,14 @@ message PartBlock {
 // Part is a single discriminated content block.
 message Part {
   oneof kind {
-    TextPart       text        = 1;
-    ThinkingPart   thinking    = 2;
-    ImagePart      image       = 3;
-    MouseMovePart  mouse_move  = 4;
-    MouseClickPart mouse_click = 5;
-    ToolResultPart tool_result = 6;
+    TextPart              text                = 1;
+    ThinkingPart          thinking            = 2;
+    ImagePart             image               = 3;
+    MouseMovePart         mouse_move          = 4;
+    MouseClickPart        mouse_click         = 5;
+    ToolResultPart        tool_result         = 6;
+    KeyboardPressPart     keyboard_press      = 7;
+    MouseMoveAndClickPart mouse_move_and_click = 8;
   }
 }
 
@@ -288,6 +314,7 @@ message MouseMovePart {
   string tool_id = 1;
   int32 x_px = 2;
   int32 y_px = 3;
+  MouseInputMethod method = 4;
 }
 
 // MouseClickPart requests the desktop perform a click at the current cursor
@@ -295,6 +322,32 @@ message MouseMovePart {
 message MouseClickPart {
   string tool_id = 1;
   MouseClickAction click = 2;
+  MouseInputMethod method = 3;
+}
+
+// KeyboardPressPart requests the desktop press a single key on the bound
+// window. tool_id links the request to its ToolResultPart and is stamped by
+// OperationBridge.dispatch. The desktop posts the key to the bound HWND
+// (e.g. WM_KEYDOWN/WM_KEYUP); the concrete Win32 mechanism is the desktop's
+// responsibility (spec 018-saolei-mcp FR-004a). Tool-agnostic: the Part
+// carries a key identifier only, never higher-level tool semantics.
+message KeyboardPressPart {
+  string tool_id = 1;
+  KeyboardKey key = 2;
+}
+
+// MouseMoveAndClickPart requests the desktop atomically move to and click a
+// target in one operation. x_px/y_px are window-client coordinates when
+// method = WINDOW_MESSAGE (packed into lParam, no cursor movement); they are
+// screenshot-relative screen-target coordinates when method = SIMULATED.
+// click reuses MouseClickAction. method selects the desktop execution path.
+// (spec 018-saolei-mcp FR-004b/FR-004c; research.md D5.)
+message MouseMoveAndClickPart {
+  string tool_id = 1;
+  int32 x_px = 2;
+  int32 y_px = 3;
+  MouseClickAction click = 4;
+  MouseInputMethod method = 5;
 }
 
 // ToolResultPart carries the outcome of an executed tool operation, reported
