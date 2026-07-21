@@ -1,27 +1,30 @@
 /**
  * saolei-mcp.test.ts — Tests for the session-bound saolei MCP server.
  *
- * Coverage (Phase 4 / US1):
- *   - All five tools are registered with the contracted names.
- *   - `saolei_init(width, height)` dispatches a `KeyboardPressPart{F2}` and
- *     initialises the per-session GameState (FR-006/FR-027).
+ * Coverage:
+ *   - Phase 4 / US1: tool registration; `saolei_init` (FR-006/FR-027).
+ *   - Phase 5 / US2: `saolei_click` dispatch + alternation + reject-no-lock
+ *     (FR-007/FR-011/FR-013, Clarification Q3); `saolei_update` accept /
+ *     reject / precondition (FR-010/FR-011/FR-013/FR-016).
  *
  * Pattern (style/javascript.md §测试): pure DI — a fake `OperationBridge`
  * is constructed via the existing test scaffolding; no `vi.mock` of the MCP
  * SDK is performed. Tools are listed via the McpServer's internal registry
  * (`server.server`'s `ListToolsRequestSchema` handler) and invoked via the
- * handler closure for `saolei_init`.
+ * handler closure for each tool.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { OperationBridge } from "../../operation-bridge";
 import type { OperationResult } from "../../operation-bridge";
 import { createSaoleiMcpServer, STATUS_SUCCEEDED } from "./saolei-mcp";
 import { CellStatus } from "./game-state";
+import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
 import type { Part } from "../../../../game_types/projects/game/Part";
 import type { AgentFrame } from "../../../../game_types/projects/game/AgentFrame";
 import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart";
+import type { MouseMoveAndClickPart } from "../../../../game_types/projects/game/MouseMoveAndClickPart";
 
 /**
  * Build a fake OperationBridge whose dispatch records the dispatched Part
@@ -55,6 +58,34 @@ function makeFakeBridge(
 		}
 	});
 	return { bridge, dispatched };
+}
+
+/**
+ * Fetch the McpServer's internal `tools/call` handler so a test can invoke
+ * a registered tool by name with literal arguments (no HTTP round-trip).
+ * The handler shape is part of the SDK's stable surface; accessing it via
+ * `(server as any).server._requestHandlers` mirrors the existing Phase 4
+ * tests.
+ */
+function callTool(
+	server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer,
+	name: string,
+	arguments_: Record<string, unknown>,
+): Promise<{ isError?: boolean; content: { type: string; text?: string }[] }> {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const handler = (server as any).server._requestHandlers.get("tools/call");
+	return handler({
+		method: "tools/call",
+		params: { name, arguments: arguments_ },
+	});
+}
+
+/** Pixel centre of cell (x, y) per `geometry.center` (data-model.md §5). */
+function centerX(x: number): number {
+	return BOARD_ORIGIN_X_PX + x * CELL_SIZE_PX + CELL_SIZE_PX / 2;
+}
+function centerY(y: number): number {
+	return BOARD_ORIGIN_Y_PX + y * CELL_SIZE_PX + CELL_SIZE_PX / 2;
 }
 
 describe("createSaoleiMcpServer", () => {
@@ -214,29 +245,279 @@ describe("createSaoleiMcpServer", () => {
 		expect(state.lastOp).toBeNull();
 	});
 
-	it("placeholder tools return 'not yet implemented' as a normal result", async () => {
+	it("remaining placeholder tools return 'not yet implemented' as a normal result", async () => {
 		const { bridge } = makeFakeBridge();
 		const { server } = createSaoleiMcpServer(bridge);
 
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const handler = (server as any).server._requestHandlers.get("tools/call");
-
-		for (const name of [
-			"saolei_click",
-			"saolei_flag",
-			"saolei_chord_click",
-			"saolei_update",
-		]) {
-			const args =
-				name === "saolei_update"
-					? { cells: [{ x: 0, y: 0, status: "1" }] }
-					: { x: 0, y: 0 };
-			const result = await handler({
-				method: "tools/call",
-				params: { name, arguments: args },
-			});
+		// Phase 5 implements `saolei_click` + `saolei_update`; only the
+		// Phase 6 tools remain as placeholders.
+		for (const name of ["saolei_flag", "saolei_chord_click"]) {
+			const result = await callTool(server, name, { x: 0, y: 0 });
 			expect(result.isError).toBeFalsy();
 			expect(result.content[0].text).toContain("not yet implemented");
 		}
+	});
+});
+
+describe("createSaoleiMcpServer: saolei_click (FR-007 / FR-011 / FR-013)", () => {
+	it("dispatches a MouseMoveAndClickPart{LEFT_CLICK, WINDOW_MESSAGE} at the cell centre (FR-007)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		// Initialise a 9x9 board so click has a valid INITIAL target.
+		await callTool(server, "saolei_init", { width: 9, height: 9 });
+
+		// Cell (3, 4): centre = (24 + 3*32 + 16, 200 + 4*32 + 16) = (136, 344).
+		const result = await callTool(server, "saolei_click", { x: 3, y: 4 });
+
+		// FR-007 / SC-002: exactly one MouseMoveAndClickPart dispatched
+		// with LEFT_CLICK + WINDOW_MESSAGE + correct window-client coords.
+		// (init also dispatched a KeyboardPressPart, hence length 2.)
+		const clickDispatches = dispatched.filter((p) => p.mouseMoveAndClick);
+		expect(clickDispatches).toHaveLength(1);
+		const part = clickDispatches[0].mouseMoveAndClick as MouseMoveAndClickPart;
+		expect(part.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
+		expect(part.method).toBe("MOUSE_INPUT_METHOD_WINDOW_MESSAGE");
+		expect(part.xPx).toBe(centerX(3));
+		expect(part.yPx).toBe(centerY(4));
+		expect(part.toolId).toBeTruthy();
+
+		// FR-011: dispatch enters the pending state.
+		expect(state.pendingUpdate).toBe(true);
+		expect(state.lastOp).toEqual({
+			kind: "click",
+			target: { x: 3, y: 4 },
+		});
+
+		// D8: normal MCP text result with the click-dispatched message.
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("click dispatched at (3,4)");
+		expect(result.content[0].text).toContain("saolei_update");
+	});
+
+	it("forwards the desktop screenshot as an image block on accept", async () => {
+		const { bridge } = makeFakeBridge({
+			status: STATUS_SUCCEEDED,
+			message: "ok",
+			screenshot: { data: "aGVsbG8=", widthPx: 332, heightPx: 508 },
+		});
+		const { server } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 3, height: 3 });
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		// Text block + screenshot image block (research.md D8).
+		expect(result.content).toHaveLength(2);
+		expect(result.content[0].type).toBe("text");
+		expect(result.content[1]).toEqual({
+			type: "image",
+			data: "aGVsbG8=",
+			mimeType: "image/png",
+		});
+	});
+
+	it("rejects a second click before saolei_update (FR-011 alternation)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 1, y: 1 });
+
+		// A second click before saolei_update must be rejected and must
+		// NOT dispatch a second Part (SC-003).
+		const before = dispatched.length;
+		const result = await callTool(server, "saolei_click", { x: 2, y: 2 });
+		expect(dispatched.length).toBe(before);
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0].text).toContain("saolei_update");
+
+		// pendingUpdate stays true; lastOp unchanged.
+		expect(state.pendingUpdate).toBe(true);
+		expect(state.lastOp).toEqual({
+			kind: "click",
+			target: { x: 1, y: 1 },
+		});
+	});
+
+	it("rejects a non-INITIAL target without dispatching and without locking (FR-013 + Clarification Q3)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		// Mark (0,0) as FLAG — a click there must be rejected pre-dispatch.
+		state.grid[0][0] = CellStatus.FLAG;
+
+		const before = dispatched.length;
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		// No new dispatch; state did not enter pending.
+		expect(dispatched.length).toBe(before);
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0].text).toContain("not INITIAL");
+		expect(state.pendingUpdate).toBe(false);
+		expect(state.lastOp).toBeNull();
+
+		// Clarification Q3: the model may retry immediately with a valid
+		// target — no saolei_update is required between the reject and
+		// the retry.
+		const retry = await callTool(server, "saolei_click", { x: 2, y: 2 });
+		expect(retry.content[0].text).toContain("click dispatched at (2,2)");
+		expect(state.pendingUpdate).toBe(true);
+	});
+});
+
+describe("createSaoleiMcpServer: saolei_update (FR-010 / FR-011 / FR-013 / FR-016)", () => {
+	it("rejects saolei_update when no operation is pending (FR-011 precondition)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 3, height: 3 });
+		// init does not enter pending state → update must be rejected.
+		const result = await callTool(server, "saolei_update", {
+			cells: [{ x: 0, y: 0, status: "1" }],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0].text).toContain("no operation awaiting update");
+		// State unchanged.
+		expect(state.pendingUpdate).toBe(false);
+		expect(state.lastOp).toBeNull();
+		expect(state.grid[0][0]).toBe(CellStatus.INITIAL);
+	});
+
+	it("accepts a connected click update and clears pendingUpdate (FR-013)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 1, y: 1 });
+		expect(state.pendingUpdate).toBe(true);
+
+		// Connected cascade reveal containing the target.
+		const result = await callTool(server, "saolei_update", {
+			cells: [
+				{ x: 1, y: 1, status: "0" },
+				{ x: 2, y: 1, status: "0" },
+				{ x: 1, y: 2, status: "1" },
+			],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toBe(
+			"state updated; 3 cells changed; ready for next operation",
+		);
+
+		// Applied to grid; pendingUpdate cleared (FR-011 alternation).
+		expect(state.grid[1][1]).toBe(CellStatus.NUMBER_0);
+		expect(state.grid[1][2]).toBe(CellStatus.NUMBER_0);
+		expect(state.grid[2][1]).toBe(CellStatus.NUMBER_1);
+		expect(state.pendingUpdate).toBe(false);
+		expect(state.lastOp).toBeNull();
+	});
+
+	it("rejects a disconnected click update and leaves state unchanged (FR-013)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 1, y: 1 });
+
+		// (1,1) target + a disconnected number at (4,4) — not 8-connected.
+		const result = await callTool(server, "saolei_update", {
+			cells: [
+				{ x: 1, y: 1, status: "0" },
+				{ x: 4, y: 4, status: "1" },
+			],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0].text).toContain("8-connected");
+
+		// State unchanged; pendingUpdate stays true (the model must send a
+		// corrected saolei_update, not start a new operation).
+		expect(state.grid[1][1]).toBe(CellStatus.INITIAL);
+		expect(state.grid[4][4]).toBe(CellStatus.INITIAL);
+		expect(state.pendingUpdate).toBe(true);
+		expect(state.lastOp).toEqual({
+			kind: "click",
+			target: { x: 1, y: 1 },
+		});
+
+		// A corrected update is then accepted.
+		const corrected = await callTool(server, "saolei_update", {
+			cells: [{ x: 1, y: 1, status: "3" }],
+		});
+		expect(corrected.content[0].text).toContain("state updated");
+		expect(state.grid[1][1]).toBe(CellStatus.NUMBER_3);
+		expect(state.pendingUpdate).toBe(false);
+	});
+
+	it("rejects an out-of-bounds coordinate (FR-016)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 3, height: 3 });
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		const result = await callTool(server, "saolei_update", {
+			cells: [
+				{ x: 0, y: 0, status: "1" },
+				{ x: 99, y: 0, status: "1" },
+			],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0].text).toContain("out of bounds");
+		// State unchanged.
+		expect(state.grid[0][0]).toBe(CellStatus.INITIAL);
+		expect(state.pendingUpdate).toBe(true);
+	});
+
+	it("accepts HIT_MINE on the target with no connectivity requirement (FR-018)", async () => {
+		const { bridge } = makeFakeBridge();
+		const { server, state } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 2, y: 2 });
+
+		// Game over: target is HIT_MINE; other mines may be revealed as
+		// MINE at arbitrary positions (no connectivity check).
+		const result = await callTool(server, "saolei_update", {
+			cells: [
+				{ x: 2, y: 2, status: "HIT_MINE" },
+				{ x: 0, y: 0, status: "MINE" },
+				{ x: 4, y: 4, status: "MINE" },
+			],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(result.content[0].text).toContain("state updated");
+		expect(state.grid[2][2]).toBe(CellStatus.HIT_MINE);
+		expect(state.grid[0][0]).toBe(CellStatus.MINE);
+		expect(state.grid[4][4]).toBe(CellStatus.MINE);
+		expect(state.pendingUpdate).toBe(false);
+	});
+});
+
+describe("createSaoleiMcpServer: init → click → update → click cycle", () => {
+	it("after a successful update, the next click is allowed (alternation reset)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+		await callTool(server, "saolei_update", {
+			cells: [{ x: 0, y: 0, status: "1" }],
+		});
+
+		// Next operation is allowed (no longer pending).
+		const before = dispatched.length;
+		const result = await callTool(server, "saolei_click", { x: 2, y: 2 });
+		expect(result.content[0].text).toContain("click dispatched at (2,2)");
+		// A second MouseMoveAndClickPart was dispatched.
+		const clickDispatches = dispatched
+			.slice(before)
+			.filter((p) => p.mouseMoveAndClick);
+		expect(clickDispatches).toHaveLength(1);
 	});
 });

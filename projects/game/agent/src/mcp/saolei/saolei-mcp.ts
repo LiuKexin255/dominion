@@ -5,10 +5,11 @@
  * tools registered per `specs/018-saolei-mcp/contracts/mcp-tool-contract.md`:
  *
  *   - `saolei_init(width, height)`     → fully implemented here (FR-006/FR-027)
- *   - `saolei_click(x, y)`             → placeholder (Phase 5 / US2)
+ *   - `saolei_click(x, y)`             → fully implemented here (FR-007/FR-013)
  *   - `saolei_flag(x, y)`              → placeholder (Phase 6 / US3)
  *   - `saolei_chord_click(x, y)`       → placeholder (Phase 6 / US3)
- *   - `saolei_update(cells)`           → placeholder (Phase 5 / US2)
+ *   - `saolei_update(cells)`           → fully implemented here (FR-010/
+ *                                        FR-011/FR-013/FR-016 click path)
  *
  * Tool schemas are pinned verbatim against the contract; placeholders return
  * "not yet implemented" as normal MCP text results so the loopback client
@@ -28,6 +29,8 @@ import type { OperationResult } from "../../operation-bridge";
 import type { Part } from "../../../game_types/projects/game/Part";
 import { createGameState } from "./game-state";
 import type { GameState } from "./game-state";
+import { center } from "./geometry";
+import { validateClickPreDispatch, validateUpdate } from "./validation";
 
 /**
  * Wire value of `KeyboardKey.KEYBOARD_KEY_F2` (proto enum string, see
@@ -37,6 +40,24 @@ import type { GameState } from "./game-state";
  * `BUILD.bazel` `:lib_test` data comment).
  */
 const KEY_F2 = "KEYBOARD_KEY_F2";
+
+/**
+ * Wire value of `MouseClickAction.MOUSE_CLICK_ACTION_LEFT_CLICK` (proto enum
+ * string, `projects/game/game.proto` `enum MouseClickAction`). Dispatched by
+ * `saolei_click`. Hardcoded for the same reason as `KEY_F2` — keeps
+ * `game_types` a type-only import. Phase 6 will add `RIGHT_CLICK` and
+ * `LEFT_RIGHT_PRESS` for `saolei_flag` / `saolei_chord_click`.
+ */
+const LEFT_CLICK = "MOUSE_CLICK_ACTION_LEFT_CLICK";
+
+/**
+ * Wire value of `MouseInputMethod.MOUSE_INPUT_METHOD_WINDOW_MESSAGE` (proto
+ * enum string, `projects/game/game.proto` `enum MouseInputMethod`). Saolei
+ * cell operations MUST dispatch with `WINDOW_MESSAGE` (research.md D5: the
+ * real cursor would visually block cells in the screenshot the model reads);
+ * the desktop defaults `UNSPECIFIED` → `SIMULATED` for existing mouse tools.
+ */
+const WINDOW_MESSAGE = "MOUSE_INPUT_METHOD_WINDOW_MESSAGE";
 
 /**
  * String status carried by `OperationResult.status` (proto enum). Used to
@@ -218,7 +239,64 @@ export function createSaoleiMcpServer(
 				y: z.number().int().min(0).describe("row index (0-based)"),
 			},
 		},
-		async () => textResult("saolei_click: not yet implemented (Phase 5)"),
+		async (args) => {
+			const { x, y } = args;
+
+			// FR-011 alternation: a second operation before the pending
+			// `saolei_update` is rejected ("must update first"). The
+			// flag stays `true` so the model cannot skip the update.
+			if (state.pendingUpdate) {
+				return textResult(
+					"rejected: a previous operation is awaiting " +
+						"saolei_update; call saolei_update before issuing " +
+						"another operation",
+				);
+			}
+
+			// FR-013 pre-dispatch: target MUST be INITIAL. A rejected
+			// operation does NOT enter the pending state (Clarification
+			// Q3 → A) — the model may retry immediately with a valid
+			// target without an intervening `saolei_update`.
+			//
+			// contracts/mcp-tool-contract.md `saolei_click` Result
+			// (reject) prefixes the reason with "rejected: " so the
+			// model can distinguish accept vs reject from the text.
+			const preResult = validateClickPreDispatch(state, { x, y });
+			if (!preResult.ok) {
+				return textResult(`rejected: ${preResult.reason}`);
+			}
+
+			// FR-007: dispatch LEFT_CLICK via WINDOW_MESSAGE at the cell's
+			// window-client centre (`data-model.md` §5 formula in
+			// `geometry.center`). Combined move+click Part because window
+			// messages carry the coordinate in the WM_* lParam (no
+			// separate move step) — research.md D5.
+			const { xPx, yPx } = center(x, y);
+			const part: Part = {
+				mouseMoveAndClick: {
+					xPx,
+					yPx,
+					click: LEFT_CLICK,
+					method: WINDOW_MESSAGE,
+				},
+			};
+			const result = await bridge.dispatch(part);
+
+			// FR-011: a dispatched operation (regardless of dispatch
+			// outcome — see spec Edge Case "click dispatched but the
+			// desktop is disconnected") enters the pending state. The
+			// model must call `saolei_update` before the next operation.
+			state.pendingUpdate = true;
+			state.lastOp = { kind: "click", target: { x, y } };
+
+			// D8: normal MCP text result + optional screenshot so the
+			// model can read the post-click board state.
+			return resultFromDispatch(
+				`click dispatched at (${x},${y}); ` +
+					`call saolei_update with the observed cell changes`,
+				result,
+			);
+		},
 	);
 
 	// ── saolei_flag(x, y) ─ FR-008 / FR-014 (Phase 6 / US3) ───────────────
@@ -256,7 +334,10 @@ export function createSaoleiMcpServer(
 		async () => textResult("saolei_chord_click: not yet implemented (Phase 6)"),
 	);
 
-	// ── saolei_update(cells) ─ FR-010 / FR-013..016 (Phase 5+ / US2..US4) ─
+	// ── saolei_update(cells) ─ FR-010 / FR-011 / FR-013..016 ──────────────
+	// Phase 5 (US2) implements the click update path; Phase 6 (US3) will add
+	// the flag + chord_click validators behind the same `validateUpdate`
+	// dispatcher (`validation.ts`).
 	server.registerTool(
 		"saolei_update",
 		{
@@ -283,7 +364,53 @@ export function createSaoleiMcpServer(
 					),
 			},
 		},
-		async () => textResult("saolei_update: not yet implemented (Phase 5)"),
+		async (args) => {
+			const { cells } = args;
+
+			// FR-011 precondition: an operation must be pending update.
+			// `saolei_init` is exempt and does not set this flag, so an
+			// `init`-only session correctly rejects `saolei_update`.
+			if (!state.pendingUpdate || state.lastOp === null) {
+				return textResult(
+					"rejected: no operation awaiting update " +
+						"(call saolei_click / saolei_flag / saolei_chord_click first)",
+				);
+			}
+
+			// FR-013 / FR-016: validate the batch against the recorded
+			// operation. `validateUpdate` runs the FR-016 range check,
+			// then routes to the click validator (FR-013 connectivity
+			// + FR-018 HIT_MINE relaxation). The flag/chord_click
+			// validators are stubbed until Phase 6.
+			const lastOp = state.lastOp;
+			const result = validateUpdate(state, lastOp, cells);
+			if (!result.ok) {
+				// State unchanged; `pendingUpdate` stays true so the
+				// model must send a corrected `saolei_update` rather
+				// than starting a new operation (D8 normal text result).
+				// contracts/mcp-tool-contract.md `saolei_update` Result
+				// (reject) prefixes the reason with "rejected: ".
+				return textResult(`rejected: ${result.reason}`);
+			}
+
+			// Apply the batch to the grid. Order matters only if the
+			// model sends duplicate coordinates (the last entry wins);
+			// the click validator already verified the rule-consistent
+			// shape, so we mutate in place.
+			for (const cell of cells) {
+				state.grid[cell.y][cell.x] = cell.status;
+			}
+
+			// FR-011: clear the pending state; the next operation may
+			// now be issued.
+			state.pendingUpdate = false;
+			state.lastOp = null;
+
+			return textResult(
+				`state updated; ${cells.length} cells changed; ` +
+					`ready for next operation`,
+			);
+		},
 	);
 
 	return { server, state };
