@@ -831,3 +831,114 @@ describe("AgentAdapterImpl.create saolei integration", () => {
 		]);
 	});
 });
+
+// ===========================================================================
+// AgentAdapterImpl.create — built-in skill injection (spec 018-saolei-mcp T018)
+// ===========================================================================
+//
+// FR-023/024/025 + research.md D9: when mcpNames includes "saolei", the
+// built-in saolei skill body is appended to the systemPrompt before the
+// adapter is constructed. Non-saolei profiles MUST NOT receive the body.
+// quickstart.md Scenario 5 is the independent validation.
+
+import { SKILL_PROMPT_SEPARATOR, loadSkillBody } from "./skill-loader";
+
+describe("AgentAdapterImpl.create skill injection (FR-023/024/025)", () => {
+	it("saolei profile: appends the skill body to the systemPrompt", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
+			getTools: async () => [],
+		}));
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"base-system-prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+			["saolei"],
+			"sess-skill-on",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		const config = createAgentFn.mock.calls[0][0];
+		const prompt: string = config.systemPrompt;
+		// The original prompt is preserved as the prefix.
+		expect(prompt.startsWith("base-system-prompt")).toBe(true);
+		// The skill body is appended after the separator (research.md D9).
+		expect(prompt).toContain(
+			"base-system-prompt" + SKILL_PROMPT_SEPARATOR + "# saolei",
+		);
+		// Stable content markers from the saolei skill body.
+		expect(prompt).toContain("saolei_init");
+		expect(prompt).toContain("saolei_update");
+		expect(prompt).toContain("Cell status enum");
+	});
+
+	it("saolei profile: appended body equals loadSkillBody('saolei') verbatim", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
+			getTools: async () => [],
+		}));
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"p",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+			["saolei"],
+			"sess-skill-body",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
+		const expected = "p" + SKILL_PROMPT_SEPARATOR + loadSkillBody("saolei");
+		expect(prompt).toBe(expected);
+	});
+
+	it("non-saolei profile: does NOT inject the skill body (FR-024 negative)", async () => {
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>();
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"base-system-prompt",
+			["mouse_move"],
+			noopBridge(),
+			new MemorySaver(),
+			[], // mcpNames — no saolei
+			"sess-skill-off",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
+		// The prompt is returned unchanged — no separator, no skill markers.
+		expect(prompt).toBe("base-system-prompt");
+		expect(prompt).not.toContain("# saolei");
+		expect(prompt).not.toContain(SKILL_PROMPT_SEPARATOR);
+		expect(prompt).not.toContain("saolei_init");
+	});
+
+	it("profile with an unknown mcp_name: does NOT inject any skill body", async () => {
+		// FR-025 scope guard + FR-024: only registered built-in skills are
+		// injected; an unknown mcp_name triggers no injection.
+		const createAgentFn = vi.fn((config: any) => ({ config }));
+		const mcpClientFactory = vi.fn<McpClientFactory>();
+
+		await AgentAdapterImpl.create(
+			fakeTextModel("hi"),
+			"base",
+			["mouse_move"],
+			noopBridge(),
+			new MemorySaver(),
+			["some-other-mcp"],
+			"sess-unknown-mcp",
+			{ createAgentFn, mcpClientFactory },
+		);
+
+		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
+		expect(prompt).toBe("base");
+		expect(prompt).not.toContain(SKILL_PROMPT_SEPARATOR);
+	});
+});

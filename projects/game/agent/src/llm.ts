@@ -20,6 +20,7 @@ import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 import { DEFAULT_MCP_PORT } from "./mcp-host";
+import { appendSkillBodyToPrompt } from "./skill-loader";
 
 /**
  * LangGraph recursion limit (super-steps) per agent turn. The framework
@@ -336,11 +337,24 @@ export class AgentAdapterImpl implements AgentAdapter {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const createAgentFn = opts.createAgentFn;
 
+		// FR-023/024/025 (research.md D9 — "append the SKILL.md body to the
+		// systemPrompt"): when the profile's mcp_names maps to a built-in skill
+		// (currently only "saolei"), append the skill body to the systemPrompt
+		// so the model receives minesweeper-specific guidance before the turn
+		// loop runs. For profiles without a matching mcp_name the prompt is
+		// returned unchanged (FR-024 negative branch). FR-025 scope guard: this
+		// only touches the mcp_name → built-in skill registry in
+		// skill-loader.ts; the user-created Skill proto resource is untouched.
+		const augmentedPrompt = appendSkillBodyToPrompt(
+			systemPrompt,
+			mcpNames,
+		);
+
 		if (!isSaolei) {
 			// Backward-compatible path: existing mouse tools, no MCP client.
 			return new AgentAdapterImpl(
 				chatModel,
-				systemPrompt,
+				augmentedPrompt,
 				toolNames,
 				bridge,
 				checkpointer,
@@ -373,7 +387,7 @@ export class AgentAdapterImpl implements AgentAdapter {
 
 		return new AgentAdapterImpl(
 			chatModel,
-			systemPrompt,
+			augmentedPrompt,
 			filteredToolNames,
 			bridge,
 			checkpointer,

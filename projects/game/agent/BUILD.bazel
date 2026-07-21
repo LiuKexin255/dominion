@@ -141,6 +141,10 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
+        # skill-loader.test.ts drift guard reads the authored SKILL.md via
+        # fs.readFileSync (FR-023 single-source-of-truth); the .md must be in
+        # the test runfiles.
+        "src/skill/saolei/SKILL.md",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",
         ":node_modules/@dominion/common-js-logs",
