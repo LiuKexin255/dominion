@@ -116,16 +116,24 @@ export function validateClickPreDispatch(
  * (encoding the 0-cell cascade reveal of standard minesweeper —
  * research.md D10). When the target becomes `HIT_MINE` the game ends and
  * the connectivity requirement is relaxed (FR-018 / data-model.md §8).
+ *
+ * Phase 7 mine-state hardening (FR-016 / D6): when the target is a number
+ * (the click did NOT end the game), the batch MUST NOT contain any
+ * `HIT_MINE` or `MINE` cell. `HIT_MINE` is the mine directly triggered by
+ * the current operation (research.md D6) — a click only triggers it on
+ * the clicked cell, so `HIT_MINE` on any other cell is impossible.
+ * `MINE` denotes mines shown at game end (research.md D6) — the game is
+ * still in progress, so `MINE` is inconsistent. Either case violates
+ * FR-016 ("statuses inconsistent with the operation performed").
  */
 export function validateClickUpdate(
   state: GameState,
   lastOp: LastOp,
   cells: readonly CellUpdate[],
 ): ValidationResult {
-  // `state` is part of the pure signature so future FR-016 hardening
-  // (Phase 7: HIT_MINE vs MINE semantics, target pre-status checks) can
-  // consult the grid without changing the call sites; currently unused
-  // beyond range checking done by `validateUpdate` upstream.
+  // `state` remains in the pure signature for future FR-016 hardening
+  // (e.g. target pre-status checks consulting the grid). Phase 7's
+  // mine-state consistency check derives from the batch + lastOp alone.
   void state;
 
   const target = lastOp.target;
@@ -157,6 +165,28 @@ export function validateClickUpdate(
   // FR-018: target hit a mine → game over; the cascade rule is relaxed.
   if (isHitMine) {
     return { ok: true };
+  }
+
+  // FR-016 / D6 mine-state consistency: target is a number → the click
+  // did NOT end the game. A click only triggers HIT_MINE on the clicked
+  // cell (research.md D6), and MINE denotes mines shown at game end
+  // (research.md D6). Neither status may appear in a non-game-ending
+  // click batch; encountering either is inconsistent with the performed
+  // operation and rejected (FR-016).
+  for (const c of cells) {
+    if (
+      c.status === CellStatus.HIT_MINE ||
+      c.status === CellStatus.MINE
+    ) {
+      return {
+        ok: false,
+        reason:
+          `click update contains a mine-state cell ` +
+          `(${c.x},${c.y})=${c.status} but the target is a number ` +
+          `(game not over; MINE/HIT_MINE only appear at game end — ` +
+          `research.md D6)`,
+      };
+    }
   }
 
   // FR-013 connectivity: N = updated number cells must form a single
@@ -385,6 +415,26 @@ export function validateChordUpdate(
       }
     }
     return { ok: true };
+  }
+
+  // FR-016 / D6 mine-state consistency: no HIT_MINE in the batch → the
+  // chord did NOT detonate a mine, so the game continues. `MINE` denotes
+  // mines shown at game end (research.md D6); a `MINE` cell that is NOT
+  // adjacent to the chord target is inconsistent — the chord only reveals
+  // the target's neighbours, so a far-away MINE cannot be a chord product
+  // and the game has not ended. Target-adjacent `MINE` is tolerated per
+  // data-model.md §8 (rule 2's defensive allowance includes MINE in the
+  // status set for revealed neighbours).
+  for (const c of cells) {
+    if (c.status === CellStatus.MINE && !isAdjacentTo(c, target)) {
+      return {
+        ok: false,
+        reason:
+          `chord update contains a MINE cell (${c.x},${c.y}) not ` +
+          `adjacent to the chord target (${target.x},${target.y}) ` +
+          `(MINE only appears at game end — research.md D6)`,
+      };
+    }
   }
 
   // FR-015 rule 1: target-adjacent FLAG cells MUST NOT change.

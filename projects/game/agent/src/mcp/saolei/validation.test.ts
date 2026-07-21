@@ -20,6 +20,8 @@
  *   - `validateClickUpdate` — FR-013 + FR-018: target missing reject,
  *     target invalid-status reject, single number accept, cascade
  *     connected accept, disconnected reject, HIT_MINE game-over accept.
+ *     Phase 7 mine-state hardening: MINE/HIT_MINE on any cell when target
+ *     is a number → reject (D6 consistency, FR-016).
  *   - `validateFlagPreDispatch` (Phase 6) — FR-014 INITIAL accept /
  *     non-INITIAL reject / out-of-bounds reject.
  *   - `validateFlagUpdate` (Phase 6) — FR-014 single-cell INITIAL→FLAG
@@ -30,9 +32,15 @@
  *     reject, out-of-bounds reject.
  *   - `validateChordUpdate` (Phase 6) — FR-015 + FR-019: target-adjacent
  *     FLAG preservation, other neighbors updated, mine-hit exception,
- *     connectivity-via-target-neighborhood.
- *   - `validateUpdate` dispatcher (Phase 6) — routing: range failure
- *     short-circuits; flag / chord_click route to their validators.
+ *     connectivity-via-target-neighborhood. Phase 7 mine-state hardening:
+ *     non-target-adjacent MINE without HIT_MINE → reject (D6 consistency).
+ *   - `validateUpdate` dispatcher (Phase 6 + 7) — routing: range failure
+ *     short-circuits; flag / chord_click route to their validators. Phase 7
+ *     lastOp-consistency: a batch shaped for one op is rejected by the
+ *     other op's validator (FR-016 status-operation mismatch).
+ *   - Scenario 4 cross-check (Phase 7) — quickstart.md Scenario 4 illegal
+ *     paths enumerated in one table-driven block, asserting each rejects
+ *     with state unchanged (SC-004).
  */
 
 import { describe, expect, it } from "vitest";
@@ -375,6 +383,46 @@ describe("validateClickUpdate (FR-013 + FR-018)", () => {
     expect(validateClickUpdate(state, clickOp(1, 1), cells)).toEqual({
       ok: true,
     });
+  });
+
+  // ── Phase 7 mine-state hardening (FR-016 / D6) ───────────────────────
+  // Target is a number → game not over → MINE/HIT_MINE anywhere in the
+  // batch is inconsistent with the performed operation (research.md D6:
+  // HIT_MINE = triggered by this op on the clicked cell only; MINE =
+  // shown at game end only). Both are rejected.
+  it("rejects MINE on a non-target cell when target is a number (D6)", () => {
+    const state = makeState(5, 5);
+    // Target (1,1) reveals as 1; (4,4) is erroneously reported as MINE.
+    // Game is not over (target is a number), so MINE is inconsistent.
+    const cells: CellUpdate[] = [
+      { x: 1, y: 1, status: CellStatus.NUMBER_1 },
+      { x: 4, y: 4, status: CellStatus.MINE },
+    ];
+    const result = validateClickUpdate(state, clickOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("mine-state cell");
+      expect(result.reason).toContain("(4,4)");
+      expect(result.reason).toContain("MINE");
+    }
+  });
+
+  it("rejects HIT_MINE on a non-target cell when target is a number (D6)", () => {
+    const state = makeState(5, 5);
+    // Target (1,1) reveals as 1 (safe); (2,2) erroneously reported as
+    // HIT_MINE. A click only triggers HIT_MINE on the clicked cell, so
+    // HIT_MINE on any other cell is inconsistent.
+    const cells: CellUpdate[] = [
+      { x: 1, y: 1, status: CellStatus.NUMBER_1 },
+      { x: 2, y: 2, status: CellStatus.HIT_MINE },
+    ];
+    const result = validateClickUpdate(state, clickOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("mine-state cell");
+      expect(result.reason).toContain("(2,2)");
+      expect(result.reason).toContain("HIT_MINE");
+    }
   });
 });
 
@@ -879,6 +927,55 @@ describe("validateChordUpdate (FR-015 + FR-019)", () => {
       ok: true,
     });
   });
+
+  // ── Phase 7 mine-state hardening (FR-016 / D6) ───────────────────────
+  // No HIT_MINE in the batch → chord did NOT detonate → game continues.
+  // MINE far from the target is inconsistent (research.md D6: MINE is a
+  // game-end-only status). Target-adjacent MINE is tolerated per
+  // data-model.md §8 rule 2's defensive allowance.
+  it("rejects a non-target-adjacent MINE when no HIT_MINE present (D6)", () => {
+    // Satisfied chord at (1,1) = "2" with flags at (0,0) and (2,2).
+    // Use a 6x6 grid so (5,5) is in-bounds. A MINE at (5,5) is far from
+    // the target — game hasn't ended (no HIT_MINE), so it's inconsistent.
+    const wideState = makeState(6, 6);
+    setCell(wideState, 1, 1, CellStatus.NUMBER_2);
+    setCell(wideState, 0, 0, CellStatus.FLAG);
+    setCell(wideState, 2, 2, CellStatus.FLAG);
+    const cells: CellUpdate[] = [
+      { x: 0, y: 1, status: CellStatus.NUMBER_1 },
+      { x: 1, y: 0, status: CellStatus.NUMBER_1 },
+      { x: 1, y: 2, status: CellStatus.NUMBER_1 },
+      { x: 2, y: 1, status: CellStatus.NUMBER_1 },
+      { x: 0, y: 2, status: CellStatus.NUMBER_1 },
+      { x: 2, y: 0, status: CellStatus.NUMBER_1 },
+      { x: 5, y: 5, status: CellStatus.MINE }, // non-target-adjacent
+    ];
+    const result = validateChordUpdate(wideState, chordOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("MINE");
+      expect(result.reason).toContain("(5,5)");
+      expect(result.reason).toContain("not adjacent");
+    }
+  });
+
+  it("tolerates a target-adjacent MINE (data-model §8 defensive allowance)", () => {
+    // data-model.md §8 rule 2 explicitly includes MINE in the allowed
+    // status set for target-adjacent revealed neighbours. A MINE at a
+    // target-adjacent cell (0,1) is tolerated even without HIT_MINE.
+    const state = makeSatisfiedChordState();
+    const cells: CellUpdate[] = [
+      { x: 0, y: 1, status: CellStatus.MINE }, // target-adjacent
+      { x: 1, y: 0, status: CellStatus.NUMBER_1 },
+      { x: 1, y: 2, status: CellStatus.NUMBER_1 },
+      { x: 2, y: 1, status: CellStatus.NUMBER_1 },
+      { x: 0, y: 2, status: CellStatus.NUMBER_1 },
+      { x: 2, y: 0, status: CellStatus.NUMBER_1 },
+    ];
+    expect(validateChordUpdate(state, chordOp(1, 1), cells)).toEqual({
+      ok: true,
+    });
+  });
 });
 
 describe("validateUpdate dispatcher", () => {
@@ -958,5 +1055,208 @@ describe("validateUpdate dispatcher", () => {
     if (!result.ok) {
       expect(result.reason).toContain("FLAG");
     }
+  });
+
+  // ── Phase 7 lastOp-consistency reject paths ──────────────────────────
+  // The dispatcher routes by `lastOp.kind`, so a batch shaped for one
+  // operation is validated against the OTHER operation's rules — which
+  // rejects it. These tests make the FR-016 "statuses inconsistent with
+  // the operation performed" routing guarantee explicit.
+  it("rejects a flag-shaped batch routed to the click validator (lastOp=click)", () => {
+    // After a click, a batch that tries to set the target to FLAG is
+    // rejected by validateClickUpdate (target must be number/HIT_MINE).
+    const state = makeState(3, 3);
+    const cells: CellUpdate[] = [
+      { x: 1, y: 1, status: CellStatus.FLAG },
+    ];
+    const result = validateUpdate(state, clickOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("must change target");
+      expect(result.reason).toContain("0..8 or HIT_MINE");
+    }
+  });
+
+  it("rejects a click-shaped batch routed to the flag validator (lastOp=flag)", () => {
+    // After a flag, a single number cell at the target is rejected by
+    // validateFlagUpdate (target must transition INITIAL↔FLAG only).
+    const state = makeState(3, 3);
+    const cells: CellUpdate[] = [
+      { x: 1, y: 1, status: CellStatus.NUMBER_1 },
+    ];
+    const result = validateUpdate(state, flagOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("INITIAL↔FLAG");
+    }
+  });
+
+  it("rejects a click-shaped batch routed to the chord validator (lastOp=chord_click)", () => {
+    // After a chord, a batch with only a far-away number cell is rejected
+    // by validateChordUpdate (target-adjacent non-number neighbours must
+    // be updated; the far cell doesn't satisfy that).
+    const state = makeState(3, 3);
+    setCell(state, 1, 1, CellStatus.NUMBER_2);
+    setCell(state, 0, 0, CellStatus.FLAG);
+    setCell(state, 2, 2, CellStatus.FLAG);
+    const cells: CellUpdate[] = [
+      { x: 0, y: 0, status: CellStatus.NUMBER_1 }, // FLAG neighbour mutated
+    ];
+    const result = validateUpdate(state, chordOp(1, 1), cells);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("FLAG");
+    }
+  });
+});
+
+/**
+ * Scenario 4 cross-check — quickstart.md Scenario 4 enumerates every
+ * illegal operation/update path the saolei MCP MUST reject. This
+ * table-driven block consolidates those paths in one place so coverage
+ * is auditable at a glance (Phase 7 completeness gate, SC-004). Detailed
+ * accept/reject cases remain in the per-validator describe blocks above;
+ * this block is the cross-check that ties them to Scenario 4.
+ */
+describe("Scenario 4 — quickstart.md reject-path enumeration", () => {
+  type Case = {
+    id: string;
+    lastOp: LastOp;
+    stateWidth: number;
+    stateHeight: number;
+    /** Pre-set specific grid cells before running the validator. */
+    gridSetup?: ReadonlyArray<{ x: number; y: number; status: CellStatus }>;
+    cells: ReadonlyArray<CellUpdate>;
+    reasonContains: ReadonlyArray<string>;
+  };
+
+  const cases: Case[] = [
+    {
+      // Scenario 4 item 4: disconnected number cells in a click update.
+      id: "4-click-disconnected-update",
+      lastOp: clickOp(1, 1),
+      stateWidth: 5,
+      stateHeight: 5,
+      cells: [
+        { x: 1, y: 1, status: CellStatus.NUMBER_0 },
+        { x: 4, y: 4, status: CellStatus.NUMBER_1 },
+      ],
+      reasonContains: ["8-connected"],
+    },
+    {
+      // Scenario 4 item 5: out-of-bounds coordinate.
+      id: "5-out-of-bounds-update",
+      lastOp: clickOp(0, 0),
+      stateWidth: 3,
+      stateHeight: 3,
+      cells: [{ x: 99, y: 0, status: CellStatus.NUMBER_1 }],
+      reasonContains: ["out of bounds"],
+    },
+    {
+      // Scenario 4 item 6: chord update changes a target-adjacent flag.
+      id: "6-chord-changes-adjacent-flag",
+      lastOp: chordOp(1, 1),
+      stateWidth: 3,
+      stateHeight: 3,
+      gridSetup: [
+        { x: 1, y: 1, status: CellStatus.NUMBER_2 },
+        { x: 0, y: 0, status: CellStatus.FLAG },
+        { x: 2, y: 2, status: CellStatus.FLAG },
+      ],
+      cells: [
+        { x: 0, y: 1, status: CellStatus.NUMBER_1 },
+        { x: 1, y: 0, status: CellStatus.NUMBER_1 },
+        { x: 0, y: 0, status: CellStatus.NUMBER_1 }, // FLAG mutated
+      ],
+      reasonContains: ["FLAG"],
+    },
+    {
+      // Phase 7 hardening: MINE in a non-game-ending click batch (D6).
+      id: "7-click-mine-in-non-game-over-batch",
+      lastOp: clickOp(1, 1),
+      stateWidth: 5,
+      stateHeight: 5,
+      cells: [
+        { x: 1, y: 1, status: CellStatus.NUMBER_1 },
+        { x: 4, y: 4, status: CellStatus.MINE },
+      ],
+      reasonContains: ["mine-state cell", "MINE"],
+    },
+    {
+      // Phase 7 hardening: HIT_MINE on a non-target cell (D6).
+      id: "7-click-hit-mine-on-non-target",
+      lastOp: clickOp(1, 1),
+      stateWidth: 5,
+      stateHeight: 5,
+      cells: [
+        { x: 1, y: 1, status: CellStatus.NUMBER_1 },
+        { x: 2, y: 2, status: CellStatus.HIT_MINE },
+      ],
+      reasonContains: ["mine-state cell", "HIT_MINE"],
+    },
+    {
+      // Phase 7 hardening: non-target-adjacent MINE in a chord batch (D6).
+      id: "7-chord-non-adjacent-mine",
+      lastOp: chordOp(1, 1),
+      stateWidth: 6,
+      stateHeight: 6,
+      gridSetup: [
+        { x: 1, y: 1, status: CellStatus.NUMBER_2 },
+        { x: 0, y: 0, status: CellStatus.FLAG },
+        { x: 2, y: 2, status: CellStatus.FLAG },
+      ],
+      cells: [
+        { x: 0, y: 1, status: CellStatus.NUMBER_1 },
+        { x: 1, y: 0, status: CellStatus.NUMBER_1 },
+        { x: 1, y: 2, status: CellStatus.NUMBER_1 },
+        { x: 2, y: 1, status: CellStatus.NUMBER_1 },
+        { x: 0, y: 2, status: CellStatus.NUMBER_1 },
+        { x: 2, y: 0, status: CellStatus.NUMBER_1 },
+        { x: 5, y: 5, status: CellStatus.MINE },
+      ],
+      reasonContains: ["MINE", "not adjacent"],
+    },
+    {
+      // Phase 7: lastOp-consistency — flag-shaped batch after a click.
+      id: "7-flag-batch-after-click",
+      lastOp: clickOp(1, 1),
+      stateWidth: 3,
+      stateHeight: 3,
+      cells: [{ x: 1, y: 1, status: CellStatus.FLAG }],
+      reasonContains: ["must change target", "0..8 or HIT_MINE"],
+    },
+    {
+      // Phase 7: lastOp-consistency — click-shaped batch after a flag.
+      id: "7-click-batch-after-flag",
+      lastOp: flagOp(1, 1),
+      stateWidth: 3,
+      stateHeight: 3,
+      cells: [{ x: 1, y: 1, status: CellStatus.NUMBER_1 }],
+      reasonContains: ["INITIAL↔FLAG"],
+    },
+  ];
+
+  it.each(cases)("$id rejects with state unchanged", (c) => {
+    const state = makeState(c.stateWidth, c.stateHeight);
+    if (c.gridSetup) {
+      for (const g of c.gridSetup) setCell(state, g.x, g.y, g.status);
+    }
+    // Snapshot the grid before validation so we can assert no mutation.
+    const gridBefore = state.grid.map((row) => [...row]);
+    const pendingBefore = state.pendingUpdate;
+    const lastOpBefore = state.lastOp;
+
+    const result = validateUpdate(state, c.lastOp, [...c.cells]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      for (const needle of c.reasonContains) {
+        expect(result.reason).toContain(needle);
+      }
+    }
+
+    // FR-016 / SC-004: a rejected update MUST leave the state unchanged.
+    expect(state.grid).toEqual(gridBefore);
+    expect(state.pendingUpdate).toBe(pendingBefore);
+    expect(state.lastOp).toEqual(lastOpBefore);
   });
 });
