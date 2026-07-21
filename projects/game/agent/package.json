@@ -7,7 +7,10 @@
         "@langchain/anthropic": "catalog:",
         "@langchain/core": "catalog:",
         "@langchain/langgraph": "catalog:",
+        "@langchain/mcp-adapters": "catalog:",
         "@langchain/openai": "catalog:",
+        "@modelcontextprotocol/sdk": "catalog:",
+        "express": "catalog:",
         "langchain": "catalog:",
         "zod": "catalog:",
         "@dominion/common-js-logs": "workspace:*",
@@ -17,6 +20,7 @@
         "@dominion/common-js-resolver": "workspace:*"
     },
     "devDependencies": {
+        "@types/express": "catalog:",
         "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:"
