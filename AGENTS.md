@@ -51,6 +51,7 @@ Python 依赖更新步骤：
 ## 代码规范 
 
 1. 参阅 `style` 目录下的文档，**任何**编辑代码前应当先阅读代码规范要求。
+2. **注意**规范文档通常会引用为外部文档作为规范一部分，阅读和规划任务必读文档时**不要忽略掉引用外部的规范文档**。
 
 ## 调试与大型测试
 
@@ -81,29 +82,6 @@ Do not add comments that restate what the code already expresses. Only add comme
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
-
-```
-// xyz.md 
-
-## section - a 
-refer [doc1](URL1)
-refer [doc2](URL2)
-
-... 
-
-// 阅读要求
-
-* 阅读 xyz.md 
-* 阅读 [doc1](URL1)
-
-// good case
-
-按照要求阅读 xyz.md 和 [doc1](URL1)
-
-// bad case 
-
-只阅读 xyz.md，没有按照要求阅读 [doc1](URL1)。阅读 xyz.md 不代表阅读了其引用的 [doc1](URL1)。[doc1](URL1) 需要自己主动阅读。
-```
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,

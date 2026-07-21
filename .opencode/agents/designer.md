@@ -54,27 +54,17 @@ tools:
 * **重要**：有些文档会引用其他文档（例如外部链接）作为文档内容，这时需要将引用的文档（特别是外部文档）显式列出，不能依靠引用传递。
 
 ```
-// xyz.md 
-## section - a 
-refer [doc1](URL1) ———— // 与 phase 有关，需要阅读
-refer [doc2](URL2) ———— // 与 phase 无关
+# bad case 
 
-... 
+协议相关的改动只声明阅读 `style/api.md`。
 
-// good case
+因为 `style/api.md` 当中没有实际的规范，只有规范的索引。
 
-Required Reading :
-* xyz.md 
-* [doc1](URL1) 
+# good case
 
-同时列出 xyz.md 和 [doc1](URL1)，确保稳定的阅读结果
+同时分配 `style/api.md` 和具体的(AIP文档)[https://xxxx]
 
-// bad case 
-Required Reading:
-* xyz.md 
-
-只列出 xyz.md，无法保证 phase 执行时会阅读 [doc1](URL1)
-
+其他规范、方案和研究文档也参考此方法，需要显示列出需要阅读的间接引用文档。
 ```
 
 * 控制每个 phase 的大小，做到 review 友好。并且每个 phase 都可以进行验证，并且要有验证门禁。
