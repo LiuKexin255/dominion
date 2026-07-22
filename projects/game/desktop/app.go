@@ -730,8 +730,6 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 	// skip the screenshot-relative → screen-absolute conversion; SIMULATED
 	// ops reuse the existing SetCursorPos + SendInput path.
 	var actionErr error
-	var screenX, screenY int32
-	var bounds capture.WindowBounds
 	var actionLabel string
 	switch {
 	case keyboard != nil:
@@ -740,9 +738,9 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 			actionErr = fmt.Errorf("keyboard press: %w", eErr)
 		}
 	case moveClick != nil:
-		actionLabel, actionErr, screenX, screenY, bounds = a.runMouseMoveAndClick(moveClick, corrID)
+		actionLabel, actionErr = a.runMouseMoveAndClick(moveClick, corrID)
 	case move != nil:
-		actionLabel, actionErr, screenX, screenY, bounds = a.runMouseMove(move, corrID)
+		actionLabel, actionErr = a.runMouseMove(move, corrID)
 	case click != nil:
 		actionLabel, actionErr = a.runMouseClick(click, corrID)
 	}
@@ -752,27 +750,10 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 	if actionErr != nil {
 		actionStatus = game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED
 		actionMsg = actionErr.Error()
-		a.logger.Error("backend", "executeAgentOperation: action failed", map[string]any{
-			"tool_id":        toolID,
-			"correlation_id": corrID,
-			"error":          actionErr.Error(),
-		})
 	} else {
 		a.logger.Info("backend", "Operation executed", map[string]any{
-			"tool_id":       toolID,
-			"action":        actionLabel,
-			"window_handle": a.boundWin.Handle,
-			"window_title":  a.boundWin.Title,
-			"window_bounds": map[string]int{
-				"left":   bounds.Left,
-				"top":    bounds.Top,
-				"right":  bounds.Right,
-				"bottom": bounds.Bottom,
-				"width":  bounds.Right - bounds.Left,
-				"height": bounds.Bottom - bounds.Top,
-			},
-			"screen_x":       screenX,
-			"screen_y":       screenY,
+			"tool_id":        toolID,
+			"action":         actionLabel,
 			"correlation_id": corrID,
 		})
 	}

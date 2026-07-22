@@ -9,9 +9,7 @@ import (
 )
 
 // runMouseMoveAndClick dispatches a MouseMoveAndClickPart on its method field
-// and returns the action label, error, and — for the SIMULATED path — the
-// computed screen-absolute coordinates and bound window bounds (zeros
-// otherwise, since WINDOW_MESSAGE uses window-client coords directly).
+// and returns the action label and error.
 //
 // WINDOW_MESSAGE posts WM_* messages to the bound HWND with the part's coords
 // packed into lParam (FR-004d); no OS cursor movement, no screen conversion.
@@ -23,66 +21,124 @@ import (
 // The SIMULATED path inherits the foreground-activation quirk of synthetic
 // clicks (SendInput is consumed by window activation when the target is not
 // foreground), so SetForeground is called between the move and the click.
-func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID string) (string, error, int32, int32, capture.WindowBounds) {
+func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID string) (string, error) {
 	switch operation.EffectiveMethod(part.GetMethod()) {
 	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
 		label := "move_and_click(window_message):" + part.GetClick().String()
 		if err := operation.ExecuteWindowMessageClick(a.boundWin.Handle, part.GetClick(), part.GetXPx(), part.GetYPx()); err != nil {
-			return label, fmt.Errorf("window-message click: %w", err), 0, 0, capture.WindowBounds{}
+			return label, fmt.Errorf("window-message click: %w", err)
 		}
-		return label, nil, 0, 0, capture.WindowBounds{}
+		a.logger.Info("backend", "mouse action executed", map[string]any{
+			"tool_id":        part.GetToolId(),
+			"correlation_id": corrID,
+			"action":         label,
+			"method":         "window_message",
+			"window_handle":  a.boundWin.Handle,
+			"window_title":   a.boundWin.Title,
+			"client_x_px":    part.GetXPx(),
+			"client_y_px":    part.GetYPx(),
+		})
+		return label, nil
 	default:
 		label := "move_and_click:" + part.GetClick().String()
 		bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
 		if bErr != nil {
-			return label, fmt.Errorf("capture window bounds: %w", bErr), 0, 0, capture.WindowBounds{}
+			return label, fmt.Errorf("capture window bounds: %w", bErr)
 		}
 		screenX, screenY, cErr := operation.ScreenshotToScreenCoords(part.GetXPx(), part.GetYPx(), int32(bounds.Left), int32(bounds.Top))
 		if cErr != nil {
-			return label, fmt.Errorf("coordinate conversion: %w", cErr), 0, 0, bounds
+			return label, fmt.Errorf("coordinate conversion: %w", cErr)
 		}
 		if err := operation.MoveCursor(screenX, screenY); err != nil {
-			return label, fmt.Errorf("move cursor: %w", err), screenX, screenY, bounds
+			return label, fmt.Errorf("move cursor: %w", err)
 		}
 		a.logSetForeground(part.GetToolId(), corrID)
 		if err := operation.ExecuteClickAtCurrentPos(part.GetClick()); err != nil {
-			return label, fmt.Errorf("click action: %w", err), screenX, screenY, bounds
+			return label, fmt.Errorf("click action: %w", err)
 		}
-		return label, nil, screenX, screenY, bounds
+		a.logger.Info("backend", "mouse action executed", map[string]any{
+			"tool_id":         part.GetToolId(),
+			"correlation_id":  corrID,
+			"action":          label,
+			"method":          "simulated",
+			"window_handle":   a.boundWin.Handle,
+			"window_title":    a.boundWin.Title,
+			"screenshot_x_px": part.GetXPx(),
+			"screenshot_y_px": part.GetYPx(),
+			"screen_x":        screenX,
+			"screen_y":        screenY,
+			"window_bounds": map[string]int{
+				"left":   bounds.Left,
+				"top":    bounds.Top,
+				"right":  bounds.Right,
+				"bottom": bounds.Bottom,
+				"width":  bounds.Right - bounds.Left,
+				"height": bounds.Bottom - bounds.Top,
+			},
+		})
+		return label, nil
 	}
 }
 
-// runMouseMove dispatches a MouseMovePart on its method field. Returns the
-// action label, error, and — for the SIMULATED path — the screen-absolute
-// coordinates and bound window bounds.
+// runMouseMove dispatches a MouseMovePart on its method field and returns the
+// action label and error.
 //
 // WINDOW_MESSAGE posts a single WM_MOUSEMOVE to the bound HWND with the
 // part's client coords; no OS cursor movement. SIMULATED converts
 // screenshot-relative coords to screen-absolute via the bound window's
 // bounds and repositions the cursor (existing behavior).
-func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, error, int32, int32, capture.WindowBounds) {
-	_ = corrID // currently unused; kept for symmetric signatures across helpers.
+func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, error) {
 	switch operation.EffectiveMethod(part.GetMethod()) {
 	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
 		label := "move(window_message)"
 		if err := operation.ExecuteWindowMessageMove(a.boundWin.Handle, part.GetXPx(), part.GetYPx()); err != nil {
-			return label, fmt.Errorf("window-message move: %w", err), 0, 0, capture.WindowBounds{}
+			return label, fmt.Errorf("window-message move: %w", err)
 		}
-		return label, nil, 0, 0, capture.WindowBounds{}
+		a.logger.Info("backend", "mouse action executed", map[string]any{
+			"tool_id":        part.GetToolId(),
+			"correlation_id": corrID,
+			"action":         label,
+			"method":         "window_message",
+			"window_handle":  a.boundWin.Handle,
+			"window_title":   a.boundWin.Title,
+			"client_x_px":    part.GetXPx(),
+			"client_y_px":    part.GetYPx(),
+		})
+		return label, nil
 	default:
 		label := "move"
 		bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
 		if bErr != nil {
-			return label, fmt.Errorf("capture window bounds: %w", bErr), 0, 0, capture.WindowBounds{}
+			return label, fmt.Errorf("capture window bounds: %w", bErr)
 		}
 		screenX, screenY, cErr := operation.ScreenshotToScreenCoords(part.GetXPx(), part.GetYPx(), int32(bounds.Left), int32(bounds.Top))
 		if cErr != nil {
-			return label, fmt.Errorf("coordinate conversion: %w", cErr), 0, 0, bounds
+			return label, fmt.Errorf("coordinate conversion: %w", cErr)
 		}
 		if err := operation.MoveCursor(screenX, screenY); err != nil {
-			return label, fmt.Errorf("move cursor: %w", err), screenX, screenY, bounds
+			return label, fmt.Errorf("move cursor: %w", err)
 		}
-		return label, nil, screenX, screenY, bounds
+		a.logger.Info("backend", "mouse action executed", map[string]any{
+			"tool_id":         part.GetToolId(),
+			"correlation_id":  corrID,
+			"action":          label,
+			"method":          "simulated",
+			"window_handle":   a.boundWin.Handle,
+			"window_title":    a.boundWin.Title,
+			"screenshot_x_px": part.GetXPx(),
+			"screenshot_y_px": part.GetYPx(),
+			"screen_x":        screenX,
+			"screen_y":        screenY,
+			"window_bounds": map[string]int{
+				"left":   bounds.Left,
+				"top":    bounds.Top,
+				"right":  bounds.Right,
+				"bottom": bounds.Bottom,
+				"width":  bounds.Right - bounds.Left,
+				"height": bounds.Bottom - bounds.Top,
+			},
+		})
+		return label, nil
 	}
 }
 
