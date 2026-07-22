@@ -26,20 +26,32 @@ async function main() {
 
 	const { startServer } = await import("./server.js");
 
+	// spec 012 FR-016/SC-001: the agent_test artifact differs from production
+	// ONLY by the resolver-aware provider — it MUST still run the full
+	// AgentAdapterImpl.create() pipeline (saolei MCP-client tools +
+	// skill auto-injection when mcpNames includes "saolei"; mouse tools +
+	// sync constructor otherwise). The earlier version bypassed create()
+	// entirely, dropping mcpNames/sessionId and so never binding the saolei
+	// MCP tools. Threading all params through create() preserves the real
+	// pipeline with only the chat-model source swapped.
 	const adapterFactory: AdapterFactory = async (
 		_getProvider: () => Promise<ChatModel>,
 		systemPrompt: string,
 		toolNames: string[],
 		bridge: OperationBridge,
 		checkpointer: MemorySaver,
+		mcpNames: string[],
+		sessionId: string,
 	) => {
 		const chatModel = await buildResolverAwareChatModel(resolver);
-		return new AgentAdapterImpl(
+		return AgentAdapterImpl.create(
 			chatModel,
 			systemPrompt,
 			toolNames,
 			bridge,
 			checkpointer,
+			mcpNames,
+			sessionId,
 		);
 	};
 

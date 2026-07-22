@@ -173,10 +173,14 @@ type responseSpec struct {
 // isToolCall reports whether the spec describes a tool-call response.
 func (s responseSpec) isToolCall() bool { return s.ToolCall != nil }
 
-// specFromMessage adapts a keyword-matched Message into a responseSpec
-// for the text path.
+// specFromMessage adapts a keyword-matched Message into a responseSpec.
+// When the Message carries a ToolCall the spec takes the ToolCallPath
+// (the response carries tool_calls + finish_reason "tool_calls"); otherwise
+// it takes the TextPath (reasoning + text + finish_reason "stop"). A nil
+// ToolCall reproduces the original text-only behaviour exactly, so existing
+// Message entries are unaffected.
 func specFromMessage(msg *Message) responseSpec {
-	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text}
+	return responseSpec{Reasoning: msg.Reasoning, Text: msg.Text, ToolCall: msg.ToolCall}
 }
 
 // specFromTool adapts a matched ToolConfig's RespondWith into a

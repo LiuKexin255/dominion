@@ -1,0 +1,37 @@
+# sample_saolei_tools.yaml — chains the saolei MCP tool results so the
+# model drives a full init→click→update sequence in large tests
+# (specs/018-saolei-mcp/quickstart.md Scenario 7 / SC-007). Each entry is
+# keyed by the tool_name LangChain reports on the tool-result message
+# (role: "tool", name: <tool>), matched against the tools branch of the
+# fake-LLM dispatch.
+#
+# Flow driven by these configs:
+#   saolei_init  result → saolei_click{3,4}   (dispatches a mouse click)
+#   saolei_click result → saolei_update{cells:[{3,4,"1"}]} (no dispatch; state update)
+#   saolei_update result → final text          (terminates the tool loop)
+tools:
+  - name: saolei-click-followup-update
+    tool_name: saolei_click
+    match_result_contains: []
+    respond_with:
+      tool_call:
+        name: saolei_update
+        arguments:
+          cells:
+            - x: 3
+              y: 4
+              status: "1"
+  - name: saolei-init-followup-click
+    tool_name: saolei_init
+    match_result_contains: []
+    respond_with:
+      tool_call:
+        name: saolei_click
+        arguments:
+          x: 3
+          y: 4
+  - name: saolei-update-final-text
+    tool_name: saolei_update
+    match_result_contains: []
+    respond_with:
+      text: "Minesweeper sequence complete."

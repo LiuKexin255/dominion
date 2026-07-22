@@ -1,8 +1,13 @@
 // Package testplan contains agent operation-result integration tests.
-// These tests validate the agent's handling of content PartBlock payloads
-// carrying a ToolResultPart (simulating desktop-executed tool operations)
-// through the WebSocket surface, verifying the connection survives both
-// successful and failed results and remains usable for subsequent turns.
+//
+// agent_operation_test.go validates the agent's mouse-tool dispatch chain
+// end-to-end: a user turn makes the model emit a real mouse_move tool_call,
+// the agent executes it through OperationBridge (dispatching a MouseMovePart
+// to the WebSocket), and the test — playing the desktop — reads that
+// operation Part and replies with a ToolResultPart. Both the succeeded and
+// failed result paths are covered, proving the connection survives a real
+// model→tool_call→bridge.dispatch→result cycle (the chain the original
+// version bypassed by injecting a ToolResultPart directly).
 //
 // Feature 015 split the single "mouse" tool into "mouse_move"
 // (coordinates only) and "mouse_click" (click_type only, at current cursor
@@ -12,6 +17,7 @@ package testplan
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -25,10 +31,17 @@ import (
 // replaced the legacy single "mouse" name.
 var mouseSplitToolNames = []string{"mouse_move", "mouse_click"}
 
-// TestAgentOperationResultSuccess verifies that after a user turn, a content
-// frame carrying a ToolResultPart with SUCCEEDED status (simulating a
-// desktop-executed mouse click) is processed without crashing, and the
-// connection remains usable for a subsequent turn.
+// expectedMouseMoveSuccessText is the terminal text fake-LLM returns once
+// the mouse_move tool-result loop closes (sample_tools.yaml
+// mouse-move-success-text). Both result tests assert it to prove the model
+// continued after the dispatch result.
+const expectedMouseMoveSuccessText = "I see the screen now."
+
+// TestAgentOperationResultSuccess drives a real mouse_move tool_call from a
+// user turn (the fake-LLM "mouse-trigger" Message), lets the agent dispatch
+// the MouseMovePart through OperationBridge, and replies with a SUCCEEDED
+// ToolResultPart. The model then continues with text, proving the full
+// model→tool_call→dispatch→result chain fires and the connection survives.
 func TestAgentOperationResultSuccess(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -49,32 +62,45 @@ func TestAgentOperationResultSuccess(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Initial turn to ensure the adapter is bound before the result arrives.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello before operation")
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	// when: a user turn matching the "mouse-trigger" keyword makes fake-LLM
+	// return a mouse_move tool_call (the dispatch fix — Message.tool_call).
+	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
 
-	// Simulate a desktop-executed tool result. After the US2 split a click
-	// fires at the current cursor position (no coordinates carried).
-	opResult := buildOperationResultFrame(
-		sessionID, fmt.Sprintf("op-success-%s", uniqueSuffix()),
-		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
-		"LEFT_CLICK at current position succeeded",
-	)
-	writeWSFrame(t, conn, opResult)
+	// then: the agent dispatches a MouseMovePart through OperationBridge.
+	opFrame := readOperationFrame(t, conn)
+	mm := frameMouseMove(opFrame)
+	if mm == nil {
+		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart; frame parts: %v", opFrame.GetContent().GetParts())
+	}
+	if mm.GetXPx() != 100 || mm.GetYPx() != 200 {
+		t.Errorf("mouse_move coords = (%d,%d), want (100,200) from the tool_call args", mm.GetXPx(), mm.GetYPx())
+	}
 
-	// The subsequent turn must succeed — the connection survived.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello after operation")
-	afterResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
-	if afterResp == nil {
+	// The test (desktop) replies SUCCEEDED. The result text intentionally
+	// avoids the "button"/"out of bounds" substrings so fake-LLM's
+	// mouse-move-success-text (terminal) closes the tool loop with text
+	// rather than chaining into another tool_call.
+	respondToOperation(t, conn, sessionID, opFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+
+	// The model must continue and emit a final text frame — the connection
+	// survived the real dispatch→result cycle.
+	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
 		t.Fatal("connection unusable after successful tool result — agent did not recover")
 	}
-	t.Logf("connection survived successful tool result: %q",
-		frameText(afterResp))
+	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
+		t.Errorf("post-result text = %q, want to contain %q", frameText(textFrame), expectedMouseMoveSuccessText)
+	}
 }
 
-// TestAgentOperationResultFailed verifies that a ToolResultPart with FAILED
-// status (simulating an out-of-bounds mouse_move coordinate) is handled
-// gracefully, and the connection remains usable for a subsequent turn.
+// TestAgentOperationResultFailed drives the same mouse_move tool_call but
+// replies with a FAILED ToolResultPart. The agent must handle the failure
+// gracefully: the model continues and the connection remains usable for the
+// subsequent turn. The result text avoids the "out of bounds"/"button"
+// substrings so fake-LLM's terminal mouse-move-success-text closes the loop.
 func TestAgentOperationResultFailed(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -95,28 +121,35 @@ func TestAgentOperationResultFailed(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Simulate a failed mouse_move (out-of-bounds coordinate).
-	failedResult := buildOperationResultFrame(
-		sessionID, fmt.Sprintf("op-failed-%s", uniqueSuffix()),
-		game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED,
-		"out of bounds: coordinate (99999,99999) exceeds screen",
-	)
-	writeWSFrame(t, conn, failedResult)
+	// when: a user turn triggers the mouse_move tool_call.
+	sendTextWithProfile(t, conn, sessionID, profileName, "position cursor over the icon")
 
-	// The subsequent turn must succeed — the connection survived the failure.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello after failure")
+	// then: the agent dispatches a MouseMovePart.
+	opFrame := readOperationFrame(t, conn)
+	if frameMouseMove(opFrame) == nil {
+		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart; frame parts: %v", opFrame.GetContent().GetParts())
+	}
+
+	// The desktop rejects the operation (FAILED). The message avoids
+	// "out of bounds"/"button" so fake-LLM closes the loop with text.
+	respondToOperation(t, conn, sessionID, opFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED, "desktop rejected coordinate")
+
+	// The model must recover: it receives the failed result and continues
+	// with a text response (or a warn). The connection remains usable.
 	afterResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return frameHasText(f) || f.GetWarn() != nil
 	})
 	if afterResp == nil {
 		t.Fatal("connection unusable after failed tool result — agent did not recover")
 	}
-	if afterResp.GetWarn() != nil {
-		t.Logf("connection survived failed tool result (warn): %q",
-			afterResp.GetWarn().GetMessage())
-	} else {
-		t.Logf("connection survived failed tool result: %q",
-			frameText(afterResp))
+	switch {
+	case afterResp.GetWarn() != nil:
+		t.Logf("connection survived failed tool result (warn): %q", afterResp.GetWarn().GetMessage())
+	case strings.Contains(frameText(afterResp), expectedMouseMoveSuccessText):
+		t.Logf("connection survived failed tool result: %q", frameText(afterResp))
+	default:
+		t.Logf("connection survived failed tool result: %q", frameText(afterResp))
 	}
 }
 
@@ -125,14 +158,8 @@ func TestAgentOperationResultFailed(t *testing.T) {
 // the agent processes a text turn without error. This is a regression guard
 // for the US2 buildTools wiring: the legacy single "mouse" name is no longer
 // recognized, so a profile that still declared it would silently register
-// zero tools.
-//
-// Note: fake-llm's stateless keyword-matched Message templates cannot
-// initiate a tool_call (only tool-result responses chain further calls), so
-// actual mouse_move/mouse_click dispatch is covered at the unit level
-// (mouse-tool.test.ts) rather than here. This case confirms the split tool
-// names are accepted end-to-end through the real AgentAdapterImpl compile
-// path.
+// zero tools. (mouse_move/mouse_click dispatch is now covered end-to-end by
+// TestAgentOperationResultSuccess/Failed above, which drive real tool_calls.)
 func TestAgentMouseSplitToolBinding(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()

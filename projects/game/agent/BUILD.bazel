@@ -63,7 +63,10 @@ artifact_pkg_js(
         ":node_modules/@langchain/anthropic",
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/mcp-adapters",
         ":node_modules/@langchain/openai",
+        ":node_modules/@modelcontextprotocol/sdk",
+        ":node_modules/express",
         ":node_modules/langchain",
     ],
     runtime_protos = [
@@ -101,7 +104,10 @@ artifact_pkg_js(
         ":node_modules/@langchain/anthropic",
         ":node_modules/@langchain/core",
         ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/mcp-adapters",
         ":node_modules/@langchain/openai",
+        ":node_modules/@modelcontextprotocol/sdk",
+        ":node_modules/express",
         ":node_modules/langchain",
     ],
     runtime_protos = [

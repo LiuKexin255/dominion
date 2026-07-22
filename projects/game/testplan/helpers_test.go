@@ -656,3 +656,113 @@ func senderString(sender game.FrameSender) string {
 		return "UNSPECIFIED"
 	}
 }
+
+// ─── Operation-dispatch helpers ─────────────────────────────────────────────
+//
+// When the model emits a tool_call, the agent executes the tool, which calls
+// OperationBridge.dispatch. The bridge wraps the operation Part (MouseMovePart,
+// MouseClickPart, KeyboardPressPart, or MouseMoveAndClickPart) in a content
+// AgentFrame and writes it to the session WebSocket sink. A large test that
+// "plays the desktop" reads that operation frame, echoes the stamped tool_id
+// back in a ToolResultPart, and the bridge resolves the pending dispatch. The
+// helpers below project the operation Part out of a content frame and reply
+// with a matching ToolResultPart — they are shared by the agent_operation and
+// agent_saolei suites so neither copies the logic (style/large_test.md §反模式3).
+
+// frameOperationToolID returns the tool_id stamped on the first tool-operation
+// Part in a content frame (keyboard_press / mouse_move_and_click / mouse_move /
+// mouse_click), or "" when the frame carries no operation Part. tool_id is the
+// correlation key the bridge matches against the ToolResultPart (see
+// projects/game/agent/src/operation-bridge.ts dispatch/handleResult).
+func frameOperationToolID(f *game.AgentFrame) string {
+	if f.GetContent() == nil {
+		return ""
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if kp := p.GetKeyboardPress(); kp != nil {
+			return kp.GetToolId()
+		}
+		if mmc := p.GetMouseMoveAndClick(); mmc != nil {
+			return mmc.GetToolId()
+		}
+		if mm := p.GetMouseMove(); mm != nil {
+			return mm.GetToolId()
+		}
+		if mc := p.GetMouseClick(); mc != nil {
+			return mc.GetToolId()
+		}
+	}
+	return ""
+}
+
+// frameKeyboardPress returns the first KeyboardPressPart in a content frame,
+// or nil. Used by the saolei suite to assert saolei_init dispatched an F2 key.
+func frameKeyboardPress(f *game.AgentFrame) *game.KeyboardPressPart {
+	if f.GetContent() == nil {
+		return nil
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if kp := p.GetKeyboardPress(); kp != nil {
+			return kp
+		}
+	}
+	return nil
+}
+
+// frameMouseMoveAndClick returns the first MouseMoveAndClickPart in a content
+// frame, or nil. Used by the saolei suite to assert a cell operation dispatched
+// the correct window-message mouse Part.
+func frameMouseMoveAndClick(f *game.AgentFrame) *game.MouseMoveAndClickPart {
+	if f.GetContent() == nil {
+		return nil
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if mmc := p.GetMouseMoveAndClick(); mmc != nil {
+			return mmc
+		}
+	}
+	return nil
+}
+
+// frameMouseMove returns the first MouseMovePart in a content frame, or nil.
+// Used by the agent_operation suite to assert a mouse_move tool_call dispatched.
+func frameMouseMove(f *game.AgentFrame) *game.MouseMovePart {
+	if f.GetContent() == nil {
+		return nil
+	}
+	for _, p := range f.GetContent().GetParts() {
+		if mm := p.GetMouseMove(); mm != nil {
+			return mm
+		}
+	}
+	return nil
+}
+
+// readOperationFrame drains frames until it finds a content frame carrying a
+// tool-operation Part, and returns it. Fails the test if no operation frame
+// arrives within the drain limit — the model→tool_call→dispatch chain is the
+// behaviour under test, so its absence is a real failure, not a timeout.
+func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
+	t.Helper()
+	f := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameOperationToolID(f) != ""
+	})
+	if f == nil {
+		t.Fatal("did not receive an operation Part frame from the agent " +
+			"(model→tool_call→dispatch chain did not fire)")
+	}
+	return f
+}
+
+// respondToOperation writes a ToolResultPart back over the WebSocket whose
+// tool_id matches the operation frame's stamped id, simulating a desktop that
+// executed the operation. The bridge's handleResult resolves the pending
+// dispatch so the model's tool-call loop continues.
+func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string) {
+	t.Helper()
+	toolID := frameOperationToolID(opFrame)
+	if toolID == "" {
+		t.Fatalf("respondToOperation: operation frame has no tool_id")
+	}
+	writeWSFrame(t, conn, buildOperationResultFrame(sessionID, toolID, status, message))
+}

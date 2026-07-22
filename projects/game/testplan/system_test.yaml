@@ -33,6 +33,9 @@ description: |
   Suite 9 (agent-operation): session + proxy + agent(test) + prompt + gateway.
     - Successful operation_result frame does not break the connection
     - Failed operation_result frame (e.g., out-of-bounds) is handled gracefully
+  Suite 10 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
+    - saolei MCP tool flow: init (F2 dispatch) → click (window-message mouse) →
+      update, driven by the fake-LLM tool_call fix
 
 suites:
   - name: prompt
@@ -112,3 +115,12 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_operation_test
+
+  - name: agent-saolei
+    description: "Agent saolei MCP tool flow with fake-llm service: init→click→update driven by a model tool_call through the loopback MCP server and OperationBridge"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:agent_saolei_test

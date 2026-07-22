@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // TestServeHTTP_NonStreaming verifies the non-streaming JSON shape:
@@ -240,9 +241,9 @@ func TestServeHTTP_NoMatchRandom(t *testing.T) {
 	}
 	got := resp.Choices[0].Message.Content
 	validTexts := map[string]bool{
-		"Goodbye! Have a great day!":         true,
-		"Hello! How can I help you today?":   true,
-		"Sure, let's chat!":                  true,
+		"Goodbye! Have a great day!":       true,
+		"Hello! How can I help you today?": true,
+		"Sure, let's chat!":                true,
 	}
 	if !validTexts[got] {
 		t.Fatalf("random fallback content = %q, want one of the configured texts", got)
@@ -834,5 +835,173 @@ func TestValidateImageContent(t *testing.T) {
 				t.Fatalf("error = %q, want to contain 'Param Incorrect'", err.Error())
 			}
 		})
+	}
+}
+
+// newStoreFromMap builds a *MessageStore from an in-memory fstest.MapFS so
+// tests can exercise custom Message/ToolConfig combinations (e.g. a Message
+// carrying a tool_call) without touching the embedded testdata that the
+// pinned TestNewMessageStore_LoadsEmbeddedSamples guards.
+func newStoreFromMap(t *testing.T, files fstest.MapFS) *MessageStore {
+	t.Helper()
+	msgs, tools, err := LoadFromFS(files, "testdata")
+	if err != nil {
+		t.Fatalf("LoadFromFS unexpected error: %v", err)
+	}
+	return &MessageStore{messages: msgs, tools: tools}
+}
+
+// TestServeHTTP_UserMessageToolCall verifies the dispatch fix: a user turn
+// (last message role "user") whose text matches a Message carrying a
+// tool_call MUST produce a tool_calls response with finish_reason
+// "tool_calls" — not the text path. This is what lets large tests drive the
+// model→tool_call→execution chain from a plain user turn. The same store also
+// carries a text-only Message, asserted separately to prove backward
+// compatibility (nil ToolCall keeps the original behaviour).
+func TestServeHTTP_UserMessageToolCall(t *testing.T) {
+	// given: an in-memory store with one tool_call Message and one
+	// text-only Message, so both dispatch paths are coverable from a
+	// user turn.
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/tool_trigger.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: tool-trigger",
+				"keywords:",
+				"  - start game",
+				"tool_call:",
+				"  name: saolei_init",
+				"  arguments:",
+				"    width: 9",
+				"    height: 9",
+				"",
+			}, "\n")),
+		},
+		"testdata/plain_text.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: plain-text",
+				"keywords:",
+				"  - chat",
+				"text: Sure, let's chat!",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	// when: a USER turn whose text matches the tool_call Message keyword.
+	body := `{"stream":false,"messages":[{"role":"user","content":"please start game now"}]}`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	// then: tool_calls response shape.
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	c := resp.Choices[0]
+	if c.FinishReason == nil || *c.FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want \"tool_calls\"", c.FinishReason)
+	}
+	if len(c.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len = %d, want 1", len(c.Message.ToolCalls))
+	}
+	tc := c.Message.ToolCalls[0]
+	if tc.Function.Name != "saolei_init" {
+		t.Errorf("tool_call.function.name = %q, want saolei_init", tc.Function.Name)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		t.Fatalf("tool_call arguments not valid JSON: %q (%v)", tc.Function.Arguments, err)
+	}
+	if args["width"] != float64(9) || args["height"] != float64(9) {
+		t.Errorf("tool_call arguments = %v, want width=9 height=9", args)
+	}
+}
+
+// TestServeHTTP_UserMessageToolCallStreaming verifies the streaming shape of
+// a user-turn tool_call response: two SSE chunks (role+tool_calls delta,
+// then empty delta with finish_reason "tool_calls") followed by [DONE].
+func TestServeHTTP_UserMessageToolCallStreaming(t *testing.T) {
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/tool_trigger.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: tool-trigger",
+				"keywords:",
+				"  - start game",
+				"tool_call:",
+				"  name: saolei_init",
+				"  arguments:",
+				"    width: 9",
+				"    height: 9",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	body := `{"stream":true,"messages":[{"role":"user","content":"start game"}]}`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	frames := scanSSEFrames(t, rec.Body)
+	if n := len(frames); n != 3 {
+		t.Fatalf("got %d SSE frames, want 3 (2 chunks + DONE):\n%s", n, rec.Body.String())
+	}
+	if frames[2] != "[DONE]" {
+		t.Fatalf("last frame = %q, want [DONE]", frames[2])
+	}
+	chunk1 := decodeChunk(t, frames[0])
+	if got := chunk1.Choices[0].Delta.Role; got != "assistant" {
+		t.Errorf("frame1 delta.role = %q, want assistant", got)
+	}
+	if len(chunk1.Choices[0].Delta.ToolCalls) != 1 {
+		t.Fatalf("frame1 tool_calls len = %d, want 1", len(chunk1.Choices[0].Delta.ToolCalls))
+	}
+	if chunk1.Choices[0].Delta.ToolCalls[0].Function.Name != "saolei_init" {
+		t.Errorf("frame1 tool_call.function.name = %q, want saolei_init",
+			chunk1.Choices[0].Delta.ToolCalls[0].Function.Name)
+	}
+	chunk2 := decodeChunk(t, frames[1])
+	if got := chunk2.Choices[0].FinishReason; got == nil || *got != "tool_calls" {
+		t.Errorf("frame2 finish_reason = %v, want \"tool_calls\"", got)
+	}
+}
+
+// TestServeHTTP_TextOnlyMessageUnchangedByToolCallField is a backward-
+// compatibility guard: a text-only Message (nil ToolCall) matched from a
+// user turn still produces a plain text response with finish_reason "stop",
+// exactly as before the ToolCall field was added.
+func TestServeHTTP_TextOnlyMessageUnchangedByToolCallField(t *testing.T) {
+	store := newStoreFromMap(t, fstest.MapFS{
+		"testdata/plain_text.yaml": &fstest.MapFile{
+			Data: []byte(strings.Join([]string{
+				"name: plain-text",
+				"keywords:",
+				"  - chat",
+				"reasoning: thinking here",
+				"text: Sure, let's chat!",
+				"",
+			}, "\n")),
+		},
+	})
+	handler := NewChatHandler(store, rand.New(rand.NewPCG(1, 0)))
+
+	body := `{"stream":false,"messages":[{"role":"user","content":"let's chat"}]}`
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+
+	var resp completionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, rec.Body.String())
+	}
+	c := resp.Choices[0]
+	if c.FinishReason == nil || *c.FinishReason != "stop" {
+		t.Fatalf("finish_reason = %v, want \"stop\"", c.FinishReason)
+	}
+	if len(c.Message.ToolCalls) != 0 {
+		t.Errorf("tool_calls len = %d, want 0 for text-only Message", len(c.Message.ToolCalls))
+	}
+	if c.Message.Content != "Sure, let's chat!" {
+		t.Errorf("content = %q, want the configured text", c.Message.Content)
 	}
 }

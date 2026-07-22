@@ -110,3 +110,19 @@ go_largetest(
         "@org_golang_google_protobuf//encoding/protojson",
     ],
 )
+
+go_largetest(
+    name = "agent_saolei_test",
+    size = "small",
+    srcs = [
+        "agent_saolei_test.go",
+        "helpers_test.go",
+    ],
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+    ],
+)

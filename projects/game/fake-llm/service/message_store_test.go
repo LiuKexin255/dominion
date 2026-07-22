@@ -216,11 +216,12 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 3 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 3 (chat-only + farewell + greeting)", len(got))
+	if len(got) != 5 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 5 (chat-only + farewell + greeting + mouse-trigger + saolei-start)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only before farewell before greeting.
+	// Sorted alphabetically: chat-only before farewell before greeting
+	// before mouse-trigger before saolei-start.
 	if got[0].Name != "chat-only" {
 		t.Fatalf("first message = %q, want chat-only", got[0].Name)
 	}
@@ -229,6 +230,12 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 	if got[2].Name != "greeting" {
 		t.Fatalf("third message = %q, want greeting", got[2].Name)
+	}
+	if got[3].Name != "mouse-trigger" {
+		t.Fatalf("fourth message = %q, want mouse-trigger", got[3].Name)
+	}
+	if got[4].Name != "saolei-start" {
+		t.Fatalf("fifth message = %q, want saolei-start", got[4].Name)
 	}
 
 	chatOnly := got[0]
@@ -263,6 +270,33 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if !slices.Contains(greeting.Keywords, "hello") {
 		t.Errorf("greeting keywords missing hello: %v", greeting.Keywords)
 	}
+
+	// mouse-trigger carries a tool_call (the dispatch fix): a user turn
+	// matching its keyword makes fake-LLM return a mouse_move tool_call
+	// so the agent_operation large tests drive the real dispatch chain.
+	mouseTrigger := got[3]
+	if mouseTrigger.ToolCall == nil {
+		t.Fatalf("mouse-trigger tool_call is nil")
+	}
+	if mouseTrigger.ToolCall.Name != "mouse_move" {
+		t.Errorf("mouse-trigger tool_call.name = %q, want mouse_move", mouseTrigger.ToolCall.Name)
+	}
+	if !slices.Contains(mouseTrigger.Keywords, "move the mouse") {
+		t.Errorf("mouse-trigger keywords missing 'move the mouse': %v", mouseTrigger.Keywords)
+	}
+
+	// saolei-start carries the first saolei_init tool_call (the entry
+	// point of the agent_saolei large-test flow).
+	saoleiStart := got[4]
+	if saoleiStart.ToolCall == nil {
+		t.Fatalf("saolei-start tool_call is nil")
+	}
+	if saoleiStart.ToolCall.Name != "saolei_init" {
+		t.Errorf("saolei-start tool_call.name = %q, want saolei_init", saoleiStart.ToolCall.Name)
+	}
+	if !slices.Contains(saoleiStart.Keywords, "start saolei") {
+		t.Errorf("saolei-start keywords missing 'start saolei': %v", saoleiStart.Keywords)
+	}
 }
 
 // TestNewMessageStore_LoadsEmbeddedTools verifies the embedded
@@ -279,8 +313,8 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	tools := store.Tools()
-	if len(tools) != 6 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 6 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text)", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 9 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-followup-update, saolei-init-followup-click, saolei-update-final-text)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
@@ -291,6 +325,9 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		"mouse-move-followup-click",
 		"mouse-move-oob",
 		"mouse-move-success-text",
+		"saolei-click-followup-update",
+		"saolei-init-followup-click",
+		"saolei-update-final-text",
 	}
 	for i, want := range wantNames {
 		if tools[i].Name != want {
@@ -371,5 +408,30 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 	if moveSuccess.RespondWith.ToolCall != nil {
 		t.Errorf("mouse-move-success-text respond_with.tool_call should be nil")
+	}
+
+	// saolei-init-followup-click chains a saolei_init result into a
+	// saolei_click tool_call (specs/018-saolei-mcp/quickstart.md Scenario 7).
+	saoleiInitClick := tools[7]
+	if saoleiInitClick.ToolName != "saolei_init" {
+		t.Errorf("saolei-init-followup-click tool_name = %q, want saolei_init", saoleiInitClick.ToolName)
+	}
+	if saoleiInitClick.RespondWith.ToolCall == nil {
+		t.Fatalf("saolei-init-followup-click respond_with.tool_call is nil")
+	}
+	if saoleiInitClick.RespondWith.ToolCall.Name != "saolei_click" {
+		t.Errorf("saolei-init-followup-click tool_call.name = %q, want saolei_click", saoleiInitClick.RespondWith.ToolCall.Name)
+	}
+
+	// saolei-update-final-text terminates the saolei tool loop with text.
+	saoleiUpdateText := tools[8]
+	if saoleiUpdateText.ToolName != "saolei_update" {
+		t.Errorf("saolei-update-final-text tool_name = %q, want saolei_update", saoleiUpdateText.ToolName)
+	}
+	if saoleiUpdateText.RespondWith.Text != "Minesweeper sequence complete." {
+		t.Errorf("saolei-update-final-text respond_with.text = %q, want 'Minesweeper sequence complete.'", saoleiUpdateText.RespondWith.Text)
+	}
+	if saoleiUpdateText.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-update-final-text respond_with.tool_call should be nil")
 	}
 }

@@ -74,12 +74,21 @@ The shipped samples are:
 | `sample_chat.yaml`        | chat-only | chat, conversation       | "Responding with text only, no tools needed." | "Sure, let's chat!"              |
 | `sample_farewell.json`    | farewell  | bye, goodbye, see you    | "The user is saying goodbye."              | "Goodbye! Have a great day!"        |
 | `sample_greeting.yaml`    | greeting  | hello, hi, greetings     | "The user is greeting me, I should respond warmly." | "Hello! How can I help you today?" |
+| `sample_mouse_trigger.yaml` | mouse-trigger | move the mouse, position cursor | — | — (carries a `tool_call: mouse_move`) |
+| `sample_saolei_start.yaml` | saolei-start | start saolei, play minesweeper | — | — (carries a `tool_call: saolei_init`) |
 
-The tool configs in `sample_tools.yaml` are matched against the `role:"tool"`
-messages returned by LangChain after a tool invocation, keyed by `tool_name`
-and the `match_result_contains` substrings. See `style/large_test.md` for the
-test organization rules and `fake-llm/service/message_store.go` for the loader
-contract.
+`mouse-trigger` and `saolei-start` carry a `tool_call` instead of text: a
+user turn matching their keyword makes fake-LLM return a `tool_calls`
+response so the large tests drive the real model→tool_call→dispatch chain
+(see §7). They are excluded from the random no-match fallback (a random
+tool_call would nonsensically invoke a desktop operation).
+
+The tool configs in `sample_tools.yaml` (mouse/keyboard) and
+`sample_saolei_tools.yaml` (saolei init→click→update chaining) are matched
+against the `role:"tool"` messages returned by LangChain after a tool
+invocation, keyed by `tool_name` and the `match_result_contains` substrings.
+See `style/large_test.md` for the test organization rules and
+`fake-llm/service/message_store.go` for the loader contract.
 
 ## 4. Stateless matching model
 
@@ -152,22 +161,33 @@ large-test coverage for those changes is split across layers:
 - **US2 (mouse tool split):** `sample_tools.yaml` now keys tool-result
   responses by `mouse_move` / `mouse_click` (the legacy single `mouse` name
   is gone). `agent_operation_test.go` declares the split tool names on its
-  profiles and includes `TestAgentMouseSplitToolBinding`, a regression guard
-  that confirms a profile with the split names binds and processes a turn
-  end-to-end.
+  profiles and drives a real `mouse_move` tool_call end-to-end (see below),
+  plus `TestAgentMouseSplitToolBinding` as a buildTools regression guard.
 - **US4 (operation/operation_result history):** `handler.ts:ListMessages`
   reconstruction of `operation` / `operation_result` Messages is covered at
   the **unit** level in `projects/game/agent/src/handler.test.ts`
   (`"emits operation Message for AIMessage with tool_calls"`,
-  `"emits operation_result Message for ToolMessage ..."`). It is NOT covered
-  at the large-test level because fake-llm's stateless keyword-matched
-  `Message` templates cannot initiate a tool call (only `ToolResponse`
-  entries chain a *follow-up* call off a prior tool result), so no
-  `AIMessage`-with-`tool_calls` or `ToolMessage` ever enters the LangChain
-  checkpoint state during a large test. Closing that gap would require
-  extending fake-llm `Message` to carry an initial `tool_call`; until then,
-  the `checkpoint-resume` suite remains the text-only history regression
-  guard and operation history parity relies on the unit tests.
+  `"emits operation_result Message for ToolMessage ..."`). It is also now
+  exercised at the large-test level: the fake-LLM dispatch fix
+  (`Message.tool_call`) lets a user turn trigger the first tool_call, so the
+  `agent_operation` suite drives a real model→tool_call→`OperationBridge`
+  dispatch chain and the `agent_saolei` suite drives an MCP init→click→update
+  flow — both producing `AIMessage`-with-`tool_calls` and `ToolMessage`
+  entries in the LangChain checkpoint state.
+
+### How the large tests drive a real tool_call (the dispatch fix)
+
+Originally fake-LLM's `Message` templates could only return text from a user
+turn, so large tests could not make the model initiate a tool_call — they
+injected a `ToolResultPart` directly, bypassing the model→tool_call→dispatch
+chain. `Message` now carries an optional `tool_call`; when a user turn matches
+its keyword, fake-LLM returns a `tool_calls` response (finish_reason
+`"tool_calls"`), and the existing `ToolConfig` tool-result chaining drives the
+follow-up calls. The `agent_operation` tests (`TestAgentOperationResultSuccess`
+/ `Failed`) now send a `mouse_move` tool_call from a user turn, read the
+dispatched `MouseMovePart` off the WebSocket, and reply with a
+`ToolResultPart`; the `agent_saolei` test does the same for the saolei MCP F2
++ window-message-mouse Parts.
 
 When updating mouse tool names or argument schemas, sync
 `sample_tools.yaml`, `message_store_test.go`
