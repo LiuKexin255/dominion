@@ -56,6 +56,9 @@ js_library(
 artifact_pkg_js(
     name = "server_pkg",
     app = "game",
+    data_files = [
+        "src/skill/saolei/SKILL.md",
+    ],
     entrypoint = "src/bootstrap.js",
     npm_deps = [
         ":node_modules/@grpc/grpc-js",
@@ -97,6 +100,9 @@ artifact_image(
 artifact_pkg_js(
     name = "server_pkg_test",
     app = "game",
+    data_files = [
+        "src/skill/saolei/SKILL.md",
+    ],
     entrypoint = "src/bootstrap-test.js",
     npm_deps = [
         ":node_modules/@grpc/grpc-js",
@@ -147,9 +153,10 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
-        # skill-loader.test.ts drift guard reads the authored SKILL.md via
-        # fs.readFileSync (FR-023 single-source-of-truth); the .md must be in
-        # the test runfiles.
+        # skill-loader.ts reads src/skill/saolei/SKILL.md at runtime via
+        # fs.readFileSync (research.md D9 — skill body bundled into the
+        # image). The .md must be in the test runfiles so the skill-loader
+        # tests exercise the real read path.
         "src/skill/saolei/SKILL.md",
         ":node_modules/@dominion/common-js-grpc-otel",
         ":node_modules/@dominion/common-js-grpc-resolver",

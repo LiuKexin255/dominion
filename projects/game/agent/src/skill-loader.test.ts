@@ -2,11 +2,12 @@
  * skill-loader.test.ts — Tests for the built-in skill loader.
  *
  * Coverage:
- *   - Drift guard (FR-023 single-source-of-truth): the inlined
- *     `SAOLEI_SKILL_BODY` equals the body of the authored
- *     `src/skill/saolei/SKILL.md` (after frontmatter stripping).
+ *   - SKILL.md format contract (FR-023): the authored
+ *     `src/skill/saolei/SKILL.md` has a frontmatter `name` matching the
+ *     folder and a non-empty `description`.
  *   - Registry lookup (FR-024): `loadSkillBody` / `loadSkillsForMcp` return
- *     the saolei body for `"saolei"`, `""` for unknown names.
+ *     the saolei body for `"saolei"` (read from disk via fs.readFileSync),
+ *     `""` for unknown names.
  *   - Prompt append (FR-023/024/025, research.md D9):
  *     `appendSkillBodyToPrompt` injects only when `mcpNames` matches a
  *     registered built-in skill; non-matching profiles are unchanged.
@@ -28,43 +29,11 @@ import {
 	SKILL_PROMPT_SEPARATOR,
 } from "./skill-loader";
 
-/**
- * Read `src/skill/saolei/SKILL.md` and strip its YAML frontmatter, returning
- * the body. Used by the drift test to compare against the inlined constant.
- *
- * `__dirname` under vitest points at the source file's directory (vitest
- * transpiles in place), so the `.md` is resolvable at a fixed relative path.
- * The file is included in the vitest_test `data` (BUILD.bazel).
- */
-function readSaoleiSkillBodyFromDisk(): string {
-	const mdPath = path.join(
-		__dirname,
-		"skill",
-		"saolei",
-		"SKILL.md",
-	);
-	const md = fs.readFileSync(mdPath, "utf8");
-	const m = md.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-	if (!m) {
-		throw new Error(`No frontmatter found in ${mdPath}`);
-	}
-	return m[1].replace(/^\n+/, "").replace(/\s+$/, "");
-}
-
 // ===========================================================================
-// Drift guard — FR-023 single source of truth
+// SKILL.md format contract — FR-023
 // ===========================================================================
 
-describe("skill-loader drift guard (FR-023)", () => {
-	it("SAOLEI skill body via loadSkillBody matches the SKILL.md body", () => {
-		const diskBody = readSaoleiSkillBodyFromDisk();
-		const runtimeBody = loadSkillBody("saolei");
-		// The inlined constant MUST equal the authored .md body byte-for-byte
-		// (no silent drift). When this fails, regenerate the constant in
-		// skill-loader.ts from the current SKILL.md.
-		expect(runtimeBody).toBe(diskBody);
-	});
-
+describe("SKILL.md format contract (FR-023)", () => {
 	it("SKILL.md frontmatter name matches the folder name (format contract)", () => {
 		// specs/020-agent-resources-layout/contracts/skill-md-format.md:
 		// the frontmatter `name` MUST equal the parent folder name.
