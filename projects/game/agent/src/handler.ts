@@ -32,6 +32,7 @@ import type { Message as MessageProto } from "../game_types/projects/game/Messag
 import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
 import type { TurnContent } from "./llm";
+import type { SinkHandle } from "./operation-bridge";
 import { deriveStatusSignal } from "./status-signal";
 
 /**
@@ -171,18 +172,29 @@ export class Handler implements AgentServiceHandlers {
       };
     };
 
-    // Track sessions whose bridge sink was registered on this stream. The
-    // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
-    const activeSessions = new Set<string>();
+    // Track the sink handle each session installed on this stream, keyed by
+    // session id. cleanupSinks passes the handle to unregisterSink so only
+    // THIS stream's sink is cleared (compare-and-delete); a stale close from
+    // a superseded stream becomes a no-op and cannot clobber a fresh
+    // registration
+    // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1;
+    // specs/021-agent-session-resync/research.md D3).
+    const sessionSinkHandles = new Map<string, SinkHandle>();
     const cleanupSinks = () => {
-      for (const sid of activeSessions) {
+      for (const [sid, handle] of sessionSinkHandles) {
         try {
           const sa = this.sessionAgentStore.getOrCreate(sid);
-          sa.getBridge().unregisterSink();
-        } catch {
+          sa.getBridge().unregisterSink(handle);
+        } catch (err) {
+          // Logged rather than swallowed so a failing unregister stays
+          // observable for tracing/log-based diagnosis (AGENTS.md).
+          warn("cleanupSinks: failed to unregister sink", {
+            sessionId: sid,
+            error: String(err),
+          });
         }
       }
-      activeSessions.clear();
+      sessionSinkHandles.clear();
     };
 
     // Per-turn AbortControllers for sessions with an in-flight generateTurn.
@@ -291,10 +303,10 @@ export class Handler implements AgentServiceHandlers {
         try {
           const sa = this.sessionAgentStore.getOrCreate(sessionId);
 
-          sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
+          const handle = sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
             stream.write(contentEnvelope);
           });
-          activeSessions.add(sessionId);
+          sessionSinkHandles.set(sessionId, handle);
 
           const adapter = await sa.getOrCreateAdapter(
             effectiveProfileName,

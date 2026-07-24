@@ -717,6 +717,34 @@ describe("Handler.Connect bridge lifecycle", () => {
     expect(stream.written.length).toBe(before + 1);
     expect(stream.written[stream.written.length - 1]).toBe(envelope);
   });
+
+  it("forwards the registerSink handle to unregisterSink on stream end", async () => {
+    // T007: cleanupSinks must pass the per-session handle (the value returned
+    // by registerSink) to unregisterSink, so the bridge's compare-and-delete
+    // clears only THIS stream's sink — a stale close cannot clobber a fresh
+    // reconnect's registration
+    // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+    const sentinelHandle = (): void => {};
+    sessionAgentStore._setBinding(
+      "sess-handle",
+      "helpful-assistant",
+      createMockAdapter([{ type: "text", text: "ok" }]),
+    );
+    const agent = sessionAgentStore._getAgent("sess-handle");
+    agent.bridge.registerSink.mockReturnValue(sentinelHandle);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-handle", "hi", "helpful-assistant"));
+    await flush();
+
+    stream.emit("end");
+
+    expect(agent.bridge.unregisterSink).toHaveBeenCalledTimes(1);
+    expect(agent.bridge.unregisterSink).toHaveBeenCalledWith(sentinelHandle);
+  });
 });
 
 // ===========================================================================

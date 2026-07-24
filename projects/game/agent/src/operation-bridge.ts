@@ -47,6 +47,17 @@ const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 export type OperationSink = (frame: AgentFrame) => void;
 
 /**
+ * Opaque identity of a registered sink, returned by registerSink and passed
+ * to unregisterSink for compare-and-delete ownership: a stale close from a
+ * superseded stream must not clobber a fresh registration
+ * (specs/021-agent-session-resync/research.md D3;
+ * specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+ * The handle IS the sink reference, so `===` compares identity without extra
+ * token bookkeeping.
+ */
+export type SinkHandle = OperationSink;
+
+/**
  * Screenshot captured by the desktop alongside a tool result.
  * `data` is a base64-encoded PNG string (raw bytes from the wire are encoded
  * by handleResult before reaching consumers).
@@ -94,24 +105,36 @@ export class OperationBridge {
 
   /**
    * Register the stream write callback.  Called by the Connect handler when a
-   * new bidi stream opens.  Replaces any previously registered sink.
+   * new bidi stream opens.  Replaces any previously registered sink and
+   * returns a handle identifying this installation; the caller stores the
+   * handle per session and passes it to unregisterSink so a stale close from
+   * a superseded stream is a no-op (compare-and-delete).
    */
-  registerSink(writeFn: OperationSink): void {
+  registerSink(writeFn: OperationSink): SinkHandle {
     this.sink = writeFn;
     info("operation bridge sink registered");
+    return writeFn;
   }
 
   /**
-   * Clear the registered sink.  Called by the Connect handler on stream end
-   * or error.  In-flight dispatches whose per-turn AbortController fires
-   * resolve immediately with FAILED "aborted"; the 5s timeout remains as a
-   * fallback for dispatches without a signal.
+   * Clear the registered sink, but only when `handle` identifies the
+   * currently-registered sink (compare-and-delete).  A stale close from a
+   * stream whose sink was already superseded is a no-op, so it cannot clobber
+   * a fresh registration (specs/021-agent-session-resync/research.md D3;
+   * specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+   * Omitting `handle` is likewise a no-op: `this.sink` is never undefined
+   * (null or a function), so it never equals undefined.  In-flight dispatches
+   * on a closing stream still resolve FAILED "aborted" via the per-turn
+   * AbortController; the 5s timeout remains the fallback for dispatches
+   * without a signal.
    */
-  unregisterSink(): void {
-    this.sink = null;
-    info("operation bridge sink unregistered", {
-      pendingCount: this.pending.size,
-    });
+  unregisterSink(handle?: SinkHandle): void {
+    if (this.sink === handle) {
+      this.sink = null;
+      info("operation bridge sink unregistered", {
+        pendingCount: this.pending.size,
+      });
+    }
   }
 
   /**

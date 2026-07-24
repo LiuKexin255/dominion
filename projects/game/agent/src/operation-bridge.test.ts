@@ -87,11 +87,12 @@ describe("OperationBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Required scenario 3: unregister mid-dispatch → timeout → FAILED
+  // Required scenario 3: unregister with the current handle mid-dispatch
+  // clears the sink; the pending dispatch then times out → FAILED.
   // ------------------------------------------------------------------
-  it("unregister mid-dispatch → timeout → FAILED", async () => {
+  it("unregister with current handle mid-dispatch → timeout → FAILED", async () => {
     const written: unknown[] = [];
-    bridge.registerSink((frame) => {
+    const handle = bridge.registerSink((frame) => {
       written.push(frame);
     });
 
@@ -100,13 +101,87 @@ describe("OperationBridge", () => {
 
     expect(written).toHaveLength(1);
 
-    bridge.unregisterSink();
+    bridge.unregisterSink(handle);
 
     await vi.advanceTimersByTimeAsync(5_000);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 2 (quickstart): sink compare-and-delete prevents a
+  // stale stream close from clobbering a fresh registration
+  // (specs/021-agent-session-resync/quickstart.md Scenario 2;
+  //  specs/021-agent-session-resync/research.md D3).
+  // ------------------------------------------------------------------
+  it("stale unregister(handleA) after B superseded A leaves sink=B; dispatch routes via B (not FAILED)", async () => {
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    const handleA = bridge.registerSink(sinkA);
+    bridge.registerSink(sinkB); // stream-B supersedes stream-A
+
+    // stream-A's late close arrives with its stale handle: compare-and-delete
+    // must be a no-op so it cannot null the fresh sink-B.
+    bridge.unregisterSink(handleA);
+
+    // sink-B is still the live sink: dispatch writes through B and resolves
+    // via it, rather than resolving FAILED "desktop disconnected" (which
+    // would mean the sink had been clobbered to null).
+    const promise = bridge.dispatch(makeMovePart());
+
+    expect(sinkA).not.toHaveBeenCalled();
+    expect(sinkB).toHaveBeenCalledOnce();
+
+    const frame = sinkB.mock.calls[0]![0] as {
+      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+    };
+    const toolId = frame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
+  });
+
+  it("unregister with current handle clears the sink; subsequent dispatch FAILED 'desktop disconnected'", async () => {
+    const sinkB = vi.fn();
+    const handleB = bridge.registerSink(sinkB);
+
+    bridge.unregisterSink(handleB);
+
+    const result = await bridge.dispatch(makeMovePart());
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("desktop disconnected");
+    expect(sinkB).not.toHaveBeenCalled();
+  });
+
+  it("unregisterSink() with no handle is a no-op: sink stays live", async () => {
+    // unregisterSink(handle?) JSDoc: omitting handle is a no-op because
+    // `this.sink` is never undefined (null or a function), so
+    // `this.sink === undefined` is always false (operation-bridge.ts
+    // unregisterSink). A call site that forgets the handle must NOT clear a
+    // live registration.
+    const sink = vi.fn();
+    bridge.registerSink(sink);
+
+    bridge.unregisterSink();
+
+    // Sink is still registered: dispatch routes through it and resolves via
+    // handleResult, rather than FAILED "desktop disconnected".
+    const promise = bridge.dispatch(makeMovePart());
+    expect(sink).toHaveBeenCalledOnce();
+
+    const frame = sink.mock.calls[0]![0] as {
+      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+    };
+    const toolId = frame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
   });
 
   // ------------------------------------------------------------------
