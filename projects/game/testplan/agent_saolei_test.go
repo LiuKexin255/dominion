@@ -131,3 +131,105 @@ func TestAgentSaoleiMcpToolFlow(t *testing.T) {
 		t.Errorf("final text = %q, want to contain the saolei completion text", frameText(textFrame))
 	}
 }
+
+// TestAgentSaoleiUpdateDisplayResult verifies that saolei_update — an
+// agent-internal tool that resolves server-side with no desktop operation —
+// forwards a display-only ToolResultPart to the stream via pushResult. The
+// forwarded part carries SUCCEEDED on acceptance and a self-descriptive
+// message; the frame is a content frame (sender=SYSTEM) that carries no
+// operation Part (no keyboardPress / mouseMoveAndClick), so the desktop renders
+// it without executing any input action.
+// (specs/021-agent-session-resync/spec.md US3 / SC-003;
+// specs/021-agent-session-resync/quickstart.md Scenario 5;
+// specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §2;
+// specs/021-agent-session-resync/data-model.md §3).
+func TestAgentSaoleiUpdateDisplayResult(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("saolei-update-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate minesweeper via saolei tools.",
+			McpNames:     saoleiMcpNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// given: drive the init→click chain so the model reaches saolei_update.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+
+	initFrame := readOperationFrame(t, conn)
+	respondToOperation(t, conn, sessionID, initFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started")
+
+	clickFrame := readOperationFrame(t, conn)
+	respondToOperation(t, conn, sessionID, clickFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cell revealed")
+
+	// when: saolei_update resolves server-side; the agent forwards a
+	// display-only ToolResultPart via pushResult (sender=SYSTEM, per
+	// channel-contract §2 / data-model §3). Drain for a SYSTEM-sent content
+	// frame whose ToolResultPart message names saolei_update. This frame is
+	// NOT an operation Part — pushResult writes a ToolResultPart, never a
+	// keyboardPress/mouseMoveAndClick.
+	updateResultFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		if f.GetContent() == nil || f.GetSender() != game.FrameSender_FRAME_SENDER_SYSTEM {
+			return false
+		}
+		for _, p := range f.GetContent().GetParts() {
+			if tr := p.GetToolResult(); tr != nil &&
+				strings.Contains(strings.ToLower(tr.GetMessage()), "saolei_update") {
+				return true
+			}
+		}
+		return false
+	})
+
+	// then: the display-only result arrived with SUCCEEDED status.
+	if updateResultFrame == nil {
+		t.Fatal("saolei_update did not forward a display-only ToolResultPart on the stream")
+	}
+	var updateResult *game.ToolResultPart
+	for _, p := range updateResultFrame.GetContent().GetParts() {
+		if tr := p.GetToolResult(); tr != nil {
+			updateResult = tr
+			break
+		}
+	}
+	if updateResult == nil {
+		t.Fatal("saolei_update frame has no ToolResultPart")
+	}
+	if updateResult.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED {
+		t.Errorf("saolei_update display result status = %v, want SUCCEEDED", updateResult.GetStatus())
+	}
+	t.Logf("saolei_update display result: %q (status=%v)",
+		updateResult.GetMessage(), updateResult.GetStatus())
+
+	// then: the forwarded frame is display-only — it carries no operation
+	// Part (no keyboardPress, no mouseMoveAndClick) so the desktop performs no
+	// input action for it (FR-010 / SC-003).
+	if frameOperationToolID(updateResultFrame) != "" {
+		t.Errorf("saolei_update display frame carries an operation Part (tool_id=%s) — expected display-only",
+			frameOperationToolID(updateResultFrame))
+	}
+
+	// The model then emits the final text, proving the init→click→update
+	// chain completed and the connection remains usable.
+	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
+		t.Fatal("did not receive a final text frame after saolei_update display result")
+	}
+	if !strings.Contains(frameText(textFrame), "Minesweeper sequence complete.") {
+		t.Errorf("final text = %q, want to contain the saolei completion text", frameText(textFrame))
+	}
+}

@@ -339,6 +339,25 @@ func getAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.Agen
 	return agent
 }
 
+// refreshAgent triggers the agent's RefreshAgent RPC for a session via HTTP
+// POST to /api/v1/sessions/{sessionID}/agent:refresh (game.proto
+// RefreshAgent http rule). The body is "{}" — the `name` field is captured
+// from the URI path by grpc-gateway (mirroring
+// projects/game/desktop/internal/api/client.go RefreshAgent). Calls t.Fatal
+// on non-2xx responses. After refresh the session agent's adapter is
+// invalidated so the next turn rebuilds it for the supplied profile
+// (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2).
+func refreshAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%ssessions/%s/agent:refresh", sutHostURL, pathPrefix, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		t.Fatalf("POST refreshAgent status=%d, body=%s", resp.StatusCode, respBody)
+	}
+}
+
 // ─── Message Helpers (proto-based) ────────────────────────────────────────
 
 // listMessages sends a GET request to list messages for a session and returns
@@ -439,6 +458,23 @@ func buildTextFrame(sessionID, agentProfileName, content string, sender game.Fra
 func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentProfileName, text string) {
 	t.Helper()
 	frame := buildTextFrame(sessionID, agentProfileName, text, game.FrameSender_FRAME_SENDER_USER)
+	writeWSFrame(t, conn, frame)
+}
+
+// sendStatusFrame writes a status-ping AgentFrame over the WebSocket with the
+// given StatusSignalStatus. The desktop sends this on session (re-)entry to
+// probe the agent's working state; the agent responds with a derived
+// StatusSignal (ACTIVE/IDLE/UNSPECIFIED)
+// (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
+func sendStatusFrame(t *testing.T, conn *websocket.Conn, sessionID string, status game.StatusSignalStatus) {
+	t.Helper()
+	frame := &game.AgentFrame{
+		SessionId: sessionID,
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_Status{
+			Status: &game.StatusSignal{Status: status},
+		},
+	}
 	writeWSFrame(t, conn, frame)
 }
 

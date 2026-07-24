@@ -81,10 +81,12 @@ func TestConnectWithoutCreate(t *testing.T) {
 	})
 }
 
-// TestProfileSwitchMidConnection verifies that switching the agent profile mid-
-// connection works: sending a frame with profile A activates adapter A, then
-// sending a frame with profile B switches to adapter B. History is shared
-// across profiles (both adapters see prior messages).
+// TestProfileSwitchMidConnection verifies that a profile switch mid-connection
+// requires Refresh: a turn under profile A binds adapter A; a subsequent turn
+// under profile B WITHOUT Refresh is rejected by the profile guard (Warn +
+// Wait). After Refresh, profile B's turn is accepted and rebuilds the adapter
+// for B (specs/021-agent-session-resync/quickstart.md Scenario 7 /
+// spec.md US4 / SC-004).
 func TestProfileSwitchMidConnection(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -115,7 +117,7 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
 	defer conn.Close()
 
-	// Turn 1: profile A
+	// given: profile A turn binds adapter A.
 	sendTextWithProfile(t, conn, sessionID, profileAName, "Message with profile A")
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	textRespA := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
@@ -123,15 +125,39 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 		t.Fatal("profile A: no text response")
 	}
 	t.Logf("profile A response: %q", frameText(textRespA))
+	// Drain the turn-completion Wait so the buffer is clean for the next turn.
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
 
-	// Turn 2: profile B — should switch adapter without creating a new one.
+	// when: profile B turn WITHOUT Refresh — the guard must reject it.
 	sendTextWithProfile(t, conn, sessionID, profileBName, "Message with profile B")
+
+	// then: a WarnSignal naming the mismatch, then a WaitSignal returning the
+	// desktop to ready (data-model.md §5 / lifecycle-contract §3).
+	warnFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return f.GetWarn() != nil && strings.Contains(f.GetWarn().GetMessage(), "profile mismatch")
+	})
+	if warnFrame == nil {
+		t.Fatal("profile B without Refresh: expected a WarnSignal with profile mismatch")
+	}
+	t.Logf("profile mismatch warn: %q", warnFrame.GetWarn().GetMessage())
+	waitAfterWarn := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return f.GetWait() != nil
+	})
+	if waitAfterWarn == nil {
+		t.Fatal("profile B without Refresh: expected a WaitSignal after the Warn")
+	}
+
+	// when: Refresh then profile B turn — the adapter rebuilds for B.
+	refreshAgent(t, sutHostURL, sutEnvName, sessionID)
+	sendTextWithProfile(t, conn, sessionID, profileBName, "Message with profile B")
+
+	// then: profile B turn succeeds with a text response.
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if textRespB == nil {
-		t.Fatal("profile B: no text response")
+		t.Fatal("profile B after Refresh: no text response")
 	}
-	t.Logf("profile B response: %q", frameText(textRespB))
+	t.Logf("profile B response after Refresh: %q", frameText(textRespB))
 
 	// Verify history is shared across profiles.
 	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
@@ -298,4 +324,231 @@ func TestDisconnectReconnectHistory(t *testing.T) {
 	if !foundSecond {
 		t.Errorf("second user message %q not found in ListMessages", messages[1])
 	}
+}
+
+// TestProfileGuardRejectsMismatch verifies the profile guard's core contract:
+// after a session is bound to profile A, a turn carrying profile B is rejected
+// (Warn + Wait, non-fatal), and a subsequent turn carrying profile A (the bound
+// profile) is accepted normally. This covers spec US4 acceptance — the
+// rejection is non-fatal and does not block later matching turns
+// (specs/021-agent-session-resync/spec.md US4 acceptance scenario 2;
+// specs/021-agent-session-resync/quickstart.md Scenario 7 mismatch part).
+func TestProfileGuardRejectsMismatch(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileAName := fmt.Sprintf("life-guard-a-%s", uniqueSuffix())
+	profileBName := fmt.Sprintf("life-guard-b-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileAName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile A.",
+			Enabled:      true,
+		},
+	})
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileBName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are profile B.",
+			Enabled:      true,
+		},
+	})
+
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// given: a turn under profile A binds the adapter.
+	sendTextWithProfile(t, conn, sessionID, profileAName, "Message with profile A")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) }) == nil {
+		t.Fatal("profile A: no text response (adapter did not bind)")
+	}
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+
+	// when: a turn under profile B arrives without Refresh.
+	sendTextWithProfile(t, conn, sessionID, profileBName, "Message with profile B")
+
+	// then: the guard rejects it — WarnSignal naming the mismatch, then a
+	// WaitSignal returning the desktop to ready (FR-012a/FR-012b).
+	warnFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return f.GetWarn() != nil && strings.Contains(f.GetWarn().GetMessage(), "profile mismatch")
+	})
+	if warnFrame == nil {
+		t.Fatal("expected a WarnSignal with profile mismatch for the profile B turn")
+	}
+	t.Logf("mismatch warn: %q", warnFrame.GetWarn().GetMessage())
+	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil }) == nil {
+		t.Fatal("expected a WaitSignal after the mismatch Warn")
+	}
+
+	// then: a subsequent turn under profile A (the bound profile) is accepted
+	// normally — the rejection did not block later matching turns (SC-004).
+	sendTextWithProfile(t, conn, sessionID, profileAName, "Second message with profile A")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) }) == nil {
+		t.Fatal("profile A after mismatch rejection: no text response (guard blocked a matching turn)")
+	}
+}
+
+// lifecycleMouseMoveSuccessText is the terminal text fake-LLM returns once the
+// mouse_move tool-result loop closes (sample_tools.yaml mouse-move-success-text).
+const lifecycleMouseMoveSuccessText = "I see the screen now."
+
+// TestStatusPingPong verifies the agent's status ping-pong: a status probe
+// returns IDLE when no turn is in-flight (adapter bound), and ACTIVE while a
+// turn is in-flight (dispatch blocked awaiting a desktop operation result).
+//
+// The ACTIVE case uses a mouse_move tool_call turn whose OperationBridge
+// dispatch blocks the turn until the test (playing desktop) replies with a
+// ToolResultPart. While the dispatch is pending the per-session turn mutex is
+// held, so a status probe observed AFTER reading the operation frame is
+// deterministic — there is no race window where the turn might complete before
+// the probe is processed
+// (specs/021-agent-session-resync/spec.md US1 / SC-001;
+// specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1;
+// specs/021-agent-session-resync/quickstart.md Scenario 6).
+func TestStatusPingPong(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("life-status-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a status test agent.",
+			ToolNames:    []string{"mouse_move", "mouse_click"},
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// given: run a text turn to completion so the adapter is bound and no
+	// turn is in-flight.
+	sendTextWithProfile(t, conn, sessionID, profileName, "hello")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+
+	// when: probe the status while idle. then: the response is IDLE.
+	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	idleResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return f.GetStatus() != nil
+	})
+	if idleResp == nil {
+		t.Fatal("did not receive a status response while idle")
+	}
+	if idleResp.GetStatus().GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("idle status = %v, want IDLE", idleResp.GetStatus().GetStatus())
+	}
+	t.Logf("idle status probe: %v", idleResp.GetStatus().GetStatus())
+
+	// when: start a mouse_move turn; reading the dispatched operation frame
+	// proves the turn is in-flight and blocked awaiting the desktop result
+	// (the per-session mutex is held for the entire dispatch wait).
+	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
+	opFrame := readOperationFrame(t, conn)
+
+	// then: a status probe while the turn is in-flight returns ACTIVE.
+	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
+	activeResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return f.GetStatus() != nil
+	})
+	if activeResp == nil {
+		t.Fatal("did not receive a status response while a turn is in-flight")
+	}
+	if activeResp.GetStatus().GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE {
+		t.Errorf("in-flight status = %v, want ACTIVE", activeResp.GetStatus().GetStatus())
+	}
+	t.Logf("in-flight status probe: %v", activeResp.GetStatus().GetStatus())
+
+	// Complete the turn so the connection settles: reply SUCCEEDED (the
+	// message avoids "button"/"out of bounds" so fake-LLM closes the loop
+	// with terminal text) and drain the final text.
+	respondToOperation(t, conn, sessionID, opFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
+		t.Fatal("did not receive a final text frame after the in-flight turn")
+	}
+	if !strings.Contains(frameText(textFrame), lifecycleMouseMoveSuccessText) {
+		t.Errorf("final text = %q, want to contain %q", frameText(textFrame), lifecycleMouseMoveSuccessText)
+	}
+	t.Logf("in-flight turn completed: %q", frameText(textFrame))
+}
+
+// TestReconnectDispatchReliability verifies that an operation dispatch succeeds
+// after a WebSocket disconnect/reconnect cycle: the stream-scoped sink
+// (compare-and-delete) ensures the closing stream's cleanup cannot clobber the
+// fresh reconnect's sink, so a tool dispatch on the new connection resolves
+// SUCCEEDED rather than FAILED "desktop disconnected"
+// (specs/021-agent-session-resync/spec.md US2 / SC-002 / SC-005;
+// specs/021-agent-session-resync/quickstart.md Scenario 6;
+// specs/021-agent-session-resync/research.md D3).
+func TestReconnectDispatchReliability(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("life-reconnect-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a reconnect test agent.",
+			ToolNames:    []string{"mouse_move", "mouse_click"},
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// given: connect, run a turn whose operation dispatches, complete it.
+	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sendTextWithProfile(t, conn1, sessionID, profileName, "please move the mouse now")
+	opFrame1 := readOperationFrame(t, conn1)
+	respondToOperation(t, conn1, sessionID, opFrame1,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasText(f) })
+
+	// when: disconnect then reconnect.
+	conn1.Close()
+	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn2.Close()
+
+	// then: a new turn on the reconnected stream dispatches its operation
+	// and the dispatch resolves SUCCEEDED (not FAILED "desktop disconnected").
+	// The operation frame arriving on conn2 proves the fresh sink is live;
+	// the subsequent text proves the dispatch result was correlated correctly.
+	sendTextWithProfile(t, conn2, sessionID, profileName, "please move the mouse now")
+	opFrame2 := readOperationFrame(t, conn2)
+	t.Logf("reconnect dispatch: operation frame received on conn2 (tool_id=%s)",
+		frameOperationToolID(opFrame2))
+
+	respondToOperation(t, conn2, sessionID, opFrame2,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+
+	textFrame := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
+		t.Fatal("reconnect dispatch: no text frame after SUCCEEDED — dispatch did not resolve on the fresh stream")
+	}
+	if !strings.Contains(frameText(textFrame), lifecycleMouseMoveSuccessText) {
+		t.Errorf("reconnect dispatch: final text = %q, want to contain %q",
+			frameText(textFrame), lifecycleMouseMoveSuccessText)
+	}
+	t.Logf("reconnect dispatch succeeded: %q", frameText(textFrame))
 }
