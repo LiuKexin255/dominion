@@ -34,6 +34,7 @@ import type { SessionAgentStore } from "./session-agent";
 import type { TurnContent } from "./llm";
 import type { SinkHandle } from "./operation-bridge";
 import { deriveStatusSignal } from "./status-signal";
+import { shouldRejectProfile } from "./profile-guard";
 
 /**
  * FrameSender enum values (proto string literals). Defined locally rather
@@ -273,13 +274,57 @@ export class Handler implements AgentServiceHandlers {
           .join("");
         const imagePart = parts.map((p: Part) => p.image).find(Boolean);
 
+        // Adapter state is read once and reused by both the empty⇒bound
+        // fallback below and the profile-name guard.
+        const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+        const state = sessionAgent.getAdapterState();
+
         let effectiveProfileName = frame.agentProfileName ?? "";
         if (!effectiveProfileName) {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
-          const state = sa.getAdapterState();
           if (state.isBound && state.activeProfileName) {
             effectiveProfileName = state.activeProfileName;
           }
+        }
+
+        // Profile-name guard: reject a mismatched turn before it acquires the
+        // mutex or invokes the adapter. Non-fatal — it only reads state and
+        // writes frames, so it cannot panic the session agent or block a later
+        // turn. The WarnSignal names the bound vs received profile and the
+        // WaitSignal returns the desktop to ready (clears its typing
+        // indicator)
+        // (specs/021-agent-session-resync/data-model.md §5;
+        // specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §3;
+        // specs/021-agent-session-resync/research.md D7).
+        if (
+          shouldRejectProfile(
+            state.activeProfileName,
+            state.isBound,
+            effectiveProfileName,
+          )
+        ) {
+          const boundProfile = state.activeProfileName ?? "";
+          warn("profile mismatch: rejecting turn before mutex", {
+            sessionId,
+            boundProfile,
+            receivedProfile: effectiveProfileName,
+          });
+          const warnFrame: AgentFrame = buildFrame(
+            sessionId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              warn: {
+                message: `profile mismatch: session bound to '${boundProfile}' but turn targets '${effectiveProfileName}'; call Refresh to switch profiles`,
+              },
+            },
+          );
+          stream.write(warnFrame);
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            { agentProfileName: effectiveProfileName, wait: {} },
+          );
+          stream.write(waitFrame);
+          return;
         }
 
         if (!effectiveProfileName) {
@@ -294,6 +339,17 @@ export class Handler implements AgentServiceHandlers {
             },
           );
           stream.write(warnFrame);
+          // Return the desktop to ready: a WarnSignal alone would leave the
+          // typing indicator stuck after this rejection. The WaitSignal clears
+          // it so the operator can immediately retry
+          // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §3;
+          // specs/021-agent-session-resync/tasks.md — note on the latent gap).
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            { agentProfileName: effectiveProfileName, wait: {} },
+          );
+          stream.write(waitFrame);
           return;
         }
 
@@ -301,14 +357,12 @@ export class Handler implements AgentServiceHandlers {
         const controller = new AbortController();
         activeTurns.set(sessionId, controller);
         try {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
-
-          const handle = sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
+          const handle = sessionAgent.getBridge().registerSink((contentEnvelope: AgentFrame) => {
             stream.write(contentEnvelope);
           });
           sessionSinkHandles.set(sessionId, handle);
 
-          const adapter = await sa.getOrCreateAdapter(
+          const adapter = await sessionAgent.getOrCreateAdapter(
             effectiveProfileName,
             () => this.promptClient.getProfile(effectiveProfileName),
           );

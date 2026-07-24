@@ -2,10 +2,14 @@
  * session-agent.ts — Per-session agent adapter lifecycle management.
  *
  * Each SessionAgent owns exactly one AgentAdapter.  The adapter is created
- * on first bind (or recreated on profile switch).  The adapter factory
- * receives a lazy getProvider callback so test factories can skip provider
- * creation entirely.  Old adapters are dereferenced synchronously; their
- * optional cleanup hook runs asynchronously via setImmediate.
+ * on first bind and rebuilt only via Refresh (invalidateAdapter).  A bound
+ * adapter is served cached for every turn; the profile-name guard
+ * (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §3)
+ * ensures a mismatched turn never reaches it, so there is no implicit
+ * per-turn switch.  The adapter factory receives a lazy getProvider callback
+ * so test factories can skip provider creation entirely.  Old adapters are
+ * dereferenced synchronously; their optional cleanup hook runs
+ * asynchronously via setImmediate.
  */
 
 import { info } from "@dominion/common-js-logs";
@@ -55,7 +59,10 @@ export class SessionAgent {
     profileName: string,
     profileFetcher: ProfileFetcher,
   ): Promise<AgentAdapter> {
-    if (this.adapter && this.activeProfileName === profileName) {
+    if (this.adapter) {
+      // Cached — serve. Profile match is ensured upstream by the turn-entry
+      // guard; Refresh (invalidateAdapter) is the sole rebuild path
+      // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2).
       return this.adapter;
     }
     return this.serializeBind(profileName, profileFetcher);
@@ -110,19 +117,16 @@ export class SessionAgent {
     await prev;
 
     try {
-      if (this.adapter && this.activeProfileName === profileName) {
-        return this.adapter;
-      }
-
+      // A concurrent bind may have populated the adapter while we waited on
+      // the lock; return the cached instance rather than rebuilding. With
+      // getOrCreateAdapter returning the cache before calling serializeBind
+      // and the turn-entry guard blocking mismatched profiles, Refresh
+      // (invalidateAdapter) is the sole rebuild path — there is no implicit
+      // per-turn switch to clean up here.
+      // (specs/021-agent-session-resync/data-model.md §4;
+      // specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2)
       if (this.adapter) {
-        const old = this.adapter;
-        const oldProfile = this.activeProfileName;
-        this.adapter = null;
-        this.activeProfileName = null;
-        setImmediate(() => {
-          old.cleanup?.();
-          info("old adapter cleaned up", { oldProfile });
-        });
+        return this.adapter;
       }
 
       const profile = await profileFetcher();

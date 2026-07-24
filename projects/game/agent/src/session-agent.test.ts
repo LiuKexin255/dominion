@@ -1,9 +1,12 @@
 /**
  * session-agent.test.ts — Tests for SessionAgent and SessionAgentStore.
  *
- * Covers: on-demand adapter creation, same-profile reuse, profile switching
- * with async cleanup, A→B→A new-instance guarantee, getAdapterState, and
- * SessionAgentStore per-session isolation.
+ * Covers: on-demand adapter creation, same-profile reuse, cached-adapter
+ * behaviour under a differing profile (no implicit switch), rebuild after
+ * Refresh (invalidateAdapter), getAdapterState, and SessionAgentStore
+ * per-session isolation
+ * (specs/021-agent-session-resync/quickstart.md Scenario 4;
+ * specs/021-agent-session-resync/data-model.md §4).
  */
 
 import { MemorySaver } from "@langchain/langgraph";
@@ -100,31 +103,50 @@ describe("SessionAgent", () => {
     expect(created).toHaveLength(1);
   });
 
-  it("creates new adapter on profile switch and cleans up old", async () => {
+  it("returns cached adapter for a differing profile (no implicit switch)", async () => {
     const { factory, created } = createMockAdapterFactory();
     const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
 
     const aliceAdapter = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
+    // A differing profile name MUST NOT rebuild — the cached adapter is
+    // served as-is (Refresh is the sole rebuild path; the turn-entry guard
+    // ensures a bound adapter is never asked to serve a mismatched profile).
+    const fetcherBob = vi.fn(profileFetcherFor("bob"));
+    const bobResult = await agent.getOrCreateAdapter("bob", fetcherBob);
+
+    expect(bobResult).toBe(aliceAdapter);
+    expect(created).toHaveLength(1);
+    // The differing-profile fetcher is never exercised (no rebuild).
+    expect(fetcherBob).not.toHaveBeenCalled();
+    expect(agent.getAdapterState().activeProfileName).toBe("alice");
+  });
+
+  it("builds a new adapter after invalidateAdapter (Refresh) and cleans up old", async () => {
+    const { factory, created } = createMockAdapterFactory();
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
+
+    const aliceAdapter = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
+    expect(agent.getAdapterState()).toEqual({
+      activeProfileName: "alice",
+      isBound: true,
+    });
+
+    agent.invalidateAdapter();
+    expect(agent.getAdapterState()).toEqual({
+      activeProfileName: null,
+      isBound: false,
+    });
+
+    // Post-Refresh, the next getOrCreateAdapter rebuilds for the new profile.
     const bobAdapter = await agent.getOrCreateAdapter("bob", profileFetcherFor("bob"));
 
     expect(bobAdapter).not.toBe(aliceAdapter);
     expect(created).toHaveLength(2);
     expect(agent.getAdapterState().activeProfileName).toBe("bob");
 
+    // invalidateAdapter schedules async cleanup of the dropped adapter.
     await new Promise((r) => setImmediate(r));
     expect(aliceAdapter.cleanup).toHaveBeenCalled();
-  });
-
-  it("A→B→A creates new adapter for A each time", async () => {
-    const { factory, created } = createMockAdapterFactory();
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-test");
-
-    const aliceFirst = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
-    await agent.getOrCreateAdapter("bob", profileFetcherFor("bob"));
-    const aliceSecond = await agent.getOrCreateAdapter("alice", profileFetcherFor("alice"));
-
-    expect(aliceSecond).not.toBe(aliceFirst);
-    expect(created).toHaveLength(3);
   });
 
   it("returns null adapter and unbound state before first bind", () => {

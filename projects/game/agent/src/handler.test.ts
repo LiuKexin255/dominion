@@ -378,7 +378,7 @@ describe("Handler.Connect missing profile name", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("returns warn frame when profile name is missing and no adapter is bound", async () => {
+  it("returns warn + wait frames when profile name is missing and no adapter is bound", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -386,7 +386,10 @@ describe("Handler.Connect missing profile name", () => {
     stream.emit("data", userContentFrame("sess-missing", "hello"));
     await flush();
 
-    expect(stream.written).toHaveLength(1);
+    // WarnSignal (the rejection) followed by a WaitSignal so the desktop's
+    // typing indicator clears and the operator can retry
+    // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §3).
+    expect(stream.written).toHaveLength(2);
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(f0.payload).toBe("warn");
@@ -394,6 +397,13 @@ describe("Handler.Connect missing profile name", () => {
     expect((f0.warn as Record<string, unknown>).message).toContain(
       "agent_profile_name",
     );
+
+    const f1 = stream.written[1] as Record<string, unknown>;
+    expect(f1.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(f1.payload).toBe("wait");
+    expect(f1.wait).toBeDefined();
+    // No profile name on this path → agentProfileName is the empty string.
+    expect(f1.agentProfileName).toBe("");
   });
 
   it("does NOT call getOrCreateAdapter when profile is missing", async () => {
@@ -468,11 +478,14 @@ describe("Handler.Connect profile switch", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — failed profile switch does not corrupt history
+// Tests: Connect — profile-name guard rejects a mismatched turn (non-fatal)
+// (specs/021-agent-session-resync/quickstart.md Scenario 3;
+// specs/021-agent-session-resync/data-model.md §5;
+// specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §3)
 // ===========================================================================
 
-describe("Handler.Connect failed profile switch", () => {
-  it("emits warn frame and does not call generateTurn when profile not found", async () => {
+describe("Handler.Connect profile-name guard", () => {
+  it("rejects a mismatched turn with warn+wait and never invokes the adapter", async () => {
     const promptClient = createMockPromptClient({
       "valid-profile": {
         model: "model-x",
@@ -486,19 +499,25 @@ describe("Handler.Connect failed profile switch", () => {
     const sessionAgentStore = createMockSessionAgentStore();
     const agent = sessionAgentStore._getAgent("sess-fail");
 
-    agent.getOrCreateAdapter
-      .mockResolvedValueOnce(adapter)
-      .mockRejectedValueOnce(new Error("Agent profile not found: nonexistent-profile"));
-
+    // The adapter is bound once for the matching turn; a later mismatched
+    // turn MUST NOT reach getOrCreateAdapter (the guard rejects it first).
+    agent.getOrCreateAdapter.mockResolvedValue(adapter);
     agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
 
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
+    // Matching turn proceeds normally.
     stream.emit("data", userContentFrame("sess-fail", "hello", "valid-profile"));
     await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].content.text).toBe("hello");
 
+    // Isolate the mismatched turn's output from the matching turn's frames.
+    stream.written.length = 0;
+
+    // Mismatched turn: bound to "valid-profile" but targets "nonexistent-profile".
     stream.emit("data", userContentFrame("sess-fail", "switch me", "nonexistent-profile"));
     await flush();
 
@@ -509,10 +528,30 @@ describe("Handler.Connect failed profile switch", () => {
     expect(
       ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
         .message,
-    ).toContain("Agent profile not found");
+    ).toContain("profile mismatch");
+    expect(
+      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
+        .message,
+    ).toContain("valid-profile");
+    expect(
+      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
+        .message,
+    ).toContain("nonexistent-profile");
 
+    // The WaitSignal returns the desktop to ready (clears the typing indicator).
+    const waitFrames = stream.written.filter(
+      (f) => (f as Record<string, unknown>).payload === "wait",
+    );
+    expect(waitFrames).toHaveLength(1);
+    expect(
+      (waitFrames[0] as Record<string, unknown>).agentProfileName,
+    ).toBe("nonexistent-profile");
+
+    // The mismatched turn never acquired the mutex / invoked the adapter:
+    // generateTurn was still called only once (the matching turn), and
+    // getOrCreateAdapter was called only once.
     expect(calls).toHaveLength(1);
-    expect(calls[0].content.text).toBe("hello");
+    expect(agent.getOrCreateAdapter).toHaveBeenCalledTimes(1);
   });
 });
 
