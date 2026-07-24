@@ -57,7 +57,7 @@ The feature design docs are required reading for every code phase (Constitution 
 - 官方文档：[Wails v2 — Application Development (Bindings)](https://wails.io/docs/guides/application-development)（`Bind` 暴露 `*App` 公有方法为 `window.go.main.App.<method>`）
 - 技术文章：无
 
-- [ ] T002 Declare the debug control-plane binding surface in `projects/game/desktop/frontend/src/api.ts`: add `SetDebugMode(enabled: boolean): Promise<void>` and `ConfirmToolResult(toolID: string): Promise<void>` to the `WailsApp` interface, and add `export async function setDebugMode(enabled: boolean)` / `export async function confirmToolResult(toolID: string)` wrappers following the existing `app()` / `window.go.main.App` pattern (per `contracts/debug-control-plane.md` §1). TS-only; the Go methods are implemented in their story phases, so runtime calls are not made until then.
+- [X] T002 Declare the debug control-plane binding surface in `projects/game/desktop/frontend/src/api.ts`: add `SetDebugMode(enabled: boolean): Promise<void>` and `ConfirmToolResult(toolID: string): Promise<void>` to the `WailsApp` interface, and add `export async function setDebugMode(enabled: boolean)` / `export async function confirmToolResult(toolID: string)` wrappers following the existing `app()` / `window.go.main.App` pattern (per `contracts/debug-control-plane.md` §1). TS-only; the Go methods are implemented in their story phases, so runtime calls are not made until then.
 
 **Checkpoint**: Binding surface declared; frontend typechecks.
 
