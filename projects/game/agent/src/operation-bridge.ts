@@ -31,8 +31,12 @@ import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMov
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
-/** Maximum wait time (ms) for a tool result before timing out. */
-const DISPATCH_TIMEOUT_MS = 5_000;
+// Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
+// to 20 min as a safety-net backstop: the desktop's 15-min auto-continue
+// (specs/022-desktop-debug-mode spec.md FR-013) always fires first under debug
+// usage, so under normal operation this longer timeout stays dormant
+// (specs/022-desktop-debug-mode spec.md FR-014, research.md D6).
+const DISPATCH_TIMEOUT_MS = 1_200_000;
 
 /** String literal values for ToolResultStatus (proto enum). */
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
@@ -134,7 +138,7 @@ export class OperationBridge {
    * Omitting `handle` is likewise a no-op: `this.sink` is never undefined
    * (null or a function), so it never equals undefined.  In-flight dispatches
    * on a closing stream still resolve FAILED "aborted" via the per-turn
-   * AbortController; the 5s timeout remains the fallback for dispatches
+   * AbortController; the 20-min timeout remains the fallback for dispatches
    * without a signal.
    */
   unregisterSink(handle?: SinkHandle): void {
@@ -156,7 +160,7 @@ export class OperationBridge {
    * is registered (desktop disconnected), resolves FAILED immediately rather
    * than throwing.  When the optional `signal` is already aborted, or aborts
    * while the dispatch is pending, resolves FAILED "aborted" immediately —
-   * abort is a third race participant alongside the 5s timeout and
+   * abort is a third race participant alongside the 20-min timeout and
    * handleResult, whichever fires first wins.
    *
    * Spec 018-saolei-mcp FR-004a/b: `KeyboardPressPart` (F2 new game) and

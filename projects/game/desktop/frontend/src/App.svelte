@@ -22,6 +22,7 @@
     openChatStream,
     closeChatStream,
     setDebugMode,
+    confirmToolResult,
   } from './api'
   import { openChatEventSource, makeDeduper } from './chat-stream'
   import type { ChunkState, Deduper } from './chat-stream'
@@ -82,6 +83,13 @@
   // the flag and mirrors it to the Go backend via the SetDebugMode bound method
   // (specs/022-desktop-debug-mode/research.md D1).
   let debugMode = $state(false)
+
+  // --- Held tool-result IDs (US2): the set of toolIDs currently held by the
+  // Go backend for debug confirmation. Populated by game:debug:result-held /
+  // result-released events (contracts/debug-control-plane.md §2.3). Passed to
+  // ChatView so it renders a "Confirm" control on matching tool-result bubbles
+  // (FR-008). Reactive via $state + Set reassignment.
+  let heldToolIds = $state<Set<string>>(new Set())
 
   // --- SSE chat push state ---
   // The chat dialog is delivered over a renderer-initiated EventSource (spec
@@ -144,6 +152,15 @@
     })
   }
 
+  // handleConfirm releases a held tool result so the Go backend sends it to the
+  // agent (FR-009). Called by ChatView's "Confirm" button via the onConfirm
+  // callback prop (contracts/debug-control-plane.md §3).
+  function handleConfirm(toolID: string) {
+    void confirmToolResult(toolID).catch((e: unknown) => {
+      log('error', 'debug', `ConfirmToolResult failed for ${toolID}: ${String(e)}`)
+    })
+  }
+
   setLogSink((entry: LogEntry) => {
     logEntries = [...logEntries, entry]
   })
@@ -167,6 +184,29 @@
     }
 
     window.addEventListener('keydown', handleKeyDown)
+
+    // Debug hold events: the Go backend emits game:debug:result-held /
+    // result-released when a tool result begins/ends being held for
+    // confirmation (contracts/debug-control-plane.md §2). Reassigning a new
+    // Set triggers Svelte 5 $state reactivity (contract §2.3).
+    const runtime = window.runtime
+    if (runtime?.EventsOn) {
+      runtime.EventsOn('game:debug:result-held', (payload: unknown) => {
+        const p = payload as { toolId?: string }
+        if (p?.toolId) {
+          heldToolIds = new Set(heldToolIds).add(p.toolId)
+        }
+      })
+      runtime.EventsOn('game:debug:result-released', (payload: unknown) => {
+        const p = payload as { toolId?: string }
+        if (p?.toolId) {
+          const next = new Set(heldToolIds)
+          next.delete(p.toolId)
+          heldToolIds = next
+        }
+      })
+    }
+
     return () => window.removeEventListener('keydown', handleKeyDown)
   })
 
@@ -846,6 +886,8 @@
           onZoom={handleZoom}
           pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
           onRemoveScreenshot={handleRemoveScreenshot}
+          {heldToolIds}
+          onConfirm={handleConfirm}
         />
       </div>
     </div>

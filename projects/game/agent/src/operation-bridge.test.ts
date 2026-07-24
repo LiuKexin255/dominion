@@ -3,7 +3,7 @@
  *
  * Covers the core scenarios:
  *   1. register sink → dispatch → handleResult → SUCCEEDED
- *   2. no sink registered → dispatch → 5s timeout → FAILED
+ *   2. no sink registered → dispatch → 20-min timeout → FAILED
  *   3. unregister mid-dispatch → timeout → FAILED
  *
  * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
@@ -105,7 +105,7 @@ describe("OperationBridge", () => {
 
     bridge.unregisterSink(handle);
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
@@ -199,7 +199,7 @@ describe("OperationBridge", () => {
     expect(result.message).toBe("aborted");
   });
 
-  it("signal aborts mid-dispatch → resolves FAILED before 5s timeout", async () => {
+  it("signal aborts mid-dispatch → resolves FAILED before 20-min timeout", async () => {
     bridge.registerSink(() => {});
     const controller = new AbortController();
     const part = makeMovePart();
@@ -256,7 +256,7 @@ describe("OperationBridge", () => {
 
     bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
@@ -276,7 +276,7 @@ describe("OperationBridge", () => {
       bridge.dispatch(makeMovePart()),
     ];
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
     await Promise.all(promises);
 
     expect(ids).toHaveLength(3);

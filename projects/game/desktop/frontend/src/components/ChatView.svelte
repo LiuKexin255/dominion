@@ -47,6 +47,8 @@
     onZoom = () => {},
     pendingScreenshot = null,
     onRemoveScreenshot = () => {},
+    heldToolIds = new Set<string>(),
+    onConfirm = (_toolID: string) => {},
   }: {
     messages: ChatEntry[]
     processing?: boolean
@@ -57,6 +59,8 @@
     onZoom?: (url: string) => void
     pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
     onRemoveScreenshot?: () => void
+    heldToolIds?: Set<string>
+    onConfirm?: (toolID: string) => void
   } = $props()
 
   let inputText = $state('')
@@ -197,6 +201,7 @@
               {:else if kind === 'toolResult'}
                 {@const result = part.toolResult!}
                 {@const succeeded = isToolResultSucceeded(result.status)}
+                {@const isHeld = result.toolId != null && heldToolIds.has(result.toolId)}
                 <div class="msg-row msg-operation-result">
                   <div class="op-result-card" class:op-result-success={succeeded} class:op-result-failure={!succeeded} data-testid="operation-result-entry">
                     <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
@@ -216,6 +221,13 @@
                           onclick={() => onZoom(screenshotUrl)}
                         />
                       </details>
+                    {/if}
+                    {#if isHeld}
+                      <button
+                        class="btn btn-small confirm-btn"
+                        data-testid="confirm-tool-result"
+                        onclick={() => onConfirm(result.toolId!)}
+                      >Confirm</button>
                     {/if}
                   </div>
                 </div>
@@ -688,6 +700,19 @@
     color: #8888aa;
     cursor: pointer;
     user-select: none;
+  }
+
+  /* Confirm control for a held tool result (debug mode, FR-008/FR-009). */
+  .confirm-btn {
+    margin-left: auto;
+    background: rgba(139, 233, 253, 0.12);
+    border: 1px solid rgba(139, 233, 253, 0.4);
+    color: #8be9fd;
+    font-weight: 600;
+  }
+
+  .confirm-btn:hover {
+    background: rgba(139, 233, 253, 0.2);
   }
 
   /* ── Warn Bubble (control-signal payload) ── */

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1524,5 +1525,284 @@ func Test_executeAgentOperation_MouseClickPart_SimulatedUnchangedBehavior(t *tes
 				t.Errorf("SIMULATED path must not hit WINDOW_MESSAGE rejection, got %q", result.GetMessage())
 			}
 		})
+	}
+}
+
+// --- Debug hold tests (T010/T011) ---
+//
+// These tests cover the debug-mode tool-result hold control plane
+// (specs/022-desktop-debug-mode contracts/debug-control-plane.md §1.1/§1.2/§2,
+// data-model.md). They never depend on the real Wails runtime: emitDebugEvent
+// is overridden to a no-op or recorder because runtime.EventsEmit calls
+// log.Fatalf when the context lacks the Wails "events" value.
+
+// noopEmit replaces emitDebugEvent with a no-op for the duration of a test.
+// It returns a cleanup func that restores the original.
+func noopEmit(t *testing.T) {
+	t.Helper()
+	orig := emitDebugEvent
+	emitDebugEvent = func(context.Context, string, ...interface{}) {}
+	t.Cleanup(func() { emitDebugEvent = orig })
+}
+
+// recorderEmit replaces emitDebugEvent with a recorder that appends each event
+// name to a slice under a mutex. It returns the slice (shared) and a cleanup.
+func recorderEmit(t *testing.T) (*[]string, *sync.Mutex) {
+	t.Helper()
+	orig := emitDebugEvent
+	var mu sync.Mutex
+	events := []string{}
+	emitDebugEvent = func(_ context.Context, name string, _ ...interface{}) {
+		mu.Lock()
+		events = append(events, name)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { emitDebugEvent = orig })
+	return &events, &mu
+}
+
+// waitForHold polls the holds map (up to ~1s) until toolID appears, then
+// returns true. Used to synchronize a confirm/cancel against a holdAndRelease
+// call running in another goroutine.
+func waitForHold(t *testing.T, app *App, toolID string) bool {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		app.holdsMu.Lock()
+		_, ok := app.holds[toolID]
+		app.holdsMu.Unlock()
+		if ok {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestConfirmToolResult_ReleasesRegisteredHold verifies that ConfirmToolResult
+// closes a manually-registered hold's confirmCh and removes it from the map
+// (contracts/debug-control-plane.md §1.2).
+func TestConfirmToolResult_ReleasesRegisteredHold(t *testing.T) {
+	// given: an app with one manually-registered hold
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	app.holdsMu.Lock()
+	h := &hold{toolID: "tool-release", confirmCh: make(chan struct{})}
+	app.holds = map[string]*hold{"tool-release": h}
+	app.holdsMu.Unlock()
+
+	// when: ConfirmToolResult is called for the held toolID
+	err := app.ConfirmToolResult("tool-release")
+
+	// then: no error, confirmCh is closed, hold removed from map
+	if err != nil {
+		t.Fatalf("ConfirmToolResult() unexpected error: %v", err)
+	}
+	select {
+	case <-h.confirmCh:
+		// expected: channel closed
+	default:
+		t.Fatal("expected confirmCh to be closed")
+	}
+	app.holdsMu.Lock()
+	_, stillHeld := app.holds["tool-release"]
+	app.holdsMu.Unlock()
+	if stillHeld {
+		t.Fatal("expected hold to be removed from map after confirm")
+	}
+}
+
+// TestConfirmToolResult_UnknownToolIDIsNoOp verifies that ConfirmToolResult on
+// a toolID that is not held is a logged no-op returning nil (contracts §1.2 —
+// "the result may already have been released").
+func TestConfirmToolResult_UnknownToolIDIsNoOp(t *testing.T) {
+	// given: an app with no holds
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when: ConfirmToolResult on an unknown toolID
+	err := app.ConfirmToolResult("unknown-tool")
+
+	// then: returns nil, no panic
+	if err != nil {
+		t.Fatalf("ConfirmToolResult() on unknown toolID should return nil, got: %v", err)
+	}
+}
+
+// TestSetDebugMode_DisabledDrainsAllHolds verifies that disabling debug mode
+// releases every currently-held result (reason "debug-off") so no turn is left
+// blocked (contracts §1.1, spec Edge Case "Debug toggled OFF mid-hold").
+func TestSetDebugMode_DisabledDrainsAllHolds(t *testing.T) {
+	// given: an app with debug ON and three registered holds
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.debugEnabled.Store(true)
+
+	holds := make([]*hold, 0, 3)
+	app.holdsMu.Lock()
+	app.holds = map[string]*hold{}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("tool-%d", i)
+		h := &hold{toolID: id, confirmCh: make(chan struct{})}
+		app.holds[id] = h
+		holds = append(holds, h)
+	}
+	app.holdsMu.Unlock()
+
+	// when: debug mode is disabled
+	err := app.SetDebugMode(false)
+
+	// then: no error, every confirmCh closed with reason "debug-off", map empty
+	if err != nil {
+		t.Fatalf("SetDebugMode(false) unexpected error: %v", err)
+	}
+	for _, h := range holds {
+		select {
+		case <-h.confirmCh:
+		default:
+			t.Fatalf("expected confirmCh for %q to be closed", h.toolID)
+		}
+		if h.releaseReason != "debug-off" {
+			t.Fatalf("expected releaseReason %q for %q, got %q", "debug-off", h.toolID, h.releaseReason)
+		}
+	}
+	app.holdsMu.Lock()
+	mapLen := len(app.holds)
+	app.holdsMu.Unlock()
+	if mapLen != 0 {
+		t.Fatalf("expected holds map to be empty after SetDebugMode(false), got %d entries", mapLen)
+	}
+}
+
+// Test_holdAndRelease_ConfirmedBranch verifies the confirm select arm: a hold
+// registered by holdAndRelease is released by ConfirmToolResult and the reason
+// returned is "confirmed" (data-model.md state transition).
+func Test_holdAndRelease_ConfirmedBranch(t *testing.T) {
+	// given: debug ON, emitDebugEvent overridden to no-op
+	noopEmit(t)
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.debugEnabled.Store(true)
+
+	toolID := "tool-confirm"
+	reasonCh := make(chan string, 1)
+
+	// when: holdAndRelease runs in a goroutine, then ConfirmToolResult fires
+	go func() {
+		reasonCh <- app.holdAndRelease(toolID)
+	}()
+	if !waitForHold(t, app, toolID) {
+		t.Fatal("hold was not registered before timeout")
+	}
+	if err := app.ConfirmToolResult(toolID); err != nil {
+		t.Fatalf("ConfirmToolResult() unexpected error: %v", err)
+	}
+	reason := <-reasonCh
+
+	// then: reason is "confirmed"
+	if reason != "confirmed" {
+		t.Fatalf("expected reason %q, got %q", "confirmed", reason)
+	}
+	app.holdsMu.Lock()
+	mapLen := len(app.holds)
+	app.holdsMu.Unlock()
+	if mapLen != 0 {
+		t.Fatalf("expected holds map empty after release, got %d", mapLen)
+	}
+}
+
+// Test_holdAndRelease_TimeoutBranch verifies the 15-min auto-continue arm: with
+// debugHoldTimeout overridden to a short duration, the reason is "timeout"
+// (spec FR-013).
+func Test_holdAndRelease_TimeoutBranch(t *testing.T) {
+	// given: debug ON, timeout overridden to 10ms, emit no-op
+	noopEmit(t)
+	origTimeout := debugHoldTimeout
+	debugHoldTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { debugHoldTimeout = origTimeout })
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.debugEnabled.Store(true)
+
+	// when: holdAndRelease runs with no confirmation
+	reason := app.holdAndRelease("tool-timeout")
+
+	// then: reason is "timeout", hold removed from map
+	if reason != "timeout" {
+		t.Fatalf("expected reason %q, got %q", "timeout", reason)
+	}
+	app.holdsMu.Lock()
+	_, stillHeld := app.holds["tool-timeout"]
+	app.holdsMu.Unlock()
+	if stillHeld {
+		t.Fatal("expected hold to be removed from map after timeout")
+	}
+}
+
+// Test_holdAndRelease_ShutdownBranch verifies the shutdown arm: cancelling the
+// app context releases the hold with reason "shutdown" (spec Edge Case
+// "leaving the session with a held result").
+func Test_holdAndRelease_ShutdownBranch(t *testing.T) {
+	// given: debug ON, cancelable ctx, emit no-op
+	noopEmit(t)
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	app.SetContext(ctx)
+	app.debugEnabled.Store(true)
+
+	toolID := "tool-shutdown"
+	reasonCh := make(chan string, 1)
+
+	// when: holdAndRelease runs, then the context is cancelled
+	go func() {
+		reasonCh <- app.holdAndRelease(toolID)
+	}()
+	if !waitForHold(t, app, toolID) {
+		t.Fatal("hold was not registered before timeout")
+	}
+	cancel()
+	reason := <-reasonCh
+
+	// then: reason is "shutdown"
+	if reason != "shutdown" {
+		t.Fatalf("expected reason %q, got %q", "shutdown", reason)
+	}
+}
+
+// Test_holdAndRelease_EmitsHeldAndReleasedEvents verifies that the result-held
+// event is emitted on entry and result-released on exit (contracts §2.1/§2.2).
+func Test_holdAndRelease_EmitsHeldAndReleasedEvents(t *testing.T) {
+	// given: debug ON, emit records event names, timeout short
+	events, mu := recorderEmit(t)
+	origTimeout := debugHoldTimeout
+	debugHoldTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { debugHoldTimeout = origTimeout })
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.debugEnabled.Store(true)
+
+	// when: holdAndRelease runs and auto-continues (timeout)
+	app.holdAndRelease("tool-events")
+
+	// then: exactly result-held then result-released were emitted, in order
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %v", len(*events), *events)
+	}
+	if got := (*events)[0]; got != "game:debug:result-held" {
+		t.Fatalf("expected first event %q, got %q", "game:debug:result-held", got)
+	}
+	if got := (*events)[1]; got != "game:debug:result-released" {
+		t.Fatalf("expected second event %q, got %q", "game:debug:result-released", got)
 	}
 }

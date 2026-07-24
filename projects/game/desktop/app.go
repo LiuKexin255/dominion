@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,8 +20,50 @@ import (
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 	gameconst "dominion/projects/game/pkg/gameconst"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// debugHoldTimeout is the maximum wall-clock wait for a user to confirm a
+// held tool result in debug mode (FR-013 auto-continue). It is a package-level
+// var (not const) so unit tests can override it to exercise the timeout branch
+// quickly. See specs/022-desktop-debug-mode spec.md FR-013, research.md D4.
+var debugHoldTimeout = 15 * time.Minute
+
+// emitDebugEvent emits a Wails runtime event Go→frontend. It is a package-level
+// variable so unit tests can replace it with a no-op or recorder: the real
+// Wails runtime is unavailable in tests (runtime.EventsEmit calls log.Fatalf
+// when the context lacks the Wails "events" value — third_party/.../runtime.go).
+// See specs/022-desktop-debug-mode/contracts/debug-control-plane.md §2.
+var emitDebugEvent = runtime.EventsEmit
+
+// hold represents a pending tool-result hold in debug mode. One instance per
+// held result, keyed by tool_id. The result frame itself stays in the
+// handleInboundOperation stack frame; the hold only carries the release signal.
+// See specs/022-desktop-debug-mode/data-model.md "HeldToolResult".
+type hold struct {
+	toolID        string
+	confirmCh     chan struct{}
+	releaseReason string // set by the signalling side under holdsMu before closing confirmCh
+}
+
+// close releases the hold: it sets releaseReason so the blocked caller can
+// report why it woke, then closes confirmCh to unblock the select in
+// holdAndRelease. The caller MUST hold holdsMu and MUST delete the entry from
+// the holds map afterwards (which prevents a double-close on a second signal).
+// See specs/022-desktop-debug-mode/data-model.md "HeldToolResult" state transitions.
+func (h *hold) close(reason string) {
+	h.releaseReason = reason
+	close(h.confirmCh)
+}
+
+// confirmed is the confirm-scoped release entry point: it calls close with the
+// fixed reason "confirmed" (contracts/debug-control-plane.md §1.2). The same
+// holdsMu / map-delete invariants apply as for close.
+func (h *hold) confirmed() {
+	h.close("confirmed")
+}
 
 // App is the Wails application struct holding all state.
 type App struct {
@@ -35,6 +78,8 @@ type App struct {
 	chatStreams  *chatstream.Registry
 	chatServer   *chatstream.Server
 	debugEnabled atomic.Bool
+	holds        map[string]*hold // active debug-mode holds keyed by tool_id
+	holdsMu      sync.Mutex       // guards holds
 }
 
 // NewApp creates a new App with default configuration.
@@ -61,18 +106,59 @@ func (a *App) SetChatStream(reg *chatstream.Registry, srv *chatstream.Server) {
 
 // SetDebugMode enables or disables desktop debug mode (Wails-bound;
 // contracts/debug-control-plane.md §1.1). It mirrors the flag atomically on
-// *App, propagates it to the applog DEBUG gate, and logs the transition.
-// Release-all-holds on disable is a US2 concern (T010) and is intentionally
-// not implemented here.
+// *App, propagates it to the applog DEBUG gate, and logs the transition. When
+// disabling it immediately releases every currently-held tool result
+// (reason "debug-off") so no turn is left blocked (spec FR, Edge Case
+// "Debug toggled OFF mid-hold"). Idempotent.
 func (a *App) SetDebugMode(enabled bool) error {
 	a.debugEnabled.Store(enabled)
 	a.logger.SetDebug(enabled)
+	if !enabled {
+		a.releaseAllHolds("debug-off")
+	}
 	state := "disabled"
 	if enabled {
 		state = "enabled"
 	}
 	a.logger.Info("backend", "debug mode "+state)
 	return nil
+}
+
+// ConfirmToolResult releases the held tool result identified by toolID
+// (Wails-bound; contracts/debug-control-plane.md §1.2), causing the blocked
+// handleInboundOperation to send it to the agent. It is a logged no-op
+// (returns nil) if toolID is not currently held — e.g., the 15-minute
+// auto-continue already released it, or debug mode was turned off. The
+// signalling side sets releaseReason and closes confirmCh under holdsMu, then
+// deletes the entry; this avoids a double-close panic on a second signal.
+func (a *App) ConfirmToolResult(toolID string) error {
+	a.holdsMu.Lock()
+	h, ok := a.holds[toolID]
+	if ok {
+		h.confirmed()
+		delete(a.holds, toolID)
+	}
+	a.holdsMu.Unlock()
+	if !ok {
+		a.logger.Debug("backend", "ConfirmToolResult: no active hold for tool", map[string]any{
+			"tool_id": toolID,
+		})
+	}
+	return nil
+}
+
+// releaseAllHolds closes every active hold's confirmCh with the given reason
+// and clears the map. Called by SetDebugMode(false) (reason "debug-off") so no
+// turn is left blocked when debug mode is turned off. The blocked
+// handleInboundOperation callers wake, read the reason, and proceed to
+// ws.SendFrame (contract §1.1 side effects).
+func (a *App) releaseAllHolds(reason string) {
+	a.holdsMu.Lock()
+	for toolID, h := range a.holds {
+		h.close(reason)
+		delete(a.holds, toolID)
+	}
+	a.holdsMu.Unlock()
 }
 
 // ensureClient lazily creates the API client if not yet initialized.
@@ -627,9 +713,18 @@ func (a *App) recvLoop(sessionID, frameID string) {
 // handleInboundOperation executes an inbound tool-request Part
 // (MouseMovePart/MouseClickPart) and sends the matching ToolResultPart back
 // over the WebSocket wrapped in a content frame. The result part carries the
-// same tool_id and a SUCCEEDED/FAILED status; it is never carried by an ack
-// (FR-013). A post-action screenshot is attached when the bound window can
-// be captured (FR-007).
+// same tool_id and a SUCCEEDED/FAILED status. A post-action screenshot is
+// attached when the bound window can be captured.
+//
+// Debug mode reorders the result-return boundary
+// (specs/022-desktop-debug-mode spec.md FR-006/FR-007/FR-011, data-model.md
+// state machine, research.md D4):
+//
+//   - Debug OFF: compute → send → append (today's order, FR-011 — no events).
+//   - Debug ON:  compute → append (result visible during hold) → register hold
+//   - emit game:debug:result-held → block on confirm/15-min/shutdown → emit
+//     game:debug:result-released → send (FR-006/FR-013). The sent frame is
+//     identical to the OFF path (FR-007 transparency).
 func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 	result := a.executeAgentOperation(part)
 
@@ -657,10 +752,27 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 		},
 	}
 
+	toolID := result.GetToolId()
+	if a.debugEnabled.Load() {
+		// Mirror the result into the chatstream before sending so the user
+		// sees it while it is held for confirmation (FR-008).
+		a.chatStreams.Append(sessionID, resultFrame)
+		a.holdAndRelease(toolID)
+		if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
+			a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
+				"session_id": sessionID,
+				"tool_id":    toolID,
+				"error":      err.Error(),
+			})
+			return fmt.Errorf("send user turn: operation result: %w", err)
+		}
+		return nil
+	}
+
 	if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
 		a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
 			"session_id": sessionID,
-			"tool_id":    result.GetToolId(),
+			"tool_id":    toolID,
 			"error":      err.Error(),
 		})
 		return fmt.Errorf("send user turn: operation result: %w", err)
@@ -670,6 +782,64 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 	// after a session restart, since the agent — not the desktop — persists it.
 	a.chatStreams.Append(sessionID, resultFrame)
 	return nil
+}
+
+// holdAndRelease is the debug-mode hold boundary: it registers a hold for
+// toolID, emits game:debug:result-held, blocks until the hold is released
+// (confirm / 15-min auto-continue / shutdown), emits
+// game:debug:result-released, and returns the release reason. handleInboundOperation
+// calls it between Append and SendFrame when debug mode is ON.
+//
+// The select arms map to the data-model state machine
+// (specs/022-desktop-debug-mode/data-model.md):
+//
+//   - <-confirmCh: released by ConfirmToolResult ("confirmed") or
+//     SetDebugMode(false) ("debug-off"); releaseReason was set by the
+//     signalling side under holdsMu.
+//   - <-time.After(debugHoldTimeout): 15-min auto-continue (FR-013, "timeout").
+//   - <-a.ctx.Done(): app/session shutdown ("shutdown").
+//
+// The delete after the select is idempotent: the confirm/debug-off branch was
+// already deleted by the signalling side, while the timeout/shutdown branch
+// still holds the entry and needs removal. See contracts §2.2.
+func (a *App) holdAndRelease(toolID string) string {
+	a.holdsMu.Lock()
+	h := &hold{
+		toolID:    toolID,
+		confirmCh: make(chan struct{}),
+	}
+	if a.holds == nil {
+		a.holds = map[string]*hold{}
+	}
+	a.holds[toolID] = h
+	a.holdsMu.Unlock()
+
+	emitDebugEvent(a.ctx, "game:debug:result-held", map[string]any{"toolId": toolID})
+
+	var reason string
+	select {
+	case <-h.confirmCh:
+		// releaseReason was set under holdsMu by the signalling side before
+		// closing the channel; read it under the same lock to be explicit
+		// about the memory model.
+		a.holdsMu.Lock()
+		reason = h.releaseReason
+		a.holdsMu.Unlock()
+	case <-time.After(debugHoldTimeout):
+		reason = "timeout"
+	case <-a.ctx.Done():
+		reason = "shutdown"
+	}
+
+	emitDebugEvent(a.ctx, "game:debug:result-released", map[string]any{
+		"toolId": toolID,
+		"reason": reason,
+	})
+	a.holdsMu.Lock()
+	delete(a.holds, toolID)
+	a.holdsMu.Unlock()
+
+	return reason
 }
 
 // executeAgentOperation runs an inbound tool-request Part via the appropriate
