@@ -289,7 +289,7 @@ interface WailsApp {
   ListWindows(): Promise<WindowRef[]>
   BindWindow(hwnd: number): Promise<void>
   CaptureScreenshot(): Promise<CapturedImage>
-  ConnectAgent(sessionID: string): Promise<void>
+  ConnectAgent(sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
   SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
@@ -376,7 +376,7 @@ export async function captureScreenshot(): Promise<CapturedImage> {
   return a.CaptureScreenshot()
 }
 
-export async function connectAgent(sessionID: string): Promise<void> {
+export async function connectAgent(sessionID: string): Promise<string> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.ConnectAgent(sessionID)

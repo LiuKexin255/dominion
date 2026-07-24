@@ -950,9 +950,14 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 // (round-trip ping) to verify the full path: desktop → gateway → proxy.
 // The probe has a 10-second timeout. On failure, the WebSocket is closed
 // and no state is stored.
-func (a *App) ConnectAgent(sessionID string) error {
+//
+// On success the probe response's StatusSignalStatus enum name is returned
+// (e.g. "STATUS_SIGNAL_STATUS_IDLE") so the frontend can reconcile its typing
+// indicator against the agent's real working state
+// (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
+func (a *App) ConnectAgent(sessionID string) (string, error) {
 	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("session_id is required")
 	}
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
@@ -984,7 +989,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
-		return err
+		return "", err
 	}
 
 	// Application-level probe: send a status signal and wait for any response.
@@ -1018,7 +1023,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 			"error":          err.Error(),
 		})
 		ws.Close()
-		return fmt.Errorf("connect session: probe send failed: %w", err)
+		return "", fmt.Errorf("connect session: probe send failed: %w", err)
 	}
 
 	resp, err := ws.RecvFrame(probeCtx)
@@ -1031,15 +1036,19 @@ func (a *App) ConnectAgent(sessionID string) error {
 			"error":          err.Error(),
 		})
 		ws.Close()
-		return fmt.Errorf("connect session: probe receive failed: %w", err)
+		return "", fmt.Errorf("connect session: probe receive failed: %w", err)
 	}
 
-	// Accept any response frame — the round-trip itself proves the path is alive.
+	// Capture the probe response's StatusSignalStatus enum name so the frontend
+	// can reconcile its typing indicator. When the response is not a status
+	// frame, the zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
+	status := resp.GetStatus().GetStatus().String()
 	a.logger.Info("backend", "Connect probe succeeded", map[string]any{
 		"trace_id":          traceID,
 		"session_id":        sessionID,
 		"frame_id":          probeFrameID,
 		"response_frame_id": resp.GetFrameId(),
+		"status":            status,
 		"correlation_id":    corrID,
 	})
 
@@ -1050,7 +1059,7 @@ func (a *App) ConnectAgent(sessionID string) error {
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
-	return nil
+	return status, nil
 }
 
 // SendAgentFrame sends a frame over the WebSocket and returns the response.

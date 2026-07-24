@@ -72,9 +72,9 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
-	err := app.ConnectAgent("test-session")
+	status, err := app.ConnectAgent("test-session")
 
-	// then: probe succeeds, ws and sessionID are stored
+	// then: probe succeeds, ws and sessionID are stored, status returned
 	if err != nil {
 		t.Fatalf("ConnectAgent() unexpected error: %v", err)
 	}
@@ -83,6 +83,9 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 	}
 	if app.sessionID != "test-session" {
 		t.Fatalf("expected sessionID %q, got %q", "test-session", app.sessionID)
+	}
+	if status != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE.String() {
+		t.Fatalf("expected status %q, got %q", game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE.String(), status)
 	}
 
 	// clean up
@@ -110,7 +113,7 @@ func TestConnectAgent_ProbeFailure(t *testing.T) {
 	app.SetContext(context.Background())
 	app.cfg = api.Config{GatewayURL: srv.URL}
 
-	err := app.ConnectAgent("test-session")
+	_, err := app.ConnectAgent("test-session")
 
 	// then: probe fails, ws is nil, error returned
 	if err == nil {
@@ -138,7 +141,7 @@ func TestConnectAgent_EmptySessionID(t *testing.T) {
 	app.SetContext(context.Background())
 
 	// when: ConnectAgent with empty session ID
-	err := app.ConnectAgent("")
+	_, err := app.ConnectAgent("")
 
 	// then: immediate error, no ws state change
 	if err == nil {
@@ -175,7 +178,7 @@ func TestConnectAgent_ProbeTimeout(t *testing.T) {
 
 	// when: ConnectAgent should time out after 10 seconds
 	start := time.Now()
-	err := app.ConnectAgent("test-session")
+	_, err := app.ConnectAgent("test-session")
 	elapsed := time.Since(start)
 
 	// then: probe times out

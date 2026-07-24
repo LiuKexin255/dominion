@@ -32,6 +32,7 @@ import type { Message as MessageProto } from "../game_types/projects/game/Messag
 import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
 import type { TurnContent } from "./llm";
+import { deriveStatusSignal } from "./status-signal";
 
 /**
  * FrameSender enum values (proto string literals). Defined locally rather
@@ -44,12 +45,6 @@ const FrameSender = {
   FRAME_SENDER_USER: "FRAME_SENDER_USER",
   FRAME_SENDER_AGENT: "FRAME_SENDER_AGENT",
   FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
-} as const;
-
-const StatusSignalStatus = {
-  STATUS_SIGNAL_STATUS_UNSPECIFIED: "STATUS_SIGNAL_STATUS_UNSPECIFIED",
-  STATUS_SIGNAL_STATUS_ACTIVE: "STATUS_SIGNAL_STATUS_ACTIVE",
-  STATUS_SIGNAL_STATUS_IDLE: "STATUS_SIGNAL_STATUS_IDLE",
 } as const;
 
 export class Handler implements AgentServiceHandlers {
@@ -213,10 +208,14 @@ export class Handler implements AgentServiceHandlers {
           sessionId,
           FrameSender.FRAME_SENDER_SYSTEM,
           {
+            // ACTIVE when a turn is in-flight (shared per-session mutex),
+            // else IDLE when an adapter is bound, else UNSPECIFIED
+            // (data-model.md §1; status-signal.ts).
             status: {
-              status: state.isBound
-                ? StatusSignalStatus.STATUS_SIGNAL_STATUS_IDLE
-                : StatusSignalStatus.STATUS_SIGNAL_STATUS_UNSPECIFIED,
+              status: deriveStatusSignal(
+                this.isMutexHeld(sessionId),
+                state.isBound,
+              ),
             },
           },
         );

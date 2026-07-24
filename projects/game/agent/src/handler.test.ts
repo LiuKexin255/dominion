@@ -890,7 +890,7 @@ describe("Handler.Connect probes", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("responds to status probe with 'unknown' for unbound session", async () => {
+  it("responds to status probe with 'unspecified' for unbound session", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
@@ -936,6 +936,54 @@ describe("Handler.Connect probes", () => {
     // as the full proto name (game.proto:374 STATUS_SIGNAL_STATUS_IDLE); the
     // handler emits the IDLE variant for a bound session.
     expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
+  });
+
+  it("responds to status probe with 'active' while a turn is in-flight", async () => {
+    // A turn in-flight = the per-session turn mutex is held (acquired before
+    // adapter invocation, released in the turn finally). Drive it with a slow
+    // adapter so the mutex stays held across the probe; isMutexHeld is the
+    // ACTIVE source (specs/021-agent-session-resync/data-model.md §1).
+    const slowAdapter: AgentAdapter = {
+      async *generateTurn(): AsyncIterable<ContentBlock> {
+        await new Promise((r) => setTimeout(r, 50));
+        yield { type: "text", text: "late reply" };
+      },
+      async getState() { return null; },
+    };
+    sessionAgentStore._setBinding(
+      "sess-active",
+      "test-profile",
+      slowAdapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // Start a turn — acquires the session mutex and parks inside generateTurn.
+    stream.emit("data", userContentFrame("sess-active", "hello", "test-profile"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Probe while the turn is in-flight (mutex held). The status branch writes
+    // its response synchronously during emit.
+    stream.emit("data", {
+      sessionId: "sess-active",
+      payload: "status",
+      sender: FRAME_SENDER_USER,
+    });
+    await flush();
+
+    // The session is bound, so without the in-flight turn the response would
+    // be IDLE; ACTIVE proves isMutexHeld was consulted.
+    const statusFrame = stream.written.find(
+      (f) => (f as Record<string, unknown>).payload === "status",
+    ) as Record<string, unknown> | undefined;
+    expect(statusFrame).toBeDefined();
+    expect(statusFrame!.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(statusFrame!.status).toEqual({ status: "STATUS_SIGNAL_STATUS_ACTIVE" });
+
+    // Let the in-flight turn complete so its finally releases the mutex.
+    await new Promise((r) => setTimeout(r, 60));
   });
 });
 

@@ -114,6 +114,10 @@
     pendingScreenshot = null
     selectedWindowHandle = undefined
     windows = []
+    // Defensively clear the typing indicator on session entry. The connect
+    // probe then refines it against the agent's real working state
+    // (contracts/agent-desktop-channel-contract.md §1).
+    processing = false
   }
 
   setLogSink((entry: LogEntry) => {
@@ -261,8 +265,18 @@
     if (!selectedSession) return
     try {
       connectionState = 'connecting'
-      await connectAgent(selectedSession.sessionId)
+      const status = await connectAgent(selectedSession.sessionId)
       connectionState = 'connected'
+      // Reconcile the typing indicator against the agent's reported working
+      // state (contracts/agent-desktop-channel-contract.md §1): ACTIVE means a
+      // turn is genuinely still running, so keep the indicator on; anything
+      // else (IDLE/UNSPECIFIED) clears it and returns the page to ready.
+      if (status === 'STATUS_SIGNAL_STATUS_ACTIVE') {
+        processing = true
+      } else {
+        processing = false
+        playState = 'chat_ready'
+      }
       log('info', 'agent', 'Agent connected via WebSocket')
     } catch (e: unknown) {
       connectionState = 'error'
