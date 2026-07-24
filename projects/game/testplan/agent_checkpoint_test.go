@@ -365,9 +365,11 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 }
 
 // TestCrossProfileHistoryPersistence verifies that messages exchanged with
-// profile A are visible to profile B via ListMessages. When switching
-// profiles mid-connection (or via a new connect), the shared session
-// history persists across adapter profiles.
+// profile A are visible to profile B via ListMessages. Switching profiles
+// mid-connection requires Refresh to rebuild the adapter (the legacy
+// auto-switch was removed in favor of a profile guard); after Refresh, the
+// shared session history persists across adapter profiles
+// (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2/§3).
 func TestCrossProfileHistoryPersistence(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -421,10 +423,22 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 		t.Logf("profile A exchange: %q → %q", msg, frameText(textResp))
 	}
 
-	// Switch to profile B mid-connection. The farewell keyword yields a
-	// distinct template, confirming profile B's adapter also reaches fake-llm.
+	// given: switching profiles mid-connection now requires Refresh. A turn
+	// under profile A binds adapter A; a later turn under profile B without
+	// Refresh is rejected by the profile guard (Warn + Wait). Drain the last
+	// profile-A turn's completion WaitSignal so the turn mutex is released,
+	// then Refresh to invalidate the adapter so the next turn rebuilds for
+	// profile B
+	// (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2/§3).
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+	refreshAgent(t, sutHostURL, sutEnvName, sessionID)
+
+	// when: profile B turn after Refresh rebuilds the adapter for B. The
+	// farewell keyword yields a distinct template, confirming profile B's
+	// adapter also reaches fake-llm.
 	profileBMsg := "Goodbye, profile B turn one"
 	sendTextWithProfile(t, conn, sessionID, profileBName, profileBMsg)
+	// then: profile B produces a thinking + text response.
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	textRespB := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if textRespB == nil {
