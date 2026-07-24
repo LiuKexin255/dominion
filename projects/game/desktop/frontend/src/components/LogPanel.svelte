@@ -107,6 +107,12 @@
     color: #c0c0d0;
   }
 
+  .log-line.log-debug {
+    border-left-color: #4a6a8a;
+    color: #8aa0b8;
+    background: rgba(74, 106, 138, 0.06);
+  }
+
   .log-time {
     color: #606080;
     flex-shrink: 0;

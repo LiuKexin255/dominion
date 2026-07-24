@@ -21,10 +21,11 @@
     sendUserTurn,
     openChatStream,
     closeChatStream,
+    setDebugMode,
   } from './api'
   import { openChatEventSource, makeDeduper } from './chat-stream'
   import type { ChunkState, Deduper } from './chat-stream'
-  import { log, setLogSink } from './logger'
+  import { log, logDebug, setDebugEnabled, setLogSink } from './logger'
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
   import ChatView from './components/ChatView.svelte'
@@ -76,6 +77,12 @@
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
 
+  // --- Debug mode (FR-001): developer-facing verbose-logging toggle. Not
+  // persisted; resets to OFF on page/session exit (FR-002). The frontend owns
+  // the flag and mirrors it to the Go backend via the SetDebugMode bound method
+  // (specs/022-desktop-debug-mode/research.md D1).
+  let debugMode = $state(false)
+
   // --- SSE chat push state ---
   // The chat dialog is delivered over a renderer-initiated EventSource (spec
   // 016) instead of the host→webview `game:frame` channel, which silently
@@ -118,6 +125,23 @@
     // probe then refines it against the agent's real working state
     // (contracts/agent-desktop-channel-contract.md §1).
     processing = false
+    // FR-002: debug mode is not persisted; reset to OFF on page/session exit
+    // and notify both layers so they stay in sync.
+    if (debugMode) {
+      debugMode = false
+      applyDebugMode()
+    }
+  }
+
+  // applyDebugMode pushes the current debugMode to the frontend logger gate and
+  // the Go backend SetDebugMode bound method, keeping the two layers in sync
+  // (FR-001 toggle, FR-004 both layers emit DEBUG). Called on toggle and on the
+  // page/session-exit reset above (FR-002).
+  function applyDebugMode() {
+    setDebugEnabled(debugMode)
+    void setDebugMode(debugMode).catch((e: unknown) => {
+      log('error', 'debug', `SetDebugMode failed: ${String(e)}`)
+    })
   }
 
   setLogSink((entry: LogEntry) => {
@@ -462,6 +486,13 @@
 
   function handleAgentFrame(frame: AgentFrame) {
     const timestamp = frame.createTime || new Date().toISOString()
+    // FR-004 frontend: surface every inbound chat frame at debug level. A no-op
+    // when debug is off (logDebug short-circuits), so this is safe on the hot
+    // SSE path.
+    logDebug('frontend', 'inbound chat frame', {
+      frame_id: frame.frameId,
+      sender: frame.sender,
+    })
     // A frame carries exactly one payload (protojson flattens the oneof). The
     // part kind — not a separate `type` field — discriminates content.
     if (frame.content) {
@@ -795,6 +826,10 @@
           <button class="btn btn-small" data-testid="capture-btn" onclick={handleCaptureScreenshot} disabled={selectedWindowHandle == null || capturing}>
             {capturing ? 'Capturing…' : 'Capture Screenshot'}
           </button>
+          <label class="debug-toggle" data-testid="debug-toggle" title="Toggle debug-level log output (FR-001)">
+            <input type="checkbox" bind:checked={debugMode} onchange={applyDebugMode} />
+            <span>Debug</span>
+          </label>
           {#if playState === 'connection_error'}
             <span class="chat-error" data-testid="chat-connection-error">{messagesError ?? 'Connection failed'}</span>
           {:else if error}
@@ -885,6 +920,21 @@
   .window-select:focus {
     outline: none;
     border-color: #4a9eff;
+  }
+
+  .debug-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #a0a0b0;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .debug-toggle input {
+    cursor: pointer;
   }
 
   .chat-error {

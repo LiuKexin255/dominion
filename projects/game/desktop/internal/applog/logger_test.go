@@ -238,6 +238,80 @@ func TestLogger_EventSink(t *testing.T) {
 	})
 }
 
+// TestLogger_Debug_Disabled verifies that Debug is a true no-op when debug
+// mode is off (the default): no entry is appended and the event sink is never
+// invoked. This is the zero-overhead guarantee (specs/022-desktop-debug-mode/
+// research.md D5).
+func TestLogger_Debug_Disabled(t *testing.T) {
+	// given: a logger with the default debug-disabled state and an event sink
+	// that would surface any pushed entry.
+	l := NewLogger()
+	sinkFired := false
+	l.SetEventSink(func(Entry) {
+		sinkFired = true
+	})
+
+	// when: emitting debug entries while debug stays disabled.
+	l.Debug("backend", "should be suppressed")
+	l.Debug("frontend", "also suppressed", map[string]any{"k": "v"})
+
+	// then: no entry is recorded and the sink never fired.
+	entries := l.Entries()
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries when debug disabled, got %d", len(entries))
+	}
+	if sinkFired {
+		t.Fatal("event sink must not fire when debug is disabled")
+	}
+}
+
+// TestLogger_Debug_Enabled verifies that once debug mode is enabled via
+// SetDebug(true), Debug appends exactly one entry with level "debug" (matching
+// the Info/Error flow) and the event sink receives it.
+func TestLogger_Debug_Enabled(t *testing.T) {
+	// given: a logger with debug enabled and an event sink capturing entries.
+	l := NewLogger()
+	l.SetDebug(true)
+	var captured []Entry
+	var mu sync.Mutex
+	l.SetEventSink(func(e Entry) {
+		mu.Lock()
+		captured = append(captured, e)
+		mu.Unlock()
+	})
+
+	// when: emitting a debug entry with fields.
+	l.Debug("backend", "debug detail", map[string]any{"tool_id": "abc"})
+
+	// then: exactly one entry exists, it is level "debug", carries the source/
+	// message/fields, and the sink received it.
+	entries := l.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.Level != "debug" {
+		t.Errorf("expected level 'debug', got %q", e.Level)
+	}
+	if e.Source != "backend" {
+		t.Errorf("expected source 'backend', got %q", e.Source)
+	}
+	if e.Message != "debug detail" {
+		t.Errorf("expected message 'debug detail', got %q", e.Message)
+	}
+	if e.Fields == nil || e.Fields["tool_id"] != "abc" {
+		t.Errorf("expected fields[tool_id]='abc', got %v", e.Fields)
+	}
+	if _, err := time.Parse(time.RFC3339, e.Time); err != nil {
+		t.Errorf("expected parseable RFC3339 time, got %q: %v", e.Time, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 || captured[0].Level != "debug" {
+		t.Errorf("expected sink to receive one debug entry, got %v", captured)
+	}
+}
+
 // TestLogger_Concurrent verifies that concurrent logging is safe and
 // no entries are lost.
 func TestLogger_Concurrent(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"dominion/common/gopkg/otel/tracecontext"
@@ -23,16 +24,17 @@ import (
 
 // App is the Wails application struct holding all state.
 type App struct {
-	logger      *applog.Logger
-	client      *api.Client
-	ws          *api.WSClient
-	cfg         api.Config
-	ctx         context.Context
-	boundWin    capture.WindowRef
-	sessionID   string // active session set on WebSocket connect
-	recvDone    chan struct{}
-	chatStreams *chatstream.Registry
-	chatServer  *chatstream.Server
+	logger       *applog.Logger
+	client       *api.Client
+	ws           *api.WSClient
+	cfg          api.Config
+	ctx          context.Context
+	boundWin     capture.WindowRef
+	sessionID    string // active session set on WebSocket connect
+	recvDone     chan struct{}
+	chatStreams  *chatstream.Registry
+	chatServer   *chatstream.Server
+	debugEnabled atomic.Bool
 }
 
 // NewApp creates a new App with default configuration.
@@ -55,6 +57,22 @@ func (a *App) SetContext(ctx context.Context) {
 func (a *App) SetChatStream(reg *chatstream.Registry, srv *chatstream.Server) {
 	a.chatStreams = reg
 	a.chatServer = srv
+}
+
+// SetDebugMode enables or disables desktop debug mode (Wails-bound;
+// contracts/debug-control-plane.md §1.1). It mirrors the flag atomically on
+// *App, propagates it to the applog DEBUG gate, and logs the transition.
+// Release-all-holds on disable is a US2 concern (T010) and is intentionally
+// not implemented here.
+func (a *App) SetDebugMode(enabled bool) error {
+	a.debugEnabled.Store(enabled)
+	a.logger.SetDebug(enabled)
+	state := "disabled"
+	if enabled {
+		state = "enabled"
+	}
+	a.logger.Info("backend", "debug mode "+state)
+	return nil
 }
 
 // ensureClient lazily creates the API client if not yet initialized.
@@ -566,6 +584,10 @@ func (a *App) recvLoop(sessionID, frameID string) {
 		}
 		frameCount++
 
+		a.logger.Debug("backend", "inbound frame received", map[string]any{
+			"session_id":  sessionID,
+			"frame_count": frameCount,
+		})
 		a.chatStreams.Append(sessionID, resp)
 
 		switch payload := resp.GetPayload().(type) {
@@ -720,6 +742,11 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		return failed("no window bound")
 	}
 
+	a.logger.Debug("backend", "executing tool operation", map[string]any{
+		"tool_id":        toolID,
+		"correlation_id": corrID,
+	})
+
 	// Action phase: accumulate errors instead of early-returning so the
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
@@ -789,6 +816,11 @@ func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
 		}
 	}
 
+	a.logger.Debug("backend", "tool operation result", map[string]any{
+		"tool_id":        toolID,
+		"correlation_id": corrID,
+		"status":         result.GetStatus().String(),
+	})
 	return result
 }
 
