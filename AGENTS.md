@@ -61,7 +61,8 @@ Python 依赖更新步骤：
 
 ## 注释
 
-Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
+* Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
+* 如果注释要引用其他文件，需要写明引用链接，避免发生歧义。例如引用 specs 内容需要注明链接，不能只写 `FR-xx` 这类，避免不同的需求导致的歧义。
 
 ## 依赖
 
