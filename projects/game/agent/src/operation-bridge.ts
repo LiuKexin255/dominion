@@ -40,6 +40,15 @@ const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
+ * String literal value of `FrameSender.FRAME_SENDER_SYSTEM` (proto enum).
+ * Labels display-only tool-result content frames written by pushResult so
+ * the desktop renders them as result cards. Defined locally (same rationale
+ * as the STATUS_* constants above — keeps game_types a type-only import, no
+ * runtime dependency on generated modules).
+ */
+const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
+
+/**
  * Sink callback registered by the Connect handler.  Receives a full AgentFrame
  * whose payload is "content".  The handler may augment envelope fields
  * (sessionId, frameId, sender, createTime) before writing to the stream.
@@ -238,6 +247,51 @@ export class OperationBridge {
         }
       }
     });
+  }
+
+  /**
+   * Forward a display-only ToolResultPart to the desktop without correlating
+   * it to any dispatch. Used by agent-internal tools (e.g. saolei_update)
+   * that resolve server-side with no desktop operation: the desktop recvLoop
+   * appends the frame and renders it as a result card without executing any
+   * input (specs/021-agent-session-resync/data-model.md §3;
+   * specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §2;
+   * specs/021-agent-session-resync/research.md D4).
+   *
+   * Unlike dispatch, this creates NO `pending` entry and awaits NO result —
+   * it is a one-way display write. No-op when no sink is registered, and a
+   * sink write error is swallowed (best-effort delivery per contract §2: a
+   * broken connection loses the live frame, but it remains in the agent's
+   * persisted turn history).
+   *
+   * The envelope carries `sender = SYSTEM` and a fresh `frameId` so the
+   * desktop renders the part as a result card. `agentProfileName` is
+   * intentionally not set here: the bridge does not own the session's profile
+   * name (SessionAgent does), and the desktop renders a SYSTEM-sent
+   * toolResult card without it (App.svelte handleContentPayload only folds
+   * AGENT-sent text/thinking; a toolResult always starts a new entry).
+   *
+   * @param toolResult - Display-only ToolResultPart (toolId is not correlated
+   *                     to any dispatch).
+   */
+  pushResult(toolResult: ToolResultPart): void {
+    const sink = this.sink;
+    if (!sink) {
+      return;
+    }
+    const envelope: AgentFrame = {
+      frameId: randomUUID(),
+      sender: FRAME_SENDER_SYSTEM,
+      payload: "content",
+      content: { parts: [{ toolResult }] },
+    };
+    try {
+      sink(envelope);
+    } catch (err) {
+      warn("pushResult sink threw (best-effort, swallowed)", {
+        error: err instanceof Error ? err.message : "sink write error",
+      });
+    }
   }
 
   /**

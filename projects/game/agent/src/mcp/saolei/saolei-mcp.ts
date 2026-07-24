@@ -27,6 +27,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { randomUUID } from "node:crypto";
+
 import type { OperationBridge } from "../../operation-bridge";
 import type { OperationResult } from "../../operation-bridge";
 import type { Part } from "../../../game_types/projects/game/Part";
@@ -89,6 +91,15 @@ const WINDOW_MESSAGE = "MOUSE_INPUT_METHOD_WINDOW_MESSAGE";
  * surface the desktop dispatch outcome back to the model.
  */
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
+
+/**
+ * String value of `ToolResultStatus.TOOL_RESULT_STATUS_FAILED` (proto enum).
+ * Used by `saolei_update` to label a display-only ToolResultPart as a
+ * validation rejection when forwarding it via `bridge.pushResult`
+ * (specs/021-agent-session-resync/data-model.md §3;
+ * specs/021-agent-session-resync/research.md D5).
+ */
+const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 
 /**
  * Cell status union sent by `saolei_update` (contracts/mcp-tool-contract.md
@@ -498,6 +509,13 @@ export function createSaoleiMcpServer(
 			// `saolei_init` is exempt and does not set this flag, so an
 			// `init`-only session correctly rejects `saolei_update`.
 			if (!state.pendingUpdate || state.lastOp === null) {
+				// Forward a display-only FAILED result so the desktop shows
+				// the rejection as a result card (data-model.md §3; D5).
+				bridge.pushResult({
+					toolId: randomUUID(),
+					status: STATUS_FAILED,
+					message: "saolei_update rejected: no operation awaiting update",
+				});
 				return textResult(
 					"rejected: no operation awaiting update " +
 						"(call saolei_click / saolei_flag / saolei_chord_click first)",
@@ -519,6 +537,12 @@ export function createSaoleiMcpServer(
 				// than starting a new operation (D8 normal text result).
 				// contracts/mcp-tool-contract.md `saolei_update` Result
 				// (reject) prefixes the reason with "rejected: ".
+				// Forward a display-only FAILED result (data-model.md §3; D5).
+				bridge.pushResult({
+					toolId: randomUUID(),
+					status: STATUS_FAILED,
+					message: `saolei_update rejected: ${result.reason}`,
+				});
 				return textResult(`rejected: ${result.reason}`);
 			}
 
@@ -535,6 +559,13 @@ export function createSaoleiMcpServer(
 			state.pendingUpdate = false;
 			state.lastOp = null;
 
+			// Forward a display-only SUCCEEDED result so the desktop renders
+			// the update as a result card (data-model.md §3; D5).
+			bridge.pushResult({
+				toolId: randomUUID(),
+				status: STATUS_SUCCEEDED,
+				message: "saolei_update: state updated",
+			});
 			return textResult(
 				`state updated; ${cells.length} cells changed; ` +
 					`ready for next operation`,

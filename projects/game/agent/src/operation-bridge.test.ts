@@ -19,10 +19,12 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { OperationBridge } from "./operation-bridge";
 
 import type { Part } from "../game_types/projects/game/Part";
+import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
+const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
 
 function makeMovePart(): Part {
   return { mouseMove: { xPx: 10, yPx: 20 } };
@@ -388,5 +390,105 @@ describe("OperationBridge", () => {
 
     const result = await promise;
     expect(result.screenshot).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pushResult: display-only tool-result forwarding (US3; data-model.md §3;
+// contracts/agent-desktop-channel-contract.md §2; research.md D4).
+//
+// pushResult wraps a ToolResultPart in a content AgentFrame (sender=SYSTEM,
+// fresh frameId) and writes it to the sink WITHOUT creating a pending entry
+// or awaiting a result — a one-way display write (DI vi.fn sink, no module
+// mocks per style/javascript.md §测试).
+// ---------------------------------------------------------------------------
+describe("OperationBridge.pushResult", () => {
+  let bridge: OperationBridge;
+
+  beforeEach(() => {
+    bridge = new OperationBridge();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("writes exactly one content frame (sender=SYSTEM, fresh frameId, toolResult part) to the sink", () => {
+    const sink = vi.fn();
+    bridge.registerSink(sink);
+
+    const toolResult = makeResult(
+      "display-only-id",
+      STATUS_SUCCEEDED,
+      "saolei_update: state updated",
+    );
+    bridge.pushResult(toolResult);
+
+    expect(sink).toHaveBeenCalledOnce();
+    const frame = sink.mock.calls[0]![0] as AgentFrame;
+    expect(frame.payload).toBe("content");
+    expect(frame.sender).toBe(FRAME_SENDER_SYSTEM);
+    expect(frame.frameId).toBeTruthy();
+    expect(frame.frameId).toHaveLength(36); // UUID v4 length
+    expect(frame.content?.parts).toHaveLength(1);
+    expect(frame.content!.parts![0].toolResult).toBe(toolResult);
+  });
+
+  it("creates no pending dispatch entry (forwarded toolId is uncorrelated; a subsequent dispatch still resolves)", async () => {
+    const sink = vi.fn();
+    bridge.registerSink(sink);
+
+    bridge.pushResult(
+      makeResult("display-only-id", STATUS_SUCCEEDED, "display"),
+    );
+
+    // The forwarded toolResult's toolId must NOT match any pending entry:
+    // feeding it to handleResult is a no-op (no dangling resolve), proving
+    // pushResult never registered a pending dispatch for it.
+    const pushedFrame = sink.mock.calls[0]![0] as AgentFrame;
+    const pushedToolId =
+      pushedFrame.content?.parts?.[0]?.toolResult?.toolId ?? "";
+    bridge.handleResult(makeResult(pushedToolId, STATUS_SUCCEEDED, "stale"));
+
+    // A subsequent real dispatch still correlates correctly, proving pushResult
+    // did not corrupt the pending map (data-model.md §3: no pending entry).
+    const dispatchSink = vi.fn();
+    bridge.registerSink(dispatchSink);
+    const part = makeMovePart();
+    const promise = bridge.dispatch(part);
+    expect(dispatchSink).toHaveBeenCalledOnce();
+    const dispFrame = dispatchSink.mock.calls[0]![0] as {
+      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+    };
+    const toolId = dispFrame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
+  });
+
+  it("is a no-op (no throw) when no sink is registered", () => {
+    expect(() => {
+      bridge.pushResult(
+        makeResult("display-only-id", STATUS_SUCCEEDED, "noop"),
+      );
+    }).not.toThrow();
+  });
+
+  it("swallows a sink write error (best-effort delivery) without throwing", () => {
+    // contracts/agent-desktop-channel-contract.md §2 "Best-effort delivery":
+    // a broken connection loses the live frame but MUST NOT disrupt the tool
+    // flow that called pushResult — so a sink throw is swallowed.
+    bridge.registerSink(() => {
+      throw new Error("stream closed");
+    });
+
+    expect(() => {
+      bridge.pushResult(
+        makeResult("display-only-id", STATUS_SUCCEEDED, "best-effort"),
+      );
+    }).not.toThrow();
   });
 });

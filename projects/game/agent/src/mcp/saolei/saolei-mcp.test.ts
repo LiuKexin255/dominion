@@ -812,3 +812,78 @@ describe("createSaoleiMcpServer: saolei_update routes by lastOp.kind", () => {
 		expect(state.pendingUpdate).toBe(false);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// saolei_update display-only ToolResultPart forwarding (US3; data-model.md §3;
+// contracts/agent-desktop-channel-contract.md §2; research.md D4/D5;
+// quickstart.md Scenario 5).
+//
+// saolei_update resolves server-side (no desktop operation), so it forwards a
+// display-only ToolResultPart via bridge.pushResult: SUCCEEDED on acceptance,
+// FAILED on rejection. The makeFakeBridge sink captures the forwarded part
+// (it has no operation toolId, so handleResult is never invoked for it — no
+// spurious correlation). Asserting one toolResult part per return point.
+// ---------------------------------------------------------------------------
+describe("createSaoleiMcpServer: saolei_update display-only result (US3 / data-model.md §3)", () => {
+	const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
+
+	it("forwards a SUCCEEDED ToolResultPart via pushResult on acceptance", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 1, y: 1 });
+		await callTool(server, "saolei_update", {
+			cells: [{ x: 1, y: 1, status: "1" }],
+		});
+
+		// Exactly one display-only ToolResultPart forwarded via pushResult
+		// (SUCCEEDED on acceptance per D5). makeFakeBridge's sink collects it
+		// alongside the operation dispatches; filter for the toolResult kind.
+		const toolResultParts = dispatched.filter((p) => p.toolResult);
+		expect(toolResultParts).toHaveLength(1);
+		const tr = toolResultParts[0].toolResult!;
+		expect(tr.status).toBe(STATUS_SUCCEEDED);
+		expect(tr.message).toContain("state updated");
+		expect(tr.toolId).toBeTruthy(); // display-only id (not correlated)
+	});
+
+	it("forwards a FAILED ToolResultPart via pushResult on a validation rejection", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 5, height: 5 });
+		await callTool(server, "saolei_click", { x: 1, y: 1 });
+		// Disconnected update (FR-013) → rejected → FAILED display result.
+		await callTool(server, "saolei_update", {
+			cells: [
+				{ x: 1, y: 1, status: "0" },
+				{ x: 4, y: 4, status: "1" },
+			],
+		});
+
+		const toolResultParts = dispatched.filter((p) => p.toolResult);
+		expect(toolResultParts).toHaveLength(1);
+		const tr = toolResultParts[0].toolResult!;
+		expect(tr.status).toBe(STATUS_FAILED);
+		expect(tr.message).toContain("rejected");
+	});
+
+	it("forwards a FAILED ToolResultPart via pushResult on the no-pending-op precondition rejection", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { server } = createSaoleiMcpServer(bridge);
+
+		await callTool(server, "saolei_init", { width: 3, height: 3 });
+		// No operation pending → precondition rejection → FAILED display result.
+		await callTool(server, "saolei_update", {
+			cells: [{ x: 0, y: 0, status: "1" }],
+		});
+
+		const toolResultParts = dispatched.filter((p) => p.toolResult);
+		expect(toolResultParts).toHaveLength(1);
+		expect(toolResultParts[0].toolResult!.status).toBe(STATUS_FAILED);
+		expect(toolResultParts[0].toolResult!.message).toContain(
+			"no operation awaiting update",
+		);
+	});
+});
