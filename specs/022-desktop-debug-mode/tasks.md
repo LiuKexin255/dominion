@@ -4,7 +4,7 @@
 
 **Prerequisites**: [plan.md](./plan.md) (required), [spec.md](./spec.md) (required, user stories), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/debug-control-plane.md](./contracts/debug-control-plane.md), [quickstart.md](./quickstart.md)
 
-**Tests**: Per Constitution §IV, compile + unit tests run on every code change as part of development (not separate tasks). Go unit tests are written alongside the Go logic they cover (the desktop has Go tests; the frontend has no JS test runner — only `svelte-check` + `vite build`). Large-test acceptance (agent) is a dedicated task in the Polish phase per Constitution §VI.
+**Tests**: Per Constitution §IV, compile + unit tests run on every code change as part of development (not separate tasks). Go unit tests are written alongside the Go logic they cover (the desktop has Go tests; the frontend has no JS test runner — only `svelte-check` typecheck + a `vite build` consumed by Bazel (`bazel build //projects/game/desktop/frontend:dist`; never run `pnpm build`/`vite build` directly — see `projects/game/desktop/README.md`)). Large-test acceptance (agent) is a dedicated task in the Polish phase per Constitution §VI.
 
 **Organization**: Tasks grouped by user story (spec US1 = P1, US2 = P2). US2 depends on US1 (debug mode must exist before results can be held "when debug mode is ON" — spec US2 "depends on debug mode existing").
 
@@ -40,7 +40,7 @@ The feature design docs are required reading for every code phase (Constitution 
 - 官方文档：无
 - 技术文章：无
 
-- [ ] T001 Verify baseline build + typecheck + tests are green: `bazel build //projects/game/desktop/... //projects/game/agent/...`, `bazel test //projects/game/desktop/... //projects/game/agent/...`, and frontend `bazel run @pnpm -- --dir "$PWD/projects/game/desktop/frontend" run typecheck` + `run build`. Fix nothing here — only confirm green; if red, stop and surface the pre-existing failure.
+- [X] T001 Verify baseline build + typecheck + tests are green: `bazel build //projects/game/desktop/... //projects/game/agent/...`, `bazel test //projects/game/desktop/... //projects/game/agent/...`, and frontend typecheck via `bazel run @pnpm -- --dir "$PWD/projects/game/desktop/frontend" run typecheck` + frontend dist build via `bazel build //projects/game/desktop/frontend:dist` (per `projects/game/desktop/README.md`: frontend `dist/` is built by the Bazel `vite_build` rule — never run `pnpm build`/`vite build` directly). Fix nothing here — only confirm green; if red, stop and surface the pre-existing failure.
 
 **Checkpoint**: Green baseline established.
 
@@ -115,7 +115,7 @@ The feature design docs are required reading for every code phase (Constitution 
 - 官方文档：无
 - 技术文章：无
 
-- [ ] T014 [P] Regenerate build files + format: run `bazel run //:gazelle projects/game/desktop projects/game/agent` (update `BUILD.bazel`), `bazel run //:go -- fmt` on changed Go files, then `bazel run @pnpm -- --dir "$PWD/projects/game/desktop/frontend" run typecheck` + `run build`. Confirm `bazel build //...` and `bazel test //projects/game/desktop/... //projects/game/agent/...` are green.
+- [ ] T014 [P] Regenerate build files + format: run `bazel run //:gazelle projects/game/desktop projects/game/agent` (update `BUILD.bazel`), `bazel run //:go -- fmt` on changed Go files, then frontend typecheck via `bazel run @pnpm -- --dir "$PWD/projects/game/desktop/frontend" run typecheck` + frontend dist build via `bazel build //projects/game/desktop/frontend:dist` (per `projects/game/desktop/README.md`; do NOT run `pnpm build`/`vite build` directly). Confirm `bazel build //...` and `bazel test //projects/game/desktop/... //projects/game/agent/...` are green.
 - [ ] T015 Run the [quickstart.md](./quickstart.md) validation scenarios end-to-end (manual): Scenario 1 (logs), Scenario 2 (hold/confirm), Scenario 3 (15-min auto-continue — use a shortened internal duration or the Go unit test to avoid waiting), Scenario 4 (transparency), Scenario 5 (scope boundary / no regressions).
 - [ ] T016 [P] Run the existing agent large tests via the `testplan` skill — `guitar run projects/game/testplan/system_test.yaml` — to confirm the `DISPATCH_TIMEOUT_MS` change (T009) keeps agent dispatch green (Constitution §VI; per `style/large_test.md`, no new large-test plan is created — the desktop is a client, out of large-test scope; the agent is covered by its existing plan). Update any agent test asserting the prior 5 s timeout if it now fails.
 
