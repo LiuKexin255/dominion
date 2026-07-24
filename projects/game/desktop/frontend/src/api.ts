@@ -309,6 +309,13 @@ interface WailsApp {
   DeleteSkill(skillName: string): Promise<void>
 
   RefreshAgent(sessionID: string): Promise<void>
+
+  // Debug control plane — desktop debug mode. The Go bound methods are added to
+  // *App in their story phases (T005 SetDebugMode, T010 ConfirmToolResult); this
+  // binding surface is declared ahead of time so the US1/US2 frontend typechecks
+  // against it. See specs/022-desktop-debug-mode/contracts/debug-control-plane.md §1.
+  SetDebugMode(enabled: boolean): Promise<void>
+  ConfirmToolResult(toolID: string): Promise<void>
 }
 
 function app(): WailsApp | undefined {
@@ -485,4 +492,20 @@ export async function refreshAgent(sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.RefreshAgent(sessionID)
+}
+
+// ─── Debug Control Plane Wrappers ──────────────────────────────────────────
+// Desktop debug-mode toggle + held-tool-result confirm. Contract:
+// specs/022-desktop-debug-mode/contracts/debug-control-plane.md §1.
+
+export async function setDebugMode(enabled: boolean): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.SetDebugMode(enabled)
+}
+
+export async function confirmToolResult(toolID: string): Promise<void> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.ConfirmToolResult(toolID)
 }
