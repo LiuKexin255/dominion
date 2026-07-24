@@ -2,26 +2,27 @@
 ==============================================================================
 Sync Impact Report
 ==============================================================================
-Version change: 1.1.0 → 1.2.0
-Rationale: Principle V (Read Before Code) — the "文档分类" rule elevated from a
-  descriptive note into a MANDATORY FORMAT REQUIREMENT: tasks.md MUST now
-  organize each phase's document list under three explicit categories
-  (代码规范文档 / 官方文档 / 技术文章), with concrete documents listed under
-  each category, and an explicit "无" placeholder required when a category has
-  no documents (omission forbidden). Each category also gets an explicit
-  definition of which documents it contains. This materially strengthens
-  planning discipline and makes the format auditable → MINOR 1.2.0.
+Version change: 1.2.0 → 1.3.0
+Rationale: Principle VI (Large Test Acceptance for Services) materially expanded
+  — acceptance now MUST include actual execution steps via the testplan skill
+  (full deploy→test→cleanup loop via `guitar run <plan.yaml>`), MUST NOT be
+  satisfied by build checks alone (e.g. `bazel build` of test targets), and the
+  pass criterion is now "all test cases pass" (any failed/flaky case = acceptance
+  not met, MUST fix and re-run until fully green). This closes a loophole where
+  build-only checks were tacitly accepted as large-test verification → MINOR
+  1.3.0.
 
 Modified principles:
-  - V. 编码前阅读文档 (Read Before Code) — 流程: "文档分类" upgraded from
-    descriptive bullet to mandatory format requirement with per-category
-    document definitions + "无"-placeholder rule. "代码规范文档" category
-    covers both repo-internal `style/` docs AND referenced external code
-    specs (official style guides, AIP/API design specs) that a phase needs
-    to read. Rationale extended to cover comparability/auditability of doc
-    coverage across phases.
+  - VI. 服务型应用大型测试验收 (Large Test Acceptance for Services) — 流程:
+    added two mandatory rules: (1) acceptance MUST include real testplan
+    execution including full deploy→test→cleanup steps, build-only checks are
+    explicitly forbidden as a substitute; (2) all test cases MUST pass (failed
+    or flaky cases = acceptance not met). Rationale extended to explain why
+    build checks alone cannot constitute acceptance.
+  - Development Workflow gate 5 (大型测试验收门禁) strengthened to require
+    actual execution + full pass (not merely "pass large tests").
 
-Added sections: none (rule-level expansion within an existing principle).
+Added sections: none (rule-level expansion within an existing principle + gate).
 
 Removed sections: none.
 
@@ -30,16 +31,14 @@ Templates requiring updates:
         reads this file dynamically; gates are derived per-feature).
   - .specify/templates/spec-template.md   — ✅ no change (scope/requirements
         unaffected).
-  - .specify/templates/tasks-template.md  — ⚠ pending (optional): consider
-        adding a per-phase "文档清单" example organized under the three
-        mandatory categories (代码规范文档 / 官方文档 / 技术文章) to make the
-        new format requirement concrete for planners. Not strictly required
-        since the constitution now mandates the format; left to manual review.
+  - .specify/templates/tasks-template.md  — ✅ no change (task structure
+        unaffected; large-test execution rigor is enforced by principle VI
+        and gate 5, not by task template shape).
   - .specify/workflows/speckit/workflow.yml — ✅ no change (integration-agnostic).
 
 Follow-up TODOs:
-  - tasks-template.md: optionally add a per-phase document-list example
-    organized by the three mandatory categories to demonstrate the format.
+  - Previous 1.2.0 follow-up (tasks-template per-phase "文档清单" example)
+    remains open/pending manual review.
   - Previous 1.0.0 follow-up (tasks-template test-framing adjustment) remains
     open/pending manual review.
 ==============================================================================
@@ -113,8 +112,10 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 
 - 大型测试 MUST 覆盖关键服务行为（接口契约、端到端流程、跨服务通信等）。
 - 大型测试通过 testplan skill（`tools/test/guitar`）执行，相关规范见 `style/large_test.md`。
+- 大型测试验收 MUST 包含完整执行步骤：MUST 实际通过 testplan skill 执行测试计划（`guitar run <plan.yaml>`），完成部署→测试→清理闭环；**禁止仅以构建检查**（如 `bazel build` 编译测试 target）**替代实际测试执行**——构建通过仅证明测试代码可编译，不构成验收。
+- 验收通过的标准为**所有测试用例全部通过**（all cases passed）；存在任何失败用例（failed 或 flaky）即视为验收未通过，MUST 修复后重新执行，直至全部通过。
 
-**Rationale**：单测验证内部逻辑正确性；大型测试验证服务在真实集成环境下的行为，两者互补才能构成服务型应用的完整验收。
+**Rationale**：单测验证内部逻辑正确性；大型测试验证服务在真实集成环境下的行为，两者互补才能构成服务型应用的完整验收。仅通过构建检查无法证明被测系统在真实集成环境下行为正确；只有实际执行测试计划并使全部用例通过，才能形成有效、可信的验收。
 
 ## 技术约束与规范 (Additional Constraints)
 
@@ -132,7 +133,7 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 2. **实现门禁**（原则 II / III）：变更以重构式进行；服务/模块变更 MUST 先有接口设计。
 3. **编译 + 单测门禁**（原则 IV）：每次代码变更 MUST 通过 `bazel build` + `bazel test`（相关 target），作为开发任务的一部分，不单列 task。
 4. **引用门禁**（原则 I）：产出的代码与文档 MUST 包含引用来源。
-5. **大型测试验收门禁**（原则 VI）：服务型应用在功能/需求完成后，MUST 通过大型测试作为验收；该步骤 MAY 单独分配 task。
+5. **大型测试验收门禁**（原则 VI）：服务型应用在功能/需求完成后，MUST 实际执行大型测试（通过 testplan skill 完成完整部署→测试→清理闭环）作为验收，且所有测试用例 MUST 全部通过；仅构建检查不构成验收；该步骤 MAY 单独分配 task。
 
 ## Governance
 
@@ -142,4 +143,4 @@ tasks.md MUST 为每个 phase 显式声明该 phase 需要阅读的文档：
 - **合规审查**：所有 PR / review MUST 校验本宪章合规性；任何复杂度 MUST 可被论证（对齐原则 II 的简化要求）。
 - 运行时开发指引见 `AGENTS.md`；本宪章文件位置：`.specify/memory/constitution.md`。
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-18
+**Version**: 1.3.0 | **Ratified**: 2026-07-16 | **Last Amended**: 2026-07-24
