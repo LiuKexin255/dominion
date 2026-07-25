@@ -5,8 +5,6 @@
  *   - Unknown `{session_id}` → 404 "Session not found" (FR-003).
  *   - Known session → lazily creates a session-bound McpServer + transport
  *     entry on first request (research.md D3).
- *   - The MCP client's `tools/list` discovers exactly the five saolei tools
- *     (FR-005; quickstart.md Scenario 2 automated check).
  *
  * DI pattern (style/javascript.md §测试): the host takes a `SessionBridgeLookup`
  * function; tests inject a fake store + real `OperationBridge`. No `vi.mock`

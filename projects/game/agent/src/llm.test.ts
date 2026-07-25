@@ -1083,15 +1083,14 @@ describe("AgentAdapterImpl.create saolei integration", () => {
 			expect(entry?.url).toBe(
 				"http://localhost:9999/internal/mcp/sess-url-test",
 			);
-			return {
-				getTools: async () => [
-					fakeTool("saolei_init"),
-					fakeTool("saolei_click"),
-					fakeTool("saolei_flag"),
-					fakeTool("saolei_chord_click"),
-					fakeTool("saolei_update"),
-				],
-			};
+		return {
+			getTools: async () => [
+				fakeTool("saolei_init"),
+				fakeTool("saolei_click"),
+				fakeTool("saolei_flag"),
+				fakeTool("saolei_chord_click"),
+			],
+		};
 		});
 
 		await AgentAdapterImpl.create(
@@ -1116,7 +1115,6 @@ describe("AgentAdapterImpl.create saolei integration", () => {
 			fakeTool("saolei_click"),
 			fakeTool("saolei_flag"),
 			fakeTool("saolei_chord_click"),
-			fakeTool("saolei_update"),
 		];
 		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
 			getTools: async () => saoleiTools,
@@ -1135,13 +1133,13 @@ describe("AgentAdapterImpl.create saolei integration", () => {
 
 		const config = createAgentFn.mock.calls[0][0];
 		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
-		// The five saolei tools are present; mouse_move is absent.
+		// The four stateless saolei tools are present; mouse_move is absent;
+		// saolei_update is absent (removed — spec 023 FR-016).
 		expect(toolNames).toEqual([
 			"saolei_init",
 			"saolei_click",
 			"saolei_flag",
 			"saolei_chord_click",
-			"saolei_update",
 		]);
 	});
 });
@@ -1183,10 +1181,16 @@ describe("AgentAdapterImpl.create skill injection (FR-023/024/025)", () => {
 		expect(prompt).toContain(
 			"base-system-prompt" + SKILL_PROMPT_SEPARATOR + "# saolei",
 		);
-		// Stable content markers from the saolei skill body.
+		// Stable content markers from the saolei skill body (spec 023 FR-022:
+		// four stateless tools, no saolei_update tool section, no validation).
 		expect(prompt).toContain("saolei_init");
-		expect(prompt).toContain("saolei_update");
-		expect(prompt).toContain("Cell status enum");
+		expect(prompt).toContain("saolei_click");
+		expect(prompt).toContain("Stateless design");
+		// The saolei_update tool is NOT documented as a callable tool (no
+		// section header); the skill only mentions it in "When NOT to use"
+		// to tell the model it does not exist.
+		expect(prompt).not.toContain("### saolei_update");
+		expect(prompt).not.toContain("Cell status enum");
 	});
 
 	it("saolei profile: appended body equals loadSkillBody('saolei') verbatim", async () => {

@@ -3,13 +3,15 @@
  *
  * Hosts a localhost Streamable HTTP MCP server that routes
  * `/internal/mcp/{session_id}` to a lazily-created, session-bound
- * `McpServer` (research.md D3). Each session's `McpServer` is built by
- * `createSaoleiMcpServer` and closes over that session's `OperationBridge`
- * + `GameState` (FR-002 / FR-026).
+ * `McpServer` (`specs/018-saolei-mcp/research.md` D3). Each session's
+ * `McpServer` is built by `createSaoleiMcpServer` and closes over that
+ * session's `OperationBridge` (FR-002 / FR-026). The saolei MCP is stateless
+ * (`specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md` §6), so
+ * the server carries no per-session game state.
  *
  * Lifecycle (research.md D3 / FR-026): the host process owns the listener;
  * sessions map onto the existing `SessionAgent` lifecycle. Unknown
- * `{session_id}` → 404 "Session not found" (FR-003), no game state created.
+ * `{session_id}` → 404 "Session not found" (FR-003), no server created.
  *
  * DI seam (style/javascript.md §测试): the host takes a `SessionLookup`
  * function so tests can inject a fake store + fake bridge without spinning
@@ -21,10 +23,10 @@ import { Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { info, warn } from "@dominion/common-js-logs";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { OperationBridge } from "./operation-bridge";
 import { createSaoleiMcpServer } from "./mcp/saolei/saolei-mcp";
-import type { SaoleiMcpHandle } from "./mcp/saolei/saolei-mcp";
 
 /**
  * Lookup result for a session id: the session's `OperationBridge`, used to
@@ -42,7 +44,7 @@ export const DEFAULT_MCP_PORT = 50052;
 
 /** Session-keyed entry: the lazily-created server + transport pair. */
 interface SessionEntry {
-	mcp: SaoleiMcpHandle;
+	mcp: McpServer;
 	transport: StreamableHTTPServerTransport;
 }
 
@@ -100,7 +102,7 @@ export function createMcpHostApp(lookup: SessionBridgeLookup): express.Express {
 		// resolves, so concurrent requests for the same session id re-enter
 		// this function and either find a cached entry or rebuild (idempotent
 		// for a fresh transport — McpServer.connect is one-shot per server).
-		await mcp.server.connect(transport);
+		await mcp.connect(transport);
 
 		const entry: SessionEntry = { mcp, transport };
 		sessions.set(sessionId, entry);
