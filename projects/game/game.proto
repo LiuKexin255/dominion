@@ -259,33 +259,79 @@ enum KeyboardKey {
 
 // ─── Content Part Model ────────────────────────────────────────────────────
 //
-// Part is one content block. PartBlock is the first-class content unit shared
-// by AgentFrame (as a payload case) and Message (as its content): it carries
-// 1+ Parts. Both live frames and persisted history use the identical
-// PartBlock shape, so live view and history render identically without any
-// per-field mirroring. Each tool is its own Part variant (no ToolPart
-// wrapper) — MouseMovePart and MouseClickPart sit directly alongside
-// Text/Thinking/Image.
+// The content model is split into two disjoint categories
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6;
+// spec 023 C3 / FR-001..FR-004):
+//
+//   - MessagePart (display only) — rendered in the conversation and carried by
+//     Message (history) and AgentFrame.message_parts (live): text, thinking,
+//     image, tool_call (the model's semantic tool invocation), tool_result.
+//   - FlowPart (control only — NEVER rendered in the conversation) — drives
+//     desktop execution (mouse/keyboard operations) and turn control
+//     (wait/warn/status). A FlowPart is consumed, not displayed
+//     (spec 023 FR-005).
+//
+// This split is structural rather than a render-time filter, so a FlowPart can
+// never accidentally render as a chat entry. Live frames and persisted history
+// share the identical MessageParts shape, so live view and history render
+// identically.
 
-// PartBlock is the basic content unit carried by frames and messages.
-message PartBlock {
-  // Ordered content blocks. A user turn, for example, is a PartBlock of
-  // [TextPart, ImagePart].
-  repeated Part parts = 1;
+// ToolCallPart carries the model's tool invocation as display content. It is
+// the semantic counterpart of the physical FlowPart operation a tool dispatches:
+// the conversation shows the tool name + arguments (this part), while the
+// desktop executes the operation (a FlowPart). tool_id links the call to its
+// subsequent tool_result MessagePart and to the FlowPart operation it dispatches
+// (spec 023 FR-002/FR-008). args_json is the model's arguments verbatim
+// (JSON.stringify(tool_call.args)); display-only.
+message ToolCallPart {
+  string tool_id   = 1;
+  string name      = 2;
+  string args_json = 3;
 }
 
-// Part is a single discriminated content block.
-message Part {
+// MessagePart is one display-only content block. The conversation renders only
+// MessageParts; they are the sole content of Message (history) and the
+// message_parts payload of AgentFrame (live). A tool call and its result are
+// both MessageParts (tool_call, tool_result) linked by tool_id.
+message MessagePart {
   oneof kind {
-    TextPart              text                = 1;
-    ThinkingPart          thinking            = 2;
-    ImagePart             image               = 3;
-    MouseMovePart         mouse_move          = 4;
-    MouseClickPart        mouse_click         = 5;
-    ToolResultPart        tool_result         = 6;
-    KeyboardPressPart     keyboard_press      = 7;
-    MouseMoveAndClickPart mouse_move_and_click = 8;
+    TextPart       text        = 1;
+    ThinkingPart   thinking    = 2;
+    ImagePart      image       = 3;
+    ToolCallPart   tool_call   = 4;  // NEW (spec 023 FR-002)
+    ToolResultPart tool_result = 5;
   }
+}
+
+// FlowPart is one control-only block. It drives desktop execution (mouse/
+// keyboard operations) and turn control (wait/warn/status); it is NEVER
+// rendered as a conversation entry (spec 023 FR-005). The operation kinds reuse
+// the existing operation Part messages verbatim (MouseMovePart, MouseClickPart,
+// KeyboardPressPart, MouseMoveAndClickPart — fields unchanged from spec 018).
+// The signal kinds (wait/warn/status) reuse the existing signal messages.
+message FlowPart {
+  oneof kind {
+    MouseMovePart         mouse_move           = 1;
+    MouseClickPart        mouse_click          = 2;
+    KeyboardPressPart     keyboard_press       = 3;
+    MouseMoveAndClickPart mouse_move_and_click = 4;
+    WaitSignal            wait                 = 5;
+    WarnSignal            warn                 = 6;
+    StatusSignal          status               = 7;
+  }
+}
+
+// MessageParts is the display payload: an ordered list of MessagePart. Carried
+// by AgentFrame.message_parts (live) and Message.content (history) — identical
+// shape, so live and history render identically (spec 023 FR-009).
+message MessageParts {
+  repeated MessagePart parts = 1;
+}
+
+// FlowParts is the control payload: an ordered list of FlowPart. Carried by
+// AgentFrame.flow_parts. Never appears in Message.content.
+message FlowParts {
+  repeated FlowPart parts = 1;
 }
 
 // TextPart carries visible text content.
@@ -361,7 +407,12 @@ message ToolResultPart {
   ImagePart screenshot = 4;
 }
 
-// ─── Control Signals (frame-payload only; never persisted to history) ──────
+// ─── Control Signals ──────────────────────────────────────────────────────
+//
+// WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
+// content-model split (spec 023 C3 / FR-003) they are FlowPart kinds — carried
+// by AgentFrame.flow_parts and never rendered as conversation entries. Their
+// message shapes are unchanged from spec 018.
 
 // WaitSignal indicates the agent finished a turn and is waiting for input.
 message WaitSignal {
@@ -394,8 +445,10 @@ message StatusSignal {
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
 // AgentFrame is the transport unit exchanged over WebSocket and gRPC streams.
-// A frame carries exactly one payload: a PartBlock of content OR a single
-// control signal. The content-vs-signal split is structural (one oneof).
+// A frame carries exactly one payload: a batch of display blocks
+// (MessageParts) OR a batch of control blocks (FlowParts). The prior
+// content/wait/warn/status cases are removed (clean break, spec 023 C2):
+// wait/warn/status became FlowPart kinds (spec 023 FR-003).
 message AgentFrame {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
   string frame_id = 2;
@@ -408,19 +461,23 @@ message AgentFrame {
   FrameSender sender = 6;
   string agent_profile_name = 7;
 
-  // Exactly one payload per frame.
+  // Exactly one payload per frame: a batch of display blocks OR a batch of
+  // control blocks (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4).
   oneof payload {
-    PartBlock    content = 10;
-    WaitSignal   wait    = 20;
-    WarnSignal   warn    = 21;
-    StatusSignal status  = 22;
+    MessageParts message_parts = 11;
+    FlowParts    flow_parts    = 12;
   }
+  // Prior payload cases (clean break, spec 023 C2): 10 was PartBlock content;
+  // 20/21/22 were wait/warn/status (now FlowPart kinds). Reserved for hygiene.
+  reserved 10, 20, 21, 22;
+  reserved "content", "wait", "warn", "status";
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
-// state (history). Its content is the same PartBlock shape as a live frame's
-// content payload, so history and live view are structurally identical.
-// Control signals are frame-only and never appear here.
+// state (history). Its content is a MessageParts (display blocks only) — the
+// identical shape a live AgentFrame's message_parts payload carries, so
+// history and live view render identically. Control blocks (FlowParts) never
+// appear here (spec 023 FR-004).
 message Message {
   option (google.api.resource) = {
     type: "game.liukexin.com/Message"
@@ -434,13 +491,13 @@ message Message {
   FrameSender sender = 3;
   google.protobuf.Timestamp create_time = 4;
 
-  // Content blocks — identical shape to AgentFrame's content payload.
-  PartBlock content = 5;
+  // Content blocks (display only) — identical shape to AgentFrame's
+  // message_parts payload (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §5).
+  MessageParts content = 5;
 
-  // Removed (breaking): `type` (string) — Part.kind self-describes, so a
-  // separate discriminator is redundant. The former content oneof fields
-  // (text / image_data / operation / operation_result) are folded into the
-  // PartBlock above.
+  // Removed (clean break, spec 023 C2): the former PartBlock content (field 5
+  // type changed from PartBlock to MessageParts) and the legacy flat content
+  // fields (type / image_data / operation / operation_result).
   reserved 6, 7, 8, 9;
   reserved "type", "image_data", "operation", "operation_result";
 }

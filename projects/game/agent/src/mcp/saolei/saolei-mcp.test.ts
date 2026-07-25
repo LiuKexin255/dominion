@@ -21,41 +21,62 @@ import type { OperationResult } from "../../operation-bridge";
 import { createSaoleiMcpServer, STATUS_SUCCEEDED } from "./saolei-mcp";
 import { CellStatus } from "./game-state";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
-import type { Part } from "../../../../game_types/projects/game/Part";
+import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
+import type { MessagePart } from "../../../../game_types/projects/game/MessagePart";
 import type { AgentFrame } from "../../../../game_types/projects/game/AgentFrame";
 import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart";
 import type { MouseMoveAndClickPart } from "../../../../game_types/projects/game/MouseMoveAndClickPart";
 
 /**
- * Build a fake OperationBridge whose dispatch records the dispatched Part
+ * A captured sink part. The fake bridge's sink receives BOTH operation
+ * dispatches (FlowParts envelope → a FlowPart) and display-only pushResult
+ * forwards (MessageParts envelope → a MessagePart carrying toolResult). Both
+ * proto oneof message types have all-optional fields, so their intersection
+ * admits either shape and exposes every variant accessor the assertions use
+ * (mouseMoveAndClick / keyboardPress / toolResult / ...). US3 rewrites this
+ * file (saolei_update / pushResult are removed).
+ */
+type CapturedSinkPart = FlowPart & MessagePart;
+
+/**
+ * Build a fake OperationBridge whose dispatch records the dispatched FlowPart
  * and resolves a canned SUCCEEDED result. The fake simulates the desktop
  * side of the bidi stream — registerSink + handleResult — without spinning
  * up a real connection (style/javascript.md §测试 — DI seam).
  */
 function makeFakeBridge(
 	canned: OperationResult = { status: STATUS_SUCCEEDED, message: "ok" },
-): { bridge: OperationBridge; dispatched: Part[] } {
+): { bridge: OperationBridge; dispatched: CapturedSinkPart[] } {
 	const bridge = new OperationBridge();
-	const dispatched: Part[] = [];
+	const dispatched: CapturedSinkPart[] = [];
 	bridge.registerSink((frame: AgentFrame) => {
-		const part = frame.content?.parts?.[0];
-		if (part) dispatched.push(part);
-		// Resolve the dispatch with the canned result by feeding the bridge
-		// a matching ToolResultPart for each tool_id observed on the part.
-		const toolId =
-			part?.keyboardPress?.toolId ??
-			part?.mouseMove?.toolId ??
-			part?.mouseClick?.toolId ??
-			part?.mouseMoveAndClick?.toolId ??
-			"";
-		if (toolId) {
-			bridge.handleResult({
-				toolId,
-				status: canned.status,
-				message: canned.message,
-				screenshot: canned.screenshot,
-			} as any);
+		// Operation dispatches arrive as a FlowParts payload.
+		const op = frame.flowParts?.parts?.[0] as CapturedSinkPart | undefined;
+		if (op) {
+			dispatched.push(op);
+			// Resolve the dispatch with the canned result by feeding the bridge
+			// a matching ToolResultPart for each tool_id observed on the part.
+			const toolId =
+				op.keyboardPress?.toolId ??
+				op.mouseMove?.toolId ??
+				op.mouseClick?.toolId ??
+				op.mouseMoveAndClick?.toolId ??
+				"";
+			if (toolId) {
+				bridge.handleResult({
+					toolId,
+					status: canned.status,
+					message: canned.message,
+					screenshot: canned.screenshot,
+				} as any);
+			}
 		}
+		// Display-only pushResult forwards arrive as a MessageParts payload
+		// (US1 envelope change). Captured for the saolei_update assertions.
+		const msg = frame.messageParts?.parts?.[0] as
+			| CapturedSinkPart
+			| undefined;
+		if (msg) dispatched.push(msg);
 	});
 	return { bridge, dispatched };
 }
@@ -605,7 +626,7 @@ describe("createSaoleiMcpServer: saolei_chord_click (FR-009 / FR-011 / FR-015)",
 	async function makeSatisfiedChordSession(): Promise<{
 		server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer;
 		state: import("./game-state").GameState;
-		dispatched: Part[];
+		dispatched: CapturedSinkPart[];
 		bridge: OperationBridge;
 	}> {
 		const { bridge, dispatched } = makeFakeBridge();

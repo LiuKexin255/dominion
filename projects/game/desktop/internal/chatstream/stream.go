@@ -189,11 +189,11 @@ func (s *ChatStream) snapshotLocked(lastEventID int64) []*ChatEvent {
 	return snap
 }
 
-// SeedFromHistory normalizes persisted history Messages into content
-// AgentFrames and appends them to the log. Each Message becomes one
-// event preserving its original messageId, sender, createTime, and
-// content PartBlock; the sessionID is rewritten to this stream's
-// session so frames are consistent across history/live boundaries.
+// SeedFromHistory normalizes persisted history Messages into messageParts
+// AgentFrames and appends them to the log. Each Message becomes one event
+// preserving its original messageId, sender, createTime, and content
+// MessageParts; the sessionID is rewritten to this stream's session so frames
+// are consistent across history/live boundaries (spec 023 FR-009).
 func (s *ChatStream) SeedFromHistory(msgs []*game.Message) {
 	for _, msg := range msgs {
 		frame := &game.AgentFrame{
@@ -201,7 +201,7 @@ func (s *ChatStream) SeedFromHistory(msgs []*game.Message) {
 			FrameId:    msg.GetMessageId(),
 			Sender:     msg.GetSender(),
 			CreateTime: msg.GetCreateTime(),
-			Payload:    &game.AgentFrame_Content{Content: msg.GetContent()},
+			Payload:    &game.AgentFrame_MessageParts{MessageParts: msg.GetContent()},
 		}
 		s.Append(frame)
 	}

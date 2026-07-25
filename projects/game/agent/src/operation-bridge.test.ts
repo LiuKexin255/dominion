@@ -18,7 +18,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { OperationBridge } from "./operation-bridge";
 
-import type { Part } from "../game_types/projects/game/Part";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 
@@ -26,7 +26,7 @@ const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
 
-function makeMovePart(): Part {
+function makeMovePart(): FlowPart {
   return { mouseMove: { xPx: 10, yPx: 20 } };
 }
 
@@ -137,9 +137,9 @@ describe("OperationBridge", () => {
     expect(sinkB).toHaveBeenCalledOnce();
 
     const frame = sinkB.mock.calls[0]![0] as {
-      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+      flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] };
     };
-    const toolId = frame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    const toolId = frame.flowParts?.parts?.[0]?.mouseMove?.toolId ?? "";
     bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;
@@ -176,9 +176,9 @@ describe("OperationBridge", () => {
     expect(sink).toHaveBeenCalledOnce();
 
     const frame = sink.mock.calls[0]![0] as {
-      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+      flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] };
     };
-    const toolId = frame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    const toolId = frame.flowParts?.parts?.[0]?.mouseMove?.toolId ?? "";
     bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;
@@ -194,7 +194,7 @@ describe("OperationBridge", () => {
     const controller = new AbortController();
     controller.abort();
     const part = makeMovePart();
-    const result = await bridge.dispatch(part, controller.signal);
+    const result = await bridge.dispatch(part, undefined, controller.signal);
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toBe("aborted");
   });
@@ -203,7 +203,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, controller.signal);
+    const promise = bridge.dispatch(part, undefined, controller.signal);
 
     await vi.advanceTimersByTimeAsync(1_000);
     controller.abort();
@@ -216,12 +216,12 @@ describe("OperationBridge", () => {
   it("handleResult wins over late signal abort (no double-resolve)", async () => {
     let capturedToolId = "";
     bridge.registerSink((frame) => {
-      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
       capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
     });
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, controller.signal);
+    const promise = bridge.dispatch(part, undefined, controller.signal);
 
     bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
     const result = await promise;
@@ -265,7 +265,7 @@ describe("OperationBridge", () => {
   it("dispatch assigns a unique UUID tool_id to each part", async () => {
     const ids: string[] = [];
     bridge.registerSink((frame) => {
-      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
       const id = parts[0]?.mouseMove?.toolId;
       if (id) ids.push(id);
     });
@@ -281,6 +281,24 @@ describe("OperationBridge", () => {
 
     expect(ids).toHaveLength(3);
     expect(new Set(ids).size).toBe(3);
+  });
+
+  // T005 (contracts/tool-dispatch-contract.md §1): when a toolId is supplied
+  // (the LangChain tool_call.id), dispatch stamps it verbatim onto the FlowPart
+  // operation instead of minting a fresh UUID; correlation then keys on it.
+  it("dispatch stamps a supplied toolId onto the operation (no UUID minted)", async () => {
+    let capturedToolId = "";
+    bridge.registerSink((frame) => {
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
+      capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
+    });
+
+    const promise = bridge.dispatch(makeMovePart(), "call_toolcall_abc");
+    expect(capturedToolId).toBe("call_toolcall_abc");
+
+    bridge.handleResult(makeResult("call_toolcall_abc", STATUS_SUCCEEDED, "ok"));
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
   });
 
   it("handleResult resolves the correct pending dispatch when multiple in-flight", async () => {
@@ -301,9 +319,9 @@ describe("OperationBridge", () => {
     expect(rB.message).toBe("b-done");
   });
 
-  it("written envelope has payload='content' and carries the tool Part", async () => {
+  it("written envelope has payload='flowParts' and carries the FlowPart", async () => {
     let captured:
-      | { payload?: string; content?: { parts?: Part[] } }
+      | { payload?: string; flowParts?: { parts?: FlowPart[] } }
       | undefined;
     bridge.registerSink((frame) => {
       captured = frame as typeof captured;
@@ -316,11 +334,11 @@ describe("OperationBridge", () => {
     await promise;
 
     expect(captured).toBeDefined();
-    expect(captured!.payload).toBe("content");
-    expect(captured!.content).toBeDefined();
-    expect(captured!.content!.parts).toHaveLength(1);
-    expect(captured!.content!.parts![0]).toBe(part);
-    expect(captured!.content!.parts![0].mouseMove!.toolId).toBe(
+    expect(captured!.payload).toBe("flowParts");
+    expect(captured!.flowParts).toBeDefined();
+    expect(captured!.flowParts!.parts).toHaveLength(1);
+    expect(captured!.flowParts!.parts![0]).toBe(part);
+    expect(captured!.flowParts!.parts![0].mouseMove!.toolId).toBe(
       part.mouseMove!.toolId,
     );
   });
@@ -427,12 +445,12 @@ describe("OperationBridge.pushResult", () => {
 
     expect(sink).toHaveBeenCalledOnce();
     const frame = sink.mock.calls[0]![0] as AgentFrame;
-    expect(frame.payload).toBe("content");
+    expect(frame.payload).toBe("messageParts");
     expect(frame.sender).toBe(FRAME_SENDER_SYSTEM);
     expect(frame.frameId).toBeTruthy();
     expect(frame.frameId).toHaveLength(36); // UUID v4 length
-    expect(frame.content?.parts).toHaveLength(1);
-    expect(frame.content!.parts![0].toolResult).toBe(toolResult);
+    expect(frame.messageParts?.parts).toHaveLength(1);
+    expect(frame.messageParts!.parts![0].toolResult).toBe(toolResult);
   });
 
   it("creates no pending dispatch entry (forwarded toolId is uncorrelated; a subsequent dispatch still resolves)", async () => {
@@ -448,7 +466,7 @@ describe("OperationBridge.pushResult", () => {
     // pushResult never registered a pending dispatch for it.
     const pushedFrame = sink.mock.calls[0]![0] as AgentFrame;
     const pushedToolId =
-      pushedFrame.content?.parts?.[0]?.toolResult?.toolId ?? "";
+      pushedFrame.messageParts?.parts?.[0]?.toolResult?.toolId ?? "";
     bridge.handleResult(makeResult(pushedToolId, STATUS_SUCCEEDED, "stale"));
 
     // A subsequent real dispatch still correlates correctly, proving pushResult
@@ -459,9 +477,9 @@ describe("OperationBridge.pushResult", () => {
     const promise = bridge.dispatch(part);
     expect(dispatchSink).toHaveBeenCalledOnce();
     const dispFrame = dispatchSink.mock.calls[0]![0] as {
-      content?: { parts?: { mouseMove?: { toolId?: string } }[] };
+      flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] };
     };
-    const toolId = dispFrame.content?.parts?.[0]?.mouseMove?.toolId ?? "";
+    const toolId = dispFrame.flowParts?.parts?.[0]?.mouseMove?.toolId ?? "";
     bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
 
     const result = await promise;

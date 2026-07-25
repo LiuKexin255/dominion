@@ -559,10 +559,10 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // describe the pixel dimensions of screenshotData and are ignored when it is
 // empty.
 //
-// The user turn is carried as a content frame whose PartBlock holds a
-// TextPart and, when a screenshot is attached, an ImagePart. Inbound
-// MouseMovePart/MouseClickPart payloads are auto-executed by recvLoop and a
-// matching ToolResultPart is sent back over the same WebSocket connection
+// The user turn is carried as a messageParts frame whose MessageParts holds a
+// text MessagePart and, when a screenshot is attached, an image MessagePart.
+// Inbound FlowParts operations (mouse/keyboard) are auto-executed by recvLoop
+// and a matching ToolResultPart is sent back over the same WebSocket connection
 // (FR-013). The result part carries a post-action screenshot of the bound
 // window (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
@@ -581,12 +581,12 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		return fmt.Errorf("send user turn: %w", err)
 	}
 
-	parts := []*game.Part{
-		{Kind: &game.Part_Text{Text: &game.TextPart{Content: text}}},
+	parts := []*game.MessagePart{
+		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
 	}
 	if len(screenshotData) > 0 {
-		parts = append(parts, &game.Part{
-			Kind: &game.Part_Image{Image: &game.ImagePart{
+		parts = append(parts, &game.MessagePart{
+			Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 				Data:        screenshotData,
 				WidthPx:     int32(screenshotWidth),
@@ -603,8 +603,8 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		CreateTime:       timestamppb.Now(),
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
 		AgentProfileName: agentProfileName,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: parts},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: parts},
 		},
 	}
 
@@ -633,20 +633,23 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 }
 
 // recvLoop drains inbound WebSocket frames for an in-flight user turn and
-// appends each to the session's chat stream. It runs in its own goroutine
-// launched by SendUserTurn. The loop terminates — and closes recvDone —
-// when a wait signal is received (the agent is done) or RecvFrame errors.
+// appends each display/control frame to the session's chat stream as needed.
+// It runs in its own goroutine launched by SendUserTurn. The loop terminates —
+// and closes recvDone — when a wait signal is received (the agent is done) or
+// RecvFrame errors.
 //
-// Frames carry exactly one payload (PartBlock content OR a single control
-// signal). Content frames are scanned for tool requests: MouseMovePart and
-// MouseClickPart are auto-executed and their ToolResultPart is sent back
-// (FR-007, FR-013); the remaining parts (text/thinking/image) are surfaced
-// via the appended frame only. Wait/Warn/Status signals are forwarded via
-// the appended frame; a wait signal additionally ends the turn.
+// A frame carries exactly one payload: a batch of display blocks (MessageParts)
+// OR a batch of control blocks (FlowParts) (content-model split, spec 023 C3).
+//   - messageParts: appended to the chat stream for the frontend to render
+//     (text/thinking/image/tool_call/tool_result).
+//   - flowParts: operation kinds (mouse/keyboard) are executed via
+//     handleInboundOperation and are NOT appended to the chat stream (FR-005:
+//     operations never render as conversation entries); signal kinds
+//     (wait/warn/status) ARE appended so the frontend can react (wait clears
+//     the typing indicator, warn shows a warning, status is a no-op for chat).
 //
-// On RecvFrame error a synthesized wait signal is appended so the frontend
-// can settle the turn before the failure surfaces, preserving the behavior
-// the synchronous loop previously had.
+// On RecvFrame error a synthesized wait FlowPart is appended so the frontend
+// can settle the turn before the failure surfaces (data-model.md §9).
 func (a *App) recvLoop(sessionID, frameID string) {
 	defer close(a.recvDone)
 
@@ -662,8 +665,10 @@ func (a *App) recvLoop(sessionID, frameID string) {
 			a.chatStreams.Append(sessionID, &game.AgentFrame{
 				SessionId: sessionID,
 				FrameId:   frameID,
-				Payload: &game.AgentFrame_Wait{
-					Wait: &game.WaitSignal{},
+				Payload: &game.AgentFrame_FlowParts{
+					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+						{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}},
+					}},
 				},
 			})
 			return
@@ -674,58 +679,73 @@ func (a *App) recvLoop(sessionID, frameID string) {
 			"session_id":  sessionID,
 			"frame_count": frameCount,
 		})
-		a.chatStreams.Append(sessionID, resp)
 
 		switch payload := resp.GetPayload().(type) {
-		case *game.AgentFrame_Content:
-			// Auto-execute tool-request Parts (mouse move/click, keyboard
-			// press, atomic move-and-click) and report each result with a
-			// post-action screenshot (FR-007, FR-013). All other Part kinds
-			// (text, image, tool_result, ...) are non-operation payloads and
-			// are skipped here — they are still appended to the chat stream
-			// above for UI rendering.
-			for _, part := range payload.Content.GetParts() {
-				if part.GetMouseMove() == nil && part.GetMouseClick() == nil &&
-					part.GetKeyboardPress() == nil && part.GetMouseMoveAndClick() == nil {
+		case *game.AgentFrame_MessageParts:
+			// Display channel: render in the conversation.
+			a.chatStreams.Append(sessionID, resp)
+		case *game.AgentFrame_FlowParts:
+			for _, fp := range payload.FlowParts.GetParts() {
+				// Operation kinds drive desktop execution and are never
+				// conversation entries (FR-005). Signal kinds are forwarded to
+				// the chat stream so the frontend can react (wait/warn/status).
+				if fp.GetMouseMove() != nil || fp.GetMouseClick() != nil ||
+					fp.GetKeyboardPress() != nil || fp.GetMouseMoveAndClick() != nil {
+					if err := a.handleInboundOperation(sessionID, fp); err != nil {
+						a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
+							"session_id":  sessionID,
+							"frame_count": frameCount,
+							"error":       err.Error(),
+						})
+						return
+					}
 					continue
 				}
-				if err := a.handleInboundOperation(sessionID, part); err != nil {
-					a.logger.Error("backend", "recvLoop: handle inbound operation failed", map[string]any{
+				// Signal FlowPart (wait/warn/status): append so the frontend
+				// reacts; not rendered as a chat bubble by ChatView.
+				a.chatStreams.Append(sessionID, &game.AgentFrame{
+					SessionId:  resp.GetSessionId(),
+					FrameId:    resp.GetFrameId(),
+					CreateTime: resp.GetCreateTime(),
+					Sender:     resp.GetSender(),
+					Payload: &game.AgentFrame_FlowParts{
+						FlowParts: &game.FlowParts{Parts: []*game.FlowPart{fp}},
+					},
+				})
+				if fp.GetWait() != nil {
+					a.logger.Info("backend", "recvLoop: done", map[string]any{
 						"session_id":  sessionID,
 						"frame_count": frameCount,
-						"error":       err.Error(),
 					})
 					return
 				}
 			}
-		case *game.AgentFrame_Wait:
-			a.logger.Info("backend", "recvLoop: done", map[string]any{
-				"session_id":  sessionID,
-				"frame_count": frameCount,
-			})
-			return
-		case *game.AgentFrame_Warn, *game.AgentFrame_Status:
-			// Forwarded via the appended frame above; nothing else to do.
 		}
 	}
 }
 
-// handleInboundOperation executes an inbound tool-request Part
-// (MouseMovePart/MouseClickPart) and sends the matching ToolResultPart back
-// over the WebSocket wrapped in a content frame. The result part carries the
-// same tool_id and a SUCCEEDED/FAILED status. A post-action screenshot is
-// attached when the bound window can be captured.
+// handleInboundOperation executes an inbound tool-request FlowPart
+// (MouseMovePart/MouseClickPart/KeyboardPressPart/MouseMoveAndClickPart) and
+// sends the matching ToolResultPart back over the WebSocket wrapped in a
+// messageParts frame. The result part carries the same tool_id and a
+// SUCCEEDED/FAILED status. A post-action screenshot is attached when the bound
+// window can be captured.
+//
+// Per spec 023 FR-010/C8 the result is NOT mirrored into the chat stream: the
+// screenshot the conversation shows comes from the agent's later tool_result
+// MessagePart (the LLM tool result), not a desktop-side mirror. The desktop
+// returns the result only over the WS (resolving the agent's dispatch).
 //
 // Debug mode reorders the result-return boundary
 // (specs/022-desktop-debug-mode spec.md FR-006/FR-007/FR-011, data-model.md
 // state machine, research.md D4):
 //
-//   - Debug OFF: compute → send → append (today's order, FR-011 — no events).
-//   - Debug ON:  compute → append (result visible during hold) → register hold
-//   - emit game:debug:result-held → block on confirm/15-min/shutdown → emit
-//     game:debug:result-released → send (FR-006/FR-013). The sent frame is
-//     identical to the OFF path (FR-007 transparency).
-func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
+//   - Debug OFF: compute → send (FR-011 — no events).
+//   - Debug ON:  compute → register hold → emit game:debug:result-held →
+//     block on confirm/15-min/shutdown → emit game:debug:result-released →
+//     send (FR-006/FR-013). The sent frame is identical to the OFF path
+//     (FR-007 transparency).
+func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) error {
 	result := a.executeAgentOperation(part)
 
 	resultFrameID, err := randomHex(8)
@@ -743,10 +763,10 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 		FrameId:    resultFrameID,
 		CreateTime: timestamppb.Now(),
 		Sender:     game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_ToolResult{ToolResult: result}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_ToolResult{ToolResult: result}},
 				},
 			},
 		},
@@ -754,9 +774,6 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 
 	toolID := result.GetToolId()
 	if a.debugEnabled.Load() {
-		// Mirror the result into the chatstream before sending so the user
-		// sees it while it is held for confirmation (FR-008).
-		a.chatStreams.Append(sessionID, resultFrame)
 		a.holdAndRelease(toolID)
 		if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
 			a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
@@ -777,10 +794,6 @@ func (a *App) handleInboundOperation(sessionID string, part *game.Part) error {
 		})
 		return fmt.Errorf("send user turn: operation result: %w", err)
 	}
-	// Mirror the result into the chatstream so the local user sees the tool
-	// outcome live; without this the result only reappears via SeedFromHistory
-	// after a session restart, since the agent — not the desktop — persists it.
-	a.chatStreams.Append(sessionID, resultFrame)
 	return nil
 }
 
@@ -842,9 +855,9 @@ func (a *App) holdAndRelease(toolID string) string {
 	return reason
 }
 
-// executeAgentOperation runs an inbound tool-request Part via the appropriate
-// executor and returns the matching ToolResultPart. The Part kinds handled
-// are: MouseMovePart, MouseClickPart, KeyboardPressPart, and
+// executeAgentOperation runs an inbound tool-request FlowPart via the
+// appropriate executor and returns the matching ToolResultPart. The FlowPart
+// kinds handled are: MouseMovePart, MouseClickPart, KeyboardPressPart, and
 // MouseMoveAndClickPart. Each mouse Part carries a MouseInputMethod that
 // selects the desktop execution path (spec 018-saolei-mcp FR-004c):
 //
@@ -859,14 +872,13 @@ func (a *App) holdAndRelease(toolID string) string {
 // KeyboardPressPart is method-agnostic: it posts WM_KEYDOWN/WM_KEYUP to the
 // bound HWND (FR-004a).
 //
-// After the action phase — regardless of whether it succeeded — a follow-up
 // screenshot of the bound window is captured (FR-007). The screenshot is
 // attached to the result part when capture and sizing succeed; otherwise
 // the capture failure is recorded in the result message. Status always
 // reflects the ACTION outcome (never SUCCEEDED when the action failed).
 // Precondition failures (no tool payload, no window bound) return early
 // since no screenshot is possible without a bound window.
-func (a *App) executeAgentOperation(part *game.Part) *game.ToolResultPart {
+func (a *App) executeAgentOperation(part *game.FlowPart) *game.ToolResultPart {
 	move := part.GetMouseMove()
 	click := part.GetMouseClick()
 	keyboard := part.GetKeyboardPress()
@@ -1195,14 +1207,17 @@ func (a *App) ConnectAgent(sessionID string) (string, error) {
 	}
 
 	// Application-level probe: send a status signal and wait for any response.
-	// This verifies the full path: desktop → gateway → proxy → agent.
+	// This verifies the full path: desktop → gateway → proxy → agent. Status is
+	// now a FlowPart kind (spec 023 C3 / FR-003).
 	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
 	probeFrame := &game.AgentFrame{
 		SessionId:  sessionID,
 		FrameId:    probeFrameID,
 		CreateTime: timestamppb.Now(),
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
+			}},
 		},
 	}
 
@@ -1242,9 +1257,18 @@ func (a *App) ConnectAgent(sessionID string) (string, error) {
 	}
 
 	// Capture the probe response's StatusSignalStatus enum name so the frontend
-	// can reconcile its typing indicator. When the response is not a status
-	// frame, the zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
-	status := resp.GetStatus().GetStatus().String()
+	// can reconcile its typing indicator. The status rides as a FlowPart kind
+	// (spec 023 C3); when the response carries no status FlowPart, the
+	// zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
+	status := "STATUS_SIGNAL_STATUS_UNSPECIFIED"
+	if fp, ok := resp.GetPayload().(*game.AgentFrame_FlowParts); ok {
+		for _, p := range fp.FlowParts.GetParts() {
+			if s := p.GetStatus(); s != nil {
+				status = s.GetStatus().String()
+				break
+			}
+		}
+	}
 	a.logger.Info("backend", "Connect probe succeeded", map[string]any{
 		"trace_id":          traceID,
 		"session_id":        sessionID,

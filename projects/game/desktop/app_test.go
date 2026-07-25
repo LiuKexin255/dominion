@@ -53,13 +53,16 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
 			return
 		}
-		// respond with a status signal (any response proves the round-trip)
+		// respond with a status signal (any response proves the round-trip).
+		// Status rides as a FlowPart kind (spec 023 C3 / FR-003).
 		respFrame := &game.AgentFrame{
 			SessionId:  frame.GetSessionId(),
 			FrameId:    "test-status-frame",
 			CreateTime: timestamppb.Now(),
-			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+			Payload: &game.AgentFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -714,8 +717,8 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	app := NewApp(logger)
 	app.SetContext(context.Background())
 
-	op := &game.Part{
-		Kind: &game.Part_MouseClick{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_MouseClick{
 			MouseClick: &game.MouseClickPart{
 				ToolId: "op-no-window",
 				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
@@ -765,8 +768,8 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.Part{
-		Kind: &game.Part_MouseClick{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_MouseClick{
 			MouseClick: &game.MouseClickPart{
 				ToolId: "op-both-fail",
 				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
@@ -813,16 +816,16 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 	contentFrame := &game.AgentFrame{
 		SessionId: "recv-session",
 		FrameId:   "srv-content-1",
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello from agent"}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello from agent"}}},
 			}},
 		},
 	}
 	waitFrame := &game.AgentFrame{
 		SessionId: "recv-session",
 		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
@@ -881,13 +884,15 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 	if snap[0].ID != 1 || snap[1].ID != 2 {
 		t.Errorf("event IDs = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
 	}
-	// first appended frame is the received content frame
-	if snap[0].Frame.GetContent() == nil {
-		t.Errorf("snap[0] expected Content payload, got %T", snap[0].Frame.GetPayload())
+	// first appended frame is the received messageParts frame
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Errorf("snap[0] expected MessageParts payload, got %T", snap[0].Frame.GetPayload())
 	}
-	// second appended frame is the received wait signal (turn terminus)
-	if snap[1].Frame.GetWait() == nil {
-		t.Errorf("snap[1] expected Wait payload, got %T", snap[1].Frame.GetPayload())
+	// second appended frame is the received wait signal (turn terminus),
+	// carried as a FlowParts kind.
+	waitFlow := snap[1].Frame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Errorf("snap[1] expected FlowParts wait payload, got %T", snap[1].Frame.GetPayload())
 	}
 }
 
@@ -904,9 +909,9 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 		contentFrame := &game.AgentFrame{
 			SessionId: "sess-recv",
 			FrameId:   "srv-frame-1",
-			Payload: &game.AgentFrame_Content{
-				Content: &game.PartBlock{Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+			Payload: &game.AgentFrame_MessageParts{
+				MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
 				}},
 			},
 		}
@@ -958,37 +963,41 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 		t.Errorf("event ids = [%d, %d], want [1, 2]", snap[0].ID, snap[1].ID)
 	}
 
-	// event 1: the content frame delivered from the server verbatim.
-	if snap[0].Frame.GetContent() == nil {
-		t.Fatal("event 0: expected Content payload, got nil")
+	// event 1: the messageParts frame delivered from the server verbatim.
+	if snap[0].Frame.GetMessageParts() == nil {
+		t.Fatal("event 0: expected MessageParts payload, got nil")
 	}
 
-	// event 2: the synthesized wait reusing the in-flight turn's frameID (F13b).
+	// event 2: the synthesized wait (a FlowParts kind) reusing the in-flight
+	// turn's frameID (F13b).
 	waitFrame := snap[1].Frame
-	if waitFrame.GetWait() == nil {
-		t.Fatal("event 1: expected Wait payload, got nil")
+	waitFlow := waitFrame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Fatal("event 1: expected FlowParts wait payload, got nil")
 	}
 	if got := waitFrame.GetFrameId(); got != "turn-frame-id" {
 		t.Errorf("event 1 FrameId = %q, want %q (F13b: synthesized wait reuses turn frameID)", got, "turn-frame-id")
 	}
 }
 
-// TestRecvLoop_AppendsToolResultFromInboundOperation verifies that the result
-// of an auto-executed mouse operation is appended to the chatstream — not
-// only sent over WebSocket to the agent. Without the mirror-append the local
-// user never sees tool results via the live SSE stream; they only reappear
-// via SeedFromHistory after a session restart (the agent persists the result,
-// the desktop does not).
-func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
-	// given: mock WS server sends a content frame with a MouseClickPart, then
-	// a wait signal. It drains client-sent frames (the tool result) in the
-	// background so SendFrame does not block.
+// TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored verifies the US1
+// recvLoop behavior (spec 023 FR-005/FR-010, research.md D8): an inbound
+// operation FlowPart is executed and its ToolResultPart is sent back over the
+// WebSocket to the agent — but the operation request and the result are NOT
+// appended to the chatstream (operations never render as conversation entries;
+// the screenshot the conversation shows comes from the agent's later
+// tool_result MessagePart, not a desktop mirror). Only the terminating wait
+// FlowPart lands in the chatstream.
+func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
+	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
+	// a wait signal. It captures client-sent frames (the tool result) so the
+	// test can assert the result was returned to the agent over the WS.
 	clickFrame := &game.AgentFrame{
 		SessionId: "op-session",
 		FrameId:   "srv-click-1",
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_MouseClick{MouseClick: &game.MouseClickPart{
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
 					ToolId: "click-1",
 					Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
 				}}},
@@ -998,14 +1007,23 @@ func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
 	waitFrame := &game.AgentFrame{
 		SessionId: "op-session",
 		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
+	sentFrames := make(chan *game.AgentFrame, 4)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		go func() {
 			for {
-				if _, _, err := conn.Read(ctx); err != nil {
+				_, data, err := conn.Read(ctx)
+				if err != nil {
 					return
+				}
+				var f game.AgentFrame
+				if err := protojson.Unmarshal(data, &f); err == nil {
+					select {
+					case sentFrames <- &f:
+					default:
+					}
 				}
 			}
 		}()
@@ -1021,7 +1039,7 @@ func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
 
 	// given: App with a chatstream Registry (stream pre-opened). No window is
 	// bound, so executeAgentOperation fails fast with "no window bound" — the
-	// result frame is still produced and must still be appended.
+	// result frame is still produced and sent over the WS.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
@@ -1053,72 +1071,57 @@ func TestRecvLoop_AppendsToolResultFromInboundOperation(t *testing.T) {
 		t.Fatal("recvLoop did not terminate within 3s")
 	}
 
-	// then: 3 events in order — agent click request, tool result, wait.
-	if got := stream.LastID(); got != 3 {
-		t.Fatalf("LastID = %d, want 3 (click request + tool result + wait)", got)
-	}
-	_, snap := stream.Subscribe(0)
-	if len(snap) != 3 {
-		t.Fatalf("snapshot length = %d, want 3", len(snap))
-	}
-
-	// event 1: the agent's mouse-click request.
-	reqContent := snap[0].Frame.GetContent()
-	if reqContent == nil {
-		t.Fatalf("snap[0] expected Content payload, got %T", snap[0].Frame.GetPayload())
-	}
-	if reqContent.GetParts()[0].GetMouseClick() == nil {
-		t.Errorf("snap[0] expected MouseClickPart, got %T", reqContent.GetParts()[0].GetKind())
-	}
-
-	// event 2: the desktop's tool result, mirrored into the chatstream.
-	// Sender is USER; status FAILED because no window is bound.
-	resContent := snap[1].Frame.GetContent()
-	if resContent == nil {
-		t.Fatalf("snap[1] expected Content payload, got %T", snap[1].Frame.GetPayload())
-	}
-	resultPart := resContent.GetParts()[0].GetToolResult()
-	if resultPart == nil {
-		t.Fatalf("snap[1] expected ToolResultPart, got %T", resContent.GetParts()[0].GetKind())
+	// then: the operation was executed and its result sent to the agent over
+	// the WS as a messageParts frame carrying a toolResult (FAILED: no window).
+	var resultPart *game.ToolResultPart
+	deadline := time.After(2 * time.Second)
+	for resultPart == nil {
+		select {
+		case f := <-sentFrames:
+			mp := f.GetMessageParts()
+			if mp != nil && len(mp.GetParts()) > 0 {
+				resultPart = mp.GetParts()[0].GetToolResult()
+			}
+		case <-deadline:
+			t.Fatal("no tool-result frame sent over WS within 2s")
+		}
 	}
 	if resultPart.GetToolId() != "click-1" {
-		t.Errorf("tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
+		t.Errorf("result tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
 	}
 	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
-		t.Errorf("status = %v, want FAILED (no window bound)", resultPart.GetStatus())
-	}
-	if snap[1].Frame.GetSender() != game.FrameSender_FRAME_SENDER_USER {
-		t.Errorf("sender = %v, want FRAME_SENDER_USER", snap[1].Frame.GetSender())
+		t.Errorf("result status = %v, want FAILED (no window bound)", resultPart.GetStatus())
 	}
 
-	// event 3: wait signal (turn terminus).
-	if snap[2].Frame.GetWait() == nil {
-		t.Errorf("snap[2] expected Wait payload, got %T", snap[2].Frame.GetPayload())
+	// and: the chatstream does NOT mirror the operation request or the result —
+	// only the terminating wait FlowPart is appended (FR-005/FR-010).
+	_, snap := stream.Subscribe(0)
+	if len(snap) != 1 {
+		t.Fatalf("chatstream snapshot length = %d, want 1 (only the wait signal; "+
+			"operations and results are not mirrored)", len(snap))
+	}
+	waitFlow := snap[0].Frame.GetFlowParts()
+	if waitFlow == nil || (len(waitFlow.GetParts()) > 0 && waitFlow.GetParts()[0].GetWait() == nil) {
+		t.Errorf("snap[0] expected FlowParts wait payload, got %T", snap[0].Frame.GetPayload())
 	}
 }
 
-// TestRecvLoop_AppendsToolResultForNewPartKinds is the regression guard for
-// the recvLoop filter: it must admit KeyboardPressPart and
-// MouseMoveAndClickPart (the two Part kinds added by spec 018-saolei-mcp
-// FR-004a/FR-004b), not just MouseMovePart/MouseClickPart. Before the fix
-// the filter was a two-clause nil check that silently dropped every new
-// Part, starving OperationBridge of the matching ToolResultPart and causing
-// the calling agent to time out.
-//
-// Each subtest sends one Part kind through recvLoop with no window bound, so
-// executeAgentOperation fails fast at the "no window bound" precondition —
-// but a ToolResultPart is still produced and appended. If the filter
-// regresses, no ToolResultPart is appended and the snapshot contains only
-// the request frame and the wait signal (length 2, not 3).
-func TestRecvLoop_AppendsToolResultForNewPartKinds(t *testing.T) {
+// TestRecvLoop_ExecutesNewPartKinds is the regression guard for the recvLoop
+// filter: it must admit KeyboardPressPart and MouseMoveAndClickPart (the two
+// operation kinds from spec 018-saolei-mcp FR-004a/FR-004b), not just
+// MouseMovePart/MouseClickPart. Each subtest sends one operation kind through
+// recvLoop with no window bound, so executeAgentOperation fails fast — but a
+// ToolResultPart is still produced and sent over the WS. If the filter
+// regresses (drops the operation), no result is sent.
+func TestRecvLoop_ExecutesNewPartKinds(t *testing.T) {
 	tests := []struct {
 		name   string
-		part   *game.Part
+		part   *game.FlowPart
 		toolID string
 	}{
 		{
 			name: "KeyboardPressPart (saolei_init F2 dispatch)",
-			part: &game.Part{Kind: &game.Part_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{
+			part: &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{
 				ToolId: "kb-1",
 				Key:    game.KeyboardKey_KEYBOARD_KEY_F2,
 			}}},
@@ -1126,7 +1129,7 @@ func TestRecvLoop_AppendsToolResultForNewPartKinds(t *testing.T) {
 		},
 		{
 			name: "MouseMoveAndClickPart (saolei cell operations)",
-			part: &game.Part{Kind: &game.Part_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{
+			part: &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{
 				ToolId: "wm-click-1",
 				XPx:    40,
 				YPx:    216,
@@ -1146,34 +1149,41 @@ func TestRecvLoop_AppendsToolResultForNewPartKinds(t *testing.T) {
 
 // runRecvLoopFilterAdmissionTest verifies op passes the recvLoop filter and
 // reaches executeAgentOperation by asserting a ToolResultPart with toolID is
-// appended to the chat stream. The setup mirrors
-// TestRecvLoop_AppendsToolResultFromInboundOperation but is intentionally
-// minimal — this is a regression guard for filter admission, not a full
-// recvLoop behavior test.
-func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.Part, toolID string) {
+// sent back over the WS (and NOT mirrored into the chatstream). The setup
+// mirrors TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored but is
+// intentionally minimal — this is a regression guard for filter admission.
+func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID string) {
 	t.Helper()
 
-	// given: a content frame carrying the op Part, followed by a wait signal
-	// that terminates recvLoop. The server drains client-sent frames in the
-	// background so SendFrame (the tool-result send) does not block.
+	// given: a flowParts frame carrying the op, followed by a wait signal that
+	// terminates recvLoop. The server captures client-sent frames.
 	contentFrame := &game.AgentFrame{
 		SessionId: "filter-session",
 		FrameId:   "srv-content-1",
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{op}},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{op}},
 		},
 	}
 	waitFrame := &game.AgentFrame{
 		SessionId: "filter-session",
 		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_Wait{Wait: &game.WaitSignal{}},
+		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
+	sentFrames := make(chan *game.AgentFrame, 4)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		go func() {
 			for {
-				if _, _, err := conn.Read(ctx); err != nil {
+				_, data, err := conn.Read(ctx)
+				if err != nil {
 					return
+				}
+				var f game.AgentFrame
+				if err := protojson.Unmarshal(data, &f); err == nil {
+					select {
+					case sentFrames <- &f:
+					default:
+					}
 				}
 			}
 		}()
@@ -1189,7 +1199,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.Part, toolID string) 
 
 	// given: App with a chatstream Registry. No window is bound, so
 	// executeAgentOperation fails fast — but the ToolResultPart must still be
-	// produced and appended (proving the filter admitted op).
+	// produced and sent (proving the filter admitted op).
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
@@ -1197,10 +1207,9 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.Part, toolID string) 
 
 	reg := chatstream.NewRegistry(logger)
 	app.chatStreams = reg
-	stream, err := reg.Open("filter-session", func() ([]*game.Message, error) {
+	if _, err := reg.Open("filter-session", func() ([]*game.Message, error) {
 		return nil, nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("reg.Open: %v", err)
 	}
 	defer reg.Close("filter-session")
@@ -1221,23 +1230,20 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.Part, toolID string) 
 		t.Fatal("recvLoop did not terminate within 3s")
 	}
 
-	// then: 3 events in order — agent request, tool result, wait. If the
-	// filter dropped op, the snapshot would have length 2 (request + wait)
-	// with no ToolResultPart, which is the exact regression this test
-	// guards.
-	_, snap := stream.Subscribe(0)
-	if len(snap) != 3 {
-		t.Fatalf("snapshot length = %d, want 3 (request + tool result + wait); "+
-			"length < 3 means the recvLoop filter dropped the Part", len(snap))
-	}
-
-	resContent := snap[1].Frame.GetContent()
-	if resContent == nil {
-		t.Fatalf("snap[1] expected Content payload, got %T", snap[1].Frame.GetPayload())
-	}
-	resultPart := resContent.GetParts()[0].GetToolResult()
-	if resultPart == nil {
-		t.Fatalf("snap[1] expected ToolResultPart, got %T", resContent.GetParts()[0].GetKind())
+	// then: a ToolResultPart with toolID was sent over the WS as a messageParts
+	// frame. If the filter dropped op, no result is sent (regression).
+	var resultPart *game.ToolResultPart
+	deadline := time.After(2 * time.Second)
+	for resultPart == nil {
+		select {
+		case f := <-sentFrames:
+			mp := f.GetMessageParts()
+			if mp != nil && len(mp.GetParts()) > 0 {
+				resultPart = mp.GetParts()[0].GetToolResult()
+			}
+		case <-deadline:
+			t.Fatalf("no tool-result frame sent over WS within 2s (filter may have dropped the Part)")
+		}
 	}
 	if resultPart.GetToolId() != toolID {
 		t.Errorf("tool_id = %q, want %q", resultPart.GetToolId(), toolID)
@@ -1267,8 +1273,8 @@ func Test_executeAgentOperation_KeyboardPressPart_RoutesToKeyboardExecutor(t *te
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.Part{
-		Kind: &game.Part_KeyboardPress{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_KeyboardPress{
 			KeyboardPress: &game.KeyboardPressPart{
 				ToolId: "kb-f2",
 				Key:    game.KeyboardKey_KEYBOARD_KEY_F2,
@@ -1312,8 +1318,8 @@ func Test_executeAgentOperation_MouseMoveAndClickPart_WindowMessageRoutes(t *tes
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.Part{
-		Kind: &game.Part_MouseMoveAndClick{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_MouseMoveAndClick{
 			MouseMoveAndClick: &game.MouseMoveAndClickPart{
 				ToolId: "wm-click",
 				XPx:    40,
@@ -1374,8 +1380,8 @@ func Test_executeAgentOperation_MouseMoveAndClickPart_SimulatedRoutes(t *testing
 				ScaleFactor: 1.0,
 			}
 
-			op := &game.Part{
-				Kind: &game.Part_MouseMoveAndClick{
+			op := &game.FlowPart{
+				Kind: &game.FlowPart_MouseMoveAndClick{
 					MouseMoveAndClick: &game.MouseMoveAndClickPart{
 						ToolId: "sim-click",
 						XPx:    400,
@@ -1414,8 +1420,8 @@ func Test_executeAgentOperation_MouseMovePart_WindowMessageRoutes(t *testing.T) 
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.Part{
-		Kind: &game.Part_MouseMove{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_MouseMove{
 			MouseMove: &game.MouseMovePart{
 				ToolId: "wm-move",
 				XPx:    100,
@@ -1453,8 +1459,8 @@ func Test_executeAgentOperation_MouseClickPart_WindowMessageRejected(t *testing.
 		ScaleFactor: 1.0,
 	}
 
-	op := &game.Part{
-		Kind: &game.Part_MouseClick{
+	op := &game.FlowPart{
+		Kind: &game.FlowPart_MouseClick{
 			MouseClick: &game.MouseClickPart{
 				ToolId: "wm-click-bad",
 				Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
@@ -1503,8 +1509,8 @@ func Test_executeAgentOperation_MouseClickPart_SimulatedUnchangedBehavior(t *tes
 				ScaleFactor: 1.0,
 			}
 
-			op := &game.Part{
-				Kind: &game.Part_MouseClick{
+			op := &game.FlowPart{
+				Kind: &game.FlowPart_MouseClick{
 					MouseClick: &game.MouseClickPart{
 						ToolId: "sim-click-only",
 						Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,

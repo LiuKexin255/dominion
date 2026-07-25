@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { FrameSender, partKind } from '../api'
-  import type { Part } from '../api'
+  import { FrameSender, messagePartKind } from '../api'
+  import type { MessagePart } from '../api'
 
-  // ChatMessage renders a single Part as a simple bubble. It owns the
+  // ChatMessage renders a single MessagePart as a simple bubble. It owns the
   // "plain" bubble shapes: user text, agent/system text, and thinking. Complex
-  // part kinds (image, mouse move/click, tool result) are rendered inline by
-  // ChatView. The part kind — not a `type` field — is the discriminator.
+  // part kinds (image, tool_call, tool_result) are rendered inline by ChatView.
+  // The part kind — not a `type` field — is the discriminator.
   let {
     part,
     sender,
     timestamp,
   }: {
-    part: Part
+    part: MessagePart
     sender: FrameSender
     timestamp: string
   } = $props()
@@ -26,7 +26,7 @@
     }
   }
 
-  let kind = $derived(partKind(part))
+  let kind = $derived(messagePartKind(part))
   let isUser = $derived(sender === FrameSender.USER)
   let isUserText = $derived(kind === 'text' && isUser)
   let isSystemText = $derived(kind === 'text' && !isUser)

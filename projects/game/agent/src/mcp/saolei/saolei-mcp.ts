@@ -31,7 +31,7 @@ import { randomUUID } from "node:crypto";
 
 import type { OperationBridge } from "../../operation-bridge";
 import type { OperationResult } from "../../operation-bridge";
-import type { Part } from "../../../game_types/projects/game/Part";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
 import { createGameState } from "./game-state";
 import type { GameState } from "./game-state";
 import { center } from "./geometry";
@@ -233,7 +233,7 @@ export function createSaoleiMcpServer(
 		async (args) => {
 			const { width, height } = args;
 			// FR-006 (a): dispatch an F2 KeyboardPressPart through the bridge.
-			const part: Part = {
+			const part: FlowPart = {
 				keyboardPress: { key: KEY_F2 },
 			};
 			const result = await bridge.dispatch(part);
@@ -308,7 +308,7 @@ export function createSaoleiMcpServer(
 			// messages carry the coordinate in the WM_* lParam (no
 			// separate move step) — research.md D5.
 			const { xPx, yPx } = center(x, y);
-			const part: Part = {
+			const part: FlowPart = {
 				mouseMoveAndClick: {
 					xPx,
 					yPx,
@@ -378,7 +378,7 @@ export function createSaoleiMcpServer(
 			// messages carry the coordinate in the WM_* lParam (no
 			// separate move step) — research.md D5.
 			const { xPx, yPx } = center(x, y);
-			const part: Part = {
+			const part: FlowPart = {
 				mouseMoveAndClick: {
 					xPx,
 					yPx,
@@ -448,7 +448,7 @@ export function createSaoleiMcpServer(
 			// double-click). Combined move+click Part because window
 			// messages carry the coordinate in the WM_* lParam.
 			const { xPx, yPx } = center(x, y);
-			const part: Part = {
+			const part: FlowPart = {
 				mouseMoveAndClick: {
 					xPx,
 					yPx,

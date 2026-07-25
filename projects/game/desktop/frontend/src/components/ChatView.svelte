@@ -1,7 +1,7 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender, MouseClickAction, ToolResultStatus, partKind } from '../api'
-  import type { Part, ImagePart } from '../api'
+  import { FrameSender, ToolResultStatus, messagePartKind } from '../api'
+  import type { MessagePart, ImagePart, ToolResultPart } from '../api'
   import { renderMarkdown } from '../markdown'
 
   type ChatEntry = {
@@ -9,28 +9,31 @@
     sender: FrameSender
     timestamp: string
     agentProfileName?: string
-    parts?: Part[]
+    parts?: MessagePart[]
     warnMessage?: string
   }
 
-  // Lookup tables for enum → display-name conversions. protojson serializes
-  // enums as their proto names (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK"), while
-  // the TypeScript types in api.ts declare them as numeric enums. To stay
-  // robust against both forms, each table maps both the numeric enum value
-  // (coerced to string by the Record lookup) and the proto name string to the
-  // same display name.
-  const MOUSE_CLICK_DISPLAY: Record<string, string> = {
-    [String(MouseClickAction.LEFT_CLICK)]: 'LEFT_CLICK',
-    [String(MouseClickAction.LEFT_DOUBLE_CLICK)]: 'LEFT_DOUBLE_CLICK',
-    [String(MouseClickAction.RIGHT_CLICK)]: 'RIGHT_CLICK',
-    [String(MouseClickAction.RIGHT_DOUBLE_CLICK)]: 'RIGHT_DOUBLE_CLICK',
-    [String(MouseClickAction.LEFT_RIGHT_PRESS)]: 'LEFT_RIGHT_PRESS',
-    MOUSE_CLICK_ACTION_LEFT_CLICK: 'LEFT_CLICK',
-    MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK: 'LEFT_DOUBLE_CLICK',
-    MOUSE_CLICK_ACTION_RIGHT_CLICK: 'RIGHT_CLICK',
-    MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK: 'RIGHT_DOUBLE_CLICK',
-    MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS: 'LEFT_RIGHT_PRESS',
+  // A flattened render item. Tool call + result collapse into ONE 'tool' item
+  // keyed by tool_id (spec 023 FR-007 / data-model.md §5): a tool_call creates
+  // the bubble; a later tool_result with the same tool_id merges into it in
+  // place (no new entry). text/thinking/image keep their own items.
+  type ToolItem = {
+    kind: 'tool'
+    key: string
+    messageId: string
+    sender: FrameSender
+    timestamp: string
+    agentProfileName?: string
+    toolId?: string
+    name?: string
+    argsJson?: string
+    result?: ToolResultPart
   }
+  type RenderItem =
+    | { kind: 'warn'; key: string; messageId: string; timestamp: string; message: string }
+    | { kind: 'profile'; key: string; profile: string }
+    | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart }
+    | ToolItem
 
   const TOOL_RESULT_SUCCESS_VALUES: ReadonlySet<string> = new Set<string>([
     String(ToolResultStatus.SUCCEEDED),
@@ -66,6 +69,85 @@
   let inputText = $state('')
   let scrollContainer: HTMLDivElement | undefined = $state()
 
+  // renderItems flattens the chat entries into an ordered render list, merging
+  // a tool_call and its later tool_result (same tool_id) into one evolving
+  // bubble. The merge is recomputed reactively as messages arrive
+  // (data-model.md §5).
+  const renderItems = $derived.by<RenderItem[]>(() => {
+    const items: RenderItem[] = []
+    const toolByKey = new Map<string, ToolItem>()
+    let agentProfileShown = false
+    let lastAgentProfile: string | undefined = undefined
+    for (const msg of messages) {
+      if (msg.warnMessage != null) {
+        items.push({ kind: 'warn', key: msg.messageId, messageId: msg.messageId, timestamp: msg.timestamp, message: msg.warnMessage })
+        continue
+      }
+      const parts = msg.parts ?? []
+      if (parts.length === 0) continue
+      // Agent profile label: show once per consecutive agent run when the
+      // profile changes.
+      if (msg.sender === FrameSender.AGENT && msg.agentProfileName && msg.agentProfileName !== lastAgentProfile) {
+        items.push({ kind: 'profile', key: msg.messageId + '-profile', profile: msg.agentProfileName })
+        lastAgentProfile = msg.agentProfileName
+        agentProfileShown = true
+      } else if (msg.sender !== FrameSender.AGENT) {
+        lastAgentProfile = undefined
+      }
+      for (const part of parts) {
+        const k = messagePartKind(part)
+        if (k === 'toolCall') {
+          const tc = part.toolCall!
+          const key = 'tool-' + (tc.toolId ?? crypto.randomUUID())
+          const existing = tc.toolId ? toolByKey.get(tc.toolId) : undefined
+          if (existing) {
+            existing.name = tc.name
+            existing.argsJson = tc.argsJson
+          } else {
+            const item: ToolItem = {
+              kind: 'tool',
+              key,
+              messageId: msg.messageId,
+              sender: msg.sender,
+              timestamp: msg.timestamp,
+              agentProfileName: msg.agentProfileName,
+              toolId: tc.toolId,
+              name: tc.name,
+              argsJson: tc.argsJson,
+            }
+            items.push(item)
+            if (tc.toolId) toolByKey.set(tc.toolId, item)
+          }
+        } else if (k === 'toolResult') {
+          const tr = part.toolResult!
+          const target = tr.toolId ? toolByKey.get(tr.toolId) : undefined
+          if (target) {
+            target.result = tr
+          } else {
+            // Result with no preceding call: create a result-only bubble.
+            const key = 'tool-' + (tr.toolId ?? crypto.randomUUID())
+            const item: ToolItem = {
+              kind: 'tool',
+              key,
+              messageId: msg.messageId,
+              sender: msg.sender,
+              timestamp: msg.timestamp,
+              agentProfileName: msg.agentProfileName,
+              toolId: tr.toolId,
+              result: tr,
+            }
+            items.push(item)
+            if (tr.toolId) toolByKey.set(tr.toolId, item)
+          }
+        } else {
+          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part })
+        }
+      }
+      void agentProfileShown
+    }
+    return items
+  })
+
   function handleSend() {
     const text = inputText.trim()
     if (!text && !pendingScreenshot) return
@@ -80,8 +162,8 @@
     }
   }
 
-  function isAgentEntry(msg: ChatEntry): boolean {
-    return msg.sender === FrameSender.AGENT
+  function isAgentSender(sender: FrameSender): boolean {
+    return sender === FrameSender.AGENT
   }
 
   function formatTime(t: string): string {
@@ -90,15 +172,6 @@
     } catch {
       return ''
     }
-  }
-
-  function describeMouseClick(click: MouseClickAction | string | undefined): string {
-    // protojson serializes enums as their proto names (e.g.
-    // "MOUSE_CLICK_ACTION_LEFT_CLICK"), not their numeric values, so the
-    // lookup table accepts both the numeric enum (coerced to string) and the
-    // proto name form. See game.proto / protojson defaults.
-    if (click == null) return 'UNSPECIFIED'
-    return MOUSE_CLICK_DISPLAY[String(click)] ?? 'UNSPECIFIED'
   }
 
   function isToolResultSucceeded(status: number | string | undefined): boolean {
@@ -117,9 +190,20 @@
     return `data:image/${enc};base64,${image.data}`
   }
 
+  // Pretty-print a tool_call's argsJson for display; fall back to the raw
+  // string when it is not parseable JSON.
+  function prettyArgs(argsJson?: string): string {
+    if (!argsJson) return ''
+    try {
+      return JSON.stringify(JSON.parse(argsJson), null, 2)
+    } catch {
+      return argsJson
+    }
+  }
+
   $effect(() => {
-    // reactively scroll when messages change
-    messages
+    // reactively scroll when renderItems change
+    renderItems
     const el = scrollContainer
     if (el) {
       requestAnimationFrame(() => {
@@ -138,109 +222,91 @@
   <div class="chat-thread" bind:this={scrollContainer}>
     {#if loadingMessages}
       <div class="chat-loading" data-testid="messages-loading">Loading messages...</div>
-    {:else if messages.length === 0}
+    {:else if renderItems.length === 0}
       <div class="chat-empty" data-testid="chat-empty">No messages yet. Start a conversation below.</div>
     {:else}
-      {#each messages as msg (msg.messageId)}
-        {#if msg.warnMessage != null}
-          <!-- Warn control-signal payload: a warning bubble. -->
+      {#each renderItems as item (item.key)}
+        {#if item.kind === 'warn'}
           <div data-testid="chat-message">
             <div class="msg-row msg-warn">
               <div class="msg-bubble warn-bubble">
                 <span class="warn-icon">&#9888;</span>
-                <span class="msg-content">{msg.warnMessage}</span>
+                <span class="msg-content">{item.message}</span>
               </div>
             </div>
           </div>
-        {:else if msg.parts && msg.parts.length > 0}
-          {#if isAgentEntry(msg) && msg.agentProfileName}
-            <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
+        {:else if item.kind === 'profile'}
+          <div class="msg-profile-label" data-testid="agent-profile-label">{item.profile}</div>
+        {:else if item.kind === 'part'}
+          {@const kind = messagePartKind(item.part)}
+          {#if kind === 'text' && isAgentSender(item.sender)}
+            {@const sanitizedHtml = renderMarkdown(item.part.text?.content ?? '')}
+            <div class="msg-row msg-agent">
+              <div class="msg-bubble agent-bubble">
+                <div class="msg-sender">Agent</div>
+                <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
+                <div class="msg-time">{formatTime(item.timestamp)}</div>
+              </div>
+            </div>
+          {:else if kind === 'image'}
+            {@const url = imageUrlForPart(item.part.image!)}
+            <div class="msg-row msg-image" class:msg-image-user={item.sender === FrameSender.USER}>
+              <details class="image-details">
+                <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
+                <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
+              </details>
+            </div>
+          {:else if kind === 'text' || kind === 'thinking'}
+            <!-- Non-agent text (user / system) and thinking parts render via the
+                 ChatMessage bubble component. -->
+            <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
           {/if}
-          <div data-testid="chat-message">
-            <!-- Render each Part by its kind. The part kind — not a separate
-                 `type` field — is the sole discriminator. Unknown / empty
-                 parts are skipped (graceful degradation). -->
-            {#each msg.parts as part, partIndex (partIndex)}
-              {@const kind = partKind(part)}
-              {#if kind === 'text' && isAgentEntry(msg)}
-                {@const sanitizedHtml = renderMarkdown(part.text?.content ?? '')}
-                <div class="msg-row msg-agent">
-                  <div class="msg-bubble agent-bubble">
-                    <div class="msg-sender">Agent</div>
-                    <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
-                    {#if partIndex === msg.parts.length - 1}
-                      <div class="msg-time">{formatTime(msg.timestamp)}</div>
-                    {/if}
-                  </div>
+        {:else if item.kind === 'tool'}
+          {@const succeeded = item.result ? isToolResultSucceeded(item.result.status) : false}
+          {@const resolved = item.result != null}
+          {@const isHeld = item.toolId != null && heldToolIds.has(item.toolId)}
+          <div class="msg-row msg-operation">
+            <div class="tool-bubble" class:tool-resolved-success={resolved && succeeded} class:tool-resolved-failure={resolved && !succeeded} data-testid="tool-bubble">
+              <div class="tool-head">
+                <span class="tool-name" data-testid="tool-name">{item.name ?? 'tool'}</span>
+                {#if item.argsJson}
+                  <pre class="tool-args" data-testid="tool-args">{prettyArgs(item.argsJson)}</pre>
+                {/if}
+              </div>
+              {#if resolved}
+                <div class="tool-result">
+                  <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
+                  <span class="op-result-status">{succeeded ? 'succeeded' : (item.result!.status === 'TOOL_RESULT_STATUS_UNSPECIFIED' || item.result!.status === ToolResultStatus.UNSPECIFIED ? 'pending' : 'failed')}</span>
+                  {#if item.result!.message}
+                    <span class="op-result-message">{item.result!.message}</span>
+                  {/if}
+                  {#if item.result!.screenshot?.data}
+                    {@const screenshotUrl = imageUrlForPart(item.result!.screenshot)}
+                    <details class="op-result-details">
+                      <summary class="op-result-summary">Result screenshot</summary>
+                      <img
+                        class="screenshot-img clickable"
+                        src={screenshotUrl}
+                        alt="Tool result screenshot"
+                        data-testid="operation-result-screenshot"
+                        onclick={() => onZoom(screenshotUrl)}
+                      />
+                    </details>
+                  {/if}
                 </div>
-              {:else if kind === 'image'}
-                {@const url = imageUrlForPart(part.image!)}
-                <div class="msg-row msg-image" class:msg-image-user={msg.sender === FrameSender.USER}>
-                  <details class="image-details">
-                    <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
-                    <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
-                  </details>
-                </div>
-              {:else if kind === 'mouseMove'}
-                {@const mv = part.mouseMove!}
-                <div class="msg-row msg-operation">
-                  <div class="op-card" data-testid="operation-entry">
-                    <span class="op-label">MouseMove</span>
-                    <span class="op-action">MOVE</span>
-                    <span class="op-coords">(@ {mv.xPx}, {mv.yPx})</span>
-                  </div>
-                </div>
-              {:else if kind === 'mouseClick'}
-                {@const mc = part.mouseClick!}
-                <div class="msg-row msg-operation">
-                  <div class="op-card" data-testid="operation-entry">
-                    <span class="op-label">MouseClick</span>
-                    <span class="op-action">{describeMouseClick(mc.click)}</span>
-                  </div>
-                </div>
-              {:else if kind === 'toolResult'}
-                {@const result = part.toolResult!}
-                {@const succeeded = isToolResultSucceeded(result.status)}
-                {@const isHeld = result.toolId != null && heldToolIds.has(result.toolId)}
-                <div class="msg-row msg-operation-result">
-                  <div class="op-result-card" class:op-result-success={succeeded} class:op-result-failure={!succeeded} data-testid="operation-result-entry">
-                    <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
-                    <span class="op-result-status">{succeeded ? 'succeeded' : 'failed'}</span>
-                    {#if result.message}
-                      <span class="op-result-message">{result.message}</span>
-                    {/if}
-                    {#if result.screenshot?.data}
-                      {@const screenshotUrl = imageUrlForPart(result.screenshot)}
-                      <details class="op-result-details">
-                        <summary class="op-result-summary">Result screenshot</summary>
-                        <img
-                          class="screenshot-img clickable"
-                          src={screenshotUrl}
-                          alt="Operation result screenshot"
-                          data-testid="operation-result-screenshot"
-                          onclick={() => onZoom(screenshotUrl)}
-                        />
-                      </details>
-                    {/if}
-                    {#if isHeld}
-                      <button
-                        class="btn btn-small confirm-btn"
-                        data-testid="confirm-tool-result"
-                        onclick={() => onConfirm(result.toolId!)}
-                      >Confirm</button>
-                    {/if}
-                  </div>
-                </div>
-              {:else if kind === 'text' || kind === 'thinking'}
-                <!-- Non-agent text (user / system) and thinking parts render
-                     via the ChatMessage bubble component. -->
-                <ChatMessage {part} sender={msg.sender} timestamp={msg.timestamp} />
+              {:else}
+                <div class="tool-pending">running…</div>
               {/if}
-            {/each}
+              {#if isHeld}
+                <button
+                  class="btn btn-small confirm-btn"
+                  data-testid="confirm-tool-result"
+                  onclick={() => onConfirm(item.toolId!)}
+                >Confirm</button>
+              {/if}
+            </div>
           </div>
         {/if}
-        <!-- A content entry with zero parts renders nothing (graceful
-             degradation for empty PartBlocks). -->
       {/each}
     {/if}
 

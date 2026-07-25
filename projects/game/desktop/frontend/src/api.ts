@@ -64,14 +64,19 @@ export enum ToolResultStatus {
   FAILED = 2,
 }
 
-// ─── Content Part Model ────────────────────────────────────────────────────
+// ─── Content Part Model (spec 023 content-model split) ─────────────────────
 //
-// Part is one discriminated content block; PartBlock is the first-class
-// content unit carried by AgentFrame (as a payload case) and Message (as its
-// content). protojson flattens the Part.kind oneof, so exactly one of the
-// variant fields below is present on a Part object — the active field name is
-// the discriminator (see partKind). Live frames and persisted history share
-// the identical PartBlock shape, so live view and history render identically.
+// The content model is split into two disjoint categories
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6;
+// spec 023 C3 / FR-001..FR-004):
+//
+//   - MessagePart (display only): text / thinking / image / tool_call /
+//     tool_result. Carried by AgentFrame.messageParts (live) and Message.content
+//     (history) — identical shape so live and history render identically.
+//   - FlowPart (control only — never rendered in the conversation): mouse/
+//     keyboard operations + wait/warn/status signals. Carried by
+//     AgentFrame.flowParts. protojson flattens each oneof so exactly one
+//     variant field is set (the field name is the discriminator).
 
 export interface TextPart {
   content: string
@@ -92,17 +97,13 @@ export interface ImagePart {
   windowTitle?: string
 }
 
-export interface MouseMovePart {
+// ToolCallPart carries the model's tool invocation as display content
+// (spec 023 FR-002). tool_id links the call to its tool_result MessagePart and
+// to the FlowPart operation it dispatches (FR-008).
+export interface ToolCallPart {
   toolId?: string
-  xPx: number
-  yPx: number
-}
-
-// MouseClickPart.click arrives as the proto enum name string
-// (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK") under protojson.
-export interface MouseClickPart {
-  toolId?: string
-  click?: MouseClickAction | string
+  name?: string
+  argsJson?: string
 }
 
 export interface ToolResultPart {
@@ -114,36 +115,92 @@ export interface ToolResultPart {
   screenshot?: ImagePart
 }
 
-// Part is a single content block. Exactly one variant field is set; use
-// partKind() to read the active variant.
-export interface Part {
+// MessagePart is one display-only content block. Exactly one variant field is
+// set; use messagePartKind() to read the active variant.
+export interface MessagePart {
   text?: TextPart
   thinking?: ThinkingPart
   image?: ImagePart
-  mouseMove?: MouseMovePart
-  mouseClick?: MouseClickPart
+  toolCall?: ToolCallPart
   toolResult?: ToolResultPart
 }
 
-export interface PartBlock {
-  parts?: Part[]
+export interface MessageParts {
+  parts?: MessagePart[]
 }
 
-// Active variant of a Part (the set oneof field), or undefined for an
-// empty/unknown part. Used to dispatch rendering by part kind.
-export type PartKind = 'text' | 'thinking' | 'image' | 'mouseMove' | 'mouseClick' | 'toolResult'
+// FlowPart operation messages (unchanged fields from spec 018; moved into
+// FlowPart.kind per spec 023).
+export interface MouseMovePart {
+  toolId?: string
+  xPx: number
+  yPx: number
+}
 
-export function partKind(part: Part): PartKind | undefined {
+export interface MouseClickPart {
+  toolId?: string
+  click?: MouseClickAction | string
+}
+
+export interface KeyboardPressPart {
+  toolId?: string
+  key?: string
+}
+
+export interface MouseMoveAndClickPart {
+  toolId?: string
+  xPx: number
+  yPx: number
+  click?: MouseClickAction | string
+  method?: string
+}
+
+// FlowPart is one control-only block. Exactly one variant field is set; use
+// flowPartKind() to read the active variant.
+export interface FlowPart {
+  mouseMove?: MouseMovePart
+  mouseClick?: MouseClickPart
+  keyboardPress?: KeyboardPressPart
+  mouseMoveAndClick?: MouseMoveAndClickPart
+  wait?: WaitSignal
+  warn?: WarnSignal
+  status?: StatusSignal
+}
+
+export interface FlowParts {
+  parts?: FlowPart[]
+}
+
+// Active variant of a MessagePart, or undefined for an empty/unknown part.
+export type MessagePartKind = 'text' | 'thinking' | 'image' | 'toolCall' | 'toolResult'
+
+export function messagePartKind(part: MessagePart): MessagePartKind | undefined {
   if (part.text) return 'text'
   if (part.thinking) return 'thinking'
   if (part.image) return 'image'
-  if (part.mouseMove) return 'mouseMove'
-  if (part.mouseClick) return 'mouseClick'
+  if (part.toolCall) return 'toolCall'
   if (part.toolResult) return 'toolResult'
   return undefined
 }
 
-// ─── Control Signals (frame-payload only; never persisted to history) ──────
+// Active variant of a FlowPart, or undefined for an empty/unknown part.
+export type FlowPartKind = 'mouseMove' | 'mouseClick' | 'keyboardPress' | 'mouseMoveAndClick' | 'wait' | 'warn' | 'status'
+
+export function flowPartKind(part: FlowPart): FlowPartKind | undefined {
+  if (part.mouseMove) return 'mouseMove'
+  if (part.mouseClick) return 'mouseClick'
+  if (part.keyboardPress) return 'keyboardPress'
+  if (part.mouseMoveAndClick) return 'mouseMoveAndClick'
+  if (part.wait) return 'wait'
+  if (part.warn) return 'warn'
+  if (part.status) return 'status'
+  return undefined
+}
+
+// ─── Control Signals (FlowPart kinds; never persisted to history) ──────────
+// WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
+// content-model split (spec 023 C3 / FR-003) they are FlowPart kinds, carried
+// by AgentFrame.flowParts and never rendered as conversation entries.
 
 export interface WaitSignal {
   reason?: string
@@ -188,31 +245,29 @@ export interface Skill {
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
 // AgentFrame is the transport unit exchanged over WebSocket / gRPC streams.
-// A frame carries exactly one payload (protojson flattens the oneof): a
-// PartBlock of content, or a single control signal (wait / warn / status).
-// Removed dead metadata: invoke_id and sequence never existed on the wire.
+// A frame carries exactly one payload (protojson flattens the oneof): a batch
+// of display blocks (messageParts) OR a batch of control blocks (flowParts).
 export interface AgentFrame {
   sessionId?: string
   frameId?: string
   createTime?: string
   sender?: FrameSender | string
   agentProfileName?: string
-  content?: PartBlock
-  wait?: WaitSignal
-  warn?: WarnSignal
-  status?: StatusSignal
+  messageParts?: MessageParts
+  flowParts?: FlowParts
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
-// state (history). Its content is the same PartBlock shape as a live frame's
-// content payload, so history and live view render identically. Control
-// signals are frame-only and never appear here.
+// state (history). Its content is a MessageParts (display blocks only) — the
+// identical shape a live AgentFrame's messageParts payload carries, so history
+// and live view render identically (spec 023 FR-009). Control blocks
+// (FlowParts) never appear here.
 export interface Message {
   name?: string
   messageId?: string
   sender?: FrameSender | string
   createTime?: string
-  content?: PartBlock
+  content?: MessageParts
 }
 
 export interface ChatStreamHandoff {

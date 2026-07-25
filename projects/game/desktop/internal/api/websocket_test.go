@@ -179,11 +179,13 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 			return
 		}
 
-		// respond with a status signal instead
+		// respond with a status signal instead. Status rides as a FlowPart kind.
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+			Payload: &game.AgentFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -201,10 +203,10 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 
 	sendFrame := &game.AgentFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{
-				Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE,
-			},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	}
 	err = ws.SendFrame(context.Background(), sendFrame)
@@ -212,7 +214,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received frame carries the status signal
+	// then: received frame carries the status signal (as a FlowPart kind).
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
@@ -220,10 +222,11 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	if resp.GetSessionId() != "test-session" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "test-session")
 	}
-	statusPayload := resp.GetStatus()
-	if statusPayload == nil {
-		t.Fatal("Status payload is nil, want non-nil")
+	respFlow := resp.GetFlowParts()
+	if respFlow == nil || len(respFlow.GetParts()) == 0 || respFlow.GetParts()[0].GetStatus() == nil {
+		t.Fatal("expected FlowParts status payload, got nil")
 	}
+	statusPayload := respFlow.GetParts()[0].GetStatus()
 	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
@@ -245,15 +248,17 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 			return
 		}
 
-		content := frame.GetContent()
+		content := frame.GetMessageParts()
 		if content == nil {
 			return
 		}
 
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+			Payload: &game.AgentFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
 			},
 		}
 		resp, _ := protojson.Marshal(respFrame)
@@ -261,7 +266,7 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 	})
 	defer srv.Close()
 
-	// when: client connects and sends a content frame with text+image parts
+	// when: client connects and sends a messageParts frame with text+image parts
 	ws := &WSClient{}
 	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
 	if err != nil {
@@ -274,10 +279,10 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		SessionId: "test-session",
 		FrameId:   "frame-001",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
-				{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
+				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:        imageData,
 					WidthPx:     1920,
@@ -293,15 +298,16 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received status signal confirms the content round-trip
+	// then: received status signal (FlowPart kind) confirms the round-trip.
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
 	}
-	statusPayload := resp.GetStatus()
-	if statusPayload == nil {
-		t.Fatal("Status payload is nil, want non-nil")
+	respFlow := resp.GetFlowParts()
+	if respFlow == nil || len(respFlow.GetParts()) == 0 || respFlow.GetParts()[0].GetStatus() == nil {
+		t.Fatal("expected FlowParts status payload, got nil")
 	}
+	statusPayload := respFlow.GetParts()[0].GetStatus()
 	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
@@ -376,8 +382,10 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	// when: sending a frame
 	err := ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "x",
-		Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	})
 
@@ -475,8 +483,10 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	// Send a frame first so the server consumes it and enters the blocking select.
 	err = ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	})
 	if err != nil {

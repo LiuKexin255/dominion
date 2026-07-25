@@ -22,10 +22,9 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
 import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-import type { Part } from "../game_types/projects/game/Part";
+import type { MessagePart } from "../game_types/projects/game/MessagePart";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
-import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
-import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
@@ -33,6 +32,7 @@ import type { PromptClient } from "./prompt-client";
 import type { SessionAgentStore } from "./session-agent";
 import type { TurnContent } from "./llm";
 import type { SinkHandle } from "./operation-bridge";
+import { parseToolResultFields } from "./tools/shared/result-blocks";
 import { deriveStatusSignal } from "./status-signal";
 import { shouldRejectProfile } from "./profile-guard";
 
@@ -154,8 +154,8 @@ export class Handler implements AgentServiceHandlers {
     // populates the `payload` discriminator during (de)serialization; outbound
     // raw frame objects built here must carry it explicitly so the frame is
     // self-describing and matches the contract the handler itself relies on
-    // when reading inbound frames (`frame.payload === "content"` etc.).
-    const PAYLOAD_ONEOF_KEYS = ["content", "wait", "warn", "status"] as const;
+    // when reading inbound frames (`frame.payload === "messageParts"` etc.).
+    const PAYLOAD_ONEOF_KEYS = ["messageParts", "flowParts"] as const;
 
     const buildFrame = (
       sessionId: string,
@@ -214,48 +214,60 @@ export class Handler implements AgentServiceHandlers {
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
 
-      if (frame.payload === "status") {
-        const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-        const state = sessionAgent.getAdapterState();
-        const statusFrame: AgentFrame = buildFrame(
-          sessionId,
-          FrameSender.FRAME_SENDER_SYSTEM,
-          {
-            // ACTIVE when a turn is in-flight (shared per-session mutex),
-            // else IDLE when an adapter is bound, else UNSPECIFIED
-            // (data-model.md §1; status-signal.ts).
-            status: {
-              status: deriveStatusSignal(
-                this.isMutexHeld(sessionId),
-                state.isBound,
-              ),
+      // Control-only FlowParts (wait/warn/status). The agent never initiates on
+      // inbound wait/warn (no-op, logged); a status FlowPart is the desktop's
+      // connectivity probe — respond with the agent's lifecycle status
+      // (data-model.md §9; research.md D9). Operation FlowParts never arrive
+      // inbound (the desktop executes those, it does not send them to the
+      // agent).
+      if (frame.payload === "flowParts") {
+        const parts = frame.flowParts?.parts ?? [];
+        const statusPart = parts.find((p: FlowPart) => p.status);
+        if (statusPart) {
+          const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+          const state = sessionAgent.getAdapterState();
+          const statusFrame: AgentFrame = buildFrame(
+            sessionId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              // ACTIVE when a turn is in-flight (shared per-session mutex),
+              // else IDLE when an adapter is bound, else UNSPECIFIED
+              // (data-model.md §1; status-signal.ts).
+              flowParts: {
+                parts: [
+                  {
+                    status: {
+                      status: deriveStatusSignal(
+                        this.isMutexHeld(sessionId),
+                        state.isBound,
+                      ),
+                    },
+                  },
+                ],
+              },
             },
-          },
-        );
-        stream.write(statusFrame);
+          );
+          stream.write(statusFrame);
+          return;
+        }
+        for (const p of parts) {
+          if (p.wait) {
+            info("wait signal received from peer", { sessionId });
+          } else if (p.warn) {
+            const message = p.warn.message ?? "";
+            warn("warn signal received from peer", { sessionId, message });
+          }
+        }
         return;
       }
 
-      // Control signals that terminate a turn / flag a warning. The agent
-      // never initiates on these, so inbound wait/warn are acknowledged as
-      // no-ops (logged) rather than driving any turn state.
-      if (frame.payload === "wait") {
-        info("wait signal received from peer", { sessionId });
-        return;
-      }
-      if (frame.payload === "warn") {
-        const message = frame.warn?.message ?? "";
-        warn("warn signal received from peer", { sessionId, message });
-        return;
-      }
+      if (frame.payload === "messageParts") {
+        const parts = frame.messageParts?.parts ?? [];
 
-      if (frame.payload === "content") {
-        const parts = frame.content?.parts ?? [];
-
-        // Tool results from the desktop arrive as content carrying
-        // ToolResultPart(s); route them to the bridge before any user-turn
-        // handling.
-        const toolResults = parts.filter((p: Part) => p.toolResult);
+        // Tool results from the desktop arrive as messageParts carrying
+        // toolResult MessagePart(s); route them to the bridge before any
+        // user-turn handling.
+        const toolResults = parts.filter((p: MessagePart) => p.toolResult);
         if (toolResults.length > 0) {
           const sa = this.sessionAgentStore.getOrCreate(sessionId);
           for (const p of toolResults) {
@@ -270,9 +282,9 @@ export class Handler implements AgentServiceHandlers {
         }
 
         const userText = parts
-          .map((p: Part) => p.text?.content ?? "")
+          .map((p: MessagePart) => p.text?.content ?? "")
           .join("");
-        const imagePart = parts.map((p: Part) => p.image).find(Boolean);
+        const imagePart = parts.map((p: MessagePart) => p.image).find(Boolean);
 
         // Adapter state is read once and reused by both the empty⇒bound
         // fallback below and the profile-name guard.
@@ -312,8 +324,14 @@ export class Handler implements AgentServiceHandlers {
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
-              warn: {
-                message: `profile mismatch: session bound to '${boundProfile}' but turn targets '${effectiveProfileName}'; call Refresh to switch profiles`,
+              flowParts: {
+                parts: [
+                  {
+                    warn: {
+                      message: `profile mismatch: session bound to '${boundProfile}' but turn targets '${effectiveProfileName}'; call Refresh to switch profiles`,
+                    },
+                  },
+                ],
               },
             },
           );
@@ -321,7 +339,10 @@ export class Handler implements AgentServiceHandlers {
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
-            { agentProfileName: effectiveProfileName, wait: {} },
+            {
+              agentProfileName: effectiveProfileName,
+              flowParts: { parts: [{ wait: {} }] },
+            },
           );
           stream.write(waitFrame);
           return;
@@ -333,8 +354,8 @@ export class Handler implements AgentServiceHandlers {
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
-              warn: {
-                message: "agent_profile_name required",
+              flowParts: {
+                parts: [{ warn: { message: "agent_profile_name required" } }],
               },
             },
           );
@@ -347,7 +368,10 @@ export class Handler implements AgentServiceHandlers {
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
-            { agentProfileName: effectiveProfileName, wait: {} },
+            {
+              agentProfileName: effectiveProfileName,
+              flowParts: { parts: [{ wait: {} }] },
+            },
           );
           stream.write(waitFrame);
           return;
@@ -382,13 +406,17 @@ export class Handler implements AgentServiceHandlers {
             controller.signal,
           )) {
             blockCount++;
+            // Display blocks (text/thinking/tool_call/tool_result) are emitted
+            // as messageParts frames — the conversation channel. Control
+            // signals (wait/warn) are emitted as flowParts frames below.
+            // (data-model.md §4; contracts/content-model-contract.md §4.)
             if (block.type === "reasoning") {
               const thinkFrame: AgentFrame = buildFrame(
                 sessionId,
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  content: {
+                  messageParts: {
                     parts: [{ thinking: { content: block.reasoning } }],
                   },
                 },
@@ -400,12 +428,56 @@ export class Handler implements AgentServiceHandlers {
                 FrameSender.FRAME_SENDER_AGENT,
                 {
                   agentProfileName: effectiveProfileName,
-                  content: {
+                  messageParts: {
                     parts: [{ text: { content: block.text } }],
                   },
                 },
               );
               stream.write(textFrame);
+            } else if (block.type === "tool_call") {
+              const toolCallFrame: AgentFrame = buildFrame(
+                sessionId,
+                FrameSender.FRAME_SENDER_AGENT,
+                {
+                  agentProfileName: effectiveProfileName,
+                  messageParts: {
+                    parts: [
+                      {
+                        toolCall: {
+                          toolId: block.toolCallId,
+                          name: block.name,
+                          argsJson: JSON.stringify(block.args ?? {}),
+                        },
+                      },
+                    ],
+                  },
+                },
+              );
+              stream.write(toolCallFrame);
+            } else if (block.type === "tool_result") {
+              const toolResultPart: ToolResultPart = {
+                toolId: block.toolCallId,
+                status: block.status as ToolResultPart["status"],
+                message: block.message,
+              };
+              if (block.screenshot) {
+                const screenshot: ImagePart = {
+                  encoding: "IMAGE_ENCODING_PNG",
+                  data: block.screenshot.data,
+                  widthPx: block.screenshot.widthPx,
+                  heightPx: block.screenshot.heightPx,
+                };
+                toolResultPart.screenshot = screenshot;
+              }
+              const toolResultFrame: AgentFrame = buildFrame(
+                sessionId,
+                FrameSender.FRAME_SENDER_AGENT,
+                {
+                  agentProfileName: effectiveProfileName,
+                  messageParts: { parts: [{ toolResult: toolResultPart }] },
+                },
+              );
+              stream.write(toolResultFrame);
             }
           }
 
@@ -421,7 +493,7 @@ export class Handler implements AgentServiceHandlers {
               FrameSender.FRAME_SENDER_SYSTEM,
               {
                 agentProfileName: effectiveProfileName,
-                wait: {},
+                flowParts: { parts: [{ wait: {} }] },
               },
             );
             stream.write(waitFrame);
@@ -437,7 +509,9 @@ export class Handler implements AgentServiceHandlers {
               sessionId,
               FrameSender.FRAME_SENDER_SYSTEM,
               {
-                warn: { message: `Processing error: ${message}` },
+                flowParts: {
+                  parts: [{ warn: { message: `Processing error: ${message}` } }],
+                },
               },
             );
             stream.write(warnFrame);
@@ -445,7 +519,10 @@ export class Handler implements AgentServiceHandlers {
             const waitFrame: AgentFrame = buildFrame(
               sessionId,
               FrameSender.FRAME_SENDER_SYSTEM,
-              { agentProfileName: effectiveProfileName, wait: {} },
+              {
+                agentProfileName: effectiveProfileName,
+                flowParts: { parts: [{ wait: {} }] },
+              },
             );
             stream.write(waitFrame);
           }
@@ -526,13 +603,32 @@ export class Handler implements AgentServiceHandlers {
               ? FrameSender.FRAME_SENDER_AGENT
               : FrameSender.FRAME_SENDER_SYSTEM;
 
-        const parts: Part[] = [];
+        const parts: MessagePart[] = [];
 
         if (msgType === "tool") {
-          const toolResult = reconstructToolResult(msg.content);
-          if (toolResult) {
-            parts.push({ toolResult });
+          // ToolMessage → tool_result MessagePart. Status is read verbatim
+          // from additional_kwargs.toolResultStatus (the real outcome carried
+          // by US2); absent → UNSPECIFIED (neutral, NEVER FAILED — spec 023
+          // FR-014/FR-015). message + screenshot come from the content blocks
+          // via the shared parser used by the live path too (FR-009).
+          const statusRaw = readToolResultStatus(msg);
+          const toolCallId = (msg as unknown as { tool_call_id?: string })
+            .tool_call_id;
+          const parsed = parseToolResultFields(msg.content);
+          const toolResultPart: ToolResultPart = {
+            toolId: toolCallId ?? "",
+            status: statusRaw,
+            message: parsed.message,
+          };
+          if (parsed.screenshot) {
+            toolResultPart.screenshot = {
+              encoding: "IMAGE_ENCODING_PNG",
+              data: parsed.screenshot.data,
+              widthPx: parsed.screenshot.widthPx,
+              heightPx: parsed.screenshot.heightPx,
+            };
           }
+          parts.push({ toolResult: toolResultPart });
         } else {
           if (typeof msg.content === "string") {
             if (msg.content) {
@@ -571,12 +667,18 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          // AI tool_calls reconstruct as MouseMovePart / MouseClickPart parts
-          // so operation history renders identically to live tool dispatch.
+          // AIMessage.tool_calls reconstruct as tool_call MessageParts carrying
+          // the semantic tool name + args (+ tool_id), so history shows the
+          // same tool calls the live stream emitted (spec 023 FR-009 / C4).
           if (msgType === "ai") {
             for (const call of extractToolCalls(msg)) {
-              const part = toolCallToPart(call);
-              if (part) parts.push(part);
+              parts.push({
+                toolCall: {
+                  toolId: call.id ?? "",
+                  name: call.name ?? "",
+                  argsJson: JSON.stringify(call.args ?? {}),
+                },
+              });
             }
           }
         }
@@ -708,9 +810,12 @@ function bytesLikeToBase64(raw: unknown): string {
 // ---------------------------------------------------------------------------
 // Tool history reconstruction helpers
 //
-// ListMessages best-effort reconstructs MouseMovePart / MouseClickPart /
-// ToolResultPart from LangChain message state so operation history renders
-// identically to the live tool stream.
+// ListMessages reconstructs MessageParts from LangChain BaseMessage state so
+// history renders identically to the live tool stream (spec 023 FR-009).
+// tool_call parts come from AIMessage.tool_calls; tool_result parts come from
+// a ToolMessage's additional_kwargs.toolResultStatus (the real status) plus
+// its content blocks (message + screenshot), parsed by the shared
+// parseToolResultFields used by the live path too.
 // ---------------------------------------------------------------------------
 
 /** Minimal shape of a LangChain tool_call carried on an AIMessage. */
@@ -720,123 +825,27 @@ interface ToolCallLike {
   id?: string;
 }
 
-/** Matches the pixel-dimension annotation emitted by mouse tools. */
-const PIXEL_SIZE_PATTERN = /图片像素尺寸[：:]?\s*(\d+)\s*[×xX*]\s*(\d+)/;
-
 /** Extract tool_calls from a BaseMessage (AIMessage carries them directly). */
 function extractToolCalls(msg: BaseMessage): ToolCallLike[] {
   const calls = (msg as unknown as { tool_calls?: unknown }).tool_calls;
   return Array.isArray(calls) ? (calls as ToolCallLike[]) : [];
 }
 
-/** Coerce a tool argument value to a finite int32, defaulting to 0. */
-function toInt32(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
-}
-
-/** Map a mouse_click click_type arg to the proto MouseClickAction string. */
-function clickTypeToAction(clickType: unknown): string {
-  if (typeof clickType !== "string" || !clickType) {
-    return "MOUSE_CLICK_ACTION_UNSPECIFIED";
-  }
-  return `MOUSE_CLICK_ACTION_${clickType.toUpperCase()}`;
-}
+/** Neutral status for a tool result whose real status is unavailable. */
+const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
- * Best-effort map a LangChain tool_call to a Part (MouseMovePart or
- * MouseClickPart). Unknown tools return null (no Part emitted for them).
+ * Read the real ToolResultStatus from a ToolMessage's additional_kwargs. The
+ * status is carried there by US2 (buildToolResultMessage) so history reflects
+ * the actual outcome (spec 023 FR-012..FR-015). Absent → UNSPECIFIED (neutral,
+ * NEVER FAILED — no text inference). US1 leaves it UNSPECIFIED until the
+ * mouse tools carry the real status (T018/T019/T020); live and history agree.
  */
-function toolCallToPart(call: ToolCallLike): Part | null {
-  const name = call.name;
-  const args = call.args ?? {};
-  if (name === "mouse_move") {
-    const part: MouseMovePart = {
-      xPx: toInt32(args.x_px),
-      yPx: toInt32(args.y_px),
-    };
-    return { mouseMove: part };
-  }
-  if (name === "mouse_click") {
-    const part: MouseClickPart = {
-      click: clickTypeToAction(args.click_type) as MouseClickPart["click"],
-    };
-    return { mouseClick: part };
-  }
-  return null;
-}
-
-/** Infer ToolResultStatus from the result message text. */
-function inferToolResultStatus(message: string): string {
-  const lower = message.toLowerCase();
-  return lower.includes("ok") || lower.includes("succeeded")
-    ? "TOOL_RESULT_STATUS_SUCCEEDED"
-    : "TOOL_RESULT_STATUS_FAILED";
-}
-
-/**
- * Best-effort reconstruct a ToolResultPart from a ToolMessage's content
- * blocks.
- *
- * - text block (non-annotation) → message
- * - image_url block → screenshot.data (base64, data-url prefix stripped)
- * - pixel-size annotation text → screenshot widthPx / heightPx
- * - status inferred from message ("ok"/"succeeded" → SUCCEEDED, else FAILED)
- *
- * String content (when the ToolMessage carries a plain string) is used as the
- * message directly. tool_id is unknown from history, so it is left empty.
- */
-function reconstructToolResult(
-  content: BaseMessage["content"],
-): ToolResultPart | null {
-  const blocks: { type?: string; text?: string; image_url?: { url?: string } }[] =
-    Array.isArray(content)
-      ? (content as { type?: string; text?: string; image_url?: { url?: string } }[])
-      : [];
-
-  let message = "";
-  let screenshotData = "";
-  let widthPx = 0;
-  let heightPx = 0;
-
-  for (const block of blocks) {
-    if (block.type === "text" && typeof block.text === "string") {
-      const dims = block.text.match(PIXEL_SIZE_PATTERN);
-      if (dims) {
-        widthPx = Number.parseInt(dims[1], 10) || 0;
-        heightPx = Number.parseInt(dims[2], 10) || 0;
-      } else if (!message) {
-        message = block.text;
-      }
-    } else if (block.type === "image_url" && block.image_url?.url) {
-      screenshotData = stripDataUrlPrefix(block.image_url.url);
-    }
-  }
-
-  if (!message && typeof content === "string") {
-    message = content;
-  }
-
-  const status = inferToolResultStatus(message) as ToolResultPart["status"];
-
-  const result: ToolResultPart = {
-    status,
-    message,
-  };
-  if (screenshotData) {
-    const screenshot: ImagePart = {
-      encoding: "IMAGE_ENCODING_PNG",
-      data: screenshotData,
-      widthPx,
-      heightPx,
-    };
-    result.screenshot = screenshot;
-  }
-  return result;
+function readToolResultStatus(msg: BaseMessage): ToolResultPart["status"] {
+  const status = (
+    msg as unknown as { additional_kwargs?: { toolResultStatus?: unknown } }
+  ).additional_kwargs?.toolResultStatus;
+  return typeof status === "string" && status.length > 0
+    ? (status as ToolResultPart["status"])
+    : (STATUS_UNSPECIFIED as ToolResultPart["status"]);
 }

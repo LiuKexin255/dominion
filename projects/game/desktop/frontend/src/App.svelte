@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, Part, WindowRef, CapturedImage, ChatStreamHandoff } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -57,7 +57,7 @@
     sender: FrameSender
     timestamp: string
     agentProfileName?: string
-    parts?: Part[]
+    parts?: MessagePart[]
     warnMessage?: string
     mergeKind?: 'text' | 'thinking' | 'mixed'
   }
@@ -367,7 +367,7 @@
   // homogeneousStreamKind classifies a content frame's parts for the streaming
   // merge decision: a frame of only TextParts or only ThinkingParts may fold
   // into the preceding agent bubble; anything mixed starts a new entry.
-  function homogeneousStreamKind(parts: Part[]): 'text' | 'thinking' | 'mixed' {
+  function homogeneousStreamKind(parts: MessagePart[]): 'text' | 'thinking' | 'mixed' {
     if (parts.length === 0) return 'mixed'
     if (parts.every(p => p.text != null)) return 'text'
     if (parts.every(p => p.thinking != null)) return 'thinking'
@@ -475,19 +475,20 @@
     consecutiveErrors = 0
   }
 
-  // handleContentPayload renders a content frame. One frameId maps to one chat
-  // entry containing ALL of the frame's parts (a user-turn frame carrying
+  // handleMessageParts renders a messageParts frame. One frameId maps to one
+  // chat entry containing ALL of the frame's parts (a user-turn frame carrying
   // [TextPart, ImagePart] is a single grouped entry, never split per-part).
   //
   // Streaming exception: the agent emits many small text/thinking chunks as
-  // separate content frames. To preserve the legacy single-bubble streaming
-  // UX, consecutive agent content frames that are purely TextPart (or purely
-  // ThinkingPart) and share the same agentProfileName fold into the preceding
-  // entry by concatenating content onto the trailing same-kind part. Every
-  // other content frame (image, mouse, tool result, mixed) starts a new entry.
-  function handleContentPayload(frame: AgentFrame, block: { parts?: Part[] }, timestamp: string) {
+  // separate messageParts frames. To preserve the legacy single-bubble
+  // streaming UX, consecutive agent messageParts frames that are purely
+  // TextPart (or purely ThinkingPart) and share the same agentProfileName fold
+  // into the preceding entry by concatenating content onto the trailing
+  // same-kind part. Every other messageParts frame (image, tool_call,
+  // tool_result, mixed) starts a new entry. (data-model.md §4; spec 023 FR-005.)
+  function handleMessageParts(frame: AgentFrame, block: { parts?: MessagePart[] }, timestamp: string) {
     const incomingParts = block.parts ?? []
-    // Graceful degradation: a content frame with zero parts is a no-op.
+    // Graceful degradation: a messageParts frame with zero parts is a no-op.
     if (incomingParts.length === 0) return
 
     const sender = resolveSender(frame.sender)
@@ -533,22 +534,28 @@
       frame_id: frame.frameId,
       sender: frame.sender,
     })
-    // A frame carries exactly one payload (protojson flattens the oneof). The
-    // part kind — not a separate `type` field — discriminates content.
-    if (frame.content) {
-      handleContentPayload(frame, frame.content, timestamp)
-    } else if (frame.wait) {
-      processing = false
-      if (playState === 'processing') playState = 'chat_ready'
-    } else if (frame.warn) {
-      chatMessages = [...chatMessages, {
-        messageId: frame.frameId ?? crypto.randomUUID(),
-        sender: FrameSender.SYSTEM,
-        timestamp,
-        warnMessage: frame.warn.message ?? '',
-      }]
-    } else if (frame.status) {
-      // Lifecycle status signal — no chat rendering.
+    // A frame carries exactly one payload (protojson flattens the oneof):
+    // messageParts (display — rendered) OR flowParts (control — drives
+    // execution / turn state, never a chat bubble).
+    if (frame.messageParts) {
+      handleMessageParts(frame, frame.messageParts, timestamp)
+    } else if (frame.flowParts) {
+      for (const fp of frame.flowParts.parts ?? []) {
+        if (fp.wait) {
+          processing = false
+          if (playState === 'processing') playState = 'chat_ready'
+        } else if (fp.warn) {
+          chatMessages = [...chatMessages, {
+            messageId: frame.frameId ?? crypto.randomUUID(),
+            sender: FrameSender.SYSTEM,
+            timestamp,
+            warnMessage: fp.warn.message ?? '',
+          }]
+        }
+        // Operation FlowParts (mouse/keyboard) and status FlowParts are
+        // executed by the Go backend / are lifecycle no-ops here — they never
+        // render as conversation entries (spec 023 FR-005).
+      }
     }
   }
 
@@ -573,7 +580,7 @@
       // Optimistic user turn: mirror the backend's single user-turn frame,
       // which carries [TextPart, ImagePart] as one PartBlock. One local id →
       // one entry holding all submitted parts (text and/or screenshot).
-      const optimisticParts: Part[] = []
+      const optimisticParts: MessagePart[] = []
       if (text.trim()) optimisticParts.push({ text: { content: text } })
       if (pendingScreenshot) {
         optimisticParts.push({

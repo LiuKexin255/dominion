@@ -31,9 +31,22 @@ type FakeStreamAgent = {
 				reasoning: AsyncGenerator<string>;
 				text: AsyncGenerator<string>;
 			}>;
+			toolCalls?: AsyncIterable<{
+				name: string;
+				callId: string;
+				input: unknown;
+				output: Promise<unknown>;
+			}>;
+			output?: PromiseLike<unknown>;
 		}>;
 	};
 };
+
+/** An empty async iterable, used for the toolCalls projection on fakes that
+ *  do not exercise tool emission. */
+function emptyAsync<T>(): AsyncIterable<T> {
+	return (async function* () {})();
+}
 
 function noopBridge(): OperationBridge {
 	return new OperationBridge();
@@ -354,10 +367,114 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 			}
 		}
 
-		expect(blocks).toHaveLength(1);
-		expect(blocks[0]).toEqual({ type: "text", text: "first" });
-		expect(capturedSignal).toBeTruthy();
-		expect(capturedSignal?.aborted).toBe(true);
+ 		expect(blocks).toHaveLength(1);
+ 		expect(blocks[0]).toEqual({ type: "text", text: "first" });
+ 		expect(capturedSignal).toBeTruthy();
+ 		expect(capturedSignal?.aborted).toBe(true);
+ 	});
+});
+
+// ===========================================================================
+// AgentAdapterImpl.generateTurn — tool_call / tool_result emission (T006;
+// contracts/tool-dispatch-contract.md §7; research.md D5; quickstart §4)
+// ===========================================================================
+
+describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => {
+	it("yields a tool_call block then a tool_result block from stream.toolCalls", async () => {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+
+		// Fake stream: one text delta, plus one ToolCallStream whose .output
+		// resolves to content blocks carrying a message and a screenshot.
+		// stream.messages ignores tool-role messages (LangGraph), so tool
+		// events come solely from stream.toolCalls.
+		const outputContent = [
+			{ type: "text", text: "ok" },
+			{
+				type: "image_url",
+				image_url: { url: "data:image/png;base64,AAAA" },
+			},
+			{
+				type: "text",
+				text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+			},
+		];
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {})(),
+						text: (async function* () {
+							yield "calling tool";
+						})(),
+					};
+				})(),
+				toolCalls: (async function* () {
+					yield {
+						name: "saolei_click",
+						callId: "call_1",
+						input: { x: 3, y: 4 },
+						output: Promise.resolve(outputContent),
+					};
+				})(),
+				output: Promise.resolve(),
+			}),
+		};
+
+		const collected = await collect(
+			adapter.generateTurn("t-tool", { text: "go" }),
+		);
+
+		// tool_call precedes tool_result and carries the model's invocation.
+		const callIdx = collected.findIndex((b) => b.type === "tool_call");
+		expect(callIdx).toBeGreaterThanOrEqual(0);
+		expect(collected[callIdx]).toEqual({
+			type: "tool_call",
+			name: "saolei_click",
+			args: { x: 3, y: 4 },
+			toolCallId: "call_1",
+		});
+
+		const resultBlock = collected.find(
+			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
+				b.type === "tool_result",
+		);
+		expect(resultBlock).toBeDefined();
+		expect(resultBlock!.toolCallId).toBe("call_1");
+		// US1: status is UNSPECIFIED on the live path (additional_kwargs not
+		// reachable via the normalised toolCalls.output projection).
+		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
+		expect(resultBlock!.message).toBe("ok");
+		expect(resultBlock!.screenshot).toBeDefined();
+		expect(resultBlock!.screenshot!.data).toBe("AAAA");
+		expect(resultBlock!.screenshot!.widthPx).toBe(10);
+		expect(resultBlock!.screenshot!.heightPx).toBe(20);
+
+		// tool_call precedes its tool_result.
+		const resultIdx = collected.findIndex((b) => b.type === "tool_result");
+		expect(callIdx).toBeLessThan(resultIdx);
+	});
+
+	it("emits no tool blocks when stream.toolCalls is absent", async () => {
+		// Defensive: a stream without the toolCalls projection (none of the
+		// existing fakes provide it) yields only text/reasoning — consumeToolCalls
+		// is a no-op.
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("plain"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const blocks = await collect(
+			adapter.generateTurn("t-no-tools", { text: "hi" }),
+		);
+		expect(blocks.some((b) => b.type.startsWith("tool"))).toBe(false);
 	});
 });
 

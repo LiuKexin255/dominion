@@ -5,16 +5,20 @@
  * OperationBridge is owned by SessionAgent and survives stream reconnects.
  * The Connect handler registers a sink callback on stream open and unregisters
  * it on stream end/error.  LangChain tools (e.g. mouse) call dispatch() to
- * send a tool Part to the desktop and await the matching ToolResultPart.
+ * send a FlowPart operation to the desktop and await the matching ToolResultPart.
  *
  * The bridge never holds a reference to a specific stream instance — only a
  * write callback — so a new stream can re-register its sink without recreating
  * the bridge or losing track of in-flight dispatches.
  *
- * Part-model contract: a tool request is a Part (MouseMovePart or
- * MouseClickPart) wrapped in a PartBlock carried by a content AgentFrame. The
- * desktop replies with a content frame whose ToolResultPart.tool_id matches the
- * request. tool_id is the single correlation key (no invoke_id/sequence).
+ * Content-model contract (specs/023-saolei-mcp-refine/contracts/content-model-contract.md):
+ * a tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
+ * FlowParts AgentFrame (payload "flowParts"). The desktop replies with a
+ * messageParts AgentFrame whose ToolResultPart.tool_id matches the request.
+ * tool_id is the single correlation key (no invoke_id/sequence). When the tool
+ * passes the LangChain tool_call.id (contracts/tool-dispatch-contract.md §1),
+ * that id is stamped onto the FlowPart so the call, the operation, and the
+ * later tool_result MessagePart share one id (spec 023 FR-008).
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { info, warn } from "@dominion/common-js-logs";
 
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-import type { Part } from "../game_types/projects/game/Part";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
 import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
@@ -151,30 +155,33 @@ export class OperationBridge {
   }
 
   /**
-   * Dispatch a tool Part (MouseMovePart, MouseClickPart, KeyboardPressPart,
-   * or MouseMoveAndClickPart) to the desktop via the registered sink and
-   * await the matching ToolResultPart.
+   * Dispatch a FlowPart operation (MouseMovePart, MouseClickPart,
+   * KeyboardPressPart, or MouseMoveAndClickPart) to the desktop via the
+   * registered sink and await the matching ToolResultPart.
    *
-   * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
-   * carried by a content AgentFrame, and writes via the sink.  When no sink
-   * is registered (desktop disconnected), resolves FAILED immediately rather
-   * than throwing.  When the optional `signal` is already aborted, or aborts
-   * while the dispatch is pending, resolves FAILED "aborted" immediately —
-   * abort is a third race participant alongside the 20-min timeout and
-   * handleResult, whichever fires first wins.
+   * The operation is stamped with a tool_id (the correlation key the desktop's
+   * reply must echo), wrapped in a FlowParts AgentFrame, and written via the
+   * sink. When `toolId` is supplied it is stamped verbatim — this is the
+   * LangChain `tool_call.id` threaded from the model invocation
+   * (contracts/tool-dispatch-contract.md §1 / research.md D2), so the call,
+   * the FlowPart operation, and the later tool_result MessagePart share one id.
+   * When `toolId` is omitted (e.g. a non-agent direct-invoke test path) a fresh
+   * UUID is minted as the fallback. When no sink is registered (desktop
+   * disconnected), resolves FAILED immediately rather than throwing. When the
+   * optional `signal` is already aborted, or aborts while the dispatch is
+   * pending, resolves FAILED "aborted" immediately — abort is a third race
+   * participant alongside the 20-min timeout and handleResult, whichever fires
+   * first wins.
    *
-   * Spec 018-saolei-mcp FR-004a/b: `KeyboardPressPart` (F2 new game) and
-   * `MouseMoveAndClickPart` (window-message cell operations) are stamped with
-   * `tool_id` here exactly like the existing mouse parts; the desktop replies
-   * with the same correlation key.
-   *
-   * @param part   - Tool Part to dispatch.
+   * @param part   - FlowPart operation to dispatch.
+   * @param toolId - Optional tool_call.id to stamp onto the operation (research.md D2).
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
-   *          abort, non-tool Part, no-sink, or sink write error.
+   *          abort, non-operation FlowPart, no-sink, or sink write error.
    */
   async dispatch(
-    part: Part,
+    part: FlowPart,
+    toolId?: string,
     signal?: AbortSignal,
   ): Promise<OperationResult> {
     const toolPart:
@@ -189,7 +196,7 @@ export class OperationBridge {
       part.mouseMoveAndClick ??
       undefined;
     if (!toolPart) {
-      warn("dispatch received a non-tool Part");
+      warn("dispatch received a non-operation FlowPart");
       return { status: STATUS_FAILED, message: "invalid tool part" };
     }
 
@@ -205,20 +212,20 @@ export class OperationBridge {
       return { status: STATUS_FAILED, message: "aborted" };
     }
 
-    const toolId = randomUUID();
-    toolPart.toolId = toolId;
+    const resolvedToolId = toolId ?? randomUUID();
+    toolPart.toolId = resolvedToolId;
 
     return new Promise<OperationResult>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           signal?.removeEventListener("abort", onAbort);
-          warn("operation dispatch timed out", { toolId });
+          warn("operation dispatch timed out", { toolId: resolvedToolId });
           resolve({ status: STATUS_FAILED, message: "operation timed out" });
         }
       }, DISPATCH_TIMEOUT_MS);
 
       const onAbort = () => {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
           resolve({ status: STATUS_FAILED, message: "aborted" });
         }
@@ -227,7 +234,7 @@ export class OperationBridge {
         signal.addEventListener("abort", onAbort, { once: true });
       }
 
-      this.pending.set(toolId, {
+      this.pending.set(resolvedToolId, {
         resolve,
         timer,
         cleanup: signal
@@ -236,17 +243,17 @@ export class OperationBridge {
       });
 
       const envelope: AgentFrame = {
-        payload: "content",
-        content: { parts: [part] },
+        payload: "flowParts",
+        flowParts: { parts: [part] },
       };
       try {
         sink(envelope);
       } catch (err) {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
           const msg = err instanceof Error ? err.message : "sink write error";
-          warn("operation dispatch sink threw", { toolId, error: msg });
+          warn("operation dispatch sink threw", { toolId: resolvedToolId, error: msg });
           resolve({ status: STATUS_FAILED, message: msg });
         }
       }
@@ -286,8 +293,8 @@ export class OperationBridge {
     const envelope: AgentFrame = {
       frameId: randomUUID(),
       sender: FRAME_SENDER_SYSTEM,
-      payload: "content",
-      content: { parts: [{ toolResult }] },
+      payload: "messageParts",
+      messageParts: { parts: [{ toolResult }] },
     };
     try {
       sink(envelope);

@@ -210,7 +210,7 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-/** Build an inbound user content frame (TextPart, sender USER). */
+/** Build an inbound user messageParts frame (TextPart, sender USER). */
 function userContentFrame(
   sessionId: string,
   text: string,
@@ -218,14 +218,14 @@ function userContentFrame(
 ) {
   return {
     sessionId,
-    payload: "content",
-    content: { parts: [{ text: { content: text } }] },
+    payload: "messageParts",
+    messageParts: { parts: [{ text: { content: text } }] },
     sender: FRAME_SENDER_USER,
     ...(profileName ? { agentProfileName: profileName } : {}),
   };
 }
 
-/** Build an inbound user content frame carrying text + image. */
+/** Build an inbound user messageParts frame carrying text + image. */
 function userContentWithImageFrame(
   sessionId: string,
   text: string,
@@ -234,8 +234,8 @@ function userContentWithImageFrame(
 ) {
   return {
     sessionId,
-    payload: "content",
-    content: {
+    payload: "messageParts",
+    messageParts: {
       parts: [
         { text: { content: text } },
         { image: { data: image.data, encoding: image.encoding } },
@@ -303,21 +303,21 @@ describe("Handler.Connect user content frame", () => {
 
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f0.payload).toBe("content");
-    expect(f0.content).toEqual({
+    expect(f0.payload).toBe("messageParts");
+    expect(f0.messageParts).toEqual({
       parts: [{ thinking: { content: "Let me think..." } }],
     });
 
     const f1 = stream.written[1] as Record<string, unknown>;
     expect(f1.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f1.content).toEqual({
+    expect(f1.messageParts).toEqual({
       parts: [{ text: { content: "The answer is 42." } }],
     });
 
     const f2 = stream.written[2] as Record<string, unknown>;
     expect(f2.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f2.payload).toBe("wait");
-    expect(f2.wait).toEqual({});
+    expect(f2.payload).toBe("flowParts");
+    expect(f2.flowParts).toEqual({ parts: [{ wait: {} }] });
   });
 
   it("produces text + wait for response with no thinking", async () => {
@@ -335,10 +335,11 @@ describe("Handler.Connect user content frame", () => {
     await flush();
 
     expect(stream.written).toHaveLength(2);
-    expect((stream.written[0] as Record<string, unknown>).content).toEqual({
+    expect((stream.written[0] as Record<string, unknown>).messageParts).toEqual({
       parts: [{ text: { content: "Direct answer" } }],
     });
-    expect((stream.written[1] as Record<string, unknown>).wait).toEqual({});
+    const waitFrame = stream.written[1] as Record<string, unknown>;
+    expect(waitFrame.flowParts).toEqual({ parts: [{ wait: {} }] });
   });
 
   it("generates unique frameId per frame", async () => {
@@ -392,16 +393,16 @@ describe("Handler.Connect missing profile name", () => {
     expect(stream.written).toHaveLength(2);
     const f0 = stream.written[0] as Record<string, unknown>;
     expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f0.payload).toBe("warn");
-    expect(f0.warn).toBeDefined();
-    expect((f0.warn as Record<string, unknown>).message).toContain(
-      "agent_profile_name",
-    );
+    expect(f0.payload).toBe("flowParts");
+    const f0Warn = (f0.flowParts as { parts: { warn?: { message?: string } }[] }).parts[0].warn;
+    expect(f0Warn).toBeDefined();
+    expect(f0Warn!.message).toContain("agent_profile_name");
 
     const f1 = stream.written[1] as Record<string, unknown>;
     expect(f1.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f1.payload).toBe("wait");
-    expect(f1.wait).toBeDefined();
+    expect(f1.payload).toBe("flowParts");
+    const f1Wait = (f1.flowParts as { parts: { wait?: unknown }[] }).parts[0].wait;
+    expect(f1Wait).toBeDefined();
     // No profile name on this path → agentProfileName is the empty string.
     expect(f1.agentProfileName).toBe("");
   });
@@ -467,10 +468,10 @@ describe("Handler.Connect profile switch", () => {
       .filter(
         (f) =>
           (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-          (f as Record<string, unknown>).payload === "content",
+          (f as Record<string, unknown>).payload === "messageParts",
       )
       .map((f) => {
-        const parts = ((f as Record<string, unknown>).content as { parts: { text?: { content?: string } }[] }).parts;
+        const parts = ((f as Record<string, unknown>).messageParts as { parts: { text?: { content?: string } }[] }).parts;
         return parts[0]?.text?.content ?? "";
       });
     expect(texts).toEqual(["Response from A", "Response from B"]);
@@ -521,30 +522,31 @@ describe("Handler.Connect profile-name guard", () => {
     stream.emit("data", userContentFrame("sess-fail", "switch me", "nonexistent-profile"));
     await flush();
 
-    const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).payload === "warn",
+    // warn + wait are now FlowParts (a warn FlowPart, then a wait FlowPart).
+    const flowWarnFrames = stream.written.filter(
+      (f) => {
+        const fr = f as Record<string, unknown>;
+        return fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { warn?: unknown }[] }).parts.some((p) => p.warn);
+      },
     );
-    expect(warnFrames).toHaveLength(1);
-    expect(
-      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
-        .message,
-    ).toContain("profile mismatch");
-    expect(
-      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
-        .message,
-    ).toContain("valid-profile");
-    expect(
-      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
-        .message,
-    ).toContain("nonexistent-profile");
+    expect(flowWarnFrames).toHaveLength(1);
+    const warnMessage = ((flowWarnFrames[0] as Record<string, unknown>).flowParts as { parts: { warn?: { message?: string } }[] }).parts.find((p) => p.warn)!.warn!.message;
+    expect(warnMessage).toContain("profile mismatch");
+    expect(warnMessage).toContain("valid-profile");
+    expect(warnMessage).toContain("nonexistent-profile");
 
     // The WaitSignal returns the desktop to ready (clears the typing indicator).
-    const waitFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).payload === "wait",
+    const flowWaitFrames = stream.written.filter(
+      (f) => {
+        const fr = f as Record<string, unknown>;
+        return fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { wait?: unknown }[] }).parts.some((p) => p.wait);
+      },
     );
-    expect(waitFrames).toHaveLength(1);
+    expect(flowWaitFrames).toHaveLength(1);
     expect(
-      (waitFrames[0] as Record<string, unknown>).agentProfileName,
+      (flowWaitFrames[0] as Record<string, unknown>).agentProfileName,
     ).toBe("nonexistent-profile");
 
     // The mismatched turn never acquired the mutex / invoked the adapter:
@@ -580,8 +582,8 @@ describe("Handler.Connect tool result content frame", () => {
     };
     stream.emit("data", {
       sessionId: "sess-or",
-      payload: "content",
-      content: { parts: [{ toolResult }] },
+      payload: "messageParts",
+      messageParts: { parts: [{ toolResult }] },
       sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
@@ -591,15 +593,15 @@ describe("Handler.Connect tool result content frame", () => {
     expect(bridge.handleResult).toHaveBeenCalledWith(toolResult);
   });
 
-  it("does not write any frame for a tool result content frame", async () => {
+  it("does not write any frame for a tool result messageParts frame", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     stream.emit("data", {
       sessionId: "sess-or2",
-      payload: "content",
-      content: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
+      payload: "messageParts",
+      messageParts: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
       sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
@@ -750,7 +752,7 @@ describe("Handler.Connect bridge lifecycle", () => {
 
     const bridge = sessionAgentStore._getAgent("sess-write").bridge;
     const sinkFn = bridge.registerSink.mock.calls[0][0] as (f: unknown) => void;
-    const envelope = { payload: "content", content: { parts: [{ mouseMove: { toolId: "x", xPx: 1, yPx: 2 } }] } };
+    const envelope = { payload: "flowParts", flowParts: { parts: [{ mouseMove: { toolId: "x", xPx: 1, yPx: 2 } }] } };
     const before = stream.written.length;
     sinkFn(envelope);
     expect(stream.written.length).toBe(before + 1);
@@ -869,10 +871,13 @@ describe("Handler.Connect abort lifecycle", () => {
     expect(signal!.aborted).toBe(true);
     expect(yieldedCount()).toBeLessThan(blocks.length);
 
+    // wait/warn now ride as FlowParts kinds; assert none were emitted on abort.
     const waitWarnFrames = stream.written.filter(
-      (f) =>
-        (f as { payload?: string }).payload === "wait" ||
-        (f as { payload?: string }).payload === "warn",
+      (f) => {
+        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+        if (fr.payload !== "flowParts") return false;
+        return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+      },
     );
     expect(waitWarnFrames).toHaveLength(0);
   });
@@ -909,10 +914,13 @@ describe("Handler.Connect abort lifecycle", () => {
     expect(signal!.aborted).toBe(true);
     expect(yieldedCount()).toBeLessThan(blocks.length);
 
+    // wait/warn now ride as FlowParts kinds; assert none were emitted on abort.
     const waitWarnFrames = stream.written.filter(
-      (f) =>
-        (f as { payload?: string }).payload === "wait" ||
-        (f as { payload?: string }).payload === "warn",
+      (f) => {
+        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+        if (fr.payload !== "flowParts") return false;
+        return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+      },
     );
     expect(waitWarnFrames).toHaveLength(0);
   });
@@ -964,7 +972,8 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-status",
-      payload: "status",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
       sender: FRAME_SENDER_USER,
     });
     await flush();
@@ -972,11 +981,12 @@ describe("Handler.Connect probes", () => {
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
     expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f.payload).toBe("status");
-    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
-    // as the full proto name (game.proto:368 STATUS_SIGNAL_STATUS_*); the handler
-    // emits the UNSPECIFIED variant for an unbound session.
-    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_UNSPECIFIED" });
+    expect(f.payload).toBe("flowParts");
+    // The status response rides as a FlowPart kind (spec 023 C3 / FR-003).
+    // proto-loader enums:String serializes StatusSignalStatus as the full proto
+    // name; the handler emits the UNSPECIFIED variant for an unbound session.
+    const statusPart = (f.flowParts as { parts: { status?: { status?: string } }[] }).parts[0].status;
+    expect(statusPart).toEqual({ status: "STATUS_SIGNAL_STATUS_UNSPECIFIED" });
   });
 
   it("responds to status probe with 'idle' for bound session", async () => {
@@ -992,17 +1002,16 @@ describe("Handler.Connect probes", () => {
 
     stream.emit("data", {
       sessionId: "sess-bound",
-      payload: "status",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
       sender: FRAME_SENDER_USER,
     });
     await flush();
 
     expect(stream.written).toHaveLength(1);
     const f = stream.written[0] as Record<string, unknown>;
-    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
-    // as the full proto name (game.proto:374 STATUS_SIGNAL_STATUS_IDLE); the
-    // handler emits the IDLE variant for a bound session.
-    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
+    const statusPart = (f.flowParts as { parts: { status?: { status?: string } }[] }).parts[0].status;
+    expect(statusPart).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
   });
 
   it("responds to status probe with 'active' while a turn is in-flight", async () => {
@@ -1035,7 +1044,8 @@ describe("Handler.Connect probes", () => {
     // its response synchronously during emit.
     stream.emit("data", {
       sessionId: "sess-active",
-      payload: "status",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
       sender: FRAME_SENDER_USER,
     });
     await flush();
@@ -1043,11 +1053,16 @@ describe("Handler.Connect probes", () => {
     // The session is bound, so without the in-flight turn the response would
     // be IDLE; ACTIVE proves isMutexHeld was consulted.
     const statusFrame = stream.written.find(
-      (f) => (f as Record<string, unknown>).payload === "status",
+      (f) => {
+        const fr = f as Record<string, unknown>;
+        return fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { status?: unknown }[] }).parts.some((p) => p.status);
+      },
     ) as Record<string, unknown> | undefined;
     expect(statusFrame).toBeDefined();
     expect(statusFrame!.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(statusFrame!.status).toEqual({ status: "STATUS_SIGNAL_STATUS_ACTIVE" });
+    const statusPart = (statusFrame!.flowParts as { parts: { status?: { status?: string } }[] }).parts.find((p) => p.status)!.status;
+    expect(statusPart).toEqual({ status: "STATUS_SIGNAL_STATUS_ACTIVE" });
 
     // Let the in-flight turn complete so its finally releases the mutex.
     await new Promise((r) => setTimeout(r, 60));
@@ -1091,7 +1106,11 @@ describe("Handler.Connect LLM error", () => {
     expect(stream.ended).toBe(false);
 
     const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).payload === "warn",
+      (f) => {
+        const fr = f as Record<string, unknown>;
+        return fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { warn?: unknown }[] }).parts.some((p) => p.warn);
+      },
     );
     expect(warnFrames.length).toBeGreaterThanOrEqual(1);
   });
@@ -1312,7 +1331,7 @@ describe("Handler.RefreshAgent", () => {
     const textFrames = stream.written.filter(
       (f) =>
         (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-        (f as Record<string, unknown>).payload === "content",
+        (f as Record<string, unknown>).payload === "messageParts",
     );
     expect(textFrames).toHaveLength(1);
   });
@@ -1630,7 +1649,7 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(firstPartText(response!.messages![3])).toBe("fourth");
   });
 
-  it("emits a MouseMovePart for AIMessage with a mouse_move tool_call", async () => {
+  it("emits a tool_call MessagePart for an AIMessage with a mouse_move tool_call", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-op-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1654,17 +1673,19 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     const opMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { mouseMove?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.mouseMove);
+      const parts = (m.content as { parts: { toolCall?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolCall);
     });
     expect(opMsg).toBeDefined();
     expect(opMsg!.sender).toBe(FRAME_SENDER_AGENT);
-    const movePart = (opMsg!.content as { parts: { mouseMove?: { xPx?: number; yPx?: number } }[] }).parts.find((p) => p.mouseMove)!.mouseMove;
-    expect(movePart?.xPx).toBe(150);
-    expect(movePart?.yPx).toBe(250);
+    const callPart = (opMsg!.content as { parts: { toolCall?: { toolId?: string; name?: string; argsJson?: string } }[] }).parts.find((p) => p.toolCall)!.toolCall;
+    // tool_call carries the semantic invocation: id, name, args_json (FR-002).
+    expect(callPart?.toolId).toBe("call-move-1");
+    expect(callPart?.name).toBe("mouse_move");
+    expect(callPart?.argsJson).toBe(JSON.stringify({ x_px: 150, y_px: 250 }));
   });
 
-  it("emits a MouseClickPart for a mouse_click tool_call with click_type", async () => {
+  it("emits a tool_call MessagePart for a mouse_click tool_call", async () => {
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-opclick-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1688,12 +1709,13 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
     const opMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { mouseClick?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.mouseClick);
+      const parts = (m.content as { parts: { toolCall?: unknown }[] } | undefined)?.parts ?? [];
+      return parts.some((p) => p.toolCall);
     });
     expect(opMsg).toBeDefined();
-    const clickPart = (opMsg!.content as { parts: { mouseClick?: { click?: string } }[] }).parts.find((p) => p.mouseClick)!.mouseClick;
-    expect(clickPart?.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
+    const callPart = (opMsg!.content as { parts: { toolCall?: { name?: string; argsJson?: string } }[] }).parts.find((p) => p.toolCall)!.toolCall;
+    expect(callPart?.name).toBe("mouse_click");
+    expect(callPart?.argsJson).toBe(JSON.stringify({ click_type: "LEFT_CLICK" }));
   });
 
   it("emits a ToolResultPart for a ToolMessage with reconstructed fields", async () => {
@@ -1727,6 +1749,10 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
           },
         ],
         tool_call_id: "call-2",
+        // US2 carries the real status in additional_kwargs; ListMessages reads
+        // it verbatim (FR-012/FR-013). Included here to exercise the carried-
+        // status path.
+        additional_kwargs: { toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED" },
       }),
     ]);
 
@@ -1734,14 +1760,15 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
 
     expect(error).toBeNull();
 
-    // The ToolMessage produces a Message carrying a ToolResultPart.
+    // The ToolMessage produces a Message carrying a tool_result MessagePart.
     const resultMsg = response!.messages!.find((m) => {
       const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
       return parts.some((p) => p.toolResult);
     });
     expect(resultMsg).toBeDefined();
     expect(resultMsg!.sender).toBe(FRAME_SENDER_SYSTEM);
-    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string; message?: string; screenshot?: { data?: string; encoding?: string; widthPx?: number; heightPx?: number } } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    const tr = (resultMsg!.content as { parts: { toolResult?: { toolId?: string; status?: string; message?: string; screenshot?: { data?: string; encoding?: string; widthPx?: number; heightPx?: number } } }[] }).parts.find((p) => p.toolResult)!.toolResult;
+    expect(tr?.toolId).toBe("call-2");
     expect(tr?.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
     expect(tr?.message).toBe("ok");
     expect(tr?.screenshot).toBeDefined();
@@ -1750,7 +1777,10 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(tr?.screenshot?.heightPx).toBe(600);
   });
 
-  it("infers FAILED status from ToolMessage message without ok/succeeded", async () => {
+  it("shows UNSPECIFIED status (not FAILED) when a ToolMessage carries no real status (FR-014/FR-015)", async () => {
+    // No text inference: a ToolMessage whose message lacks "ok"/"succeeded"
+    // AND whose additional_kwargs carries no toolResultStatus reconstructs to
+    // UNSPECIFIED (neutral), NEVER FAILED. inferToolResultStatus is gone.
     const { adapter, graph } = createStateAdapter();
     sessionAgentStore._setBinding("sess-opfail-rt", "test-profile", adapter);
     const handler = createHandler({ promptClient, sessionAgentStore });
@@ -1783,6 +1813,6 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     });
     expect(resultMsg).toBeDefined();
     const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string } }[] }).parts.find((p) => p.toolResult)!.toolResult;
-    expect(tr?.status).toBe("TOOL_RESULT_STATUS_FAILED");
+    expect(tr?.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
   });
 });

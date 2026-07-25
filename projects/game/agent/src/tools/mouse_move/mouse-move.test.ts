@@ -27,7 +27,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { createMouseMoveTool } from "./mouse-move";
 import { OperationBridge } from "../../operation-bridge";
 
-import type { Part } from "../../../game_types/projects/game/Part";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
@@ -80,7 +80,7 @@ describe("createMouseMoveTool", () => {
     await mouseTool.invoke({ x_px: 100, y_px: 200 });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    const part = bridge.dispatch.mock.calls[0][0] as Part;
+    const part = bridge.dispatch.mock.calls[0][0] as FlowPart;
     expect(part.mouseMove).toBeDefined();
     expect(part.mouseMove!.xPx).toBe(100);
     expect(part.mouseMove!.yPx).toBe(200);
@@ -189,7 +189,8 @@ describe("createMouseMoveTool", () => {
     );
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    expect(bridge.dispatch.mock.calls[0][1]).toBe(controller.signal);
+    // dispatch signature is (part, toolId, signal); signal is the 3rd arg.
+    expect(bridge.dispatch.mock.calls[0][2]).toBe(controller.signal);
   });
 
   it("forwards undefined signal when no config is provided", async () => {
@@ -202,7 +203,22 @@ describe("createMouseMoveTool", () => {
     await mouseTool.invoke({ x_px: 1, y_px: 2 });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    expect(bridge.dispatch.mock.calls[0][1]).toBeUndefined();
+    expect(bridge.dispatch.mock.calls[0][2]).toBeUndefined();
+  });
+
+  // T009 (contracts/tool-dispatch-contract.md §2): the tool reads
+  // config.toolCall.id and passes it to dispatch so the FlowPart operation
+  // shares the LangChain tool_call.id (spec 023 FR-008).
+  it("passes config.toolCall.id as the dispatch toolId", async () => {
+    const mouseTool = createMouseMoveTool(bridge);
+
+    await mouseTool.invoke(
+      { x_px: 7, y_px: 8 },
+      { toolCall: { id: "call_xyz" } } as unknown as Record<string, unknown>,
+    );
+
+    expect(bridge.dispatch).toHaveBeenCalledTimes(1);
+    expect(bridge.dispatch.mock.calls[0][1]).toBe("call_xyz");
   });
 });
 

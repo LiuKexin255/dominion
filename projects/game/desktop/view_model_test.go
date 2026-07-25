@@ -233,8 +233,8 @@ func TestToMessageViewModels(t *testing.T) {
 			MessageId:  "msg-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "Hello from user"}}},
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from user"}}},
 			}},
 		},
 		{
@@ -242,8 +242,8 @@ func TestToMessageViewModels(t *testing.T) {
 			MessageId:  "msg-2",
 			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
 			}},
 		},
 	}
@@ -314,8 +314,8 @@ func TestToMessageViewModels_Image(t *testing.T) {
 			MessageId:  "img-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Image{Image: &game.ImagePart{
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 					Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:     rawImage,
 				}}},

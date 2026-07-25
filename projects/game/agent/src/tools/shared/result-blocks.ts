@@ -50,3 +50,52 @@ export function buildResultBlocks(
   }
   return blocks;
 }
+
+/** Matches the pixel-dimension annotation emitted by buildResultBlocks. */
+const PIXEL_SIZE_PATTERN = /图片像素尺寸[：:]?\s*(\d+)\s*[×xX*]\s*(\d+)/;
+
+/** Parsed tool-result display fields extracted from content blocks. */
+export interface ParsedToolResult {
+  message: string;
+  screenshot?: { data: string; widthPx: number; heightPx: number };
+}
+
+/**
+ * Parse a tool's content-block array (the LangChain ToolMessage.content shape)
+ * into display fields: the first non-annotation text block → message; an
+ * image_url block → screenshot.data (base64, data-url prefix stripped); the
+ * pixel-size annotation text → screenshot widthPx/heightPx. A plain-string
+ * content is used as the message directly.
+ *
+ * Used by BOTH the live emission (llm.ts reads `stream.toolCalls` output) and
+ * history reconstruction (handler.ts `ListMessages` reads the checkpointed
+ * ToolMessage), so live and history render identically (spec 023 FR-009).
+ */
+export function parseToolResultFields(content: unknown): ParsedToolResult {
+  const blocks = Array.isArray(content)
+    ? (content as { type?: string; text?: string; image_url?: { url?: string } }[])
+    : [];
+  let message = "";
+  let data = "";
+  let widthPx = 0;
+  let heightPx = 0;
+  for (const block of blocks) {
+    if (block.type === "text" && typeof block.text === "string") {
+      const dims = block.text.match(PIXEL_SIZE_PATTERN);
+      if (dims) {
+        widthPx = Number.parseInt(dims[1], 10) || 0;
+        heightPx = Number.parseInt(dims[2], 10) || 0;
+      } else if (!message) {
+        message = block.text;
+      }
+    } else if (block.type === "image_url" && block.image_url?.url) {
+      data = block.image_url.url.replace(/^data:image\/[^;]+;base64,/, "");
+    }
+  }
+  if (!message && typeof content === "string") {
+    message = content;
+  }
+  const result: ParsedToolResult = { message };
+  if (data) result.screenshot = { data, widthPx, heightPx };
+  return result;
+}

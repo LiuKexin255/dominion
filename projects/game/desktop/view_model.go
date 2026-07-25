@@ -34,11 +34,12 @@ type AgentView struct {
 }
 
 // MessageViewModel is the Wails view model for game.Message. The message
-// content is projected as the same PartBlock shape a live AgentFrame's content
-// payload carries, so history and live view render identically: Content holds
-// the protojson-serialized PartBlock ({"parts":[...]} with camelCase field
-// names and base64 image bytes), matching what app.go's frameToMap emits for
-// live content frames.
+// content is projected as the same MessageParts shape a live AgentFrame's
+// message_parts payload carries, so history and live view render identically:
+// Content holds the protojson-serialized MessageParts ({"parts":[...]} with
+// camelCase field names, flattened oneofs, and base64 image bytes), matching
+// what app.go's chatstream emits for live messageParts frames
+// (spec 023 FR-009; contracts/content-model-contract.md §5/§8).
 type MessageViewModel struct {
 	Name       string         `json:"name"`
 	MessageID  string         `json:"messageId"`
@@ -87,10 +88,11 @@ func agentViewFromProto(a *game.Agent) *AgentView {
 }
 
 // ToMessageViewModels converts a slice of proto Message to view models. Each
-// message's Content PartBlock is serialized via protojson (camelCase field
+// message's Content MessageParts is serialized via protojson (camelCase field
 // names, flattened oneofs, base64 image bytes) so it matches the live
-// AgentFrame content emitted by app.go's frameToMap — history and live view
-// render identically.
+// AgentFrame messageParts emitted by app.go's chatstream — history and live
+// view render identically. The MessagePart oneof flattens so each part's
+// active variant (text/thinking/image/toolCall/toolResult) appears camelCase.
 func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 	if messages == nil {
 		return nil

@@ -25,7 +25,7 @@ import { tool } from "langchain";
 import { z } from "zod";
 
 import type { OperationBridge } from "../../operation-bridge";
-import type { Part } from "../../../game_types/projects/game/Part";
+import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
 import type { MouseContentBlock } from "../shared/result-blocks";
 import { buildResultBlocks } from "../shared/result-blocks";
 import type { StandaloneExtras } from "../types";
@@ -56,10 +56,14 @@ const mouseClickSchema = z.object({
  * Create the "mouse_click" LangChain tool bound to a session's OperationBridge.
  *
  * On invoke the tool:
- *   1. Builds a Part carrying a MouseClickPart with the requested click
+ *   1. Builds a FlowPart carrying a MouseClickPart with the requested click
  *      action; the desktop clicks at the cursor's current position.
- *   2. Dispatches it through the bridge and awaits the desktop result.
- *   3. Returns a content-block array to LangChain via buildResultBlocks.
+ *   2. Reads the LangChain tool_call id from `config.toolCall.id`
+ *      (contracts/tool-dispatch-contract.md §2 / research.md D2) and passes it
+ *      to dispatch so the FlowPart operation, the tool_call MessagePart, and the
+ *      later tool_result MessagePart share one tool_id (spec 023 FR-008).
+ *   3. Dispatches it through the bridge and awaits the desktop result.
+ *   4. Returns a content-block array to LangChain via buildResultBlocks.
  *
  * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
  */
@@ -69,12 +73,13 @@ export function createMouseClickTool(
   return tool(
     async ({ click_type }, config): Promise<MouseContentBlock[]> => {
       const signal = (config as { signal?: AbortSignal } | undefined)?.signal;
-      const part: Part = {
+      const toolCallId = (config as { toolCall?: { id?: string } } | undefined)?.toolCall?.id;
+      const part: FlowPart = {
         mouseClick: {
           click: CLICK_TYPE_TO_PROTO[click_type],
         },
       };
-      const result = await bridge.dispatch(part, signal);
+      const result = await bridge.dispatch(part, toolCallId, signal);
       return buildResultBlocks(result);
     },
     {

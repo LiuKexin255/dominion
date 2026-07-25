@@ -17,6 +17,7 @@ import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { beforeModelMiddleware } from "./context-middleware";
 import { createMouseClickTool } from "./tools/mouse_click/mouse-click";
 import { createMouseMoveTool } from "./tools/mouse_move/mouse-move";
+import { parseToolResultFields } from "./tools/shared/result-blocks";
 import type { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
 import { DEFAULT_MCP_PORT } from "./mcp-host";
@@ -36,7 +37,36 @@ const RECURSION_LIMIT = 1000;
 
 export type ContentBlock =
 	| { type: "reasoning"; reasoning: string }
-	| { type: "text"; text: string };
+	| { type: "text"; text: string }
+	| {
+			type: "tool_call";
+			name: string;
+			args: unknown;
+			toolCallId: string;
+	  }
+	| {
+			type: "tool_result";
+			toolCallId: string;
+			status: string;
+			message: string;
+			screenshot?: {
+				data: string;
+				widthPx: number;
+				heightPx: number;
+			};
+	  };
+
+/**
+ * Wire value of `ToolResultStatus.TOOL_RESULT_STATUS_UNSPECIFIED` (proto enum
+ * string). The live tool_result block's status defaults to UNSPECIFIED: the
+ * `stream.toolCalls` output projection normalises a ToolMessage to its `.content`
+ * only, so `additional_kwargs.toolResultStatus` (the real status, carried into
+ * the checkpoint by US2) is not reachable on the live path. History
+ * reconstruction (handler.ts ListMessages) reads the same default, so live and
+ * history render identically in US1 (spec 023 FR-009). US2 (T018) makes the
+ * real status survive so both paths read it.
+ */
+const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
  * Per-turn user input for `generateTurn`.
@@ -465,6 +495,35 @@ export class AgentAdapterImpl implements AgentAdapter {
 		},
 		);
 
+		// Live emission of tool_call / tool_result (contracts/tool-dispatch-contract.md §7
+		// / research.md D5). `stream.messages` yields text/reasoning for model
+		// messages but EXPLICITLY ignores tool-role messages (LangGraph's
+		// createMessagesTransformer drops role==="tool" on message-start), so a
+		// tool_result cannot come from it. `createAgent` (ReactAgent) registers
+		// createToolCallTransformer, exposing `stream.toolCalls`: an async
+		// iterable of ToolCallStream handles, each carrying .name/.callId/.input
+		// immediately and .output (Promise resolving to the tool's normalised
+		// content) on completion. The tool_call block is yielded as soon as the
+		// call is observable; the tool_result block is yielded when .output
+		// resolves — so the live conversation shows the same tool calls/results
+		// that history replays (spec 023 FR-006/FR-009). The two streams are
+		// drained concurrently and merged so tool events interleave with text
+		// in streaming order.
+		const messageBlocks = this.consumeMessages(stream);
+		const toolBlocks = this.consumeToolCalls(stream);
+		yield* mergeIterables([messageBlocks, toolBlocks]);
+
+		await stream.output;
+	}
+
+	/**
+	 * Drain `stream.messages` into text/reasoning ContentBlocks. Each streamed
+	 * message exposes `.text` and `.reasoning` async iterables of deltas.
+	 */
+	private async *consumeMessages(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		stream: any,
+	): AsyncIterable<ContentBlock> {
 		for await (const message of stream.messages) {
 			for await (const reasoning of message.reasoning) {
 				yield { type: "reasoning", reasoning };
@@ -473,7 +532,115 @@ export class AgentAdapterImpl implements AgentAdapter {
 				yield { type: "text", text };
 			}
 		}
-
-		await stream.output;
 	}
+
+	/**
+	 * Drain `stream.toolCalls` into tool_call + tool_result ContentBlocks. For
+	 * each ToolCallStream: the tool_call block (name + args + toolCallId) is
+	 * yielded immediately; the tool_result block (toolCallId + status +
+	 * message + screenshot) is yielded once `.output` resolves. The tool_call
+	 * always precedes its matching tool_result within a call (FR-007 ordering).
+	 */
+	private async *consumeToolCalls(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		stream: any,
+	): AsyncIterable<ContentBlock> {
+		// Defensive: createAgent always registers the toolCalls transformer, so
+		// `stream.toolCalls` is present in production. Tests inject a fake
+		// stream that provides it.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const toolCalls = (stream as any).toolCalls as
+			| AsyncIterable<{
+					name: string;
+					callId: string;
+					input: unknown;
+					output: Promise<unknown>;
+			  }>
+			| undefined;
+		if (!toolCalls) return;
+		for await (const tc of toolCalls) {
+			yield {
+				type: "tool_call",
+				name: tc.name,
+				args: tc.input,
+				toolCallId: tc.callId,
+			};
+			try {
+				const output = await tc.output;
+				const parsed = parseToolResultFields(output);
+				yield {
+					type: "tool_result",
+					toolCallId: tc.callId,
+					status: STATUS_UNSPECIFIED,
+					message: parsed.message,
+					...(parsed.screenshot ? { screenshot: parsed.screenshot } : {}),
+				};
+			} catch {
+				// tool-error (non-interrupt): emit a tool_result with an empty
+				// message so the bubble still resolves rather than dangling.
+				yield {
+					type: "tool_result",
+					toolCallId: tc.callId,
+					status: STATUS_UNSPECIFIED,
+					message: "",
+				};
+			}
+		}
+	}
+}
+
+/**
+ * Fairly merge N async iterables into a single async generator, preserving
+ * per-source order but interleaving across sources as values arrive. Used by
+ * streamFromAgent to interleave streaming text/reasoning with tool_call/
+ * tool_result blocks. Termination: the merged iterable completes once every
+ * source iterable has completed.
+ */
+async function* mergeIterables<T>(
+	iters: AsyncIterable<T>[],
+): AsyncIterable<T> {
+	if (iters.length === 0) return;
+	const queue: T[] = [];
+	let pending = iters.length;
+	let resolveWaiter: (() => void) | null = null;
+
+	const notify = (): void => {
+		const w = resolveWaiter;
+		resolveWaiter = null;
+		w?.();
+	};
+
+	for (const it of iters) {
+		void (async () => {
+			try {
+				for await (const v of it) {
+					queue.push(v);
+					notify();
+				}
+			} finally {
+				pending -= 1;
+				notify();
+			}
+		})();
+	}
+
+	while (pending > 0) {
+		while (queue.length > 0) yield queue.shift() as T;
+		if (pending > 0) {
+			await new Promise<void>((resolve) => {
+				resolveWaiter = resolve;
+				// Re-check after registering the waiter: a producer may have
+				// pushed (or completed) in the synchronous gap between the
+				// queue check above and this registration. JS is single-
+				// threaded, so no producer runs between these statements; the
+				// re-check is belt-and-suspenders for clarity.
+				if (queue.length > 0 || pending <= 0) {
+					resolveWaiter = null;
+					resolve();
+				}
+			});
+			resolveWaiter = null;
+		}
+	}
+	while (queue.length > 0) yield queue.shift() as T;
 }

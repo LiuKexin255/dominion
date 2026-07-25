@@ -35,10 +35,10 @@ func testFrame(id int64) *game.AgentFrame {
 		SessionId: "test-session",
 		FrameId:   fmt.Sprintf("frame-%d", id),
 		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: fmt.Sprintf("msg-%d", id)}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: fmt.Sprintf("msg-%d", id)}}},
 				},
 			},
 		},
@@ -54,9 +54,9 @@ func testMessages(count int) []*game.Message {
 		msgs[i] = &game.Message{
 			MessageId: fmt.Sprintf("msg-%d", i+1),
 			Sender:    game.FrameSender_FRAME_SENDER_USER,
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: fmt.Sprintf("history-%d", i+1)}}},
+			Content: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: fmt.Sprintf("history-%d", i+1)}}},
 				},
 			},
 		}
@@ -792,9 +792,9 @@ func TestSeedFromHistory(t *testing.T) {
 			MessageId:  "msg-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			CreateTime: &timestamppb.Timestamp{Seconds: 1000, Nanos: 1},
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "history-1"}}},
+			Content: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "history-1"}}},
 				},
 			},
 		},
@@ -802,9 +802,9 @@ func TestSeedFromHistory(t *testing.T) {
 			MessageId:  "msg-2",
 			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
 			CreateTime: &timestamppb.Timestamp{Seconds: 2000, Nanos: 2},
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "history-2"}}},
+			Content: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "history-2"}}},
 				},
 			},
 		},
@@ -841,8 +841,8 @@ func TestSeedFromHistory(t *testing.T) {
 		if frame.GetSessionId() != stream.sessionID {
 			t.Errorf("snap[%d].SessionId = %q, want %q", i, frame.GetSessionId(), stream.sessionID)
 		}
-		// payload is the content PartBlock
-		if frame.GetContent().String() != msgs[i].GetContent().String() {
+		// payload is the messageParts content
+		if frame.GetMessageParts().String() != msgs[i].GetContent().String() {
 			t.Errorf("snap[%d].Content mismatch", i)
 		}
 	}
