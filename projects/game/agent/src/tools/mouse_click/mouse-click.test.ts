@@ -24,6 +24,7 @@ import { createMouseClickTool } from "./mouse-click";
 import { OperationBridge } from "../../operation-bridge";
 
 import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
+import type { ToolMessage } from "@langchain/core/messages";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
@@ -42,17 +43,17 @@ function makeMockBridge(): MockBridge {
 }
 
 /**
- * Expected content-block shape returned by the tool. The mouse tool's return
- * is consumed by LangChain `_formatToolOutput`, which passes any array whose
- * elements carry a `type` discriminator through verbatim as
- * `ToolMessage.content`. The cast below mirrors that shape for assertions.
+ * Content-block shape carried inside the returned ToolMessage's `.content`.
+ * The tool now returns a ToolMessage (T020 — buildToolResultMessage); tests
+ * read `.content` / `.additional_kwargs.toolResultStatus` / `.tool_call_id` /
+ * `.name` directly off the message.
  */
 type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
 
-function asBlocks(value: unknown): ContentBlock[] {
-  return value as ContentBlock[];
+function readContent(msg: ToolMessage): ContentBlock[] {
+  return msg.content as ContentBlock[];
 }
 
 function readSchemaShape(
@@ -84,40 +85,39 @@ describe("createMouseClickTool", () => {
     expect((part.mouseClick as unknown as { xPx?: number }).xPx).toBeUndefined();
   });
 
-  it("returns a single text content block when no screenshot is present", async () => {
+  it("returns a ToolMessage whose content is a single text block when no screenshot is present", async () => {
     bridge.dispatch.mockResolvedValueOnce({
       status: STATUS_SUCCEEDED,
       message: "click registered",
     });
 
     const mouseTool = createMouseClickTool(bridge);
-    const result = asBlocks(
-      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
-    );
+    const msg = await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({ type: "text", text: "click registered" });
+    expect(readContent(msg)).toHaveLength(1);
+    expect(readContent(msg)[0]).toEqual({ type: "text", text: "click registered" });
   });
 
-  it("returns a single text block carrying the failure message on dispatch failure", async () => {
+  it("returns a ToolMessage carrying FAILED status in additional_kwargs on dispatch failure", async () => {
+    // spec US2 acceptance 2 / FR-013: a genuine failure still reads FAILED
+    // (the fix does not mask real failures).
     bridge.dispatch.mockResolvedValueOnce({
       status: STATUS_FAILED,
       message: "operation timed out",
     });
 
     const mouseTool = createMouseClickTool(bridge);
-    const result = asBlocks(
-      await mouseTool.invoke({ click_type: "RIGHT_CLICK" }),
-    );
+    const msg = await mouseTool.invoke({ click_type: "RIGHT_CLICK" });
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({
+    expect(msg.additional_kwargs?.toolResultStatus).toBe(STATUS_FAILED);
+    expect(readContent(msg)).toHaveLength(1);
+    expect(readContent(msg)[0]).toEqual({
       type: "text",
       text: "operation timed out",
     });
   });
 
-  it("returns [text, image_url, text] with annotation when screenshot is present", async () => {
+  it("returns a ToolMessage whose content is [text, image_url, text] with annotation when screenshot is present", async () => {
     const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
     bridge.dispatch.mockResolvedValueOnce({
       status: STATUS_SUCCEEDED,
@@ -126,17 +126,16 @@ describe("createMouseClickTool", () => {
     });
 
     const mouseTool = createMouseClickTool(bridge);
-    const result = asBlocks(
-      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
-    );
+    const msg = await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
-    expect(result).toHaveLength(3);
-    expect(result[0]).toEqual({ type: "text", text: "click registered" });
-    expect(result[1]).toEqual({
+    const blocks = readContent(msg);
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toEqual({ type: "text", text: "click registered" });
+    expect(blocks[1]).toEqual({
       type: "image_url",
       image_url: { url: `data:image/png;base64,${pngBase64}` },
     });
-    expect(result[2]).toEqual({
+    expect(blocks[2]).toEqual({
       type: "text",
       text: "[图片像素尺寸：1920×1080（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
     });
@@ -149,12 +148,10 @@ describe("createMouseClickTool", () => {
     });
 
     const mouseTool = createMouseClickTool(bridge);
-    const result = asBlocks(
-      await mouseTool.invoke({ click_type: "LEFT_CLICK" }),
-    );
+    const msg = await mouseTool.invoke({ click_type: "LEFT_CLICK" });
 
-    expect(result).toHaveLength(1);
-    expect(result[0].type).toBe("text");
+    expect(readContent(msg)).toHaveLength(1);
+    expect(readContent(msg)[0].type).toBe("text");
   });
 
   it("tool schema exposes only click_type", () => {
@@ -216,5 +213,26 @@ describe("createMouseClickTool", () => {
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
     expect(bridge.dispatch.mock.calls[0][1]).toBe("call_abc");
+  });
+
+  // T020 (contracts/tool-dispatch-contract.md §3): the returned ToolMessage
+  // carries the LangChain tool_call.id as tool_call_id and the real status in
+  // additional_kwargs, so ListMessages reconstructs the actual outcome
+  // (FR-012/FR-013) and the live path reads the same value (FR-009).
+  it("returns a ToolMessage whose tool_call_id + name + status come from config.toolCall.id / tool name / dispatch outcome", async () => {
+    bridge.dispatch.mockResolvedValueOnce({
+      status: STATUS_SUCCEEDED,
+      message: "click registered",
+    });
+    const mouseTool = createMouseClickTool(bridge);
+
+    const msg = await mouseTool.invoke(
+      { click_type: "LEFT_CLICK" },
+      { toolCall: { id: "call_abc" } } as unknown as Record<string, unknown>,
+    );
+
+    expect(msg.tool_call_id).toBe("call_abc");
+    expect(msg.name).toBe("mouse_click");
+    expect(msg.additional_kwargs?.toolResultStatus).toBe(STATUS_SUCCEEDED);
   });
 });

@@ -6,10 +6,12 @@
  * threadId and a multimodal TurnContent (text + optional image).
  */
 
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
 import { MemorySaver } from "@langchain/langgraph";
+import { tool } from "langchain";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
 	AgentAdapterImpl,
@@ -35,8 +37,11 @@ type FakeStreamAgent = {
 				name: string;
 				callId: string;
 				input: unknown;
-				output: Promise<unknown>;
 			}>;
+			/** Raw event stream (GraphRunStream `[Symbol.asyncIterator]`).
+			 * Models the tool-result events read by `consumeToolResults`
+			 * (contract §7 fallback). */
+			[Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
 			output?: PromiseLike<unknown>;
 		}>;
 	};
@@ -380,7 +385,15 @@ describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
 // ===========================================================================
 
 describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => {
-	it("yields a tool_call block then a tool_result block from stream.toolCalls", async () => {
+	it("yields a tool_call block then a tool_result block carrying the real status (quickstart Scenario 4)", async () => {
+		// US2 / quickstart.md Scenario 4: the live tool_result MUST carry the
+		// real status. The fake injects the REAL production event shape — a
+		// LangGraph ProtocolEvent `{method:"tools",
+		// params:{data:{event:"tool-finished", output:<ToolMessage>}}}` (this
+		// is the empirically-verified shape the v3 GraphRunStream emits; see
+		// extractToolOutput doc). Iterating generateTurn MUST yield a tool_call
+		// block followed by a tool_result block whose status equals the carried
+		// real value (FR-009: live≡history).
 		const adapter = new AgentAdapterImpl(
 			fakeTextModel("unused"),
 			"prompt",
@@ -389,21 +402,37 @@ describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => 
 			new MemorySaver(),
 		);
 
-		// Fake stream: one text delta, plus one ToolCallStream whose .output
-		// resolves to content blocks carrying a message and a screenshot.
-		// stream.messages ignores tool-role messages (LangGraph), so tool
-		// events come solely from stream.toolCalls.
-		const outputContent = [
-			{ type: "text", text: "ok" },
-			{
-				type: "image_url",
-				image_url: { url: "data:image/png;base64,AAAA" },
+		// The completed tool's ToolMessage — content (message + screenshot) +
+		// additional_kwargs (real status) — exactly what buildToolResultMessage
+		// (US2) writes and what the live path must read (contract §7 fallback).
+		const toolMessage = {
+			tool_call_id: "call_1",
+			name: "saolei_click",
+			additional_kwargs: {
+				toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED",
 			},
-			{
-				type: "text",
-				text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-			},
-		];
+			content: [
+				{ type: "text", text: "ok" },
+				{
+					type: "image_url",
+					image_url: { url: "data:image/png;base64,AAAA" },
+				},
+				{
+					type: "text",
+					text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+				},
+			],
+		};
+		// Raw stream events: the ProtocolEvent shape production emits (verified
+		// pinned @langchain/langgraph ^1.4.8). Non-tool events (lifecycle/
+		// messages/etc.) are omitted — consumeToolResults ignores them.
+		async function* rawEvents() {
+			yield {
+				method: "tools",
+				params: { data: { event: "tool-finished", output: toolMessage } },
+			};
+		}
+
 		(adapter as unknown as FakeStreamAgent).agent = {
 			streamEvents: async () => ({
 				messages: (async function* () {
@@ -419,9 +448,9 @@ describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => 
 						name: "saolei_click",
 						callId: "call_1",
 						input: { x: 3, y: 4 },
-						output: Promise.resolve(outputContent),
 					};
 				})(),
+				[Symbol.asyncIterator]: () => rawEvents()[Symbol.asyncIterator](),
 				output: Promise.resolve(),
 			}),
 		};
@@ -446,9 +475,9 @@ describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => 
 		);
 		expect(resultBlock).toBeDefined();
 		expect(resultBlock!.toolCallId).toBe("call_1");
-		// US1: status is UNSPECIFIED on the live path (additional_kwargs not
-		// reachable via the normalised toolCalls.output projection).
-		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
+		// US2: the live tool_result carries the REAL status read from the
+		// ToolMessage.additional_kwargs.toolResultStatus (FR-009).
+		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
 		expect(resultBlock!.message).toBe("ok");
 		expect(resultBlock!.screenshot).toBeDefined();
 		expect(resultBlock!.screenshot!.data).toBe("AAAA");
@@ -458,6 +487,127 @@ describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => 
 		// tool_call precedes its tool_result.
 		const resultIdx = collected.findIndex((b) => b.type === "tool_result");
 		expect(callIdx).toBeLessThan(resultIdx);
+	});
+
+	it("live tool_result defaults to UNSPECIFIED (not FAILED) when the ToolMessage carries no status (FR-014/FR-015)", async () => {
+		// spec US2 acceptance 3 / FR-014: a result whose real status is
+		// unavailable shows neutral, NEVER FAILED.
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const toolMessage = {
+			tool_call_id: "call_x",
+			name: "mouse_move",
+			content: [{ type: "text", text: "done" }],
+			// NOTE: no additional_kwargs.toolResultStatus.
+		};
+		async function* rawEvents() {
+			yield {
+				method: "tools",
+				params: { data: { event: "tool-finished", output: toolMessage } },
+			};
+		}
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async () => ({
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {})(),
+						text: (async function* () {})(),
+					};
+				})(),
+				toolCalls: (async function* () {
+					yield {
+						name: "mouse_move",
+						callId: "call_x",
+						input: { x_px: 1, y_px: 2 },
+					};
+				})(),
+				[Symbol.asyncIterator]: () => rawEvents()[Symbol.asyncIterator](),
+				output: Promise.resolve(),
+			}),
+		};
+
+		const collected = await collect(
+			adapter.generateTurn("t-nostatus", { text: "go" }),
+		);
+		const resultBlock = collected.find(
+			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
+				b.type === "tool_result",
+		);
+		expect(resultBlock).toBeDefined();
+		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
+	});
+
+	it("real createAgent stream: live tool_result carries the real status end-to-end (empirical, pinned langchain)", async () => {
+		// The strongest fidelity test for quickstart Scenario 4: a REAL
+		// createAgent (via AgentAdapterImpl, no fake stream) + a tool that
+		// returns a ToolMessage carrying additional_kwargs.toolResultStatus.
+		// Drives a real turn through generateTurn — the internal
+		// streamEvents(v3) GraphRunStream is the actual production stream, so
+		// this validates the ProtocolEvent → extractToolOutput path against the
+		// real LangChain runtime (not a fake). Guards against the live
+		// tool_result silently going missing if a future LangChain version
+		// changes the internal event shape.
+		const probe = tool(
+			async (_args, config): Promise<ToolMessage> => {
+				const tcId =
+					(config as { toolCall?: { id?: string } } | undefined)?.toolCall
+						?.id ?? "real-fallback";
+				return new ToolMessage({
+					content: [
+						{ type: "text", text: "ok" },
+						{
+							type: "image_url",
+							image_url: { url: "data:image/png;base64,AAAA" },
+						},
+						{
+							type: "text",
+							text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+						},
+					],
+					tool_call_id: tcId,
+					name: "probe",
+					additional_kwargs: { toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED" },
+				});
+			},
+			{ name: "probe", description: "test probe", schema: z.object({}) },
+		);
+		const model = fakeModel()
+			.respondWithTools([{ name: "probe", args: {} }])
+			.respond(new AIMessage("done"));
+		// Real createAgent (createAgentFn undefined → default) with the probe
+		// tool injected via the `tools` param.
+		const adapter = new AgentAdapterImpl(
+			model,
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+			undefined,
+			[probe],
+		);
+
+		const collected = await collect(
+			adapter.generateTurn("real-stream", { text: "call probe" }),
+		);
+
+		// The model's tool_call surfaced as a live tool_call block.
+		expect(collected.some((b) => b.type === "tool_call")).toBe(true);
+		// The real production stream surfaced the tool's ToolMessage, and the
+		// live tool_result carries the REAL status from additional_kwargs.
+		const resultBlock = collected.find(
+			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
+				b.type === "tool_result",
+		);
+		expect(resultBlock).toBeDefined();
+		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
+		expect(resultBlock!.message).toBe("ok");
+		expect(resultBlock!.screenshot).toBeDefined();
+		expect(resultBlock!.screenshot!.data).toBe("AAAA");
 	});
 
 	it("emits no tool blocks when stream.toolCalls is absent", async () => {
@@ -475,6 +625,53 @@ describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => 
 			adapter.generateTurn("t-no-tools", { text: "hi" }),
 		);
 		expect(blocks.some((b) => b.type.startsWith("tool"))).toBe(false);
+	});
+});
+
+// ===========================================================================
+// mergeIterables — error propagation (a sub-stream rejection MUST surface to
+// the generateTurn caller, not become an unhandled process-killing rejection)
+// ===========================================================================
+
+describe("AgentAdapterImpl.generateTurn error propagation through merged streams", () => {
+	it("propagates a sub-stream rejection to the generateTurn caller", async () => {
+		// One sub-stream rejects mid-flight: the underlying LangGraph stream
+		// broke. Without the mergeIterables catch the IIFE rejection would be
+		// dropped (unhandled rejection); with it, the error propagates so the
+		// caller (handler) perceives the stream failure.
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const streamErr = new Error("STREAM BROKE");
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async () => ({
+				// messages sub-stream yields one text delta, then the raw-event
+				// sub-stream rejects — simulating the underlying stream dying.
+				messages: (async function* () {
+					yield {
+						reasoning: (async function* () {})(),
+						text: (async function* () {
+							yield "partial";
+						})(),
+					};
+				})(),
+				toolCalls: emptyAsync(),
+				[Symbol.asyncIterator]: (): AsyncIterator<unknown> => ({
+					// Rejects on first .next() — models a sub-stream that dies
+					// mid-flight (the underlying LangGraph stream broke).
+					next: () => Promise.reject(streamErr),
+				}),
+				output: Promise.resolve(),
+			}),
+		};
+
+		await expect(
+			collect(adapter.generateTurn("t-merge-err", { text: "go" })),
+		).rejects.toBe(streamErr);
 	});
 });
 

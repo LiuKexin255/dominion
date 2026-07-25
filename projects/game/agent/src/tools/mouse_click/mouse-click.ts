@@ -3,31 +3,39 @@
  * through the session-scoped OperationBridge.
  *
  * On invoke the tool:
- *   1. Builds a Part carrying a MouseClickPart with the requested click
+ *   1. Builds a FlowPart carrying a MouseClickPart with the requested click
  *      action; the desktop clicks at the cursor's current position.
- *   2. Dispatches it through the bridge and awaits the desktop result.
- *   3. Returns a content-block array to LangChain via buildResultBlocks.
+ *   2. Reads the LangChain tool_call id from `config.toolCall.id`
+ *      (contracts/tool-dispatch-contract.md §2 / research.md D2) and passes it
+ *      to dispatch so the FlowPart operation, the tool_call MessagePart, and the
+ *      later tool_result MessagePart share one tool_id (spec 023 FR-008).
+ *   3. Dispatches it through the bridge and awaits the desktop result.
+ *   4. Returns a `ToolMessage` via `buildToolResultMessage` carrying the REAL
+ *      `ToolResultStatus` in `additional_kwargs.toolResultStatus`
+ *      (contracts/tool-dispatch-contract.md §3 / data-model.md §6 — spec 023
+ *      FR-012/FR-013). The ToolNode passes a returned ToolMessage through, so
+ *      the status survives the MemorySaver checkpoint and `ListMessages`
+ *      reconstructs the actual outcome (no text inference, no default-FAILED).
  *
- * Part-model contract: a tool emits a Part (MouseClickPart) which the bridge
- * stamps with a tool_id and dispatches as a content frame. The bridge resolves
- * the dispatch from the matching ToolResultPart and buildResultBlock renders
- * it back to LangChain content blocks.
+ * Part-model contract: a tool emits a FlowPart (MouseClickPart) which the bridge
+ * stamps with a tool_id and dispatches as a control frame. The bridge resolves
+ * the dispatch from the matching ToolResultPart and buildToolResultMessage
+ * renders it back to LangChain as a ToolMessage.
  *
  * Relocated from `src/mouse-tool.ts` (Feature 020 — per-tool-name directory
  * layout, see `specs/020-agent-resources-layout/contracts/directory-layout.md`).
- * The tool body is verbatim; only the import paths and the new
- * `extras: { standalone: true }` field differ from the pre-refactor source
- * (FR-011 — preserve today's desktop-display behavior).
+ * The `extras: { standalone: true }` field is preserved from the pre-refactor
+ * source (FR-011 — preserve today's desktop-display behavior).
  */
 
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { ToolMessage } from "@langchain/core/messages";
 import { tool } from "langchain";
 import { z } from "zod";
 
 import type { OperationBridge } from "../../operation-bridge";
 import type { FlowPart } from "../../../game_types/projects/game/FlowPart";
-import type { MouseContentBlock } from "../shared/result-blocks";
-import { buildResultBlocks } from "../shared/result-blocks";
+import { buildToolResultMessage } from "../shared/result-blocks";
 import type { StandaloneExtras } from "../types";
 
 const CLICK_TYPES = [
@@ -55,23 +63,13 @@ const mouseClickSchema = z.object({
 /**
  * Create the "mouse_click" LangChain tool bound to a session's OperationBridge.
  *
- * On invoke the tool:
- *   1. Builds a FlowPart carrying a MouseClickPart with the requested click
- *      action; the desktop clicks at the cursor's current position.
- *   2. Reads the LangChain tool_call id from `config.toolCall.id`
- *      (contracts/tool-dispatch-contract.md §2 / research.md D2) and passes it
- *      to dispatch so the FlowPart operation, the tool_call MessagePart, and the
- *      later tool_result MessagePart share one tool_id (spec 023 FR-008).
- *   3. Dispatches it through the bridge and awaits the desktop result.
- *   4. Returns a content-block array to LangChain via buildResultBlocks.
- *
  * @param bridge - The session-scoped OperationBridge (owned by SessionAgent).
  */
 export function createMouseClickTool(
   bridge: OperationBridge,
 ): StructuredToolInterface {
   return tool(
-    async ({ click_type }, config): Promise<MouseContentBlock[]> => {
+    async ({ click_type }, config): Promise<ToolMessage> => {
       const signal = (config as { signal?: AbortSignal } | undefined)?.signal;
       const toolCallId = (config as { toolCall?: { id?: string } } | undefined)?.toolCall?.id;
       const part: FlowPart = {
@@ -80,7 +78,7 @@ export function createMouseClickTool(
         },
       };
       const result = await bridge.dispatch(part, toolCallId, signal);
-      return buildResultBlocks(result);
+      return buildToolResultMessage(result, toolCallId, "mouse_click");
     },
     {
       name: "mouse_click",

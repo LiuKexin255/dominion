@@ -58,13 +58,14 @@ export type ContentBlock =
 
 /**
  * Wire value of `ToolResultStatus.TOOL_RESULT_STATUS_UNSPECIFIED` (proto enum
- * string). The live tool_result block's status defaults to UNSPECIFIED: the
- * `stream.toolCalls` output projection normalises a ToolMessage to its `.content`
- * only, so `additional_kwargs.toolResultStatus` (the real status, carried into
- * the checkpoint by US2) is not reachable on the live path. History
- * reconstruction (handler.ts ListMessages) reads the same default, so live and
- * history render identically in US1 (spec 023 FR-009). US2 (T018) makes the
- * real status survive so both paths read it.
+ * string). The live `tool_result` block's status defaults to UNSPECIFIED when a
+ * tool's `ToolMessage.additional_kwargs.toolResultStatus` is absent — NEVER
+ * `FAILED` (spec FR-014/FR-015). The real status is carried into the
+ * checkpoint by US2 (`buildToolResultMessage` writes
+ * `additional_kwargs.toolResultStatus`), and the live path reads it from raw
+ * stream events (see `consumeToolResults`); history reconstruction
+ * (handler.ts `ListMessages`) reads the same field off the checkpointed
+ * message, so live and history render identically (spec 023 FR-009).
  */
 const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
@@ -502,16 +503,25 @@ export class AgentAdapterImpl implements AgentAdapter {
 		// tool_result cannot come from it. `createAgent` (ReactAgent) registers
 		// createToolCallTransformer, exposing `stream.toolCalls`: an async
 		// iterable of ToolCallStream handles, each carrying .name/.callId/.input
-		// immediately and .output (Promise resolving to the tool's normalised
-		// content) on completion. The tool_call block is yielded as soon as the
-		// call is observable; the tool_result block is yielded when .output
-		// resolves — so the live conversation shows the same tool calls/results
-		// that history replays (spec 023 FR-006/FR-009). The two streams are
+		// immediately. The tool_call block is yielded as soon as the call is
+		// observable.
+		//
+		// The tool_result block CANNOT come from `stream.toolCalls`: the
+		// transformer's `normalizeToolOutput` (langchain
+		// dist/agents/transformers/tool-call.js) returns only `.content` for a
+		// ToolMessage, dropping `additional_kwargs` — so the real status
+		// (carried there by `buildToolResultMessage`, US2) is unreachable. Per
+		// contract §7's foreseen fallback ("switch to raw streamEvents —
+		// on_tool_end for results"), `consumeToolResults` iterates the raw
+		// stream and reads the ToolMessage's `additional_kwargs.toolResultStatus`
+		// directly, so the live conversation shows the SAME real status that
+		// history replays (spec 023 FR-006/FR-009). The three streams are
 		// drained concurrently and merged so tool events interleave with text
 		// in streaming order.
 		const messageBlocks = this.consumeMessages(stream);
-		const toolBlocks = this.consumeToolCalls(stream);
-		yield* mergeIterables([messageBlocks, toolBlocks]);
+		const toolCallBlocks = this.consumeToolCalls(stream);
+		const toolResultBlocks = this.consumeToolResults(stream);
+		yield* mergeIterables([messageBlocks, toolCallBlocks, toolResultBlocks]);
 
 		await stream.output;
 	}
@@ -535,11 +545,13 @@ export class AgentAdapterImpl implements AgentAdapter {
 	}
 
 	/**
-	 * Drain `stream.toolCalls` into tool_call + tool_result ContentBlocks. For
-	 * each ToolCallStream: the tool_call block (name + args + toolCallId) is
-	 * yielded immediately; the tool_result block (toolCallId + status +
-	 * message + screenshot) is yielded once `.output` resolves. The tool_call
-	 * always precedes its matching tool_result within a call (FR-007 ordering).
+	 * Drain `stream.toolCalls` into tool_call ContentBlocks. For each
+	 * ToolCallStream the tool_call block (name + args + toolCallId) is yielded
+	 * immediately when the call is observable. The matching tool_result is
+	 * yielded separately by {@link consumeToolResults} once the raw stream
+	 * surfaces the completed ToolMessage (contract §7 fallback — see below);
+	 * the tool_call always precedes its matching tool_result because tool-start
+	 * fires before tool-end.
 	 */
 	private async *consumeToolCalls(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -554,7 +566,6 @@ export class AgentAdapterImpl implements AgentAdapter {
 					name: string;
 					callId: string;
 					input: unknown;
-					output: Promise<unknown>;
 			  }>
 			| undefined;
 		if (!toolCalls) return;
@@ -565,28 +576,128 @@ export class AgentAdapterImpl implements AgentAdapter {
 				args: tc.input,
 				toolCallId: tc.callId,
 			};
-			try {
-				const output = await tc.output;
-				const parsed = parseToolResultFields(output);
-				yield {
-					type: "tool_result",
-					toolCallId: tc.callId,
-					status: STATUS_UNSPECIFIED,
-					message: parsed.message,
-					...(parsed.screenshot ? { screenshot: parsed.screenshot } : {}),
-				};
-			} catch {
-				// tool-error (non-interrupt): emit a tool_result with an empty
-				// message so the bubble still resolves rather than dangling.
-				yield {
-					type: "tool_result",
-					toolCallId: tc.callId,
-					status: STATUS_UNSPECIFIED,
-					message: "",
-				};
-			}
 		}
 	}
+
+	/**
+	 * Drain raw stream events into tool_result ContentBlocks, reading the REAL
+	 * `ToolResultStatus` from each completed tool's `ToolMessage.additional_kwargs`.
+	 *
+	 * Why this exists (contracts/tool-dispatch-contract.md §7 fallback): the
+	 * `stream.toolCalls` projection normalises a tool's ToolMessage to its
+	 * `.content` only (langchain `dist/agents/transformers/tool-call.js`
+	 * `normalizeToolOutput`), so `additional_kwargs.toolResultStatus` — where
+	 * US2 (`buildToolResultMessage`) carries the real status — is NOT reachable
+	 * via `stream.toolCalls.output`. The contract anticipated this and
+	 * prescribes the fallback: read tool results from raw stream events.
+	 *
+	 * Concurrency (Issue 3 doc): `agent.streamEvents(input, {version:"v3"})`
+	 * returns a `GraphRunStream`. Its `[Symbol.asyncIterator]` returns
+	 * `this._mux.subscribeEvents(...)` — a FRESH subscription per call (verified
+	 * in `@langchain/langgraph` ^1.4.8 `dist/stream/run-stream.js`). The
+	 * `.messages` / `.toolCalls` projections register their own transformers on
+	 * the same mux but drain via independent subscriptions, so iterating the
+	 * stream directly (here) does NOT steal events from them — the three
+	 * consumers in {@link streamFromAgent} run concurrently without starving
+	 * each other.
+	 *
+	 * Empirically-verified production event shape (Issue 2): iterating the v3
+	 * `GraphRunStream` yields LangGraph internal ProtocolEvents
+	 * `{type, seq, method, params: {data, namespace}}`. A tool completion
+	 * surfaces as `{method:"tools", params:{data:{event:"tool-finished",
+	 * output:<ToolMessage>}}}` where `output` carries `tool_call_id`,
+	 * `additional_kwargs.toolResultStatus`, and the content blocks. Verified
+	 * against pinned `@langchain/langgraph` ^1.4.8 / `langchain` ^1.5.3 /
+	 * `@langchain/core` ^1.2.3 (a real createAgent + ToolMessage-returning tool
+	 * was driven through the stream and the ProtocolEvent was observed carrying
+	 * the status). See {@link extractToolOutput} for the shape match.
+	 *
+	 * Why NOT the public `on_tool_end` API: the v3 `on_tool_end` event
+	 * (`{event:"on_tool_end", data:{output}}`, contract §7's named shape) only
+	 * surfaces via `agent.streamEvents(input, {version:"v2"})` — the NON-createAgent-
+	 * transformer branch (ReactAgent.streamEvents dispatches v3 to a GraphRunStream
+	 * with projections; v2/v1 to the plain event stream). Switching the whole turn
+	 * to v2 would lose the `.messages`/`.toolCalls` projections that the text/
+	 * tool_call streaming depends on — a major rewrite contract §7 explicitly
+	 * avoided (research.md D5 lists it only as a last-resort fallback). The
+	 * ProtocolEvent shape is the natural complement to the projections on the
+	 * same v3 stream. `extractToolOutput` still ALSO accepts the `on_tool_end`
+	 * shape as a defensive guard against future LangChain drift (it is the
+	 * contract §7 named shape), but it is NOT the production path today.
+	 *
+	 * When `additional_kwargs.toolResultStatus` is absent the status defaults
+	 * to UNSPECIFIED (neutral) — NEVER FAILED (spec FR-014/FR-015).
+	 *
+	 * If the stream is not async-iterable (e.g. a test fake that only models
+	 * `.toolCalls`), this consumer is a no-op and no tool_result is emitted on
+	 * the live path. US2 tests model the raw stream (quickstart.md Scenario 4).
+	 */
+	private async *consumeToolResults(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		stream: any,
+	): AsyncIterable<ContentBlock> {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		if (typeof (stream as any)?.[Symbol.asyncIterator] !== "function") {
+			return;
+		}
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		for await (const event of stream as AsyncIterable<any>) {
+			const output = extractToolOutput(event);
+			if (!output) continue;
+			const toolCallId =
+				(output as { tool_call_id?: string }).tool_call_id ?? "";
+			const status =
+				(output as { additional_kwargs?: { toolResultStatus?: string } })
+					?.additional_kwargs?.toolResultStatus ?? STATUS_UNSPECIFIED;
+			const parsed = parseToolResultFields(
+				(output as { content?: unknown }).content,
+			);
+			yield {
+				type: "tool_result",
+				toolCallId,
+				status,
+				message: parsed.message,
+				...(parsed.screenshot ? { screenshot: parsed.screenshot } : {}),
+			};
+		}
+	}
+}
+
+/**
+ * Extract the raw tool-result payload (a ToolMessage) from a streamed event.
+ *
+ * Primary (empirically-verified production) shape — pinned
+ * `@langchain/langgraph` ^1.4.8 / `langchain` ^1.5.3: the v3 GraphRunStream
+ * yields LangGraph internal ProtocolEvents; a tool completion is
+ * `{ method: "tools", params: { data: { event: "tool-finished",
+ * output: <ToolMessage> } } }`.
+ *
+ * Defensive fallback shape — the v3 public `on_tool_end` event
+ * `{ event: "on_tool_end", data: { output } }` (the shape named by
+ * contracts/tool-dispatch-contract.md §7). This is NOT emitted on our v3
+ * production path (it requires `streamEvents({version:"v2"})`, see
+ * {@link AgentAdapterImpl.consumeToolResults}); the branch is retained as a
+ * guard against future LangChain drift and to honour the contract's named
+ * shape, at negligible cost.
+ *
+ * Returns `undefined` for non-tool-result events.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractToolOutput(event: any): unknown {
+	if (!event || typeof event !== "object") return undefined;
+	// Primary: GraphRunStream ProtocolEvent (verified production shape).
+	if (event.method === "tools") {
+		const data = (event.params as { data?: unknown } | undefined)?.data as
+			| { event?: string; output?: unknown }
+			| undefined;
+		if (data?.event === "tool-finished") return data.output;
+	}
+	// Defensive: v3 public on_tool_end (contract §7 named shape; not the
+	// production path today — see consumeToolResults doc).
+	if (event.event === "on_tool_end") {
+		return (event.data as { output?: unknown } | undefined)?.output;
+	}
+	return undefined;
 }
 
 /**
@@ -595,6 +706,17 @@ export class AgentAdapterImpl implements AgentAdapter {
  * streamFromAgent to interleave streaming text/reasoning with tool_call/
  * tool_result blocks. Termination: the merged iterable completes once every
  * source iterable has completed.
+ *
+ * Error propagation: if any source iterable rejects (e.g. the underlying
+ * LangGraph stream breaks, or a consumer throws inside its `for await`), the
+ * FIRST error is captured and re-thrown from the merged output AFTER flushing
+ * any items already buffered up to the failure point — so the caller of
+ * `generateTurn` perceives the stream failure (rather than a silently-truncated
+ * success). Without the inner `catch` the `void`-prefixed IIFE would drop the
+ * rejection, surfacing as a Node.js unhandled rejection (`process.exit(1)` in
+ * the production service). Subsequent errors after the first are swallowed
+ * (only the first is re-thrown; the others' IIFEs still run their `finally`
+ * and decrement `pending`, so the merge terminates cleanly).
  */
 async function* mergeIterables<T>(
 	iters: AsyncIterable<T>[],
@@ -603,6 +725,8 @@ async function* mergeIterables<T>(
 	const queue: T[] = [];
 	let pending = iters.length;
 	let resolveWaiter: (() => void) | null = null;
+	let firstError: unknown = undefined;
+	let hasError = false;
 
 	const notify = (): void => {
 		const w = resolveWaiter;
@@ -617,6 +741,13 @@ async function* mergeIterables<T>(
 					queue.push(v);
 					notify();
 				}
+			} catch (err) {
+				// See "Error propagation" above: capture the first sub-stream
+				// failure so it propagates to the merged output.
+				if (!hasError) {
+					firstError = err;
+					hasError = true;
+				}
 			} finally {
 				pending -= 1;
 				notify();
@@ -624,17 +755,17 @@ async function* mergeIterables<T>(
 		})();
 	}
 
-	while (pending > 0) {
+	while (pending > 0 && !hasError) {
 		while (queue.length > 0) yield queue.shift() as T;
-		if (pending > 0) {
+		if (pending > 0 && !hasError) {
 			await new Promise<void>((resolve) => {
 				resolveWaiter = resolve;
 				// Re-check after registering the waiter: a producer may have
-				// pushed (or completed) in the synchronous gap between the
-				// queue check above and this registration. JS is single-
-				// threaded, so no producer runs between these statements; the
-				// re-check is belt-and-suspenders for clarity.
-				if (queue.length > 0 || pending <= 0) {
+				// pushed (or completed, or errored) in the synchronous gap
+				// between the queue check above and this registration. JS is
+				// single-threaded, so no producer runs between these
+				// statements; the re-check is belt-and-suspenders for clarity.
+				if (queue.length > 0 || pending <= 0 || hasError) {
 					resolveWaiter = null;
 					resolve();
 				}
@@ -642,5 +773,8 @@ async function* mergeIterables<T>(
 			resolveWaiter = null;
 		}
 	}
+	// Flush items buffered up to the failure (or before all sources completed)
+	// so the consumer keeps all data produced before the stream broke.
 	while (queue.length > 0) yield queue.shift() as T;
+	if (hasError) throw firstError;
 }

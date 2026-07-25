@@ -1,5 +1,6 @@
 /**
- * result-blocks.ts — LangChain content-block builder shared by the mouse tools.
+ * result-blocks.ts — LangChain content-block builder + ToolMessage builder
+ * shared by the mouse tools (and, from US3, the saolei tools).
  *
  * Emits the status text always, and — when the desktop captured a screenshot—
  * the image plus a pixel-dimension annotation so the model can re-estimate
@@ -9,6 +10,8 @@
  * directory layout, see
  * `specs/020-agent-resources-layout/contracts/directory-layout.md`).
  */
+
+import { ToolMessage } from "@langchain/core/messages";
 
 import type { OperationResult } from "../../operation-bridge";
 
@@ -49,6 +52,50 @@ export function buildResultBlocks(
     });
   }
   return blocks;
+}
+
+/**
+ * Build a LangChain `ToolMessage` carrying the REAL `ToolResultStatus` in
+ * `additional_kwargs.toolResultStatus` so it survives the `MemorySaver`
+ * checkpoint and is read back verbatim by `ListMessages`
+ * (`specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md` §3 /
+ * `data-model.md` §6). The round-trip assumption is verified by
+ * `projects/game/agent/src/spike.checkpoint.test.ts` (research.md D4).
+ *
+ * Why a ToolMessage (not raw content blocks): `additional_kwargs` is the
+ * standard `BaseMessage` extensibility channel and is serialised by
+ * `MemorySaver`'s JSON serde alongside `content`. Returning a `ToolMessage`
+ * directly from a tool is supported by the LangChain JS `ToolNode` — when a
+ * tool's invocation returns a `ToolMessage` the node passes it through, so
+ * `additional_kwargs` set here reach the checkpoint verbatim
+ * (research.md D4 + the spike). `ListMessages` then reads
+ * `msg.additional_kwargs?.toolResultStatus` and defaults to
+ * `TOOL_RESULT_STATUS_UNSPECIFIED` (neutral) when absent — NEVER `FAILED`
+ * (spec FR-014/FR-015; the text-heuristic `inferToolResultStatus` is gone).
+ *
+ * - `content` reuses {@link buildResultBlocks} unchanged (status text +
+ *   screenshot `image_url` + pixel-size annotation) — the model sees the
+ *   same text + screenshot it sees today (contract §8).
+ * - `tool_call_id` links the result to the originating
+ *   `AIMessage.tool_calls[i].id` (LangChain's ToolNode uses this for the
+ *   model's tool-result loop). When `toolCallId` is `undefined` (non-agent
+ *   direct-invoke test path) it defaults to the empty string per contract §3.
+ * - `name` carries the tool name so history can display it without
+ *   re-deriving.
+ */
+export function buildToolResultMessage(
+  result: OperationResult,
+  toolCallId: string | undefined,
+  name: string,
+): ToolMessage {
+  return new ToolMessage({
+    content: buildResultBlocks(result),
+    tool_call_id: toolCallId ?? "",
+    name,
+    additional_kwargs: {
+      toolResultStatus: result.status,
+    },
+  });
 }
 
 /** Matches the pixel-dimension annotation emitted by buildResultBlocks. */
