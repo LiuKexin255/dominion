@@ -38,7 +38,7 @@ message ToolCallPart {
 }
 ```
 
-- `tool_id`: the LangChain `tool_call.id` (research.md D2). Same value as the dispatched FlowPart's `tool_id` and the matching `ToolResultPart.tool_id`.
+- `tool_id`: the LangChain `tool_call.id` (research.md D2). Used to group the `tool_call` MessagePart with the later `tool_result` MessagePart **within the conversation channel** (the evolving bubble). It is NOT shared with the `FlowPart` operation — per the 2026-07-25 decoupling (research.md D10), the `FlowPart.tool_id` is a **separate, bridge-minted** operation-channel id. The `tool_result` MessagePart's `tool_id` equals this conversation `tool_call.id` (LangChain wires `ToolMessage.tool_call_id` automatically for both native and MCP tools).
 - `args_json`: `JSON.stringify` of the model's `tool_call.args`. Examples: `saolei_click(x=3,y=4)` → `"{\"x\":3,\"y\":4}"`; `mouse_move(x_px=120,y_px=200)` → `"{\"x_px\":120,\"y_px\":200}"`.
 
 ## §2. New messages — `MessagePart` and `FlowPart` (the two categories)
@@ -78,7 +78,7 @@ message FlowPart {
 ```
 
 - `TextPart`, `ThinkingPart`, `ImagePart`, `ToolResultPart` — unchanged messages (moved into `MessagePart.kind`).
-- `MouseMovePart`, `MouseClickPart`, `KeyboardPressPart`, `MouseMoveAndClickPart` — unchanged messages (moved into `FlowPart.kind`). Each already carries `tool_id` (stamped by `OperationBridge.dispatch`).
+- `MouseMovePart`, `MouseClickPart`, `KeyboardPressPart`, `MouseMoveAndClickPart` — unchanged messages (moved into `FlowPart.kind`). Each carries `tool_id` stamped by `OperationBridge.dispatch` — a **bridge-minted** operation-channel id (research.md D10), independent of the conversation `tool_call.id`.
 - `WaitSignal`, `WarnSignal`, `StatusSignal` — unchanged messages (moved into `FlowPart.kind`).
 
 ## §3. New wrapper messages — `MessageParts` and `FlowParts`
@@ -178,6 +178,6 @@ Spec Clarification C2 declares a clean break: old sessions/checkpoints are not m
 
 ## Out of scope for this contract
 
-- Tool↔bridge `tool_id` threading, the ToolMessage status carriage, and the stateless saolei tool set → `contracts/tool-dispatch-contract.md`.
+- Tool↔bridge operation-channel correlation (decoupled), the ToolMessage status carriage (native tools), and the stateless saolei tool set → `contracts/tool-dispatch-contract.md`.
 - The evolving-bubble frontend view model → `data-model.md` §5.
 - Fixed board geometry → `projects/game/agent/src/mcp/saolei/geometry.ts` (unchanged).

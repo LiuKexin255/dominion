@@ -81,83 +81,93 @@ message FlowParts    { repeated FlowPart    parts = 1; }
 
 ---
 
-## §4 — The live≡history invariant (single source of truth)
+## §4 — The live≡history invariant (single source of truth); channels decoupled (D10)
 
-Live frames and replayed history both project from the **same** LangChain `BaseMessage` stream, so they render identically (spec FR-009):
+Live frames and replayed history both project from the **same** LangChain `BaseMessage` stream, so they render identically (spec FR-009). The **conversation channel** (display) and the **operation channel** (control) are **decoupled** — they do not share an id (research.md D10):
 
 | `BaseMessage` (checkpoint) | Live emission (turn loop) | History reconstruction (`ListMessages`) |
 |---|---|---|
 | `HumanMessage` | `message_parts` frame: `text` (+`image` if screenshot attached) | `Message` content: `text` (+`image`) |
 | `AIMessage` text/reasoning blocks | `message_parts` frame: `text` / `thinking` | content: `text` / `thinking` (from `contentBlocks`) |
-| `AIMessage.tool_calls[]` | `message_parts` frame: one `tool_call` per entry | content: one `tool_call` per entry (`tool_id=call.id`, `name`, `args_json`) |
-| `ToolMessage` | `message_parts` frame: `tool_result` (`tool_id`, status from `additional_kwargs.toolResultStatus`, message + screenshot from content blocks) | content: `tool_result` (same reconstruction) |
-| operation dispatched by a tool | `flow_parts` frame: the `MouseMoveAndClickPart`/`KeyboardPressPart` | **not reconstructed** — operations are control-only; history shows the `tool_call` (semantic) instead |
+| `AIMessage.tool_calls[]` | `message_parts` frame: one `tool_call` per entry (conversation-channel `tool_call.id`) | content: one `tool_call` per entry (`tool_id=call.id`, `name`, `args_json`) |
+| `ToolMessage` | `message_parts` frame: `tool_result` (`tool_id`=`tool_call_id`, status from `additional_kwargs.toolResultStatus` — real for native tools, neutral for MCP/saolei per D12, message + screenshot from content blocks) | content: `tool_result` (same reconstruction) |
+| operation dispatched by a tool | `flow_parts` frame: the `MouseMoveAndClickPart`/`KeyboardPressPart` (operation-channel **bridge-minted** `tool_id`, independent of `tool_call.id`) | **not reconstructed** — operations are control-only; history shows the `tool_call` (semantic) instead |
 
-The operation `FlowPart` is live-only (the desktop must execute it); history shows the *semantic* `tool_call` instead — which is the whole point of the split (live and history now show the same semantic call, not physical-vs-semantic).
+The operation `FlowPart` is live-only (the desktop must execute it); it carries a bridge-minted id for dispatch↔result correlation, NOT the conversation `tool_call.id`. History shows the *semantic* `tool_call` instead — which is the whole point of the split (live and history now show the same semantic call, not physical-vs-semantic). The decoupling means MCP tools (saolei) dispatch without needing the LangChain `tool_call.id` (D10).
 
 ---
 
-## §5 — Evolving tool bubble (frontend view model)
+## §5 — Evolving tool bubble (conversation channel) + Debug drawer (operation channel)
 
-One conversation bubble per `tool_id` (spec FR-007 / C5). State machine:
+> **Decoupled (D10/D11):** the conversation bubble groups by the LangChain `tool_call.id`; the debug Confirm is a **separate session-top drawer** on the operation channel (bridge-minted id). They no longer associate via a shared id.
+
+### Conversation bubble (grouped by conversation-channel `tool_call.id`)
+
+One conversation bubble per `tool_call.id` (spec FR-007 / C5). State machine:
 
 ```
 [ none ]
-   | tool_call MessagePart (tool_id=T, name, args_json)
+   | tool_call MessagePart (tool_id=T [= LangChain tool_call.id], name, args_json)
    v
-[ call ] ── shows: name + args_json (+ Confirm control if tool_id ∈ heldToolIds, debug)
+[ call ] ── shows: name + args_json
    | tool_result MessagePart (tool_id=T, status, message, screenshot)
    v
 [ resolved ] ── shows: name + args_json + status + message + screenshot
 ```
 
-- Grouping key: `tool_id` (shared by `ToolCallPart.tool_id` and `ToolResultPart.tool_id`).
+- Grouping key: the conversation-channel `tool_call.id` (shared by `ToolCallPart.tool_id` and `ToolResultPart.tool_id`). For native tools this is `config.toolCall.id`; for MCP (saolei) tools it is the `tool_call_id` the adapter sets on the `ToolMessage` — LangChain wires both automatically (D2 revised).
+- This id is NOT the operation-channel id (D10). The bubble knows nothing about the dispatched FlowPart operation.
 - A `tool_result` whose `tool_id` has no preceding `tool_call` (graceless history edge) creates the bubble from the result alone (no call header).
-- A `tool_call` whose `tool_result` never arrives (turn aborted) stays in `[ call ]` — not a half-updated inconsistent state (spec Edge Case).
-- Multiple tool calls in one turn → one bubble each, updated independently by `tool_id` (spec Edge Case).
+- A `tool_call` whose `tool_result` never arrives (turn aborted, or debug hold not yet released) stays in `[ call ]` — not a half-updated inconsistent state (spec Edge Case).
+- Multiple tool calls in one turn → one bubble each, updated independently by `tool_call.id` (spec Edge Case).
 
-### Debug Confirm anchoring (D8)
+### Debug Confirm drawer (operation channel — D11)
 
-`heldToolIds: Set<string>` (frontend) is populated by `game:debug:result-held { toolId }` and cleared by `game:debug:result-released { toolId, reason }` (022 contract, unchanged event names). The Confirm control renders on the `[ call ]` bubble iff `heldToolIds.has(bubble.tool_id)`. The screenshot is **not** shown during the hold (C12); it appears only once the bubble reaches `[ resolved ]` (after the hold releases and the agent emits the `tool_result`).
+The 022 debug Confirm is **re-anchored off the bubble** onto a session-top drawer driven by the operation channel. When the desktop holds an operation result (debug mode), it emits `game:debug:result-held { toolId, operation: { kind, summary, details } }` where `toolId` is the **operation-channel** bridge-minted id (NOT the conversation `tool_call.id`). The frontend renders a drawer at the top of the session chat view: one row per held operation (operation `summary` + a Confirm button). Clicking Confirm calls `ConfirmToolResult(toolId)` (releases that held result); `game:debug:result-released { toolId, reason }` dismisses the row. The conversation `ChatView` is NOT involved (no `heldToolIds`/`onConfirm` props). Full interface: [contracts/debug-drawer-contract.md](contracts/debug-drawer-contract.md).
+
+During a debug hold the conversation bubble stays in `[ call ]` (the agent is blocked waiting for the tool result, so no `tool_result` is produced yet); it reaches `[ resolved ]` only after the hold releases and the agent produces the tool's LLM result. The screenshot is NOT shown during the hold (C12). The execution outcome is reachable in the log (C7/FR-011).
 
 ---
 
-## §6 — Tool-result status provenance (the history fix)
+## §6 — Tool-result status provenance (the history fix; native vs MCP — D12)
 
-The real `ToolResultStatus` flows:
+The real `ToolResultStatus` flows into the checkpoint **for native tools**:
 
 ```
 desktop executes operation
-   → ToolResultPart{ status, message, screenshot }  (over WS, desktop→agent)
+   → ToolResultPart{ status, message, screenshot }  (over WS, desktop→agent, operation-channel tool_id)
    → OperationBridge.handleResult resolves OperationResult{ status, ... }
-   → tool returns ToolMessage{ content=blocks, additional_kwargs.toolResultStatus=status,
-                               tool_call_id=config.toolCall.id, name }
+   → [native tool] returns ToolMessage{ content=blocks, additional_kwargs.toolResultStatus=status,
+                                tool_call_id=config.toolCall.id, name }  (buildToolResultMessage, D4)
    → MemorySaver checkpoint persists the ToolMessage (content + additional_kwargs)
    → ListMessages reads additional_kwargs.toolResultStatus → tool_result MessagePart.status
 ```
 
+For **MCP tools** (saolei) the handler returns MCP content blocks; the `@langchain/mcp-adapters` client builds the `ToolMessage` **without** `additional_kwargs`, so the status is neutral (D12). This fixes the original spurious-FAILED bug (the text-heuristic is gone) and is FR-014-compliant.
+
 Status resolution table (spec FR-013..FR-015):
 
-| Real status (from desktop) | `additional_kwargs.toolResultStatus` | Rendered history status |
-|---|---|---|
-| `SUCCEEDED` | `TOOL_RESULT_STATUS_SUCCEEDED` | succeeded |
-| `FAILED` | `TOOL_RESULT_STATUS_FAILED` | failed |
-| unavailable / absent | (absent) → default `TOOL_RESULT_STATUS_UNSPECIFIED` | neutral/unspecified — **never** `FAILED` |
+| Tool kind | Real status (from desktop) | `additional_kwargs.toolResultStatus` | Rendered history status |
+|---|---|---|---|
+| **native (mouse)** | `SUCCEEDED` | `TOOL_RESULT_STATUS_SUCCEEDED` | succeeded |
+| **native (mouse)** | `FAILED` | `TOOL_RESULT_STATUS_FAILED` | failed |
+| **native (mouse)** | unavailable / absent | (absent) → default `TOOL_RESULT_STATUS_UNSPECIFIED` | neutral/unspecified — **never** `FAILED` |
+| **MCP (saolei)** | any (status not carried) | (absent) → `TOOL_RESULT_STATUS_UNSPECIFIED` | neutral — **never** `FAILED` (D12) |
 
-The text-heuristic `inferToolResultStatus` (current `projects/game/agent/src/handler.ts:776`) is **removed**. No fallback infers status from result text; the only fallback is neutral (FR-015).
+The text-heuristic `inferToolResultStatus` (current `projects/game/agent/src/handler.ts`) is **removed**. No fallback infers status from result text; the only fallback is neutral (FR-015). For saolei the actual outcome remains visible via the result message text + the returned screenshot; only the structured status badge is neutral.
 
 ---
 
 ## §7 — Saolei tool set (stateless)
 
-Four tools, each a pure dispatch-and-return over `OperationBridge`. No per-session mutable state (spec FR-016..FR-022):
+Four tools, each a pure dispatch-and-return over `OperationBridge` (`bridge.dispatch(part, signal)` — no toolId, D10). No per-session mutable state (spec FR-016..FR-022). Each returns MCP content blocks (text + screenshot); the adapter-wrapped `ToolMessage` carries **neutral** status (D12):
 
 | Tool | Args | Dispatches (proto FlowPart) | Returns |
 |---|---|---|---|
-| `saolei_init` | (none — `width`/`height` dropped, C11) | `KeyboardPressPart{ key: KEYBOARD_KEY_F2 }` | `ToolMessage` (text + screenshot, status from dispatch) |
-| `saolei_click` | `x`, `y` (grid) | `MouseMoveAndClickPart{ xPx: centerX(x), yPx: centerY(y), click: LEFT_CLICK, method: WINDOW_MESSAGE }` | `ToolMessage` |
-| `saolei_flag` | `x`, `y` | `MouseMoveAndClickPart{ ..., click: RIGHT_CLICK, method: WINDOW_MESSAGE }` | `ToolMessage` |
-| `saolei_chord_click` | `x`, `y` | `MouseMoveAndClickPart{ ..., click: LEFT_RIGHT_PRESS, method: WINDOW_MESSAGE }` | `ToolMessage` |
+| `saolei_init` | (none — `width`/`height` dropped, C11) | `KeyboardPressPart{ key: KEYBOARD_KEY_F2 }` | MCP content blocks → `ToolMessage` (text + screenshot, **neutral** status) |
+| `saolei_click` | `x`, `y` (grid) | `MouseMoveAndClickPart{ xPx: centerX(x), yPx: centerY(y), click: LEFT_CLICK, method: WINDOW_MESSAGE }` | MCP content blocks → `ToolMessage` (neutral) |
+| `saolei_flag` | `x`, `y` | `MouseMoveAndClickPart{ ..., click: RIGHT_CLICK, method: WINDOW_MESSAGE }` | MCP content blocks → `ToolMessage` (neutral) |
+| `saolei_chord_click` | `x`, `y` | `MouseMoveAndClickPart{ ..., click: LEFT_RIGHT_PRESS, method: WINDOW_MESSAGE }` | MCP content blocks → `ToolMessage` (neutral) |
 
 Grid→pixel geometry is the unchanged fixed formula (`projects/game/agent/src/mcp/saolei/geometry.ts`): `centerX(x) = 24 + x*32 + 16`, `centerY(y) = 200 + y*32 + 16`. The desktop-facing operation contract is unchanged from 018 (FR-020 / Assumption).
 
@@ -177,6 +187,7 @@ Grid→pixel geometry is the unchanged fixed formula (`projects/game/agent/src/m
 | saolei validators (`validateUpdate`, `validateClick/Flag/Chord*`, connectivity helpers) | `validation.ts` | removed (file deleted) | no agent-side validation (D7) |
 | `saolei_update` tool registration | `saolei-mcp.ts:479` | removed | stateless saolei (D7) |
 | desktop result→chatstream mirror | `app.go:759`/`783` | removed | screenshot comes from the LLM tool result (D8 / FR-010) |
+| `heldToolIds`/Confirm-on-bubble (022 §3) | `App.svelte`/`ChatView.svelte` | removed | debug Confirm re-anchored onto a session-top drawer (D11; the conversation no longer carries held state) |
 
 ---
 
@@ -184,7 +195,7 @@ Grid→pixel geometry is the unchanged fixed formula (`projects/game/agent/src/m
 
 - The four saolei tool *names*, their `(x, y)` grid convention, and the proto operation Parts they dispatch (`KeyboardPressPart{F2}`, `MouseMoveAndClickPart` + `WINDOW_MESSAGE`) — unchanged (FR-020).
 - `MouseClickAction`, `MouseInputMethod`, `KeyboardKey`, `ToolResultStatus` enums — unchanged.
-- `OperationBridge.dispatch`/`handleResult` correlation and the 20-min `DISPATCH_TIMEOUT_MS` backstop (022 FR-014) — unchanged (`dispatch` gains an optional `toolId` parameter only).
-- The 022 debug control-plane contract (`SetDebugMode`, `ConfirmToolResult`, `game:debug:result-held`/`result-released`) — unchanged method/event names; only the frontend anchoring surface shifts from a result bubble to a `tool_call` bubble (D8).
+- `OperationBridge.dispatch`/`handleResult` correlation and the 20-min `DISPATCH_TIMEOUT_MS` backstop (022 FR-014) — unchanged. `dispatch` mints its own operation id internally (D10: the `toolId` parameter is removed; the bridge always mints a UUID).
+- The 022 debug control-plane contract (`SetDebugMode`, `ConfirmToolResult`, `game:debug:result-held`/`result-released`) — unchanged method/event NAMES; the `result-held` payload gains an `operation` field and the Confirm surface moves from a conversation bubble to a session-top drawer (D11, [contracts/debug-drawer-contract.md](contracts/debug-drawer-contract.md)).
 - `MemorySaver` checkpoint of `BaseMessage`s — the persistence format; the refactor changes only the proto reconstruction layer, not the checkpoint.
 - Session/agent/profile/skill services and their RPCs — untouched.
