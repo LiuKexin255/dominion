@@ -1,6 +1,7 @@
 // Package testplan contains agent checkpoint integration tests covering
 // checkpoint resume, cross-profile history persistence, per-profile model
-// usage, and concurrent message serialization.
+// usage, concurrent message serialization, and tool-result status
+// preservation across session re-entry (spec 023 FR-012..FR-015).
 package testplan
 
 import (
@@ -430,7 +431,7 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	// then Refresh to invalidate the adapter so the next turn rebuilds for
 	// profile B
 	// (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2/§3).
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
 	refreshAgent(t, sutHostURL, sutEnvName, sessionID)
 
 	// when: profile B turn after Refresh rebuilds the adapter for B. The
@@ -492,4 +493,118 @@ func TestCrossProfileHistoryPersistence(t *testing.T) {
 	if gotCount < 6 {
 		t.Errorf("profile B should see all %d prior messages, but only got %d", 6, gotCount)
 	}
+}
+
+// TestAgentCheckpointToolResultStatusPersists verifies spec 023 FR-012/FR-013
+// (the history-status fix, quickstart.md Scenario 6): a native mouse tool
+// whose real outcome was SUCCEEDED MUST still read SUCCEEDED after leaving
+// and re-entering the session, and one that genuinely failed MUST still read
+// FAILED. Before this feature the status was guessed by `inferToolResultStatus`
+// (FAILED unless the text contained "ok"/"succeeded") — every result that
+// lacked those keywords flipped to FAILED on re-entry. With the real status
+// carried through `ToolMessage.additional_kwargs.toolResultStatus` (D4) and
+// read directly by `ListMessages`, the live and history statuses match.
+//
+// Saolei (MCP) tool results reading neutral (TOOL_RESULT_STATUS_UNSPECIFIED,
+// never FAILED) on re-entry is covered by TestAgentSaoleiMcpStatelessFlow
+// (D12 / spec 023 FR-014) — `ListMessages` is a stateless reconstruction of
+// the checkpoint, so its behaviour does not change across WS reconnects.
+func TestAgentCheckpointToolResultStatusPersists(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("ckpt-status-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate the mouse for checkpoint-status tests.",
+			ToolNames:    mouseSplitToolNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// given: turn 1 — a mouse_move tool_call whose real outcome is SUCCEEDED.
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
+	// The agent emits the tool_call MessagePart frame and the operation
+	// FlowPart frame concurrently (see readToolCallAndOperation doc); collect
+	// both in one pass so neither is dropped by an early drain. The tool_call
+	// frame's content is asserted in agent_operation_test.go; this suite only
+	// needs the operation frame to reply and the resulting tool_result status.
+	_, successOp1 := readToolCallAndOperation(t, conn)
+	respondToOperation(t, conn, sessionID, successOp1,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+	if fr := drainWSFrame(t, conn, frameHasToolResult); fr == nil {
+		t.Fatal("turn 1: did not receive a tool_result MessagePart frame after SUCCEEDED reply")
+	}
+	// Drain the terminal text frame so the turn mutex releases before the
+	// next turn (the agent emits mouse-move-success-text on the loop close).
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	// Drain the wait FlowPart so the turn is fully settled.
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
+
+	// given: turn 2 — a mouse_move tool_call whose real outcome is FAILED
+	// (different trigger keyword — mouse-trigger matches both "move the mouse"
+	// and "position cursor"). fake-LLM returns mouse-move-success-text for
+	// both (the test replies FAILED regardless; the loop closes on text).
+	sendTextWithProfile(t, conn, sessionID, profileName, "position cursor over the icon")
+	_, failOp := readToolCallAndOperation(t, conn)
+	respondToOperation(t, conn, sessionID, failOp,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED, "desktop rejected coordinate")
+	if fr := drainWSFrame(t, conn, frameHasToolResult); fr == nil {
+		t.Fatal("turn 2: did not receive a tool_result MessagePart frame after FAILED reply")
+	}
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+
+	// when: the session is left (WS closed). ListMessages reads from the
+	// checkpoint, not the live socket, so it must reflect both tool_result
+	// statuses without reconnect-dependent state.
+	conn.Close()
+	lmrAfterLeave := listMessages(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: SUCCEEDED stays SUCCEEDED, FAILED stays FAILED — no spurious
+	// "failed" from text-heuristic inference (spec 023 FR-012/FR-013;
+	// data-model.md §6; the original bug from spec §Motivation item 3).
+	if !messagesContainToolResultStatus(lmrAfterLeave.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED) {
+		t.Errorf("after leave: ListMessages did not surface a SUCCEEDED tool_result — real status MUST survive the checkpoint (FR-013)")
+	}
+	if !messagesContainToolResultStatus(lmrAfterLeave.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED) {
+		t.Errorf("after leave: ListMessages did not surface a FAILED tool_result — real failures MUST survive too (FR-013 masks nothing)")
+	}
+
+	// when: the session is re-entered (fresh WS). The adapter is rebuilt but
+	// the checkpoint persists; ListMessages must return the same statuses.
+	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn2.Close()
+	lmrAfterReenter := listMessages(t, sutHostURL, sutEnvName, sessionID)
+
+	// then: identical statuses after re-entry (live≡history for status).
+	if !messagesContainToolResultStatus(lmrAfterReenter.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED) {
+		t.Errorf("after re-enter: SUCCEEDED tool_result dropped from history — status MUST persist across re-entry (FR-013)")
+	}
+	if !messagesContainToolResultStatus(lmrAfterReenter.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED) {
+		t.Errorf("after re-enter: FAILED tool_result dropped from history — status MUST persist across re-entry (FR-013)")
+	}
+
+	// then: no historical tool_result reads spurious FAILED beyond the one
+	// genuine failure. Count the FAILED entries and confirm there is at most
+	// one (the turn-2 failure) — the SUCCEEDED turn-1 result MUST NOT flip.
+	var failedCount int
+	for _, m := range lmrAfterReenter.GetMessages() {
+		for _, s := range messageToolResultStatuses(m) {
+			if s == game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
+				failedCount++
+			}
+		}
+	}
+	if failedCount > 1 {
+		t.Errorf("after re-enter: %d FAILED tool_results in history, want at most 1 (the genuine turn-2 failure) — spurious FAILED indicates the text-heuristic regression recurred (FR-015)", failedCount)
+	}
+
+	// then: no operation FlowPart in Message.content (FR-005).
+	assertMessageContentDisplayOnly(t, lmrAfterReenter.GetMessages())
 }

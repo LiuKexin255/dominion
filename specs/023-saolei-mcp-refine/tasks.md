@@ -156,14 +156,22 @@
 - **技术文章**：无。
 - **SKILL**：执行大型测试前加载 `testplan` SKILL（`.opencode/skills/testplan/SKILL.md`）。
 
-### 任务
+### 前置：proto 迁移（修复 Phase 2 clean break 遗留）
 
-- [ ] T035 [P] 更新 `projects/game/testplan/agent_saolei_test.go`：改为 4 工具无状态流（init→click→click 连续，无 update），断言 dispatch 的操作 Part 字段不变、saolei 结果状态 neutral（D12，非 FAILED）、操作 FlowPart 不在 `Message.content`。依据 `quickstart.md` Scenario 5。
-- [ ] T036 [P] 更新 `projects/game/testplan/agent_operation_test.go`：改为断言 tool_call/tool_result MessageParts 与 mouse 工具携带的真实状态（解耦后 FlowPart.tool_id 为 bridge UUID，≠ tool_call.id）。依据 `quickstart.md` Scenario 7。
-- [ ] T037 [P] 更新 `projects/game/testplan/agent_checkpoint_test.go`：改为 leave/re-enter 后 `ListMessages` 真实状态保持（mouse 成功仍 succeeded、失败仍 failed、saolei neutral）——quickstart Scenario 6。依据 `quickstart.md` Scenario 6、`data-model.md` §6。
-- [ ] T038 [P] 更新 `projects/game/testplan/agent_dialog_test.go`：改为断言 tool_call 渲染 name+args、操作 FlowPart 不在 `Message.content`。复用 `helpers_test.go` 既有构造/断言，不复制 helper。依据 `quickstart.md` Scenario 7、`style/large_test.md`。
-- [ ] T039 更新 `projects/game/testplan/system_test.yaml`：确认 `agent-saolei`/`agent-operation`/`checkpoint-resume`/`agent-dialog` suite 引用更新后的 case binary（通常无需新增 suite；若 deploy 拓扑无根本变化不得新建独立 YAML）。
-- [ ] T040 通过 `testplan` SKILL 执行大型测试验收：`guitar run projects/game/testplan/system_test.yaml`，完成部署→测试→清理闭环；**所有用例 MUST 全部通过**（failed/flaky 即验收未通过，修复后重跑至全绿）。仅 `bazel build` 测试 target 不构成验收（宪章原则 VI v1.3.0）。
+> **背景**：Phase 2 的 proto clean break（`Part`→`MessagePart`/`FlowPart` 拆分）未同步迁移 testplan，导致 testplan 编译失败（引用已删除的 `PartBlock`/`Part`/`AgentFrame_Content`/`AgentFrame_Status`/`GetContent()`）。下列 task 修复编译，是后续断言更新与 `guitar run` 的前提。迁移依据 `contracts/content-model-contract.md`、`data-model.md` §1/§3（`AgentFrame.payload` = `message_parts`/`flow_parts`；`Message.content` = `MessageParts`）。
+
+- [X] T035 迁移 `projects/game/testplan/helpers_test.go`（44 处旧 proto）：所有构造器/断言 helper 从旧 proto 迁移到新 proto——构造器（`buildTextFrame`/`buildUserTurnFrame`/`buildOperationResultFrame`/`buildImageFrame`/`sendStatusFrame` 等）改用 `MessageParts`/`FlowParts` + `AgentFrame_MessageParts`/`AgentFrame_FlowParts`；断言（`frameHasThinking`/`frameHasText`/`frameThinking`/`frameText`/`messageKind`/`messageText`/`frameOperationToolID`/`frameKeyboardPress`/`frameMouseMoveAndClick`/`frameMouseMove` 等）改读 `GetMessageParts()`/`GetFlowParts()`。新增 tool_call/tool_result MessagePart 构造/断言 helper（如 `frameToolCall`/`frameToolResult`/`messageToolCall`）供 T038-T041 复用。
+- [X] T036 [P] 迁移 `projects/game/testplan/agent_multimodal_test.go`（2 处旧 proto）到新 `MessageParts` proto（复用 T035 迁移后的 helpers）。
+- [X] T037 [P] 迁移 `projects/game/testplan/prompt_test.go`（4 处旧 proto）到新 `MessageParts` proto（复用 T035 迁移后的 helpers）。
+
+### 任务：断言更新（US3/US2/US1 验收）
+
+- [X] T038 [P] 更新 `projects/game/testplan/agent_saolei_test.go`：改为 4 工具无状态流（init→click→click 连续，无 update），断言 dispatch 的操作 Part 字段不变、saolei 结果状态 neutral（D12，非 FAILED）、操作 FlowPart 不在 `Message.content`。依据 `quickstart.md` Scenario 5。
+- [X] T039 [P] 更新 `projects/game/testplan/agent_operation_test.go`：改为断言 tool_call/tool_result MessageParts 与 mouse 工具携带的真实状态（解耦后 FlowPart.tool_id 为 bridge UUID，≠ tool_call.id）。依据 `quickstart.md` Scenario 7。
+- [X] T040 [P] 更新 `projects/game/testplan/agent_checkpoint_test.go`：改为 leave/re-enter 后 `ListMessages` 真实状态保持（mouse 成功仍 succeeded、失败仍 failed、saolei neutral）——quickstart Scenario 6。依据 `quickstart.md` Scenario 6、`data-model.md` §6。
+- [X] T041 [P] 更新 `projects/game/testplan/agent_dialog_test.go`：改为断言 tool_call 渲染 name+args、操作 FlowPart 不在 `Message.content`。复用 `helpers_test.go`（T035 已迁移）的构造/断言 helper，不复制 helper。依据 `quickstart.md` Scenario 7、`style/large_test.md`。
+- [X] T042 更新 `projects/game/testplan/system_test.yaml`：确认 `agent-saolei`/`agent-operation`/`checkpoint-resume`/`agent-dialog`/`agent-multimodal` suite 引用更新后的 case binary（通常无需新增 suite；若 deploy 拓扑无根本变化不得新建独立 YAML）。
+- [X] T043 通过 `testplan` SKILL 执行大型测试验收：`guitar run projects/game/testplan/system_test.yaml`，完成部署→测试→清理闭环；**所有用例 MUST 全部通过**（failed/flaky 即验收未通过，修复后重跑至全绿）。仅 `bazel build` 测试 target 不构成验收（宪章原则 VI v1.3.0）。
 
 **Checkpoint**: 大型测试全部通过；feature 验收完成。
 
@@ -199,7 +207,7 @@ US3（saolei，P1）不依赖解耦签名变更（saolei 保持 `dispatch(part)`
 
 - US3: T022 ∥ T023 ∥ T025；T021→T024。
 - 解耦+US4: T027 ∥ T028（mouse/saolei 不同文件，均依赖 T026）；T032（新组件）可与 T030 并行准备。
-- Phase 6: T035 ∥ T036 ∥ T037 ∥ T038（不同测试文件）。
+- Phase 6: T035 (helpers) 先行；T036 ∥ T037 ∥ T038 ∥ T039 ∥ T040 ∥ T041（不同测试文件，均依赖 T035 的 helper 迁移）；T042；T043 最后。
 
 ---
 

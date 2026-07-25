@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,20 @@ const (
 // drive keyword matching), so the actual pixel content is irrelevant — tests
 // only verify the server accepts and processes the multimodal frame.
 var smallScreenshotData = mustBase64PNG()
+
+// mouseSplitToolNames is the post-015 mouse tool surface shared by the
+// agent_operation and agent_checkpoint suites: mouse_move positions the
+// cursor, mouse_click fires at the current position. Declaring both on a
+// profile exercises the buildTools wiring that replaced the legacy single
+// "mouse" name.
+var mouseSplitToolNames = []string{"mouse_move", "mouse_click"}
+
+// expectedMouseMoveSuccessText is the terminal text fake-LLM returns once
+// the mouse_move tool-result loop closes (sample_tools.yaml
+// mouse-move-success-text). Shared by the agent_operation and
+// agent_checkpoint suites to prove the model continued after the dispatch
+// result.
+const expectedMouseMoveSuccessText = "I see the screen now."
 
 // mustBase64PNG decodes a minimal 1×1 transparent PNG. It panics on failure,
 // which would indicate a bug in the test itself rather than the SUT.
@@ -438,16 +453,17 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 	return frame
 }
 
-// buildTextFrame constructs an AgentFrame whose content payload is a PartBlock
-// holding a single TextPart. Sets the session ID, agent profile name, sender.
+// buildTextFrame constructs an AgentFrame whose message_parts payload carries
+// a single TextPart (specs/023-saolei-mcp-refine/contracts/content-model-contract.md
+// §3/§4 — display channel). Sets the session ID, agent profile name, sender.
 func buildTextFrame(sessionID, agentProfileName, content string, sender game.FrameSender) *game.AgentFrame {
 	return &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: agentProfileName,
 		Sender:           sender,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: content}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: content}}},
 			}},
 		},
 	}
@@ -461,18 +477,21 @@ func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentPro
 	writeWSFrame(t, conn, frame)
 }
 
-// sendStatusFrame writes a status-ping AgentFrame over the WebSocket with the
-// given StatusSignalStatus. The desktop sends this on session (re-)entry to
-// probe the agent's working state; the agent responds with a derived
-// StatusSignal (ACTIVE/IDLE/UNSPECIFIED)
+// sendStatusFrame writes a flow_parts AgentFrame over the WebSocket carrying a
+// single StatusSignal FlowPart (specs/023-saolei-mcp-refine/contracts/content-model-contract.md
+// §2 — status became a FlowPart kind per spec 023 C3 / FR-003). The desktop
+// sends this on session (re-)entry to probe the agent's working state; the
+// agent responds with a derived StatusSignal (ACTIVE/IDLE/UNSPECIFIED)
 // (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
 func sendStatusFrame(t *testing.T, conn *websocket.Conn, sessionID string, status game.StatusSignalStatus) {
 	t.Helper()
 	frame := &game.AgentFrame{
 		SessionId: sessionID,
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: status},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: status}}},
+			}},
 		},
 	}
 	writeWSFrame(t, conn, frame)
@@ -480,7 +499,7 @@ func sendStatusFrame(t *testing.T, conn *websocket.Conn, sessionID string, statu
 
 // buildImageFrame constructs a minimal ImagePart carrying a 1×1 PNG
 // (smallScreenshotData) plus the metadata required by the proto. The returned
-// part is embedded in a user-turn PartBlock by buildUserTurnFrame.
+// part is embedded in a user-turn MessageParts by buildUserTurnFrame.
 func buildImageFrame(sessionID string) *game.ImagePart {
 	return &game.ImagePart{
 		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
@@ -492,43 +511,45 @@ func buildImageFrame(sessionID string) *game.ImagePart {
 	}
 }
 
-// buildUserTurnFrame constructs an AgentFrame whose content payload is a
-// PartBlock of [TextPart, (optional) ImagePart]. Pass a nil image for a
-// text-only user turn.
+// buildUserTurnFrame constructs an AgentFrame whose message_parts payload
+// carries [TextPart, (optional) ImagePart]. Pass a nil image for a text-only
+// user turn (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
 func buildUserTurnFrame(sessionID, profileName, text string, image *game.ImagePart) *game.AgentFrame {
-	parts := []*game.Part{
-		{Kind: &game.Part_Text{Text: &game.TextPart{Content: text}}},
+	parts := []*game.MessagePart{
+		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
 	}
 	if image != nil {
-		parts = append(parts, &game.Part{Kind: &game.Part_Image{Image: image}})
+		parts = append(parts, &game.MessagePart{Kind: &game.MessagePart_Image{Image: image}})
 	}
 	return &game.AgentFrame{
 		SessionId:        sessionID,
 		AgentProfileName: profileName,
 		Sender:           game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: parts},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: parts},
 		},
 	}
 }
 
-// sendUserTurn builds and writes a content user-turn frame over the WebSocket.
-// Pass a nil image for a text-only turn.
+// sendUserTurn builds and writes a message_parts user-turn frame over the
+// WebSocket. Pass a nil image for a text-only turn.
 func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, image *game.ImagePart) {
 	t.Helper()
 	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, image))
 }
 
-// buildOperationResultFrame constructs an AgentFrame whose content payload is a
-// PartBlock holding a ToolResultPart. Used to simulate a desktop-executed tool
-// operation result delivered back to the agent.
+// buildOperationResultFrame constructs an AgentFrame whose message_parts
+// payload carries a single ToolResultPart. Used to simulate a desktop-executed
+// tool operation result delivered back to the agent over the operation channel
+// (the desktop replies with a tool_result MessagePart frame whose tool_id
+// matches the FlowPart operation's bridge-minted id — research.md D10).
 func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string) *game.AgentFrame {
 	return &game.AgentFrame{
 		SessionId: sessionID,
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_ToolResult{ToolResult: &game.ToolResultPart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_ToolResult{ToolResult: &game.ToolResultPart{
 					ToolId:  toolID,
 					Status:  status,
 					Message: message,
@@ -540,19 +561,39 @@ func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultS
 
 // ─── Content-projection helpers ─────────────────────────────────────────────
 //
-// The Part model folds every content variant into a PartBlock of Parts, so a
-// thinking or text response is now a content frame whose PartBlock carries a
-// ThinkingPart / TextPart — not a dedicated frame payload. These helpers
-// project a part-kind out of a content frame (or Message) the way the old
-// frame.GetThinking() / frame.GetText() / message.GetText() accessors did.
+// The content-model split (specs/023-saolei-mcp-refine/contracts/content-model-contract.md)
+// carries display blocks in AgentFrame.message_parts / Message.content
+// (MessageParts) and control blocks in AgentFrame.flow_parts (FlowParts).
+// These helpers project a MessagePart/FlowPart variant out of a frame or
+// Message the way the old frame.GetThinking() / frame.GetText() /
+// frame.GetWarn() accessors did before the split.
 
-// frameHasThinking reports whether a content frame's PartBlock holds a
+// frameMessageParts returns the MessageParts payload of a frame, or nil when
+// the frame carries no display channel (e.g. it is a flow_parts frame).
+func frameMessageParts(f *game.AgentFrame) *game.MessageParts {
+	if f == nil {
+		return nil
+	}
+	return f.GetMessageParts()
+}
+
+// frameFlowParts returns the FlowParts payload of a frame, or nil when the
+// frame carries no control channel (e.g. it is a message_parts frame).
+func frameFlowParts(f *game.AgentFrame) *game.FlowParts {
+	if f == nil {
+		return nil
+	}
+	return f.GetFlowParts()
+}
+
+// frameHasThinking reports whether a message_parts frame carries a
 // ThinkingPart.
 func frameHasThinking(f *game.AgentFrame) bool {
-	if f.GetContent() == nil {
+	mp := frameMessageParts(f)
+	if mp == nil {
 		return false
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range mp.GetParts() {
 		if p.GetThinking() != nil {
 			return true
 		}
@@ -560,12 +601,13 @@ func frameHasThinking(f *game.AgentFrame) bool {
 	return false
 }
 
-// frameHasText reports whether a content frame's PartBlock holds a TextPart.
+// frameHasText reports whether a message_parts frame carries a TextPart.
 func frameHasText(f *game.AgentFrame) bool {
-	if f.GetContent() == nil {
+	mp := frameMessageParts(f)
+	if mp == nil {
 		return false
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range mp.GetParts() {
 		if p.GetText() != nil {
 			return true
 		}
@@ -573,13 +615,14 @@ func frameHasText(f *game.AgentFrame) bool {
 	return false
 }
 
-// frameThinking returns the content of the first ThinkingPart in a content
-// frame's PartBlock, or "" if the frame has no thinking part.
+// frameThinking returns the content of the first ThinkingPart in a
+// message_parts frame, or "" if the frame has no thinking part.
 func frameThinking(f *game.AgentFrame) string {
-	if f.GetContent() == nil {
+	mp := frameMessageParts(f)
+	if mp == nil {
 		return ""
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range mp.GetParts() {
 		if t := p.GetThinking(); t != nil {
 			return t.GetContent()
 		}
@@ -587,13 +630,14 @@ func frameThinking(f *game.AgentFrame) string {
 	return ""
 }
 
-// frameText returns the content of the first TextPart in a content frame's
-// PartBlock, or "" if the frame has no text part.
+// frameText returns the content of the first TextPart in a message_parts
+// frame, or "" if the frame has no text part.
 func frameText(f *game.AgentFrame) string {
-	if f.GetContent() == nil {
+	mp := frameMessageParts(f)
+	if mp == nil {
 		return ""
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range mp.GetParts() {
 		if t := p.GetText(); t != nil {
 			return t.GetContent()
 		}
@@ -601,11 +645,62 @@ func frameText(f *game.AgentFrame) string {
 	return ""
 }
 
-// messageKind returns the part-kind string of the first Part in a Message's
-// content PartBlock ("text", "thinking", "image", "mouseMove", "mouseClick",
-// "toolResult"), or "" if the message has no content. Replaces the removed
-// Message.type field — Part.kind self-describes, so a separate discriminator
-// is redundant on the wire, but tests still need a kind label for logging.
+// frameWarn returns the WarnSignal in a flow_parts frame, or nil when the
+// frame carries no warn FlowPart. Replaces the removed AgentFrame.warn
+// payload accessor — warn is now a FlowPart kind (spec 023 C3 / FR-003).
+func frameWarn(f *game.AgentFrame) *game.WarnSignal {
+	fp := frameFlowParts(f)
+	if fp == nil {
+		return nil
+	}
+	for _, p := range fp.GetParts() {
+		if w := p.GetWarn(); w != nil {
+			return w
+		}
+	}
+	return nil
+}
+
+// frameWait returns the WaitSignal in a flow_parts frame, or nil when the
+// frame carries no wait FlowPart. Replaces the removed AgentFrame.wait
+// payload accessor — wait is now a FlowPart kind (spec 023 C3 / FR-003).
+// Tests drain for a wait frame to detect turn completion (the agent emits
+// a wait FlowPart when its turn ends).
+func frameWait(f *game.AgentFrame) *game.WaitSignal {
+	fp := frameFlowParts(f)
+	if fp == nil {
+		return nil
+	}
+	for _, p := range fp.GetParts() {
+		if w := p.GetWait(); w != nil {
+			return w
+		}
+	}
+	return nil
+}
+
+// frameStatus returns the StatusSignal in a flow_parts frame, or nil when
+// the frame carries no status FlowPart. Replaces the removed AgentFrame.status
+// payload accessor — status is now a FlowPart kind (spec 023 C3 / FR-003).
+// Used by the session-agent lifecycle suite to assert IDLE/ACTIVE probes.
+func frameStatus(f *game.AgentFrame) *game.StatusSignal {
+	fp := frameFlowParts(f)
+	if fp == nil {
+		return nil
+	}
+	for _, p := range fp.GetParts() {
+		if s := p.GetStatus(); s != nil {
+			return s
+		}
+	}
+	return nil
+}
+
+// messageKind returns the MessagePart-kind string of the first part in a
+// Message's content MessageParts ("text", "thinking", "image", "toolCall",
+// "toolResult"), or "" if the message has no content. Only MessagePart kinds
+// appear here — Message.content is typed as MessageParts so a FlowPart can
+// never appear (spec 023 FR-004).
 func messageKind(m *game.Message) string {
 	if m.GetContent() == nil || len(m.GetContent().GetParts()) == 0 {
 		return ""
@@ -618,18 +713,16 @@ func messageKind(m *game.Message) string {
 		return "thinking"
 	case p.GetImage() != nil:
 		return "image"
-	case p.GetMouseMove() != nil:
-		return "mouseMove"
-	case p.GetMouseClick() != nil:
-		return "mouseClick"
+	case p.GetToolCall() != nil:
+		return "toolCall"
 	case p.GetToolResult() != nil:
 		return "toolResult"
 	}
 	return ""
 }
 
-// messageText returns the content of the first TextPart in a Message's content
-// PartBlock, or "" if none. Replaces the removed Message.text field.
+// messageText returns the content of the first TextPart in a Message's
+// content MessageParts, or "" if none.
 func messageText(m *game.Message) string {
 	if m.GetContent() == nil {
 		return ""
@@ -640,6 +733,114 @@ func messageText(m *game.Message) string {
 		}
 	}
 	return ""
+}
+
+// messagePartKind returns the active variant name of a MessagePart
+// ("text"/"thinking"/"image"/"toolCall"/"toolResult"), or "" when no variant
+// is set. Used to assert no control-only FlowPart kind leaks into
+// Message.content (which is typed MessageParts so the proto layer already
+// forbids FlowParts structurally, but the test asserts the rendered kinds so
+// a future regression that reintroduces an operation-shaped MessagePart is
+// caught — spec 023 FR-005).
+func messagePartKind(p *game.MessagePart) string {
+	if p == nil {
+		return ""
+	}
+	switch {
+	case p.GetText() != nil:
+		return "text"
+	case p.GetThinking() != nil:
+		return "thinking"
+	case p.GetImage() != nil:
+		return "image"
+	case p.GetToolCall() != nil:
+		return "toolCall"
+	case p.GetToolResult() != nil:
+		return "toolResult"
+	}
+	return ""
+}
+
+// isDisplayOnlyMessagePartKind reports whether kind is one of the display-only
+// MessagePart variants. Any other value (including the empty string or a
+// FlowPart kind that should never appear here) is a leak — used with
+// messagePartKind to guard spec 023 FR-005 (operations must not appear in
+// Message.content).
+func isDisplayOnlyMessagePartKind(kind string) bool {
+	switch kind {
+	case "text", "thinking", "image", "toolCall", "toolResult":
+		return true
+	}
+	return false
+}
+
+// messagesContainToolCall reports whether any Message's content MessageParts
+// carries a ToolCallPart whose name matches.
+func messagesContainToolCall(messages []*game.Message, name string) bool {
+	for _, m := range messages {
+		if messageHasToolCall(m, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// messagesContainText reports whether any Message's content MessageParts
+// carries a TextPart whose content contains the substring. Used as a sanity
+// check that user/agent text survived history reconstruction.
+func messagesContainText(messages []*game.Message, substring string) bool {
+	for _, m := range messages {
+		if strings.Contains(messageText(m), substring) {
+			return true
+		}
+	}
+	return false
+}
+
+// messagesContainToolResultStatus reports whether any Message's content
+// MessageParts carries a ToolResultPart whose status matches. Used to assert
+// the real status survives a leave/re-enter cycle for native tools
+// (research.md D4; data-model.md §6).
+func messagesContainToolResultStatus(messages []*game.Message, status game.ToolResultStatus) bool {
+	for _, m := range messages {
+		for _, s := range messageToolResultStatuses(m) {
+			if s == status {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// firstToolCallArgsJSON returns the args_json of the first ToolCallPart with
+// the given tool name across the messages, or "" if none.
+func firstToolCallArgsJSON(messages []*game.Message, name string) string {
+	for _, m := range messages {
+		if args := messageToolCallArgsJSON(m, name); args != "" {
+			return args
+		}
+	}
+	return ""
+}
+
+// assertMessageContentDisplayOnly fails the test if any Message's content
+// carries a non-display-only MessagePart kind (i.e. an operation FlowPart
+// leaked into history). spec 023 FR-004/FR-005 — Message.content is typed
+// MessageParts, so this guard catches a future regression that reintroduces
+// an operation-shaped entry.
+func assertMessageContentDisplayOnly(t *testing.T, messages []*game.Message) {
+	t.Helper()
+	for i, m := range messages {
+		if m.GetContent() == nil {
+			continue
+		}
+		for j, p := range m.GetContent().GetParts() {
+			kind := messagePartKind(p)
+			if !isDisplayOnlyMessagePartKind(kind) {
+				t.Errorf("message[%d].parts[%d]: kind = %q is not a display-only MessagePart kind (spec 023 FR-005 — operations must not appear in Message.content)", i, j, kind)
+			}
+		}
+	}
 }
 
 // updateAgentProfileTools sends an HTTP PATCH to add the given tool names to
@@ -696,25 +897,31 @@ func senderString(sender game.FrameSender) string {
 // ─── Operation-dispatch helpers ─────────────────────────────────────────────
 //
 // When the model emits a tool_call, the agent executes the tool, which calls
-// OperationBridge.dispatch. The bridge wraps the operation Part (MouseMovePart,
-// MouseClickPart, KeyboardPressPart, or MouseMoveAndClickPart) in a content
-// AgentFrame and writes it to the session WebSocket sink. A large test that
+// OperationBridge.dispatch. The bridge wraps the operation FlowPart
+// (MouseMovePart, MouseClickPart, KeyboardPressPart, or MouseMoveAndClickPart)
+// in a flow_parts AgentFrame and writes it to the session WebSocket sink
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2;
+// research.md D10 — the FlowPart carries a bridge-minted operation-channel
+// tool_id, decoupled from the conversation tool_call.id). A large test that
 // "plays the desktop" reads that operation frame, echoes the stamped tool_id
-// back in a ToolResultPart, and the bridge resolves the pending dispatch. The
-// helpers below project the operation Part out of a content frame and reply
-// with a matching ToolResultPart — they are shared by the agent_operation and
-// agent_saolei suites so neither copies the logic (style/large_test.md §反模式3).
+// back in a ToolResultPart, and the bridge resolves the pending dispatch.
+// The helpers below project the operation Part out of a flow_parts frame and
+// reply with a matching ToolResultPart — they are shared by the
+// agent_operation and agent_saolei suites so neither copies the logic
+// (style/large_test.md §反模式3).
 
 // frameOperationToolID returns the tool_id stamped on the first tool-operation
-// Part in a content frame (keyboard_press / mouse_move_and_click / mouse_move /
-// mouse_click), or "" when the frame carries no operation Part. tool_id is the
-// correlation key the bridge matches against the ToolResultPart (see
-// projects/game/agent/src/operation-bridge.ts dispatch/handleResult).
+// FlowPart in a flow_parts frame (keyboard_press / mouse_move_and_click /
+// mouse_move / mouse_click), or "" when the frame carries no operation Part.
+// tool_id is the bridge-minted operation-channel id the bridge matches against
+// the ToolResultPart (projects/game/agent/src/operation-bridge.ts
+// dispatch/handleResult; research.md D10).
 func frameOperationToolID(f *game.AgentFrame) string {
-	if f.GetContent() == nil {
+	fp := frameFlowParts(f)
+	if fp == nil {
 		return ""
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range fp.GetParts() {
 		if kp := p.GetKeyboardPress(); kp != nil {
 			return kp.GetToolId()
 		}
@@ -731,13 +938,15 @@ func frameOperationToolID(f *game.AgentFrame) string {
 	return ""
 }
 
-// frameKeyboardPress returns the first KeyboardPressPart in a content frame,
-// or nil. Used by the saolei suite to assert saolei_init dispatched an F2 key.
+// frameKeyboardPress returns the first KeyboardPressPart in a flow_parts
+// frame, or nil. Used by the saolei suite to assert saolei_init dispatched an
+// F2 key (specs/018-saolei-mcp/contracts/proto-operation-contract.md §2).
 func frameKeyboardPress(f *game.AgentFrame) *game.KeyboardPressPart {
-	if f.GetContent() == nil {
+	fp := frameFlowParts(f)
+	if fp == nil {
 		return nil
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range fp.GetParts() {
 		if kp := p.GetKeyboardPress(); kp != nil {
 			return kp
 		}
@@ -745,14 +954,16 @@ func frameKeyboardPress(f *game.AgentFrame) *game.KeyboardPressPart {
 	return nil
 }
 
-// frameMouseMoveAndClick returns the first MouseMoveAndClickPart in a content
-// frame, or nil. Used by the saolei suite to assert a cell operation dispatched
-// the correct window-message mouse Part.
+// frameMouseMoveAndClick returns the first MouseMoveAndClickPart in a
+// flow_parts frame, or nil. Used by the saolei suite to assert a cell
+// operation dispatched the correct window-message mouse Part
+// (specs/018-saolei-mcp/contracts/proto-operation-contract.md §3).
 func frameMouseMoveAndClick(f *game.AgentFrame) *game.MouseMoveAndClickPart {
-	if f.GetContent() == nil {
+	fp := frameFlowParts(f)
+	if fp == nil {
 		return nil
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range fp.GetParts() {
 		if mmc := p.GetMouseMoveAndClick(); mmc != nil {
 			return mmc
 		}
@@ -760,13 +971,15 @@ func frameMouseMoveAndClick(f *game.AgentFrame) *game.MouseMoveAndClickPart {
 	return nil
 }
 
-// frameMouseMove returns the first MouseMovePart in a content frame, or nil.
-// Used by the agent_operation suite to assert a mouse_move tool_call dispatched.
+// frameMouseMove returns the first MouseMovePart in a flow_parts frame, or
+// nil. Used by the agent_operation suite to assert a mouse_move tool_call
+// dispatched.
 func frameMouseMove(f *game.AgentFrame) *game.MouseMovePart {
-	if f.GetContent() == nil {
+	fp := frameFlowParts(f)
+	if fp == nil {
 		return nil
 	}
-	for _, p := range f.GetContent().GetParts() {
+	for _, p := range fp.GetParts() {
 		if mm := p.GetMouseMove(); mm != nil {
 			return mm
 		}
@@ -774,8 +987,8 @@ func frameMouseMove(f *game.AgentFrame) *game.MouseMovePart {
 	return nil
 }
 
-// readOperationFrame drains frames until it finds a content frame carrying a
-// tool-operation Part, and returns it. Fails the test if no operation frame
+// readOperationFrame drains frames until it finds a flow_parts frame carrying
+// a tool-operation Part, and returns it. Fails the test if no operation frame
 // arrives within the drain limit — the model→tool_call→dispatch chain is the
 // behaviour under test, so its absence is a real failure, not a timeout.
 func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
@@ -784,16 +997,56 @@ func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 		return frameOperationToolID(f) != ""
 	})
 	if f == nil {
-		t.Fatal("did not receive an operation Part frame from the agent " +
+		t.Fatal("did not receive an operation FlowPart frame from the agent " +
 			"(model→tool_call→dispatch chain did not fire)")
 	}
 	return f
 }
 
+// readToolCallAndOperation drains WS frames until BOTH a tool_call MessagePart
+// frame and an operation FlowPart frame have been observed, returning both.
+//
+// The agent emits the two frames CONCURRENTLY and their relative order is NOT
+// guaranteed: OperationBridge.dispatch sink-writes the FlowPart envelope
+// synchronously inside the tool fn (operation-bridge.ts dispatch →
+// sink(envelope)), while the tool_call MessagePart frame is yielded
+// asynchronously through LangGraph's stream.toolCalls transformer pipeline
+// (llm.ts consumeToolCalls → mergeIterables → handler for-await). In practice
+// the operation FlowPart usually arrives FIRST (synchronous sink vs. several
+// microtask hops through the transformer), so a test that drains one frame
+// kind and then the other can drop the earlier frame and time out.
+//
+// This helper reads frames in a single loop, collecting each kind into its
+// slot without discarding the other, and returns once both are present. Used
+// by the agent_operation and agent_checkpoint suites (style/large_test.md
+// §反模式3 — shared helper, not copied).
+func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame, opFrame *game.AgentFrame) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		if toolCallFrame != nil && opFrame != nil {
+			return toolCallFrame, opFrame
+		}
+		frame := readWSFrame(t, conn)
+		if toolCallFrame == nil && frameHasToolCall(frame) {
+			toolCallFrame = frame
+		}
+		if opFrame == nil && frameOperationToolID(frame) != "" {
+			opFrame = frame
+		}
+	}
+	if toolCallFrame == nil {
+		t.Fatal("did not receive a tool_call MessagePart frame from the agent (FR-006)")
+	}
+	if opFrame == nil {
+		t.Fatal("did not receive an operation FlowPart frame from the agent (model→tool_call→dispatch chain did not fire)")
+	}
+	return toolCallFrame, opFrame
+}
+
 // respondToOperation writes a ToolResultPart back over the WebSocket whose
-// tool_id matches the operation frame's stamped id, simulating a desktop that
-// executed the operation. The bridge's handleResult resolves the pending
-// dispatch so the model's tool-call loop continues.
+// tool_id matches the operation frame's stamped bridge-minted id, simulating
+// a desktop that executed the operation. The bridge's handleResult resolves
+// the pending dispatch so the model's tool-call loop continues (research.md D10).
 func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string) {
 	t.Helper()
 	toolID := frameOperationToolID(opFrame)
@@ -801,4 +1054,119 @@ func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, op
 		t.Fatalf("respondToOperation: operation frame has no tool_id")
 	}
 	writeWSFrame(t, conn, buildOperationResultFrame(sessionID, toolID, status, message))
+}
+
+// ─── Tool-call / tool-result MessagePart helpers ────────────────────────────
+//
+// The model's tool invocation (name + args_json) and the tool's LLM result
+// both surface as MessageParts — `tool_call` and `tool_result` — grouped by
+// the conversation-channel tool_id (the LangChain tool_call.id). These
+// helpers project those parts out of a live frame or a history Message for
+// the agent_saolei / agent_operation / agent_dialog / agent_checkpoint suites
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1/§2;
+// data-model.md §4/§6).
+
+// frameHasToolCall reports whether a message_parts frame carries a
+// ToolCallPart.
+func frameHasToolCall(f *game.AgentFrame) bool {
+	return frameToolCall(f) != nil
+}
+
+// frameToolCall returns the first ToolCallPart in a message_parts frame, or
+// nil.
+func frameToolCall(f *game.AgentFrame) *game.ToolCallPart {
+	mp := frameMessageParts(f)
+	if mp == nil {
+		return nil
+	}
+	for _, p := range mp.GetParts() {
+		if tc := p.GetToolCall(); tc != nil {
+			return tc
+		}
+	}
+	return nil
+}
+
+// frameHasToolResult reports whether a message_parts frame carries a
+// ToolResultPart.
+func frameHasToolResult(f *game.AgentFrame) bool {
+	return frameToolResult(f) != nil
+}
+
+// frameToolResult returns the first ToolResultPart in a message_parts frame,
+// or nil.
+func frameToolResult(f *game.AgentFrame) *game.ToolResultPart {
+	mp := frameMessageParts(f)
+	if mp == nil {
+		return nil
+	}
+	for _, p := range mp.GetParts() {
+		if tr := p.GetToolResult(); tr != nil {
+			return tr
+		}
+	}
+	return nil
+}
+
+// messageHasToolCall reports whether a Message's content MessageParts contains
+// a ToolCallPart whose name matches. The tool_call part is the model's
+// semantic tool invocation rendered as a conversation bubble (spec 023 FR-002;
+// data-model.md §2).
+func messageHasToolCall(m *game.Message, name string) bool {
+	if m.GetContent() == nil {
+		return false
+	}
+	for _, p := range m.GetContent().GetParts() {
+		if tc := p.GetToolCall(); tc != nil && tc.GetName() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// messageToolCallNames returns the names of every ToolCallPart in a Message's
+// content MessageParts, in order.
+func messageToolCallNames(m *game.Message) []string {
+	if m.GetContent() == nil {
+		return nil
+	}
+	var names []string
+	for _, p := range m.GetContent().GetParts() {
+		if tc := p.GetToolCall(); tc != nil {
+			names = append(names, tc.GetName())
+		}
+	}
+	return names
+}
+
+// messageToolResultStatuses returns the ToolResultStatus of every
+// ToolResultPart in a Message's content MessageParts, in order. Used to
+// assert the real status survives a leave/re-enter cycle for native tools and
+// that saolei (MCP) results read neutral (research.md D12; data-model.md §6).
+func messageToolResultStatuses(m *game.Message) []game.ToolResultStatus {
+	if m.GetContent() == nil {
+		return nil
+	}
+	var statuses []game.ToolResultStatus
+	for _, p := range m.GetContent().GetParts() {
+		if tr := p.GetToolResult(); tr != nil {
+			statuses = append(statuses, tr.GetStatus())
+		}
+	}
+	return statuses
+}
+
+// messageToolCallArgsJSON returns the args_json of the first ToolCallPart in a
+// Message whose name matches, or "" when no such part exists. The args_json
+// is the model's arguments verbatim (research.md D3).
+func messageToolCallArgsJSON(m *game.Message, name string) string {
+	if m.GetContent() == nil {
+		return ""
+	}
+	for _, p := range m.GetContent().GetParts() {
+		if tc := p.GetToolCall(); tc != nil && tc.GetName() == name {
+			return tc.GetArgsJson()
+		}
+	}
+	return ""
 }

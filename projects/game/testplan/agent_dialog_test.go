@@ -206,6 +206,55 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	}
 }
 
+// TestAgentDialogMessageContentDisplayOnly verifies spec 023 FR-005 in the
+// dialog module: after a plain text turn, ListMessages returns Messages
+// whose content.parts carry ONLY display-only MessagePart kinds
+// (text/thinking/image/toolCall/toolResult) — no FlowPart (mouse/keyboard
+// operation or wait/warn/status signal) ever appears in Message.content.
+// The content-model split is structural (Message.content is typed
+// MessageParts), so this test guards a future regression that reintroduces
+// an operation-shaped entry. It reuses the shared helpers in helpers_test.go
+// (style/large_test.md §反模式3 — do not copy helpers).
+func TestAgentDialogMessageContentDisplayOnly(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("ad-DispOnly-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// Run a text turn carrying the greeting keyword so the response is
+	// deterministic. The wait FlowPart the agent emits at turn end is a
+	// flow_parts frame on the live socket (control channel); it MUST NOT
+	// be reconstructed into any Message.content.
+	sendTextWithProfile(t, conn, sessionID, profileName, "Hello display-only test")
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	// Drain the terminal wait FlowPart so the turn settles before listing.
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
+
+	// then: ListMessages returns Messages whose content is display-only.
+	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
+	assertMessageContentDisplayOnly(t, lmr.GetMessages())
+
+	// Sanity: the user text survived in history (a regression that
+	// dropped text would silently pass the display-only guard).
+	if !messagesContainText(lmr.GetMessages(), "Hello display-only test") {
+		t.Errorf("ListMessages did not surface the user text 'Hello display-only test' — history reconstruction regressed")
+	}
+}
+
 // TestAgentDialogFIFOQueue verifies that sending 3 messages in rapid
 // succession yields responses in FIFO order. Because fake-llm matches by
 // keyword, each turn is made to carry a DISTINCT keyword backed by a DISTINCT

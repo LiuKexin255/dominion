@@ -28,14 +28,16 @@ description: |
   Suite 7 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
     - Send two messages rapidly, verify FIFO processing order
   Suite 8 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
-    - Text-plus-image turn (content PartBlock of [TextPart, ImagePart] processed end-to-end)
+    - Text-plus-image turn (message_parts of [TextPart, ImagePart] processed end-to-end)
     - Image-only turn accepted (empty text, random fallback acceptable)
   Suite 9 (agent-operation): session + proxy + agent(test) + prompt + gateway.
     - Successful operation_result frame does not break the connection
     - Failed operation_result frame (e.g., out-of-bounds) is handled gracefully
   Suite 10 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
-    - saolei MCP tool flow: init (F2 dispatch) → click (window-message mouse) →
-      update, driven by the fake-LLM tool_call fix
+    - saolei MCP stateless tool flow: init (F2 dispatch) → click (window-message
+      mouse) → click (back-to-back, no update), driven by the fake-LLM
+      tool_call through the loopback MCP server and OperationBridge
+      (specs/023-saolei-mcp-refine/quickstart.md Scenario 5)
 
 suites:
   - name: prompt
@@ -99,7 +101,7 @@ suites:
       - //projects/game/testplan:agent_checkpoint_test
 
   - name: agent-multimodal
-    description: "Agent multimodal turns with fake-llm service: text+image content PartBlock processed end-to-end; image-only turn accepted"
+    description: "Agent multimodal turns with fake-llm service: text+image message_parts payload processed end-to-end; image-only turn accepted"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -108,7 +110,7 @@ suites:
       - //projects/game/testplan:agent_multimodal_test
 
   - name: agent-operation
-    description: "Agent operation_result frame handling with fake-llm service: succeeded and failed results do not break the connection"
+    description: "Agent mouse-tool dispatch chain with fake-llm service: tool_call/tool_result MessageParts frames on the live conversation channel, real SUCCEEDED/FAILED status carried through (spec 023 D4); operation FlowPart carries a bridge-minted id decoupled from the conversation tool_call.id (spec 023 D10)"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -117,7 +119,7 @@ suites:
       - //projects/game/testplan:agent_operation_test
 
   - name: agent-saolei
-    description: "Agent saolei MCP tool flow with fake-llm service: init→click→update driven by a model tool_call through the loopback MCP server and OperationBridge"
+    description: "Agent saolei MCP stateless tool flow with fake-llm service: init→click→click (back-to-back, no update) driven by model tool_calls through the loopback MCP server and OperationBridge; saolei tool_result status is neutral (UNSPECIFIED, never FAILED) per spec 023 D12"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:

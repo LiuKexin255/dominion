@@ -870,9 +870,7 @@ func TestServeHTTP_UserMessageToolCall(t *testing.T) {
 				"  - start game",
 				"tool_call:",
 				"  name: saolei_init",
-				"  arguments:",
-				"    width: 9",
-				"    height: 9",
+				"  arguments: {}",
 				"",
 			}, "\n")),
 		},
@@ -909,12 +907,14 @@ func TestServeHTTP_UserMessageToolCall(t *testing.T) {
 	if tc.Function.Name != "saolei_init" {
 		t.Errorf("tool_call.function.name = %q, want saolei_init", tc.Function.Name)
 	}
+	// saolei_init takes no arguments (spec 023 C11 / FR-019); the dispatch
+	// fix must still emit an empty (valid-JSON) arguments object.
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		t.Fatalf("tool_call arguments not valid JSON: %q (%v)", tc.Function.Arguments, err)
 	}
-	if args["width"] != float64(9) || args["height"] != float64(9) {
-		t.Errorf("tool_call arguments = %v, want width=9 height=9", args)
+	if len(args) != 0 {
+		t.Errorf("tool_call arguments = %v, want empty object (saolei_init is argument-free per spec 023 C11)", args)
 	}
 }
 
@@ -930,9 +930,7 @@ func TestServeHTTP_UserMessageToolCallStreaming(t *testing.T) {
 				"  - start game",
 				"tool_call:",
 				"  name: saolei_init",
-				"  arguments:",
-				"    width: 9",
-				"    height: 9",
+				"  arguments: {}",
 				"",
 			}, "\n")),
 		},

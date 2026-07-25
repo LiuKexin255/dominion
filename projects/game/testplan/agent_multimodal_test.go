@@ -92,14 +92,14 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	writeWSFrame(t, conn, frame)
 
 	respFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return frameHasThinking(f) || frameHasText(f) || f.GetWarn() != nil
+		return frameHasThinking(f) || frameHasText(f) || frameWarn(f) != nil
 	})
 	if respFrame == nil {
 		t.Fatal("did not receive any response frame for image-only turn")
 	}
 	switch {
-	case respFrame.GetWarn() != nil:
-		t.Logf("warn (acceptable for empty-text turn): %q", respFrame.GetWarn().GetMessage())
+	case frameWarn(respFrame) != nil:
+		t.Logf("warn (acceptable for empty-text turn): %q", frameWarn(respFrame).GetMessage())
 	case frameHasText(respFrame):
 		t.Logf("text response received: %q", frameText(respFrame))
 	case frameHasThinking(respFrame):

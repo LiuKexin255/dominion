@@ -3,13 +3,14 @@
 # match return a tool_calls response, so the agent_operation / agent_saolei
 # large tests can exercise the real model→tool_call→MCP→OperationBridge
 # chain. keywords are the trigger phrases the large tests send; tool_call
-# points at saolei_init per specs/018-saolei-mcp/contracts/mcp-tool-contract.md.
+# points at saolei_init per specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md
+# §6. Per spec 023 C11 / FR-019, saolei_init takes no arguments (it is a
+# bare F2 new-game dispatch — the prior width/height args affected only the
+# now-removed agent-side grid state).
 name: saolei-start
 keywords:
   - start saolei
   - play minesweeper
 tool_call:
   name: saolei_init
-  arguments:
-    width: 9
-    height: 9
+  arguments: {}

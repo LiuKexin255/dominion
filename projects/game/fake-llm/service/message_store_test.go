@@ -314,7 +314,7 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 
 	tools := store.Tools()
 	if len(tools) != 9 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 9 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-followup-update, saolei-init-followup-click, saolei-update-final-text)", len(tools))
+		t.Fatalf("NewMessageStore loaded %d tools, want 9 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-3-4-followup-click, saolei-click-5-6-final-text, saolei-init-followup-click)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
@@ -325,9 +325,9 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		"mouse-move-followup-click",
 		"mouse-move-oob",
 		"mouse-move-success-text",
-		"saolei-click-followup-update",
+		"saolei-click-3-4-followup-click",
+		"saolei-click-5-6-final-text",
 		"saolei-init-followup-click",
-		"saolei-update-final-text",
 	}
 	for i, want := range wantNames {
 		if tools[i].Name != want {
@@ -411,8 +411,9 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	// saolei-init-followup-click chains a saolei_init result into a
-	// saolei_click tool_call (specs/018-saolei-mcp/quickstart.md Scenario 7).
-	saoleiInitClick := tools[7]
+	// saolei_click{3,4} tool_call (specs/023-saolei-mcp-refine/quickstart.md
+	// Scenario 5 — stateless init→click flow, no update).
+	saoleiInitClick := tools[8]
 	if saoleiInitClick.ToolName != "saolei_init" {
 		t.Errorf("saolei-init-followup-click tool_name = %q, want saolei_init", saoleiInitClick.ToolName)
 	}
@@ -423,15 +424,44 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		t.Errorf("saolei-init-followup-click tool_call.name = %q, want saolei_click", saoleiInitClick.RespondWith.ToolCall.Name)
 	}
 
-	// saolei-update-final-text terminates the saolei tool loop with text.
-	saoleiUpdateText := tools[8]
-	if saoleiUpdateText.ToolName != "saolei_update" {
-		t.Errorf("saolei-update-final-text tool_name = %q, want saolei_update", saoleiUpdateText.ToolName)
+	// saolei-click-3-4-followup-click chains the first saolei_click{3,4}
+	// result into a back-to-back saolei_click{5,6} tool_call (spec 023
+	// FR-021 — tools callable back-to-back with no intervening step). The
+	// match_result_contains=["(3,4)"] substring distinguishes this result
+	// from the second click's "(5,6)" result.
+	saoleiClick34 := tools[6]
+	if saoleiClick34.Name != "saolei-click-3-4-followup-click" {
+		t.Errorf("tools[6] name = %q, want saolei-click-3-4-followup-click", saoleiClick34.Name)
 	}
-	if saoleiUpdateText.RespondWith.Text != "Minesweeper sequence complete." {
-		t.Errorf("saolei-update-final-text respond_with.text = %q, want 'Minesweeper sequence complete.'", saoleiUpdateText.RespondWith.Text)
+	if saoleiClick34.ToolName != "saolei_click" {
+		t.Errorf("saolei-click-3-4-followup-click tool_name = %q, want saolei_click", saoleiClick34.ToolName)
 	}
-	if saoleiUpdateText.RespondWith.ToolCall != nil {
-		t.Errorf("saolei-update-final-text respond_with.tool_call should be nil")
+	if !slices.Contains(saoleiClick34.MatchResultContains, "(3,4)") {
+		t.Errorf("saolei-click-3-4-followup-click match_result_contains missing (3,4): %v", saoleiClick34.MatchResultContains)
+	}
+	if saoleiClick34.RespondWith.ToolCall == nil {
+		t.Fatalf("saolei-click-3-4-followup-click respond_with.tool_call is nil")
+	}
+	if saoleiClick34.RespondWith.ToolCall.Name != "saolei_click" {
+		t.Errorf("saolei-click-3-4-followup-click tool_call.name = %q, want saolei_click", saoleiClick34.RespondWith.ToolCall.Name)
+	}
+
+	// saolei-click-5-6-final-text terminates the saolei tool loop with
+	// text after the second click's "(5,6)" result.
+	saoleiClick56Final := tools[7]
+	if saoleiClick56Final.Name != "saolei-click-5-6-final-text" {
+		t.Errorf("tools[7] name = %q, want saolei-click-5-6-final-text", saoleiClick56Final.Name)
+	}
+	if saoleiClick56Final.ToolName != "saolei_click" {
+		t.Errorf("saolei-click-5-6-final-text tool_name = %q, want saolei_click", saoleiClick56Final.ToolName)
+	}
+	if !slices.Contains(saoleiClick56Final.MatchResultContains, "(5,6)") {
+		t.Errorf("saolei-click-5-6-final-text match_result_contains missing (5,6): %v", saoleiClick56Final.MatchResultContains)
+	}
+	if saoleiClick56Final.RespondWith.Text != "Minesweeper sequence complete." {
+		t.Errorf("saolei-click-5-6-final-text respond_with.text = %q, want 'Minesweeper sequence complete.'", saoleiClick56Final.RespondWith.Text)
+	}
+	if saoleiClick56Final.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-click-5-6-final-text respond_with.tool_call should be nil")
 	}
 }

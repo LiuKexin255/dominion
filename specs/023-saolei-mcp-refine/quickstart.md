@@ -97,7 +97,7 @@ Reference: [contracts/tool-dispatch-contract.md](contracts/tool-dispatch-contrac
 2. **Given** a saolei-enabled profile and a fake-LLM fixture driving `saolei_init` → `saolei_click(3,4)` → `saolei_click(5,6)` (back-to-back, no update).
 3. **When** the test (playing desktop) reads the dispatched operation Parts over the WS:
    - `saolei_init` dispatches a `KeyboardPressPart{ F2 }` (FlowPart).
-   - Each `saolei_click` dispatches a `MouseMoveAndClickPart{ LEFT_CLICK, WINDOW_MESSAGE }` at the cell centre (136,344) and (184,344).
+   - Each `saolei_click` dispatches a `MouseMoveAndClickPart{ LEFT_CLICK, WINDOW_MESSAGE }` at the cell centre (136,344) and (200,408).
 4. **Then** the test echoes each back as a `ToolResultPart{ SUCCEEDED }`; the agent continues (no "must update first" rejection).
 5. **Then** `ListMessages` for the session returns `Message`s whose `content.parts` include `tool_call` parts (name + `argsJson`) and `tool_result` parts (screenshot reachable; status **neutral** `TOOL_RESULT_STATUS_UNSPECIFIED` — saolei is an MCP tool, D12) — and **no** operation FlowParts in `Message.content`.
 

@@ -77,7 +77,7 @@ func TestConnectWithoutCreate(t *testing.T) {
 
 	// Optionally receive wait frame after response.
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetWait() != nil
+		return frameWait(f) != nil
 	})
 }
 
@@ -126,7 +126,7 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	}
 	t.Logf("profile A response: %q", frameText(textRespA))
 	// Drain the turn-completion Wait so the buffer is clean for the next turn.
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
 
 	// when: profile B turn WITHOUT Refresh — the guard must reject it.
 	sendTextWithProfile(t, conn, sessionID, profileBName, "Message with profile B")
@@ -134,14 +134,14 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	// then: a WarnSignal naming the mismatch, then a WaitSignal returning the
 	// desktop to ready (data-model.md §5 / lifecycle-contract §3).
 	warnFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetWarn() != nil && strings.Contains(f.GetWarn().GetMessage(), "profile mismatch")
+		return frameWarn(f) != nil && strings.Contains(frameWarn(f).GetMessage(), "profile mismatch")
 	})
 	if warnFrame == nil {
 		t.Fatal("profile B without Refresh: expected a WarnSignal with profile mismatch")
 	}
-	t.Logf("profile mismatch warn: %q", warnFrame.GetWarn().GetMessage())
+	t.Logf("profile mismatch warn: %q", frameWarn(warnFrame).GetMessage())
 	waitAfterWarn := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetWait() != nil
+		return frameWait(f) != nil
 	})
 	if waitAfterWarn == nil {
 		t.Fatal("profile B without Refresh: expected a WaitSignal after the Warn")
@@ -369,7 +369,7 @@ func TestProfileGuardRejectsMismatch(t *testing.T) {
 	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) }) == nil {
 		t.Fatal("profile A: no text response (adapter did not bind)")
 	}
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
 
 	// when: a turn under profile B arrives without Refresh.
 	sendTextWithProfile(t, conn, sessionID, profileBName, "Message with profile B")
@@ -377,13 +377,13 @@ func TestProfileGuardRejectsMismatch(t *testing.T) {
 	// then: the guard rejects it — WarnSignal naming the mismatch, then a
 	// WaitSignal returning the desktop to ready (FR-012a/FR-012b).
 	warnFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetWarn() != nil && strings.Contains(f.GetWarn().GetMessage(), "profile mismatch")
+		return frameWarn(f) != nil && strings.Contains(frameWarn(f).GetMessage(), "profile mismatch")
 	})
 	if warnFrame == nil {
 		t.Fatal("expected a WarnSignal with profile mismatch for the profile B turn")
 	}
-	t.Logf("mismatch warn: %q", warnFrame.GetWarn().GetMessage())
-	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil }) == nil {
+	t.Logf("mismatch warn: %q", frameWarn(warnFrame).GetMessage())
+	if drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil }) == nil {
 		t.Fatal("expected a WaitSignal after the mismatch Warn")
 	}
 
@@ -396,9 +396,10 @@ func TestProfileGuardRejectsMismatch(t *testing.T) {
 	}
 }
 
-// lifecycleMouseMoveSuccessText is the terminal text fake-LLM returns once the
-// mouse_move tool-result loop closes (sample_tools.yaml mouse-move-success-text).
-const lifecycleMouseMoveSuccessText = "I see the screen now."
+// The terminal mouse-move-success-text constant lives in helpers_test.go
+// (expectedMouseMoveSuccessText) — shared by the agent_operation,
+// agent_checkpoint, and agent_lifecycle suites (style/large_test.md
+// §反模式3 — do not copy helpers).
 
 // TestStatusPingPong verifies the agent's status ping-pong: a status probe
 // returns IDLE when no turn is in-flight (adapter bound), and ACTIVE while a
@@ -438,20 +439,20 @@ func TestStatusPingPong(t *testing.T) {
 	sendTextWithProfile(t, conn, sessionID, profileName, "hello")
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return f.GetWait() != nil })
+	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
 
 	// when: probe the status while idle. then: the response is IDLE.
 	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
 	idleResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetStatus() != nil
+		return frameStatus(f) != nil
 	})
 	if idleResp == nil {
 		t.Fatal("did not receive a status response while idle")
 	}
-	if idleResp.GetStatus().GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
-		t.Errorf("idle status = %v, want IDLE", idleResp.GetStatus().GetStatus())
+	if frameStatus(idleResp).GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
+		t.Errorf("idle status = %v, want IDLE", frameStatus(idleResp).GetStatus())
 	}
-	t.Logf("idle status probe: %v", idleResp.GetStatus().GetStatus())
+	t.Logf("idle status probe: %v", frameStatus(idleResp).GetStatus())
 
 	// when: start a mouse_move turn; reading the dispatched operation frame
 	// proves the turn is in-flight and blocked awaiting the desktop result
@@ -462,15 +463,15 @@ func TestStatusPingPong(t *testing.T) {
 	// then: a status probe while the turn is in-flight returns ACTIVE.
 	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
 	activeResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return f.GetStatus() != nil
+		return frameStatus(f) != nil
 	})
 	if activeResp == nil {
 		t.Fatal("did not receive a status response while a turn is in-flight")
 	}
-	if activeResp.GetStatus().GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE {
-		t.Errorf("in-flight status = %v, want ACTIVE", activeResp.GetStatus().GetStatus())
+	if frameStatus(activeResp).GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE {
+		t.Errorf("in-flight status = %v, want ACTIVE", frameStatus(activeResp).GetStatus())
 	}
-	t.Logf("in-flight status probe: %v", activeResp.GetStatus().GetStatus())
+	t.Logf("in-flight status probe: %v", frameStatus(activeResp).GetStatus())
 
 	// Complete the turn so the connection settles: reply SUCCEEDED (the
 	// message avoids "button"/"out of bounds" so fake-LLM closes the loop
@@ -483,8 +484,8 @@ func TestStatusPingPong(t *testing.T) {
 	if textFrame == nil {
 		t.Fatal("did not receive a final text frame after the in-flight turn")
 	}
-	if !strings.Contains(frameText(textFrame), lifecycleMouseMoveSuccessText) {
-		t.Errorf("final text = %q, want to contain %q", frameText(textFrame), lifecycleMouseMoveSuccessText)
+	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
+		t.Errorf("final text = %q, want to contain %q", frameText(textFrame), expectedMouseMoveSuccessText)
 	}
 	t.Logf("in-flight turn completed: %q", frameText(textFrame))
 }
@@ -546,9 +547,9 @@ func TestReconnectDispatchReliability(t *testing.T) {
 	if textFrame == nil {
 		t.Fatal("reconnect dispatch: no text frame after SUCCEEDED — dispatch did not resolve on the fresh stream")
 	}
-	if !strings.Contains(frameText(textFrame), lifecycleMouseMoveSuccessText) {
+	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
 		t.Errorf("reconnect dispatch: final text = %q, want to contain %q",
-			frameText(textFrame), lifecycleMouseMoveSuccessText)
+			frameText(textFrame), expectedMouseMoveSuccessText)
 	}
 	t.Logf("reconnect dispatch succeeded: %q", frameText(textFrame))
 }
