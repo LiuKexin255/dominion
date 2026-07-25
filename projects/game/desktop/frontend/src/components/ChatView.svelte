@@ -50,8 +50,6 @@
     onZoom = () => {},
     pendingScreenshot = null,
     onRemoveScreenshot = () => {},
-    heldToolIds = new Set<string>(),
-    onConfirm = (_toolID: string) => {},
   }: {
     messages: ChatEntry[]
     processing?: boolean
@@ -62,8 +60,6 @@
     onZoom?: (url: string) => void
     pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
     onRemoveScreenshot?: () => void
-    heldToolIds?: Set<string>
-    onConfirm?: (toolID: string) => void
   } = $props()
 
   let inputText = $state('')
@@ -264,7 +260,6 @@
         {:else if item.kind === 'tool'}
           {@const succeeded = item.result ? isToolResultSucceeded(item.result.status) : false}
           {@const resolved = item.result != null}
-          {@const isHeld = item.toolId != null && heldToolIds.has(item.toolId)}
           <div class="msg-row msg-operation">
             <div class="tool-bubble" class:tool-resolved-success={resolved && succeeded} class:tool-resolved-failure={resolved && !succeeded} data-testid="tool-bubble">
               <div class="tool-head">
@@ -296,13 +291,6 @@
                 </div>
               {:else}
                 <div class="tool-pending">running…</div>
-              {/if}
-              {#if isHeld}
-                <button
-                  class="btn btn-small confirm-btn"
-                  data-testid="confirm-tool-result"
-                  onclick={() => onConfirm(item.toolId!)}
-                >Confirm</button>
               {/if}
             </div>
           </div>
@@ -766,19 +754,6 @@
     color: #8888aa;
     cursor: pointer;
     user-select: none;
-  }
-
-  /* Confirm control for a held tool result (debug mode, FR-008/FR-009). */
-  .confirm-btn {
-    margin-left: auto;
-    background: rgba(139, 233, 253, 0.12);
-    border: 1px solid rgba(139, 233, 253, 0.4);
-    color: #8be9fd;
-    font-weight: 600;
-  }
-
-  .confirm-btn:hover {
-    background: rgba(139, 233, 253, 0.2);
   }
 
   /* ── Warn Bubble (control-signal payload) ── */

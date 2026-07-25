@@ -1567,6 +1567,37 @@ func recorderEmit(t *testing.T) (*[]string, *sync.Mutex) {
 	return &events, &mu
 }
 
+// emitRecord is a single recorded event: name + payload (the variadic argument
+// the production code passes to runtime.EventsEmit).
+type emitRecord struct {
+	name    string
+	payload map[string]any
+}
+
+// recorderEmitPayload replaces emitDebugEvent with a recorder that captures
+// the event name and its payload map. Used by tests that assert on the
+// EXTENDED result-held payload (specs/023-saolei-mcp-refine/contracts/
+// debug-drawer-contract.md §2). Returns the slice (shared) and a cleanup.
+func recorderEmitPayload(t *testing.T) (*[]emitRecord, *sync.Mutex) {
+	t.Helper()
+	orig := emitDebugEvent
+	var mu sync.Mutex
+	var recorded []emitRecord
+	emitDebugEvent = func(_ context.Context, name string, args ...interface{}) {
+		var payload map[string]any
+		if len(args) > 0 {
+			if m, ok := args[0].(map[string]any); ok {
+				payload = m
+			}
+		}
+		mu.Lock()
+		recorded = append(recorded, emitRecord{name: name, payload: payload})
+		mu.Unlock()
+	}
+	t.Cleanup(func() { emitDebugEvent = orig })
+	return &recorded, &mu
+}
+
 // waitForHold polls the holds map (up to ~1s) until toolID appears, then
 // returns true. Used to synchronize a confirm/cancel against a holdAndRelease
 // call running in another goroutine.
@@ -1696,10 +1727,16 @@ func Test_holdAndRelease_ConfirmedBranch(t *testing.T) {
 
 	toolID := "tool-confirm"
 	reasonCh := make(chan string, 1)
+	// holdAndRelease now takes the raw FlowPart and builds the descriptor
+	// internally via describeFlowPart. A keyboard_press F2 yields the
+	// "按键 F2" summary the drawer renders.
+	part := &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{
+		KeyboardPress: &game.KeyboardPressPart{Key: game.KeyboardKey_KEYBOARD_KEY_F2},
+	}}
 
 	// when: holdAndRelease runs in a goroutine, then ConfirmToolResult fires
 	go func() {
-		reasonCh <- app.holdAndRelease(toolID)
+		reasonCh <- app.holdAndRelease(toolID, part)
 	}()
 	if !waitForHold(t, app, toolID) {
 		t.Fatal("hold was not registered before timeout")
@@ -1736,8 +1773,19 @@ func Test_holdAndRelease_TimeoutBranch(t *testing.T) {
 	app.SetContext(context.Background())
 	app.debugEnabled.Store(true)
 
+	// holdAndRelease builds the descriptor from this FlowPart internally;
+	// the resulting summary is "移动并点击 (136, 344) · 左键 · 窗口消息".
+	part := &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{
+		MouseMoveAndClick: &game.MouseMoveAndClickPart{
+			XPx:    136,
+			YPx:    344,
+			Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+			Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+		},
+	}}
+
 	// when: holdAndRelease runs with no confirmation
-	reason := app.holdAndRelease("tool-timeout")
+	reason := app.holdAndRelease("tool-timeout", part)
 
 	// then: reason is "timeout", hold removed from map
 	if reason != "timeout" {
@@ -1765,10 +1813,18 @@ func Test_holdAndRelease_ShutdownBranch(t *testing.T) {
 
 	toolID := "tool-shutdown"
 	reasonCh := make(chan string, 1)
+	// holdAndRelease builds the descriptor from this FlowPart internally;
+	// the resulting summary is "左键点击 · 模拟".
+	part := &game.FlowPart{Kind: &game.FlowPart_MouseClick{
+		MouseClick: &game.MouseClickPart{
+			Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+			Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED,
+		},
+	}}
 
 	// when: holdAndRelease runs, then the context is cancelled
 	go func() {
-		reasonCh <- app.holdAndRelease(toolID)
+		reasonCh <- app.holdAndRelease(toolID, part)
 	}()
 	if !waitForHold(t, app, toolID) {
 		t.Fatal("hold was not registered before timeout")
@@ -1796,8 +1852,13 @@ func Test_holdAndRelease_EmitsHeldAndReleasedEvents(t *testing.T) {
 	app.SetContext(context.Background())
 	app.debugEnabled.Store(true)
 
+	// holdAndRelease builds the descriptor from this FlowPart internally.
+	part := &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{
+		KeyboardPress: &game.KeyboardPressPart{Key: game.KeyboardKey_KEYBOARD_KEY_F2},
+	}}
+
 	// when: holdAndRelease runs and auto-continues (timeout)
-	app.holdAndRelease("tool-events")
+	app.holdAndRelease("tool-events", part)
 
 	// then: exactly result-held then result-released were emitted, in order
 	mu.Lock()
@@ -1810,5 +1871,211 @@ func Test_holdAndRelease_EmitsHeldAndReleasedEvents(t *testing.T) {
 	}
 	if got := (*events)[1]; got != "game:debug:result-released" {
 		t.Fatalf("expected second event %q, got %q", "game:debug:result-released", got)
+	}
+}
+
+// Test_holdAndRelease_HeldPayloadCarriesOperation verifies the EXTENDED
+// result-held payload (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md
+// §2): alongside toolId, the event carries an `operation` object with
+// kind/summary/details so the session-top drawer can render the request
+// content without proto knowledge. result-released is unchanged ({toolId,
+// reason}).
+func Test_holdAndRelease_HeldPayloadCarriesOperation(t *testing.T) {
+	// given: emit records full payloads, timeout short
+	recorded, mu := recorderEmitPayload(t)
+	origTimeout := debugHoldTimeout
+	debugHoldTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { debugHoldTimeout = origTimeout })
+
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	app.debugEnabled.Store(true)
+
+	// holdAndRelease builds the descriptor from this FlowPart internally
+	// via describeFlowPart; the resulting emit payload's operation fields
+	// are asserted below.
+	part := &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{
+		MouseMoveAndClick: &game.MouseMoveAndClickPart{
+			XPx:    136,
+			YPx:    344,
+			Click:  game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+			Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE,
+		},
+	}}
+
+	// when: holdAndRelease runs (auto-continues via timeout)
+	app.holdAndRelease("tool-payload", part)
+
+	// then: the held payload carries toolId + operation{kind,summary,details};
+	// the released payload carries toolId + reason (unchanged).
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*recorded) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(*recorded))
+	}
+	held := (*recorded)[0]
+	if held.name != "game:debug:result-held" {
+		t.Fatalf("expected first event %q, got %q", "game:debug:result-held", held.name)
+	}
+	if got, ok := held.payload["toolId"].(string); !ok || got != "tool-payload" {
+		t.Fatalf("expected held payload toolId %q, got %#v", "tool-payload", held.payload["toolId"])
+	}
+	opMap, ok := held.payload["operation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected held payload to carry operation map, got %#v", held.payload["operation"])
+	}
+	if opMap["kind"] != "mouse_move_and_click" {
+		t.Fatalf("expected operation.kind %q, got %#v", "mouse_move_and_click", opMap["kind"])
+	}
+	if opMap["summary"] != "移动并点击 (136, 344) · 左键 · 窗口消息" {
+		t.Fatalf("expected operation.summary, got %#v", opMap["summary"])
+	}
+	details, ok := opMap["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected operation.details map, got %#v", opMap["details"])
+	}
+	if details["click"] != "MOUSE_CLICK_ACTION_LEFT_CLICK" {
+		t.Fatalf("expected details.click, got %#v", details["click"])
+	}
+	if details["method"] != "MOUSE_INPUT_METHOD_WINDOW_MESSAGE" {
+		t.Fatalf("expected details.method, got %#v", details["method"])
+	}
+
+	released := (*recorded)[1]
+	if released.name != "game:debug:result-released" {
+		t.Fatalf("expected second event %q, got %q", "game:debug:result-released", released.name)
+	}
+	if got, ok := released.payload["toolId"].(string); !ok || got != "tool-payload" {
+		t.Fatalf("expected released payload toolId %q, got %#v", "tool-payload", released.payload["toolId"])
+	}
+	if _, hasOp := released.payload["operation"]; hasOp {
+		t.Fatalf("released payload MUST NOT carry operation (unchanged from 022), got %#v", released.payload)
+	}
+	if released.payload["reason"] != "timeout" {
+		t.Fatalf("expected released reason %q, got %#v", "timeout", released.payload["reason"])
+	}
+}
+
+// Test_describeFlowPart verifies the operation descriptor builder for each
+// FlowPart variant (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md
+// §2). The descriptor feeds the session-top drawer payload so the frontend
+// can render a human-readable operation request without proto knowledge.
+func Test_describeFlowPart(t *testing.T) {
+	tests := []struct {
+		name    string
+		part    *game.FlowPart
+		wantKind string
+		wantSummary string
+		wantDetails map[string]any
+	}{
+		{
+			name:    "mouse_move with WINDOW_MESSAGE",
+			part:    &game.FlowPart{Kind: &game.FlowPart_MouseMove{MouseMove: &game.MouseMovePart{XPx: 100, YPx: 200, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind: "mouse_move",
+			wantSummary: "移动光标 (100, 200) · 窗口消息",
+			wantDetails: map[string]any{
+				"xPx":    int32(100),
+				"yPx":    int32(200),
+				"method": "MOUSE_INPUT_METHOD_WINDOW_MESSAGE",
+			},
+		},
+		{
+			name:    "mouse_click LEFT_CLICK SIMULATED",
+			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED}}},
+			wantKind: "mouse_click",
+			wantSummary: "左键点击 · 模拟",
+			wantDetails: map[string]any{
+				"click":  "MOUSE_CLICK_ACTION_LEFT_CLICK",
+				"method": "MOUSE_INPUT_METHOD_SIMULATED",
+			},
+		},
+		{
+			name:    "mouse_click RIGHT_CLICK",
+			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind: "mouse_click",
+			wantSummary: "右键点击 · 窗口消息",
+			wantDetails: map[string]any{
+				"click":  "MOUSE_CLICK_ACTION_RIGHT_CLICK",
+				"method": "MOUSE_INPUT_METHOD_WINDOW_MESSAGE",
+			},
+		},
+		{
+			name:    "mouse_click LEFT_RIGHT_PRESS",
+			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind: "mouse_click",
+			wantSummary: "左右键同按点击 · 窗口消息",
+			wantDetails: map[string]any{
+				"click":  "MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS",
+				"method": "MOUSE_INPUT_METHOD_WINDOW_MESSAGE",
+			},
+		},
+		{
+			name:    "keyboard_press F2",
+			part:    &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{Key: game.KeyboardKey_KEYBOARD_KEY_F2}}},
+			wantKind: "keyboard_press",
+			wantSummary: "按键 F2",
+			wantDetails: map[string]any{
+				"key": "KEYBOARD_KEY_F2",
+			},
+		},
+		{
+			name:    "mouse_move_and_click at saolei cell (3,4) with LEFT_CLICK WINDOW_MESSAGE",
+			part:    &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{XPx: 136, YPx: 344, Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind: "mouse_move_and_click",
+			wantSummary: "移动并点击 (136, 344) · 左键 · 窗口消息",
+			wantDetails: map[string]any{
+				"xPx":    int32(136),
+				"yPx":    int32(344),
+				"click":  "MOUSE_CLICK_ACTION_LEFT_CLICK",
+				"method": "MOUSE_INPUT_METHOD_WINDOW_MESSAGE",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			op := describeFlowPart(tt.part)
+			if op == nil {
+				t.Fatalf("describeFlowPart returned nil for %s", tt.name)
+			}
+			if op.kind != tt.wantKind {
+				t.Fatalf("kind: want %q, got %q", tt.wantKind, op.kind)
+			}
+			if op.summary != tt.wantSummary {
+				t.Fatalf("summary: want %q, got %q", tt.wantSummary, op.summary)
+			}
+			for k, want := range tt.wantDetails {
+				got, has := op.details[k]
+				if !has {
+					t.Fatalf("details missing key %q in %s", k, tt.name)
+				}
+				if got != want {
+					t.Fatalf("details[%q]: want %#v, got %#v", k, want, got)
+				}
+			}
+		})
+	}
+
+	// Non-operation FlowPart (signal kind): describe always returns non-nil —
+	// it falls back to a default "unknown" descriptor so callers never need a
+	// nil check.
+	{
+		got := describeFlowPart(&game.FlowPart{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}})
+		if got == nil {
+			t.Fatal("describeFlowPart returned nil for a non-operation FlowPart; expected default unknown descriptor")
+		}
+		if got.kind != "unknown" {
+			t.Fatalf("non-operation kind: want %q, got %q", "unknown", got.kind)
+		}
+		if got.summary != "未知操作" {
+			t.Fatalf("non-operation summary: want %q, got %q", "未知操作", got.summary)
+		}
+		if got.details == nil {
+			t.Fatal("non-operation details: want non-nil empty map, got nil")
+		}
+		if len(got.details) != 0 {
+			t.Fatalf("non-operation details: want empty map, got %#v", got.details)
+		}
 	}
 }

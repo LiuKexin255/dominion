@@ -98,8 +98,10 @@ export interface ImagePart {
 }
 
 // ToolCallPart carries the model's tool invocation as display content
-// (spec 023 FR-002). tool_id links the call to its tool_result MessagePart and
-// to the FlowPart operation it dispatches (FR-008).
+// (spec 023 FR-002). tool_id links the call to its tool_result MessagePart
+// within the conversation channel for bubble grouping (spec 023 C6/C13).
+// The operation channel uses an independent bridge-minted id
+// (contracts/tool-dispatch-contract.md §1; research.md D10).
 export interface ToolCallPart {
   toolId?: string
   name?: string
@@ -552,6 +554,40 @@ export async function refreshAgent(sessionID: string): Promise<void> {
 // ─── Debug Control Plane Wrappers ──────────────────────────────────────────
 // Desktop debug-mode toggle + held-tool-result confirm. Contract:
 // specs/022-desktop-debug-mode/contracts/debug-control-plane.md §1.
+// In feature 023 the held payload is extended with an operation descriptor
+// (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2) and the
+// Confirm control moves to a session-top drawer; the method/event names are
+// unchanged.
+
+// A held operation awaiting user confirmation, surfaced in the session-top
+// drawer. toolId is the operation-channel id (bridge-minted, NOT the
+// conversation tool_call.id — research.md D10/D11). kind/summary/details are
+// built by the Go backend from the FlowPart so the drawer needs no proto
+// knowledge (contracts/debug-drawer-contract.md §2).
+export interface HeldOperation {
+  toolId: string
+  kind: string
+  summary: string
+  details: Record<string, unknown>
+}
+
+// `game:debug:result-held` payload (023-extended). `toolId` is retained from
+// 022 (additive change — contracts/debug-drawer-contract.md §7); `operation`
+// carries the request content for the drawer.
+export interface DebugResultHeldPayload {
+  toolId: string
+  operation: {
+    kind: string
+    summary: string
+    details: Record<string, unknown>
+  }
+}
+
+// `game:debug:result-released` payload (unchanged from 022).
+export interface DebugResultReleasedPayload {
+  toolId: string
+  reason: 'confirmed' | 'timeout' | 'debug-off' | 'shutdown'
+}
 
 export async function setDebugMode(enabled: boolean): Promise<void> {
   const a = app()

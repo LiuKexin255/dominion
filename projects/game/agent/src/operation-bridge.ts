@@ -11,14 +11,16 @@
  * write callback — so a new stream can re-register its sink without recreating
  * the bridge or losing track of in-flight dispatches.
  *
- * Content-model contract (specs/023-saolei-mcp-refine/contracts/content-model-contract.md):
- * a tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
+ * Content-model contract (specs/023-saolei-mcp-refine/contracts/content-model-contract.md)
+ * + decoupling (research.md D10 / contracts/tool-dispatch-contract.md §1): a
+ * tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
  * FlowParts AgentFrame (payload "flowParts"). The desktop replies with a
- * messageParts AgentFrame whose ToolResultPart.tool_id matches the request.
- * tool_id is the single correlation key (no invoke_id/sequence). When the tool
- * passes the LangChain tool_call.id (contracts/tool-dispatch-contract.md §1),
- * that id is stamped onto the FlowPart so the call, the operation, and the
- * later tool_result MessagePart share one id (spec 023 FR-008).
+ * messageParts AgentFrame whose ToolResultPart.tool_id matches the bridge-minted
+ * operation-channel id. The conversation channel (tool_call/tool_result
+ * MessageParts) is fully DECOUPLED — it groups by the LangChain
+ * `tool_call.id` independently; the operation channel uses a bridge-minted id
+ * that has no relation to any conversation tool_call.id (revised FR-008 /
+ * research.md D10).
  */
 
 import { randomUUID } from "node:crypto";
@@ -150,29 +152,29 @@ export class OperationBridge {
    * KeyboardPressPart, or MouseMoveAndClickPart) to the desktop via the
    * registered sink and await the matching ToolResultPart.
    *
-   * The operation is stamped with a tool_id (the correlation key the desktop's
-   * reply must echo), wrapped in a FlowParts AgentFrame, and written via the
-   * sink. When `toolId` is supplied it is stamped verbatim — this is the
-   * LangChain `tool_call.id` threaded from the model invocation
-   * (contracts/tool-dispatch-contract.md §1 / research.md D2), so the call,
-   * the FlowPart operation, and the later tool_result MessagePart share one id.
-   * When `toolId` is omitted (e.g. a non-agent direct-invoke test path) a fresh
-   * UUID is minted as the fallback. When no sink is registered (desktop
-   * disconnected), resolves FAILED immediately rather than throwing. When the
-   * optional `signal` is already aborted, or aborts while the dispatch is
-   * pending, resolves FAILED "aborted" immediately — abort is a third race
-   * participant alongside the 20-min timeout and handleResult, whichever fires
-   * first wins.
+   * The bridge ALWAYS mints a fresh UUID as the operation-channel id and stamps
+   * it onto the FlowPart's `tool_id`; this id is for operation-channel
+   * correlation only (dispatch↔`handleResult` via the pending map). It is NOT
+   * related to the conversation-channel `tool_call.id` — the two channels are
+   * decoupled (research.md D10 / contracts/tool-dispatch-contract.md §1: the
+   * conversation groups tool_call↔tool_result by the LangChain `tool_call.id`
+   * independently; the operation channel uses the bridge-minted id). The tool
+   * caller therefore passes NO toolId to dispatch.
+   *
+   * The operation is wrapped in a FlowParts AgentFrame and written via the
+   * sink. When no sink is registered (desktop disconnected), resolves FAILED
+   * immediately rather than throwing. When the optional `signal` is already
+   * aborted, or aborts while the dispatch is pending, resolves FAILED "aborted"
+   * immediately — abort is a third race participant alongside the 20-min
+   * timeout and handleResult, whichever fires first wins.
    *
    * @param part   - FlowPart operation to dispatch.
-   * @param toolId - Optional tool_call.id to stamp onto the operation (research.md D2).
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
    *          abort, non-operation FlowPart, no-sink, or sink write error.
    */
   async dispatch(
     part: FlowPart,
-    toolId?: string,
     signal?: AbortSignal,
   ): Promise<OperationResult> {
     const toolPart:
@@ -203,7 +205,7 @@ export class OperationBridge {
       return { status: STATUS_FAILED, message: "aborted" };
     }
 
-    const resolvedToolId = toolId ?? randomUUID();
+    const resolvedToolId = randomUUID();
     toolPart.toolId = resolvedToolId;
 
     return new Promise<OperationResult>((resolve) => {

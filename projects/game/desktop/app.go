@@ -38,6 +38,119 @@ var debugHoldTimeout = 15 * time.Minute
 // See specs/022-desktop-debug-mode/contracts/debug-control-plane.md §2.
 var emitDebugEvent = runtime.EventsEmit
 
+// clickSummary maps a MouseClickAction proto enum to a short localized label
+// for the debug drawer summary line
+// (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2). The
+// proto enum name (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK") is also carried
+// verbatim in `details` for richer/programmatic rendering.
+func clickSummary(c game.MouseClickAction) string {
+	switch c {
+	case game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK:
+		return "左键"
+	case game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK:
+		return "左键双击"
+	case game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK:
+		return "右键"
+	case game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK:
+		return "右键双击"
+	case game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS:
+		return "左右键同按"
+	default:
+		return "未指定"
+	}
+}
+
+// methodSummary maps a MouseInputMethod proto enum to a short localized label.
+// UNSPECIFIED collapses to SIMULATED on the desktop execution path
+// (game.proto comment on MouseInputMethod), so the label reflects that.
+func methodSummary(m game.MouseInputMethod) string {
+	switch m {
+	case game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED:
+		return "模拟"
+	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
+		return "窗口消息"
+	default:
+		return "未指定(→模拟)"
+	}
+}
+
+// keySummary maps a KeyboardKey proto enum to a short UI label by stripping the
+// KEYBOARD_KEY_ prefix; unknown values fall back to the proto enum name.
+func keySummary(k game.KeyboardKey) string {
+	const prefix = "KEYBOARD_KEY_"
+	name := k.String()
+	if len(name) > len(prefix) && name[:len(prefix)] == prefix {
+		return name[len(prefix):]
+	}
+	return name
+}
+
+// describeFlowPart builds a heldOperation descriptor for the operation a
+// FlowPart carries (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md
+// §2). kind is the FlowPart variant name (snake_case, matching the proto field
+// names); summary is a localized single-line description built from the
+// variant fields; details carries the raw operation fields for optional richer
+// rendering/debugging. The function ALWAYS returns a non-nil descriptor: a
+// FlowPart carrying no operation kind (e.g. a signal kind that should never
+// reach this path) yields a default "unknown" descriptor, so callers never
+// need a nil check (style/golang.md §函数参数与返回值: pointer return,
+// non-nil guarantee).
+func describeFlowPart(part *game.FlowPart) *heldOperation {
+	switch {
+	case part.GetMouseMove() != nil:
+		m := part.GetMouseMove()
+		return &heldOperation{
+			kind:    "mouse_move",
+			summary: fmt.Sprintf("移动光标 (%d, %d) · %s", m.GetXPx(), m.GetYPx(), methodSummary(m.GetMethod())),
+			details: map[string]any{
+				"xPx":    m.GetXPx(),
+				"yPx":    m.GetYPx(),
+				"method": m.GetMethod().String(),
+			},
+		}
+	case part.GetMouseClick() != nil:
+		c := part.GetMouseClick()
+		return &heldOperation{
+			kind:    "mouse_click",
+			summary: fmt.Sprintf("%s点击 · %s", clickSummary(c.GetClick()), methodSummary(c.GetMethod())),
+			details: map[string]any{
+				"click":  c.GetClick().String(),
+				"method": c.GetMethod().String(),
+			},
+		}
+	case part.GetKeyboardPress() != nil:
+		k := part.GetKeyboardPress()
+		return &heldOperation{
+			kind:    "keyboard_press",
+			summary: fmt.Sprintf("按键 %s", keySummary(k.GetKey())),
+			details: map[string]any{
+				"key": k.GetKey().String(),
+			},
+		}
+	case part.GetMouseMoveAndClick() != nil:
+		mc := part.GetMouseMoveAndClick()
+		return &heldOperation{
+			kind:    "mouse_move_and_click",
+			summary: fmt.Sprintf("移动并点击 (%d, %d) · %s · %s", mc.GetXPx(), mc.GetYPx(), clickSummary(mc.GetClick()), methodSummary(mc.GetMethod())),
+			details: map[string]any{
+				"xPx":    mc.GetXPx(),
+				"yPx":    mc.GetYPx(),
+				"click":  mc.GetClick().String(),
+				"method": mc.GetMethod().String(),
+			},
+		}
+	}
+	// Non-operation FlowPart (signal kind, or empty): the caller still gets a
+	// usable descriptor so a Confirm control always renders. recvLoop only
+	// routes operation FlowParts to handleInboundOperation, so this branch is
+	// defensive.
+	return &heldOperation{
+		kind:    "unknown",
+		summary: "未知操作",
+		details: map[string]any{},
+	}
+}
+
 // hold represents a pending tool-result hold in debug mode. One instance per
 // held result, keyed by tool_id. The result frame itself stays in the
 // handleInboundOperation stack frame; the hold only carries the release signal.
@@ -46,6 +159,18 @@ type hold struct {
 	toolID        string
 	confirmCh     chan struct{}
 	releaseReason string // set by the signalling side under holdsMu before closing confirmCh
+}
+
+// heldOperation describes the operation a held result corresponds to, so the
+// session-top debug drawer can render a human-readable request line without
+// proto knowledge (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md
+// §2). The Go backend builds it from the FlowPart the desktop received and
+// executed. It is purely an operation-channel artifact (decoupled from the
+// conversation render path — research.md D10/D11).
+type heldOperation struct {
+	kind    string
+	summary string
+	details map[string]any
 }
 
 // close releases the hold: it sets releaseReason so the blocked caller can
@@ -741,10 +866,11 @@ func (a *App) recvLoop(sessionID, frameID string) {
 // state machine, research.md D4):
 //
 //   - Debug OFF: compute → send (FR-011 — no events).
-//   - Debug ON:  compute → register hold → emit game:debug:result-held →
+//   - Debug ON:  compute → register hold → emit game:debug:result-held
+//     (payload EXTENDED with the operation descriptor —
+//     specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2/§4) →
 //     block on confirm/15-min/shutdown → emit game:debug:result-released →
-//     send (FR-006/FR-013). The sent frame is identical to the OFF path
-//     (FR-007 transparency).
+//     send. The sent frame is identical to the OFF path (FR-007 transparency).
 func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) error {
 	result := a.executeAgentOperation(part)
 
@@ -774,7 +900,10 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 
 	toolID := result.GetToolId()
 	if a.debugEnabled.Load() {
-		a.holdAndRelease(toolID)
+		// holdAndRelease builds the drawer descriptor from `part` internally
+		// (contracts/debug-drawer-contract.md §4) — handleInboundOperation
+		// only owns execute → hold → send, not the descriptor shape.
+		a.holdAndRelease(toolID, part)
 		if err := a.ws.SendFrame(a.ctx, resultFrame); err != nil {
 			a.logger.Error("backend", "handleInboundOperation: send failed", map[string]any{
 				"session_id": sessionID,
@@ -798,10 +927,23 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 }
 
 // holdAndRelease is the debug-mode hold boundary: it registers a hold for
-// toolID, emits game:debug:result-held, blocks until the hold is released
-// (confirm / 15-min auto-continue / shutdown), emits
-// game:debug:result-released, and returns the release reason. handleInboundOperation
-// calls it between Append and SendFrame when debug mode is ON.
+// toolID, emits game:debug:result-held (carrying the operation descriptor so
+// the session-top drawer can render the request content —
+// specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2/§4),
+// blocks until the hold is released (confirm / 15-min auto-continue /
+// shutdown), emits game:debug:result-released, and returns the release reason.
+// handleInboundOperation calls it between Append and SendFrame when debug
+// mode is ON.
+//
+// The operation descriptor for the emit payload is built INSIDE this function
+// by calling describeFlowPart(part) as an adapter that formats the raw
+// FlowPart into a drawer-renderable shape. holdAndRelease owns the emit
+// concern end-to-end; handleInboundOperation is unaware of the descriptor.
+// describeFlowPart always returns non-nil, so no nil check is needed here.
+//
+// part is the inbound FlowPart the desktop received and executed; it is only
+// read (to build the descriptor), never mutated. Pointer param per
+// style/golang.md §函数参数与返回值.
 //
 // The select arms map to the data-model state machine
 // (specs/022-desktop-debug-mode/data-model.md):
@@ -815,7 +957,9 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 // The delete after the select is idempotent: the confirm/debug-off branch was
 // already deleted by the signalling side, while the timeout/shutdown branch
 // still holds the entry and needs removal. See contracts §2.2.
-func (a *App) holdAndRelease(toolID string) string {
+func (a *App) holdAndRelease(toolID string, part *game.FlowPart) string {
+	op := describeFlowPart(part)
+
 	a.holdsMu.Lock()
 	h := &hold{
 		toolID:    toolID,
@@ -827,7 +971,14 @@ func (a *App) holdAndRelease(toolID string) string {
 	a.holds[toolID] = h
 	a.holdsMu.Unlock()
 
-	emitDebugEvent(a.ctx, "game:debug:result-held", map[string]any{"toolId": toolID})
+	emitDebugEvent(a.ctx, "game:debug:result-held", map[string]any{
+		"toolId": toolID,
+		"operation": map[string]any{
+			"kind":    op.kind,
+			"summary": op.summary,
+			"details": op.details,
+		},
+	})
 
 	var reason string
 	select {

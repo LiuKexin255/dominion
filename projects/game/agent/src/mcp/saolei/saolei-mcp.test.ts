@@ -49,15 +49,22 @@ type CapturedPart = FlowPart;
  * side of the bidi stream — registerSink + handleResult — without spinning
  * up a real connection (`style/javascript.md` §测试 — DI seam).
  *
+ * T028: the fake also records the AbortSignal each dispatch received (via a
+ * dispatch wrapper) so tests can assert the MCP `extra.signal` is forwarded
+ * to dispatch (`specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md`
+ * §6). Signal-less dispatches (the legacy single-arg form) are not used by
+ * saolei anymore.
+ *
  * Stateless saolei no longer forwards display-only results (no
  * `saolei_update`, no `pushResult`), so the sink captures ONLY operation
  * dispatches (FlowParts envelopes).
  */
 function makeFakeBridge(
 	canned: OperationResult = { status: STATUS_SUCCEEDED, message: "ok" },
-): { bridge: OperationBridge; dispatched: CapturedPart[] } {
+): { bridge: OperationBridge; dispatched: CapturedPart[]; signals: AbortSignal[] } {
 	const bridge = new OperationBridge();
 	const dispatched: CapturedPart[] = [];
+	const signals: AbortSignal[] = [];
 	bridge.registerSink((frame: AgentFrame) => {
 		const op = frame.flowParts?.parts?.[0] as CapturedPart | undefined;
 		if (!op) return;
@@ -79,7 +86,15 @@ function makeFakeBridge(
 			} as any);
 		}
 	});
-	return { bridge, dispatched };
+	// Wrap dispatch to capture the signal each tool handler forwards
+	// (T028). The wrapper delegates to the real dispatch so the bridge's
+	// pending-map / sink / handleResult mechanics stay intact.
+	const origDispatch = bridge.dispatch.bind(bridge);
+	bridge.dispatch = (part: FlowPart, signal?: AbortSignal) => {
+		if (signal) signals.push(signal);
+		return origDispatch(part, signal);
+	};
+	return { bridge, dispatched, signals };
 }
 
 /**
@@ -87,11 +102,19 @@ function makeFakeBridge(
  * internal `tools/call` handler (no HTTP round-trip). The handler shape is
  * part of the SDK's stable surface; accessing it via
  * `(server as any).server._requestHandlers` mirrors the existing test pattern.
+ *
+ * T028: the SDK `tools/call` handler signature is `(request, extra)` where
+ * `extra: RequestHandlerExtra` carries the AbortSignal the production path
+ * obtains from the transport. Tests pass a fake `extra` (a fresh, non-aborted
+ * AbortSignal) so the tool handler can read `extra.signal` and forward it to
+ * `bridge.dispatch`. Callers MAY override `extra` (e.g. to pass an aborted
+ * signal) via the optional third argument.
  */
 function callTool(
 	server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer,
 	name: string,
 	arguments_: Record<string, unknown>,
+	extra?: { signal: AbortSignal },
 ): Promise<{
 	isError?: boolean;
 	content: { type: string; text?: string; data?: string; mimeType?: string }[];
@@ -100,10 +123,11 @@ function callTool(
 }> {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const handler = (server as any).server._requestHandlers.get("tools/call");
+	const fakeExtra = extra ?? { signal: new AbortController().signal };
 	return handler({
 		method: "tools/call",
 		params: { name, arguments: arguments_ },
-	});
+	}, fakeExtra);
 }
 
 /** Pixel centre of cell (x, y) per `geometry.center` (data-model.md §7). */
@@ -364,5 +388,53 @@ describe("createSaoleiMcpServer: saolei_chord_click (FR-020)", () => {
 		expect(result.content[0].text).toBe(
 			"saolei_chord_click dispatched at (1,1)",
 		);
+	});
+});
+
+// T028 (contracts/tool-dispatch-contract.md §6 / research.md D10): each saolei
+// tool forwards the MCP `RequestHandlerExtra.signal` to `bridge.dispatch` so a
+// cancelled MCP request aborts the in-flight desktop dispatch (resolves FAILED
+// "aborted" rather than waiting the full 20-min backstop).
+describe("createSaoleiMcpServer: signal forwarding (T028)", () => {
+	it("forwards the MCP extra.signal to bridge.dispatch", async () => {
+		const { bridge, signals } = makeFakeBridge();
+		const server = createSaoleiMcpServer(bridge);
+
+		const controller = new AbortController();
+		await callTool(server, "saolei_init", {}, { signal: controller.signal });
+
+		// The signal carried by the MCP extra reached dispatch verbatim.
+		expect(signals).toHaveLength(1);
+		expect(signals[0]).toBe(controller.signal);
+	});
+
+	it("aborted signal short-circuits dispatch (no FlowPart written to the sink)", async () => {
+		// The bridge short-circuits an already-aborted signal BEFORE writing to
+		// the sink (operation-bridge.ts dispatch). The tool still returns MCP
+		// content blocks built from its result; the structured status remains
+		// neutral (D12 — no additional_kwargs). The canned SUCCEEDED result is
+		// never produced because dispatch returns FAILED "aborted" without
+		// touching the sink.
+		const { bridge, dispatched, signals } = makeFakeBridge({
+			status: "TOOL_RESULT_STATUS_SUCCEEDED",
+			message: "should-not-happen",
+		});
+		const server = createSaoleiMcpServer(bridge);
+
+		const controller = new AbortController();
+		controller.abort();
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 }, {
+			signal: controller.signal,
+		});
+
+		// The aborted signal reached dispatch verbatim.
+		expect(signals).toHaveLength(1);
+		expect(signals[0]).toBe(controller.signal);
+		// Dispatch was short-circuited: no FlowPart was written to the sink.
+		expect(dispatched).toHaveLength(0);
+		// The tool still returns a well-formed MCP content block (its template
+		// text); the structured status is neutral (D12).
+		expect(result.additional_kwargs).toBeUndefined();
+		expect(result.content[0].type).toBe("text");
 	});
 });

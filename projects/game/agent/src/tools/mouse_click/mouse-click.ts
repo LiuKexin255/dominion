@@ -6,9 +6,13 @@
  *   1. Builds a FlowPart carrying a MouseClickPart with the requested click
  *      action; the desktop clicks at the cursor's current position.
  *   2. Reads the LangChain tool_call id from `config.toolCall.id`
- *      (contracts/tool-dispatch-contract.md §2 / research.md D2) and passes it
- *      to dispatch so the FlowPart operation, the tool_call MessagePart, and the
- *      later tool_result MessagePart share one tool_id (spec 023 FR-008).
+ *      (contracts/tool-dispatch-contract.md §2 / research.md D2). This id is
+ *      used ONLY to set the returned `ToolMessage.tool_call_id` so the
+ *      conversation channel groups the tool_call↔tool_result bubble (LangChain
+ *      wires the bubble grouping). It is NOT passed to dispatch: per the
+ *      decoupling revision (research.md D10 / contracts/tool-dispatch-contract.md
+ *      §1) the operation channel uses a bridge-minted id that is independent of
+ *      the conversation `tool_call.id`.
  *   3. Dispatches it through the bridge and awaits the desktop result.
  *   4. Returns a `ToolMessage` via `buildToolResultMessage` carrying the REAL
  *      `ToolResultStatus` in `additional_kwargs.toolResultStatus`
@@ -18,9 +22,9 @@
  *      reconstructs the actual outcome (no text inference, no default-FAILED).
  *
  * Part-model contract: a tool emits a FlowPart (MouseClickPart) which the bridge
- * stamps with a tool_id and dispatches as a control frame. The bridge resolves
- * the dispatch from the matching ToolResultPart and buildToolResultMessage
- * renders it back to LangChain as a ToolMessage.
+ * stamps with a bridge-minted operation-channel id and dispatches as a control
+ * frame. The bridge resolves the dispatch from the matching ToolResultPart and
+ * buildToolResultMessage renders it back to LangChain as a ToolMessage.
  *
  * Relocated from `src/mouse-tool.ts` (Feature 020 — per-tool-name directory
  * layout, see `specs/020-agent-resources-layout/contracts/directory-layout.md`).
@@ -77,7 +81,7 @@ export function createMouseClickTool(
           click: CLICK_TYPE_TO_PROTO[click_type],
         },
       };
-      const result = await bridge.dispatch(part, toolCallId, signal);
+      const result = await bridge.dispatch(part, signal);
       return buildToolResultMessage(result, toolCallId, "mouse_click");
     },
     {

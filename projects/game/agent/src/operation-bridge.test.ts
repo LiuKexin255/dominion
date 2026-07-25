@@ -192,7 +192,7 @@ describe("OperationBridge", () => {
     const controller = new AbortController();
     controller.abort();
     const part = makeMovePart();
-    const result = await bridge.dispatch(part, undefined, controller.signal);
+    const result = await bridge.dispatch(part, controller.signal);
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toBe("aborted");
   });
@@ -201,7 +201,7 @@ describe("OperationBridge", () => {
     bridge.registerSink(() => {});
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, undefined, controller.signal);
+    const promise = bridge.dispatch(part, controller.signal);
 
     await vi.advanceTimersByTimeAsync(1_000);
     controller.abort();
@@ -219,7 +219,7 @@ describe("OperationBridge", () => {
     });
     const controller = new AbortController();
     const part = makeMovePart();
-    const promise = bridge.dispatch(part, undefined, controller.signal);
+    const promise = bridge.dispatch(part, controller.signal);
 
     bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
     const result = await promise;
@@ -281,20 +281,23 @@ describe("OperationBridge", () => {
     expect(new Set(ids).size).toBe(3);
   });
 
-  // T005 (contracts/tool-dispatch-contract.md §1): when a toolId is supplied
-  // (the LangChain tool_call.id), dispatch stamps it verbatim onto the FlowPart
-  // operation instead of minting a fresh UUID; correlation then keys on it.
-  it("dispatch stamps a supplied toolId onto the operation (no UUID minted)", async () => {
+  // T026 (contracts/tool-dispatch-contract.md §1 / research.md D10): dispatch
+  // mints its own operation-channel UUID and does NOT take a toolId parameter.
+  // The bridge-minted id is independent of any conversation tool_call.id; two
+  // consecutive dispatches yield two distinct minted ids.
+  it("dispatch always mints a fresh UUID operation id (no toolId param)", async () => {
     let capturedToolId = "";
     bridge.registerSink((frame) => {
       const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
       capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
     });
 
-    const promise = bridge.dispatch(makeMovePart(), "call_toolcall_abc");
-    expect(capturedToolId).toBe("call_toolcall_abc");
+    const promise = bridge.dispatch(makeMovePart());
+    // The minted id is a non-empty UUID, NOT any caller-supplied tool_call.id.
+    expect(capturedToolId).not.toBe("");
+    expect(capturedToolId).toHaveLength(36);
 
-    bridge.handleResult(makeResult("call_toolcall_abc", STATUS_SUCCEEDED, "ok"));
+    bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
     const result = await promise;
     expect(result.status).toBe(STATUS_SUCCEEDED);
   });

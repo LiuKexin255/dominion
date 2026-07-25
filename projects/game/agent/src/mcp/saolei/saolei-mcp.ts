@@ -16,10 +16,11 @@
  * operate-then-update alternation
  * (`specs/023-saolei-mcp-refine/spec.md` FR-016..FR-022). Tools are callable
  * back-to-back (FR-021). Each tool dispatches a `FlowPart` via
- * `bridge.dispatch(part)` — the bridge mints the operation-channel id; saolei
- * passes no `toolId` (D10 decoupling). `signal` propagation from the MCP
- * `RequestHandlerExtra` is deferred to Phase 5 (T028) — saolei calls
- * `dispatch(part)` (single-arg form) in this phase.
+ * `bridge.dispatch(part, signal)` — the bridge mints the operation-channel id;
+ * saolei passes no `toolId` (D10 decoupling). The `signal` is taken from the
+ * MCP `RequestHandlerExtra` (the second callback argument; the SDK always
+ * provides a non-undefined `extra.signal` — see `@modelcontextprotocol/sdk`
+ * `shared/protocol.d.ts` `RequestHandlerExtra.signal: AbortSignal`).
  *
  * Each tool returns MCP content blocks (a status text block + an optional
  * screenshot image block). It does NOT construct a `ToolMessage` and does NOT
@@ -125,6 +126,16 @@ function resultFromDispatch(
 }
 
 /**
+ * Minimal shape of the MCP `RequestHandlerExtra` consumed by saolei tool
+ * handlers. The full type (`RequestHandlerExtra<ServerRequest, ServerNotification>`
+ * from `@modelcontextprotocol/sdk` `shared/protocol.d.ts`) always carries a
+ * non-undefined `signal: AbortSignal`; we read only that field and forward it
+ * to `bridge.dispatch` (T028). Declaring the narrow shape avoids importing the
+ * SDK's internal protocol types into this module.
+ */
+type SaoleiToolExtra = { signal: AbortSignal };
+
+/**
  * Build a session-bound saolei `McpServer` with exactly four stateless tools
  * registered (`specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md`
  * §6; `specs/023-saolei-mcp-refine/data-model.md` §7).
@@ -155,11 +166,11 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 				"the board bounds are inferred from the returned screenshot. " +
 				"Re-calling re-dispatches F2 (restarts the game).",
 		},
-		async () => {
+		async (_extra: SaoleiToolExtra) => {
 			const part: FlowPart = {
 				keyboardPress: { key: KEY_F2 },
 			};
-			const result = await bridge.dispatch(part);
+			const result = await bridge.dispatch(part, _extra.signal);
 			return resultFromDispatch(
 				"saolei_init: F2 dispatched (new game)",
 				result,
@@ -179,7 +190,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 				"Callable back-to-back with no intervening step.",
 			inputSchema: cellInputSchema(),
 		},
-		async (args) => {
+		async (args, extra: SaoleiToolExtra) => {
 			const { x, y } = args;
 			const { xPx, yPx } = center(x, y);
 			const part: FlowPart = {
@@ -190,7 +201,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 					method: WINDOW_MESSAGE,
 				},
 			};
-			const result = await bridge.dispatch(part);
+			const result = await bridge.dispatch(part, extra.signal);
 			return resultFromDispatch(
 				`saolei_click dispatched at (${x},${y})`,
 				result,
@@ -210,7 +221,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 				"screenshot. Callable back-to-back with no intervening step.",
 			inputSchema: cellInputSchema(),
 		},
-		async (args) => {
+		async (args, extra: SaoleiToolExtra) => {
 			const { x, y } = args;
 			const { xPx, yPx } = center(x, y);
 			const part: FlowPart = {
@@ -221,7 +232,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 					method: WINDOW_MESSAGE,
 				},
 			};
-			const result = await bridge.dispatch(part);
+			const result = await bridge.dispatch(part, extra.signal);
 			return resultFromDispatch(
 				`saolei_flag dispatched at (${x},${y})`,
 				result,
@@ -244,7 +255,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 				"intervening step.",
 			inputSchema: cellInputSchema(),
 		},
-		async (args) => {
+		async (args, extra: SaoleiToolExtra) => {
 			const { x, y } = args;
 			const { xPx, yPx } = center(x, y);
 			const part: FlowPart = {
@@ -255,7 +266,7 @@ export function createSaoleiMcpServer(bridge: OperationBridge): McpServer {
 					method: WINDOW_MESSAGE,
 				},
 			};
-			const result = await bridge.dispatch(part);
+			const result = await bridge.dispatch(part, extra.signal);
 			return resultFromDispatch(
 				`saolei_chord_click dispatched at (${x},${y})`,
 				result,

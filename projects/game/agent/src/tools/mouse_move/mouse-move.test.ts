@@ -186,8 +186,8 @@ describe("createMouseMoveTool", () => {
     );
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    // dispatch signature is (part, toolId, signal); signal is the 3rd arg.
-    expect(bridge.dispatch.mock.calls[0][2]).toBe(controller.signal);
+    // dispatch signature is (part, signal); signal is the 2nd arg.
+    expect(bridge.dispatch.mock.calls[0][1]).toBe(controller.signal);
   });
 
   it("forwards undefined signal when no config is provided", async () => {
@@ -200,13 +200,13 @@ describe("createMouseMoveTool", () => {
     await mouseTool.invoke({ x_px: 1, y_px: 2 });
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    expect(bridge.dispatch.mock.calls[0][2]).toBeUndefined();
+    expect(bridge.dispatch.mock.calls[0][1]).toBeUndefined();
   });
 
-  // T009 (contracts/tool-dispatch-contract.md §2): the tool reads
-  // config.toolCall.id and passes it to dispatch so the FlowPart operation
-  // shares the LangChain tool_call.id (spec 023 FR-008).
-  it("passes config.toolCall.id as the dispatch toolId", async () => {
+  // T027 (contracts/tool-dispatch-contract.md §1..§2 / research.md D10): the
+  // tool does NOT pass config.toolCall.id to dispatch — the operation channel
+  // uses a bridge-minted id (decoupled from the conversation tool_call.id).
+  it("does not pass any toolId to dispatch (operation channel is decoupled)", async () => {
     const mouseTool = createMouseMoveTool(bridge);
 
     await mouseTool.invoke(
@@ -215,7 +215,10 @@ describe("createMouseMoveTool", () => {
     );
 
     expect(bridge.dispatch).toHaveBeenCalledTimes(1);
-    expect(bridge.dispatch.mock.calls[0][1]).toBe("call_xyz");
+    // dispatch is (part, signal) — the second positional arg is the signal
+    // (undefined here), NOT a toolId. The conversation tool_call.id never
+    // reaches dispatch.
+    expect(bridge.dispatch.mock.calls[0][1]).toBeUndefined();
   });
 
   // T019 (contracts/tool-dispatch-contract.md §3): the returned ToolMessage
@@ -234,6 +237,8 @@ describe("createMouseMoveTool", () => {
       { toolCall: { id: "call_xyz" } } as unknown as Record<string, unknown>,
     );
 
+    // tool_call_id still mirrors config.toolCall.id (conversation grouping),
+    // even though dispatch no longer takes the id.
     expect(msg.tool_call_id).toBe("call_xyz");
     expect(msg.name).toBe("mouse_move");
     expect(msg.additional_kwargs?.toolResultStatus).toBe(STATUS_SUCCEEDED);

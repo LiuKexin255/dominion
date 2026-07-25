@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff } from './api'
+  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
   import { FrameSender } from './api'
   import {
     setConfig,
@@ -30,6 +30,7 @@
   import type { LogEntry } from './logger'
   import SessionList from './components/SessionList.svelte'
   import ChatView from './components/ChatView.svelte'
+  import OperationConfirmDrawer from './components/OperationConfirmDrawer.svelte'
   import ProfileManagement from './components/ProfileManagement.svelte'
   import AgentSidebar from './components/AgentSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
@@ -84,12 +85,14 @@
   // (specs/022-desktop-debug-mode/research.md D1).
   let debugMode = $state(false)
 
-  // --- Held tool-result IDs (US2): the set of toolIDs currently held by the
-  // Go backend for debug confirmation. Populated by game:debug:result-held /
-  // result-released events (contracts/debug-control-plane.md §2.3). Passed to
-  // ChatView so it renders a "Confirm" control on matching tool-result bubbles
-  // (FR-008). Reactive via $state + Set reassignment.
-  let heldToolIds = $state<Set<string>>(new Set())
+  // --- Held operations awaiting confirmation (US4 debug drawer,
+  // contracts/debug-drawer-contract.md §3.1). The session-top Confirm drawer
+  // is driven entirely by the operation channel: each entry's `toolId` is the
+  // bridge-minted operation id (NOT any conversation tool_call.id — decoupled
+  // per research.md D10/D11). Populated by the EXTENDED `game:debug:result-held`
+  // payload and removed on `result-released`. Arrival order is preserved so
+  // multiple simultaneous holds stack in the drawer (§5). Reactive via $state.
+  let heldOperations = $state<HeldOperation[]>([])
 
   // --- SSE chat push state ---
   // The chat dialog is delivered over a renderer-initiated EventSource (spec
@@ -139,6 +142,11 @@
       debugMode = false
       applyDebugMode()
     }
+    // Clear any residual drawer entries. The backend's SetDebugMode(false)
+    // above releases all holds and emits result-released for each, but those
+    // events arrive asynchronously; clearing here avoids a flicker of stale
+    // rows on the next session entry (contracts/debug-drawer-contract.md §5).
+    heldOperations = []
   }
 
   // applyDebugMode pushes the current debugMode to the frontend logger gate and
@@ -152,9 +160,10 @@
     })
   }
 
-  // handleConfirm releases a held tool result so the Go backend sends it to the
-  // agent (FR-009). Called by ChatView's "Confirm" button via the onConfirm
-  // callback prop (contracts/debug-control-plane.md §3).
+  // handleConfirm releases a held operation result so the Go backend sends it
+  // to the agent (FR-009 / FR-025). Called by OperationConfirmDrawer's "Confirm"
+  // button via the onConfirm callback prop
+  // (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §3).
   function handleConfirm(toolID: string) {
     void confirmToolResult(toolID).catch((e: unknown) => {
       log('error', 'debug', `ConfirmToolResult failed for ${toolID}: ${String(e)}`)
@@ -186,24 +195,28 @@
     window.addEventListener('keydown', handleKeyDown)
 
     // Debug hold events: the Go backend emits game:debug:result-held /
-    // result-released when a tool result begins/ends being held for
-    // confirmation (contracts/debug-control-plane.md §2). Reassigning a new
-    // Set triggers Svelte 5 $state reactivity (contract §2.3).
+    // result-released when an operation result begins/ends being held for
+    // confirmation (contracts/debug-drawer-contract.md §2/§3.1). The held
+    // payload is extended with the operation descriptor (kind/summary/details)
+    // so the session-top drawer can render the request content. `toolId` is
+    // the operation-channel id (decoupled from the conversation tool_call.id).
     const runtime = window.runtime
     if (runtime?.EventsOn) {
       runtime.EventsOn('game:debug:result-held', (payload: unknown) => {
-        const p = payload as { toolId?: string }
-        if (p?.toolId) {
-          heldToolIds = new Set(heldToolIds).add(p.toolId)
-        }
+        const p = payload as DebugResultHeldPayload | undefined
+        if (!p?.toolId) return
+        const op = p.operation
+        heldOperations = [...heldOperations, {
+          toolId: p.toolId,
+          kind: op?.kind ?? '',
+          summary: op?.summary ?? '',
+          details: op?.details ?? {},
+        }]
       })
       runtime.EventsOn('game:debug:result-released', (payload: unknown) => {
-        const p = payload as { toolId?: string }
-        if (p?.toolId) {
-          const next = new Set(heldToolIds)
-          next.delete(p.toolId)
-          heldToolIds = next
-        }
+        const p = payload as DebugResultReleasedPayload | undefined
+        if (!p?.toolId) return
+        heldOperations = heldOperations.filter(h => h.toolId !== p.toolId)
       })
     }
 
@@ -883,6 +896,10 @@
             <span class="chat-error">{error}</span>
           {/if}
         </div>
+        <OperationConfirmDrawer
+          heldOperations={heldOperations}
+          onConfirm={handleConfirm}
+        />
         <ChatView
           messages={chatMessages}
           {processing}
@@ -893,8 +910,6 @@
           onZoom={handleZoom}
           pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
           onRemoveScreenshot={handleRemoveScreenshot}
-          {heldToolIds}
-          onConfirm={handleConfirm}
         />
       </div>
     </div>
