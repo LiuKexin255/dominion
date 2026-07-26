@@ -31,6 +31,7 @@ ts_project(
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@langchain/anthropic",
@@ -82,6 +83,7 @@ artifact_pkg_js(
         "//common/js/grpc/resolver:runtime_pkg",
         "//common/js/logs:runtime_pkg",
         "//common/js/otel:runtime_pkg",
+        "//projects/game/pkg/saolei-board:runtime_pkg",
     ],
 )
 
@@ -127,6 +129,7 @@ artifact_pkg_js(
         "//common/js/logs:runtime_pkg",
         "//common/js/otel:runtime_pkg",
         "//common/js/resolver:runtime_pkg",
+        "//projects/game/pkg/saolei-board:runtime_pkg",
     ],
 )
 
@@ -163,6 +166,7 @@ vitest_test(
         ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-otel",
         ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@dominion/game-saolei-board",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@grpc/proto-loader",
         ":node_modules/@langchain/anthropic",

@@ -87,7 +87,7 @@ message FlowPart {
      ▲                                                         │
      │                                          updateFromScreenshot on each legal cell op
      │                                                         │
-     │                                            terminal recognized (won / lost)
+     │                                            terminal recognized (lost)
      │                                                         │
      │  saolei_init again (F2 dispatch + init)                ▼
    [active] ◄───────────────────────────────────────────── [terminal]
@@ -98,7 +98,7 @@ message FlowPart {
 **Transitions**:
 - `none → active`: `saolei_init` dispatches F2, captures screenshot, `SaoleiBoard.init(screenshot)` succeeds, returns initial text board.
 - `active → active`: a legal cell op dispatches, captures screenshot, `updateFromScreenshot(screenshot)` succeeds (monotonic), returns updated text board.
-- `active → terminal`: `updateFromScreenshot` recognizes a terminal board (HIT_MINE `X` present, or all non-mine cells revealed → win). Returns text board; subsequent cell ops rejected (FR-015f) until `saolei_init`.
+- `active → terminal`: `updateFromScreenshot` recognizes a terminal (**lost**) board — a `HIT_MINE` (`X`, the triggered mine) or `MINE` (`M`, an end-game revealed mine) is present. Returns text board; subsequent cell ops rejected (FR-015f) until `saolei_init`. Terminal detection is **loss-only**: a win is not reliably detectable from the cell grid (classic Minesweeper auto-flags every mine as `F` on a win, indistinguishable from a player-placed flag, and exposes no distinct per-cell marker), so `game_over` covers the post-loss case where the model would otherwise keep clicking a finished board.
 - `* → error (unable to recognize)`: `init`/`updateFromScreenshot` throws (`BoardStateIncompatibleError` / `BoardDimensionMismatchError`, or the image is not a saolei board). The tool returns "unable to recognize" (FR-017); the state is marked invalid; cell ops rejected until a successful `saolei_init`.
 
 **Validation source**: the current recognized `state` (cell grid + dimensions) is the input to pre-dispatch validation (D5). `UNKNOWN` cells are treated leniently (FR-018): a move targeting an `UNKNOWN` cell is **not** rejected on state grounds.

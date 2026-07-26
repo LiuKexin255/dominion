@@ -3,6 +3,7 @@ load("@aspect_rules_swc//swc:defs.bzl", "swc")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+load("//tools/release:js_runtime_library.bzl", "js_runtime_library")
 
 npm_link_all_packages(name = "node_modules")
 
@@ -43,6 +44,28 @@ js_library(
         ":core",
     ],
     visibility = ["//visibility:public"],
+)
+
+# Runtime package target exposing JsRuntimePackageInfo for artifact_pkg_js
+# runtime_deps closure walking (see common/js/logs/BUILD.bazel :runtime_pkg and
+# tools/release/js_runtime_library.bzl). Required so a consuming service's
+# artifact_pkg_js packages THIS package's own compiled source (Phase 4 of
+# _artifact_pkg_js_impl) plus its third-party runtime dep pngjs (collected into
+# the closure's npm_targets). Separate from :pkg because the npm_deps Phase 3
+# path of artifact_pkg_js only copies files whose short_path contains
+# "node_modules/" — a workspace package's own source lives at
+# projects/game/pkg/saolei-board/src/core/*.js and would be skipped without
+# this JsRuntimePackageInfo provider.
+js_runtime_library(
+    name = "runtime_pkg",
+    package_name = "@dominion/game-saolei-board",
+    lib = ":core",
+    npm_deps = [
+        ":node_modules/pngjs",
+    ],
+    package_json = "package.json",
+    visibility = ["//visibility:public"],
+    runtime_deps = [],
 )
 
 # ── CLI shell ───────────────────────────────────────────────────────────────

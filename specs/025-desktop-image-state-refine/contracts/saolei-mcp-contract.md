@@ -47,7 +47,9 @@ Validation runs **before** dispatch, against the latest recognized state (FR-014
 | any cell op | `?` (UNKNOWN target) | dispatch (lenient) | FR-018 — never reject solely on uncertainty |
 | any cell op | no active game (pre-`init`, or state invalid) | **reject** | `no_active_game` (FR-015a) |
 | any cell op | `(x,y)` outside recognized dimensions | **reject** | `out_of_bounds` + valid range (FR-015b) |
-| any cell op | terminal state (won/lost recognized) | **reject** | `game_over` (FR-015f) |
+| any cell op | terminal state (lost — a mine `X`/`M` is recognized) | **reject** | `game_over` (FR-015f) |
+
+Terminal detection is **loss-only**: the recognized state is terminal when a mine is visible (`HIT_MINE` `X` or `MINE` `M`). A win is not reliably detectable from the cell grid alone (classic Minesweeper auto-flags mines as `F` on a win, indistinguishable from player-placed flags, and exposes no distinct per-cell marker), so `game_over` covers the post-loss case; see `data-model.md` §2 for the state-machine rationale.
 
 A rejected move returns the reason code, the current text board, and the valid coordinate range; it does **not** dispatch and the desktop receives no operation (FR-014).
 

@@ -17,7 +17,8 @@
         "@dominion/common-js-otel": "workspace:*",
         "@dominion/common-js-grpc-otel": "workspace:*",
         "@dominion/common-js-grpc-resolver": "workspace:*",
-        "@dominion/common-js-resolver": "workspace:*"
+        "@dominion/common-js-resolver": "workspace:*",
+        "@dominion/game-saolei-board": "workspace:*"
     },
     "devDependencies": {
         "@types/express": "catalog:",

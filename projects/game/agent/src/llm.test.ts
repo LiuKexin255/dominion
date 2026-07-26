@@ -1181,11 +1181,15 @@ describe("AgentAdapterImpl.create skill injection (FR-023/024/025)", () => {
 		expect(prompt).toContain(
 			"base-system-prompt" + SKILL_PROMPT_SEPARATOR + "# saolei",
 		);
-		// Stable content markers from the saolei skill body (spec 023 FR-022:
-		// four stateless tools, no saolei_update tool section, no validation).
+		// Stable content markers from the saolei skill body (spec 025 FR-021:
+		// text-board return + strict validation; the "Stateless design" /
+		// read-screenshot guidance from spec 023 is removed).
 		expect(prompt).toContain("saolei_init");
 		expect(prompt).toContain("saolei_click");
-		expect(prompt).toContain("Stateless design");
+		expect(prompt).toContain("Recognized text board");
+		expect(prompt).toContain("Move validation");
+		// The old read-screenshot guidance is gone (FR-021).
+		expect(prompt).not.toContain("Stateless design");
 		// The saolei_update tool is NOT documented as a callable tool (no
 		// section header); the skill only mentions it in "When NOT to use"
 		// to tell the model it does not exist.
