@@ -382,7 +382,7 @@ interface WailsApp {
   DeleteSession(sessionID: string): Promise<void>
   GetAgent(sessionID: string): Promise<Agent>
   ListWindows(): Promise<WindowRef[]>
-  BindWindow(hwnd: number): Promise<void>
+  SetSelectedWindow(hwnd: number): Promise<void>
   CaptureScreenshot(): Promise<CapturedImage>
   ConnectAgent(sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
@@ -466,10 +466,10 @@ export async function listWindows(): Promise<WindowRef[]> {
   return a.ListWindows()
 }
 
-export async function bindWindow(hwnd: number): Promise<void> {
+export async function setSelectedWindow(hwnd: number): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.BindWindow(hwnd)
+  return a.SetSelectedWindow(hwnd)
 }
 
 export async function captureScreenshot(): Promise<CapturedImage> {

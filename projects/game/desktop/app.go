@@ -38,6 +38,13 @@ var debugHoldTimeout = 15 * time.Minute
 // See specs/022-desktop-debug-mode/contracts/debug-control-plane.md §2.
 var emitDebugEvent = runtime.EventsEmit
 
+// listWindows is the capture.ListWindows function, exposed as a package-level
+// variable so unit tests can override it to inject a mock window list (the
+// real capture.ListWindows returns "not supported" on the Linux test host).
+// resolveSelectedWindow calls it to turn the selected handle into a WindowRef
+// at use time (specs/025-desktop-image-state-refine/contracts/window-select-contract.md §2.3).
+var listWindows = capture.ListWindows
+
 // clickSummary maps a MouseClickAction proto enum to a short localized label
 // for the debug drawer summary line
 // (specs/023-saolei-mcp-refine/contracts/debug-drawer-contract.md §2). The
@@ -197,8 +204,9 @@ type App struct {
 	ws           *api.WSClient
 	cfg          api.Config
 	ctx          context.Context
-	boundWin     capture.WindowRef
-	sessionID    string // active session set on WebSocket connect
+	selectedMu   sync.Mutex
+	selectedWin  uintptr // handle of the selected window; 0 = none (spec 025 FR-006)
+	sessionID    string  // active session set on WebSocket connect
 	recvDone     chan struct{}
 	chatStreams  *chatstream.Registry
 	chatServer   *chatstream.Server
@@ -679,7 +687,7 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // signal is received (signalling the agent is done) or RecvFrame errors.
 //
 // The agentProfileName selects which agent profile to use for this session.
-// screenshotData is the raw PNG bytes of the bound window; pass an empty
+// screenshotData is the raw PNG bytes of the selected window; pass an empty
 // slice when no screenshot is attached. screenshotWidth and screenshotHeight
 // describe the pixel dimensions of screenshotData and are ignored when it is
 // empty.
@@ -689,7 +697,7 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // Inbound FlowParts operations (mouse/keyboard) are auto-executed by recvLoop
 // and a matching FlowResultPart is sent back over the same WebSocket connection
 // on the control channel (FR-013; spec 025 FR-023/FR-024). The result part
-// carries a post-action screenshot of the bound window (FR-007).
+// carries a post-action screenshot of the selected window (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -710,14 +718,21 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
 	}
 	if len(screenshotData) > 0 {
+		// The screenshot was captured from the selected window; resolve it to
+		// attach ScaleFactor/WindowTitle (spec 025 FR-003/FR-006). No selection
+		// is a graceful failure (FR-005).
+		win, err := a.resolveSelectedWindow()
+		if err != nil {
+			return fmt.Errorf("send user turn: %w", err)
+		}
 		parts = append(parts, &game.MessagePart{
 			Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 				Data:        screenshotData,
 				WidthPx:     int32(screenshotWidth),
 				HeightPx:    int32(screenshotHeight),
-				ScaleFactor: a.boundWin.ScaleFactor,
-				WindowTitle: a.boundWin.Title,
+				ScaleFactor: win.ScaleFactor,
+				WindowTitle: win.Title,
 			}},
 		})
 	}
@@ -1017,21 +1032,21 @@ func (a *App) holdAndRelease(toolID string, part *game.FlowPart) string {
 //
 //   - SIMULATED (the default, including UNSPECIFIED) is the existing
 //     behavior: screenshot-relative coords are converted to screen-absolute
-//     via the bound window's bounds, the OS cursor is repositioned with
+//     via the selected window's bounds, the OS cursor is repositioned with
 //     SetCursorPos, and button events are dispatched via SendInput.
-//   - WINDOW_MESSAGE posts WM_* messages to the bound window's HWND with
+//   - WINDOW_MESSAGE posts WM_* messages to the selected window's HWND with
 //     window-client coordinates packed into lParam and does NOT move the OS
 //     cursor (FR-004d).
 //
 // KeyboardPressPart is method-agnostic: it posts WM_KEYDOWN/WM_KEYUP to the
-// bound HWND (FR-004a).
+// selected HWND (FR-004a).
 //
-// screenshot of the bound window is captured (FR-007). The screenshot is
+// screenshot of the selected window is captured (FR-007). The screenshot is
 // attached to the result part when capture and sizing succeed; otherwise
 // the capture failure is recorded in the result message. Status always
 // reflects the ACTION outcome (never SUCCEEDED when the action failed).
-// Precondition failures (no tool payload, no window bound) return early
-// since no screenshot is possible without a bound window.
+// Precondition failures (no tool payload, no window selected) return early
+// since no screenshot is possible without a selected window.
 func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	move := part.GetMouseMove()
 	click := part.GetMouseClick()
@@ -1074,9 +1089,20 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 		return failed("unsupported operation: only mouse and keyboard operations are supported")
 	}
 
-	if a.boundWin.Handle == 0 {
-		return failed("no window bound")
+	// Resolve the selected window (single source of truth, spec 025 FR-006).
+	// No selection is a graceful failure (FR-005) replacing the former
+	// "no window bound" guard. The handle is resolved fresh on every operation
+	// so re-selecting a different window retargets subsequent ops (FR-004).
+	win, err := a.resolveSelectedWindow()
+	if err != nil {
+		return failed(err.Error())
 	}
+	a.logger.Debug("backend", "resolved selected window", map[string]any{
+		"tool_id":        toolID,
+		"correlation_id": corrID,
+		"window_handle":  win.Handle,
+		"window_title":   win.Title,
+	})
 
 	a.logger.Debug("backend", "executing tool operation", map[string]any{
 		"tool_id":        toolID,
@@ -1087,25 +1113,26 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	// screenshot phase always runs (FR-007). actionStatus reflects only the
 	// ACTION outcome; a failed action never reports SUCCEEDED.
 	//
-	// Each Part kind dispatches to the matching executor, with mouse Parts
-	// further routing on their MouseInputMethod field. WINDOW_MESSAGE mouse
-	// ops post WM_* messages to the HWND with window-client coordinates and
-	// skip the screenshot-relative → screen-absolute conversion; SIMULATED
-	// ops reuse the existing SetCursorPos + SendInput path.
+	// Each Part kind dispatches to the matching executor with the resolved
+	// selected window's handle (spec 025 FR-006). Mouse Parts further route on
+	// their MouseInputMethod field. WINDOW_MESSAGE mouse ops post WM_* messages
+	// to the HWND with window-client coordinates and skip the
+	// screenshot-relative → screen-absolute conversion; SIMULATED ops reuse the
+	// existing SetCursorPos + SendInput path.
 	var actionErr error
 	var actionLabel string
 	switch {
 	case keyboard != nil:
 		actionLabel = "keyboard_press:" + keyboard.GetKey().String()
-		if eErr := operation.ExecuteKeyboardPress(a.boundWin.Handle, keyboard.GetKey()); eErr != nil {
+		if eErr := operation.ExecuteKeyboardPress(win.Handle, keyboard.GetKey()); eErr != nil {
 			actionErr = fmt.Errorf("keyboard press: %w", eErr)
 		}
 	case moveClick != nil:
-		actionLabel, actionErr = a.runMouseMoveAndClick(moveClick, corrID)
+		actionLabel, actionErr = a.runMouseMoveAndClick(moveClick, corrID, win.Handle)
 	case move != nil:
-		actionLabel, actionErr = a.runMouseMove(move, corrID)
+		actionLabel, actionErr = a.runMouseMove(move, corrID, win.Handle)
 	case click != nil:
-		actionLabel, actionErr = a.runMouseClick(click, corrID)
+		actionLabel, actionErr = a.runMouseClick(click, corrID, win.Handle)
 	}
 
 	actionStatus := game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED
@@ -1122,33 +1149,34 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	}
 
 	// Single exit: build the result with the accumulated action status, then
-	// always attempt a post-action screenshot when a window is bound (FR-007).
+	// always attempt a post-action screenshot of the resolved selected window
+	// (FR-007). win is non-zero — resolveSelectedWindow already rejected the
+	// no-selection precondition — so the screenshot always runs (errors are
+	// recorded in the message, never swallowed by an early return).
 	result := &game.FlowResultPart{
 		ToolId:  toolID,
 		Status:  actionStatus,
 		Message: actionMsg,
 	}
 
-	if a.boundWin.Handle != 0 {
-		// Wait briefly so the target window can render the effect of the
-		// action before the screenshot is captured.
-		time.Sleep(postActionScreenshotDelay)
+	// Wait briefly so the target window can render the effect of the action
+	// before the screenshot is captured.
+	time.Sleep(postActionScreenshotDelay)
 
-		capturedImg, captureErr := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
-		switch {
-		case captureErr != nil:
-			result.Message = fmt.Sprintf("%s (screenshot capture failed: %s)", result.Message, captureErr.Error())
-		case len(capturedImg.Data) > maxScreenshotBytes:
-			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
-		default:
-			result.Screenshot = &game.ImagePart{
-				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-				Data:        capturedImg.Data,
-				WidthPx:     int32(capturedImg.WidthPx),
-				HeightPx:    int32(capturedImg.HeightPx),
-				ScaleFactor: a.boundWin.ScaleFactor,
-				WindowTitle: a.boundWin.Title,
-			}
+	capturedImg, captureErr := capture.CaptureWindow(a.ctx, win.Handle)
+	switch {
+	case captureErr != nil:
+		result.Message = fmt.Sprintf("%s (screenshot capture failed: %s)", result.Message, captureErr.Error())
+	case len(capturedImg.Data) > maxScreenshotBytes:
+		result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
+	default:
+		result.Screenshot = &game.ImagePart{
+			Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+			Data:        capturedImg.Data,
+			WidthPx:     int32(capturedImg.WidthPx),
+			HeightPx:    int32(capturedImg.HeightPx),
+			ScaleFactor: win.ScaleFactor,
+			WindowTitle: win.Title,
 		}
 	}
 
@@ -1240,7 +1268,7 @@ func (a *App) ListWindows() ([]capture.WindowRef, error) {
 	}
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Listing windows", map[string]any{"correlation_id": corrID})
-	windows, err := capture.ListWindows(a.ctx)
+	windows, err := listWindows(a.ctx)
 	if err != nil {
 		a.logger.Error("backend", "List windows failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
 		return nil, err
@@ -1249,41 +1277,54 @@ func (a *App) ListWindows() ([]capture.WindowRef, error) {
 	return windows, nil
 }
 
-// BindWindow stores the given window handle as the currently bound window.
-// The bound window is used by CaptureScreenshot and SendUserTurn.
-func (a *App) BindWindow(hwnd uintptr) error {
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("bind window: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Binding window", map[string]any{"hwnd": hwnd, "correlation_id": corrID})
-	// Verify the window still exists by listing and matching.
-	windows, err := capture.ListWindows(a.ctx)
-	if err != nil {
-		a.logger.Error("backend", "Bind window: list windows failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
-		return fmt.Errorf("bind window: %w", err)
-	}
-	found := false
-	for _, w := range windows {
-		if w.Handle == hwnd {
-			a.boundWin = w
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("bind window: hwnd %d not found in visible windows", hwnd)
-	}
-	a.logger.Info("backend", "Window bound", map[string]any{"hwnd": hwnd, "title": a.boundWin.Title, "correlation_id": corrID})
+// SetSelectedWindow stores the handle of the window currently selected in the
+// desktop session chat dropdown (Wails-bound; exposed to the frontend). The
+// selected window is the single source of truth for every screenshot and
+// operation — there is no separate "bind" step (spec 025 FR-001/FR-006,
+// contracts/window-select-contract.md §2). The WindowRef is resolved from
+// this handle at use time via listWindows, so a window closing between
+// selection and use surfaces as a graceful use-time failure (FR-005) rather
+// than being rejected at selection time.
+func (a *App) SetSelectedWindow(hwnd uintptr) error {
+	a.selectedMu.Lock()
+	a.selectedWin = hwnd
+	a.selectedMu.Unlock()
+	a.logger.Info("backend", "Selected window set", map[string]any{"hwnd": hwnd})
 	return nil
 }
 
-// CaptureScreenshot captures the currently bound window as a PNG image.
-// Returns an error if no window is bound or the capture fails.
+// resolveSelectedWindow resolves the currently selected window to a
+// capture.WindowRef by looking it up via listWindows (the same lookup the
+// former BindWindow performed, spec 025 D3). It returns a graceful error when
+// no window is selected or the selected handle is no longer present
+// (closed/minimized/hidden between selection and use) — spec 025 FR-005,
+// contracts/window-select-contract.md §2.3/§3.
+func (a *App) resolveSelectedWindow() (capture.WindowRef, error) {
+	a.selectedMu.Lock()
+	hwnd := a.selectedWin
+	a.selectedMu.Unlock()
+	if hwnd == 0 {
+		return capture.WindowRef{}, fmt.Errorf("no window selected")
+	}
+	windows, err := listWindows(a.ctx)
+	if err != nil {
+		return capture.WindowRef{}, fmt.Errorf("resolve selected window: %w", err)
+	}
+	for _, w := range windows {
+		if w.Handle == hwnd {
+			return w, nil
+		}
+	}
+	return capture.WindowRef{}, fmt.Errorf("selected window %d not found (it may have closed)", hwnd)
+}
+
+// CaptureScreenshot captures the currently selected window as a PNG image
+// (spec 025 FR-003). It resolves the selected window at capture time and
+// returns a graceful error when no window is selected (FR-005).
 func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
-	if a.boundWin.Handle == 0 {
-		return nil, fmt.Errorf("capture screenshot: no window bound")
+	win, err := a.resolveSelectedWindow()
+	if err != nil {
+		return nil, fmt.Errorf("capture screenshot: %w", err)
 	}
 	corrSuffix, err := randomHex(8)
 	if err != nil {
@@ -1291,16 +1332,16 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 	}
 	corrID := "corr-" + corrSuffix
 	// Capture bounds before screenshot for logging.
-	bnds, _ := capture.CaptureWindowBounds(a.boundWin.Handle)
-	a.logger.Info("backend", "Capturing screenshot", map[string]any{"hwnd": a.boundWin.Handle, "correlation_id": corrID})
-	img, err := capture.CaptureWindow(a.ctx, a.boundWin.Handle)
+	bnds, _ := capture.CaptureWindowBounds(win.Handle)
+	a.logger.Info("backend", "Capturing screenshot", map[string]any{"hwnd": win.Handle, "correlation_id": corrID})
+	img, err := capture.CaptureWindow(a.ctx, win.Handle)
 	if err != nil {
 		a.logger.Error("backend", "Capture screenshot failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
 		return nil, err
 	}
 	a.logger.Info("backend", "screenshot captured", map[string]any{
-		"hwnd":           a.boundWin.Handle,
-		"title":          a.boundWin.Title,
+		"hwnd":           win.Handle,
+		"title":          win.Title,
 		"bounds":         map[string]int{"left": bnds.Left, "top": bnds.Top, "right": bnds.Right, "bottom": bnds.Bottom},
 		"width_px":       img.WidthPx,
 		"height_px":      img.HeightPx,

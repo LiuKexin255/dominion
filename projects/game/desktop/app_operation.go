@@ -11,21 +11,26 @@ import (
 // runMouseMoveAndClick dispatches a MouseMoveAndClickPart on its method field
 // and returns the action label and error.
 //
-// WINDOW_MESSAGE posts WM_* messages to the bound HWND with the part's coords
-// packed into lParam (FR-004d); no OS cursor movement, no screen conversion.
-// SIMULATED (and UNSPECIFIED → SIMULATED) reuses the existing
+// WINDOW_MESSAGE posts WM_* messages to the selected HWND with the part's
+// coords packed into lParam (FR-004d); no OS cursor movement, no screen
+// conversion. SIMULATED (and UNSPECIFIED → SIMULATED) reuses the existing
 // SetCursorPos + SendInput path: screenshot-relative coords are converted to
-// screen-absolute via the bound window's bounds, then move + click fire
+// screen-absolute via the selected window's bounds, then move + click fire
 // against the cursor's resulting position.
+//
+// hwnd is the resolved selected window handle (spec 025 FR-006); it replaces
+// the former a.boundWin.Handle read. The window title is logged by the caller
+// (executeAgentOperation) at resolve time, so executor logs carry only the
+// handle.
 //
 // The SIMULATED path inherits the foreground-activation quirk of synthetic
 // clicks (SendInput is consumed by window activation when the target is not
 // foreground), so SetForeground is called between the move and the click.
-func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID string) (string, error) {
+func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID string, hwnd uintptr) (string, error) {
 	switch operation.EffectiveMethod(part.GetMethod()) {
 	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
 		label := "move_and_click(window_message):" + part.GetClick().String()
-		if err := operation.ExecuteWindowMessageClick(a.boundWin.Handle, part.GetClick(), part.GetXPx(), part.GetYPx()); err != nil {
+		if err := operation.ExecuteWindowMessageClick(hwnd, part.GetClick(), part.GetXPx(), part.GetYPx()); err != nil {
 			return label, fmt.Errorf("window-message click: %w", err)
 		}
 		a.logger.Info("backend", "mouse action executed", map[string]any{
@@ -33,15 +38,14 @@ func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID stri
 			"correlation_id": corrID,
 			"action":         label,
 			"method":         "window_message",
-			"window_handle":  a.boundWin.Handle,
-			"window_title":   a.boundWin.Title,
+			"window_handle":  hwnd,
 			"client_x_px":    part.GetXPx(),
 			"client_y_px":    part.GetYPx(),
 		})
 		return label, nil
 	default:
 		label := "move_and_click:" + part.GetClick().String()
-		bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
+		bounds, bErr := capture.CaptureWindowBounds(hwnd)
 		if bErr != nil {
 			return label, fmt.Errorf("capture window bounds: %w", bErr)
 		}
@@ -52,7 +56,7 @@ func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID stri
 		if err := operation.MoveCursor(screenX, screenY); err != nil {
 			return label, fmt.Errorf("move cursor: %w", err)
 		}
-		a.logSetForeground(part.GetToolId(), corrID)
+		a.logSetForeground(hwnd, part.GetToolId(), corrID)
 		if err := operation.ExecuteClickAtCurrentPos(part.GetClick()); err != nil {
 			return label, fmt.Errorf("click action: %w", err)
 		}
@@ -61,8 +65,7 @@ func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID stri
 			"correlation_id":  corrID,
 			"action":          label,
 			"method":          "simulated",
-			"window_handle":   a.boundWin.Handle,
-			"window_title":    a.boundWin.Title,
+			"window_handle":   hwnd,
 			"screenshot_x_px": part.GetXPx(),
 			"screenshot_y_px": part.GetYPx(),
 			"screen_x":        screenX,
@@ -83,15 +86,17 @@ func (a *App) runMouseMoveAndClick(part *game.MouseMoveAndClickPart, corrID stri
 // runMouseMove dispatches a MouseMovePart on its method field and returns the
 // action label and error.
 //
-// WINDOW_MESSAGE posts a single WM_MOUSEMOVE to the bound HWND with the
+// WINDOW_MESSAGE posts a single WM_MOUSEMOVE to the selected HWND with the
 // part's client coords; no OS cursor movement. SIMULATED converts
-// screenshot-relative coords to screen-absolute via the bound window's
+// screenshot-relative coords to screen-absolute via the selected window's
 // bounds and repositions the cursor (existing behavior).
-func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, error) {
+//
+// hwnd is the resolved selected window handle (spec 025 FR-006).
+func (a *App) runMouseMove(part *game.MouseMovePart, corrID string, hwnd uintptr) (string, error) {
 	switch operation.EffectiveMethod(part.GetMethod()) {
 	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
 		label := "move(window_message)"
-		if err := operation.ExecuteWindowMessageMove(a.boundWin.Handle, part.GetXPx(), part.GetYPx()); err != nil {
+		if err := operation.ExecuteWindowMessageMove(hwnd, part.GetXPx(), part.GetYPx()); err != nil {
 			return label, fmt.Errorf("window-message move: %w", err)
 		}
 		a.logger.Info("backend", "mouse action executed", map[string]any{
@@ -99,15 +104,14 @@ func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, err
 			"correlation_id": corrID,
 			"action":         label,
 			"method":         "window_message",
-			"window_handle":  a.boundWin.Handle,
-			"window_title":   a.boundWin.Title,
+			"window_handle":  hwnd,
 			"client_x_px":    part.GetXPx(),
 			"client_y_px":    part.GetYPx(),
 		})
 		return label, nil
 	default:
 		label := "move"
-		bounds, bErr := capture.CaptureWindowBounds(a.boundWin.Handle)
+		bounds, bErr := capture.CaptureWindowBounds(hwnd)
 		if bErr != nil {
 			return label, fmt.Errorf("capture window bounds: %w", bErr)
 		}
@@ -123,8 +127,7 @@ func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, err
 			"correlation_id":  corrID,
 			"action":          label,
 			"method":          "simulated",
-			"window_handle":   a.boundWin.Handle,
-			"window_title":    a.boundWin.Title,
+			"window_handle":   hwnd,
 			"screenshot_x_px": part.GetXPx(),
 			"screenshot_y_px": part.GetYPx(),
 			"screen_x":        screenX,
@@ -151,9 +154,11 @@ func (a *App) runMouseMove(part *game.MouseMovePart, corrID string) (string, err
 // MouseClickPart with WINDOW_MESSAGE has no well-defined target.
 //
 // SIMULATED (and UNSPECIFIED → SIMULATED) preserves the existing behavior:
-// the bound window is foregrounded (synthetic clicks are otherwise consumed
+// the selected window is foregrounded (synthetic clicks are otherwise consumed
 // by activation) and button events fire at the cursor's current position.
-func (a *App) runMouseClick(part *game.MouseClickPart, corrID string) (string, error) {
+//
+// hwnd is the resolved selected window handle (spec 025 FR-006).
+func (a *App) runMouseClick(part *game.MouseClickPart, corrID string, hwnd uintptr) (string, error) {
 	switch operation.EffectiveMethod(part.GetMethod()) {
 	case game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE:
 		label := "click(window_message)"
@@ -161,12 +166,12 @@ func (a *App) runMouseClick(part *game.MouseClickPart, corrID string) (string, e
 	default:
 		// Synthetic clicks (SendInput) are consumed by Windows for window
 		// activation when the target is not the foreground window, so the
-		// bound window must be foreground before the button event fires —
+		// selected window must be foreground before the button event fires —
 		// otherwise the click lands as an activation gesture with no
 		// application-level effect. The cursor position from the preceding
 		// mouse_move is preserved by SetForeground.
 		label := part.GetClick().String()
-		a.logSetForeground(part.GetToolId(), corrID)
+		a.logSetForeground(hwnd, part.GetToolId(), corrID)
 		if err := operation.ExecuteClickAtCurrentPos(part.GetClick()); err != nil {
 			return label, fmt.Errorf("click action: %w", err)
 		}
@@ -174,19 +179,19 @@ func (a *App) runMouseClick(part *game.MouseClickPart, corrID string) (string, e
 	}
 }
 
-// logSetForeground foregrounds the bound window and logs the foreground
+// logSetForeground foregrounds the selected window and logs the foreground
 // transition. Pulled into a helper so the SIMULATED click and move-and-click
 // paths share identical behavior. The previous foreground state and the
-// SetForeground return value are logged for diagnostic continuity.
-func (a *App) logSetForeground(toolID, corrID string) {
+// SetForeground return value are logged for diagnostic continuity. hwnd is the
+// resolved selected window handle (spec 025 FR-006).
+func (a *App) logSetForeground(hwnd uintptr, toolID, corrID string) {
 	fgBefore := capture.ForegroundWindow()
-	fgOk := capture.SetForeground(a.boundWin.Handle)
+	fgOk := capture.SetForeground(hwnd)
 	fgAfter := capture.ForegroundWindow()
 	a.logger.Info("backend", "click: foreground state", map[string]any{
 		"tool_id":           toolID,
 		"correlation_id":    corrID,
-		"window_handle":     a.boundWin.Handle,
-		"window_title":      a.boundWin.Title,
+		"window_handle":     hwnd,
 		"foreground_before": fgBefore,
 		"set_foreground_ok": fgOk,
 		"foreground_after":  fgAfter,

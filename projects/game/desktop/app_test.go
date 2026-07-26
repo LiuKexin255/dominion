@@ -707,12 +707,13 @@ func TestListMessages_Error(t *testing.T) {
 	}
 }
 
-// Test_executeAgentOperation_NoWindowBound verifies Rule 6: when no window is
-// bound the result is FAILED with "no window bound" and no screenshot is
-// attached (precondition early-return — no screenshot is possible without a
-// bound window).
-func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
-	// given: App with no bound window (boundWin.Handle zero value)
+// Test_executeAgentOperation_NoWindowSelected verifies spec 025 FR-005: when no
+// window is selected the result is FAILED with "no window selected" and no
+// screenshot is attached (precondition early-return — no screenshot is
+// possible without a selected window). Replaces the former "no window bound"
+// guard removed in spec 025 FR-006.
+func Test_executeAgentOperation_NoWindowSelected(t *testing.T) {
+	// given: App with no selected window (selectedWin zero value)
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
@@ -733,11 +734,11 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 	if got := result.GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
 		t.Fatalf("expected FAILED status, got %s", got)
 	}
-	if !strings.Contains(result.GetMessage(), "no window bound") {
-		t.Errorf("expected message to mention 'no window bound', got %q", result.GetMessage())
+	if !strings.Contains(result.GetMessage(), "no window selected") {
+		t.Errorf("expected message to mention 'no window selected', got %q", result.GetMessage())
 	}
 	if result.GetScreenshot() != nil {
-		t.Errorf("expected nil screenshot when no window is bound, got non-nil")
+		t.Errorf("expected nil screenshot when no window is selected, got non-nil")
 	}
 	if result.GetToolId() != "op-no-window" {
 		t.Errorf("expected tool_id %q, got %q", "op-no-window", result.GetToolId())
@@ -755,18 +756,23 @@ func Test_executeAgentOperation_NoWindowBound(t *testing.T) {
 // screenshot capture failures are recorded. Status reflects the action
 // failure (never SUCCEEDED), screenshot is nil.
 func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing.T) {
-	// given: App with a bound window. A click action skips bounds capture /
-	// coordinate conversion and dispatches ExecuteClickAtCurrentPos, which
-	// fails on the Linux stub; CaptureWindow (screenshot) also fails,
-	// exercising the error-accumulation path.
+	// given: App with a selected window (Linux stubs make every executor fail,
+	// but the resolved handle lets executeAgentOperation proceed to the action
+	// phase rather than short-circuiting at "no window selected"). A click
+	// action on the Linux stub fails inside ExecuteClickAtCurrentPos ("not
+	// supported") and CaptureWindow (screenshot) also returns "not supported",
+	// which is the exact Rule 5 scenario. The click path performs no window
+	// bounds capture or coordinate conversion, so only the click action and the
+	// screenshot capture failures are recorded. Status reflects the action
+	// failure (never SUCCEEDED), screenshot is nil.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
-	app.boundWin = capture.WindowRef{
+	selectWindowForTest(t, app, capture.WindowRef{
 		Handle:      1,
 		Title:       "stub-window",
 		ScaleFactor: 1.0,
-	}
+	})
 
 	op := &game.FlowPart{
 		Kind: &game.FlowPart_MouseClick{
@@ -1039,8 +1045,8 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	defer srv.Close()
 
 	// given: App with a chatstream Registry (stream pre-opened). No window is
-	// bound, so executeAgentOperation fails fast with "no window bound" — the
-	// result frame is still produced and sent over the WS.
+	// selected, so executeAgentOperation fails fast with "no window selected" —
+	// the result frame is still produced and sent over the WS.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
@@ -1091,7 +1097,7 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 		t.Errorf("result tool_id = %q, want %q", resultPart.GetToolId(), "click-1")
 	}
 	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
-		t.Errorf("result status = %v, want FAILED (no window bound)", resultPart.GetStatus())
+		t.Errorf("result status = %v, want FAILED (no window selected)", resultPart.GetStatus())
 	}
 
 	// and: the chatstream does NOT mirror the operation request or the result —
@@ -1198,7 +1204,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	})
 	defer srv.Close()
 
-	// given: App with a chatstream Registry. No window is bound, so
+	// given: App with a chatstream Registry. No window is selected, so
 	// executeAgentOperation fails fast — but the FlowResultPart must still be
 	// produced and sent (proving the filter admitted op).
 	logger := applog.NewLogger()
@@ -1250,7 +1256,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 		t.Errorf("tool_id = %q, want %q", resultPart.GetToolId(), toolID)
 	}
 	if resultPart.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
-		t.Errorf("status = %v, want FAILED (no window bound — expected precondition failure, not filter rejection)",
+		t.Errorf("status = %v, want FAILED (no window selected — expected precondition failure, not filter rejection)",
 			resultPart.GetStatus())
 	}
 }
@@ -1262,17 +1268,17 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 // "keyboard press" — proving the keyboard path was taken rather than the
 // mouse path.
 func Test_executeAgentOperation_KeyboardPressPart_RoutesToKeyboardExecutor(t *testing.T) {
-	// given: App with a bound window (Linux stubs make every executor fail,
-	// but the bound handle lets executeAgentOperation proceed to the action
-	// phase rather than short-circuiting at "no window bound").
+	// given: App with a selected window (Linux stubs make every executor fail,
+	// but the resolved handle lets executeAgentOperation proceed to the action
+	// phase rather than short-circuiting at "no window selected").
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
-	app.boundWin = capture.WindowRef{
+	selectWindowForTest(t, app, capture.WindowRef{
 		Handle:      1,
 		Title:       "stub-window",
 		ScaleFactor: 1.0,
-	}
+	})
 
 	op := &game.FlowPart{
 		Kind: &game.FlowPart_KeyboardPress{
@@ -1313,11 +1319,11 @@ func Test_executeAgentOperation_MouseMoveAndClickPart_WindowMessageRoutes(t *tes
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
-	app.boundWin = capture.WindowRef{
+	selectWindowForTest(t, app, capture.WindowRef{
 		Handle:      1,
 		Title:       "stub-window",
 		ScaleFactor: 1.0,
-	}
+	})
 
 	op := &game.FlowPart{
 		Kind: &game.FlowPart_MouseMoveAndClick{
@@ -1375,11 +1381,11 @@ func Test_executeAgentOperation_MouseMoveAndClickPart_SimulatedRoutes(t *testing
 			logger := applog.NewLogger()
 			app := NewApp(logger)
 			app.SetContext(context.Background())
-			app.boundWin = capture.WindowRef{
+			selectWindowForTest(t, app, capture.WindowRef{
 				Handle:      1,
 				Title:       "stub-window",
 				ScaleFactor: 1.0,
-			}
+			})
 
 			op := &game.FlowPart{
 				Kind: &game.FlowPart_MouseMoveAndClick{
@@ -1415,11 +1421,11 @@ func Test_executeAgentOperation_MouseMovePart_WindowMessageRoutes(t *testing.T) 
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
-	app.boundWin = capture.WindowRef{
+	selectWindowForTest(t, app, capture.WindowRef{
 		Handle:      1,
 		Title:       "stub-window",
 		ScaleFactor: 1.0,
-	}
+	})
 
 	op := &game.FlowPart{
 		Kind: &game.FlowPart_MouseMove{
@@ -1454,11 +1460,11 @@ func Test_executeAgentOperation_MouseClickPart_WindowMessageRejected(t *testing.
 	logger := applog.NewLogger()
 	app := NewApp(logger)
 	app.SetContext(context.Background())
-	app.boundWin = capture.WindowRef{
+	selectWindowForTest(t, app, capture.WindowRef{
 		Handle:      1,
 		Title:       "stub-window",
 		ScaleFactor: 1.0,
-	}
+	})
 
 	op := &game.FlowPart{
 		Kind: &game.FlowPart_MouseClick{
@@ -1504,11 +1510,11 @@ func Test_executeAgentOperation_MouseClickPart_SimulatedUnchangedBehavior(t *tes
 			logger := applog.NewLogger()
 			app := NewApp(logger)
 			app.SetContext(context.Background())
-			app.boundWin = capture.WindowRef{
+			selectWindowForTest(t, app, capture.WindowRef{
 				Handle:      1,
 				Title:       "stub-window",
 				ScaleFactor: 1.0,
-			}
+			})
 
 			op := &game.FlowPart{
 				Kind: &game.FlowPart_MouseClick{
@@ -2078,5 +2084,189 @@ func Test_describeFlowPart(t *testing.T) {
 		if len(got.details) != 0 {
 			t.Fatalf("non-operation details: want empty map, got %#v", got.details)
 		}
+	}
+}
+
+// --- Selected-window tests (spec 025 US1 — single source of truth) ---
+//
+// The selected window replaces the removed App.boundWin
+// (specs/025-desktop-image-state-refine/contracts/window-select-contract.md).
+// These tests cover the resolve path (no selection ⇒ graceful failure,
+// re-select retargets) and the setter, which are the behaviors US1 adds; the
+// operation routing tests above (which now call selectWindowForTest) cover the
+// select-then-op path.
+
+// selectWindowForTest sets the selected window handle on app and injects a
+// mock window list (overriding the package-level listWindows) so
+// resolveSelectedWindow returns win for the handle. The real capture.ListWindows
+// returns "not supported" on the Linux test host, so operations/screenshots
+// that need a resolved window require this injection. Cleanup restores the
+// original listWindows. See contracts/window-select-contract.md §2.3.
+func selectWindowForTest(t *testing.T, app *App, win capture.WindowRef) {
+	t.Helper()
+	orig := listWindows
+	listWindows = func(context.Context) ([]capture.WindowRef, error) {
+		return []capture.WindowRef{win}, nil
+	}
+	t.Cleanup(func() { listWindows = orig })
+	app.SetSelectedWindow(win.Handle)
+}
+
+// TestSetSelectedWindow verifies the Wails-bound setter stores the handle on
+// the App (spec 025 FR-006: selected window is set on dropdown selection).
+func TestSetSelectedWindow(t *testing.T) {
+	// given: a fresh App
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when: SetSelectedWindow stores a handle
+	app.SetSelectedWindow(42)
+
+	// then: the field holds the value under its mutex
+	app.selectedMu.Lock()
+	got := app.selectedWin
+	app.selectedMu.Unlock()
+	if got != 42 {
+		t.Errorf("expected selectedWin=42, got %d", got)
+	}
+}
+
+// Test_resolveSelectedWindow_NoSelection verifies FR-005: with no window
+// selected, resolveSelectedWindow fails gracefully with "no window selected".
+func Test_resolveSelectedWindow_NoSelection(t *testing.T) {
+	// given: App with no selected window (selectedWin zero value)
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when
+	_, err := app.resolveSelectedWindow()
+
+	// then: graceful failure, no crash
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no window selected") {
+		t.Errorf("expected 'no window selected', got %q", err.Error())
+	}
+}
+
+// Test_resolveSelectedWindow_WindowNotFound verifies the FR-005 edge case:
+// when the selected handle is no longer in the window list (the window closed
+// between selection and use), resolve fails gracefully. The user can recover
+// by selecting another window.
+func Test_resolveSelectedWindow_WindowNotFound(t *testing.T) {
+	// given: an empty injected window list and a selected handle that is not
+	// in it.
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	orig := listWindows
+	listWindows = func(context.Context) ([]capture.WindowRef, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { listWindows = orig })
+	app.SetSelectedWindow(999)
+
+	// when
+	_, err := app.resolveSelectedWindow()
+
+	// then: graceful failure mentioning "not found"
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found', got %q", err.Error())
+	}
+}
+
+// Test_resolveSelectedWindow_ReselectRetargets verifies FR-004: re-selecting a
+// different window makes the next resolve return the new selection. The
+// resolver reads the current handle on every call, so a mid-session re-select
+// retargets subsequent operations/screenshots with no follow-up action.
+func Test_resolveSelectedWindow_ReselectRetargets(t *testing.T) {
+	// given: an injected list with two windows so either handle resolves
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	orig := listWindows
+	listWindows = func(context.Context) ([]capture.WindowRef, error) {
+		return []capture.WindowRef{
+			{Handle: 100, Title: "window-A", ScaleFactor: 1.0},
+			{Handle: 200, Title: "window-B", ScaleFactor: 2.0},
+		}, nil
+	}
+	t.Cleanup(func() { listWindows = orig })
+
+	// when: select window A; resolve
+	app.SetSelectedWindow(100)
+	win, err := app.resolveSelectedWindow()
+	if err != nil {
+		t.Fatalf("first resolve: unexpected error: %v", err)
+	}
+	// then: resolve returns window A
+	if win.Handle != 100 || win.Title != "window-A" || win.ScaleFactor != 1.0 {
+		t.Errorf("first resolve: got handle=%d title=%q scale=%v, want 100/window-A/1.0",
+			win.Handle, win.Title, win.ScaleFactor)
+	}
+
+	// when: re-select window B (retarget); resolve
+	app.SetSelectedWindow(200)
+	win, err = app.resolveSelectedWindow()
+	if err != nil {
+		t.Fatalf("second resolve: unexpected error: %v", err)
+	}
+	// then: resolve returns window B — the new selection is now the target
+	if win.Handle != 200 || win.Title != "window-B" || win.ScaleFactor != 2.0 {
+		t.Errorf("second resolve: got handle=%d title=%q scale=%v, want 200/window-B/2.0",
+			win.Handle, win.Title, win.ScaleFactor)
+	}
+}
+
+// TestCaptureScreenshot_NoSelection verifies FR-005: CaptureScreenshot with no
+// window selected fails gracefully (no crash, no silent no-op).
+func TestCaptureScreenshot_NoSelection(t *testing.T) {
+	// given: App with no selected window
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+
+	// when
+	_, err := app.CaptureScreenshot()
+
+	// then: graceful failure
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no window selected") {
+		t.Errorf("expected 'no window selected', got %q", err.Error())
+	}
+}
+
+// TestCaptureScreenshot_SelectionButCaptureFails verifies that with a selected
+// window the capture path is reached. On the Linux test host CaptureWindow
+// returns "not supported" — the error proves resolve succeeded (no
+// "no window selected" precondition failure) and capture was attempted.
+func TestCaptureScreenshot_SelectionButCaptureFails(t *testing.T) {
+	// given: App with a selected window
+	logger := applog.NewLogger()
+	app := NewApp(logger)
+	app.SetContext(context.Background())
+	selectWindowForTest(t, app, capture.WindowRef{
+		Handle:      1,
+		Title:       "stub-window",
+		ScaleFactor: 1.0,
+	})
+
+	// when
+	_, err := app.CaptureScreenshot()
+
+	// then: the failure is from the capture stub, NOT from the precondition
+	if err == nil {
+		t.Fatal("expected error from stub capture, got nil")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("expected 'not supported' from Linux stub (resolve succeeded), got %q", err.Error())
 	}
 }

@@ -16,7 +16,7 @@
     updateAgentProfile,
     refreshAgent,
     listWindows,
-    bindWindow,
+    setSelectedWindow,
     captureScreenshot,
     sendUserTurn,
     openChatStream,
@@ -148,6 +148,20 @@
     // rows on the next session entry (contracts/debug-drawer-contract.md §5).
     heldOperations = []
   }
+
+  // Push the selected window handle to the backend on every dropdown change.
+  // Selecting a window is sufficient to make it the target for every
+  // screenshot and operation — there is no separate "bind" step (spec 025
+  // FR-001/FR-006, contracts/window-select-contract.md §2.1). Re-selecting a
+  // different window retargets subsequent ops (FR-004). The undefined initial
+  // value and the resetPlayPageState clear are skipped (no selection).
+  $effect(() => {
+    const h = selectedWindowHandle
+    if (h == null) return
+    void setSelectedWindow(h).catch((e: unknown) => {
+      log('error', 'windows', `SetSelectedWindow failed: ${String(e)}`)
+    })
+  })
 
   // applyDebugMode pushes the current debugMode to the frontend logger gate and
   // the Go backend SetDebugMode bound method, keeping the two layers in sync
@@ -767,11 +781,15 @@
     }
   }
 
+  // handleCaptureScreenshot captures the selected window and attaches the
+  // screenshot to the next user message. The selected window is used directly
+  // — there is no separate "bind" step (spec 025 FR-001/FR-006). The Capture
+  // affordance remains a user-initiated "attach a screenshot to my next
+  // message" action only; it is NOT a prerequisite for operations.
   async function handleCaptureScreenshot() {
     if (selectedWindowHandle == null) return
     capturing = true
     try {
-      await bindWindow(selectedWindowHandle)
       const img = await captureScreenshot()
       pendingScreenshot = {
         dataUrl: 'data:image/png;base64,' + img.data,
