@@ -130,7 +130,8 @@ function callTool(
 	}, fakeExtra);
 }
 
-/** Pixel centre of cell (x, y) per `geometry.center` (data-model.md §7). */
+/** Pixel centre of cell (x, y) per `geometry.center`
+ * (specs/024-tool-render-coord-fix/data-model.md §3). */
 function centerX(x: number): number {
 	return BOARD_ORIGIN_X_PX + x * CELL_SIZE_PX + CELL_SIZE_PX / 2;
 }
@@ -269,7 +270,9 @@ describe("createSaoleiMcpServer: saolei_click (FR-020 / FR-021)", () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		const server = createSaoleiMcpServer(bridge);
 
-		// Cell (3, 4): centre = (24 + 3*32 + 16, 200 + 4*32 + 16) = (136, 344).
+		// Cell (3, 4): centre = (24 + 3*32 + 16, 104 + 4*32 + 16) = (136, 248)
+		// in WM_* client space (BOARD_ORIGIN_Y_PX = 200 − CHROME_OFFSET_Y_PX 96 = 104;
+		// specs/024-tool-render-coord-fix/data-model.md §3).
 		const result = await callTool(server, "saolei_click", { x: 3, y: 4 });
 
 		// FR-020: exactly one MouseMoveAndClickPart dispatched with LEFT_CLICK
@@ -350,7 +353,9 @@ describe("createSaoleiMcpServer: saolei_flag (FR-020)", () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		const server = createSaoleiMcpServer(bridge);
 
-		// Cell (2, 3): centre = (24 + 2*32 + 16, 200 + 3*32 + 16) = (104, 312).
+		// Cell (2, 3): centre = (24 + 2*32 + 16, 104 + 3*32 + 16) = (104, 216)
+		// in WM_* client space (BOARD_ORIGIN_Y_PX = 200 − CHROME_OFFSET_Y_PX 96 = 104;
+		// specs/024-tool-render-coord-fix/data-model.md §3).
 		const result = await callTool(server, "saolei_flag", { x: 2, y: 3 });
 
 		expect(dispatched).toHaveLength(1);
@@ -371,7 +376,9 @@ describe("createSaoleiMcpServer: saolei_chord_click (FR-020)", () => {
 		const { bridge, dispatched } = makeFakeBridge();
 		const server = createSaoleiMcpServer(bridge);
 
-		// Cell (1, 1): centre = (24 + 1*32 + 16, 200 + 1*32 + 16) = (72, 248).
+		// Cell (1, 1): centre = (24 + 1*32 + 16, 104 + 1*32 + 16) = (72, 152)
+		// in WM_* client space (BOARD_ORIGIN_Y_PX = 200 − CHROME_OFFSET_Y_PX 96 = 104;
+		// specs/024-tool-render-coord-fix/data-model.md §3).
 		const result = await callTool(server, "saolei_chord_click", { x: 1, y: 1 });
 
 		// FR-020: a single simultaneous left+right press (LEFT_RIGHT_PRESS),
