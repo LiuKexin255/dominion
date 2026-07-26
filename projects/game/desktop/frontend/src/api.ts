@@ -199,6 +199,44 @@ export function flowPartKind(part: FlowPart): FlowPartKind | undefined {
   return undefined
 }
 
+// The three render states a resolved tool-result bubble resolves to. This is
+// the single source of truth for tool-result status classification
+// (specs/024-tool-render-coord-fix/research.md D3;
+// specs/024-tool-render-coord-fix/data-model.md §1): a neutral status covers
+// both an explicit TOOL_RESULT_STATUS_UNSPECIFIED and an absent status field —
+// protojson omits zero-value enum fields without field presence
+// (https://protobuf.dev/programming-guides/json/#presence) — and saolei/MCP
+// tool results carry UNSPECIFIED (specs/023-saolei-mcp-refine C15/D12), so a
+// neutral result MUST map to 'neutral', never 'failed'.
+export type ToolResultStatusClass = 'succeeded' | 'failed' | 'neutral'
+
+// classifyToolResultStatus maps a ToolResultPart.status (protojson enum-name
+// string or numeric enum form) to one of the three render states. Accepts both
+// forms because protojson emits the enum name by default but may emit the
+// integer when the "emit enums as integers" option is set
+// (https://protobuf.dev/programming-guides/json/#json-options). undefined/null/
+// ''/0/"TOOL_RESULT_STATUS_UNSPECIFIED" all classify as 'neutral' so an absent
+// status (the protojson default-value omission) never reads as failure
+// (specs/024-tool-render-coord-fix/data-model.md §5).
+export function classifyToolResultStatus(
+  status: ToolResultStatus | string | undefined | null,
+): ToolResultStatusClass {
+  if (status == null) return 'neutral'
+  if (typeof status === 'number') {
+    if (status === ToolResultStatus.SUCCEEDED) return 'succeeded'
+    if (status === ToolResultStatus.FAILED) return 'failed'
+    return 'neutral'
+  }
+  switch (status) {
+    case 'TOOL_RESULT_STATUS_SUCCEEDED':
+      return 'succeeded'
+    case 'TOOL_RESULT_STATUS_FAILED':
+      return 'failed'
+    default:
+      return 'neutral'
+  }
+}
+
 // ─── Control Signals (FlowPart kinds; never persisted to history) ──────────
 // WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds, carried

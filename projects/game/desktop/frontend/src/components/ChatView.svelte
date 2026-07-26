@@ -1,6 +1,6 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender, ToolResultStatus, messagePartKind } from '../api'
+  import { FrameSender, messagePartKind, classifyToolResultStatus } from '../api'
   import type { MessagePart, ImagePart, ToolResultPart } from '../api'
   import { renderMarkdown } from '../markdown'
 
@@ -34,11 +34,6 @@
     | { kind: 'profile'; key: string; profile: string }
     | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart }
     | ToolItem
-
-  const TOOL_RESULT_SUCCESS_VALUES: ReadonlySet<string> = new Set<string>([
-    String(ToolResultStatus.SUCCEEDED),
-    'TOOL_RESULT_STATUS_SUCCEEDED',
-  ])
 
   let {
     messages,
@@ -170,13 +165,6 @@
     }
   }
 
-  function isToolResultSucceeded(status: number | string | undefined): boolean {
-    // protojson emits the proto name ("TOOL_RESULT_STATUS_SUCCEEDED"); accept
-    // both that and the numeric enum form.
-    if (status == null) return false
-    return TOOL_RESULT_SUCCESS_VALUES.has(String(status))
-  }
-
   // imageUrlForPart builds a display data URL from an ImagePart. protojson
   // delivers bytes as base64 (image.data) and the encoding as the proto enum
   // name (e.g. "IMAGE_ENCODING_PNG"); the proto currently defines PNG only.
@@ -258,10 +246,18 @@
             <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
           {/if}
         {:else if item.kind === 'tool'}
-          {@const succeeded = item.result ? isToolResultSucceeded(item.result.status) : false}
           {@const resolved = item.result != null}
+          {@const statusClass = resolved ? classifyToolResultStatus(item.result!.status) : 'neutral'}
+          {@const statusIcon = statusClass === 'succeeded' ? '✓' : statusClass === 'failed' ? '✗' : '›'}
+          {@const statusLabel = statusClass === 'succeeded' ? 'succeeded' : statusClass === 'failed' ? 'failed' : 'done'}
           <div class="msg-row msg-operation">
-            <div class="tool-bubble" class:tool-resolved-success={resolved && succeeded} class:tool-resolved-failure={resolved && !succeeded} data-testid="tool-bubble">
+            <div
+              class="tool-bubble"
+              class:tool-resolved-success={resolved && statusClass === 'succeeded'}
+              class:tool-resolved-failure={resolved && statusClass === 'failed'}
+              class:tool-resolved-neutral={resolved && statusClass === 'neutral'}
+              data-testid="tool-bubble"
+            >
               <div class="tool-head">
                 <span class="tool-name" data-testid="tool-name">{item.name ?? 'tool'}</span>
                 {#if item.argsJson}
@@ -270,8 +266,8 @@
               </div>
               {#if resolved}
                 <div class="tool-result">
-                  <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
-                  <span class="op-result-status">{succeeded ? 'succeeded' : (item.result!.status === 'TOOL_RESULT_STATUS_UNSPECIFIED' || item.result!.status === ToolResultStatus.UNSPECIFIED ? 'pending' : 'failed')}</span>
+                  <span class="op-result-icon">{statusIcon}</span>
+                  <span class="op-result-status">{statusLabel}</span>
                   {#if item.result!.message}
                     <span class="op-result-message">{item.result!.message}</span>
                   {/if}
@@ -754,6 +750,84 @@
     color: #8888aa;
     cursor: pointer;
     user-select: none;
+  }
+
+  /* ── Tool Bubble (tool call + result; specs/024-tool-render-coord-fix
+       data-model.md §2; research.md D5) ──
+     One evolving bubble per tool_call.id (specs/023-saolei-mcp-refine/spec.md FR-007). These rules reuse the
+     pre-refactor .op-card / .op-result-* visual language: a bordered monospace
+     box whose border/background tint reflects the resolved status
+     (success/failed/neutral — data-model.md §1). The legacy .op-* rules are
+     retained (research.md D5: removal optional). */
+  .tool-bubble {
+    max-width: 80%;
+    padding: 6px 10px;
+    background: rgba(74, 158, 255, 0.06);
+    border: 1px solid rgba(74, 158, 255, 0.2);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #a0c8ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .tool-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tool-name {
+    font-weight: 600;
+    color: #4a9eff;
+  }
+
+  .tool-args {
+    margin: 0;
+    padding: 6px 8px;
+    background: #0d0d2b;
+    border-radius: 4px;
+    font-size: 11px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .tool-result {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tool-pending {
+    margin-top: 4px;
+    color: #8888aa;
+    font-style: italic;
+  }
+
+  /* Resolved-state tints applied to .tool-bubble: success/failed reuse the
+     .op-result-success/.op-result-failure palette; neutral is the muted
+     palette for an absent/UNSPECIFIED status (protojson omits the zero-value
+     enum — https://protobuf.dev/programming-guides/json/#presence — so a
+     saolei/MCP result arrives with status absent and MUST read neutral, never
+     failed; data-model.md §1). */
+  .tool-resolved-success {
+    background: rgba(80, 250, 123, 0.08);
+    border-color: rgba(80, 250, 123, 0.3);
+    color: #50fa7b;
+  }
+
+  .tool-resolved-failure {
+    background: rgba(255, 107, 107, 0.08);
+    border-color: rgba(255, 107, 107, 0.3);
+    color: #ff6b6b;
+  }
+
+  .tool-resolved-neutral {
+    background: rgba(136, 136, 170, 0.08);
+    border-color: rgba(136, 136, 170, 0.3);
+    color: #8888aa;
   }
 
   /* ── Warn Bubble (control-signal payload) ── */
