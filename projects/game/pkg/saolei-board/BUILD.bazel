@@ -1,0 +1,90 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+
+npm_link_all_packages(name = "node_modules")
+
+# gazelle:exclude src/core/test-helpers.ts
+
+# ── Core library ────────────────────────────────────────────────────────────
+# The importable package (@dominion/game-saolei-board). External consumers
+# depend on :core and import the core barrel (src/core/index.ts). The CLI is a
+# separate target (:cli) that depends on this package by name.
+
+ts_project(
+    name = "core",
+    srcs = glob(
+        ["src/core/**/*.ts"],
+        exclude = [
+            "**/*.test.ts",
+            "src/core/test-helpers.ts",
+        ],
+    ),
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":node_modules/@types/node",
+        ":node_modules/@types/pngjs",
+        ":node_modules/pngjs",
+    ],
+)
+
+# Workspace package target: gives :core the package name so
+# `@dominion/game-saolei-board` resolves via npm_link_all_packages (the same
+# pattern common/js packages use — see common/js/logs/BUILD.bazel).
+js_library(
+    name = "pkg",
+    srcs = [
+        "package.json",
+        ":core",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# ── CLI shell ───────────────────────────────────────────────────────────────
+# `bazel run //projects/game/pkg/saolei-board:cli -- <screenshot.png>`.
+# A thin shell over the core library; imports @dominion/game-saolei-board so it
+# stays decoupled from the core's internal layout.
+
+ts_project(
+    name = "cli_lib",
+    srcs = ["src/cli/cli.ts"],
+    declaration = True,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":core",
+        ":node_modules/@types/node",
+    ],
+)
+
+js_binary(
+    name = "cli",
+    data = [
+        ":cli_lib",
+        ":core",
+    ],
+    entry_point = "src/cli/cli.js",
+    visibility = ["//visibility:public"],
+)
+
+# ── Tests ───────────────────────────────────────────────────────────────────
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    # Test against the package's raw .ts source (NOT the compiled :core), per
+    # style/javascript.md §js_test 执行模型 and the vitest_test macro contract.
+    data = glob(
+        ["src/core/**/*.ts"],
+        allow_empty = True,
+    ) + glob(["testdata/*.png"]) + glob(["testdata/*.golden.txt"]) + [
+        ":node_modules/@types/node",
+        ":node_modules/@types/pngjs",
+        ":node_modules/pngjs",
+    ],
+)
