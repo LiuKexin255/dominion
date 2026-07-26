@@ -7,6 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -49,6 +53,14 @@ const (
 // only verify the server accepts and processes the multimodal frame.
 var smallScreenshotData = mustBase64PNG()
 
+// largeScreenshotData is a PNG whose encoded size exceeds the pre-025
+// `coder/websocket` default ReadLimit of 32 KiB. It exercises the binary-
+// protobuf WS path (spec 025 FR-007/FR-008/FR-010) — under the old protojson
+// text + 32 KiB limit regime this frame would have torn the WS session down
+// with `ErrMessageTooBig`. Built from a deterministic noise pattern so PNG
+// compression cannot shrink it below the threshold.
+var largeScreenshotData = mustLargePNG()
+
 // mouseSplitToolNames is the post-015 mouse tool surface shared by the
 // agent_operation and agent_checkpoint suites: mouse_move positions the
 // cursor, mouse_click fires at the current position. Declaring both on a
@@ -73,6 +85,35 @@ func mustBase64PNG() []byte {
 		panic(fmt.Sprintf("decode test png: %v", err))
 	}
 	return raw
+}
+
+// mustLargePNG builds a deterministic PNG whose encoded size exceeds the
+// pre-025 `coder/websocket` default ReadLimit (32 KiB). A high-entropy RGB
+// pattern is used so PNG compression cannot deflate it below the threshold.
+// Panics on encode failure (a bug in the test itself).
+//
+// Used by the large-image round-trip test (spec 025 FR-007/FR-010): under
+// the old default 32 KiB read limit + protojson text regime, a frame carrying
+// this image would have torn the WS session down with `ErrMessageTooBig`.
+func mustLargePNG() []byte {
+	const w, h = 128, 128 // 128×128 RGB ≈ 49 KiB raw, well above 32 KiB encoded
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			// Deterministic high-entropy pattern (no LFSR/RNG dependency):
+			// mix the coordinates so neighbouring pixels differ widely,
+			// defeating PNG's DEFLATE.
+			r := uint8((x*73 + y*151) ^ (x ^ y))
+			g := uint8((x*197 + y*31) ^ (x * y))
+			b := uint8((x*11 + y*223) ^ (x | y))
+			img.SetRGBA(x, y, color.RGBA{R: r, G: g, B: b, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(fmt.Sprintf("encode large test png: %v", err))
+	}
+	return buf.Bytes()
 }
 
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
@@ -420,22 +461,34 @@ func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, sessionID string) *web
 	return conn
 }
 
-// writeWSFrame marshals a proto frame to protojson and writes it over the
-// WebSocket connection. Calls t.Fatal on marshal or write errors.
+// writeWSFrame marshals a proto frame to binary protobuf and writes it over
+// the WebSocket connection. Calls t.Fatal on marshal or write errors.
+//
+// spec 025 FR-011 / image-transport-contract.md §2: the desktop↔gateway WS
+// leg now carries binary protobuf frames (was protojson text). The large
+// tests connect through the gateway and MUST speak the same wire format,
+// otherwise the gateway's `proto.Unmarshal` on a text frame fails and the
+// connection is closed. `proto.Marshal` is also the compact representation
+// required by FR-008 (no base64 inflation of image bytes).
 func writeWSFrame(t *testing.T, conn *websocket.Conn, frame *game.AgentFrame) {
 	t.Helper()
 
-	data, err := protojson.Marshal(frame)
+	data, err := proto.Marshal(frame)
 	if err != nil {
-		t.Fatalf("protojson.Marshal frame: %v", err)
+		t.Fatalf("proto.Marshal frame: %v", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		t.Fatalf("WriteMessage: %v", err)
 	}
 }
 
 // readWSFrame reads a single WebSocket message and unmarshals it into an
 // AgentFrame. Calls t.Fatal on timeout or parse error.
+//
+// The WS leg is binary protobuf (see writeWSFrame doc); `proto.Unmarshal`
+// preserves unknown fields per the proto spec, matching the forward-
+// compatibility behaviour that `protojson.Unmarshal{DiscardUnknown:true}`
+// provided before spec 025.
 func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 	t.Helper()
 
@@ -446,9 +499,8 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 	}
 
 	frame := new(game.AgentFrame)
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(data, frame); err != nil {
-		t.Fatalf("Unmarshal AgentFrame: %v (raw: %s)", err, string(data))
+	if err := proto.Unmarshal(data, frame); err != nil {
+		t.Fatalf("Unmarshal AgentFrame: %v (raw len=%d)", err, len(data))
 	}
 	return frame
 }
@@ -511,6 +563,39 @@ func buildImageFrame(sessionID string) *game.ImagePart {
 	}
 }
 
+// buildLargeImageFrame constructs an ImagePart whose encoded PNG size exceeds
+// the pre-025 `coder/websocket` default ReadLimit of 32 KiB
+// (largeScreenshotData). Used by the large-image round-trip test to prove the
+// binary-protobuf WS path (spec 025 FR-007/FR-008/FR-010) delivers an
+// oversized frame intact (would have torn the session down under the old
+// protojson-text + 32 KiB regime).
+func buildLargeImageFrame(sessionID string) *game.ImagePart {
+	return &game.ImagePart{
+		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:        largeScreenshotData,
+		WidthPx:     128,
+		HeightPx:    128,
+		ScaleFactor: 1.0,
+		WindowTitle: "Large Test Window",
+	}
+}
+
+// buildSaoleiFlowResultScreenshot constructs an ImagePart carrying a real
+// Minesweeper screenshot (saoleiBoardInitPNG or saoleiBoardRevealedPNG) — the
+// data the test "playing the desktop" attaches to a FlowResultPart so the
+// agent's real @dominion/game-saolei-board recognition engine can decode the
+// board (spec 025 FR-012/FR-013). Dimensions/ScaleFactor mirror a full-window
+// capture; only `data` feeds recognition (origin 24/200, cell 32×32px per the
+// saolei-board README).
+func buildSaoleiFlowResultScreenshot(pngData []byte) *game.ImagePart {
+	return &game.ImagePart{
+		Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+		Data:        pngData,
+		ScaleFactor: 1.0,
+		WindowTitle: "Minesweeper",
+	}
+}
+
 // buildUserTurnFrame constructs an AgentFrame whose message_parts payload
 // carries [TextPart, (optional) ImagePart]. Pass a nil image for a text-only
 // user turn (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
@@ -538,22 +623,41 @@ func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, te
 	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, image))
 }
 
-// buildOperationResultFrame constructs an AgentFrame whose message_parts
-// payload carries a single ToolResultPart. Used to simulate a desktop-executed
-// tool operation result delivered back to the agent over the operation channel
-// (the desktop replies with a tool_result MessagePart frame whose tool_id
-// matches the FlowPart operation's bridge-minted id — research.md D10).
+// buildOperationResultFrame constructs an AgentFrame whose flow_parts payload
+// carries a single FlowResultPart. Used to simulate a desktop-executed tool
+// operation result delivered back to the agent on the CONTROL channel
+// (spec 025 FR-023/FR-024 — the desktop reports operation outcomes as a
+// flow_result FlowPart, NOT a display tool_result MessagePart; the agent's
+// handler.ts routes flowParts/flow_result to OperationBridge.handleResult,
+// resolving the pending dispatch). tool_id matches the bridge-minted
+// operation-channel id stamped on the originating FlowPart.
+//
+// This variant carries no screenshot; use buildFlowResultFrame for the
+// screenshot-bearing variant (saolei tests).
 func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string) *game.AgentFrame {
+	return buildFlowResultFrame(sessionID, toolID, status, message, nil)
+}
+
+// buildFlowResultFrame is the screenshot-bearing variant of
+// buildOperationResultFrame. The screenshot is attached to the FlowResultPart
+// (spec 025 FR-026 — control-channel carrier for the post-action screenshot);
+// pass nil to omit it. Saolei tests use this so the agent's recognition engine
+// (@dominion/game-saolei-board) can consume the screenshot.
+func buildFlowResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string, screenshot *game.ImagePart) *game.AgentFrame {
+	part := &game.FlowResultPart{
+		ToolId:  toolID,
+		Status:  status,
+		Message: message,
+	}
+	if screenshot != nil {
+		part.Screenshot = screenshot
+	}
 	return &game.AgentFrame{
 		SessionId: sessionID,
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
-			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
-				{Kind: &game.MessagePart_ToolResult{ToolResult: &game.ToolResultPart{
-					ToolId:  toolID,
-					Status:  status,
-					Message: message,
-				}}},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_FlowResult{FlowResult: part}},
 			}},
 		},
 	}
@@ -1043,10 +1147,12 @@ func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame
 	return toolCallFrame, opFrame
 }
 
-// respondToOperation writes a ToolResultPart back over the WebSocket whose
+// respondToOperation writes a FlowResultPart back over the WebSocket whose
 // tool_id matches the operation frame's stamped bridge-minted id, simulating
-// a desktop that executed the operation. The bridge's handleResult resolves
-// the pending dispatch so the model's tool-call loop continues (research.md D10).
+// a desktop that executed the operation (spec 025 FR-023/FR-024 — control
+// channel). The bridge's handleResult resolves the pending dispatch so the
+// model's tool-call loop continues. No screenshot is attached (mouse-tool
+// tests rely on the agent emitting its own display tool_result).
 func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string) {
 	t.Helper()
 	toolID := frameOperationToolID(opFrame)
@@ -1054,6 +1160,19 @@ func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, op
 		t.Fatalf("respondToOperation: operation frame has no tool_id")
 	}
 	writeWSFrame(t, conn, buildOperationResultFrame(sessionID, toolID, status, message))
+}
+
+// respondToOperationWithScreenshot is the screenshot-bearing variant of
+// respondToOperation. The screenshot rides on the FlowResultPart (spec 025
+// FR-026 — control-channel carrier); saolei tests use it so the agent's
+// recognition engine can decode the board. Pass nil to omit the screenshot.
+func respondToOperationWithScreenshot(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string, screenshot *game.ImagePart) {
+	t.Helper()
+	toolID := frameOperationToolID(opFrame)
+	if toolID == "" {
+		t.Fatalf("respondToOperationWithScreenshot: operation frame has no tool_id")
+	}
+	writeWSFrame(t, conn, buildFlowResultFrame(sessionID, toolID, status, message, screenshot))
 }
 
 // ─── Tool-call / tool-result MessagePart helpers ────────────────────────────

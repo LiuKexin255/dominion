@@ -1,14 +1,20 @@
 // Package testplan contains agent operation-result integration tests.
 //
 // agent_operation_test.go validates the agent's mouse-tool dispatch chain
-// end-to-end against the deployed agent (quickstart.md Scenario 7 / SC-001):
+// end-to-end against the deployed agent (spec 025 spec.md FR-023..FR-026;
+// specs/023-saolei-mcp-refine/quickstart.md Scenario 7 / SC-001):
 // a user turn makes the model emit a real mouse_move tool_call, the agent
 // emits a tool_call MessagePart frame (live conversation channel), dispatches
 // a MouseMovePart FlowPart through OperationBridge (control channel), and the
 // test — playing the desktop — reads that operation Part and replies with a
-// ToolResultPart. The agent then emits a tool_result MessagePart frame whose
-// status is the REAL outcome (native mouse tool — D4). Both the succeeded and
-// failed result paths are covered.
+// FlowResultPart (spec 025 FR-023/FR-024 — control channel; was a display
+// tool_result MessagePart before 025). The agent's bridge.handleResult
+// resolves the pending dispatch from the FlowResultPart, the model continues,
+// and the agent emits a display tool_result MessagePart whose status is the
+// REAL outcome (native mouse tool — D4). Both the succeeded and failed
+// result paths are covered, plus the screenshot-forwarding path
+// (FlowResultPart.screenshot → mouse tool's display tool_result.screenshot,
+// spec 025 FR-025/FR-026).
 //
 // spec 023 D10 decoupling is asserted: the dispatched FlowPart carries a
 // bridge-minted operation-channel tool_id that is NOT the conversation-channel
@@ -37,14 +43,18 @@ import (
 // TestAgentOperationResultSuccess drives a real mouse_move tool_call from a
 // user turn (the fake-LLM "mouse-trigger" Message), lets the agent dispatch
 // the MouseMovePart through OperationBridge, and replies with a SUCCEEDED
-// ToolResultPart. The model then continues with text, proving the full
-// model→tool_call→dispatch→result chain fires and the connection survives.
+// FlowResultPart (spec 025 FR-023/FR-024 — control channel). The model then
+// continues with text, proving the full model→tool_call→dispatch→result
+// chain fires and the connection survives.
 //
 // Live emission (spec 023 FR-006) is asserted: the agent emits a tool_call
 // MessagePart frame before the operation and a tool_result MessagePart frame
 // after the reply. The dispatched FlowPart's bridge-minted tool_id MUST
 // differ from the conversation-channel tool_call.id (decoupling, research.md
 // D10). The native mouse tool carries the REAL status (D4) — SUCCEEDED here.
+// The display tool_result is emitted by the AGENT from the mouse tool's
+// LLM result (spec 025 FR-024/FR-025); the FlowResultPart the test sends
+// back is control-only and never appears in the conversation history.
 func TestAgentOperationResultSuccess(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -241,6 +251,109 @@ func TestAgentOperationResultFailed(t *testing.T) {
 		t.Errorf("ListMessages did not surface a FAILED tool_result MessagePart — the real FAILED status must survive history (FR-013/D4)")
 	}
 	// No operation FlowPart appears in Message.content (FR-005).
+	assertMessageContentDisplayOnly(t, lmr.GetMessages())
+}
+
+// TestAgentOperationFlowResultCarriesScreenshot verifies spec 025 FR-025/FR-026
+// end-to-end: a FlowResultPart.screenshot sent on the CONTROL channel by the
+// desktop is consumed by the agent's OperationBridge.handleResult, forwarded
+// by the native mouse tool into its display tool_result MessagePart, and
+// reaches the model as a display-channel screenshot. This is the mouse-tool
+// translation described in contracts/flow-result-contract.md §6 ("Native
+// mouse: reads screenshot from FlowResultPart → emits display tool_result
+// text + screenshot"), and it is the path that was previously carried by the
+// (now control-only) display tool_result before 025 separated the channels.
+//
+// The screenshot the test attaches to the FlowResultPart is small (1×1 PNG)
+// — the assertion is structural (screenshot survives the control→display
+// translation and appears in the live display tool_result frame and in
+// ListMessages history), not about image bytes, which fake-LLM ignores.
+func TestAgentOperationFlowResultCarriesScreenshot(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("op-shot-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "Operation screenshot forwarding test agent.",
+			ToolNames:    mouseSplitToolNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// when: a mouse_move tool_call dispatches.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
+	_, opFrame := readToolCallAndOperation(t, conn)
+	if frameMouseMove(opFrame) == nil {
+		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart FlowPart; frame parts: %v",
+			opFrame.GetFlowParts().GetParts())
+	}
+
+	// The test (desktop) replies with a SUCCEEDED FlowResultPart that carries
+	// a screenshot on the CONTROL channel (spec 025 FR-026). The mouse tool
+	// copies that screenshot into its display tool_result (FR-025).
+	respondToOperationWithScreenshot(t, conn, sessionID, opFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200",
+		buildImageFrame(sessionID))
+
+	// then (1): the agent emits a display tool_result MessagePart frame whose
+	// screenshot is the one carried by the FlowResultPart (control→display
+	// translation). The message intentionally avoids the "button"/"out of
+	// bounds" substrings so fake-LLM's mouse-move-success-text closes the loop.
+	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
+	if toolResultFrame == nil {
+		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
+	}
+	liveResult := frameToolResult(toolResultFrame)
+	if liveResult.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED {
+		t.Errorf("live tool_result.status = %v, want SUCCEEDED (native mouse tool carries the REAL status — D4)",
+			liveResult.GetStatus())
+	}
+	if liveResult.GetScreenshot() == nil {
+		t.Fatal("live tool_result.screenshot is nil — the FlowResultPart.screenshot MUST be forwarded into the mouse tool's display tool_result (spec 025 FR-025/FR-026)")
+	}
+	if len(liveResult.GetScreenshot().GetData()) == 0 {
+		t.Error("live tool_result.screenshot.data is empty — the screenshot bytes did not survive the control→display translation")
+	}
+
+	// then (2): the model continues with the terminal text frame — the
+	// connection survived the dispatch→result cycle.
+	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if textFrame == nil {
+		t.Fatal("connection unusable after tool result — agent did not recover")
+	}
+	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
+		t.Errorf("post-result text = %q, want to contain %q", frameText(textFrame), expectedMouseMoveSuccessText)
+	}
+
+	// then (3): ListMessages history carries the display tool_result with the
+	// screenshot (FR-009 — live and history render identically).
+	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
+	historyScreenshotFound := false
+	for _, m := range lmr.GetMessages() {
+		for _, p := range m.GetContent().GetParts() {
+			if tr := p.GetToolResult(); tr != nil && tr.GetScreenshot() != nil {
+				historyScreenshotFound = true
+				if len(tr.GetScreenshot().GetData()) == 0 {
+					t.Error("history tool_result.screenshot.data is empty — the screenshot bytes did not survive checkpoint reconstruction")
+				}
+			}
+		}
+	}
+	if !historyScreenshotFound {
+		t.Error("ListMessages did not surface a tool_result MessagePart carrying a screenshot — the display screenshot MUST survive history (spec 025 FR-025 / spec 023 FR-009)")
+	}
+	// No operation FlowPart appears in Message.content (FR-005); the
+	// FlowResultPart is control-only and never enters the conversation.
 	assertMessageContentDisplayOnly(t, lmr.GetMessages())
 }
 

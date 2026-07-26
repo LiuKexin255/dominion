@@ -13,6 +13,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -28,6 +29,7 @@ go_largetest(
         "//projects/game",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -44,6 +46,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -60,6 +63,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -76,6 +80,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -92,6 +97,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -108,9 +114,16 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
+# agent_saolei_test embeds real Minesweeper screenshots
+# (testdata/saolei_1.png, testdata/saolei_2.png) reused from the
+# @dominion/game-saolei-board golden testdata. The deployed agent runs the
+# real recognition engine (no DI seam), so the FlowResultPart.screenshot the
+# test attaches MUST be a recognizable board; the embedded PNGs are the
+# authoritative bytes owned by the saolei-board package (golden-tested).
 go_largetest(
     name = "agent_saolei_test",
     size = "small",
@@ -118,11 +131,16 @@ go_largetest(
         "agent_saolei_test.go",
         "helpers_test.go",
     ],
+    embedsrcs = [
+        "testdata/saolei_1.png",
+        "testdata/saolei_2.png",
+    ],
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
