@@ -31,11 +31,17 @@ import (
 var saoleiMcpNames = []string{"saolei"}
 
 // saolei cell geometry constants. The fake-LLM fixture drives
-// saolei_click{3,4} then saolei_click{5,6}; their window-client centres per
-// the fixed formula in projects/game/agent/src/mcp/saolei/geometry.ts
-// (centerX(x) = 24 + x*32 + 16, centerY(y) = 200 + y*32 + 16) are asserted on
-// the dispatched MouseMoveAndClickPart (specs/018-saolei-mcp/contracts/proto-operation-contract.md
-// §3; data-model.md §7).
+// saolei_click{3,4} then saolei_click{5,6}; their WM_* client-space cell
+// centres per the formula in projects/game/agent/src/mcp/saolei/geometry.ts
+// (centerX(x) = 24 + x*32 + 16, centerY(y) = 104 + y*32 + 16) are asserted on
+// the dispatched MouseMoveAndClickPart. centerY uses the client-space board
+// top BOARD_ORIGIN_Y_PX = BOARD_ORIGIN_Y_PX_SCREENSHOT(200) − CHROME_OFFSET_Y_PX(96)
+// = 104 — the screenshot→client chrome compensation applied in the agent
+// (specs/024-tool-render-coord-fix/research.md D1/D2) so the desktop's
+// WINDOW_MESSAGE path posts the coordinate verbatim (desktop-facing contract
+// unchanged — specs/018-saolei-mcp/contracts/proto-operation-contract.md §3;
+// specs/024-tool-render-coord-fix/contracts/coordinate-space-contract.md §4/§6;
+// specs/024-tool-render-coord-fix/data-model.md §3).
 const (
 	saoleiClick1X = 3
 	saoleiClick1Y = 4
@@ -43,9 +49,9 @@ const (
 	saoleiClick2Y = 6
 
 	saoleiClick1CenterX = 136 // 24 + 3*32 + 16
-	saoleiClick1CenterY = 344 // 200 + 4*32 + 16
+	saoleiClick1CenterY = 248 // 104 + 4*32 + 16
 	saoleiClick2CenterX = 200 // 24 + 5*32 + 16
-	saoleiClick2CenterY = 408 // 200 + 6*32 + 16
+	saoleiClick2CenterY = 312 // 104 + 6*32 + 16
 )
 
 // expectedSaoleiFinalText is the terminal text fake-LLM returns once the
