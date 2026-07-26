@@ -96,13 +96,20 @@ func Run(ctx context.Context, cfg *guitarconfig.Config, opts ...Option) error {
 		}
 	}
 
+	var results []*SuiteResult
+	defer func() {
+		r.Summary(results)
+	}()
+
 	for _, suite := range cfg.Suites {
 		err := runSuite(ctx, suite, r)
 		if err != nil {
 			r.SuiteStatus(suite.Name, statusFailure, err)
+			results = append(results, &SuiteResult{Name: suite.Name, Status: statusFailure, Err: err})
 			return err
 		}
 		r.SuiteStatus(suite.Name, statusSuccess, nil)
+		results = append(results, &SuiteResult{Name: suite.Name, Status: statusSuccess})
 	}
 
 	return nil

@@ -758,3 +758,94 @@ func TestReporter(t *testing.T) {
 		})
 	}
 }
+
+func TestSummary(t *testing.T) {
+	tests := []struct {
+		name         string
+		useColor     bool
+		results      []*SuiteResult
+		assertOutput func(t *testing.T, output string)
+	}{
+		{
+			name:    "empty results produces no output",
+			results: nil,
+			assertOutput: func(t *testing.T, output string) {
+				if output != "" {
+					t.Fatalf("output = %q, want empty", output)
+				}
+			},
+		},
+		{
+			name:     "single success no color",
+			useColor: false,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				for _, want := range []string{
+					"--- Summary ---",
+					"total: 1, passed: 1, failed: 0",
+					"  suite-a: success",
+				} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("output = %q, want containing %q", output, want)
+					}
+				}
+				if strings.Contains(output, "\x1b[") {
+					t.Fatalf("output = %q, must not contain ANSI codes", output)
+				}
+			},
+		},
+		{
+			name:     "all pass uses green counts in TTY",
+			useColor: true,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+				{Name: "suite-b", Status: statusSuccess},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				if !strings.Contains(output, colorGreen+"total: 2, passed: 2, failed: 0"+colorReset) {
+					t.Fatalf("output = %q, want green counts line", output)
+				}
+				if strings.Contains(output, colorRed) {
+					t.Fatalf("output = %q, must not contain red", output)
+				}
+			},
+		},
+		{
+			name:     "mixed results use red counts and per-suite colors",
+			useColor: true,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+				{Name: "suite-b", Status: statusFailure, Err: fmt.Errorf("boom")},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				if !strings.Contains(output, colorRed+"total: 2, passed: 1, failed: 1"+colorReset) {
+					t.Fatalf("output = %q, want red counts line", output)
+				}
+				if !strings.Contains(output, colorGreen+"success"+colorReset) {
+					t.Fatalf("output = %q, want green success", output)
+				}
+				if !strings.Contains(output, colorRed+"failure"+colorReset) {
+					t.Fatalf("output = %q, want red failure", output)
+				}
+				if !strings.Contains(output, "suite-b: "+colorRed+"failure"+colorReset+", error: boom") {
+					t.Fatalf("output = %q, want failure line with error", output)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalCheckTerminal := checkTerminal
+			checkTerminal = func(io.Writer) bool { return tt.useColor }
+			defer func() { checkTerminal = originalCheckTerminal }()
+
+			var buf bytes.Buffer
+			r := NewReporter(&buf)
+			r.Summary(tt.results)
+			tt.assertOutput(t, buf.String())
+		})
+	}
+}

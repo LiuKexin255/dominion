@@ -76,6 +76,63 @@ func (r *Reporter) Step(label string) {
 	fmt.Fprintf(r.w, "  %s\n", label)
 }
 
+// SuiteResult records the outcome of a single suite execution, consumed by
+// Summary to print an end-of-run recap.
+type SuiteResult struct {
+	Name   string
+	Status string
+	Err    error
+}
+
+// Summary prints a recap of suite outcomes: a total/passed/failed header line
+// followed by one status line per suite. It is emitted once at the end of Run
+// so `tail` of the output is enough to see every suite's result.
+//
+// Empty input produces no output.
+func (r *Reporter) Summary(results []*SuiteResult) {
+	if len(results) == 0 {
+		return
+	}
+
+	var passed, failed int
+	for _, res := range results {
+		if res.Status == statusSuccess {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	fmt.Fprintln(r.w, "--- Summary ---")
+
+	counts := fmt.Sprintf("total: %d, passed: %d, failed: %d", len(results), passed, failed)
+	if r.useColor {
+		if failed > 0 {
+			counts = colorRed + counts + colorReset
+		} else {
+			counts = colorGreen + counts + colorReset
+		}
+	}
+	fmt.Fprintln(r.w, counts)
+
+	for _, res := range results {
+		status := res.Status
+		if r.useColor {
+			switch res.Status {
+			case statusSuccess:
+				status = colorGreen + res.Status + colorReset
+			case statusFailure:
+				status = colorRed + res.Status + colorReset
+			}
+		}
+		if res.Err != nil {
+			fmt.Fprintf(r.w, "  %s: %s, error: %v\n", res.Name, status, res.Err)
+			continue
+		}
+		fmt.Fprintf(r.w, "  %s: %s\n", res.Name, status)
+	}
+}
+
 // defaultCheckTerminal returns true when w is a character device file (i.e. a
 // real terminal) and the TERM environment variable is non-empty and not "dumb".
 func defaultCheckTerminal(w io.Writer) bool {

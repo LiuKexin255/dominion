@@ -80,4 +80,13 @@ run={runID} env={envName} deploy={deployPath}
 - TTY 模式下自动启用颜色，非 TTY 或管道模式下自动禁用
 - 每个 suite 执行受其 `timeout` 或全局 `--timeout` 限制，超时则终止该 suite
 
+执行结束后输出一个 Summary，列出每个 suite 的结果与总计统计，方便用 `tail` 查看执行结果：
+
+```
+--- Summary ---
+total: 2, passed: 1, failed: 1
+  suite-a: success
+  suite-b: failure, error: <error>
+```
+
 注意：suite 中不再包含 `env` 字段。环境名由 `guitar run` 为每个 suite 自动生成（lt + 6 位 base36 随机串），并通过环境变量注入测试进程。
