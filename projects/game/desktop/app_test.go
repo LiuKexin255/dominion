@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -50,7 +51,7 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 			return
 		}
 		frame := new(game.AgentFrame)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 		// respond with a status signal (any response proves the round-trip).
@@ -65,8 +66,8 @@ func TestConnectAgent_ProbeSuccess(t *testing.T) {
 				}},
 			},
 		}
-		resp, _ := protojson.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageText, resp)
+		resp, _ := proto.Marshal(respFrame)
+		conn.Write(ctx, websocket.MessageBinary, resp)
 	})
 	defer srv.Close()
 
@@ -836,8 +837,8 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
-			data, _ := protojson.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+			data, _ := proto.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
 			}
 		}
@@ -921,8 +922,8 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 				}},
 			},
 		}
-		data, _ := protojson.Marshal(contentFrame)
-		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		data, _ := proto.Marshal(contentFrame)
+		if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 			return
 		}
 		// Closing after the write guarantees (via TCP ordering) the client
@@ -1026,7 +1027,7 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 					return
 				}
 				var f game.AgentFrame
-				if err := protojson.Unmarshal(data, &f); err == nil {
+				if err := proto.Unmarshal(data, &f); err == nil {
 					select {
 					case sentFrames <- &f:
 					default:
@@ -1035,8 +1036,8 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 			}
 		}()
 		for _, f := range []*game.AgentFrame{clickFrame, waitFrame} {
-			data, _ := protojson.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+			data, _ := proto.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
 			}
 		}
@@ -1186,7 +1187,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 					return
 				}
 				var f game.AgentFrame
-				if err := protojson.Unmarshal(data, &f); err == nil {
+				if err := proto.Unmarshal(data, &f); err == nil {
 					select {
 					case sentFrames <- &f:
 					default:
@@ -1195,8 +1196,8 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 			}
 		}()
 		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
-			data, _ := protojson.Marshal(f)
-			if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+			data, _ := proto.Marshal(f)
+			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
 			}
 		}

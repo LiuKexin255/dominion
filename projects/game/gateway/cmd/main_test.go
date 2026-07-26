@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -176,14 +175,14 @@ func wsURL(httpURL string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Test: invalid JSON causes close, no echo
+// Test: invalid protobuf causes close, no echo
 // ---------------------------------------------------------------------------
 
-func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
+func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
 	mock := &mockProxyServer{
 		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
 			// The server should not receive any frames since the client
-			// sends invalid JSON.
+			// sends invalid protobuf.
 			_, err := stream.Recv()
 			return err
 		},
@@ -206,8 +205,8 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send invalid JSON.
-	err = conn.Write(ctx, websocket.MessageText, []byte("not valid json at all"))
+	// Send invalid protobuf (0xFF bytes are an invalid wire format).
+	err = conn.Write(ctx, websocket.MessageBinary, []byte{0xFF, 0xFF, 0xFF, 0xFF})
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -215,7 +214,7 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 	// Read response — should get a close frame (error).
 	_, _, readErr := conn.Read(ctx)
 	if readErr == nil {
-		t.Fatal("expected error reading after sending invalid JSON, got nil")
+		t.Fatal("expected error reading after sending invalid protobuf, got nil")
 	}
 
 	closeCode := websocket.CloseStatus(readErr)
@@ -225,10 +224,10 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: valid JSON with unknown fields is accepted (DiscardUnknown)
+// Test: valid protobuf with unknown fields is accepted (forward compat)
 // ---------------------------------------------------------------------------
 
-func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
+func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 
 	mock := &mockProxyServer{
@@ -258,10 +257,28 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send valid AgentFrame JSON with an extra unknown field. status is now
-	// a FlowPart kind carried inside flow_parts (spec 023 C3 / FR-003).
-	frameJSON := `{"sessionId":"","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]},"unknown_field":"should be discarded"}`
-	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
+	// Build a valid AgentFrame (status is a FlowPart kind), marshal as binary
+	// protobuf, then append an unknown field (field 999, length-delimited)
+	// to verify proto.Unmarshal tolerates unknown fields — the forward-
+	// compatibility mechanism that replaced protojson's DiscardUnknown
+	// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
+	sendFrame := &game.AgentFrame{
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
+	data, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Tag for field 999, wire type 2: varint((999<<3)|2) = varint(7994) = {0xBA, 0x3E}
+	// Length 6, then payload "future".
+	data = append(data, 0xBA, 0x3E, 0x06)
+	data = append(data, []byte("future")...)
+
+	err = conn.Write(ctx, websocket.MessageBinary, data)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -340,12 +357,12 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -357,7 +374,7 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	}
 
 	recvFrame := new(game.AgentFrame)
-	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
@@ -441,12 +458,12 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 			}},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		// Connection may already be closed by the server.
 		return
@@ -494,10 +511,21 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send a frame with a DIFFERENT session_id in JSON — gateway should
-	// overwrite it with the URL session_id. status is a FlowPart kind now.
-	frameJSON := `{"sessionId":"from-json","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]}}`
-	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
+	// Send a frame with a DIFFERENT session_id in the protobuf — gateway
+	// should overwrite it with the URL session_id. status is a FlowPart kind.
+	sendFrame := &game.AgentFrame{
+		SessionId: "from-proto",
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
+	msg, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -505,7 +533,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	select {
 	case f := <-received:
 		if f.GetSessionId() != "from-url" {
-			t.Fatalf("session_id = %q, want %q (should be from URL, not JSON)", f.GetSessionId(), "from-url")
+			t.Fatalf("session_id = %q, want %q (should be from URL, not protobuf)", f.GetSessionId(), "from-url")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for frame on gRPC server")
@@ -513,19 +541,36 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: protojson DiscardUnknown directly
+// Test: proto.Unmarshal forward-compat with unknown fields directly
 // ---------------------------------------------------------------------------
 
-func TestProtojsonDiscardUnknown(t *testing.T) {
-	// Verify that protojson.UnmarshalOptions{DiscardUnknown: true} actually
-	// discards unknown fields without error. status is a FlowPart kind
-	// carried inside flow_parts (spec 023 C3 / FR-003).
-	input := []byte(`{"sessionId":"s1","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]},"future_field":"ignored"}`)
+func TestProtoUnmarshalForwardCompat(t *testing.T) {
+	// Verify that proto.Unmarshal tolerates unknown fields without error —
+	// the forward-compatibility mechanism that replaced protojson's
+	// DiscardUnknown (specs/025-desktop-image-state-refine/contracts/
+	// image-transport-contract.md §2). Unknown fields are preserved per
+	// the proto spec, not discarded.
+	want := &game.AgentFrame{
+		SessionId: "s1",
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
 
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	data, err := proto.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Append an unknown field (field 999, length-delimited wire type 2).
+	// Tag varint for (999<<3)|2 = 7994: {0xBA, 0x3E}; length 6; payload "future".
+	data = append(data, 0xBA, 0x3E, 0x06)
+	data = append(data, []byte("future")...)
+
 	frame := new(game.AgentFrame)
-	if err := opts.Unmarshal(input, frame); err != nil {
-		t.Fatalf("Unmarshal with DiscardUnknown: %v", err)
+	if err := proto.Unmarshal(data, frame); err != nil {
+		t.Fatalf("Unmarshal with unknown field: %v", err)
 	}
 
 	if frame.GetSessionId() != "s1" {
@@ -546,18 +591,11 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 		t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 
-	// Verify the proto is valid.
-	want := &game.AgentFrame{
-		SessionId: "s1",
-		Payload: &game.AgentFrame_FlowParts{
-			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
-				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
-			}},
-		},
-	}
-	if !proto.Equal(frame, want) {
-		t.Fatalf("frame = %v, want %v", frame, want)
-	}
+	// Note: we do NOT use proto.Equal here because proto.Unmarshal preserves
+	// unknown fields (the appended 999:"future"), so the frame would differ
+	// from a clean marshal. This is the correct forward-compat behavior —
+	// the individual field assertions above confirm the known fields parse
+	// correctly despite the unknown field.
 }
 
 // ---------------------------------------------------------------------------
@@ -703,12 +741,12 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -752,7 +790,7 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	}
 
 	recvFrame := new(game.AgentFrame)
-	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
 
@@ -832,12 +870,12 @@ func TestReadLimitSet(t *testing.T) {
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}

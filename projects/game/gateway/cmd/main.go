@@ -30,7 +30,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -133,7 +133,7 @@ func extractSessionID(path string) string {
 }
 
 // wsStream adapts a WebSocket connection to bind.AgentFrameStream.
-// It handles protojson serialization/deserialization and injects the
+// It handles binary-protobuf serialization/deserialization and injects the
 // sessionID from the URL path into every received frame, overwriting
 // any client-supplied value.
 //
@@ -145,16 +145,19 @@ type wsStream struct {
 	sessionID string
 }
 
-// Recv reads a text frame from the WebSocket, unmarshals it as an
-// AgentFrame (protojson, DiscardUnknown), and injects the sessionID
-// from the URL path.
+// Recv reads a binary frame from the WebSocket, unmarshals it as an
+// AgentFrame (protobuf wire format), and injects the sessionID
+// from the URL path. proto.Unmarshal preserves unknown fields per the proto
+// spec, maintaining the forward-compatibility that protojson's DiscardUnknown
+// previously provided
+// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
 func (s *wsStream) Recv() (*game.AgentFrame, error) {
 	_, data, err := s.conn.Read(s.ctx)
 	if err != nil {
 		return nil, err
 	}
 	var frame game.AgentFrame
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &frame); err != nil {
+	if err := proto.Unmarshal(data, &frame); err != nil {
 		return nil, errors.Join(errProtocol, err)
 	}
 	// CRITICAL: inject sessionID from URL path — always wins over client-supplied value
@@ -162,23 +165,23 @@ func (s *wsStream) Recv() (*game.AgentFrame, error) {
 	return &frame, nil
 }
 
-// Send marshals the AgentFrame as JSON and writes it as a text frame to
-// the WebSocket connection.
+// Send marshals the AgentFrame as binary protobuf and writes it as a binary
+// frame to the WebSocket connection.
 func (s *wsStream) Send(frame *game.AgentFrame) error {
-	data, err := protojson.Marshal(frame)
+	data, err := proto.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	return s.conn.Write(s.ctx, websocket.MessageText, data)
+	return s.conn.Write(s.ctx, websocket.MessageBinary, data)
 }
 
 // errProtocol is a sentinel error for protocol-level errors (e.g. invalid
-// AgentFrame JSON) that should result in a WebSocket InvalidFramePayloadData
-// close code.
+// AgentFrame protobuf) that should result in a WebSocket
+// InvalidFramePayloadData close code.
 var errProtocol = errors.New("protocol error")
 
 // isProtocolError reports whether err is a protocol-level error (invalid
-// AgentFrame JSON) from the WebSocket adapter.
+// AgentFrame protobuf) from the WebSocket adapter.
 func isProtocolError(err error) bool {
 	return errors.Is(err, errProtocol)
 }
@@ -187,9 +190,9 @@ func isProtocolError(err error) bool {
 // establishes a bidirectional forwarding bridge between the WebSocket
 // and the underlying ProxyService.ConnectAgent gRPC stream.
 //
-// Messages are serialized as AgentFrame JSON (protojson) over WebSocket
-// text frames on both directions. Unknown JSON fields are silently
-// discarded during deserialization (DiscardUnknown).
+// Messages are serialized as AgentFrame binary protobuf over WebSocket
+// binary frames in both directions. proto.Unmarshal preserves unknown
+// fields for forward compatibility.
 func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *grpc.ClientConn) {
 	sessionID := extractSessionID(r.URL.Path)
 	if sessionID == "" {
@@ -248,7 +251,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
-		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame JSON")
+		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame protobuf")
 		return
 	}
 	logs.Error(r.Context(), "agent connect: internal error",

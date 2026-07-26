@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -13,7 +14,7 @@ import (
 	game "dominion/projects/game"
 
 	"github.com/coder/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // wsTestServer creates an httptest.Server that upgrades to WebSocket and calls handler.
@@ -163,7 +164,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 	}
 }
 
-// TestWSClient_SendRecvFrame verifies protojson round-trip for SendFrame/RecvFrame.
+// TestWSClient_SendRecvFrame verifies binary-protobuf round-trip for SendFrame/RecvFrame.
 func TestWSClient_SendRecvFrame(t *testing.T) {
 	// given: mock server that reads a frame and responds with a status signal
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
@@ -173,9 +174,9 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 			return
 		}
 
-		// verify received frame is valid protojson
+		// verify received frame is valid binary protobuf
 		frame := new(game.AgentFrame)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 
@@ -188,8 +189,8 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 				}},
 			},
 		}
-		resp, _ := protojson.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageText, resp)
+		resp, _ := proto.Marshal(respFrame)
+		conn.Write(ctx, websocket.MessageBinary, resp)
 	})
 	defer srv.Close()
 
@@ -232,7 +233,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	}
 }
 
-// TestWSClient_SendRecvFrame_Content verifies protojson round-trip for a
+// TestWSClient_SendRecvFrame_Content verifies binary-protobuf round-trip for a
 // content PartBlock carrying text and an image.
 func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 	// given: mock server that reads a content frame and responds with a status signal
@@ -244,7 +245,7 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		}
 
 		frame := new(game.AgentFrame)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 
@@ -261,8 +262,8 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 				}},
 			},
 		}
-		resp, _ := protojson.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageText, resp)
+		resp, _ := proto.Marshal(respFrame)
+		conn.Write(ctx, websocket.MessageBinary, resp)
 	})
 	defer srv.Close()
 
@@ -501,5 +502,133 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	_, err = ws.RecvFrame(ctx)
 	if err == nil {
 		t.Fatal("RecvFrame() expected error with expiring context, got nil")
+	}
+}
+
+// TestWSClient_SendRecvFrame_LargeFrame verifies that a frame exceeding the
+// coder/websocket default read limit (32 KiB) round-trips successfully after
+// Connect calls SetReadLimit(10 MiB). Under the old code (no SetReadLimit)
+// this would fail with ErrMessageTooBig and tear down the session
+// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §3).
+func TestWSClient_SendRecvFrame_LargeFrame(t *testing.T) {
+	// given: mock server that echoes frames back. The server must also raise
+	// its read limit to read the large inbound frame.
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		conn.SetReadLimit(10 << 20)
+		ctx := context.Background()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		// echo the frame back verbatim (binary bytes)
+		conn.Write(ctx, websocket.MessageBinary, data)
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "large-frame", "test-env"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// Build a message_parts frame carrying a 64 KiB ImagePart — double the
+	// 32 KiB default read limit. The marshalled binary proto will be slightly
+	// larger than 64 KiB due to field overhead.
+	largeData := make([]byte, 64*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+	sendFrame := &game.AgentFrame{
+		SessionId: "large-frame",
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
+						Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+						Data:     largeData,
+						WidthPx:  100,
+						HeightPx: 100,
+					}}},
+				},
+			},
+		},
+	}
+
+	// when: send the large frame
+	if err := ws.SendFrame(context.Background(), sendFrame); err != nil {
+		t.Fatalf("SendFrame() unexpected error: %v", err)
+	}
+
+	// then: the echoed frame is received without ErrMessageTooBig. Under the
+	// old default (32 KiB) this Read would fail and close the connection.
+	recv, err := ws.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame() unexpected error for 64 KiB frame: %v — SetReadLimit may not be applied", err)
+	}
+	img := recv.GetMessageParts().GetParts()[0].GetImage()
+	if img == nil {
+		t.Fatal("expected image part in echoed frame, got nil")
+	}
+	if len(img.GetData()) != len(largeData) {
+		t.Fatalf("echoed image data = %d bytes, want %d bytes", len(img.GetData()), len(largeData))
+	}
+}
+
+// TestWSClient_RecvFrame_OversizedError verifies that a frame exceeding the
+// 10 MiB read limit surfaces as a clear, attributable error (FR-010) — not a
+// hang, not a silent truncation.
+func TestWSClient_RecvFrame_OversizedError(t *testing.T) {
+	// given: mock server that sends a frame above the 10 MiB limit. The
+	// server's own read limit is irrelevant here — it only writes.
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		// Build an AgentFrame whose marshalled binary exceeds 10 MiB.
+		oversizedData := make([]byte, 11*1024*1024)
+		frame := &game.AgentFrame{
+			SessionId: "oversized",
+			Payload: &game.AgentFrame_MessageParts{
+				MessageParts: &game.MessageParts{
+					Parts: []*game.MessagePart{
+						{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
+							Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+							Data:     oversizedData,
+							WidthPx:  1000,
+							HeightPx: 1000,
+						}}},
+					},
+				},
+			},
+		}
+		data, err := proto.Marshal(frame)
+		if err != nil {
+			return
+		}
+		conn.Write(ctx, websocket.MessageBinary, data)
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "oversized", "test-env"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// when: RecvFrame with a timeout so the test cannot hang if the limit
+	// guard fails to fire (FR-010: must not hang).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := ws.RecvFrame(ctx)
+
+	// then: an error is returned (not nil, not a hang). The error must be
+	// attributable — either wrapping ErrMessageTooBig or carrying a
+	// StatusMessageTooBig close code.
+	if err == nil {
+		t.Fatal("RecvFrame() expected error for >10 MiB frame, got nil")
+	}
+	if !errors.Is(err, websocket.ErrMessageTooBig) &&
+		websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
+		t.Fatalf("RecvFrame() error is not attributable as oversized: %v", err)
 	}
 }
