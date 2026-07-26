@@ -83,6 +83,7 @@ Python 依赖更新步骤：
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
+* 获取 `bazel` 产物和测试报告等信息使用仓库下的 `bazel-*` 等目录，而不是 `~/.cache/bazel` 目录
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
