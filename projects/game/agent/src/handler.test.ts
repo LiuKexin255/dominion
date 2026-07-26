@@ -558,10 +558,10 @@ describe("Handler.Connect profile-name guard", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — ToolResultPart content frame dispatches to bridge.handleResult
+// Tests: Connect — FlowResultPart control frame dispatches to bridge.handleResult
 // ===========================================================================
 
-describe("Handler.Connect tool result content frame", () => {
+describe("Handler.Connect flow result control frame", () => {
   let promptClient: ReturnType<typeof createMockPromptClient>;
   let sessionAgentStore: MockSessionAgentStore;
 
@@ -570,38 +570,38 @@ describe("Handler.Connect tool result content frame", () => {
     sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("calls getBridge().handleResult when a ToolResultPart content frame arrives", async () => {
+  it("calls getBridge().handleResult when a FlowResultPart control frame arrives", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    const toolResult = {
+    const flowResult = {
       toolId: "tool-1",
       status: "TOOL_RESULT_STATUS_SUCCEEDED",
       message: "ok",
     };
     stream.emit("data", {
       sessionId: "sess-or",
-      payload: "messageParts",
-      messageParts: { parts: [{ toolResult }] },
+      payload: "flowParts",
+      flowParts: { parts: [{ flowResult }] },
       sender: FRAME_SENDER_SYSTEM,
     });
     await flush();
 
     const bridge = sessionAgentStore._getAgent("sess-or").bridge;
     expect(bridge.handleResult).toHaveBeenCalledTimes(1);
-    expect(bridge.handleResult).toHaveBeenCalledWith(toolResult);
+    expect(bridge.handleResult).toHaveBeenCalledWith(flowResult);
   });
 
-  it("does not write any frame for a tool result messageParts frame", async () => {
+  it("does not write any frame for a flow result flowParts frame", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     stream.emit("data", {
       sessionId: "sess-or2",
-      payload: "messageParts",
-      messageParts: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
+      payload: "flowParts",
+      flowParts: { parts: [{ flowResult: { toolId: "tool-2", status: 1, message: "" } }] },
       sender: FRAME_SENDER_SYSTEM,
     });
     await flush();

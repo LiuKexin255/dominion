@@ -981,13 +981,14 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 }
 
 // TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored verifies the US1
-// recvLoop behavior (spec 023 FR-005/FR-010, research.md D8): an inbound
-// operation FlowPart is executed and its ToolResultPart is sent back over the
-// WebSocket to the agent — but the operation request and the result are NOT
-// appended to the chatstream (operations never render as conversation entries;
-// the screenshot the conversation shows comes from the agent's later
-// tool_result MessagePart, not a desktop mirror). Only the terminating wait
-// FlowPart lands in the chatstream.
+// recvLoop behavior (spec 023 FR-005/FR-010, research.md D8; spec 025
+// FR-023/FR-024): an inbound operation FlowPart is executed and its
+// FlowResultPart is sent back over the WebSocket to the agent on the control
+// channel — but the operation request and the result are NOT appended to the
+// chatstream (operations never render as conversation entries; the screenshot
+// the conversation shows comes from the agent's later tool_result MessagePart,
+// not a desktop mirror). Only the terminating wait FlowPart lands in the
+// chatstream.
 func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
 	// a wait signal. It captures client-sent frames (the tool result) so the
@@ -1072,18 +1073,18 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	}
 
 	// then: the operation was executed and its result sent to the agent over
-	// the WS as a messageParts frame carrying a toolResult (FAILED: no window).
-	var resultPart *game.ToolResultPart
+	// the WS as a flowParts frame carrying a flowResult (FAILED: no window).
+	var resultPart *game.FlowResultPart
 	deadline := time.After(2 * time.Second)
 	for resultPart == nil {
 		select {
 		case f := <-sentFrames:
-			mp := f.GetMessageParts()
-			if mp != nil && len(mp.GetParts()) > 0 {
-				resultPart = mp.GetParts()[0].GetToolResult()
+			fp := f.GetFlowParts()
+			if fp != nil && len(fp.GetParts()) > 0 {
+				resultPart = fp.GetParts()[0].GetFlowResult()
 			}
 		case <-deadline:
-			t.Fatal("no tool-result frame sent over WS within 2s")
+			t.Fatal("no flow-result frame sent over WS within 2s")
 		}
 	}
 	if resultPart.GetToolId() != "click-1" {
@@ -1111,8 +1112,8 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 // operation kinds from spec 018-saolei-mcp FR-004a/FR-004b), not just
 // MouseMovePart/MouseClickPart. Each subtest sends one operation kind through
 // recvLoop with no window bound, so executeAgentOperation fails fast — but a
-// ToolResultPart is still produced and sent over the WS. If the filter
-// regresses (drops the operation), no result is sent.
+// FlowResultPart is still produced and sent over the WS (spec 025 FR-023). If
+// the filter regresses (drops the operation), no result is sent.
 func TestRecvLoop_ExecutesNewPartKinds(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1148,7 +1149,7 @@ func TestRecvLoop_ExecutesNewPartKinds(t *testing.T) {
 }
 
 // runRecvLoopFilterAdmissionTest verifies op passes the recvLoop filter and
-// reaches executeAgentOperation by asserting a ToolResultPart with toolID is
+// reaches executeAgentOperation by asserting a FlowResultPart with toolID is
 // sent back over the WS (and NOT mirrored into the chatstream). The setup
 // mirrors TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored but is
 // intentionally minimal — this is a regression guard for filter admission.
@@ -1198,7 +1199,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 	defer srv.Close()
 
 	// given: App with a chatstream Registry. No window is bound, so
-	// executeAgentOperation fails fast — but the ToolResultPart must still be
+	// executeAgentOperation fails fast — but the FlowResultPart must still be
 	// produced and sent (proving the filter admitted op).
 	logger := applog.NewLogger()
 	app := NewApp(logger)
@@ -1230,19 +1231,19 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 		t.Fatal("recvLoop did not terminate within 3s")
 	}
 
-	// then: a ToolResultPart with toolID was sent over the WS as a messageParts
+	// then: a FlowResultPart with toolID was sent over the WS as a flowParts
 	// frame. If the filter dropped op, no result is sent (regression).
-	var resultPart *game.ToolResultPart
+	var resultPart *game.FlowResultPart
 	deadline := time.After(2 * time.Second)
 	for resultPart == nil {
 		select {
 		case f := <-sentFrames:
-			mp := f.GetMessageParts()
-			if mp != nil && len(mp.GetParts()) > 0 {
-				resultPart = mp.GetParts()[0].GetToolResult()
+			fp := f.GetFlowParts()
+			if fp != nil && len(fp.GetParts()) > 0 {
+				resultPart = fp.GetParts()[0].GetFlowResult()
 			}
 		case <-deadline:
-			t.Fatalf("no tool-result frame sent over WS within 2s (filter may have dropped the Part)")
+			t.Fatalf("no flow-result frame sent over WS within 2s (filter may have dropped the Part)")
 		}
 	}
 	if resultPart.GetToolId() != toolID {
@@ -1963,16 +1964,16 @@ func Test_holdAndRelease_HeldPayloadCarriesOperation(t *testing.T) {
 // can render a human-readable operation request without proto knowledge.
 func Test_describeFlowPart(t *testing.T) {
 	tests := []struct {
-		name    string
-		part    *game.FlowPart
-		wantKind string
+		name        string
+		part        *game.FlowPart
+		wantKind    string
 		wantSummary string
 		wantDetails map[string]any
 	}{
 		{
-			name:    "mouse_move with WINDOW_MESSAGE",
-			part:    &game.FlowPart{Kind: &game.FlowPart_MouseMove{MouseMove: &game.MouseMovePart{XPx: 100, YPx: 200, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
-			wantKind: "mouse_move",
+			name:        "mouse_move with WINDOW_MESSAGE",
+			part:        &game.FlowPart{Kind: &game.FlowPart_MouseMove{MouseMove: &game.MouseMovePart{XPx: 100, YPx: 200, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind:    "mouse_move",
 			wantSummary: "移动光标 (100, 200) · 窗口消息",
 			wantDetails: map[string]any{
 				"xPx":    int32(100),
@@ -1981,9 +1982,9 @@ func Test_describeFlowPart(t *testing.T) {
 			},
 		},
 		{
-			name:    "mouse_click LEFT_CLICK SIMULATED",
-			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED}}},
-			wantKind: "mouse_click",
+			name:        "mouse_click LEFT_CLICK SIMULATED",
+			part:        &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_SIMULATED}}},
+			wantKind:    "mouse_click",
 			wantSummary: "左键点击 · 模拟",
 			wantDetails: map[string]any{
 				"click":  "MOUSE_CLICK_ACTION_LEFT_CLICK",
@@ -1991,9 +1992,9 @@ func Test_describeFlowPart(t *testing.T) {
 			},
 		},
 		{
-			name:    "mouse_click RIGHT_CLICK",
-			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
-			wantKind: "mouse_click",
+			name:        "mouse_click RIGHT_CLICK",
+			part:        &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind:    "mouse_click",
 			wantSummary: "右键点击 · 窗口消息",
 			wantDetails: map[string]any{
 				"click":  "MOUSE_CLICK_ACTION_RIGHT_CLICK",
@@ -2001,9 +2002,9 @@ func Test_describeFlowPart(t *testing.T) {
 			},
 		},
 		{
-			name:    "mouse_click LEFT_RIGHT_PRESS",
-			part:    &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
-			wantKind: "mouse_click",
+			name:        "mouse_click LEFT_RIGHT_PRESS",
+			part:        &game.FlowPart{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind:    "mouse_click",
 			wantSummary: "左右键同按点击 · 窗口消息",
 			wantDetails: map[string]any{
 				"click":  "MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS",
@@ -2011,18 +2012,18 @@ func Test_describeFlowPart(t *testing.T) {
 			},
 		},
 		{
-			name:    "keyboard_press F2",
-			part:    &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{Key: game.KeyboardKey_KEYBOARD_KEY_F2}}},
-			wantKind: "keyboard_press",
+			name:        "keyboard_press F2",
+			part:        &game.FlowPart{Kind: &game.FlowPart_KeyboardPress{KeyboardPress: &game.KeyboardPressPart{Key: game.KeyboardKey_KEYBOARD_KEY_F2}}},
+			wantKind:    "keyboard_press",
 			wantSummary: "按键 F2",
 			wantDetails: map[string]any{
 				"key": "KEYBOARD_KEY_F2",
 			},
 		},
 		{
-			name:    "mouse_move_and_click at saolei cell (3,4) with LEFT_CLICK WINDOW_MESSAGE",
-			part:    &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{XPx: 136, YPx: 344, Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
-			wantKind: "mouse_move_and_click",
+			name:        "mouse_move_and_click at saolei cell (3,4) with LEFT_CLICK WINDOW_MESSAGE",
+			part:        &game.FlowPart{Kind: &game.FlowPart_MouseMoveAndClick{MouseMoveAndClick: &game.MouseMoveAndClickPart{XPx: 136, YPx: 344, Click: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK, Method: game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE}}},
+			wantKind:    "mouse_move_and_click",
 			wantSummary: "移动并点击 (136, 344) · 左键 · 窗口消息",
 			wantDetails: map[string]any{
 				"xPx":    int32(136),

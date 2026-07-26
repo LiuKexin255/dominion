@@ -687,9 +687,9 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // The user turn is carried as a messageParts frame whose MessageParts holds a
 // text MessagePart and, when a screenshot is attached, an image MessagePart.
 // Inbound FlowParts operations (mouse/keyboard) are auto-executed by recvLoop
-// and a matching ToolResultPart is sent back over the same WebSocket connection
-// (FR-013). The result part carries a post-action screenshot of the bound
-// window (FR-007).
+// and a matching FlowResultPart is sent back over the same WebSocket connection
+// on the control channel (FR-013; spec 025 FR-023/FR-024). The result part
+// carries a post-action screenshot of the bound window (FR-007).
 func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
@@ -851,15 +851,17 @@ func (a *App) recvLoop(sessionID, frameID string) {
 
 // handleInboundOperation executes an inbound tool-request FlowPart
 // (MouseMovePart/MouseClickPart/KeyboardPressPart/MouseMoveAndClickPart) and
-// sends the matching ToolResultPart back over the WebSocket wrapped in a
-// messageParts frame. The result part carries the same tool_id and a
-// SUCCEEDED/FAILED status. A post-action screenshot is attached when the bound
-// window can be captured.
+// sends the matching FlowResultPart back over the WebSocket wrapped in a
+// flowParts frame (the control channel). The result part carries the same
+// tool_id and a SUCCEEDED/FAILED status. A post-action screenshot is attached
+// when the bound window can be captured.
 //
-// Per spec 023 FR-010/C8 the result is NOT mirrored into the chat stream: the
-// screenshot the conversation shows comes from the agent's later tool_result
-// MessagePart (the LLM tool result), not a desktop-side mirror. The desktop
-// returns the result only over the WS (resolving the agent's dispatch).
+// Per spec 025 FR-023/FR-024 the operation outcome travels as a FlowResultPart
+// (a FlowPart kind) on the control channel, NOT as a display tool_result
+// MessagePart. Per spec 023 FR-010/C8 the result is NOT mirrored into the chat
+// stream: the screenshot the conversation shows comes from the agent's later
+// tool_result MessagePart (the LLM tool result), not a desktop-side mirror. The
+// desktop returns the result only over the WS (resolving the agent's dispatch).
 //
 // Debug mode reorders the result-return boundary
 // (specs/022-desktop-debug-mode spec.md FR-006/FR-007/FR-011, data-model.md
@@ -889,10 +891,10 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 		FrameId:    resultFrameID,
 		CreateTime: timestamppb.Now(),
 		Sender:     game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
-			MessageParts: &game.MessageParts{
-				Parts: []*game.MessagePart{
-					{Kind: &game.MessagePart_ToolResult{ToolResult: result}},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{
+				Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_FlowResult{FlowResult: result}},
 				},
 			},
 		},
@@ -1007,7 +1009,8 @@ func (a *App) holdAndRelease(toolID string, part *game.FlowPart) string {
 }
 
 // executeAgentOperation runs an inbound tool-request FlowPart via the
-// appropriate executor and returns the matching ToolResultPart. The FlowPart
+// appropriate executor and returns the matching FlowResultPart (the
+// control-channel operation outcome, spec 025 FR-023/FR-024). The FlowPart
 // kinds handled are: MouseMovePart, MouseClickPart, KeyboardPressPart, and
 // MouseMoveAndClickPart. Each mouse Part carries a MouseInputMethod that
 // selects the desktop execution path (spec 018-saolei-mcp FR-004c):
@@ -1029,7 +1032,7 @@ func (a *App) holdAndRelease(toolID string, part *game.FlowPart) string {
 // reflects the ACTION outcome (never SUCCEEDED when the action failed).
 // Precondition failures (no tool payload, no window bound) return early
 // since no screenshot is possible without a bound window.
-func (a *App) executeAgentOperation(part *game.FlowPart) *game.ToolResultPart {
+func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	move := part.GetMouseMove()
 	click := part.GetMouseClick()
 	keyboard := part.GetKeyboardPress()
@@ -1054,13 +1057,13 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.ToolResultPart {
 		corrID = "corr-" + corrSuffix
 	}
 
-	failed := func(msg string) *game.ToolResultPart {
+	failed := func(msg string) *game.FlowResultPart {
 		a.logger.Error("backend", "executeAgentOperation: failed", map[string]any{
 			"tool_id":        toolID,
 			"correlation_id": corrID,
 			"error":          msg,
 		})
-		return &game.ToolResultPart{
+		return &game.FlowResultPart{
 			ToolId:  toolID,
 			Status:  game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED,
 			Message: msg,
@@ -1120,7 +1123,7 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.ToolResultPart {
 
 	// Single exit: build the result with the accumulated action status, then
 	// always attempt a post-action screenshot when a window is bound (FR-007).
-	result := &game.ToolResultPart{
+	result := &game.FlowResultPart{
 		ToolId:  toolID,
 		Status:  actionStatus,
 		Message: actionMsg,

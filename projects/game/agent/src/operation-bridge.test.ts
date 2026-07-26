@@ -10,8 +10,8 @@
  * and concurrent dispatch correlation.
  *
  * Part-model contract: dispatch accepts a Part (MouseMovePart/MouseClickPart),
- * stamps a tool_id, and wraps it in a content PartBlock frame. handleResult
- * accepts a ToolResultPart correlated by tool_id.
+ * stamps a tool_id, and wraps it in a flowParts frame. handleResult accepts a
+ * FlowResultPart correlated by tool_id (spec 025 FR-023/FR-025).
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -19,7 +19,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { OperationBridge } from "./operation-bridge";
 
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
@@ -32,10 +32,10 @@ function makeResult(
   toolId: string,
   status: string,
   message = "",
-): ToolResultPart {
+): FlowResultPart {
   return {
     toolId,
-    status: status as ToolResultPart["status"],
+    status: status as FlowResultPart["status"],
     message,
   };
 }
@@ -357,7 +357,7 @@ describe("OperationBridge", () => {
     const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
     bridge.handleResult({
       toolId: part.mouseMove!.toolId!,
-      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      status: STATUS_SUCCEEDED as FlowResultPart["status"],
       message: "done",
       screenshot: {
         encoding: "IMAGE_ENCODING_PNG",
@@ -383,7 +383,7 @@ describe("OperationBridge", () => {
 
     bridge.handleResult({
       toolId: part.mouseMove!.toolId!,
-      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      status: STATUS_SUCCEEDED as FlowResultPart["status"],
       message: "done",
       screenshot: {
         encoding: "IMAGE_ENCODING_PNG",

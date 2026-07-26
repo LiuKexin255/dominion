@@ -8,9 +8,11 @@
  * SessionAgent owns its adapter and manages profile binding/switching.
  *
  * Frame contract (Part model): every AgentFrame carries exactly one payload —
- * a PartBlock of content OR a single control signal (wait/warn/status).  User
- * turns and agent output are both content frames distinguished only by
- * `sender`; tool results are content frames carrying a ToolResultPart.
+ * a MessageParts batch (display) OR a FlowParts batch (control). User turns and
+ * agent output are both display frames distinguished only by `sender`;
+ * operation results from the desktop are control frames carrying a
+ * FlowResultPart (spec 025 FR-023/FR-024); the agent emits display tool_result
+ * MessageParts from each tool's LLM result.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -24,6 +26,7 @@ import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { MessagePart } from "../game_types/projects/game/MessagePart";
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
@@ -214,14 +217,29 @@ export class Handler implements AgentServiceHandlers {
     stream.on("data", async (frame) => {
       const sessionId = frame.sessionId ?? "";
 
-      // Control-only FlowParts (wait/warn/status). The agent never initiates on
-      // inbound wait/warn (no-op, logged); a status FlowPart is the desktop's
-      // connectivity probe — respond with the agent's lifecycle status
-      // (data-model.md §9; research.md D9). Operation FlowParts never arrive
-      // inbound (the desktop executes those, it does not send them to the
-      // agent).
+      // Control-only FlowParts (operation result / wait / warn / status). A
+      // flow_result FlowPart is the desktop's operation-execution outcome on
+      // the control channel — route it to the bridge (spec 025 FR-023/FR-025).
+      // The agent never initiates on inbound wait/warn (no-op, logged); a
+      // status FlowPart is the desktop's connectivity probe — respond with the
+      // agent's lifecycle status (data-model.md §9; research.md D9). Operation
+      // request FlowParts (mouse/keyboard) never arrive inbound (the desktop
+      // executes those, it does not send them to the agent).
       if (frame.payload === "flowParts") {
         const parts = frame.flowParts?.parts ?? [];
+
+        // Operation results from the desktop arrive as flowParts carrying
+        // flow_result FlowPart(s) (spec 025 FR-023/FR-025 — control channel);
+        // route them to the bridge before any control-signal handling.
+        const flowResults = parts.filter((p: FlowPart) => p.flowResult);
+        if (flowResults.length > 0) {
+          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+          for (const p of flowResults) {
+            sa.getBridge().handleResult(p.flowResult as FlowResultPart);
+          }
+          return;
+        }
+
         const statusPart = parts.find((p: FlowPart) => p.status);
         if (statusPart) {
           const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
@@ -264,19 +282,11 @@ export class Handler implements AgentServiceHandlers {
       if (frame.payload === "messageParts") {
         const parts = frame.messageParts?.parts ?? [];
 
-        // Tool results from the desktop arrive as messageParts carrying
-        // toolResult MessagePart(s); route them to the bridge before any
-        // user-turn handling.
-        const toolResults = parts.filter((p: MessagePart) => p.toolResult);
-        if (toolResults.length > 0) {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
-          for (const p of toolResults) {
-            sa.getBridge().handleResult(p.toolResult as ToolResultPart);
-          }
-          return;
-        }
-
-        // Only user-sent content drives a turn.
+        // Only user-sent content drives a turn. (Operation results from the
+        // desktop now arrive as flowParts/flow_result on the control channel,
+        // not as messageParts/toolResult — spec 025 FR-023/FR-024. The display
+        // tool_result MessagePart is emitted by this agent from each tool's
+        // LLM result, never received inbound from the desktop.)
         if (frame.sender !== FrameSender.FRAME_SENDER_USER) {
           return;
         }

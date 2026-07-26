@@ -304,11 +304,15 @@ message MessagePart {
 }
 
 // FlowPart is one control-only block. It drives desktop execution (mouse/
-// keyboard operations) and turn control (wait/warn/status); it is NEVER
-// rendered as a conversation entry (spec 023 FR-005). The operation kinds reuse
-// the existing operation Part messages verbatim (MouseMovePart, MouseClickPart,
-// KeyboardPressPart, MouseMoveAndClickPart — fields unchanged from spec 018).
-// The signal kinds (wait/warn/status) reuse the existing signal messages.
+// keyboard operations), carries the operation-execution result back to the
+// agent (flow_result), and conveys turn control (wait/warn/status); it is NEVER
+// rendered as a conversation entry (spec 023 FR-005; spec 025 FR-023/FR-024).
+// The operation kinds reuse the existing operation Part messages verbatim
+// (MouseMovePart, MouseClickPart, KeyboardPressPart, MouseMoveAndClickPart —
+// fields unchanged from spec 018). The signal kinds (wait/warn/status) reuse
+// the existing signal messages. flow_result is the control-channel counterpart
+// to the operation request kinds, reported by the desktop over this same
+// control channel (spec 025 FR-023; data-model.md §1).
 message FlowPart {
   oneof kind {
     MouseMovePart         mouse_move           = 1;
@@ -318,6 +322,9 @@ message FlowPart {
     WaitSignal            wait                 = 5;
     WarnSignal            warn                 = 6;
     StatusSignal          status               = 7;
+    // NEW (spec 025 FR-023): the desktop's outcome of an executed FlowPart
+    // operation, reported on the control channel.
+    FlowResultPart        flow_result          = 8;
   }
 }
 
@@ -404,6 +411,29 @@ message ToolResultPart {
   string tool_id = 1;
   ToolResultStatus status = 2;
   string message = 3;
+  ImagePart screenshot = 4;
+}
+
+// FlowResultPart carries the desktop's outcome of an executed FlowPart
+// operation (mouse/keyboard), reported back over the CONTROL channel
+// (FlowParts). It is the operation-channel counterpart to the operation
+// request kinds and corresponds shape-wise to ToolResultPart — but it is a
+// FlowPart kind, NEVER rendered in the conversation (spec 025 FR-023/FR-024).
+// The agent consumes it (OperationBridge.handleResult) and translates it into
+// the display tool_result MessagePart per tool (text board for saolei;
+// text + screenshot for mouse tools). See
+// specs/025-desktop-image-state-refine/contracts/flow-result-contract.md.
+message FlowResultPart {
+  // Operation-channel id (bridge-minted by OperationBridge.dispatch), matching
+  // the originating operation FlowPart's tool_id. Used only for dispatch↔result
+  // correlation; unrelated to the conversation tool_call.id (023 C13).
+  string tool_id = 1;
+  // Operation outcome. Reuses ToolResultStatus (UNSPECIFIED/SUCCEEDED/FAILED).
+  ToolResultStatus status = 2;
+  // Human/agent-readable outcome detail (e.g. "ok" or an error message).
+  string message = 3;
+  // Post-action screenshot (control-channel carrier). Consumed by the agent
+  // for recognition (saolei) or copied into a mouse tool's display tool_result.
   ImagePart screenshot = 4;
 }
 

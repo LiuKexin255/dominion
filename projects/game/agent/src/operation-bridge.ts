@@ -5,7 +5,7 @@
  * OperationBridge is owned by SessionAgent and survives stream reconnects.
  * The Connect handler registers a sink callback on stream open and unregisters
  * it on stream end/error.  LangChain tools (e.g. mouse) call dispatch() to
- * send a FlowPart operation to the desktop and await the matching ToolResultPart.
+ * send a FlowPart operation to the desktop and await the matching FlowResultPart.
  *
  * The bridge never holds a reference to a specific stream instance — only a
  * write callback — so a new stream can re-register its sink without recreating
@@ -15,12 +15,13 @@
  * + decoupling (research.md D10 / contracts/tool-dispatch-contract.md §1): a
  * tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
  * FlowParts AgentFrame (payload "flowParts"). The desktop replies with a
- * messageParts AgentFrame whose ToolResultPart.tool_id matches the bridge-minted
- * operation-channel id. The conversation channel (tool_call/tool_result
- * MessageParts) is fully DECOUPLED — it groups by the LangChain
- * `tool_call.id` independently; the operation channel uses a bridge-minted id
- * that has no relation to any conversation tool_call.id (revised FR-008 /
- * research.md D10).
+ * flowParts AgentFrame whose FlowResultPart.tool_id matches the bridge-minted
+ * operation-channel id (spec 025 FR-023/FR-025 — the operation result travels
+ * on the control channel, not as a display tool_result MessagePart). The
+ * conversation channel (tool_call/tool_result MessageParts) is fully DECOUPLED
+ * — it groups by the LangChain `tool_call.id` independently; the operation
+ * channel uses a bridge-minted id that has no relation to any conversation
+ * tool_call.id (revised FR-008 / research.md D10).
  */
 
 import { randomUUID } from "node:crypto";
@@ -29,12 +30,12 @@ import { info, warn } from "@dominion/common-js-logs";
 
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
 import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
 import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart";
 import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
 // Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
@@ -51,7 +52,7 @@ const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
  * Sink callback registered by the Connect handler.  Receives a full AgentFrame
- * whose payload is "content".  The handler may augment envelope fields
+ * whose payload is "flowParts".  The handler may augment envelope fields
  * (sessionId, frameId, sender, createTime) before writing to the stream.
  */
 export type OperationSink = (frame: AgentFrame) => void;
@@ -78,7 +79,7 @@ export interface OperationScreenshot {
   heightPx: number;
 }
 
-/** Outcome of a dispatch — mirrors the relevant fields of ToolResultPart. */
+/** Outcome of a dispatch — mirrors the relevant fields of FlowResultPart. */
 export interface OperationResult {
   status: ToolResultStatus;
   message: string;
@@ -150,7 +151,7 @@ export class OperationBridge {
   /**
    * Dispatch a FlowPart operation (MouseMovePart, MouseClickPart,
    * KeyboardPressPart, or MouseMoveAndClickPart) to the desktop via the
-   * registered sink and await the matching ToolResultPart.
+   * registered sink and await the matching FlowResultPart.
    *
    * The bridge ALWAYS mints a fresh UUID as the operation-channel id and stamps
    * it onto the FlowPart's `tool_id`; this id is for operation-channel
@@ -255,10 +256,12 @@ export class OperationBridge {
 
   /**
    * Resolve a pending dispatch whose tool_id matches the result part.
-   * Called by the Connect handler when a ToolResultPart arrives from the
-   * desktop.  Unknown or stale tool_ids are logged and ignored.
+   * Called by the Connect handler when a FlowResultPart arrives from the
+   * desktop on the control channel (a flowParts frame whose kind is
+   * flow_result — spec 025 FR-023/FR-025). Unknown or stale tool_ids are
+   * logged and ignored.
    */
-  handleResult(result: ToolResultPart): void {
+  handleResult(result: FlowResultPart): void {
     const toolId = result.toolId ?? "";
     if (!toolId) {
       warn("tool result received with no tool_id");
