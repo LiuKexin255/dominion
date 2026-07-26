@@ -29,7 +29,7 @@
 ## 全局约定（宪章原则 I / IV / V）
 
 - **引用溯源**：代码注释引用 specs/契约时写明相对路径（如 `specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md §1`）。
-- **编译+单测门禁**：每个代码 task 完成后 MUST 运行 `bazel build //projects/game/agent/... //projects/game/desktop/...` 与 `bazel test //projects/game/agent/... //projects/game/desktop/...`（相关 target），作为该 task 的一部分。
+- **编译+单测门禁**：每个代码 task 完成后 MUST 运行 `bazel build //projects/game/...` 与 `bazel test //projects/game/...`（覆盖整个 game 目录树：agent/desktop/gateway/proxy/session/prompt/pkg/testplan 等，**不得**只 build 子树），作为该 task 的一部分。
 - **proto 改动后**：运行 `bazel run //:gazelle projects/game/agent projects/game/desktop` 重新生成 `BUILD.bazel` 与 `game_types`（TS）/ Go proto 类型。（本修订不改 proto，无需 regen。）
 - **本 feature 的 spec/plan/research/data-model/contracts 为必读**（宪章原则 V 注：无需在下方各 phase 重复列出）。
 

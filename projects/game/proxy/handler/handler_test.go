@@ -568,12 +568,15 @@ func TestMapDomainError(t *testing.T) {
 }
 
 // makeProxyStream builds a mockProxyStream whose first Recv yields a status
-// frame carrying the given sessionID.
+// FlowPart frame carrying the given sessionID. status is a FlowPart kind
+// (spec 023 C3 / FR-003 — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
 func makeProxyStream(sessionID string) *mockProxyStream {
 	recvCh := make(chan *game.AgentFrame, 1)
 	recvCh <- &game.AgentFrame{
 		SessionId: sessionID,
-		Payload:   &game.AgentFrame_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}},
+		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+		}}},
 	}
 	close(recvCh)
 	return &mockProxyStream{ctx: context.Background(), recvCh: recvCh}

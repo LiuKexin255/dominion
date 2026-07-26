@@ -26,7 +26,9 @@ func newTestStream() *testStream {
 func TestWithFirstFrame_FirstRecvReturnsFirst(t *testing.T) {
 	first := &game.AgentFrame{
 		SessionId: "first",
-		Payload:   &game.AgentFrame_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}},
+		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+		}}},
 	}
 	inner := newTestStream()
 	wrapped := bind.WithFirstFrame(inner, first)

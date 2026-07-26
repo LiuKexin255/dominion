@@ -12,12 +12,18 @@ import (
 	"dominion/projects/game/pkg/bind"
 )
 
-// probeFrame returns a minimal AgentFrame carrying a StatusSignal payload. It
-// is used as a generic transport probe in forwarding tests — the binder is
-// payload-agnostic, so the concrete payload shape is irrelevant to coverage.
+// probeFrame returns a minimal AgentFrame carrying a StatusSignal FlowPart.
+// It is used as a generic transport probe in forwarding tests — the binder
+// is payload-agnostic, so the concrete payload shape is irrelevant to
+// coverage. status is a FlowPart kind per spec 023 C3 / FR-003
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
 func probeFrame() *game.AgentFrame {
 	return &game.AgentFrame{
-		Payload: &game.AgentFrame_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
 	}
 }
 

@@ -258,8 +258,9 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send valid AgentFrame JSON with an extra unknown field.
-	frameJSON := `{"sessionId":"","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"unknown_field":"should be discarded"}`
+	// Send valid AgentFrame JSON with an extra unknown field. status is now
+	// a FlowPart kind carried inside flow_parts (spec 023 C3 / FR-003).
+	frameJSON := `{"sessionId":"","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]},"unknown_field":"should be discarded"}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -271,9 +272,16 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 		if f.GetSessionId() != "test-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "test-session")
 		}
-		sf := f.GetStatus()
+		fp := f.GetFlowParts()
+		if fp == nil {
+			t.Fatal("payload oneof = nil, want flowParts")
+		}
+		if len(fp.GetParts()) != 1 {
+			t.Fatalf("flowParts parts = %d, want 1", len(fp.GetParts()))
+		}
+		sf := fp.GetParts()[0].GetStatus()
 		if sf == nil {
-			t.Fatal("payload oneof = nil, want status")
+			t.Fatal("flowParts[0] kind = nil, want status")
 		}
 		if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 			t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
@@ -319,14 +327,15 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send a content frame (PartBlock with a single TextPart) — the new
-	// first-class payload unit. The server echoes it back unmodified.
+	// Send a message_parts frame (MessageParts with a single TextPart) —
+	// the display payload unit. The server echoes it back unmodified
+	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3/§4).
 	sendFrame := &game.AgentFrame{
 		SessionId: "echo-session",
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
 				},
 			},
 		},
@@ -355,14 +364,14 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	if recvFrame.GetSessionId() != "echo-session" {
 		t.Fatalf("session_id = %q, want %q", recvFrame.GetSessionId(), "echo-session")
 	}
-	content := recvFrame.GetContent()
-	if content == nil {
-		t.Fatal("payload oneof = nil, want content")
+	mp := recvFrame.GetMessageParts()
+	if mp == nil {
+		t.Fatal("payload oneof = nil, want messageParts")
 	}
-	if len(content.GetParts()) != 1 {
-		t.Fatalf("parts = %d, want 1", len(content.GetParts()))
+	if len(mp.GetParts()) != 1 {
+		t.Fatalf("parts = %d, want 1", len(mp.GetParts()))
 	}
-	textPart := content.GetParts()[0].GetText()
+	textPart := mp.GetParts()[0].GetText()
 	if textPart == nil {
 		t.Fatal("part[0].kind = nil, want text")
 	}
@@ -423,11 +432,13 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Send a valid frame — the gRPC server will error on Recv or the
-	// stream will error immediately.
+	// stream will error immediately. status is a FlowPart kind (spec 023).
 	sendFrame := &game.AgentFrame{
 		SessionId: "err-session",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	}
 	msg, err := protojson.Marshal(sendFrame)
@@ -484,8 +495,8 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Send a frame with a DIFFERENT session_id in JSON — gateway should
-	// overwrite it with the URL session_id.
-	frameJSON := `{"sessionId":"from-json","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}`
+	// overwrite it with the URL session_id. status is a FlowPart kind now.
+	frameJSON := `{"sessionId":"from-json","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]}}`
 	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -507,8 +518,9 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 
 func TestProtojsonDiscardUnknown(t *testing.T) {
 	// Verify that protojson.UnmarshalOptions{DiscardUnknown: true} actually
-	// discards unknown fields without error.
-	input := []byte(`{"sessionId":"s1","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"future_field":"ignored"}`)
+	// discards unknown fields without error. status is a FlowPart kind
+	// carried inside flow_parts (spec 023 C3 / FR-003).
+	input := []byte(`{"sessionId":"s1","flowParts":{"parts":[{"status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}]},"future_field":"ignored"}`)
 
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	frame := new(game.AgentFrame)
@@ -519,9 +531,16 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	if frame.GetSessionId() != "s1" {
 		t.Fatalf("session_id = %q, want %q", frame.GetSessionId(), "s1")
 	}
-	sf := frame.GetStatus()
+	fp := frame.GetFlowParts()
+	if fp == nil {
+		t.Fatal("payload oneof = nil, want flowParts")
+	}
+	if len(fp.GetParts()) != 1 {
+		t.Fatalf("flowParts parts = %d, want 1", len(fp.GetParts()))
+	}
+	sf := fp.GetParts()[0].GetStatus()
 	if sf == nil {
-		t.Fatal("payload oneof = nil, want status")
+		t.Fatal("flowParts[0] kind = nil, want status")
 	}
 	if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
@@ -530,8 +549,10 @@ func TestProtojsonDiscardUnknown(t *testing.T) {
 	// Verify the proto is valid.
 	want := &game.AgentFrame{
 		SessionId: "s1",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	}
 	if !proto.Equal(frame, want) {
@@ -619,13 +640,15 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 				return err
 			}
 			received <- frame
-			// Reply with a StatusSignal — the new control-signal payload
-			// used for connectivity / lifecycle confirmation. (Replaces the
-			// removed AgentAckFrame.)
+			// Reply with a StatusSignal FlowPart — the control-signal
+			// payload used for connectivity / lifecycle confirmation.
+			// status is a FlowPart kind (spec 023 C3 / FR-003).
 			if err := stream.Send(&game.AgentFrame{
 				SessionId: frame.GetSessionId(),
-				Payload: &game.AgentFrame_Status{
-					Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+				Payload: &game.AgentFrame_FlowParts{
+					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+						{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+					}},
 				},
 			}); err != nil {
 				return err
@@ -657,17 +680,18 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		pngData[i] = byte(i)
 	}
 
-	// Send a content frame carrying [TextPart, ImagePart] — the new shape
-	// for a multimodal user turn.
+	// Send a message_parts frame carrying [TextPart, ImagePart] — the
+	// display payload for a multimodal user turn
+	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
 	sendFrame := &game.AgentFrame{
 		SessionId: "shot-session",
 		FrameId:   "frame-1",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
-					{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 						Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 						Data:        pngData,
 						WidthPx:     800,
@@ -694,11 +718,11 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		if f.GetSessionId() != "shot-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
 		}
-		content := f.GetContent()
-		if content == nil {
-			t.Fatal("payload oneof = nil, want content")
+		mp := f.GetMessageParts()
+		if mp == nil {
+			t.Fatal("payload oneof = nil, want messageParts")
 		}
-		parts := content.GetParts()
+		parts := mp.GetParts()
 		if len(parts) != 2 {
 			t.Fatalf("parts = %d, want 2", len(parts))
 		}
@@ -719,7 +743,7 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 			t.Fatalf("dimensions = %dx%d, want 800x600", img.GetWidthPx(), img.GetHeightPx())
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for content frame on gRPC server")
+		t.Fatal("timeout waiting for message_parts frame on gRPC server")
 	}
 
 	_, resp, err := conn.Read(ctx)
@@ -732,9 +756,10 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		t.Fatalf("unmarshal status: %v", err)
 	}
 
-	status := recvFrame.GetStatus()
+	// status is a FlowPart kind carried inside flow_parts (spec 023).
+	status := recvFrame.GetFlowParts().GetParts()[0].GetStatus()
 	if status == nil {
-		t.Fatal("response payload oneof = nil, want status")
+		t.Fatal("response flowParts[0] kind = nil, want status")
 	}
 	if status.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Fatalf("status = %q, want %q", status.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
@@ -784,7 +809,8 @@ func TestReadLimitSet(t *testing.T) {
 	// Raise client-side ReadLimit too so we can read the large echoed response.
 	conn.SetReadLimit(10 << 20)
 
-	// Build a content frame with a 64KB ImagePart — exceeds default 32KB limit.
+	// Build a message_parts frame with a 64KB ImagePart — exceeds default
+	// 32KB limit.
 	largeData := make([]byte, 64*1024)
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
@@ -793,10 +819,10 @@ func TestReadLimitSet(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "limit-test",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 						Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
 						Data:     largeData,
 						WidthPx:  100,
