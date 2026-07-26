@@ -1150,7 +1150,7 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 
 	// Single exit: build the result with the accumulated action status, then
 	// always attempt a post-action screenshot of the resolved selected window
-	// (FR-007). win is non-zero — resolveSelectedWindow already rejected the
+	// (FR-007). win is non-nil — resolveSelectedWindow already rejected the
 	// no-selection precondition — so the screenshot always runs (errors are
 	// recorded in the message, never swallowed by an early return).
 	result := &game.FlowResultPart{
@@ -1164,19 +1164,31 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	time.Sleep(postActionScreenshotDelay)
 
 	capturedImg, captureErr := capture.CaptureWindow(a.ctx, win.Handle)
-	switch {
-	case captureErr != nil:
+
+	// Error handling (independent of the success path below): a screenshot
+	// capture failure is recorded in result.Message and leaves result.Screenshot
+	// nil. The action outcome (result.Status above) is unaffected. Falls
+	// through to the success-path guard and the final log + return so every
+	// path reports its result.
+	if captureErr != nil {
 		result.Message = fmt.Sprintf("%s (screenshot capture failed: %s)", result.Message, captureErr.Error())
-	case len(capturedImg.Data) > maxScreenshotBytes:
-		result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
-	default:
-		result.Screenshot = &game.ImagePart{
-			Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
-			Data:        capturedImg.Data,
-			WidthPx:     int32(capturedImg.WidthPx),
-			HeightPx:    int32(capturedImg.HeightPx),
-			ScaleFactor: win.ScaleFactor,
-			WindowTitle: win.Title,
+	} else {
+	// Success path: attach the post-action screenshot (FR-007) only when capture
+	// succeeded. The size guard (FR-005a) rejects oversized payloads before
+	// attachment, recording the rejection in the message. This block is skipped
+	// entirely when capture failed above, so result.Screenshot stays nil. Both
+	// branches fall through to the final log + return.
+		if len(capturedImg.Data) > maxScreenshotBytes {
+			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
+		} else {
+			result.Screenshot = &game.ImagePart{
+				Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
+				Data:        capturedImg.Data,
+				WidthPx:     int32(capturedImg.WidthPx),
+				HeightPx:    int32(capturedImg.HeightPx),
+				ScaleFactor: win.ScaleFactor,
+				WindowTitle: win.Title,
+			}
 		}
 	}
 
@@ -1299,23 +1311,31 @@ func (a *App) SetSelectedWindow(hwnd uintptr) error {
 // no window is selected or the selected handle is no longer present
 // (closed/minimized/hidden between selection and use) — spec 025 FR-005,
 // contracts/window-select-contract.md §2.3/§3.
-func (a *App) resolveSelectedWindow() (capture.WindowRef, error) {
+//
+// The return is a pointer per style/golang.md §函数参数与返回值: WindowRef has
+// object semantics (it identifies a specific window instance by handle), so a
+// pointer return is preferred over a value return. On success the returned
+// pointer is always non-nil; callers that have already handled the error path
+// (early return) may read its fields without an extra nil check, and Go's
+// automatic pointer dereferencing keeps win.Handle / win.Title access
+// unchanged.
+func (a *App) resolveSelectedWindow() (*capture.WindowRef, error) {
 	a.selectedMu.Lock()
 	hwnd := a.selectedWin
 	a.selectedMu.Unlock()
 	if hwnd == 0 {
-		return capture.WindowRef{}, fmt.Errorf("no window selected")
+		return nil, fmt.Errorf("no window selected")
 	}
 	windows, err := listWindows(a.ctx)
 	if err != nil {
-		return capture.WindowRef{}, fmt.Errorf("resolve selected window: %w", err)
+		return nil, fmt.Errorf("resolve selected window: %w", err)
 	}
-	for _, w := range windows {
-		if w.Handle == hwnd {
-			return w, nil
+	for i := range windows {
+		if windows[i].Handle == hwnd {
+			return &windows[i], nil
 		}
 	}
-	return capture.WindowRef{}, fmt.Errorf("selected window %d not found (it may have closed)", hwnd)
+	return nil, fmt.Errorf("selected window %d not found (it may have closed)", hwnd)
 }
 
 // CaptureScreenshot captures the currently selected window as a PNG image
@@ -1331,24 +1351,42 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 		return nil, fmt.Errorf("capture screenshot: %w", err)
 	}
 	corrID := "corr-" + corrSuffix
-	// Capture bounds before screenshot for logging.
-	bnds, _ := capture.CaptureWindowBounds(win.Handle)
+	// Capture bounds before screenshot for logging only. Unlike
+	// app_operation.go (where bounds drive coordinate conversion and a failure
+	// is fatal), here bounds merely enrich the capture log, so a failure MUST
+	// NOT abort the screenshot flow (style/golang.md §可观测: errors must not
+	// be silently discarded — log at Error level, then degrade). The bounds
+	// lookup is recorded as "unavailable" in the success log below when it
+	// fails, so the zero values are never mistaken for a real 0×0 window.
+	bnds, bErr := capture.CaptureWindowBounds(win.Handle)
+	if bErr != nil {
+		a.logger.Error("backend", "CaptureScreenshot: window bounds lookup failed; bounds will be reported unavailable", map[string]any{
+			"hwnd":           win.Handle,
+			"correlation_id": corrID,
+			"error":          bErr.Error(),
+		})
+	}
 	a.logger.Info("backend", "Capturing screenshot", map[string]any{"hwnd": win.Handle, "correlation_id": corrID})
 	img, err := capture.CaptureWindow(a.ctx, win.Handle)
 	if err != nil {
 		a.logger.Error("backend", "Capture screenshot failed", map[string]any{"error": err.Error(), "correlation_id": corrID})
 		return nil, err
 	}
-	a.logger.Info("backend", "screenshot captured", map[string]any{
+	capturedFields := map[string]any{
 		"hwnd":           win.Handle,
 		"title":          win.Title,
-		"bounds":         map[string]int{"left": bnds.Left, "top": bnds.Top, "right": bnds.Right, "bottom": bnds.Bottom},
 		"width_px":       img.WidthPx,
 		"height_px":      img.HeightPx,
 		"encoding":       img.Encoding,
 		"size":           len(img.Data),
 		"correlation_id": corrID,
-	})
+	}
+	if bErr == nil {
+		capturedFields["bounds"] = map[string]int{"left": bnds.Left, "top": bnds.Top, "right": bnds.Right, "bottom": bnds.Bottom}
+	} else {
+		capturedFields["bounds"] = "unavailable"
+	}
+	a.logger.Info("backend", "screenshot captured", capturedFields)
 	return img, nil
 }
 
