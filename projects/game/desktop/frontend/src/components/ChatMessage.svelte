@@ -17,6 +17,9 @@
   } = $props()
 
   let expanded = $state(false)
+  // bind:this on the .thinking-content <pre>; drives the auto-scroll $effects
+  // below (FR-002..004).
+  let contentEl: HTMLPreElement | undefined = $state()
 
   function formatTime(t: string): string {
     try {
@@ -31,6 +34,50 @@
   let isUserText = $derived(kind === 'text' && isUser)
   let isSystemText = $derived(kind === 'text' && !isUser)
   let isThinking = $derived(kind === 'thinking')
+
+  // TOLERANCE for the at-bottom test (px); absorbs sub-pixel float jitter so
+  // "at the bottom" is stable across browsers.
+  // Ref: specs/027-chat-bubble-game-state/data-model.md §6 (TOLERANCE = 8);
+  //      specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §2.
+  const TOLERANCE = 8
+
+  // FR-004 (specs/027-chat-bubble-game-state/spec.md): open scrolled to the
+  // bottom when the bubble is expanded, so the latest reasoning is visible
+  // immediately. Mirrors the chat-thread pattern in
+  // projects/game/desktop/frontend/src/components/ChatView.svelte
+  // ($effect + requestAnimationFrame after the DOM update).
+  // Design: specs/027-chat-bubble-game-state/data-model.md §6;
+  //         specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §2 (rule 1);
+  //         specs/027-chat-bubble-game-state/research.md D2 (two-$effect split).
+  $effect(() => {
+    if (!expanded) return
+    const el = contentEl
+    if (!el) return
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  })
+
+  // FR-002/FR-003 (specs/027-chat-bubble-game-state/spec.md): while expanded,
+  // follow the streaming content if the operator is at the bottom; if they've
+  // scrolled up, do nothing (pause) so they can read history. The at-bottom
+  // test is `scrollTop + clientHeight >= scrollHeight − TOLERANCE` per
+  // specs/027-chat-bubble-game-state/data-model.md §6 /
+  // specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §2 (rule 2..4).
+  // The two-$effect split (open-to-bottom vs follow-or-pause) is decision
+  // specs/027-chat-bubble-game-state/research.md D2.
+  $effect(() => {
+    if (!expanded) return
+    // reactive dependency: re-run when the streaming content grows
+    part.thinking?.content
+    const el = contentEl
+    if (!el) return
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - TOLERANCE
+    if (!atBottom) return
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  })
 </script>
 
 {#if isUserText}
@@ -49,7 +96,7 @@
         <span class="thinking-label">Thinking…</span>
       </button>
       {#if expanded}
-        <pre class="thinking-content">{part.thinking?.content ?? ''}</pre>
+        <pre class="thinking-content" bind:this={contentEl}>{part.thinking?.content ?? ''}</pre>
       {/if}
     </div>
   </div>
@@ -150,6 +197,18 @@
     user-select: none;
   }
 
+  /* FR-001 (specs/027-chat-bubble-game-state/spec.md): hide the visible
+   * scrollbar track/thumb on overflow while keeping the area scrollable
+   * (overflow-y: auto and max-height: 200px are unchanged). `scrollbar-width`
+   * is the standard (CSS Scrollbars Styling L1) rule, portable to Firefox;
+   * `::-webkit-scrollbar { display: none }` is the WebKit/Chromium rule,
+   * operative on the Wails v2 WebView2 runtime. Design:
+   * specs/027-chat-bubble-game-state/data-model.md §6 (CSS);
+   * specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §1;
+   * specs/027-chat-bubble-game-state/research.md D1.
+   * External refs:
+   * - https://developer.mozilla.org/en-US/docs/Web/CSS/scrollbar-width
+   * - https://developer.mozilla.org/en-US/docs/Web/CSS/::-webkit-scrollbar */
   .thinking-content {
     margin: 8px 0 0 0;
     padding: 8px;
@@ -163,6 +222,11 @@
     max-height: 200px;
     overflow-y: auto;
     line-height: 1.4;
+    scrollbar-width: none;
+  }
+
+  .thinking-content::-webkit-scrollbar {
+    display: none;
   }
 
   /* ── System fallback ── */
