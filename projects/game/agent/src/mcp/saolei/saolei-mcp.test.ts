@@ -327,6 +327,34 @@ describe("validateMove: strict rule table (contract §4)", () => {
 		expect(validateMove(s, "saolei_flag", 0, 0)).toEqual({ ok: true });
 		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
 	});
+
+	it("rejects any cell op when the state is a recognized win (game_won, FR-021..023)", () => {
+		// All cells are revealed numbers or FLAG ⇒ isWin returns true.
+		const win = board(["0 F", "1 1"]);
+		expect(validateMove(win, "saolei_click", 0, 0)).toEqual({
+			ok: false,
+			reason: "game_won",
+		});
+		expect(validateMove(win, "saolei_flag", 1, 1)).toEqual({
+			ok: false,
+			reason: "game_won",
+		});
+		expect(validateMove(win, "saolei_chord_click", 1, 1)).toEqual({
+			ok: false,
+			reason: "game_won",
+		});
+	});
+
+	it("loss takes precedence over win: a HIT_MINE board is game_over, never game_won", () => {
+		// A board with HIT_MINE is a loss; isWin returns false for it, so the
+		// terminal reason is the existing game_over (FR-022 — the two terminal
+		// reasons are mutually exclusive).
+		const lost = board(["X 0", "0 0"]);
+		expect(validateMove(lost, "saolei_click", 1, 0)).toEqual({
+			ok: false,
+			reason: "game_over",
+		});
+	});
 });
 
 describe("isTerminalState", () => {
@@ -407,6 +435,8 @@ describe("createSaoleiMcpServer: saolei_init (FR-012 / FR-019)", () => {
 		expect(text).toContain("new game started");
 		expect(text).toContain("board size 2*2");
 		expect(text).toContain("* *");
+		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
+		expect(text).toContain("game status: playing");
 	});
 
 	it("re-calling re-dispatches F2 and re-seeds the board (restart)", async () => {
@@ -438,6 +468,8 @@ describe("createSaoleiMcpServer: saolei_init (FR-012 / FR-019)", () => {
 		expect(text).toContain("unable to recognize board");
 		// No board body on recognition failure (contract §3).
 		expect(text).not.toContain("board size");
+		// FR-015: no recognized state ⇒ NO fabricated game-status line.
+		expect(text).not.toContain("game status:");
 	});
 });
 
@@ -468,6 +500,8 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		const text = expectTextOnly(result);
 		expect(text).toContain("saolei_click at (0,0) → dispatched");
 		expect(text).toContain("0 *");
+		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
+		expect(text).toContain("game status: playing");
 	});
 
 	it("saolei_flag dispatches a RIGHT_CLICK at the cell centre", async () => {
@@ -511,6 +545,8 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 		expect(result.content[0].text).toContain(
 			"saolei_chord_click at (0,0) → dispatched",
 		);
+		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
+		expect(result.content[0].text).toContain("game status: playing");
 	});
 });
 
@@ -606,17 +642,23 @@ describe("createSaoleiMcpServer: illegal moves rejected before dispatch", () => 
 		const text = expectTextOnly(result);
 		expect(text).toContain("rejected: no_active_game");
 		expect(text).toContain("call saolei_init first");
+		// FR-015: no recognized state ⇒ NO fabricated game-status line.
+		expect(text).not.toContain("game status:");
 	});
 
 	it("rejects any cell op when the state is terminal (game_over, FR-015f)", async () => {
 		const { server, dispatched } = setup(board(["X *", "* *"]));
-		await callTool(server, "saolei_init", {});
+		const initState = await callTool(server, "saolei_init", {});
+		// FR-013: a losing board (HIT_MINE present) ⇒ `game status: lost`.
+		expect(initState.content[0].text).toContain("game status: lost");
 
 		// (1,0) is INITIAL, but the board is terminal (HIT_MINE at (0,0)).
 		const result = await callTool(server, "saolei_click", { x: 1, y: 0 });
 
 		expect(dispatched).toHaveLength(1);
 		expect(result.content[0].text).toContain("rejected: game_over");
+		// FR-015: the rejection carries the status line for the losing state.
+		expect(result.content[0].text).toContain("game status: lost");
 	});
 });
 
@@ -631,11 +673,15 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 
 		const initResult = await callTool(server, "saolei_init", {});
 		expect(initResult.content[0].text).toContain("unable to recognize board");
+		// FR-015: no recognized state ⇒ NO fabricated game-status line.
+		expect(initResult.content[0].text).not.toContain("game status:");
 
 		// State is invalid → cell op rejected as no_active_game (not dispatched).
 		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
 		expect(dispatched).toHaveLength(1); // only the F2
 		expect(clickResult.content[0].text).toContain("rejected: no_active_game");
+		// FR-015: no_active_game carries NO status line either.
+		expect(clickResult.content[0].text).not.toContain("game status:");
 	});
 
 	it("a failed update (post-dispatch) invalidates the state; subsequent ops are rejected", async () => {
@@ -650,6 +696,8 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 
 		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
 		expect(clickResult.content[0].text).toContain("unable to recognize board");
+		// FR-015: state invalidated ⇒ NO game-status line on this result.
+		expect(clickResult.content[0].text).not.toContain("game status:");
 		// The click DID dispatch (recognition fails on the post-action frame).
 		expect(dispatched).toHaveLength(2);
 
@@ -669,6 +717,88 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 
 		const result = await callTool(server, "saolei_init", {});
 		expect(result.content[0].text).toContain("unable to recognize board");
+		// FR-015: no recognized state ⇒ NO fabricated game-status line.
+		expect(result.content[0].text).not.toContain("game status:");
+	});
+});
+
+// ── game status line + post-win terminal (FR-012..015, FR-021..023) ─────────
+
+describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-012..015, FR-021..023)", () => {
+	it("a winning board surfaces 'game status: won' on init and rejects subsequent cell ops as game_won (no dispatch)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		// All cells revealed numbers / FLAG ⇒ isWin(state) === true.
+		const winning = board(["0 F", "1 1"]);
+		const fake = makeFakeBoardApi(winning);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		// init recognizes the winning board: the init result carries
+		// `game status: won` (FR-012/FR-013).
+		const initResult = await callTool(server, "saolei_init", {});
+		const initText = expectTextOnly(initResult);
+		expect(initText).toContain("new game started");
+		expect(initText).toContain("game status: won");
+		expect(initText).toContain("board size 2*2");
+
+		// A subsequent cell op is rejected as game_won BEFORE dispatch
+		// (FR-021): the desktop receives NO operation for it — only the
+		// init F2 was dispatched.
+		const clickResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		expect(dispatched).toHaveLength(1); // the init F2 only
+		const clickText = expectTextOnly(clickResult);
+		expect(clickText).toContain("rejected: game_won");
+		// FR-023: the rejection body carries the status line for the won state.
+		expect(clickText).toContain("game status: won");
+		expect(clickText).toContain("board size 2*2");
+		expect(clickText).toContain("valid range: x 0..1, y 0..1");
+
+		// saolei_flag and saolei_chord_click are equally terminal-blocked
+		// after the win (FR-021 — "any cell operation").
+		const flagResult = await callTool(server, "saolei_flag", { x: 1, y: 0 });
+		expect(flagResult.content[0].text).toContain("rejected: game_won");
+		const chordResult = await callTool(server, "saolei_chord_click", { x: 1, y: 1 });
+		expect(chordResult.content[0].text).toContain("rejected: game_won");
+		// Still no further dispatches — only the init F2.
+		expect(dispatched).toHaveLength(1);
+	});
+
+	it("a winning board's game_won rejection has NO dispatched FlowPart", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const winning = board(["0 F", "1 1"]);
+		const fake = makeFakeBoardApi(winning);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		// Pre-condition: only the init F2 has dispatched.
+		expect(dispatched).toHaveLength(1);
+		const initDispatched = dispatched.length;
+
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		// FR-020/FR-021: the post-win op is rejected pre-dispatch; the
+		// dispatched count is unchanged (the cell op added NO FlowPart).
+		expect(dispatched).toHaveLength(initDispatched);
+	});
+
+	it("saolei_init is NOT blocked by a recognized win — it restarts the game (FR-021)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const winning = board(["0 F", "1 1"]);
+		const fake = makeFakeBoardApi(winning);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		// After the win, a cell op is terminal-blocked (game_won)…
+		const blocked = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		expect(blocked.content[0].text).toContain("rejected: game_won");
+
+		// …but saolei_init re-dispatches F2 unconditionally (contract §6).
+		const restart = await callTool(server, "saolei_init", {});
+		expect(dispatched.filter((p) => p.keyboardPress?.key === "KEYBOARD_KEY_F2"))
+			.toHaveLength(2);
+		// The post-restart init result still carries the status line for
+		// whatever the new screenshot recognizes (here: still the winning
+		// canned board, so `game status: won`).
+		expect(restart.content[0].text).toContain("game status: won");
 	});
 });
 

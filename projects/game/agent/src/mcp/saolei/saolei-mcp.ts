@@ -35,12 +35,22 @@
  * structured status stays neutral (023 C15 — `TOOL_RESULT_STATUS_UNSPECIFIED`),
  * so a rejected move is a normal tool result the model can act on, not a tool
  * error that aborts the turn.
+ *
+ * Game-status surfacing + post-win terminal (spec 027 US4 / FR-012..015,
+ * FR-021..023; `specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-
+ * contract.md`): every tool-result body whose state is recognized carries a
+ * `game status: won|lost|playing` line (derived loss-first via
+ * `isTerminalState`, then `isWin` from `@dominion/game-saolei-board`, else
+ * `playing`), and a recognized win is a terminal state symmetric with a loss
+ * — any cell operation attempted after a recognized win is rejected before
+ * dispatch with `game_won` (mirroring the existing loss `game_over`).
+ * `saolei_init` is never terminal-blocked (it restarts the game).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { SaoleiBoard, renderBoardText } from "@dominion/game-saolei-board";
+import { SaoleiBoard, isWin, renderBoardText } from "@dominion/game-saolei-board";
 import type { CellStatus, GameState } from "@dominion/game-saolei-board";
 
 import type { OperationBridge } from "../../operation-bridge";
@@ -104,13 +114,15 @@ export type MoveVerdict = { ok: true } | { ok: false; reason: MoveRejection };
 
 /**
  * Stable reason codes for a rejected move, mirroring the rule table in
- * `contracts/saolei-mcp-contract.md` §4. Surfaced verbatim to the model in the
- * rejection outcome line so the model can choose a different move.
+ * `specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md`
+ * §4. Surfaced verbatim to the model in the rejection outcome line so the
+ * model can choose a different move.
  */
 export type MoveRejection =
 	| "no_active_game"
 	| "out_of_bounds"
 	| "game_over"
+	| "game_won"
 	| "cell_already_revealed"
 	| "cell_is_flagged"
 	| "cannot_flag_revealed"
@@ -142,16 +154,15 @@ const CHORD_NUMBERS: ReadonlySet<CellStatus> = new Set<CellStatus>([
 ]);
 
 /**
- * Terminal indicators: `HIT_MINE` (the triggered mine, red background) and
+ * Terminal-LOSS indicators: `HIT_MINE` (the triggered mine, red background) and
  * `MINE` (an end-game revealed mine, grey background) only appear once the
  * game is lost — classic Minesweeper reveals all mines on a loss, and never
  * surfaces a bare `MINE` while the game is in progress. A win does not expose
  * mines as `MINE`/`HIT_MINE` (they are auto-flagged as `F`), so the presence
- * of either symbol is a definitive terminal (lost) signal. (A win is not
- * reliably detectable from the cell grid alone — it has no distinct per-cell
- * marker — so terminal detection is loss-based; the `game_over` reason covers
- * the post-loss case where the model would otherwise keep clicking a finished
- * board. data-model.md §2 state machine "terminal recognized (lost)".)
+ * of either symbol is a definitive terminal-LOSS signal. `isTerminalState`
+ * below uses this set; a terminal-WIN is detected separately via `isWin`
+ * (`specs/027-chat-bubble-game-state/data-model.md` §3 — loss takes precedence
+ * but both are terminal, surfacing `game_over` and `game_won` respectively).
  */
 const TERMINAL_CELLS: ReadonlySet<CellStatus> = new Set<CellStatus>([
 	"HIT_MINE",
@@ -159,8 +170,11 @@ const TERMINAL_CELLS: ReadonlySet<CellStatus> = new Set<CellStatus>([
 ]);
 
 /**
- * Whether a recognized state is terminal (game over). True when any cell is a
- * revealed mine (`HIT_MINE` / `MINE`) — see `TERMINAL_CELLS`.
+ * Whether a recognized state is a terminal LOSS. True when any cell is a
+ * revealed mine (`HIT_MINE` / `MINE`) — see `TERMINAL_CELLS`. A terminal WIN
+ * is detected separately via `isWin` (the post-win `game_won` check in
+ * `validateMove`); this helper stays loss-only so the two terminal reasons
+ * stay disjoint and mutually exclusive (FR-022).
  */
 export function isTerminalState(state: GameState): boolean {
 	for (const row of state.grid) {
@@ -172,16 +186,40 @@ export function isTerminalState(state: GameState): boolean {
 }
 
 /**
+ * The game-status token emitted in every tool-result body (FR-012..015; `specs/
+ * 027-chat-bubble-game-state/data-model.md` §3, `specs/027-chat-bubble-game-
+ * state/contracts/saolei-mcp-status-contract.md` §3).
+ */
+type GameStatus = "won" | "lost" | "playing";
+
+/**
+ * Derive the game status from a recognized state. Loss takes precedence over
+ * win: a board with `HIT_MINE`/`MINE` is a loss (and `isWin` returns `false`
+ * for it anyway), but loss-first is explicit so the "loss takes precedence"
+ * edge case is unambiguous (`specs/027-chat-bubble-game-state/data-model.md`
+ * §3 / research.md D7). Pure function of `state`.
+ */
+function gameStatus(state: GameState): GameStatus {
+	if (isTerminalState(state)) return "lost";
+	if (isWin(state)) return "won";
+	return "playing";
+}
+
+/**
  * Strict pre-dispatch validation (FR-014/FR-015,
- * `contracts/saolei-mcp-contract.md` §4). Judges **target-cell compatibility**
- * — never predicted outcome (so a chord whose adjacent-flag count ≠ the number
- * is still legal and NOT rejected; FR-015e). Pure: takes the recognized state
- * and the requested move, returns a verdict with a stable reason code.
+ * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md` §4;
+ * `specs/027-chat-bubble-game-state/data-model.md` §4 rule order). Judges
+ * **target-cell compatibility** — never predicted outcome (so a chord whose
+ * adjacent-flag count ≠ the number is still legal and NOT rejected; FR-015e).
+ * Pure: takes the recognized state and the requested move, returns a verdict
+ * with a stable reason code.
  *
- * Check order: structural (out-of-bounds) → state-level (terminal) →
- * cell-specific (per-tool rule). `UNKNOWN` targets are always lenient
- * (FR-018): a move is never rejected solely because the target cell's
- * recognition is uncertain.
+ * Check order: structural (out-of-bounds) → state-level (terminal loss
+ * `game_over`, then terminal win `game_won` — FR-021..023, mutually exclusive
+ * but loss-first per `specs/027-chat-bubble-game-state/contracts/saolei-mcp-
+ * status-contract.md` §5) → cell-specific (per-tool rule). `UNKNOWN` targets
+ * are always lenient (FR-018): a move is never rejected solely because the
+ * target cell's recognition is uncertain.
  *
  * `no_active_game` is NOT produced here — it is a session-level check (no
  * recognized state exists) handled by the caller before invoking this helper.
@@ -197,6 +235,9 @@ export function validateMove(
 	}
 	if (isTerminalState(state)) {
 		return { ok: false, reason: "game_over" };
+	}
+	if (isWin(state)) {
+		return { ok: false, reason: "game_won" };
 	}
 	const cell = state.grid[y][x];
 	// FR-018: never reject solely on recognition uncertainty.
@@ -303,14 +344,20 @@ const REJECT_PREFIX = "rejected:";
 /** Outcome line for a recognition failure (contract §3 / FR-017). */
 const UNRECOGNIZABLE_OUTCOME = "unable to recognize board";
 
-/** Build the `saolei_init` success body: outcome + initial text board. */
+/**
+ * Build the `saolei_init` success body: outcome + game-status line + initial
+ * text board (`specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-
+ * contract.md` §2). The status line sits immediately after the outcome line
+ * and before the board (FR-012..014).
+ */
 function initSuccessText(state: GameState): string {
-	return `${INIT_OUTCOME}\n\n${renderBoardText(state)}`;
+	return `${INIT_OUTCOME}\ngame status: ${gameStatus(state)}\n\n${renderBoardText(state)}`;
 }
 
 /**
- * Build the legal-cell-op success body: `<tool> at (x,y) → dispatched` + the
- * updated text board (contract §3).
+ * Build the legal-cell-op success body: `<tool> at (x,y) → dispatched` +
+ * game-status line + the updated text board (`specs/027-chat-bubble-game-
+ * state/contracts/saolei-mcp-status-contract.md` §2; FR-012..014).
  */
 function dispatchedText(
 	tool: CellTool,
@@ -318,13 +365,20 @@ function dispatchedText(
 	y: number,
 	state: GameState,
 ): string {
-	return `${tool} at (${x},${y}) → dispatched\n\n${renderBoardText(state)}`;
+	return (
+		`${tool} at (${x},${y}) → dispatched\n` +
+		`game status: ${gameStatus(state)}\n\n` +
+		`${renderBoardText(state)}`
+	);
 }
 
 /**
- * Build the rejection body: `rejected: <reason>` + the current text board +
- * the valid coordinate range (FR-016). When the state is unavailable
- * (`no_active_game`), substitutes guidance to call `saolei_init` first.
+ * Build the rejection body: `rejected: <reason>` + game-status line + the
+ * current text board + the valid coordinate range (FR-016/FR-023; `specs/027-
+ * chat-bubble-game-state/contracts/saolei-mcp-status-contract.md` §2). When
+ * the state is unavailable (`no_active_game`), substitutes guidance to call
+ * `saolei_init` first and OMITS the status line — no fabricated status
+ * (FR-015).
  */
 function rejectionText(
 	reason: MoveRejection,
@@ -334,13 +388,18 @@ function rejectionText(
 		return `${REJECT_PREFIX} ${reason}\n\ncall saolei_init first to start a game.`;
 	}
 	return (
-		`${REJECT_PREFIX} ${reason}\n\n` +
+		`${REJECT_PREFIX} ${reason}\n` +
+		`game status: ${gameStatus(state)}\n\n` +
 		`${renderBoardText(state)}\n` +
 		`valid range: x 0..${state.width - 1}, y 0..${state.height - 1}`
 	);
 }
 
-/** Build the recognition-failure body (FR-017) + re-init guidance. */
+/**
+ * Build the recognition-failure body (FR-017) + re-init guidance. No status
+ * line is emitted — a recognition failure invalidates the state, so there is
+ * no recognized board to derive a status from (FR-015).
+ */
 function unrecognizableText(): string {
 	return `${UNRECOGNIZABLE_OUTCOME}\n\ncall saolei_init to start a new game.`;
 }
