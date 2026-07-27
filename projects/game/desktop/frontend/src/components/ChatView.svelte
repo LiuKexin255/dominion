@@ -174,12 +174,16 @@
     return `data:image/${enc};base64,${image.data}`
   }
 
-  // Pretty-print a tool_call's argsJson for display; fall back to the raw
-  // string when it is not parseable JSON.
-  function prettyArgs(argsJson?: string): string {
+  // Compact a tool_call's argsJson for INLINE display
+  // (specs/027-chat-bubble-game-state/spec.md FR-005;
+  // specs/027-chat-bubble-game-state/data-model.md §7;
+  // specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3).
+  // Invalid JSON falls back to the raw string (no throw) —
+  // specs/027-chat-bubble-game-state/spec.md FR-005 edge case.
+  function compactArgs(argsJson?: string): string {
     if (!argsJson) return ''
     try {
-      return JSON.stringify(JSON.parse(argsJson), null, 2)
+      return JSON.stringify(JSON.parse(argsJson))
     } catch {
       return argsJson
     }
@@ -261,19 +265,42 @@
               <div class="tool-head">
                 <span class="tool-name" data-testid="tool-name">{item.name ?? 'tool'}</span>
                 {#if item.argsJson}
-                  <pre class="tool-args" data-testid="tool-args">{prettyArgs(item.argsJson)}</pre>
+                  <!-- Inline compact args next to the tool name
+                       (specs/027-chat-bubble-game-state/spec.md FR-005;
+                       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3;
+                       specs/027-chat-bubble-game-state/data-model.md §7). -->
+                  <code class="tool-args-inline" data-testid="tool-args">{compactArgs(item.argsJson)}</code>
                 {/if}
               </div>
               {#if resolved}
-                <div class="tool-result">
-                  <span class="op-result-icon">{statusIcon}</span>
-                  <span class="op-result-status">{statusLabel}</span>
+                <!-- Collapsible result body
+                     (specs/027-chat-bubble-game-state/spec.md FR-007/008;
+                     specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §5;
+                     specs/027-chat-bubble-game-state/data-model.md §7).
+                     The outer <details> has NO `open`
+                     attribute → the <summary> (status icon + label) is always
+                     visible; the formatted message and the screenshot
+                     sub-toggle are hidden until expanded. The screenshot keeps
+                     its own nested <details> so its open/closed state is
+                     independent (specs/027-chat-bubble-game-state/spec.md FR-008).
+                     The pending "running…" branch below
+                     stays outside the <details> (nothing to collapse before
+                     resolution). -->
+                <details class="tool-result-details">
+                  <summary>
+                    <span class="op-result-icon">{statusIcon}</span>
+                    <span class="op-result-status">{statusLabel}</span>
+                  </summary>
                   {#if item.result!.message}
-                    <span class="op-result-message">{item.result!.message}</span>
+                    <!-- pre-wrap preserves the multi-line text board
+                         (specs/027-chat-bubble-game-state/spec.md FR-006;
+                         specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §4;
+                         specs/027-chat-bubble-game-state/data-model.md §7). -->
+                    <pre class="op-result-message">{item.result!.message}</pre>
                   {/if}
                   {#if item.result!.screenshot?.data}
                     {@const screenshotUrl = imageUrlForPart(item.result!.screenshot)}
-                    <details class="op-result-details">
+                    <details class="op-result-screenshot-details">
                       <summary class="op-result-summary">Result screenshot</summary>
                       <img
                         class="screenshot-img clickable"
@@ -284,7 +311,7 @@
                       />
                     </details>
                   {/if}
-                </div>
+                </details>
               {:else}
                 <div class="tool-pending">running…</div>
               {/if}
@@ -737,11 +764,22 @@
   }
 
   .op-result-message {
+    /* specs/027-chat-bubble-game-state/spec.md FR-006;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §4;
+       specs/027-chat-bubble-game-state/data-model.md §7:
+       preserve newlines and wrap.
+       MDN white-space: https://developer.mozilla.org/en-US/docs/Web/CSS/white-space
+       — `pre-wrap` preserves newlines and wraps overlong lines (unlike `pre`,
+       which would horizontally scroll). */
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 6px 0 0;
     color: #a0a0b0;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  .op-result-details {
-    width: 100%;
+  .op-result-screenshot-details {
     margin-top: 4px;
   }
 
@@ -782,22 +820,29 @@
     color: #4a9eff;
   }
 
-  .tool-args {
-    margin: 0;
-    padding: 6px 8px;
+  .tool-args-inline {
+    /* Inline compact args (specs/027-chat-bubble-game-state/spec.md FR-005;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3;
+       specs/027-chat-bubble-game-state/data-model.md §7).
+       `<code>` gives monospace inline without forcing a block. */
     background: #0d0d2b;
-    border-radius: 4px;
+    padding: 1px 4px;
+    border-radius: 3px;
     font-size: 11px;
-    overflow-x: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-word;
   }
 
-  .tool-result {
+  .tool-result-details {
+    /* Collapsible result body (specs/027-chat-bubble-game-state/spec.md FR-007/008;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §5;
+       specs/027-chat-bubble-game-state/data-model.md §7). */
     margin-top: 4px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    align-items: center;
+  }
+
+  .tool-result-details > summary {
+    cursor: pointer;
+    user-select: none;
   }
 
   .tool-pending {
