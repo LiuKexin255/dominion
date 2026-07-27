@@ -265,7 +265,7 @@ export class Handler implements AgentServiceHandlers {
               },
             },
           );
-          stream.write(statusFrame);
+          safeWrite(stream, statusFrame, sessionId);
           return;
         }
         for (const p of parts) {
@@ -345,7 +345,7 @@ export class Handler implements AgentServiceHandlers {
               },
             },
           );
-          stream.write(warnFrame);
+          safeWrite(stream, warnFrame, sessionId);
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
@@ -354,7 +354,7 @@ export class Handler implements AgentServiceHandlers {
               flowParts: { parts: [{ wait: {} }] },
             },
           );
-          stream.write(waitFrame);
+          safeWrite(stream, waitFrame, sessionId);
           return;
         }
 
@@ -369,7 +369,7 @@ export class Handler implements AgentServiceHandlers {
               },
             },
           );
-          stream.write(warnFrame);
+          safeWrite(stream, warnFrame, sessionId);
           // Return the desktop to ready: a WarnSignal alone would leave the
           // typing indicator stuck after this rejection. The WaitSignal clears
           // it so the operator can immediately retry
@@ -383,7 +383,7 @@ export class Handler implements AgentServiceHandlers {
               flowParts: { parts: [{ wait: {} }] },
             },
           );
-          stream.write(waitFrame);
+          safeWrite(stream, waitFrame, sessionId);
           return;
         }
 
@@ -392,7 +392,7 @@ export class Handler implements AgentServiceHandlers {
         activeTurns.set(sessionId, controller);
         try {
           const handle = sessionAgent.getBridge().registerSink((contentEnvelope: AgentFrame) => {
-            stream.write(contentEnvelope);
+            safeWrite(stream, contentEnvelope, sessionId);
           });
           sessionSinkHandles.set(sessionId, handle);
 
@@ -431,7 +431,7 @@ export class Handler implements AgentServiceHandlers {
                   },
                 },
               );
-              stream.write(thinkFrame);
+              safeWrite(stream, thinkFrame, sessionId);
             } else if (block.type === "text") {
               const textFrame: AgentFrame = buildFrame(
                 sessionId,
@@ -443,7 +443,7 @@ export class Handler implements AgentServiceHandlers {
                   },
                 },
               );
-              stream.write(textFrame);
+              safeWrite(stream, textFrame, sessionId);
             } else if (block.type === "tool_call") {
               const toolCallFrame: AgentFrame = buildFrame(
                 sessionId,
@@ -463,7 +463,7 @@ export class Handler implements AgentServiceHandlers {
                   },
                 },
               );
-              stream.write(toolCallFrame);
+              safeWrite(stream, toolCallFrame, sessionId);
             } else if (block.type === "tool_result") {
               const toolResultPart: ToolResultPart = {
                 toolId: block.toolCallId,
@@ -487,7 +487,7 @@ export class Handler implements AgentServiceHandlers {
                   messageParts: { parts: [{ toolResult: toolResultPart }] },
                 },
               );
-              stream.write(toolResultFrame);
+              safeWrite(stream, toolResultFrame, sessionId);
             }
           }
 
@@ -506,7 +506,7 @@ export class Handler implements AgentServiceHandlers {
                 flowParts: { parts: [{ wait: {} }] },
               },
             );
-            stream.write(waitFrame);
+            safeWrite(stream, waitFrame, sessionId);
           }
         } catch (err: unknown) {
           if (controller.signal.aborted) {
@@ -524,7 +524,7 @@ export class Handler implements AgentServiceHandlers {
                 },
               },
             );
-            stream.write(warnFrame);
+            safeWrite(stream, warnFrame, sessionId);
 
             const waitFrame: AgentFrame = buildFrame(
               sessionId,
@@ -534,7 +534,7 @@ export class Handler implements AgentServiceHandlers {
                 flowParts: { parts: [{ wait: {} }] },
               },
             );
-            stream.write(waitFrame);
+            safeWrite(stream, waitFrame, sessionId);
           }
         } finally {
           activeTurns.delete(sessionId);
@@ -722,6 +722,44 @@ export class Handler implements AgentServiceHandlers {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Write a frame to the bidi stream, swallowing any synchronous throw that
+ * results from writing to a closed/destroyed stream (peer disconnected).
+ *
+ * A write failure here is an expected operational event on a disconnecting
+ * stream, not an anomaly — it is logged at `warn` and the frame is dropped
+ * (the peer is gone; per 017 FR-004 no frames should be emitted to a dead
+ * peer anyway). The core contract is that this helper NEVER throws: it is
+ * the error-containment boundary that prevents a closed-stream write error
+ * from escaping an async EventEmitter listener and becoming an unhandled
+ * rejection (which would terminate the multi-session agent service).
+ *
+ * Contract: specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §1
+ * Behavior: specs/026-agent-abort-crash-fix/data-model.md §1
+ * Crash vector: specs/026-agent-abort-crash-fix/research.md §D
+ *
+ * NOTE: the stream parameter is typed as `ServerDuplexStream` (the actual
+ * type of a bidi-stream handler's stream), not `ServerWritableStream` as
+ * written in the contract. The two grpc-js types differ in that
+ * `ServerDuplexStream` omits the `request` field; both expose the `write`
+ * method this helper depends on. See
+ * specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §1.
+ */
+function safeWrite(
+  stream: grpc.ServerDuplexStream<AgentFrame, AgentFrame>,
+  frame: AgentFrame,
+  sessionId: string,
+): void {
+  try {
+    stream.write(frame);
+  } catch (err: unknown) {
+    warn("stream write failed (peer disconnected?)", {
+      sessionId,
+      error: String(err),
+    });
+  }
+}
 
 function timestampNow(): { seconds: number; nanos: number } {
   const ms = Date.now();

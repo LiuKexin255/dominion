@@ -20,6 +20,13 @@ import {
   MessagesAnnotation,
 } from "@langchain/langgraph";
 
+import {
+  installReporter,
+  type Reporter,
+  type LogLevel,
+  type LogAttributes,
+} from "@dominion/common-js-logs";
+
 import type { AgentAdapter, AdapterFactory, ContentBlock, AdapterStateSnapshot, TurnContent } from "./llm";
 import { Handler } from "./handler";
 import { SessionAgent } from "./session-agent";
@@ -178,11 +185,14 @@ interface FakeStream {
   emit(event: string, ...args: unknown[]): void;
   written: unknown[];
   ended: boolean;
+  /** Total number of `write` calls, including ones that threw. */
+  writeCallCount: number;
 }
 
-function createFakeStream(): FakeStream {
+function createFakeStream(opts: { writeThrows?: Error } = {}): FakeStream {
   const written: unknown[] = [];
   let ended = false;
+  let writeCallCount = 0;
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   const stream: FakeStream = {
     on(event, handler) {
@@ -191,6 +201,8 @@ function createFakeStream(): FakeStream {
       return stream;
     },
     write(data) {
+      writeCallCount++;
+      if (opts.writeThrows) throw opts.writeThrows;
       written.push(data);
     },
     end() {
@@ -205,6 +217,9 @@ function createFakeStream(): FakeStream {
     written,
     get ended() {
       return ended;
+    },
+    get writeCallCount() {
+      return writeCallCount;
     },
   };
   return stream;
@@ -1814,5 +1829,302 @@ describe("Handler.ListMessages (real MemorySaver)", () => {
     expect(resultMsg).toBeDefined();
     const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string } }[] }).parts.find((p) => p.toolResult)!.toolResult;
     expect(tr?.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
+  });
+});
+
+// ===========================================================================
+// Tests: Connect — safeWrite error containment & abort crash fix (spec 026)
+//
+// Validates specs/026-agent-abort-crash-fix/quickstart.md Scenarios 1-3 and
+// spec FR-001..FR-007. The crash vector (research.md §D) is closed by the
+// safeWrite helper: every stream.write() in the Connect handler's data
+// callback is now wrapped so a write to a closed/destroyed stream is logged
+// at warn and swallowed, never escaping the async EventEmitter listener as
+// an unhandled rejection (Node.js default `--unhandled-rejections=throw`
+// would otherwise terminate the multi-session agent service).
+// ===========================================================================
+
+/**
+ * Capture structured logs via the DI-friendly reporter seam
+ * (style/javascript.md §测试 — prefer installReporter over module-level
+ * vi.mock). Returns an entries array and an uninstall function.
+ */
+function captureLogs(): {
+  entries: Array<{ level: LogLevel; msg: string; attrs: LogAttributes }>;
+  uninstall: () => void;
+} {
+  const entries: Array<{ level: LogLevel; msg: string; attrs: LogAttributes }> = [];
+  const reporter: Reporter = {
+    write(level, msg, attrs) {
+      entries.push({ level, msg, attrs });
+    },
+  };
+  const uninstall = installReporter(reporter);
+  return { entries, uninstall };
+}
+
+describe("Handler.Connect safeWrite error containment (spec 026)", () => {
+  let promptClient: ReturnType<typeof createMockPromptClient>;
+  let sessionAgentStore: MockSessionAgentStore;
+
+  beforeEach(() => {
+    promptClient = createMockPromptClient({
+      "helpful-assistant": {
+        model: "opencode-go/deepseek-v4",
+        systemPrompt: "You are helpful.",
+      },
+    });
+    sessionAgentStore = createMockSessionAgentStore();
+  });
+
+  // Scenario 1 (quickstart.md §Scenario 1; data-model.md §1; contract §1):
+  // safeWrite MUST NOT throw when stream.write() fails on a closed stream.
+  // safeWrite is a private helper in handler.ts (not exported per plan), so
+  // we exercise it indirectly via the status-probe path — the simplest
+  // synchronous safeWrite call site in the data callback.
+  //
+  // Validates: spec FR-002 (no unhandled rejection from write failures).
+  it("safeWrite catches write error on closed stream and logs warn", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream({
+      writeThrows: new Error("ERR_STREAM_DESTROYED after end"),
+    });
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    const { entries, uninstall } = captureLogs();
+
+    stream.emit("data", {
+      sessionId: "sess-closed-write",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+      sender: FRAME_SENDER_USER,
+    });
+    await flush();
+
+    // safeWrite was exercised (write attempted) ...
+    expect(stream.writeCallCount).toBeGreaterThanOrEqual(1);
+    // ... but the throw was swallowed, so no frame was delivered ...
+    expect(stream.written).toHaveLength(0);
+    // ... and a warn log was emitted per contract §1.
+    const writeFailWarn = entries.find(
+      (e) =>
+        e.level === "warn" &&
+        e.msg === "stream write failed (peer disconnected?)",
+    );
+    expect(writeFailWarn).toBeDefined();
+    expect(writeFailWarn!.attrs.sessionId).toBe("sess-closed-write");
+    expect(String(writeFailWarn!.attrs.error)).toContain("ERR_STREAM_DESTROYED");
+
+    // Verify the mock reporter was actually invoked (style/javascript.md
+    // §规则:验证 mock 确实生效).
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+
+    uninstall();
+  });
+
+  // Scenario 2 (quickstart.md §Scenario 2; spec FR-001/FR-002; research.md §D):
+  // The crash vector — catch-block stream.write() escaping as an unhandled
+  // rejection when the stream is already closed. generateTurn throws a
+  // non-abort error (catch enters the else-branch); every stream.write
+  // throws. The data callback MUST complete without crashing, and the
+  // finally block MUST still release the per-session mutex (FR-004/FR-005).
+  //
+  // Note: vitest fails the test if the async data-listener's promise
+  // rejects, so simply reaching the assertions below proves no unhandled
+  // rejection escaped the data callback.
+  it("catch-block write does not crash on closed stream and finally still releases mutex", async () => {
+    const throwingAdapter: AgentAdapter = {
+      generateTurn(): AsyncIterable<ContentBlock> {
+        const it: AsyncIterator<ContentBlock> = {
+          async next() {
+            throw new Error("Provider timeout");
+          },
+        };
+        return { [Symbol.asyncIterator]: () => it };
+      },
+      async getState() { return null; },
+    };
+    sessionAgentStore._setBinding("sess-crash", "helpful-assistant", throwingAdapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream({
+      writeThrows: new Error("write after end"),
+    });
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-crash", "break me", "helpful-assistant"));
+    await flush();
+
+    // safeWrite swallowed the catch-block writes (no crash, no unhandled
+    // rejection). Multiple write attempts occurred (warn + wait in the catch
+    // else-branch) and all were contained ...
+    expect(stream.writeCallCount).toBeGreaterThanOrEqual(2);
+    expect(stream.written).toHaveLength(0);
+
+    // FR-004/FR-005: the finally block ran despite the catch-body writes
+    // throwing — the per-session mutex is released, so a RefreshAgent call
+    // succeeds (not FAILED_PRECONDITION). This is the observable proxy for
+    // activeTurns.delete + releaseMutex having executed.
+    const refreshCall = { request: { name: "sessions/sess-crash/agent" } } as grpc.ServerUnaryCall<
+      { name?: string },
+      unknown
+    >;
+    const refreshResult = await new Promise<{ error: grpc.ServiceError | null }>((resolve) => {
+      const cb: grpc.sendUnaryData<{}> = (error) => {
+        resolve({ error: error && "code" in error ? (error as grpc.ServiceError) : null });
+      };
+      handler.RefreshAgent(refreshCall, cb);
+    });
+    expect(refreshResult.error).toBeNull();
+  });
+
+  // Scenario 3 (quickstart.md §Scenario 3; spec FR-003 / 017 FR-004):
+  // On mid-turn disconnect, abort fires synchronously via stream.on("end");
+  // the catch block enters the `if (controller.signal.aborted)` branch which
+  // only logs info — no warn/wait frames are emitted to the dead peer.
+  it("disconnect during turn emits no warn/wait frames to dead peer", async () => {
+    // Adapter that parks on the abort signal after the first yield so the
+    // test can fire stream.end mid-turn and observe the abort path.
+    function createAbortParkingAdapter(blocks: ContentBlock[]): {
+      adapter: AgentAdapter;
+      capturedSignal: () => AbortSignal | undefined;
+    } {
+      let signal: AbortSignal | undefined;
+      const adapter: AgentAdapter = {
+        async *generateTurn(_threadId, _content, sig) {
+          signal = sig;
+          for (const block of blocks) {
+            if (sig?.aborted) return;
+            yield block;
+            if (sig) {
+              await new Promise<void>((resolve) => {
+                if (sig.aborted) {
+                  resolve();
+                  return;
+                }
+                sig.addEventListener("abort", () => resolve(), { once: true });
+              });
+            }
+          }
+        },
+        async getState() { return null; },
+      };
+      return { adapter, capturedSignal: () => signal };
+    }
+
+    const { adapter, capturedSignal } = createAbortParkingAdapter([
+      { type: "text", text: "chunk-1" },
+      { type: "text", text: "chunk-2" },
+      { type: "text", text: "chunk-3" },
+    ]);
+    sessionAgentStore._setBinding("sess-no-frames", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-no-frames", "hi", "helpful-assistant"));
+    await flush();
+
+    // chunk-1 was emitted before the adapter parked on the abort signal.
+    const writtenBeforeAbort = stream.written.length;
+    expect(writtenBeforeAbort).toBeGreaterThanOrEqual(1);
+
+    stream.emit("end");
+    await flush();
+
+    expect(capturedSignal()?.aborted).toBe(true);
+
+    // After abort, no further frames — especially no wait/warn frames — are
+    // written (FR-003 / 017 FR-004). The for-await exits and the post-loop
+    // `if (controller.signal.aborted)` branch only logs info.
+    const framesAfterAbort = stream.written.slice(writtenBeforeAbort);
+    const waitWarnFramesAfterAbort = framesAfterAbort.filter((f) => {
+      const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+      if (fr.payload !== "flowParts") return false;
+      return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+    });
+    expect(waitWarnFramesAfterAbort).toHaveLength(0);
+  });
+
+  // Scenario 4 (spec FR-005 / 017 FR-006): mid-turn abort leaves the
+  // conversation in a recoverable state. Full checkpoint consistency
+  // requires a real checkpointer (covered by the large-test suite, T009);
+  // at the unit level we verify the finally-block resource cleanup
+  // (activeTurns.delete + releaseMutex) executes after the abort path so a
+  // reconnect can immediately start a new turn (017 FR-005 parity).
+  it("mid-turn abort: finally cleanup releases mutex for reconnect", async () => {
+    function createAbortParkingAdapter(): {
+      adapter: AgentAdapter;
+      capturedSignal: () => AbortSignal | undefined;
+    } {
+      let signal: AbortSignal | undefined;
+      const adapter: AgentAdapter = {
+        async *generateTurn(_threadId, _content, sig) {
+          signal = sig;
+          yield { type: "text", text: "partial" };
+          if (sig) {
+            await new Promise<void>((resolve) => {
+              if (sig.aborted) {
+                resolve();
+                return;
+              }
+              sig.addEventListener("abort", () => resolve(), { once: true });
+            });
+          }
+        },
+        async getState() { return null; },
+      };
+      return { adapter, capturedSignal: () => signal };
+    }
+
+    const { adapter, capturedSignal } = createAbortParkingAdapter();
+    sessionAgentStore._setBinding("sess-mid-abort", "helpful-assistant", adapter);
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-mid-abort", "hi", "helpful-assistant"));
+    await flush();
+
+    stream.emit("end");
+    await flush();
+
+    expect(capturedSignal()?.aborted).toBe(true);
+
+    // FR-005: mutex released by finally → RefreshAgent (rejected while the
+    // mutex is held) is accepted immediately, proving the per-session turn
+    // mutex was released so a reconnect can start a new turn.
+    const refreshCall = { request: { name: "sessions/sess-mid-abort/agent" } } as grpc.ServerUnaryCall<
+      { name?: string },
+      unknown
+    >;
+    const refreshResult = await new Promise<{ error: grpc.ServiceError | null }>((resolve) => {
+      const cb: grpc.sendUnaryData<{}> = (error) => {
+        resolve({ error: error && "code" in error ? (error as grpc.ServiceError) : null });
+      };
+      handler.RefreshAgent(refreshCall, cb);
+    });
+    expect(refreshResult.error).toBeNull();
+  });
+
+  // Scenario 5 (spec FR-007 / 017 FR-009): disconnect with NO in-flight turn
+  // is a pure no-op — no frames written, no abort work, no state change.
+  it("idle session disconnect produces no side effects", async () => {
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // No data frame sent — the session has no in-flight turn. Emitting
+    // "end" triggers abortAllTurns() + cleanupSinks(), both of which must
+    // be no-ops on empty maps.
+    stream.emit("end");
+    await flush();
+
+    expect(stream.writeCallCount).toBe(0);
+    expect(stream.written).toHaveLength(0);
+    // No session agent was ever materialized (no inbound data frame).
+    expect(sessionAgentStore.getOrCreate).not.toHaveBeenCalled();
   });
 });
