@@ -50,31 +50,31 @@
 
 ### 任务
 
-- [ ] T001 [US1] 在 `projects/game/agent/src/handler.ts` 中新增私有辅助函数 `safeWrite`：签名 `(stream: grpc.ServerWritableStream<AgentFrame, AgentFrame>, frame: AgentFrame, sessionId: string): void`；用 try-catch 包裹 `stream.write(frame)`，catch 块中 `warn("stream write failed (peer disconnected?)", { sessionId, error: String(err) })` 并吞掉异常（不重新抛出）。函数**MUST NOT throw**（契约 §1 不变量）。依据 `specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md` §1、`data-model.md` §1。
+- [X] T001 [US1] 在 `projects/game/agent/src/handler.ts` 中新增私有辅助函数 `safeWrite`：签名 `(stream: grpc.ServerWritableStream<AgentFrame, AgentFrame>, frame: AgentFrame, sessionId: string): void`；用 try-catch 包裹 `stream.write(frame)`，catch 块中 `warn("stream write failed (peer disconnected?)", { sessionId, error: String(err) })` 并吞掉异常（不重新抛出）。函数**MUST NOT throw**（契约 §1 不变量）。依据 `specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md` §1、`data-model.md` §1。
 
-- [ ] T002 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **catch 块内** 的 `stream.write()` 调用（崩溃向量 — research.md §D）替换为 `safeWrite(stream, frame, sessionId)`：
+- [X] T002 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **catch 块内** 的 `stream.write()` 调用（崩溃向量 — research.md §D）替换为 `safeWrite(stream, frame, sessionId)`：
   - 行 527: `stream.write(warnFrame)` → `safeWrite(stream, warnFrame, sessionId)`（catch 块 else 分支 warn frame）
   - 行 537: `stream.write(waitFrame)` → `safeWrite(stream, waitFrame, sessionId)`（catch 块 else 分支 wait frame）
 
-- [ ] T003 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **try 块内** `for await` 循环及循环后** 的 `stream.write()` 调用替换为 `safeWrite(stream, frame, sessionId)`：
+- [X] T003 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **try 块内** `for await` 循环及循环后** 的 `stream.write()` 调用替换为 `safeWrite(stream, frame, sessionId)`：
   - 行 434: `stream.write(thinkFrame)` → `safeWrite(stream, thinkFrame, sessionId)`
   - 行 446: `stream.write(textFrame)` → `safeWrite(stream, textFrame, sessionId)`
   - 行 466: `stream.write(toolCallFrame)` → `safeWrite(stream, toolCallFrame, sessionId)`
   - 行 490: `stream.write(toolResultFrame)` → `safeWrite(stream, toolResultFrame, sessionId)`
   - 行 509: `stream.write(waitFrame)` → `safeWrite(stream, waitFrame, sessionId)`（post-loop wait frame，`if (controller.signal.aborted)` else 分支内）
 
-- [ ] T004 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **try 块外** data callback 内的 `stream.write()` 调用替换为 `safeWrite(stream, frame, sessionId)`：
+- [X] T004 [US1] 在 `projects/game/agent/src/handler.ts` 的 `Connect` handler 中，将以下 **try 块外** data callback 内的 `stream.write()` 调用替换为 `safeWrite(stream, frame, sessionId)`：
   - 行 268: `stream.write(statusFrame)` → `safeWrite(stream, statusFrame, sessionId)`（status 响应）
   - 行 348: `stream.write(warnFrame)` → `safeWrite(stream, warnFrame, sessionId)`（profile mismatch warn）
   - 行 357: `stream.write(waitFrame)` → `safeWrite(stream, waitFrame, sessionId)`（profile mismatch wait）
   - 行 372: `stream.write(warnFrame)` → `safeWrite(stream, warnFrame, sessionId)`（no profile warn）
   - 行 386: `stream.write(waitFrame)` → `safeWrite(stream, waitFrame, sessionId)`（no profile wait）
 
-- [ ] T005 [US1] 在 `projects/game/agent/src/handler.ts` 的 sink callback（行 394-396，`registerSink` 注册的回调）中，将 `stream.write(contentEnvelope)` 替换为 `safeWrite(stream, contentEnvelope, sessionId)`。依据 `contracts/stream-abort-contract.md` §1 "Usage rule" 最后一段（sink callback 也应被保护，虽然 `cleanupSinks` 在 stream end/error 时 unregister 了 sink，但窗口仍然存在）。
+- [X] T005 [US1] 在 `projects/game/agent/src/handler.ts` 的 sink callback（行 394-396，`registerSink` 注册的回调）中，将 `stream.write(contentEnvelope)` 替换为 `safeWrite(stream, contentEnvelope, sessionId)`。依据 `contracts/stream-abort-contract.md` §1 "Usage rule" 最后一段（sink callback 也应被保护，虽然 `cleanupSinks` 在 stream end/error 时 unregister 了 sink，但窗口仍然存在）。
 
-- [ ] T006 [P] [US1] 在 `projects/game/agent/src/bootstrap.ts` 中注册全局 `unhandledRejection` 处理器：在 `main()` 函数内、`installReporter(...)` 之后、`startServer()` 之前，添加 `process.on("unhandledRejection", (reason) => { error("unhandled promise rejection", { reason: String(reason) }); })`。**MUST NOT** 调用 `process.exit()`（契约 §2 不变量）。依据 `contracts/stream-abort-contract.md` §2、`data-model.md` §2、`research.md` §E D4。
+- [X] T006 [P] [US1] 在 `projects/game/agent/src/bootstrap.ts` 中注册全局 `unhandledRejection` 处理器：在 `main()` 函数内、`installReporter(...)` 之后、`startServer()` 之前，添加 `process.on("unhandledRejection", (reason) => { error("unhandled promise rejection", { reason: String(reason) }); })`。**MUST NOT** 调用 `process.exit()`（契约 §2 不变量）。依据 `contracts/stream-abort-contract.md` §2、`data-model.md` §2、`research.md` §E D4。
 
-- [ ] T007 [US2] 在 `projects/game/agent/src/handler.test.ts` 中新增单元测试，覆盖以下场景（依据 `quickstart.md` Scenarios 1-3，以及 spec.md FR-004/FR-005/FR-007）：
+- [X] T007 [US2] 在 `projects/game/agent/src/handler.test.ts` 中新增单元测试，覆盖以下场景（依据 `quickstart.md` Scenarios 1-3，以及 spec.md FR-004/FR-005/FR-007）：
   - **"safeWrite catches write error on closed stream"**（quickstart Scenario 1）：mock stream 的 `write()` 抛出 `new Error("ERR_STREAM_DESTROYED")`，调用 `safeWrite`，断言不抛出异常、有 `warn` 日志产出。
   - **"catch-block write does not crash on closed stream"**（quickstart Scenario 2, spec FR-001/FR-002）：模拟 turn 进行中 `generateTurn` 抛出非 abort 错误、mock stream `write()` 每次抛出，断言 data callback 完成而不崩溃、无 unhandled rejection。**附加断言**：`finally` 块已执行（`activeTurns` 中不包含该 session、`releaseMutex` 已被调用）—— 验证 FR-004（mutex 释放）和 FR-005（finally 块不受 catch 块异常影响）的隐含保证。
   - **"disconnect during turn emits no frames to dead peer"**（quickstart Scenario 3, spec FR-003 / 017 FR-004）：触发 `stream.on("end")` → `abortAllTurns()`，断言 abort 后无 `stream.write()` 调用（catch 块进入 `if (controller.signal.aborted)` 分支，只记录 info）。
@@ -101,11 +101,11 @@
 
 ### 任务
 
-- [ ] T008a 检查 `projects/game/testplan/system_test.yaml` 中 `checkpoint-resume` suite，确认是否已覆盖"desktop 断开后 agent 服务存活"场景（依据 `quickstart.md` Scenario 4）。记录检查结果（覆盖或未覆盖），供后续维护参考。
+- [X] T008a 检查 `projects/game/testplan/system_test.yaml` 中 `checkpoint-resume` suite，确认是否已覆盖"desktop 断开后 agent 服务存活"场景（依据 `quickstart.md` Scenario 4）。记录检查结果（覆盖或未覆盖），供后续维护参考。
 
-- [ ] T008b [US1] 在 `projects/game/testplan/agent_checkpoint_test.go` 中新增专项测试 case：连接 desktop、开始 turn、中途断开 bidi stream、断言 agent 服务进程仍存活（可对同一服务实例发起第二次 RPC）、断言日志中无 `unhandled promise rejection`。依据 `style/large_test.md` §测试组织（按模块组织、复用既有 helper）。**本 task 为 spec SC-001/SC-002 的直接验证，MUST 执行**（不依赖 T008a 的检查结果 —— 即使现有 suite 名义上覆盖，新增专项 case 不属于冗余，它针对"进程存活"这一最关键验收标准提供独立验证）。
+- [X] T008b [US1] 在 `projects/game/testplan/agent_checkpoint_test.go` 中新增专项测试 case：连接 desktop、开始 turn、中途断开 bidi stream、断言 agent 服务进程仍存活（可对同一服务实例发起第二次 RPC）、断言日志中无 `unhandled promise rejection`。依据 `style/large_test.md` §测试组织（按模块组织、复用既有 helper）。**本 task 为 spec SC-001/SC-002 的直接验证，MUST 执行**（不依赖 T008a 的检查结果 —— 即使现有 suite 名义上覆盖，新增专项 case 不属于冗余，它针对"进程存活"这一最关键验收标准提供独立验证）。
 
-- [ ] T009 通过 `testplan` SKILL 执行大型测试验收：`guitar run projects/game/testplan/system_test.yaml`，完成部署→测试→清理闭环；**所有用例 MUST 全部通过**（failed/flaky 即验收未通过，修复后重跑至全绿）。仅 `bazel build` 测试 target 不构成验收（宪章原则 VI v1.3.0）。依据 `quickstart.md` Scenarios 4-5。
+- [X] T009 通过 `testplan` SKILL 执行大型测试验收：`guitar run projects/game/testplan/system_test.yaml`，完成部署→测试→清理闭环；**所有用例 MUST 全部通过**（failed/flaky 即验收未通过，修复后重跑至全绿）。仅 `bazel build` 测试 target 不构成验收（宪章原则 VI v1.3.0）。依据 `quickstart.md` Scenarios 4-5。
 
 **Checkpoint**: 大型测试全部通过；feature 验收完成。
 
