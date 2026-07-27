@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { recognizeBoard } from "./recognize";
 import { renderBoardText } from "./render";
+import { isWin } from "./win";
 
 /**
  * golden.test.ts — Golden recognition tests against real desktop screenshots.
@@ -28,6 +29,7 @@ const CASES = [
   "saolei_6",
   "saolei_7",
   "saolei_8",
+  "saolei_10",
 ];
 
 describe("golden recognition (real screenshots)", () => {
@@ -42,4 +44,10 @@ describe("golden recognition (real screenshots)", () => {
       expect(renderBoardText(state)).toBe(golden);
     });
   }
+
+  it("classifies the real win screenshot (saolei_10.png) as a win", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_10.png"));
+    const { state } = recognizeBoard(png);
+    expect(isWin(state)).toBe(true);
+  });
 });

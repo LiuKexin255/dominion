@@ -44,3 +44,5 @@ export {
   BoardStateIncompatibleError,
 } from "./validate";
 export type { Compatibility } from "./validate";
+
+export { isWin } from "./win";
