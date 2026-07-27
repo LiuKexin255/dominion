@@ -44,7 +44,41 @@ board size 9*9
 * * 1 0 0 0 0 1 *
 ```
 
-A result line precedes the board: `new game started`, `<tool> at (x,y) → dispatched`, `rejected: <reason>`, or `unable to recognize board`.
+### Tool-result body shape
+
+Every tool result is a single TEXT content block whose body has three layers, in this fixed order:
+
+1. **Outcome line** — what happened: `new game started`, `<tool> at (x,y) → dispatched`, `rejected: <reason>`, or `unable to recognize board`.
+2. **Game-status line** — `game status: won`, `game status: lost`, or `game status: playing`, derived from the recognized board (won = every non-mine cell revealed and every mine auto-flagged; lost = a mine `X`/`M` is visible; playing = otherwise). This line tells you whether the game is finished — read it before parsing the board. **It is omitted only when there is no recognized board** (`no_active_game` rejection, or `unable to recognize board`).
+3. **The text board** — the `board size <w>*<h>` header and the symbol grid (plus a `valid range: x 0..<w-1>, y 0..<h-1>` line on rejections).
+
+A winning or losing status is surfaced on the very operation whose recognized board first reflects it. A win or loss is **terminal** — see "Move validation" below: once the status is `won` or `lost`, any further cell operation is rejected before dispatch.
+
+Worked example — a legal `saolei_click` on an in-progress board:
+
+```
+saolei_click at (4,4) → dispatched
+game status: playing
+
+board size 9*9
+
+* * * 1 0 0 1 M *
+* * 2 1 0 0 1 2 *
+* * 1 0 0 0 0 1 *
+...
+```
+
+Worked example — a rejection on an in-progress board:
+
+```
+rejected: cell_already_revealed
+game status: playing
+
+board size 9*9
+
+...
+valid range: x 0..8, y 0..8
+```
 
 ## Coordinate convention
 
@@ -97,13 +131,15 @@ The rule categories:
 |---|---|
 | `no_active_game` | You called a cell tool before `saolei_init`, or the board state was invalidated by a recognition failure. Call `saolei_init` first. |
 | `out_of_bounds` | The `(x, y)` coordinate is outside the board dimensions. The valid range is included in the result. |
-| `game_over` | The current game is already over (a mine `X`/`M` is visible). Call `saolei_init` to start a new game. |
+| `game_over` | The current game is already lost (a mine `X`/`M` is visible). Call `saolei_init` to start a new game. |
+| `game_won` | The current game is already won (`game status: won`). A win is terminal exactly like a loss — any cell operation after a win is rejected. Call `saolei_init` to start a new game. |
 | `cell_already_revealed` | `saolei_click` on an already-revealed number (`0`–`8`) — a no-op. |
 | `cell_is_flagged` | `saolei_click` on a flagged cell (`F`) — a flagged cell is protected. |
 | `cannot_flag_revealed` | `saolei_flag` on a revealed number (`0`–`8`) — you cannot flag an open cell. |
 | `chord_requires_number` | `saolei_chord_click` on anything but a revealed number `1`–`8` (i.e. on `0`, `*`, or `F`). A chord is only permitted on a revealed number. |
+| `chord_no_unrevealed_neighbor` | `saolei_chord_click` on a revealed number `1`–`8` whose neighbors are all revealed numbers, flags, or mines — there is no unrevealed cell (`*`) and no uncertain cell (`?`) for the chord to reveal. The chord would be a guaranteed no-op; pick a different target or flag/unflag first. |
 
-Important nuance: a chord whose adjacent-flag count does NOT equal the number is still a **legal** move and is NOT rejected — it may simply reveal nothing. Validation judges whether the target cell is a valid chord target, not whether the chord will succeed. So you will not see a rejection for "wrong flag count"; only for chording a non-number cell.
+Important nuance: a chord whose adjacent-flag count does NOT equal the number is still a **legal** move and is NOT rejected — it may simply reveal nothing. Validation judges whether the target cell is a valid chord target with something to reveal, not whether the chord will succeed. So you will not see a rejection for "wrong flag count"; only for chording a non-number cell, or chording a number whose every neighbor is already revealed/flagged (nothing left to reveal).
 
 A cell recognized as `?` (uncertain) is never rejected solely for being uncertain — treat `?` as possibly unrevealed and proceed.
 
@@ -111,34 +147,66 @@ If the agent cannot recognize the board from the screenshot (e.g. the window is 
 
 ## Example play flow
 
-A simple supervised reveal sequence using only the saolei tools:
+A simple supervised reveal sequence using only the saolei tools. Every result body carries `game status: <status>` between the outcome line and the board; the status here stays `playing` until the game ends.
 
 ```
 1. saolei_init()
-   → F2 dispatched; new game started. The result is a TEXT board (all cells
-     `*` initially, e.g. "board size 9*9" then a grid of `*`).
+   → F2 dispatched; result body:
+     new game started
+     game status: playing
+
+     board size 9*9
+     ... (a grid of `*`) ...
 
 2. saolei_click(x=4, y=4)
-   → Legal (cell is `*`): dispatched; result is the updated TEXT board showing
-     the revealed region (a blank cascade with number boundaries).
+   → Legal (cell is `*`): dispatched; result body:
+     saolei_click at (4,4) → dispatched
+     game status: playing
+
+     board size 9*9
+     ... (the revealed region, a blank cascade with number boundaries) ...
 
 3. saolei_click(x=7, y=7)
    → Another legal reveal — callable immediately, no intervening step needed.
-     Result is the updated TEXT board.
+     Same body shape as step 2 with the updated board.
 
 4. saolei_flag(x=3, y=3)
-   → Place a flag where a mine is suspected. Result is the updated TEXT board
-     showing `F` at (3,3).
+   → Place a flag where a mine is suspected. Result body:
+     saolei_flag at (3,3) → dispatched
+     game status: playing
+
+     board size 9*9
+     ... (`F` at (3,3)) ...
 
 5. saolei_chord_click(x=4, y=4)
    → Adjacent flag count satisfies the cell's number → chord dispatched.
-     Result is the updated TEXT board with the neighbors revealed.
+     Result body:
+     saolei_chord_click at (4,4) → dispatched
+     game status: playing
+
+     board size 9*9
+     ... (the neighbors revealed) ...
 ```
+
+If a click reveals the last safe cell (or flags the last mine), the same operation's result carries `game status: won` instead. The NEXT cell operation on that board is then rejected before dispatch:
+
+```
+rejected: game_won
+game status: won
+
+board size 9*9
+... (the winning board — all cells `0`–`8` or `F`) ...
+valid range: x 0..8, y 0..8
+```
+
+Call `saolei_init` to start a new game. (Symmetrically, a board with `X`/`M` carries `game status: lost` and rejects further ops as `game_over`.)
 
 Key points demonstrated:
 
 - `saolei_init` takes no arguments and returns a TEXT board.
+- Every result body carries the `game status:` line between the outcome line and the board (omitted only when there is no recognized board).
 - Operations are callable back-to-back; each returns the updated TEXT board.
+- Read the `game status:` line first — it tells you whether the game is finished before you parse the board. A win or loss is terminal.
 - Read the returned text board (symbols above) to track the game — never a screenshot.
 
 ## When NOT to use

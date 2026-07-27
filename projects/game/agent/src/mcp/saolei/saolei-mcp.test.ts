@@ -321,6 +321,99 @@ describe("validateMove: strict rule table (contract §4)", () => {
 		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
 	});
 
+	it("saolei_chord_click: rejects when the target's 8 neighbors are all revealed numbers (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+		// 4×4 board: the 3×3 region around (1,1) is all numbers, the rest is
+		// INITIAL so the board is NOT terminal-won. Target (1,1) = "1"; every
+		// in-bounds neighbor of (1,1) is a revealed number → no INITIAL/UNKNOWN
+		// neighbor for the chord to reveal.
+		const s = board([
+			"1 1 1 *",
+			"1 1 1 *",
+			"1 1 1 *",
+			"* * * *",
+		]);
+		expect(validateMove(s, "saolei_chord_click", 1, 1)).toEqual({
+			ok: false,
+			reason: "chord_no_unrevealed_neighbor",
+		});
+	});
+
+	it("saolei_chord_click: rejects when all neighbors are FLAG (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+		// (1,1) = "8" with 8 FLAG neighbors — every neighbor is a flag, so
+		// hasInitialOrUnknownNeighbor is false. The "*" cells keep the board
+		// non-terminal.
+		const s = board([
+			"F F F *",
+			"F 8 F *",
+			"F F F *",
+			"* * * *",
+		]);
+		expect(validateMove(s, "saolei_chord_click", 1, 1)).toEqual({
+			ok: false,
+			reason: "chord_no_unrevealed_neighbor",
+		});
+	});
+
+	it("saolei_chord_click: rejects at a corner/edge target with no in-bounds INITIAL neighbor (chord_no_unrevealed_neighbor, FR-016..020)", () => {
+		// Corner target (0,0) = "1": its only in-bounds neighbors are (1,0),
+		// (0,1), (1,1) — all numbers. The "*" cells keep the board non-terminal.
+		const corner = board([
+			"1 1 *",
+			"1 1 *",
+			"* * *",
+		]);
+		expect(validateMove(corner, "saolei_chord_click", 0, 0)).toEqual({
+			ok: false,
+			reason: "chord_no_unrevealed_neighbor",
+		});
+		// Edge target (1,0) = "1": its in-bounds neighbors are (0,0), (2,0),
+		// (0,1), (1,1), (2,1) — all numbers.
+		const edge = board([
+			"1 1 1",
+			"1 1 1",
+			"* * *",
+		]);
+		expect(validateMove(edge, "saolei_chord_click", 1, 0)).toEqual({
+			ok: false,
+			reason: "chord_no_unrevealed_neighbor",
+		});
+	});
+
+	it("saolei_chord_click: allows when at least one neighbor is INITIAL", () => {
+		// (0,0) = "1"; neighbor (1,0) is INITIAL — a chord would reveal it.
+		const s = board([
+			"1 *",
+			"1 1",
+		]);
+		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+	});
+
+	it("saolei_chord_click: lenient on UNKNOWN neighbor (FR-017) — allowed even when no INITIAL neighbor exists", () => {
+		// (0,0) = "1"; the only non-revealed neighbor is UNKNOWN. Per FR-017
+		// the chord is NOT rejected on this ground (UNKNOWN is treated as
+		// possibly unrevealed).
+		const s = board([
+			"1 ?",
+			"1 1",
+		]);
+		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({ ok: true });
+	});
+
+	it("saolei_chord_click: chord_requires_number still fires FIRST on a non-number target (FR-018 rule order)", () => {
+		// (0,0) = INITIAL (a non-number) and NONE of its neighbors is INITIAL
+		// or UNKNOWN — so the chord-neighbor rule would also fire if reached.
+		// Assert the existing chord_requires_number rule wins (FR-018: the
+		// new neighbor check is applied AFTER the existing chord-target check).
+		const s = board([
+			"* 1",
+			"1 1",
+		]);
+		expect(validateMove(s, "saolei_chord_click", 0, 0)).toEqual({
+			ok: false,
+			reason: "chord_requires_number",
+		});
+	});
+
 	it("UNKNOWN target is always lenient (FR-018)", () => {
 		const s = board(["? *", "* *"]);
 		expect(validateMove(s, "saolei_click", 0, 0)).toEqual({ ok: true });

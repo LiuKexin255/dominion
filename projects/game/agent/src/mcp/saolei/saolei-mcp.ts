@@ -126,7 +126,8 @@ export type MoveRejection =
 	| "cell_already_revealed"
 	| "cell_is_flagged"
 	| "cannot_flag_revealed"
-	| "chord_requires_number";
+	| "chord_requires_number"
+	| "chord_no_unrevealed_neighbor";
 
 /** Revealed numeric cell statuses (permanent within a game). */
 const REVEALED_NUMBERS: ReadonlySet<CellStatus> = new Set<CellStatus>([
@@ -170,6 +171,22 @@ const TERMINAL_CELLS: ReadonlySet<CellStatus> = new Set<CellStatus>([
 ]);
 
 /**
+ * The 8 Moore-neighbor offsets (row-major, top row first), bounded by the
+ * board dims at call time (`specs/027-chat-bubble-game-state/data-model.md`
+ * §4 — `neighbors` helper).
+ */
+const NEIGHBOR_OFFSETS: ReadonlyArray<readonly [number, number]> = [
+	[-1, -1],
+	[0, -1],
+	[1, -1],
+	[-1, 0],
+	[1, 0],
+	[-1, 1],
+	[0, 1],
+	[1, 1],
+];
+
+/**
  * Whether a recognized state is a terminal LOSS. True when any cell is a
  * revealed mine (`HIT_MINE` / `MINE`) — see `TERMINAL_CELLS`. A terminal WIN
  * is detected separately via `isWin` (the post-win `game_won` check in
@@ -203,6 +220,44 @@ function gameStatus(state: GameState): GameStatus {
 	if (isTerminalState(state)) return "lost";
 	if (isWin(state)) return "won";
 	return "playing";
+}
+
+/**
+ * In-bounds Moore neighbors of `(x, y)`. Returns up to 8 cell statuses
+ * (fewer on the board edge — 5 on an edge, 3 on a corner), intersecting
+ * `NEIGHBOR_OFFSETS` with `[0, width) × [0, height)`. Indexing follows the
+ * `GameState.grid` order `[y][x]` (`projects/game/pkg/saolei-board/src/core/
+ * types.ts`). Pure function of `state`, `x`, `y`
+ * (`specs/027-chat-bubble-game-state/data-model.md` §4).
+ */
+function neighbors(state: GameState, x: number, y: number): CellStatus[] {
+	const out: CellStatus[] = [];
+	for (const [dx, dy] of NEIGHBOR_OFFSETS) {
+		const nx = x + dx;
+		const ny = y + dy;
+		if (nx >= 0 && ny >= 0 && nx < state.width && ny < state.height) {
+			out.push(state.grid[ny][nx]);
+		}
+	}
+	return out;
+}
+
+/**
+ * True iff some in-bounds Moore neighbor of `(x, y)` is `INITIAL` or
+ * `UNKNOWN` (`specs/027-chat-bubble-game-state/data-model.md` §4 /
+ * `specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md`
+ * §5.1). `FLAG` / revealed-number / `HIT_MINE` / `MINE` neighbors do NOT
+ * count — a chord acts only on `INITIAL` cells and is lenient on `UNKNOWN`
+ * per 025 FR-018 (an `UNKNOWN` neighbor is treated as possibly unrevealed).
+ */
+function hasInitialOrUnknownNeighbor(
+	state: GameState,
+	x: number,
+	y: number,
+): boolean {
+	return neighbors(state, x, y).some(
+		(c) => c === "INITIAL" || c === "UNKNOWN",
+	);
 }
 
 /**
@@ -264,8 +319,20 @@ export function validateMove(
 			if (!CHORD_NUMBERS.has(cell)) {
 				return { ok: false, reason: "chord_requires_number" };
 			}
-			// Chord on a revealed 1–8 is legal regardless of adjacent-flag count
-			// (FR-015e: it may reveal nothing — still legal, NOT rejected).
+			// FR-016..020: a chord reveals `INITIAL` neighbors (and is lenient
+			// on `UNKNOWN`). If no in-bounds neighbor is `INITIAL` or
+			// `UNKNOWN` — i.e. every neighbor is a revealed number, `FLAG`,
+			// `HIT_MINE`, or `MINE` — the chord is a guaranteed no-op and is
+			// rejected before dispatch. Checked AFTER `chord_requires_number`
+			// so a chord on a non-number still reports `chord_requires_number`
+			// (FR-018 rule order; `specs/027-chat-bubble-game-state/contracts/
+			// saolei-mcp-status-contract.md` §5).
+			if (!hasInitialOrUnknownNeighbor(state, x, y)) {
+				return { ok: false, reason: "chord_no_unrevealed_neighbor" };
+			}
+			// Chord on a revealed 1–8 with at least one INITIAL/UNKNOWN
+			// neighbor is legal regardless of adjacent-flag count (FR-015e:
+			// it may reveal nothing — still legal, NOT rejected).
 			return { ok: true };
 	}
 }
