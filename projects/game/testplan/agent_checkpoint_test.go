@@ -608,3 +608,117 @@ func TestAgentCheckpointToolResultStatusPersists(t *testing.T) {
 	// then: no operation FlowPart in Message.content (FR-005).
 	assertMessageContentDisplayOnly(t, lmrAfterReenter.GetMessages())
 }
+
+// TestServiceSurvivesDisconnectDuringTurn verifies
+// specs/026-agent-abort-crash-fix/spec.md SC-001/SC-002/SC-003 and
+// specs/026-agent-abort-crash-fix/quickstart.md Scenario 4: when a desktop
+// disconnects MID-TURN (before the closing wait frame), the agent service
+// process MUST survive and the session MUST remain reusable on reconnect.
+//
+// Coverage gap closed by this case (T008a finding): the other cases in this
+// binary (TestAgentCheckpointResume, TestAgentCheckpointResumeVerifyContext,
+// TestCrossProfileHistoryPersistence, TestAgentCheckpointToolResultStatusPersists,
+// TestAgentPerProfileModel, TestAgentConcurrentSerialization) all disconnect
+// AFTER draining the closing wait frame — the turn is already complete when
+// the bidi stream closes. TestReconnectDispatchReliability
+// (agent_lifecycle_test.go) also disconnects after the in-flight turn
+// completes (the text frame is already drained). None of them exercise the
+// abort-during-turn path where the catch block's stream.write can race a
+// closed peer — the exact crash vector fixed by safeWrite + the global
+// unhandledRejection handler
+// (specs/026-agent-abort-crash-fix/research.md §D;
+// specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §1/§3).
+//
+// Indirect SC-002 verification: testplan large tests are black-box and cannot
+// read the agent's container logs (style/large_test.md — tests reach the SUT
+// only via HTTP/WS public endpoints). A fatal `unhandledRejection` would, by
+// the Node.js ≥15 default (--unhandled-rejections=throw → process.exit(1)),
+// restart the agent container. The reconnect-and-resume step below would then
+// fail (connection refused / state lost). A passing reconnect therefore
+// serves as an indirect assertion of SC-002 (zero fatal unhandled rejections)
+// — direct log inspection is not possible from this layer.
+func TestServiceSurvivesDisconnectDuringTurn(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("abort-survive-%s", uniqueSuffix())
+
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You are a test agent.",
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+
+	// given: a turn is in-flight. The greeting keyword yields a deterministic
+	// thinking frame from fake-llm, proving the agent loop has started
+	// consuming the user message (the LLM produced at least one streamed
+	// block). We deliberately do NOT drain the closing wait frame — the
+	// turn MUST still be running when we disconnect below, so the abort path
+	// (catch block + finally → releaseMutex) is the code under test.
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sendTextWithProfile(t, conn, sessionID, profileName, "Hello, mid-turn abort")
+	firstThinking := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasThinking(f)
+	})
+	if firstThinking == nil {
+		t.Fatal("did not receive the first thinking frame — turn never started")
+	}
+	t.Logf("turn started: thinking received, disconnecting before wait frame")
+
+	// when: the desktop bidi stream is torn down MID-TURN. On the agent side
+	// this triggers stream.on("end") → abortAllTurns() → controller.abort(),
+	// which races against the in-flight LLM stream. Before spec 026, the
+	// catch-block stream.write on the now-closed gRPC stream escaped as an
+	// unhandled rejection and crashed the process
+	// (specs/026-agent-abort-crash-fix/research.md §D).
+	conn.Close()
+
+	// then (SC-001 + SC-003): the service process is still alive and the
+	// session is reusable. We prove this by reconnecting with the SAME
+	// sessionID and starting a NEW turn. If the service had crashed, the WS
+	// dial would fail with connection refused; if the per-session turn
+	// mutex had leaked (017 FR-005 regression), the new turn would be
+	// rejected or hang. A successful thinking + text response after
+	// reconnect proves both process liveness (SC-001) and mutex release
+	// (SC-003 / spec 026 FR-004 restoring 017 FR-005). drainWSFrame's read
+	// deadline (helpers_test.go wsReadTimeout) absorbs the abort-propagation
+	// tail latency through the concurrent consumers
+	// (specs/026-agent-abort-crash-fix/research.md §C).
+	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn2.Close()
+	sendTextWithProfile(t, conn2, sessionID, profileName, "Hello, after reconnect")
+
+	reconnectThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+		return frameHasThinking(f)
+	})
+	if reconnectThinking == nil {
+		t.Fatal("post-disconnect reconnect: no thinking frame — service did not survive or mutex was not released (SC-001/SC-003)")
+	}
+	if !strings.Contains(frameThinking(reconnectThinking), expectedGreetingReasoning) {
+		t.Errorf("post-disconnect thinking = %q, want to contain %q",
+			frameThinking(reconnectThinking), expectedGreetingReasoning)
+	}
+	reconnectText := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+		return frameHasText(f)
+	})
+	if reconnectText == nil {
+		t.Fatal("post-disconnect reconnect: no text frame — turn did not complete after reconnect (SC-003)")
+	}
+	if !strings.Contains(frameText(reconnectText), expectedGreetingText) {
+		t.Errorf("post-disconnect text = %q, want to contain %q",
+			frameText(reconnectText), expectedGreetingText)
+	}
+	t.Logf("post-disconnect turn completed: %q — service survived mid-turn abort (SC-001/SC-002/SC-003)",
+		frameText(reconnectText))
+
+	// then (SC-002, indirect): the reconnect turn above would have failed if
+	// the agent service had emitted a fatal unhandled promise rejection
+	// during the mid-turn abort (Node.js default --unhandled-rejections=throw
+	// → process.exit(1) → service restart). The successful reconnect is the
+	// black-box-equivalent assertion of "zero fatal unhandled rejections".
+}
