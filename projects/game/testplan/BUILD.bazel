@@ -118,12 +118,16 @@ go_largetest(
     ],
 )
 
-# agent_saolei_test embeds real Minesweeper screenshots
-# (testdata/saolei_1.png, testdata/saolei_2.png) reused from the
+# agent_saolei_test embeds real Minesweeper screenshots reused from the
 # @dominion/game-saolei-board golden testdata. The deployed agent runs the
 # real recognition engine (no DI seam), so the FlowResultPart.screenshot the
 # test attaches MUST be a recognizable board; the embedded PNGs are the
 # authoritative bytes owned by the saolei-board package (golden-tested).
+# The fixtures span all three game outcomes (specs/027-chat-bubble-game-state/
+# research.md D12): in-progress (saolei_1.png 16×16 all-INITIAL,
+# saolei_2.png 9×9 partially revealed), win (saolei_10.png 9×9 win board),
+# and loss (saolei_5.png 16×16 with HIT_MINE/MINE). Each is a cmp-identical
+# copy of its library-original, mirroring the saolei_1/saolei_2 precedent.
 go_largetest(
     name = "agent_saolei_test",
     size = "small",
@@ -134,6 +138,8 @@ go_largetest(
     embedsrcs = [
         "testdata/saolei_1.png",
         "testdata/saolei_2.png",
+        "testdata/saolei_10.png",
+        "testdata/saolei_5.png",
     ],
     deps = [
         "//common/gopkg/testtool",

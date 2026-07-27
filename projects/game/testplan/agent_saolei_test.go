@@ -10,13 +10,23 @@
 // screenshot so the agent's @dominion/game-saolei-board recognition engine
 // decodes the board.
 //
-// Coverage (spec 025 FR-012..FR-018, FR-022):
-//   - TestAgentSaoleiTextBoardFlow: init→click→click on a recognizable board;
-//     each tool returns a TEXT board (no image block) and the screenshot stays
-//     on the control channel.
+// Coverage (spec 025 FR-012..FR-018, FR-022; spec 027 FR-012..FR-015,
+// FR-021..023):
+//   - TestAgentSaoleiTextBoardFlow: init→click→click on a recognizable
+//     in-progress board; each tool returns a TEXT board (no image block) and
+//     the screenshot stays on the control channel; every result carries
+//     `game status: playing` (spec 027 FR-012/FR-014).
 //   - TestAgentSaoleiIllegalMovePreDispatchReject: a click on an already-
 //     revealed cell is rejected BEFORE dispatch (no operation FlowPart reaches
 //     the desktop) with a stable reason code the model can act on.
+//   - TestAgentSaoleiWonGameStatusAndTerminalReject: a 9×9 win screenshot
+//     (saolei_10.png) seeds a terminal-won state — init surfaces
+//     `game status: won` and a following cell op is rejected pre-dispatch as
+//     `game_won` (spec 027 FR-021..023) carrying the won status line.
+//   - TestAgentSaoleiLostGameStatusAndTerminalReject: a 16×16 loss screenshot
+//     (saolei_5.png) seeds a terminal-lost state — init surfaces
+//     `game status: lost` and a following cell op is rejected pre-dispatch as
+//     `game_over` (existing terminal-loss) carrying the lost status line.
 //
 // Organised by MODULE per style/large_test.md (not by scenario/spec-id); it
 // reuses the shared helpers in helpers_test.go.
@@ -56,6 +66,34 @@ var saoleiBoardInitPNG []byte
 //
 //go:embed testdata/saolei_2.png
 var saoleiBoardRevealedPNG []byte
+
+// saoleiBoardWinPNG is a real Minesweeper screenshot (9×9 win board — every
+// cell is a revealed number "0".."8" or FLAG; no INITIAL/HIT_MINE/MINE/
+// UNKNOWN) reused from the saolei-board golden testdata. Used by
+// TestAgentSaoleiWonGameStatusAndTerminalReject (specs/027-chat-bubble-game-
+// state / research.md D12): `saolei_init` recognizes this board, the
+// @dominion/game-saolei-board `isWin(state)` predicate returns true
+// (specs/027-chat-bubble-game-state/data-model.md §1), so the init result
+// carries `game status: won` and any following cell op is rejected
+// pre-dispatch as `game_won` (FR-021..023).
+//
+//go:embed testdata/saolei_10.png
+var saoleiBoardWinPNG []byte
+
+// saoleiBoardLossPNG is a real Minesweeper screenshot (16×16 loss board —
+// contains HIT_MINE "X" and MINE "M" cells; see
+// projects/game/pkg/saolei-board/testdata/saolei_5.golden.txt) reused from
+// the saolei-board golden testdata. Used by
+// TestAgentSaoleiLostGameStatusAndTerminalReject (specs/027-chat-bubble-game-
+// state / research.md D12): `saolei_init` recognizes this board, the agent's
+// existing `isTerminalState(state)` loss signal fires, so the init result
+// carries `game status: lost` and any following cell op is rejected
+// pre-dispatch as `game_over` (existing terminal-loss,
+// specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5)
+// whose body now also carries `game status: lost` (FR-012..015).
+//
+//go:embed testdata/saolei_5.png
+var saoleiBoardLossPNG []byte
 
 // saoleiMcpNames is the profile MCP selection that triggers the agent's
 // saolei adapter path (llm.ts builds the loopback MultiServerMCPClient for a
@@ -264,6 +302,16 @@ func TestAgentSaoleiTextBoardFlow(t *testing.T) {
 				!strings.Contains(msg, "dispatched") {
 				t.Errorf("saolei tool_result message = %q, want to contain \"new game started\" or \"dispatched\" (spec 025 FR-012 text-board return)", msg)
 			}
+			// FR-012/FR-014 (specs/027-chat-bubble-game-state): every saolei
+			// tool_result on a recognized in-progress board carries the line
+			// `game status: playing`. This flow uses saolei_1.png (16×16
+			// all-INITIAL) for init + two updates, so every recognized state
+			// is in-progress and every result must surface the playing
+			// status (specs/027-chat-bubble-game-state/contracts/saolei-mcp-
+			// status-contract.md §2/§3).
+			if !strings.Contains(msg, "game status: playing") {
+				t.Errorf("saolei tool_result message = %q, want to contain \"game status: playing\" (spec 027 FR-012/FR-014 — in-progress board surfaces the playing status)", msg)
+			}
 		}
 	}
 	if saoleiResultCount == 0 {
@@ -378,6 +426,273 @@ func TestAgentSaoleiIllegalMovePreDispatchReject(t *testing.T) {
 	// The 9×8 board renders numbers/initials/flags; assert at least the
 	// "valid range" guidance is present (FR-016: rejection includes the valid
 	// coordinate range).
+	if !strings.Contains(rejectedMessage, "valid range:") {
+		t.Errorf("rejection message = %q, want to contain \"valid range:\" (spec 025 FR-016 — rejection includes the valid coordinate range)", rejectedMessage)
+	}
+}
+
+// TestAgentSaoleiWonGameStatusAndTerminalReject verifies spec 027 FR-012..015
+// (game-status line) + FR-021..023 (post-win game_won terminal rejection)
+// end-to-end on the deployed agent with the REAL recognition engine. The test
+// seeds the session with a real 9×9 win screenshot (saoleiBoardWinPNG /
+// saolei_10.png — every cell is a revealed number or FLAG; no INITIAL/
+// HIT_MINE/MINE/UNKNOWN), so @dominion/game-saolei-board's isWin(state)
+// returns true (specs/027-chat-bubble-game-state/data-model.md §1). It then
+// asserts:
+//
+//  1. The saolei_init result text contains `game status: won` (FR-012/FR-013
+//     — a recognized win is surfaced on the operation that produced the
+//     terminal board).
+//  2. A following saolei_click(x,y) is rejected pre-dispatch as `game_won`
+//     (FR-021..023) — NO operation FlowPart reaches the desktop (the win is
+//     terminal, symmetric with how a loss rejects further ops as game_over).
+//  3. The game_won rejection body carries `game status: won` (FR-023).
+//  4. The rejection follows the existing 025 FR-016 contract: body contains
+//     the current text board and the valid coordinate range.
+//
+// Mirrors TestAgentSaoleiIllegalMovePreDispatchReject's drain-and-assert-no-
+// operation pattern: the bounded drain tolerates interleaved display frames
+// (saolei_init tool_result, saolei_click tool_call) that precede the
+// rejection tool_result.
+func TestAgentSaoleiWonGameStatusAndTerminalReject(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("saolei-win-%s", uniqueSuffix())
+
+	// given: a saolei-enabled profile. The model name is non-Anthropic so
+	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
+	// saolei tools are surfaced via the loopback MCP client, each backed by
+	// the real @dominion/game-saolei-board recognition engine.
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate minesweeper via saolei tools.",
+			McpNames:     saoleiMcpNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// A real 9×9 win Minesweeper screenshot (all cells revealed/flagged,
+	// no INITIAL/HIT_MINE/MINE/UNKNOWN) — see
+	// projects/game/pkg/saolei-board/testdata/saolei_10.golden.txt. The
+	// agent's recognition engine decodes it; isWin(state) returns true
+	// (specs/027-chat-bubble-game-state/data-model.md §1), so gameStatus
+	// returns "won" and any subsequent cell op is terminal-blocked as
+	// game_won (FR-021..023).
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG)
+
+	// when: a user turn triggers saolei_init (sample_saolei_start.yaml
+	// keyword "start saolei"). The agent dispatches F2; the test replies
+	// with the win screenshot so the agent seeds the recognized state from
+	// the 9×9 win board.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+
+	initFrame := readOperationFrame(t, conn)
+	if frameKeyboardPress(initFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
+			initFrame.GetFlowParts().GetParts())
+	}
+	respondToOperationWithScreenshot(t, conn, sessionID, initFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
+
+	// then: fake-LLM chains saolei_init → saolei_click{3,4} (the existing
+	// sample_saolei_tools.yaml saolei-init-followup-click chaining). The
+	// agent validates (3,4) against the recognized win board: isWin(state)
+	// is true ⇒ validateMove returns game_won BEFORE any dispatch
+	// (FR-021..023, specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5).
+	//
+	// Drain frames until the rejection tool_result arrives, asserting NO
+	// operation FlowPart (keyboard/mouse with a tool_id) appears in between
+	// — a rejection that still dispatched would be an FR-021 violation. The
+	// bounded loop also collects the saolei_init tool_result so the won
+	// status line can be asserted on the operation that produced the
+	// terminal board (FR-012/FR-013).
+	const drainLimit = 8
+	var initMessage string
+	var rejectedMessage string
+	for i := 0; i < drainLimit; i++ {
+		frame := readWSFrame(t, conn)
+		if opID := frameOperationToolID(frame); opID != "" {
+			t.Fatalf("saolei_click(3,4) on a won board dispatched an operation FlowPart (tool_id=%q) — a cell op after a recognized win MUST be rejected BEFORE dispatch as game_won (spec 027 FR-021..023)",
+				opID)
+		}
+		if tr := frameToolResult(frame); tr != nil {
+			msg := tr.GetMessage()
+			if strings.Contains(msg, "new game started") && initMessage == "" {
+				initMessage = msg
+			}
+			if strings.Contains(msg, "rejected: game_won") {
+				rejectedMessage = msg
+				break
+			}
+		}
+	}
+
+	// then (1): the saolei_init result carries `game status: won`
+	// (FR-012/FR-013 — the operation that produced the terminal-won board
+	// surfaces the won status).
+	if initMessage == "" {
+		t.Fatalf("did not receive a saolei_init tool_result within %d frames — the init→recognition chain did not produce a recognized init result", drainLimit)
+	}
+	if !strings.Contains(initMessage, "game status: won") {
+		t.Errorf("saolei_init result message = %q, want to contain \"game status: won\" (spec 027 FR-012/FR-013 — a recognized win surfaces on the operation that produced the terminal board)", initMessage)
+	}
+
+	// then (2): the post-win cell op was rejected pre-dispatch as game_won.
+	if rejectedMessage == "" {
+		t.Fatalf("did not receive a game_won rejection within %d frames — saolei_click(3,4) on a won board was not rejected pre-dispatch", drainLimit)
+	}
+	if !strings.Contains(rejectedMessage, "rejected: game_won") {
+		t.Errorf("rejection message = %q, want to contain \"rejected: game_won\" (spec 027 FR-021..023)", rejectedMessage)
+	}
+
+	// then (3): the rejection body carries `game status: won` (FR-023).
+	if !strings.Contains(rejectedMessage, "game status: won") {
+		t.Errorf("rejection message = %q, want to contain \"game status: won\" (spec 027 FR-023 — game_won rejection carries the won status line)", rejectedMessage)
+	}
+
+	// then (4): the rejection follows the existing 025 FR-016 contract
+	// (restated by specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5 / FR-023): body contains the
+	// current text board and the valid coordinate range.
+	if !strings.Contains(rejectedMessage, "valid range:") {
+		t.Errorf("rejection message = %q, want to contain \"valid range:\" (spec 025 FR-016 / 027 FR-023 — rejection includes the valid coordinate range)", rejectedMessage)
+	}
+}
+
+// TestAgentSaoleiLostGameStatusAndTerminalReject verifies spec 027 FR-012..015
+// (game-status line) on the loss branch + the existing terminal-loss
+// rejection (spec 025 FR-015b `game_over`, restated by specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5)
+// end-to-end on the deployed agent with the REAL recognition engine. The test
+// seeds the session with a real 16×16 loss screenshot (saoleiBoardLossPNG /
+// saolei_5.png — contains HIT_MINE "X" and MINE "M" cells; see
+// projects/game/pkg/saolei-board/testdata/saolei_5.golden.txt), so the
+// agent's existing isTerminalState(state) loss signal fires. It then asserts:
+//
+//  1. The saolei_init result text contains `game status: lost` (FR-012/FR-013
+//     — a recognized loss is surfaced on the operation that produced the
+//     terminal board).
+//  2. A following saolei_click(x,y) is rejected pre-dispatch as `game_over`
+//     (existing terminal-loss behaviour — specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5) and NO
+//     operation FlowPart reaches the desktop.
+//  3. The game_over rejection body now carries `game status: lost`
+//     (FR-012..015 — every rejection with a recognized state carries the
+//     status line; specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §2).
+//  4. The rejection follows the existing 025 FR-016 contract: body contains
+//     the current text board and the valid coordinate range.
+//
+// Mirrors TestAgentSaoleiIllegalMovePreDispatchReject's drain-and-assert-no-
+// operation pattern.
+func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("saolei-loss-%s", uniqueSuffix())
+
+	// given: a saolei-enabled profile. The model name is non-Anthropic so
+	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
+	// saolei tools are surfaced via the loopback MCP client, each backed by
+	// the real @dominion/game-saolei-board recognition engine.
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate minesweeper via saolei tools.",
+			McpNames:     saoleiMcpNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// A real 16×16 loss Minesweeper screenshot (contains HIT_MINE "X" and
+	// MINE "M" cells — see
+	// projects/game/pkg/saolei-board/testdata/saolei_5.golden.txt). The
+	// agent's recognition engine decodes it; isTerminalState(state) fires
+	// (the existing loss signal — HIT_MINE/MINE presence), so gameStatus
+	// returns "lost" and any subsequent cell op is terminal-blocked as
+	// game_over (existing terminal-loss, specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5).
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG)
+
+	// when: a user turn triggers saolei_init (sample_saolei_start.yaml
+	// keyword "start saolei"). The agent dispatches F2; the test replies
+	// with the loss screenshot so the agent seeds the recognized state
+	// from the 16×16 loss board.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+
+	initFrame := readOperationFrame(t, conn)
+	if frameKeyboardPress(initFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
+			initFrame.GetFlowParts().GetParts())
+	}
+	respondToOperationWithScreenshot(t, conn, sessionID, initFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
+
+	// then: fake-LLM chains saolei_init → saolei_click{3,4} (the existing
+	// sample_saolei_tools.yaml saolei-init-followup-click chaining). The
+	// agent validates (3,4) against the recognized loss board:
+	// isTerminalState(state) is true ⇒ validateMove returns game_over
+	// BEFORE any dispatch (existing terminal-loss, specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5).
+	//
+	// Drain frames until the rejection tool_result arrives, asserting NO
+	// operation FlowPart appears in between. The bounded loop also
+	// collects the saolei_init tool_result so the lost status line can be
+	// asserted on the operation that produced the terminal board.
+	const drainLimit = 8
+	var initMessage string
+	var rejectedMessage string
+	for i := 0; i < drainLimit; i++ {
+		frame := readWSFrame(t, conn)
+		if opID := frameOperationToolID(frame); opID != "" {
+			t.Fatalf("saolei_click(3,4) on a lost board dispatched an operation FlowPart (tool_id=%q) — a cell op after a recognized loss MUST be rejected BEFORE dispatch as game_over (spec 025 FR-015b / specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5)",
+				opID)
+		}
+		if tr := frameToolResult(frame); tr != nil {
+			msg := tr.GetMessage()
+			if strings.Contains(msg, "new game started") && initMessage == "" {
+				initMessage = msg
+			}
+			if strings.Contains(msg, "rejected: game_over") {
+				rejectedMessage = msg
+				break
+			}
+		}
+	}
+
+	// then (1): the saolei_init result carries `game status: lost`
+	// (FR-012/FR-013 — the operation that produced the terminal-lost board
+	// surfaces the lost status).
+	if initMessage == "" {
+		t.Fatalf("did not receive a saolei_init tool_result within %d frames — the init→recognition chain did not produce a recognized init result", drainLimit)
+	}
+	if !strings.Contains(initMessage, "game status: lost") {
+		t.Errorf("saolei_init result message = %q, want to contain \"game status: lost\" (spec 027 FR-012/FR-013 — a recognized loss surfaces on the operation that produced the terminal board)", initMessage)
+	}
+
+	// then (2): the post-loss cell op was rejected pre-dispatch as game_over.
+	if rejectedMessage == "" {
+		t.Fatalf("did not receive a game_over rejection within %d frames — saolei_click(3,4) on a lost board was not rejected pre-dispatch", drainLimit)
+	}
+	if !strings.Contains(rejectedMessage, "rejected: game_over") {
+		t.Errorf("rejection message = %q, want to contain \"rejected: game_over\" (spec 025 FR-015b / specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5 — existing terminal-loss)", rejectedMessage)
+	}
+
+	// then (3): the rejection body carries `game status: lost` (FR-012..015
+	// — every rejection with a recognized state carries the status line;
+	// specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §2).
+	if !strings.Contains(rejectedMessage, "game status: lost") {
+		t.Errorf("rejection message = %q, want to contain \"game status: lost\" (spec 027 FR-012..015 — game_over rejection carries the lost status line)", rejectedMessage)
+	}
+
+	// then (4): the rejection follows the existing 025 FR-016 contract:
+	// body contains the current text board and the valid coordinate range.
 	if !strings.Contains(rejectedMessage, "valid range:") {
 		t.Errorf("rejection message = %q, want to contain \"valid range:\" (spec 025 FR-016 — rejection includes the valid coordinate range)", rejectedMessage)
 	}
