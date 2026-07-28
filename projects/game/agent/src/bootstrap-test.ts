@@ -1,6 +1,7 @@
 import { createGrpcInstrumentation } from "@dominion/common-js-grpc-otel";
 import {
 	createOTelReporter,
+	error,
 	info,
 	installReporter,
 } from "@dominion/common-js-logs";
@@ -21,6 +22,22 @@ async function main() {
 	);
 
 	info("OTel initialized", { service: "game-agent" });
+
+	// Defense-in-depth: log (do NOT exit on) unhandled promise rejections.
+	// Node.js >=15 defaults to `--unhandled-rejections=throw`, which
+	// terminates the process on any unhandled rejection. For a long-running
+	// multi-session gRPC server, a single unexpected rejection must not kill
+	// all active sessions — e.g. an in-flight LangGraph turn that is aborted
+	// when a desktop disconnects mid-turn (handler.ts abortAllTurns) can
+	// surface an AbortError as an unhandled rejection if the abort races with
+	// the turn's own catch. This handler is the safety net that keeps the
+	// test deployment alive in that case, mirroring the production bootstrap
+	// (bootstrap.ts line 35) — the two MUST stay aligned so the test SUT
+	// exhibits the same crash-resistance as production
+	// (specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §2).
+	process.on("unhandledRejection", (reason) => {
+		error("unhandled promise rejection", { reason: String(reason) });
+	});
 
 	const resolver = createResolver();
 

@@ -11,7 +11,7 @@
 // decodes the board.
 //
 // Coverage (spec 025 FR-012..FR-018, FR-022; spec 027 FR-012..FR-015,
-// FR-021..023):
+// FR-021..023; spec 028 FR-006/FR-012, SC-004):
 //   - TestAgentSaoleiTextBoardFlow: init→click→click on a recognizable
 //     in-progress board; each tool returns a TEXT board (no image block) and
 //     the screenshot stays on the control channel; every result carries
@@ -20,13 +20,19 @@
 //     revealed cell is rejected BEFORE dispatch (no operation FlowPart reaches
 //     the desktop) with a stable reason code the model can act on.
 //   - TestAgentSaoleiWonGameStatusAndTerminalReject: a 9×9 win screenshot
-//     (saolei_10.png) seeds a terminal-won state — init surfaces
-//     `game status: won` and a following cell op is rejected pre-dispatch as
-//     `game_won` (spec 027 FR-021..023) carrying the won status line.
+//     (saolei_10.png, counter `000`) seeds a terminal-won state — init
+//     surfaces `game status: won` and a following cell op is rejected
+//     pre-dispatch as `game_won` (spec 027 FR-021..023) carrying the won
+//     status line.
 //   - TestAgentSaoleiLostGameStatusAndTerminalReject: a 16×16 loss screenshot
 //     (saolei_5.png) seeds a terminal-lost state — init surfaces
 //     `game status: lost` and a following cell op is rejected pre-dispatch as
 //     `game_over` (existing terminal-loss) carrying the lost status line.
+//   - TestAgentSaoleiOverFlagBoardStaysPlaying: a 9×9 over-flag screenshot
+//     (saolei_9.png — grid all-revealed, 11 flags, counter `-01`) seeds a
+//     NON-terminal state — init surfaces `game status: playing` (NOT `won`)
+//     and a following cell op is NOT rejected as `game_won` (spec 028 — the
+//     counter-informed isWin eliminates the grid-only false-positive win).
 //
 // Organised by MODULE per style/large_test.md (not by scenario/spec-id); it
 // reuses the shared helpers in helpers_test.go.
@@ -94,6 +100,24 @@ var saoleiBoardWinPNG []byte
 //
 //go:embed testdata/saolei_5.png
 var saoleiBoardLossPNG []byte
+
+// saoleiBoardOverFlagPNG is a real Minesweeper screenshot (9×9, grid fully
+// revealed/flagged — every cell is a revealed number "0".."8" or FLAG; 11
+// flags total) reused from the saolei-board golden testdata, but whose
+// top-left mine counter reads `-01` (the player over-flagged: 11 flags on a
+// 10-mine board, so mines − flags = −1). Used by
+// TestAgentSaoleiOverFlagBoardStaysPlaying
+// (specs/028-saolei-win-counter-fix): under the PRE-028 grid-only `isWin`
+// rule this board was a false-positive win (grid all-revealed ⇒ isWin true ⇒
+// `game status: won` + `game_won` terminal). Under the 028 counter-informed
+// rule `isWin(state)` additionally requires `state.mineCounter === {decoded:
+// true, value: 0}` (specs/028-saolei-win-counter-fix/contracts/saolei-mcp-
+// win-contract.md), so this over-flag board ⇒ `game status: playing` and
+// cell operations are NOT rejected as `game_won`
+// (specs/028-saolei-win-counter-fix spec.md FR-006/FR-012, SC-004).
+//
+//go:embed testdata/saolei_9.png
+var saoleiBoardOverFlagPNG []byte
 
 // saoleiMcpNames is the profile MCP selection that triggers the agent's
 // saolei adapter path (llm.ts builds the loopback MultiServerMCPClient for a
@@ -689,6 +713,180 @@ func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
 	// specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §2).
 	if !strings.Contains(rejectedMessage, "game status: lost") {
 		t.Errorf("rejection message = %q, want to contain \"game status: lost\" (spec 027 FR-012..015 — game_over rejection carries the lost status line)", rejectedMessage)
+	}
+
+	// then (4): the rejection follows the existing 025 FR-016 contract:
+	// body contains the current text board and the valid coordinate range.
+	if !strings.Contains(rejectedMessage, "valid range:") {
+		t.Errorf("rejection message = %q, want to contain \"valid range:\" (spec 025 FR-016 — rejection includes the valid coordinate range)", rejectedMessage)
+	}
+}
+
+// TestAgentSaoleiOverFlagBoardStaysPlaying verifies spec 028 FR-006/FR-012 +
+// SC-004 (the counter-informed win fix) end-to-end on the deployed agent with
+// the REAL recognition engine. The test seeds the session with a real 9×9
+// over-flag screenshot (saoleiBoardOverFlagPNG / saolei_9.png — grid fully
+// revealed/flagged, 11 flags, top-left mine counter reads `-01` because 11
+// flags exceed the 10 mines). Under the PRE-028 grid-only `isWin` rule this
+// board was a FALSE-POSITIVE win (grid all-revealed ⇒ isWin true ⇒
+// `game status: won` + `game_won` terminal rejection on the next cell op).
+// Under the 028 counter-informed rule, `isWin(state)` additionally requires
+// `state.mineCounter === {decoded: true, value: 0}`
+// (specs/028-saolei-win-counter-fix/contracts/saolei-mcp-win-contract.md),
+// so this over-flag board ⇒ `playing`. The test asserts:
+//
+//  1. The saolei_init result carries `game status: playing` and does NOT
+//     carry `game status: won` (FR-012 — the false-positive win is
+//     eliminated; the [027] text contract is preserved, only the `won`
+//     decision is more accurate).
+//  2. A following saolei_click(3,4) is NOT rejected as `game_won`. Because
+//     isWin(state) now returns false, validateMove (projects/game/agent/src/
+//     mcp/saolei/saolei-mcp.ts) does NOT short-circuit on the win branch and
+//     falls through to the cell-specific rule: cell (3,4) on the over-flag
+//     board is a revealed number "0" (see
+//     projects/game/pkg/saolei-board/testdata/saolei_9.png grid), so the
+//     click is rejected as `cell_already_revealed` — NOT `game_won`. This
+//     fall-through is the direct evidence that the counter cross-check took
+//     effect: under the grid-only rule the same click would have been
+//     rejected as `game_won` BEFORE reaching the cell rule.
+//  3. The cell rejection carries `game status: playing` (the over-flag board
+//     is non-terminal, so the status line the rejection body re-derives from
+//     the recognized state is `playing`, not `won`).
+//  4. NO operation FlowPart is dispatched for the cell op — the
+//     `cell_already_revealed` rejection is pre-dispatch (symmetric with the
+//     won/loss terminal rejections; an illegal move never reaches the
+//     desktop).
+//
+// Note on the "DISPATCHED" wording in tasks.md T013: on a fully-revealed
+// over-flag board every cell is either a revealed number or a FLAG, so there
+// is no legal `saolei_click` target (the only dispatchable cell op would be
+// `saolei_flag` toggling an existing FLAG). The shared fake-LLM fixture
+// (sample_saolei_tools.yaml `saolei-init-followup-click`) chains
+// saolei_init → saolei_click{3,4} and is shared by all four existing saolei
+// tests, so it cannot be specialised to emit saolei_flag here without
+// breaking them. The `cell_already_revealed` fall-through (assertion 2) is
+// the equivalent invariant: it proves the cell op was NOT rejected as
+// `game_won`, which is the bug-fix acceptance criterion (SC-004 — "the agent
+// large test no longer surfaces `game status: won` nor rejects subsequent
+// cell operations as `game_won`").
+func TestAgentSaoleiOverFlagBoardStaysPlaying(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("saolei-overflag-%s", uniqueSuffix())
+
+	// given: a saolei-enabled profile. The model name is non-Anthropic so
+	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
+	// saolei tools are surfaced via the loopback MCP client, each backed by
+	// the real @dominion/game-saolei-board recognition engine (which now
+	// also decodes the top-left mine counter — spec 028 US1).
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate minesweeper via saolei tools.",
+			McpNames:     saoleiMcpNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// A real 9×9 over-flag Minesweeper screenshot (grid fully revealed/
+	// flagged, 11 flags, counter `-01` — the over-flagged false-positive
+	// fixture added by spec 028; see
+	// projects/game/pkg/saolei-board/testdata/saolei_9.png). The agent's
+	// recognition engine decodes both the grid (all-revealed) AND the mine
+	// counter (value -1); the counter-informed isWin(state) returns false
+	// (FR-006), so gameStatus returns "playing" (FR-012) and the board is
+	// NOT terminal.
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardOverFlagPNG)
+
+	// when: a user turn triggers saolei_init (sample_saolei_start.yaml
+	// keyword "start saolei"). The agent dispatches F2; the test replies
+	// with the over-flag screenshot so the agent seeds the recognized state
+	// (grid + decoded counter) from the 9×9 over-flag board.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+
+	initFrame := readOperationFrame(t, conn)
+	if frameKeyboardPress(initFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
+			initFrame.GetFlowParts().GetParts())
+	}
+	respondToOperationWithScreenshot(t, conn, sessionID, initFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
+
+	// then: fake-LLM chains saolei_init → saolei_click{3,4} (the shared
+	// sample_saolei_tools.yaml saolei-init-followup-click chaining). On the
+	// over-flag board cell (3,4) is a revealed number "0", so validateMove
+	// (with the counter-informed isWin returning false) falls through to the
+	// cell-specific rule and rejects the click as cell_already_revealed —
+	// NOT as game_won. The bounded drain also collects the saolei_init
+	// tool_result so the playing status line can be asserted on the
+	// operation that produced the recognized board.
+	const drainLimit = 8
+	var initMessage string
+	var rejectedMessage string
+	for i := 0; i < drainLimit; i++ {
+		frame := readWSFrame(t, conn)
+		// A cell_already_revealed rejection is pre-dispatch: NO operation
+		// FlowPart may reach the desktop for the cell op (symmetric with the
+		// won/loss terminal rejections — an illegal move never dispatches).
+		if opID := frameOperationToolID(frame); opID != "" {
+			t.Fatalf("saolei_click(3,4) on the over-flag board dispatched an operation FlowPart (tool_id=%q) — a cell_already_revealed rejection MUST be pre-dispatch (spec 025 FR-014)",
+				opID)
+		}
+		if tr := frameToolResult(frame); tr != nil {
+			msg := tr.GetMessage()
+			if strings.Contains(msg, "new game started") && initMessage == "" {
+				initMessage = msg
+			}
+			if strings.Contains(msg, "rejected: cell_already_revealed") {
+				rejectedMessage = msg
+				break
+			}
+		}
+	}
+
+	// then (1): the saolei_init result carries `game status: playing`
+	// (FR-012 — the over-flag board is non-terminal: the counter-informed
+	// isWin returned false because the decoded counter is -1, not 0).
+	if initMessage == "" {
+		t.Fatalf("did not receive a saolei_init tool_result within %d frames — the init→recognition chain did not produce a recognized init result", drainLimit)
+	}
+	if !strings.Contains(initMessage, "game status: playing") {
+		t.Errorf("saolei_init result message = %q, want to contain \"game status: playing\" (spec 028 FR-012 — an over-flag board whose counter ≠ 000 is NOT a win; the counter-informed isWin returned false)", initMessage)
+	}
+	// The false positive the fix eliminates: the grid-only rule would have
+	// surfaced `game status: won` here. Asserting its ABSENCE pins the fix.
+	if strings.Contains(initMessage, "game status: won") {
+		t.Errorf("saolei_init result message = %q — over-flag board (counter -01) was reported WON; the grid-only false positive is still present (spec 028 FR-006/SC-002 — counter ≠ 000 ⇒ not a win)", initMessage)
+	}
+
+	// then (2): the post-init cell op was rejected as cell_already_revealed,
+	// NOT as game_won. This fall-through is the direct evidence the counter
+	// cross-check took effect: validateMove's isWin branch (which would
+	// return game_won under the grid-only rule) did NOT fire.
+	if rejectedMessage == "" {
+		t.Fatalf("did not receive a cell_already_revealed rejection within %d frames — saolei_click(3,4) on the over-flag board was not rejected pre-dispatch", drainLimit)
+	}
+	if !strings.Contains(rejectedMessage, "rejected: cell_already_revealed") {
+		t.Errorf("rejection message = %q, want to contain \"rejected: cell_already_revealed\" (spec 025 FR-015c — click on a revealed cell)", rejectedMessage)
+	}
+	if strings.Contains(rejectedMessage, "rejected: game_won") {
+		t.Errorf("rejection message = %q — over-flag board cell op was rejected as game_won; the counter-informed isWin did NOT take effect (spec 028 SC-004 — a non-won board MUST NOT reject cell ops as game_won)", rejectedMessage)
+	}
+
+	// then (3): the rejection body carries `game status: playing`
+	// (FR-012..015 — every rejection with a recognized state carries the
+	// status line; the over-flag board's status is `playing`, not `won`).
+	if !strings.Contains(rejectedMessage, "game status: playing") {
+		t.Errorf("rejection message = %q, want to contain \"game status: playing\" (spec 028 FR-012 — over-flag board rejection carries the playing status, not won)", rejectedMessage)
+	}
+	if strings.Contains(rejectedMessage, "game status: won") {
+		t.Errorf("rejection message = %q — over-flag board rejection carries `game status: won`; the counter-informed status is wrong (spec 028 SC-004)", rejectedMessage)
 	}
 
 	// then (4): the rejection follows the existing 025 FR-016 contract:

@@ -123,11 +123,14 @@ go_largetest(
 # real recognition engine (no DI seam), so the FlowResultPart.screenshot the
 # test attaches MUST be a recognizable board; the embedded PNGs are the
 # authoritative bytes owned by the saolei-board package (golden-tested).
-# The fixtures span all three game outcomes (specs/027-chat-bubble-game-state/
-# research.md D12): in-progress (saolei_1.png 16×16 all-INITIAL,
-# saolei_2.png 9×9 partially revealed), win (saolei_10.png 9×9 win board),
-# and loss (saolei_5.png 16×16 with HIT_MINE/MINE). Each is a cmp-identical
-# copy of its library-original, mirroring the saolei_1/saolei_2 precedent.
+# The fixtures span every game outcome (specs/027-chat-bubble-game-state/
+# research.md D12; specs/028-saolei-win-counter-fix): in-progress
+# (saolei_1.png 16×16 all-INITIAL, saolei_2.png 9×9 partially revealed),
+# win (saolei_10.png 9×9 win board, counter 000), loss (saolei_5.png 16×16
+# with HIT_MINE/MINE), and the over-flag false-positive (saolei_9.png 9×9
+# grid all-revealed with 11 flags, counter -01 — spec 028). Each is a
+# cmp-identical copy of its library-original, mirroring the saolei_1/
+# saolei_2 precedent.
 go_largetest(
     name = "agent_saolei_test",
     size = "small",
@@ -140,6 +143,7 @@ go_largetest(
         "testdata/saolei_2.png",
         "testdata/saolei_10.png",
         "testdata/saolei_5.png",
+        "testdata/saolei_9.png",
     ],
     deps = [
         "//common/gopkg/testtool",
