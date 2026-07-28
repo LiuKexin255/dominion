@@ -42,3 +42,18 @@ tools:
         arguments:
           x: 3
           y: 4
+  # saolei-remain-final-text terminates the saolei_remain tool loop with a
+  # plain text response (specs/029-saolei-coord-remain/contracts/saolei-
+  # remain-tool-contract.md §8 / quickstart.md Scenario 5). saolei_remain
+  # dispatches nothing (FR-007), so after its tool_result the fake-LLM MUST
+  # return text (not a tool_call) to end the turn deterministically;
+  # otherwise MatchToolResult's no-match random fallback (matcher.go) could
+  # emit an unrelated tool_call and dispatch an operation, muddying the
+  # large test's zero-dispatch assertion. tool_name=saolei_remain is unique
+  # to this config, so it is the only MatchToolResult candidate for a
+  # saolei_remain result.
+  - name: saolei-remain-final-text
+    tool_name: saolei_remain
+    match_result_contains: []
+    respond_with:
+      text: "Remaining mines computed."

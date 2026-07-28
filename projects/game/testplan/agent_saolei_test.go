@@ -33,6 +33,13 @@
 //     NON-terminal state — init surfaces `game status: playing` (NOT `won`)
 //     and a following cell op is NOT rejected as `game_won` (spec 028 — the
 //     counter-informed isWin eliminates the grid-only false-positive win).
+//   - TestAgentSaoleiRemainToolNoDispatch: the read-only saolei_remain tool
+//     (spec 029 US2) returns the remain grid for a recognized board while
+//     dispatching ZERO operations to the desktop (FR-007). Turn 1 seeds the
+//     state via saolei_init (saolei_1.png → 16×16); turn 2 drives
+//     saolei_remain via a distinct keyword and asserts no FlowPart operation
+//     is dispatched and the result carries `saolei_remain → computed`,
+//     `game status: playing`, and `board size 16*16`.
 //
 // Organised by MODULE per style/large_test.md (not by scenario/spec-id); it
 // reuses the shared helpers in helpers_test.go.
@@ -155,6 +162,16 @@ const (
 // (sample_saolei_tools.yaml saolei-click-5-6-final-text). The test asserts
 // it to prove the whole init→click→click chain completed.
 const expectedSaoleiFinalText = "Minesweeper sequence complete."
+
+// expectedSaoleiRemainFinalText is the terminal text fake-LLM returns once
+// the saolei_remain tool-result loop closes
+// (sample_saolei_tools.yaml saolei-remain-final-text). Used by
+// TestAgentSaoleiRemainToolNoDispatch to prove the remain turn ended
+// deterministically (saolei_remain dispatches nothing, so the fake-LLM
+// MUST return text — not a tool_call — after its result, otherwise the
+// no-match random fallback could dispatch an unrelated operation and
+// muddy the zero-dispatch assertion).
+const expectedSaoleiRemainFinalText = "Remaining mines computed."
 
 // TestAgentSaoleiTextBoardFlow drives a full saolei init→click→click
 // sequence through the deployed agent against a RECOGNIZABLE Minesweeper
@@ -893,6 +910,165 @@ func TestAgentSaoleiOverFlagBoardStaysPlaying(t *testing.T) {
 	// body contains the current text board and the valid coordinate range.
 	if !strings.Contains(rejectedMessage, "valid range:") {
 		t.Errorf("rejection message = %q, want to contain \"valid range:\" (spec 025 FR-016 — rejection includes the valid coordinate range)", rejectedMessage)
+	}
+}
+
+// TestAgentSaoleiRemainToolNoDispatch verifies spec 029 US2 / FR-006..013
+// (the read-only saolei_remain tool) end-to-end on the deployed agent with
+// the REAL recognition engine. saolei_remain returns the remain grid for a
+// recognized board while dispatching ZERO operations to the desktop
+// (FR-007 — it is purely computational). The test drives two user turns:
+//
+//  1. Turn 1 — saolei_init (saolei_1.png → 16×16 board) seeds the
+//     per-session recognized state. The shared fake-LLM fixture
+//     (sample_saolei_tools.yaml) then chains init→saolei_click{3,4}→
+//     saolei_click{5,6}→final text — the SAME chain every saolei test
+//     uses — so the test "plays the desktop" through it; turn 1
+//     completes and the recognized 16×16 state persists to turn 2.
+//  2. Turn 2 — a user turn matching the "show remaining mines" keyword
+//     (sample_saolei_remain.yaml) makes fake-LLM return a saolei_remain
+//     tool_call. saolei_remain reads the seeded state and returns the
+//     remain grid; the test asserts NO FlowPart operation is dispatched
+//     for the call (the desktop receives nothing) and the result text
+//     carries `saolei_remain → computed`, `game status: playing`, and
+//     `board size 16*16`.
+//
+// Why two turns (a distinct second-turn keyword) instead of wiring
+// saolei_remain into the shared init chain: MatchToolResult
+// (fake-llm matcher.go) breaks ties by alphabetically-first Name, and the
+// init→click chain (saolei-init-followup-click, match_result_contains=[])
+// matches every saolei_init result. A saolei_remain follow-up on
+// tool_name=saolei_init would either lose to it (click < remain) or, if
+// named to sort first, hijack the four existing saolei tests' init flow.
+// The all-INITIAL 16×16 init result is identical for this test and
+// TestAgentSaoleiTextBoardFlow, so it cannot be disambiguated by content.
+// A second-turn keyword (matcher.go Match branch) isolates saolei_remain:
+// no other suite sends it, so existing suites are unaffected.
+//
+// The "no dispatch" assertion mirrors TestAgentSaoleiIllegalMovePreDispatchReject's
+// drain-and-assert-no-operation pattern: the bounded drain tolerates the
+// interleaved display frames (saolei_remain tool_call, its tool_result)
+// around the remain call, failing if ANY operation FlowPart reaches the
+// desktop.
+func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
+	sutHostURL := testtool.MustEndpoint("http", "public")
+	sutEnvName := testtool.MustEnv()
+
+	profileName := fmt.Sprintf("saolei-remain-%s", uniqueSuffix())
+
+	// given: a saolei-enabled profile. The model name is non-Anthropic so
+	// ModelProviderCache routes to the OpenAI platform (fake-llm). The
+	// five saolei tools are surfaced via the loopback MCP client, each
+	// backed by the real @dominion/game-saolei-board recognition engine.
+	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
+		Parent:         gameconst.PromptsParent,
+		AgentProfileId: profileName,
+		AgentProfile: &game.AgentProfile{
+			Model:        "gpt-4",
+			SystemPrompt: "You operate minesweeper via saolei tools.",
+			McpNames:     saoleiMcpNames,
+			Enabled:      true,
+		},
+	})
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	defer conn.Close()
+
+	// A recognizable Minesweeper screenshot (16×16 all-INITIAL) used for
+	// turn 1's init + click replies. Recognition is monotonic-safe across
+	// identical frames (no revealed cells to regress), so init + two
+	// updates against the same PNG all succeed. The final recognized state
+	// (16×16 all-INITIAL) persists to turn 2, where saolei_remain reads it.
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+
+	// ── Turn 1: seed the recognized board state via saolei_init. ──────
+	// A user turn whose text matches the "saolei-start" keyword makes
+	// fake-LLM return the first saolei_init tool_call.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+
+	// saolei_init dispatches an F2 KeyboardPressPart; reply with the
+	// recognizable screenshot so the agent seeds the recognized state from
+	// the 16×16 board.
+	initFrame := readOperationFrame(t, conn)
+	if frameKeyboardPress(initFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
+			initFrame.GetFlowParts().GetParts())
+	}
+	respondToOperationWithScreenshot(t, conn, sessionID, initFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
+
+	// The shared fixture (sample_saolei_tools.yaml) chains saolei_init →
+	// saolei_click{3,4} → saolei_click{5,6} → final text. Play the desktop
+	// through both clicks so turn 1 completes; the recognized state seeded
+	// above persists across turns within the session.
+	for _, step := range []struct{ cellX, cellY int32 }{
+		{saoleiClick1X, saoleiClick1Y},
+		{saoleiClick2X, saoleiClick2Y},
+	} {
+		clickFrame := readOperationFrame(t, conn)
+		if frameMouseMoveAndClick(clickFrame) == nil {
+			t.Fatalf("saolei_click(%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart; frame parts: %v",
+				step.cellX, step.cellY, clickFrame.GetFlowParts().GetParts())
+		}
+		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
+			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+			fmt.Sprintf("cell at (%d,%d) revealed", step.cellX, step.cellY), screenshot)
+	}
+
+	// Drain until turn 1's final text frame arrives — turn 1 is then
+	// complete and turn 2 may be sent on the same session/connection.
+	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		return frameHasText(f) && strings.Contains(frameText(f), expectedSaoleiFinalText)
+	})
+	if textFrame == nil {
+		t.Fatalf("turn 1 did not complete — did not receive the final text %q within the drain limit", expectedSaoleiFinalText)
+	}
+
+	// ── Turn 2: drive saolei_remain and assert zero dispatch. ────────
+	// A user turn matching the "show remaining mines" keyword
+	// (sample_saolei_remain.yaml) makes fake-LLM return a saolei_remain
+	// tool_call. saolei_remain reads the seeded 16×16 state and returns
+	// the remain grid.
+	sendTextWithProfile(t, conn, sessionID, profileName, "please show remaining mines")
+
+	// Drain frames around the saolei_remain call, asserting NO operation
+	// FlowPart (keyboard/mouse carrying a tool_id) is dispatched —
+	// saolei_remain is read-only and MUST NOT call OperationBridge.dispatch
+	// (spec 029 FR-007). The bounded loop tolerates the interleaved display
+	// frames (the saolei_remain tool_call, its tool_result) and collects
+	// the remain tool_result so its body can be asserted.
+	const drainLimit = 8
+	var remainMessage string
+	for i := 0; i < drainLimit; i++ {
+		frame := readWSFrame(t, conn)
+		if opID := frameOperationToolID(frame); opID != "" {
+			t.Fatalf("saolei_remain dispatched an operation FlowPart (tool_id=%q) — saolei_remain MUST be read-only and dispatch nothing (spec 029 FR-007)", opID)
+		}
+		if tr := frameToolResult(frame); tr != nil {
+			if strings.Contains(tr.GetMessage(), "saolei_remain → computed") {
+				remainMessage = tr.GetMessage()
+				break
+			}
+		}
+	}
+	if remainMessage == "" {
+		t.Fatalf("did not receive a saolei_remain tool_result within %d frames — the read-only remain query did not run", drainLimit)
+	}
+
+	// then: the remain result carries the computed outcome line, the
+	// in-progress status (the all-INITIAL board is non-terminal), and the
+	// 16×16 board size. The remain grid itself is all `-` on this board
+	// (no revealed numbers yet — FR-009), which the unit tests cover
+	// (saolei-mcp.test.ts); the large test pins the body shape + the
+	// zero-dispatch invariant.
+	if !strings.Contains(remainMessage, "saolei_remain → computed") {
+		t.Errorf("remain message = %q, want to contain \"saolei_remain → computed\" (spec 029 FR-008 — the computed outcome line)", remainMessage)
+	}
+	if !strings.Contains(remainMessage, "game status: playing") {
+		t.Errorf("remain message = %q, want to contain \"game status: playing\" (spec 029 FR-008 / specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §3)", remainMessage)
+	}
+	if !strings.Contains(remainMessage, "board size 16*16") {
+		t.Errorf("remain message = %q, want to contain \"board size 16*16\" (the seeded board is saolei_1.png, 16×16)", remainMessage)
 	}
 }
 

@@ -216,12 +216,13 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 5 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 5 (chat-only + farewell + greeting + mouse-trigger + saolei-start)", len(got))
+	if len(got) != 6 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 6 (chat-only + farewell + greeting + mouse-trigger + saolei-remain + saolei-start)", len(got))
 	}
 
 	// Sorted alphabetically: chat-only before farewell before greeting
-	// before mouse-trigger before saolei-start.
+	// before mouse-trigger before saolei-remain before saolei-start
+	// ("saolei-remain" < "saolei-start" because 'r' < 's').
 	if got[0].Name != "chat-only" {
 		t.Fatalf("first message = %q, want chat-only", got[0].Name)
 	}
@@ -234,8 +235,11 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if got[3].Name != "mouse-trigger" {
 		t.Fatalf("fourth message = %q, want mouse-trigger", got[3].Name)
 	}
-	if got[4].Name != "saolei-start" {
-		t.Fatalf("fifth message = %q, want saolei-start", got[4].Name)
+	if got[4].Name != "saolei-remain" {
+		t.Fatalf("fifth message = %q, want saolei-remain", got[4].Name)
+	}
+	if got[5].Name != "saolei-start" {
+		t.Fatalf("sixth message = %q, want saolei-start", got[5].Name)
 	}
 
 	chatOnly := got[0]
@@ -285,9 +289,25 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 		t.Errorf("mouse-trigger keywords missing 'move the mouse': %v", mouseTrigger.Keywords)
 	}
 
+	// saolei-remain carries a saolei_remain tool_call (spec 029 US2): a user
+	// turn matching its keyword makes fake-LLM return a saolei_remain
+	// tool_call so the agent_saolei large test drives the read-only remain
+	// query end-to-end (specs/029-saolei-coord-remain/contracts/saolei-
+	// remain-tool-contract.md §8).
+	saoleiRemain := got[4]
+	if saoleiRemain.ToolCall == nil {
+		t.Fatalf("saolei-remain tool_call is nil")
+	}
+	if saoleiRemain.ToolCall.Name != "saolei_remain" {
+		t.Errorf("saolei-remain tool_call.name = %q, want saolei_remain", saoleiRemain.ToolCall.Name)
+	}
+	if !slices.Contains(saoleiRemain.Keywords, "show remaining mines") {
+		t.Errorf("saolei-remain keywords missing 'show remaining mines': %v", saoleiRemain.Keywords)
+	}
+
 	// saolei-start carries the first saolei_init tool_call (the entry
 	// point of the agent_saolei large-test flow).
-	saoleiStart := got[4]
+	saoleiStart := got[5]
 	if saoleiStart.ToolCall == nil {
 		t.Fatalf("saolei-start tool_call is nil")
 	}
@@ -313,8 +333,8 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	tools := store.Tools()
-	if len(tools) != 9 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 9 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-3-4-followup-click, saolei-click-5-6-final-text, saolei-init-followup-click)", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 10 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-3-4-followup-click, saolei-click-5-6-final-text, saolei-init-followup-click, saolei-remain-final-text)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
@@ -328,6 +348,7 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		"saolei-click-3-4-followup-click",
 		"saolei-click-5-6-final-text",
 		"saolei-init-followup-click",
+		"saolei-remain-final-text",
 	}
 	for i, want := range wantNames {
 		if tools[i].Name != want {
@@ -463,5 +484,25 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 	if saoleiClick56Final.RespondWith.ToolCall != nil {
 		t.Errorf("saolei-click-5-6-final-text respond_with.tool_call should be nil")
+	}
+
+	// saolei-remain-final-text terminates the saolei_remain tool loop with
+	// a plain text response (spec 029 US2). saolei_remain dispatches
+	// nothing, so the fake-LLM must return text after its result to end the
+	// turn deterministically (otherwise the no-match random fallback could
+	// emit an unrelated tool_call). tool_name=saolei_remain is unique to
+	// this config.
+	saoleiRemainFinal := tools[9]
+	if saoleiRemainFinal.Name != "saolei-remain-final-text" {
+		t.Errorf("tools[9] name = %q, want saolei-remain-final-text", saoleiRemainFinal.Name)
+	}
+	if saoleiRemainFinal.ToolName != "saolei_remain" {
+		t.Errorf("saolei-remain-final-text tool_name = %q, want saolei_remain", saoleiRemainFinal.ToolName)
+	}
+	if saoleiRemainFinal.RespondWith.Text != "Remaining mines computed." {
+		t.Errorf("saolei-remain-final-text respond_with.text = %q, want 'Remaining mines computed.'", saoleiRemainFinal.RespondWith.Text)
+	}
+	if saoleiRemainFinal.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-remain-final-text respond_with.tool_call should be nil")
 	}
 }

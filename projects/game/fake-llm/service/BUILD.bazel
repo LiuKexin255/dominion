@@ -18,6 +18,7 @@ go_library(
         "testdata/sample_mouse_trigger.yaml",
         "testdata/sample_saolei_start.yaml",
         "testdata/sample_saolei_tools.yaml",
+        "testdata/sample_saolei_remain.yaml",
     ],
     importpath = "dominion/projects/game/fake-llm/service",
     visibility = ["//visibility:public"],

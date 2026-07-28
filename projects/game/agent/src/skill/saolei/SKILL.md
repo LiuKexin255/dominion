@@ -1,6 +1,6 @@
 ---
 name: saolei
-description: Operate a grid-based Minesweeper game through the four saolei MCP tools (saolei_init, saolei_click, saolei_flag, saolei_chord_click). Use this skill when the session profile has the saolei MCP enabled and you must start a new game, reveal cells, place flags, or chord numbers on a bound Minesweeper window.
+description: Operate a grid-based Minesweeper game through the five saolei MCP tools (saolei_init, saolei_click, saolei_flag, saolei_chord_click, saolei_remain). Use this skill when the session profile has the saolei MCP enabled and you must start a new game, reveal cells, place flags, chord numbers, or query remaining mines on a bound Minesweeper window.
 compatibility: opencode
 metadata:
   audience: dominion
@@ -9,7 +9,7 @@ metadata:
 
 # saolei
 
-This skill guides the model in operating a grid-based Minesweeper game through the saolei MCP tools. The agent hosts a per-session MCP server that exposes four tools; the model uses them — INSTEAD OF the raw mouse tools — to play the game.
+This skill guides the model in operating a grid-based Minesweeper game through the saolei MCP tools. The agent hosts a per-session MCP server that exposes five tools — four operation tools (`saolei_init`, `saolei_click`, `saolei_flag`, `saolei_chord_click`) plus the read-only `saolei_remain` query; the model uses them — INSTEAD OF the raw mouse tools — to play the game.
 
 Authority: `specs/025-desktop-image-state-refine/spec.md` (FR-012..FR-022), `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`, `projects/game/pkg/saolei-board/README.md`.
 
@@ -34,14 +34,19 @@ Each cell is rendered as one symbol (space-separated rows):
 | `M` | A mine revealed at end-game (all mines shown on a loss) |
 | `?` | Recognition uncertain (the agent is lenient here; treat it as possibly unrevealed) |
 
+### Coordinate ruler (tagged `col<N>`/`row<N>`)
+
+Every text board carries a **coordinate ruler** so you can locate any cell without counting symbols. Above the grid is a **column-index header row** whose first slot is blank and whose remaining slots are the column labels `col0`, `col1`, …; each grid row is prefixed with its **row label** `row0`, `row1`, …. The indices are **0-based, top-left origin** — identical to the `(x, y)` arguments of `saolei_click`/`saolei_flag`/`saolei_chord_click`, so `col0`/`row0` is the first column/row. Each label is **tagged** with the `col`/`row` prefix so it cannot be confused with the `0`–`8` cell values: `col3` is column index 3, `row1` is row index 1, while a bare `3` or `1` on the grid is a game-state number. To target a cell, read its `col<N>` header and `row<N>` prefix and pass those N values as `(x, y)`.
+
 Example text board (a 9-wide board with a revealed region):
 
 ```
 board size 9*9
 
-* * * 1 0 0 1 M *
-* * 2 1 0 0 1 2 *
-* * 1 0 0 0 0 1 *
+     col0 col1 col2 col3 col4 col5 col6 col7 col8
+row0    *    *    *    1    0    0    1    M    *
+row1    *    *    2    1    0    0    1    2    *
+row2    *    *    1    0    0    0    0    1    *
 ```
 
 ### Tool-result body shape
@@ -62,9 +67,10 @@ game status: playing
 
 board size 9*9
 
-* * * 1 0 0 1 M *
-* * 2 1 0 0 1 2 *
-* * 1 0 0 0 0 1 *
+     col0 col1 col2 col3 col4 col5 col6 col7 col8
+row0    *    *    *    1    0    0    1    M    *
+row1    *    *    2    1    0    0    1    2    *
+row2    *    *    1    0    0    0    0    1    *
 ...
 ```
 
@@ -120,6 +126,30 @@ Perform a chord — a **single simultaneous left+right button press** — on the
 Behavior: validates the move, dispatches a combined move + chord via window messages at the cell's fixed pixel centre, then recognizes and returns the updated TEXT board. If any flag is misplaced (a real mine remains among the unflagged neighbors), the chord reveals that mine and the game ends.
 
 Do NOT emulate a chord with two separate clicks; `saolei_chord_click` is the single atomic operation.
+
+### saolei_remain()
+
+A **read-only deduction aid**. Takes **no arguments**.
+
+`saolei_remain` does **not** dispatch any operation to the desktop and does **not** change the board — it is purely computational. It reads the latest recognized board and returns a **remain grid** of the same dimensions, where each cell shows how many mines are still unflagged around it:
+
+- For a revealed number cell (`1`–`8`), the value is `number − (count of adjacent flags)` — i.e. the remaining unmarked mines. This may be `0` (the number is fully satisfied by adjacent flags) or **negative** (more flags surround it than its value — an over-flag error you should correct).
+- For every other cell (`0`/blank, `*`, `F`, `X`, `M`, `?`), the value is the literal `-` (a non-number carries no mine-deduction information).
+
+The remain grid carries the same tagged coordinate ruler as the board grid (`col<N>` header + `row<N>` prefixes, plus the `board size <w>*<h>` header), so every remain cell lines up with its board cell. Like the operation tools, `saolei_remain` rejects with `no_active_game` when no board is recognized (call `saolei_init` first), but it is **not** blocked by a terminal `won`/`lost` board — it is a pure query.
+
+Result body shape:
+
+```
+saolei_remain → computed
+game status: playing
+
+board size <w>*<h>
+
+<the ruled remain grid — number cells show their remaining count, others show `-`>
+```
+
+Use `saolei_remain` when you want a ready-made "mines still left around each number" view instead of scanning the symbol grid and counting adjacent flags by hand. A negative value is a direct signal that a flag is misplaced; a `0` means that number's flag count is exactly right (a chord there would be safe). The lone `-` marker (no digit) is visually distinct from a negative count like `-1`.
 
 ## Move validation (illegal moves are rejected)
 
