@@ -23,6 +23,18 @@ const (
 	wmRButtonDblClk = 0x0206
 )
 
+// Win32 MK_* virtual-key state flags carried in the wParam of WM_LBUTTON* /
+// WM_RBUTTON* messages. They describe which mouse buttons are currently held
+// down at the time each message is processed; the target window reads them to
+// detect simultaneous presses (notably the Minesweeper chord, which requires
+// observing MK_LBUTTON|MK_RBUTTON on the second button-down).
+//
+// Ref: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-lbuttondown
+const (
+	mkLButton uintptr = 0x0001
+	mkRButton uintptr = 0x0002
+)
+
 // Win32 keyboard message constants and the VK_F2 virtual-key code.
 //
 // Ref: https://learn.microsoft.com/en-us/windows/win32/inputdev/keyboard-input-notifications
@@ -76,6 +88,71 @@ func wmMessageSequence(action game.MouseClickAction) ([]uint32, error) {
 	default:
 		return nil, fmt.Errorf("unsupported click action: %v", action)
 	}
+}
+
+// postedMouseMessage is one entry in a mouse-button message execution plan
+// produced by wmClickPlan for the window-message click path. It pairs the
+// WM_* message constant with the MK_* virtual-key flags the message must
+// carry in wParam, plus a dwell marker telling the executor to hold the
+// current button state (sleep) before posting the next message — used to
+// insert a realistic down/up pause so the target window observes a real
+// simultaneous press rather than an instantaneous down/up flip.
+type postedMouseMessage struct {
+	msg    uint32
+	wParam uintptr
+	dwell  bool
+}
+
+// isButtonDownMessage reports whether msg is a WM_*BUTTONDOWN message.
+func isButtonDownMessage(msg uint32) bool {
+	return msg == wmLButtonDown || msg == wmRButtonDown
+}
+
+// isButtonUpMessage reports whether msg is a WM_*BUTTONUP message.
+func isButtonUpMessage(msg uint32) bool {
+	return msg == wmLButtonUp || msg == wmRButtonUp
+}
+
+// wmClickPlan builds the full execution plan for a click action: each entry
+// carries its WM_* message, the correct MK_* virtual-key flags for wParam
+// (computed from the cumulative button-down state across the sequence), and a
+// dwell flag set on every button-down message that is immediately followed by
+// a button-up message. The executor sleeps after a dwell entry to give the
+// target window a realistic down/up press window.
+//
+// The wParam is the crux of correct chord delivery: the WM_RBUTTONDOWN of a
+// LEFT_RIGHT_PRESS must carry MK_LBUTTON|MK_RBUTTON so the target can observe
+// both buttons held simultaneously — posting it with wParam=0 makes chord
+// detection unreliable.
+func wmClickPlan(action game.MouseClickAction) ([]postedMouseMessage, error) {
+	msgs, err := wmMessageSequence(action)
+	if err != nil {
+		return nil, err
+	}
+	var leftDown, rightDown bool
+	var plan []postedMouseMessage
+	for i, msg := range msgs {
+		switch msg {
+		case wmLButtonDown:
+			leftDown = true
+		case wmLButtonUp:
+			leftDown = false
+		case wmRButtonDown:
+			rightDown = true
+		case wmRButtonUp:
+			rightDown = false
+		}
+		var wParam uintptr
+		if leftDown {
+			wParam |= mkLButton
+		}
+		if rightDown {
+			wParam |= mkRButton
+		}
+		dwell := isButtonDownMessage(msg) && i+1 < len(msgs) && isButtonUpMessage(msgs[i+1])
+		plan = append(plan, postedMouseMessage{msg: msg, wParam: wParam, dwell: dwell})
+	}
+	return plan, nil
 }
 
 // keyboardKeyToVK maps a proto KeyboardKey enum value to its Win32 virtual-key

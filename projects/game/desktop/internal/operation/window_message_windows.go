@@ -5,6 +5,7 @@ package operation
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"dominion/projects/game"
 )
@@ -17,27 +18,40 @@ import (
 // Ref: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-postmessagea
 var procPostMessage = user32DLL.NewProc("PostMessageW")
 
+// downUpDwell is the pause inserted between a button-down message and its
+// corresponding button-up message in the window-message click path. Real
+// mouse input holds the button(s) down for tens of milliseconds; posted
+// WM_* messages otherwise arrive in the target's queue near-instantly,
+// breaking simultaneous-press detection (notably the Minesweeper chord).
+const downUpDwell = 100 * time.Millisecond
+
 // ExecuteWindowMessageClick posts WM_* button messages for action to hwnd at
 // the given client coordinates. It does NOT move the OS cursor: the
 // coordinates are packed into lParam and the target window reads them from
 // the posted messages directly (spec 018-saolei-mcp FR-004d).
 //
-// Action is validated and mapped to a WM_* message sequence per the contract
+// Action is validated and mapped to a WM_* message plan per the contract
 // (specs/018-saolei-mcp/contracts/proto-operation-contract.md "Desktop
-// MouseClickAction → WM_* mapping"). Each message in the sequence is posted
-// in order; an error from any PostMessage aborts the remainder.
+// MouseClickAction → WM_* mapping"). Each entry's wParam carries the correct
+// MK_* virtual-key flags (so the target observes simultaneous button state,
+// e.g. MK_LBUTTON|MK_RBUTTON for a chord) and a dwell marker; the executor
+// sleeps after each dwell entry to give the target a realistic down/up press
+// window. An error from any PostMessage aborts the remainder.
 func ExecuteWindowMessageClick(hwnd uintptr, action game.MouseClickAction, clientX, clientY int32) error {
 	if err := validateClickAction(action); err != nil {
 		return err
 	}
-	msgs, err := wmMessageSequence(action)
+	plan, err := wmClickPlan(action)
 	if err != nil {
 		return err
 	}
 	lParam := makeLPARAM(clientX, clientY)
-	for _, msg := range msgs {
-		if err := postMessage(hwnd, msg, 0, lParam); err != nil {
+	for _, p := range plan {
+		if err := postMessage(hwnd, p.msg, p.wParam, lParam); err != nil {
 			return fmt.Errorf("post WM_* for action %v: %w", action, err)
+		}
+		if p.dwell {
+			time.Sleep(downUpDwell)
 		}
 	}
 	return nil

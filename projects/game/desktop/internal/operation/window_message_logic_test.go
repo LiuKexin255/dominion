@@ -185,6 +185,117 @@ func Test_wmMessageSequence_LeftRightPressIsChord(t *testing.T) {
 	}
 }
 
+// Test_wmClickPlan verifies the per-message wParam (MK_* virtual-key flags)
+// and dwell (down/up pause) plan for each click action. The wParam must
+// reflect the cumulative button-down state at each message so the target
+// window can detect simultaneous presses — notably the chord, whose second
+// button-down must carry MK_LBUTTON|MK_RBUTTON (both held). A dwell marker
+// must precede every down→up transition so the executor inserts a realistic
+// press window.
+//
+// Ref: https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-lbuttondown (wParam MK_* flags)
+func Test_wmClickPlan(t *testing.T) {
+	tests := []struct {
+		name   string
+		action game.MouseClickAction
+		want   []postedMouseMessage
+	}{
+		{
+			name:   "left click: down(MK_LBUTTON, dwell) then up",
+			action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK,
+			want: []postedMouseMessage{
+				{msg: wmLButtonDown, wParam: mkLButton, dwell: true},
+				{msg: wmLButtonUp, wParam: 0, dwell: false},
+			},
+		},
+		{
+			name:   "left double click: two down/dwell/up cycles",
+			action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK,
+			want: []postedMouseMessage{
+				{msg: wmLButtonDown, wParam: mkLButton, dwell: true},
+				{msg: wmLButtonUp, wParam: 0, dwell: false},
+				{msg: wmLButtonDown, wParam: mkLButton, dwell: true},
+				{msg: wmLButtonUp, wParam: 0, dwell: false},
+			},
+		},
+		{
+			name:   "right click: down(MK_RBUTTON, dwell) then up",
+			action: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_CLICK,
+			want: []postedMouseMessage{
+				{msg: wmRButtonDown, wParam: mkRButton, dwell: true},
+				{msg: wmRButtonUp, wParam: 0, dwell: false},
+			},
+		},
+		{
+			name:   "right double click: two down/dwell/up cycles",
+			action: game.MouseClickAction_MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK,
+			want: []postedMouseMessage{
+				{msg: wmRButtonDown, wParam: mkRButton, dwell: true},
+				{msg: wmRButtonUp, wParam: 0, dwell: false},
+				{msg: wmRButtonDown, wParam: mkRButton, dwell: true},
+				{msg: wmRButtonUp, wParam: 0, dwell: false},
+			},
+		},
+		{
+			name:   "chord: L-down, R-down(MK_LBUTTON|MK_RBUTTON, dwell), R-up, L-up",
+			action: game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS,
+			want: []postedMouseMessage{
+				// Left goes down first; wParam reports only MK_LBUTTON. No
+				// dwell — the next message is another down, not an up.
+				{msg: wmLButtonDown, wParam: mkLButton, dwell: false},
+				// Right goes down while left is held: wParam must report
+				// MK_LBUTTON|MK_RBUTTON (both held). This is the entry the
+				// target reads to detect a simultaneous press; dwelling here
+				// gives it a realistic both-held window before release.
+				{msg: wmRButtonDown, wParam: mkLButton | mkRButton, dwell: true},
+				// Right released while left still held: MK_LBUTTON only. No
+				// dwell — not a down message.
+				{msg: wmRButtonUp, wParam: mkLButton, dwell: false},
+				// Left released last: no buttons held.
+				{msg: wmLButtonUp, wParam: 0, dwell: false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := wmClickPlan(tt.action)
+			if err != nil {
+				t.Fatalf("wmClickPlan(%v) unexpected error: %v", tt.action, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("wmClickPlan(%v) got %d entries, want %d", tt.action, len(got), len(tt.want))
+			}
+			for i, e := range got {
+				if e != tt.want[i] {
+					t.Errorf("plan[%d] = {msg:0x%x, wParam:0x%x, dwell:%v}, want {msg:0x%x, wParam:0x%x, dwell:%v}",
+						i, e.msg, e.wParam, e.dwell, tt.want[i].msg, tt.want[i].wParam, tt.want[i].dwell)
+				}
+			}
+		})
+	}
+}
+
+// Test_wmClickPlan_UnsupportedRejected ensures unsupported/unknown click
+// actions surface an error rather than producing an empty plan.
+func Test_wmClickPlan_UnsupportedRejected(t *testing.T) {
+	tests := []struct {
+		name   string
+		action game.MouseClickAction
+	}{
+		{name: "unspecified rejected", action: game.MouseClickAction_MOUSE_CLICK_ACTION_UNSPECIFIED},
+		{name: "unknown rejected", action: game.MouseClickAction(99)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := wmClickPlan(tt.action)
+			if err == nil {
+				t.Fatalf("wmClickPlan(%v) expected error, got plan %v", tt.action, got)
+			}
+		})
+	}
+}
+
 // Test_keyboardKeyToVK verifies the KeyboardKey enum maps to the right Win32
 // virtual-key code. F2 = VK_F2 = 0x71 is the minesweeper new-game shortcut
 // (spec 018-saolei-mcp FR-006; research.md D4).
