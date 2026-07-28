@@ -72,7 +72,7 @@ bazel run //projects/game/pkg/saolei-board:cli -- <screenshot.png>
 # JSON GameState
 bazel run //projects/game/pkg/saolei-board:cli -- <screenshot.png> --json
 
-# 每格诊断（采样色、bevel、黑/红像素数、胜出参考色）——校准用
+# 每格诊断（采样色、bevel、黑/红像素数、胜出参考色）+ 雷数计数器解码值——校准用
 bazel run //projects/game/pkg/saolei-board:cli -- <screenshot.png> --debug
 
 # 覆盖自动推算的棋盘尺寸
@@ -98,6 +98,56 @@ bazel run //projects/game/pkg/saolei-board:cli -- <screenshot.png> --width 9 --h
 （[社区来源](https://online.games.narkive.com/FUc9B1QB/colors-in-minesweeper)）；
 社区主流做法参考
 ([BestHub Python bot](https://www.besthub.dev/articles/how-to-build-an-automated-minesweeper-bot-with-python-and-win32-api-d1d7ef54e731))。
+
+### 雷数计数器（mine counter）
+
+除每格判定外，识别器还解码窗口左上角的 3 位 7 段红色 LED 雷数计数器——即游戏自身
+的 `mines − flags` 显示（`000` ⇔ `flags === mines`；玩家过度标旗时显示负数，首位
+为减号，如 `-01`）。计数器位于**截图空间** X 32..113、Y 120..169（82×50 px），与
+棋盘一样使用固定几何，无 OCR。坐标与算法常量详见
+`specs/028-saolei-win-counter-fix/research.md` D1..D5、
+`specs/028-saolei-win-counter-fix/data-model.md` entity 3。
+
+算法（`src/core/counter.ts` `decodeMineCounter`，`classifyCell` 的对等模块）：
+
+1. 对 3 个固定数字格（origins (38,126)/(64,126)/(90,126)，22×42），逐段检测 7 段
+   （`a`..`g`）**segment-core** 红像素比例：ON iff 核心子矩形内
+   `R ≥ redMinR ∧ G ≤ redMaxG ∧ B ≤ redMaxB` 的像素占比 > `segmentOnRatio`。
+   段 `g`（中间横杠）同时兼作减号检测。
+2. 将 ON-segment 集合查 glyph 表（`0`-`9`；孤立的 `{g}` ⇒ `-` 减号——没有数字
+   `0`-`9` 的 ON-set 与之重合）。
+3. 任一格 ON-set 无匹配 ⇒ 整个计数器判为 `{ decoded: false }`（lenient，绝不编造
+   数字）。
+4. 按符号语义拼值：首位 `-` ⇒ `-(10·d1+d2)`；否则 `100·d0+10·d1+d2`。
+
+`DEFAULT_COUNTER_PROFILE`（经典 Win32 实测常量：`redMinR=150`、`redMaxG=80`、
+`redMaxB=80`、`segmentOnRatio=0.5`）可在 `recognizeBoard` / `SaoleiBoard.init` 时
+通过 `RecognizeOptions.counterProfile` 覆盖；用 `--debug` 对照真实截图校准（见下文
+"校准与 Golden 测试"——`--debug` 会输出 `mine counter: <三位显示> (decoded, value N)`
+或 `mine counter: undecodable`）。计数器在每次 `updateFromScreenshot` 时重新解码
+（非单调——一局内随标旗增减可上可下），不参与 `checkCompatible` 的单调网格校验。
+
+## 胜利判定（isWin）
+
+`src/core/win.ts` 的 `isWin(state)` 判定一盘棋是否获胜——返回 `true` **当且仅当**
+两个条件**同时**成立（`specs/028-saolei-win-counter-fix/spec.md` FR-005..010）：
+
+1. **棋盘格完全揭示/标旗**：没有任何 `INITIAL`/`HIT_MINE`/`MINE`/`UNKNOWN` 格
+   （即每格都是已揭示数字 `0`-`8` 或 `FLAG`）。
+2. **雷数计数器读数恰为 `000`**：`state.mineCounter === { decoded: true, value: 0 }`
+   （即 `flags === mines`）。
+
+两者缺一不可。经典扫雷胜利时所有未标旗的雷会被自动标旗（条件 1 满足），但仅看棋盘格
+无法证明 `flags === mines`——玩家可能**过度标旗**（如 10 雷棋盘放了 11 旗，计数器读
+`-01`，棋盘格看似全揭示却并未获胜）。计数器是游戏自身的 ground truth，两个条件的
+合取才是胜利的充要判定。这取代了原先仅看棋盘格的网格规则（网格条件作为合取的一半
+保留）。
+
+**Lenient 行为**（`spec.md` FR-008）：当计数器未被解码（`mineCounter === undefined`
+或 `{ decoded: false }`）时，`isWin` 返回 `false`——宁可漏判胜利（false negative，
+可恢复：操作者/agent 继续操作即可），也不误判胜利（terminal：会阻断后续所有 cell
+操作）。这与库现有的 `UNKNOWN` 格宽容处理一致（[027 FR-010](../../../specs/027-chat-bubble-game-state/spec.md)）。
+`HIT_MINE`/`MINE`（踩雷）使条件 1 直接失败 ⇒ `false`，与计数器无关（负优先于胜）。
 
 ## 校准与 Golden 测试
 

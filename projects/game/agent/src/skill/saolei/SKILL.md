@@ -49,7 +49,7 @@ board size 9*9
 Every tool result is a single TEXT content block whose body has three layers, in this fixed order:
 
 1. **Outcome line** — what happened: `new game started`, `<tool> at (x,y) → dispatched`, `rejected: <reason>`, or `unable to recognize board`.
-2. **Game-status line** — `game status: won`, `game status: lost`, or `game status: playing`, derived from the recognized board (won = every non-mine cell revealed and every mine auto-flagged; lost = a mine `X`/`M` is visible; playing = otherwise). This line tells you whether the game is finished — read it before parsing the board. **It is omitted only when there is no recognized board** (`no_active_game` rejection, or `unable to recognize board`).
+2. **Game-status line** — `game status: won`, `game status: lost`, or `game status: playing`, derived from the recognized board (won = every cell is a revealed number or a flag AND the game's mine counter reads `000`, meaning the placed flag count equals the mine count; lost = a mine `X`/`M` is visible; playing = otherwise). This line tells you whether the game is finished — read it before parsing the board. **It is omitted only when there is no recognized board** (`no_active_game` rejection, or `unable to recognize board`).
 3. **The text board** — the `board size <w>*<h>` header and the symbol grid (plus a `valid range: x 0..<w-1>, y 0..<h-1>` line on rejections).
 
 A winning or losing status is surfaced on the very operation whose recognized board first reflects it. A win or loss is **terminal** — see "Move validation" below: once the status is `won` or `lost`, any further cell operation is rejected before dispatch.
