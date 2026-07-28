@@ -1,17 +1,21 @@
 /**
  * recognize.ts — Board-level orchestration: decode a screenshot, segment it
- * into cells at the fixed geometry, classify each cell, and assemble a
- * `GameState`. Also exposes the stateful `SaoleiBoard` helper that maintains
- * the current state and refreshes it from each new screenshot.
+ * into cells at the fixed geometry, classify each cell, AND decode the
+ * top-left mine counter (via `counter.ts`), assembling a `GameState` whose
+ * `mineCounter` field carries the decoded counter value. Also exposes the
+ * stateful `SaoleiBoard` helper that maintains the current state and refreshes
+ * it (grid + counter) from each new screenshot.
  */
 
 import { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify";
+import { DEFAULT_COUNTER_PROFILE, decodeMineCounter } from "./counter";
 import { decodePng, extractCellRegion } from "./decode";
 import { cellOrigin, detectBoardSize, resolveGeometry } from "./geometry";
 import { renderBoardText } from "./render";
 import type {
   CellStatus,
   ColorProfile,
+  CounterProfile,
   GameState,
   RecognizeOptions,
 } from "./types";
@@ -59,6 +63,7 @@ export function recognizeBoard(
 ): RecognizeResult {
   const geometry = resolveGeometry(options.geometry);
   const profile = options.profile ?? DEFAULT_COLOR_PROFILE;
+  const counterProfile = options.counterProfile ?? DEFAULT_COUNTER_PROFILE;
   const img = decodePng(png);
 
   const { width, height } =
@@ -110,7 +115,16 @@ export function recognizeBoard(
     if (diagnostics && diagRow) diagnostics.push(diagRow);
   }
 
-  return { state: { width, height, grid }, diagnostics };
+  // Decode the top-left mine counter in the same pass over the decoded image
+  // (FR-001/FR-002). The counter is non-monotonic within a game (flags are
+  // placed/removed), so it is re-decoded on every screenshot and is NOT part
+  // of `checkCompatible`.
+  const mineCounter = decodeMineCounter(img, counterProfile);
+
+  return {
+    state: { width, height, grid, mineCounter },
+    diagnostics,
+  };
 }
 
 /**
@@ -130,6 +144,7 @@ export class SaoleiBoard {
   private readonly height: number;
   private readonly geometry: ReturnType<typeof resolveGeometry>;
   private readonly profile: ColorProfile;
+  private readonly counterProfile: CounterProfile;
   private current: GameState;
 
   private constructor(
@@ -137,12 +152,14 @@ export class SaoleiBoard {
     height: number,
     geometry: ReturnType<typeof resolveGeometry>,
     profile: ColorProfile,
+    counterProfile: CounterProfile,
     current: GameState,
   ) {
     this.width = width;
     this.height = height;
     this.geometry = geometry;
     this.profile = profile;
+    this.counterProfile = counterProfile;
     this.current = current;
   }
 
@@ -150,9 +167,9 @@ export class SaoleiBoard {
    * Initialize a board from a screenshot — the explicit entry point for the
    * first screenshot of a game or any new game. Recognizes the board
    * (auto-detecting dimensions from the screenshot size unless `width`/
-   * `height` are supplied) and fixes the geometry/profile used for all
-   * subsequent updates. Use this (not `updateFromScreenshot`) whenever the
-   * screenshot may belong to a different game than the board's current one.
+   * `height` are supplied) and fixes the geometry/profile/counter-profile used
+   * for all subsequent updates. Use this (not `updateFromScreenshot`) whenever
+   * the screenshot may belong to a different game than the board's current one.
    */
   static init(
     png: Buffer | Uint8Array,
@@ -160,9 +177,11 @@ export class SaoleiBoard {
   ): SaoleiBoard {
     const geometry = resolveGeometry(options.geometry);
     const profile = options.profile ?? DEFAULT_COLOR_PROFILE;
+    const counterProfile = options.counterProfile ?? DEFAULT_COUNTER_PROFILE;
     const { state } = recognizeBoard(png, {
       geometry,
       profile,
+      counterProfile,
       width: options.width,
       height: options.height,
     });
@@ -171,6 +190,7 @@ export class SaoleiBoard {
       state.height,
       geometry,
       profile,
+      counterProfile,
       state,
     );
   }
@@ -199,6 +219,7 @@ export class SaoleiBoard {
     const { state: next } = recognizeBoard(png, {
       geometry: this.geometry,
       profile: this.profile,
+      counterProfile: this.counterProfile,
     });
     const compat = checkCompatible(this.current, next);
     if (!compat.ok) {

@@ -50,4 +50,26 @@ describe("golden recognition (real screenshots)", () => {
     const { state } = recognizeBoard(png);
     expect(isWin(state)).toBe(true);
   });
+
+  // Counter decode against the three win-boundary fixtures (SC-001 / FR-004):
+  //   saolei_9  — grid all-revealed, over-flagged (11 flags > 10 mines) ⇒ -01
+  //   saolei_10 — genuine win (flags == mines) ⇒ 000
+  //   saolei_11 — counter 000 but grid has INITIAL ⇒ not won, but counter 000
+  it("decodes saolei_9.png mine counter as -1 (over-flagged `-01`)", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_9.png"));
+    const { state } = recognizeBoard(png);
+    expect(state.mineCounter).toEqual({ decoded: true, value: -1 });
+  });
+
+  it("decodes saolei_10.png mine counter as 0 (`000`)", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_10.png"));
+    const { state } = recognizeBoard(png);
+    expect(state.mineCounter).toEqual({ decoded: true, value: 0 });
+  });
+
+  it("decodes saolei_11.png mine counter as 0 (`000`)", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_11.png"));
+    const { state } = recognizeBoard(png);
+    expect(state.mineCounter).toEqual({ decoded: true, value: 0 });
+  });
 });

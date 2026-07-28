@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 
 import { recognizeBoard } from "../core/recognize";
 import { renderBoardText } from "../core/render";
+import type { MineCounter } from "../core/types";
 
 interface ParsedArgs {
   path: string;
@@ -52,11 +53,29 @@ function usage(): string {
     "",
     "options:",
     "  --json            output JSON GameState",
-    "  --debug           per-cell diagnostics (sampled color, bevel, winner)",
+    "  --debug           per-cell diagnostics (sampled color, bevel, winner) + counter",
     "  --width N         override auto-detected column count",
     "  --height N        override auto-detected row count",
     "  -h, --help        show this help",
   ].join("\n");
+}
+
+/**
+ * Format the decoded mine counter for the `--debug` diagnostics block. Renders
+ * the 3-glyph display from the integer value (negative ⇒ leading `-` plus the
+ * 2-digit magnitude; non-negative ⇒ 3 zero-padded digits) so an operator can
+ * cross-check against the screenshot LED, or `undecodable` when recognition
+ * could not confidently read it.
+ */
+function formatCounter(counter: MineCounter | undefined): string {
+  if (counter === undefined || !counter.decoded) return "undecodable";
+  const { value } = counter;
+  if (value < 0) {
+    const glyphs = `-${String(Math.abs(value)).padStart(2, "0")}`;
+    return `${glyphs} (decoded, value ${value})`;
+  }
+  const glyphs = String(value).padStart(3, "0");
+  return `${glyphs} (decoded, value ${value})`;
 }
 
 /** CLI entry point. Reads a PNG, recognizes, and prints the board. */
@@ -106,6 +125,7 @@ export function main(argv: string[]): number {
         );
       }
     }
+    process.stdout.write(`\nmine counter: ${formatCounter(result.state.mineCounter)}\n`);
   }
 
   return 0;

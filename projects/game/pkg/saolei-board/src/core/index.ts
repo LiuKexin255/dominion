@@ -32,6 +32,8 @@ export type { DecodedImage } from "./decode";
 export { classifyCell, DEFAULT_COLOR_PROFILE } from "./classify";
 export type { CellClassifyDiagnostics } from "./classify";
 
+export { decodeMineCounter, DEFAULT_COUNTER_PROFILE } from "./counter";
+
 export { recognizeBoard, SaoleiBoard } from "./recognize";
 export type {
   RecognizeResult,

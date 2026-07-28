@@ -154,6 +154,10 @@ export interface RecognizeOptions {
   geometry?: Partial<BoardGeometry>;
   /** Recognition profile override (defaults to classic Win32). */
   profile?: ColorProfile;
+  /** Mine-counter decode profile override (defaults to classic Win32 — see
+   *  `counter.ts` `DEFAULT_COUNTER_PROFILE`). A peer of `profile`/`geometry`;
+   *  fixed at `SaoleiBoard.init` alongside them. */
+  counterProfile?: CounterProfile;
   /** Explicit board dimensions; overrides auto-detection from screenshot size. */
   width?: number;
   height?: number;
