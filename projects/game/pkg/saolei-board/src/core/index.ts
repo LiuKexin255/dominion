@@ -41,7 +41,7 @@ export type {
   CellDiagInternal,
 } from "./recognize";
 
-export { renderBoardText, cellSymbol } from "./render";
+export { renderBoardText, renderGridWithRuler, cellSymbol } from "./render";
 
 export {
   checkCompatible,

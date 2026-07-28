@@ -124,7 +124,9 @@ describe("SaoleiBoard", () => {
     const board = SaoleiBoard.init(
       buildScreenshot([[numberCell("1"), blankCell()]]),
     );
-    expect(board.renderText()).toBe("board size 2*1\n\n1 0");
+    expect(board.renderText()).toBe(
+      "board size 2*1\n\n     col0 col1\nrow0    1    0",
+    );
   });
 });
 
@@ -133,6 +135,8 @@ describe("recognizeBoard end-to-end render", () => {
     const grid = [[unopenedCell(), blankCell(), numberCell("2")]];
     const png = buildScreenshot(grid);
     const { state } = recognizeBoard(png, { width: 3, height: 1 });
-    expect(renderBoardText(state)).toBe("board size 3*1\n\n* 0 2");
+    expect(renderBoardText(state)).toBe(
+      "board size 3*1\n\n     col0 col1 col2\nrow0    *    0    2",
+    );
   });
 });

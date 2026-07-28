@@ -568,7 +568,10 @@ describe("createSaoleiMcpServer: saolei_init (FR-012 / FR-019)", () => {
 		const text = expectTextOnly(result);
 		expect(text).toContain("new game started");
 		expect(text).toContain("board size 2*2");
-		expect(text).toContain("* *");
+		// Ruled grid (contract specs/029-saolei-coord-remain/contracts/saolei-board-render-contract.md §1):
+		// cells are right-aligned to columnWidth 4, so two adjacent single-char
+		// cells are separated by 4 spaces, not 1.
+		expect(text).toContain("*    *");
 		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
 		expect(text).toContain("game status: playing");
 	});
@@ -633,7 +636,9 @@ describe("createSaoleiMcpServer: legal cell op dispatches and returns updated te
 
 		const text = expectTextOnly(result);
 		expect(text).toContain("saolei_click at (0,0) → dispatched");
-		expect(text).toContain("0 *");
+		// Ruled grid (contract specs/029-saolei-coord-remain/contracts/saolei-board-render-contract.md §1):
+		// cells right-aligned to columnWidth 4 ⇒ 4-space separator.
+		expect(text).toContain("0    *");
 		// FR-012/FR-014: in-progress board ⇒ `game status: playing`.
 		expect(text).toContain("game status: playing");
 	});
