@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import { FrameSender, messagePartKind } from '../api'
   import type { MessagePart } from '../api'
 
@@ -48,7 +49,7 @@
   // ($effect + requestAnimationFrame after the DOM update).
   // Design: specs/027-chat-bubble-game-state/data-model.md §6;
   //         specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §2 (rule 1);
-  //         specs/027-chat-bubble-game-state/research.md D2 (two-$effect split).
+  //         specs/027-chat-bubble-game-state/research.md D2 ($effect / $effect.pre split).
   $effect(() => {
     if (!expanded) return
     const el = contentEl
@@ -64,9 +65,21 @@
   // test is `scrollTop + clientHeight >= scrollHeight − TOLERANCE` per
   // specs/027-chat-bubble-game-state/data-model.md §6 /
   // specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §2 (rule 2..4).
-  // The two-$effect split (open-to-bottom vs follow-or-pause) is decision
-  // specs/027-chat-bubble-game-state/research.md D2.
-  $effect(() => {
+  // The split (open-to-bottom `$effect` vs follow-or-pause `$effect.pre`) is
+  // decision specs/027-chat-bubble-game-state/research.md D2.
+  //
+  // MUST run as `$effect.pre` (BEFORE the DOM update), NOT `$effect`: the
+  // at-bottom check reads `scrollHeight`. After the DOM update (i.e. inside a
+  // regular `$effect`), `scrollHeight` already reflects the newly-appended
+  // reasoning while `scrollTop` is still the operator's pre-update position,
+  // so `scrollTop + clientHeight >= scrollHeight − TOLERANCE` is false on
+  // every content growth — the bubble freezes at the top instead of following
+  // the stream. `$effect.pre` reads `scrollHeight` before the new content
+  // renders (the height the operator currently sees), so the at-bottom test
+  // reflects the operator's true position; `tick().then(...)` then scrolls
+  // after the DOM update lands the new bottom. This is the Svelte autoscroll
+  // pattern: https://svelte.dev/docs/svelte/$effect#$effect.pre
+  $effect.pre(() => {
     if (!expanded) return
     // reactive dependency: re-run when the streaming content grows
     part.thinking?.content
@@ -74,7 +87,7 @@
     if (!el) return
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - TOLERANCE
     if (!atBottom) return
-    requestAnimationFrame(() => {
+    tick().then(() => {
       el.scrollTop = el.scrollHeight
     })
   })
