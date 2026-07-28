@@ -26,6 +26,21 @@ export type CellStatus =
   | "UNKNOWN";
 
 /**
+ * The decoded top-left mine counter — the game's own `mines − flags` display
+ * (the 3-digit red LED at screenshot-space X 32..113, Y 120..169). A tagged
+ * union so the win predicate (`win.ts`) can distinguish a confidently-decoded
+ * value from an undecodable read and stay lenient (never claim a win on an
+ * uncertain counter). `decoded: true` carries the integer shown (negative when
+ * the player over-flags; `value === 0` ⇔ the counter reads `000` ⇔
+ * `flags === mines`); `decoded: false` covers an absent region, a non-classic
+ * header, or a digit pattern that matched no glyph entry. See
+ * `specs/028-saolei-win-counter-fix/data-model.md` entity 1.
+ */
+export type MineCounter =
+  | { decoded: true; value: number }
+  | { decoded: false };
+
+/**
  * Recognized board state. `grid` is indexed `[y][x]` where `x` is the column
  * (0..width-1) and `y` is the row (0..height-1) — the same convention as the
  * saolei MCP (`specs/018-saolei-mcp/data-model.md` §1).
@@ -34,6 +49,16 @@ export interface GameState {
   width: number;
   height: number;
   grid: CellStatus[][];
+  /**
+   * The decoded top-left mine counter, or `undefined` when not decoded in this
+   * pass (e.g. a synthetic state). `isWin` treats `undefined` and
+   * `{ decoded: false }` identically — lenient, never a win on an absent or
+   * uncertain counter (`specs/028-saolei-win-counter-fix/spec.md` FR-008).
+   * `renderBoardText` does NOT render it (the text board stays grid-only) and
+   * `checkCompatible` does NOT compare it (the counter is non-monotonic within
+   * a game).
+   */
+  mineCounter?: MineCounter;
 }
 
 /** RGB triple (0..255 each). Alpha is ignored for recognition. */
@@ -132,4 +157,51 @@ export interface RecognizeOptions {
   /** Explicit board dimensions; overrides auto-detection from screenshot size. */
   width?: number;
   height?: number;
+}
+
+/** The 7 segments of a counter digit cell. The middle bar `g` doubles as the
+ *  minus-sign detector: a lone `{g}` ON-set maps to `-` (no digit `0`-`9` has
+ *  that pattern). See `specs/028-saolei-win-counter-fix/data-model.md`
+ *  entity 3. */
+export type SegmentId = "a" | "b" | "c" | "d" | "e" | "f" | "g";
+
+/**
+ * Tunable 7-segment mine-counter decode profile (a peer of `ColorProfile` and
+ * `BoardGeometry`). The default targets classic Win32 Microsoft Minesweeper
+ * (winmine.exe); the measured constants live in
+ * `specs/028-saolei-win-counter-fix/research.md` D2/D3/D5 and are re-tunable
+ * via the CLI `--debug` calibration flow. See
+ * `specs/028-saolei-win-counter-fix/data-model.md` entity 3.
+ */
+export interface CounterProfile {
+  /** Counter region origin in screenshot space (default X=32, Y=120). */
+  regionX: number;
+  regionY: number;
+  /** Counter region size in px (default 82×50). */
+  regionW: number;
+  regionH: number;
+  /** Per-digit cell origins in screenshot space
+   *  (default [{x:38,y:126},{x:64,y:126},{x:90,y:126}]). */
+  cellOrigins: ReadonlyArray<{ x: number; y: number }>;
+  /** Per-digit cell size in px (default 22×42). */
+  cellW: number;
+  cellH: number;
+  /** Segment-core sub-rects in LOCAL cell coords (x0..x1, y0..y1 inclusive),
+   *  measured in `specs/028-saolei-win-counter-fix/research.md` D3. A segment
+   *  is ON iff its core red-pixel ratio exceeds `segmentOnRatio`. */
+  segments: Record<SegmentId, { x0: number; x1: number; y0: number; y1: number }>;
+  /** Red-pixel test threshold: R ≥ this ⇒ red candidate (default 150). The
+   *  full test (R ≥ `redMinR`, G ≤ `redMaxG`, B ≤ `redMaxB`) is the same
+   *  family as `ColorProfile.flagRed*`, tightened on G/B because the LED red
+   *  is saturated on near-black (`specs/028-saolei-win-counter-fix/research.md`
+   *  D5). */
+  redMinR: number;
+  /** G upper bound for the red-pixel test (default 80). */
+  redMaxG: number;
+  /** B upper bound for the red-pixel test (default 80). */
+  redMaxB: number;
+  /** A segment is ON iff its core red-pixel ratio exceeds this (default 0.5;
+   *  measured ON ≥ 0.90, OFF = 0.00 — a wide margin, see
+   *  `specs/028-saolei-win-counter-fix/research.md` D1). */
+  segmentOnRatio: number;
 }

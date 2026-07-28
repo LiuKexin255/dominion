@@ -9,6 +9,9 @@
 export type {
   CellStatus,
   GameState,
+  MineCounter,
+  SegmentId,
+  CounterProfile,
   RGB,
   BoardGeometry,
   ColorProfile,
