@@ -40,7 +40,7 @@ import {
 } from "./saolei-mcp";
 import type { SaoleiBoardApi, CellTool } from "./saolei-mcp";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
-import type { CellStatus, GameState } from "@dominion/game-saolei-board";
+import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
 import type { AgentFrame } from "../../../../game_types/projects/game/AgentFrame";
 import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart";
@@ -77,15 +77,29 @@ const SYMBOL_TO_STATUS: Record<string, CellStatus> = {
  * Build a `GameState` from space-separated symbol rows (the same symbols the
  * text-board renderer emits), so tests read as the board the model sees. Example:
  * `board(["* *", "* 0"])` → a 2×2 board with cell (1,1) revealed as "0".
+ *
+ * `mineCounter` is optional — the counter-informed `isWin` (spec 028) returns
+ * `false` when it is `undefined` (lenient), so a win-shape board MUST pass
+ * `{ decoded: true; value: 0 }` to be classified `won`. The saolei_9-style
+ * over-flag shape passes a decoded non-zero counter.
  */
-function board(rows: string[]): GameState {
+function board(
+	rows: string[],
+	mineCounter?: MineCounter,
+): GameState {
 	const height = rows.length;
 	const width = rows[0]?.split(/\s+/).length ?? 0;
 	const grid = rows.map((r) =>
 		r.split(/\s+/).map((s) => SYMBOL_TO_STATUS[s] ?? "UNKNOWN"),
 	);
-	return { width, height, grid };
+	return { width, height, grid, mineCounter };
 }
+
+/** A decoded `000` mine counter — `flags === mines` (the counter half of a win). */
+const COUNTER_ZERO: MineCounter = { decoded: true, value: 0 };
+
+/** A decoded `-01` mine counter — over-flagged (the `saolei_9` shape). */
+const COUNTER_NEG_ONE: MineCounter = { decoded: true, value: -1 };
 
 /**
  * Build a fake OperationBridge whose dispatch records the dispatched FlowPart
@@ -422,8 +436,9 @@ describe("validateMove: strict rule table (contract §4)", () => {
 	});
 
 	it("rejects any cell op when the state is a recognized win (game_won, FR-021..023)", () => {
-		// All cells are revealed numbers or FLAG ⇒ isWin returns true.
-		const win = board(["0 F", "1 1"]);
+		// All cells are revealed numbers or FLAG with a decoded 000 counter ⇒
+		// isWin(state) === true (spec 028: grid-revealed AND counter 000).
+		const win = board(["0 F", "1 1"], COUNTER_ZERO);
 		expect(validateMove(win, "saolei_click", 0, 0)).toEqual({
 			ok: false,
 			reason: "game_won",
@@ -435,6 +450,32 @@ describe("validateMove: strict rule table (contract §4)", () => {
 		expect(validateMove(win, "saolei_chord_click", 1, 1)).toEqual({
 			ok: false,
 			reason: "game_won",
+		});
+	});
+
+	it("allows cell ops on a grid-only-would-be-win board whose counter is non-zero (FR-012 / SC-004)", () => {
+		// The saolei_9 over-flag shape: all cells revealed/flagged but the
+		// counter reads `-01` ⇒ isWin(state) === false ⇒ NOT terminal-won ⇒
+		// cell ops are NOT rejected as `game_won`. The grid half holds, so
+		// the target-cell rules apply normally — the point of this test is
+		// that NONE of these verdicts is `game_won` (the terminal-win gate
+		// did not fire), and that toggling a flag is still `ok: true`.
+		//   (0,0)="0" (revealed)  (1,0)="F" (FLAG)
+		//   (0,1)="1" (revealed)  (1,1)="1" (revealed)
+		const overFlag = board(["0 F", "1 1"], COUNTER_NEG_ONE);
+		// saolei_flag on the FLAG at (1,0) ⇒ legal (place/toggle) ⇒ ok: true.
+		expect(validateMove(overFlag, "saolei_flag", 1, 0)).toEqual({ ok: true });
+		// saolei_click on the FLAG at (1,0) ⇒ cell-specific `cell_is_flagged`
+		// (NOT `game_won` — the terminal-win gate did not fire).
+		expect(validateMove(overFlag, "saolei_click", 1, 0)).toEqual({
+			ok: false,
+			reason: "cell_is_flagged",
+		});
+		// saolei_flag on the revealed "0" at (0,0) ⇒ cell-specific
+		// `cannot_flag_revealed` (NOT `game_won`).
+		expect(validateMove(overFlag, "saolei_flag", 0, 0)).toEqual({
+			ok: false,
+			reason: "cannot_flag_revealed",
 		});
 	});
 
@@ -820,8 +861,9 @@ describe("createSaoleiMcpServer: recognition failure (FR-017)", () => {
 describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-012..015, FR-021..023)", () => {
 	it("a winning board surfaces 'game status: won' on init and rejects subsequent cell ops as game_won (no dispatch)", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
-		// All cells revealed numbers / FLAG ⇒ isWin(state) === true.
-		const winning = board(["0 F", "1 1"]);
+		// All cells revealed numbers / FLAG with a decoded 000 counter ⇒
+		// isWin(state) === true (spec 028: grid-revealed AND counter 000).
+		const winning = board(["0 F", "1 1"], COUNTER_ZERO);
 		const fake = makeFakeBoardApi(winning);
 		const server = createSaoleiMcpServer(bridge, fake.api);
 
@@ -857,7 +899,7 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 
 	it("a winning board's game_won rejection has NO dispatched FlowPart", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
-		const winning = board(["0 F", "1 1"]);
+		const winning = board(["0 F", "1 1"], COUNTER_ZERO);
 		const fake = makeFakeBoardApi(winning);
 		const server = createSaoleiMcpServer(bridge, fake.api);
 
@@ -875,7 +917,7 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 
 	it("saolei_init is NOT blocked by a recognized win — it restarts the game (FR-021)", async () => {
 		const { bridge, dispatched } = makeFakeBridge();
-		const winning = board(["0 F", "1 1"]);
+		const winning = board(["0 F", "1 1"], COUNTER_ZERO);
 		const fake = makeFakeBoardApi(winning);
 		const server = createSaoleiMcpServer(bridge, fake.api);
 
@@ -892,6 +934,76 @@ describe("createSaoleiMcpServer: game status line + post-win terminal (US4 / FR-
 		// whatever the new screenshot recognizes (here: still the winning
 		// canned board, so `game status: won`).
 		expect(restart.content[0].text).toContain("game status: won");
+	});
+});
+
+// ── counter-informed win (spec 028 FR-012 / SC-004) ─────────────────────────
+
+describe("createSaoleiMcpServer: counter-informed win (028 FR-012 / SC-004)", () => {
+	it("an over-flag board (grid all-revealed, counter -01) surfaces 'playing' and is NOT terminal-won (no game_won)", async () => {
+		// The saolei_9 over-flag shape: every cell is a revealed number or
+		// FLAG (the grid half of a win holds) BUT the mine counter reads
+		// `-01` (11 flags > 10 mines) ⇒ isWin(state) === false ⇒ the board is
+		// NOT terminal-won. So `game status: playing` is surfaced on init,
+		// and a following cell op is NOT rejected as `game_won` (the
+		// terminal-win gate did not fire) — it reaches the cell-specific
+		// rules normally. This is the false-positive fix (FR-012 / SC-004).
+		const { bridge, dispatched } = makeFakeBridge();
+		const overFlag = board(["0 F", "1 1"], COUNTER_NEG_ONE);
+		const fake = makeFakeBoardApi(overFlag);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		// init recognizes the over-flag board ⇒ `game status: playing` (NOT
+		// `won` — the counter half fails).
+		const initResult = await callTool(server, "saolei_init", {});
+		const initText = expectTextOnly(initResult);
+		expect(initText).toContain("new game started");
+		expect(initText).toContain("game status: playing");
+		expect(initText).not.toContain("game status: won");
+
+		// A following cell op is NOT rejected as `game_won` — the
+		// terminal-win gate did not fire, so the cell-specific rules apply.
+		// `saolei_flag` on the revealed "0" at (0,0) ⇒ `cannot_flag_revealed`
+		// (a cell-specific reject, NOT `game_won`). The cell-specific reject
+		// is pre-dispatch, so no new FlowPart was dispatched for it.
+		const preDispatchCount = dispatched.length;
+		const flagResult = await callTool(server, "saolei_flag", { x: 0, y: 0 });
+		const flagText = expectTextOnly(flagResult);
+		expect(flagText).toContain("rejected: cannot_flag_revealed");
+		expect(flagText).not.toContain("game_won");
+		expect(flagText).toContain("game status: playing");
+		expect(dispatched).toHaveLength(preDispatchCount);
+	});
+
+	it("an over-flag board's cell op on a FLAG dispatches (NOT rejected as game_won)", async () => {
+		// Symmetric to the above but on a FLAG cell — toggling a flag is legal
+		// on the over-flag board (the cell-specific rules ALLOW it), so the
+		// op DISPATCHES (proving the terminal-win gate `game_won` did not
+		// fire). After the dispatch the post-action screenshot recognizes the
+		// same over-flag board ⇒ `game status: playing`.
+		const { bridge, dispatched } = makeFakeBridge();
+		const overFlag = board(["0 F", "1 1"], COUNTER_NEG_ONE);
+		const fake = makeFakeBoardApi(overFlag);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const preDispatchCount = dispatched.length;
+
+		// Toggle the flag at (1,0) — legal on a FLAG cell (place/toggle).
+		const result = await callTool(server, "saolei_flag", { x: 1, y: 0 });
+		const text = expectTextOnly(result);
+
+		// The op DISPATCHED (a new FlowPart beyond the init F2).
+		expect(dispatched).toHaveLength(preDispatchCount + 1);
+		const part = dispatched[dispatched.length - 1].mouseMoveAndClick as MouseMoveAndClickPart;
+		expect(part.click).toBe("MOUSE_CLICK_ACTION_RIGHT_CLICK");
+		expect(part.method).toBe("MOUSE_INPUT_METHOD_WINDOW_MESSAGE");
+
+		// The result body carries the dispatched outcome and `game status:
+		// playing` (NOT `won`, NOT `game_won`).
+		expect(text).toContain("saolei_flag at (1,0) → dispatched");
+		expect(text).toContain("game status: playing");
+		expect(text).not.toContain("game status: won");
 	});
 });
 

@@ -45,6 +45,19 @@
  * — any cell operation attempted after a recognized win is rejected before
  * dispatch with `game_won` (mirroring the existing loss `game_over`).
  * `saolei_init` is never terminal-blocked (it restarts the game).
+ *
+ * Counter-informed win (spec 028 FR-005..010 / FR-012;
+ * `specs/028-saolei-win-counter-fix/contracts/saolei-mcp-win-contract.md`):
+ * the `won` decision is now a conjunction — `isWin(state)` returns `true`
+ * only when the grid is fully revealed/flagged AND `state.mineCounter` reads
+ * exactly `000`. The recognized `GameState` carries `mineCounter` (populated
+ * by the library's recognition pass — see `SaoleiBoardApi`), so this module
+ * needs NO signature change: `gameStatus` / `validateMove` /
+ * `isTerminalState` already take `state: GameState` and read `isWin(state)`
+ * through it. The MCP text-result contract (the `game status:` line, the
+ * `game_won` / `game_over` rejection bodies) is UNCHANGED in wording — only
+ * *when* `won` is decided is more accurate (a grid-only-would-be-win board
+ * whose counter ≠ `000` ⇒ `playing`, cell ops allowed).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -215,6 +228,13 @@ type GameStatus = "won" | "lost" | "playing";
  * for it anyway), but loss-first is explicit so the "loss takes precedence"
  * edge case is unambiguous (`specs/027-chat-bubble-game-state/data-model.md`
  * §3 / research.md D7). Pure function of `state`.
+ *
+ * `isWin(state)` is counter-informed as of spec 028 FR-005..010: it returns
+ * `true` only when the grid is fully revealed/flagged AND `state.mineCounter`
+ * reads exactly `000`. A grid-only-would-be-win board whose counter ≠ `000`
+ * (e.g. the `saolei_9` over-flagged shape) ⇒ `playing` here, not `won` — the
+ * text contract is unchanged, only the `won` decision is more accurate
+ * (`specs/028-saolei-win-counter-fix/contracts/saolei-mcp-win-contract.md`).
  */
 function gameStatus(state: GameState): GameStatus {
 	if (isTerminalState(state)) return "lost";

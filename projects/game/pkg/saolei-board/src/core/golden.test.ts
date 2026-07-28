@@ -51,6 +51,28 @@ describe("golden recognition (real screenshots)", () => {
     expect(isWin(state)).toBe(true);
   });
 
+  // Counter-informed win classification (FR-005..010 / SC-002 / SC-003): the
+  // two badcase fixtures exercise the two halves of the win conjunction —
+  //   saolei_9  — grid all-revealed/flagged but the counter reads `-01`
+  //               (over-flagged: 11 flags > 10 mines) ⇒ the grid half holds,
+  //               the counter half fails ⇒ NOT a win (the false-positive fix).
+  //   saolei_11 — counter `000` (flags == mines) but the grid has `INITIAL`
+  //               cells ⇒ the counter half holds, the grid half fails ⇒ NOT a
+  //               win (counter-alone is not a win).
+  // The genuine-win fixture saolei_10 (both halves hold) stays a win —
+  // asserted above (FR-005/SC-003, unchanged).
+  it("classifies the over-flagged screenshot (saolei_9.png) as NOT a win (FR-006/SC-002)", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_9.png"));
+    const { state } = recognizeBoard(png);
+    expect(isWin(state)).toBe(false);
+  });
+
+  it("classifies the counter-000-but-unrevealed screenshot (saolei_11.png) as NOT a win (FR-007/SC-003)", () => {
+    const png = readFileSync(path.join(TESTDATA, "saolei_11.png"));
+    const { state } = recognizeBoard(png);
+    expect(isWin(state)).toBe(false);
+  });
+
   // Counter decode against the three win-boundary fixtures (SC-001 / FR-004):
   //   saolei_9  — grid all-revealed, over-flagged (11 flags > 10 mines) ⇒ -01
   //   saolei_10 — genuine win (flags == mines) ⇒ 000
