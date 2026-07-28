@@ -4,8 +4,11 @@
  *
  * Coverage (Phase 4 / US3, spec 025 FR-012..FR-022;
  * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`):
- *   - Exactly four tools are exposed (`saolei_init`, `saolei_click`,
- *     `saolei_flag`, `saolei_chord_click`); `saolei_update` is absent.
+ *   - Exactly five tools are exposed (`saolei_init`, `saolei_click`,
+ *     `saolei_flag`, `saolei_chord_click`, `saolei_remain`); `saolei_update`
+ *     is absent. `saolei_remain` is the read-only fifth tool (spec 029 US2 /
+ *     FR-006..013; `specs/029-saolei-coord-remain/contracts/saolei-remain-
+ *     tool-contract.md`).
  *   - `saolei_init` takes no `width`/`height` arguments (FR-019).
  *   - Every tool returns a single TEXT board block — NEVER an image block
  *     (FR-012 / SC-003).
@@ -506,7 +509,7 @@ describe("isTerminalState", () => {
 // ── Tool registration ──────────────────────────────────────────────────────
 
 describe("createSaoleiMcpServer: tool registration (FR-020)", () => {
-	it("registers exactly the four saolei tools (no saolei_update)", async () => {
+	it("registers exactly the five saolei tools (no saolei_update)", async () => {
 		const { bridge } = makeFakeBridge();
 		const { api } = makeFakeBoardApi(board(["*"]));
 		const server = createSaoleiMcpServer(bridge, api);
@@ -523,6 +526,7 @@ describe("createSaoleiMcpServer: tool registration (FR-020)", () => {
 				"saolei_click",
 				"saolei_flag",
 				"saolei_init",
+				"saolei_remain",
 			].sort(),
 		);
 		expect(names).not.toContain("saolei_update");
@@ -1025,5 +1029,152 @@ describe("createSaoleiMcpServer: signal forwarding (T028)", () => {
 
 		expect(signals).toHaveLength(1);
 		expect(signals[0]).toBe(controller.signal);
+	});
+});
+
+// ── saolei_remain (read-only query, US2 / FR-006..013) ──────────────────────
+//
+// `saolei_remain` is the read-only fifth tool
+// (`specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`):
+// it takes no arguments, dispatches nothing, and returns a per-cell remain
+// grid (number cell → `number − adjacent flags`, raw/negative; non-number →
+// `-`) sharing the board grid's coordinate ruler. Its only rejection is
+// `no_active_game`; terminal `won`/`lost` boards are NOT blocked.
+
+describe("createSaoleiMcpServer: saolei_remain (read-only)", () => {
+	it("returns the remain grid for a recognized board (FR-008..010)", async () => {
+		const { bridge } = makeFakeBridge();
+		// (0,0)="3" with one adjacent FLAG (1,0)="F" → remain 2; every other
+		// cell is a non-number → "-".
+		const fake = makeFakeBoardApi(board(["3 F", "* *"]));
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const result = await callTool(server, "saolei_remain", {});
+
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_remain → computed");
+		expect(text).toContain("game status: playing");
+		expect(text).toContain("board size 2*2");
+		// Tagged ruler (FR-010 / SC-004 — shared with the board grid).
+		expect(text).toContain("col0");
+		expect(text).toContain("col1");
+		expect(text).toContain("row0");
+		expect(text).toContain("row1");
+		// Remain 2 at (0,0); the rest of the grid is "-".
+		// columnWidth=4 ⇒ row0 is "row0    2    -" and row1 is "row1    -    -".
+		expect(text).toMatch(/row0\s+2\s+-/);
+		expect(text).toMatch(/row1\s+-\s+-/);
+	});
+
+	it("dispatches NOTHING and does not mutate recognized (FR-007 / SC-003)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const initial = board(["3 F", "* *"]);
+		const fake = makeFakeBoardApi(initial);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const initDispatched = dispatched.length;
+
+		// First saolei_remain — dispatches nothing.
+		const r1 = await callTool(server, "saolei_remain", {});
+		expect(dispatched).toHaveLength(initDispatched);
+		const t1 = expectTextOnly(r1);
+		expect(t1).toContain("saolei_remain → computed");
+
+		// A second saolei_remain returns the SAME remain grid — recognized
+		// was not mutated (FR-007: MUST NOT mutate recognized). If
+		// saolei_remain had nulled or altered recognized, this would differ.
+		const r2 = await callTool(server, "saolei_remain", {});
+		expect(dispatched).toHaveLength(initDispatched);
+		expect(expectTextOnly(r2)).toBe(t1);
+
+		// A subsequent saolei_click sees the UNCHANGED recognized board: the
+		// click at the INITIAL cell (1,1) is legal (proves recognized still
+		// holds `initial`), dispatches exactly one new FlowPart, and the
+		// post-click board is the canned update — no corruption by the prior
+		// saolei_remain calls.
+		fake.setUpdate(initial);
+		const clickResult = await callTool(server, "saolei_click", { x: 1, y: 1 });
+		expect(dispatched).toHaveLength(initDispatched + 1);
+		const clickText = expectTextOnly(clickResult);
+		expect(clickText).toContain("saolei_click at (1,1) → dispatched");
+		// Cell (0,0) is still "3" in the post-click board — saolei_remain
+		// did not mutate recognized.
+		expect(clickText).toContain("3");
+	});
+
+	it("rejects with no_active_game before init (FR-011)", async () => {
+		const { bridge, dispatched } = makeFakeBridge();
+		const { api } = makeFakeBoardApi(board(["*"]));
+		const server = createSaoleiMcpServer(bridge, api);
+
+		const result = await callTool(server, "saolei_remain", {});
+
+		// No dispatch at all — no game has been started.
+		expect(dispatched).toHaveLength(0);
+		const text = expectTextOnly(result);
+		expect(text).toContain("rejected: no_active_game");
+		expect(text).toContain("call saolei_init first");
+		// No status line, no grid (contract §4 — byte-identical to the cell
+		// tools' no_active_game body).
+		expect(text).not.toContain("game status:");
+		expect(text).not.toContain("board size");
+	});
+
+	it("returns the remain grid on a terminal WON board (FR-012)", async () => {
+		const { bridge } = makeFakeBridge();
+		// All cells revealed numbers / FLAG with a decoded 000 counter ⇒
+		// isWin(state) === true ⇒ game status: won.
+		const winning = board(["0 F", "1 1"], COUNTER_ZERO);
+		const fake = makeFakeBoardApi(winning);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const result = await callTool(server, "saolei_remain", {});
+
+		const text = expectTextOnly(result);
+		// NOT rejected — read-only; no move attempted, so the terminal-win
+		// guard in validateMove never runs (contract §5 / FR-012).
+		expect(text).toContain("saolei_remain → computed");
+		expect(text).not.toContain("rejected:");
+		expect(text).toContain("game status: won");
+		expect(text).toContain("board size 2*2");
+	});
+
+	it("returns the remain grid on a terminal LOST board (FR-012)", async () => {
+		const { bridge } = makeFakeBridge();
+		// HIT_MINE present ⇒ terminal loss.
+		const losing = board(["X *", "* *"]);
+		const fake = makeFakeBoardApi(losing);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const result = await callTool(server, "saolei_remain", {});
+
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_remain → computed");
+		expect(text).not.toContain("rejected:");
+		expect(text).toContain("game status: lost");
+		expect(text).toContain("board size 2*2");
+	});
+
+	it("surfaces a NEGATIVE remain for an over-flagged cell (FR-013, raw not clamped)", async () => {
+		const { bridge } = makeFakeBridge();
+		// (1,0)="1" with TWO adjacent FLAGs → remain -1 (over-flagged, raw —
+		// NOT clamped to 0). The lone "-" non-number marker occupies its own
+		// slot, distinct from the "-1" negative remain token.
+		const overFlag = board(["F 1 F"]);
+		const fake = makeFakeBoardApi(overFlag);
+		const server = createSaoleiMcpServer(bridge, fake.api);
+
+		await callTool(server, "saolei_init", {});
+		const result = await callTool(server, "saolei_remain", {});
+
+		const text = expectTextOnly(result);
+		expect(text).toContain("saolei_remain → computed");
+		expect(text).toContain("board size 3*1");
+		// Raw -1 present (columnWidth=4 ⇒ row0 is "row0    -   -1   -").
+		expect(text).toMatch(/row0\s+-\s+-1\s+-/);
 	});
 });

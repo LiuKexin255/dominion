@@ -12,12 +12,21 @@
  * reach the desktop (spec 025 FR-012..FR-018, FR-020;
  * `specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`).
  *
- * Tool surface is unchanged (FR-020): exactly four tools
+ * Tool surface (spec 029 FR-020 refines the earlier "exactly four" to
+ * "exactly five" — four operation tools plus one read-only query):
  *   - `saolei_init`              → F2 new-game keypress; recognizes the first
  *                                 screenshot and seeds the session board.
  *   - `saolei_click(x, y)`       → LEFT_CLICK at the cell centre.
  *   - `saolei_flag(x, y)`        → RIGHT_CLICK at the cell centre.
  *   - `saolei_chord_click(x, y)` → LEFT_RIGHT_PRESS at the cell centre.
+ *   - `saolei_remain`            → read-only remain-grid query (no dispatch).
+ *
+ * `saolei_remain` (spec 029 US2 / FR-006..013;
+ * `specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`)
+ * is the read-only fifth tool: it computes the per-cell remain grid (number
+ * cell → `number − adjacent flags`, raw/negative; non-number → `-`) and
+ * returns it with the same coordinate ruler as the board grid. It dispatches
+ * NOTHING and mutates NOTHING; its only rejection is `no_active_game`.
  *
  * Coordinate-space discipline (contract §5): recognition reads pixels in
  * **screenshot** space (originY 200, includes non-client chrome); the cell
@@ -63,7 +72,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { SaoleiBoard, isWin, renderBoardText } from "@dominion/game-saolei-board";
+import {
+	SaoleiBoard,
+	isWin,
+	renderBoardText,
+	renderGridWithRuler,
+} from "@dominion/game-saolei-board";
 import type { CellStatus, GameState } from "@dominion/game-saolei-board";
 
 import type { OperationBridge } from "../../operation-bridge";
@@ -492,6 +506,49 @@ function unrecognizableText(): string {
 }
 
 /**
+ * Outcome line for the read-only `saolei_remain` query
+ * (`specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`
+ * §4).
+ */
+const REMAIN_OUTCOME = "saolei_remain → computed";
+
+/**
+ * Build the `saolei_remain` body: outcome + game-status line + the remain
+ * grid rendered with the shared coordinate ruler
+ * (`specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`
+ * §3/§4). Each revealed number cell (`1`–`8`, the existing `CHORD_NUMBERS`)
+ * carries its raw `number − adjacent FLAG count` (may be `0` or negative —
+ * not clamped); every other cell (`"0"`, `INITIAL`, `FLAG`, `HIT_MINE`,
+ * `MINE`, `UNKNOWN`) is `-`. The grid reuses the library's
+ * `renderGridWithRuler` so its ruler matches the board grid's exactly (spec
+ * FR-010 / SC-004). Pure: takes a `GameState`, returns a string, dispatches
+ * nothing.
+ *
+ * `Number(cell)` is used instead of `parseInt` per `style/javascript.md` →
+ * Google TypeScript Style Guide "Type coercion" (prefer `Number()`); the
+ * cell is guaranteed to be a single digit `"1".."8"` by the `CHORD_NUMBERS`
+ * membership check, so parse failure is impossible here.
+ */
+function remainText(state: GameState): string {
+	const tokenAt = (x: number, y: number): string => {
+		const cell = state.grid[y][x];
+		if (CHORD_NUMBERS.has(cell)) {
+			const flagCount = neighbors(state, x, y).filter(
+				(s) => s === "FLAG",
+			).length;
+			return String(Number(cell) - flagCount);
+		}
+		return "-";
+	};
+	return (
+		`${REMAIN_OUTCOME}\n` +
+		`game status: ${gameStatus(state)}\n\n` +
+		`board size ${state.width}*${state.height}\n\n` +
+		renderGridWithRuler(state.width, state.height, tokenAt)
+	);
+}
+
+/**
  * Minimal shape of the MCP `RequestHandlerExtra` consumed by saolei tool
  * handlers. The full type (`RequestHandlerExtra<ServerRequest, ServerNotification>`
  * from `@modelcontextprotocol/sdk` `shared/protocol.d.ts`) always carries a
@@ -502,9 +559,12 @@ function unrecognizableText(): string {
 type SaoleiToolExtra = { signal: AbortSignal };
 
 /**
- * Build a session-bound saolei `McpServer` with exactly four tools, holding a
+ * Build a session-bound saolei `McpServer` with exactly five tools (four
+ * operation tools plus the read-only `saolei_remain`), holding a
  * per-session recognized board state and validating each cell move strictly
- * before dispatch (`specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`).
+ * before dispatch (`specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`;
+ * the fifth tool is specified in
+ * `specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`).
  *
  * Per-session state: the MCP host (`mcp-host.ts`) creates one server per
  * session via this factory, so the closure variables below are per-session.
@@ -581,6 +641,35 @@ export function createSaoleiMcpServer(
 				return textResult(unrecognizableText());
 			}
 			return textResult(initSuccessText(state));
+		},
+	);
+
+	// ── saolei_remain — read-only, no arguments, no dispatch ───────────
+	// Pure query: reads `recognized`, computes the remain grid, returns it.
+	// Performs NO `bridge.dispatch` and does NOT mutate `recognized`
+	// (`specs/029-saolei-coord-remain/contracts/saolei-remain-tool-contract.md`
+	// §2 / spec FR-007). Rejects ONLY with `no_active_game` when no board is
+	// recognized; terminal `won`/`lost` boards are NOT blocked (no move is
+	// attempted, so `validateMove` is never invoked — contract §5 / FR-012).
+	server.registerTool(
+		"saolei_remain",
+		{
+			description:
+				"Read-only deduction view. Takes NO arguments and dispatches " +
+				"NOTHING to the desktop. Reads the latest recognized board and " +
+				"returns, for every cell, the remaining unmarked mine count: " +
+				"for a revealed number cell (1–8), the value is " +
+				"`number − adjacent flags` (Moore neighbourhood; may be 0 or " +
+				"NEGATIVE when over-flagged); for every other cell (0, *, F, " +
+				"X, M, ?), the value is `-`. The grid carries the same " +
+				"coordinate ruler as the board grid. Rejects with " +
+				"`no_active_game` only when no board is recognized.",
+		},
+		async () => {
+			if (!recognized) {
+				return textResult(rejectionText("no_active_game", null));
+			}
+			return textResult(remainText(recognized));
 		},
 	);
 
