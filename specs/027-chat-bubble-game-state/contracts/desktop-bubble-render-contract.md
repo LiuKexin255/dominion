@@ -46,15 +46,15 @@ It **refines** (does not replace) the bubble renderers made functional by [024 �
 | # | Rule | FR |
 |---|---|---|
 | 1 | When the bubble is **expanded** (`expanded` flips false→true), the content area opens scrolled to the bottom (`scrollTop = scrollHeight`) of the current content, on `requestAnimationFrame`. | FR-004 |
-| 2 | When the bubble is expanded **and** `part.thinking.content` grows, IF the operator is at the bottom (`scrollTop + clientHeight >= scrollHeight − TOLERANCE`, `TOLERANCE = 8` px), scroll to bottom on `requestAnimationFrame`. | FR-002 |
+| 2 | When the bubble is expanded **and** `part.thinking.content` grows, IF the operator is at the bottom (`scrollTop + clientHeight >= scrollHeight − TOLERANCE`, `TOLERANCE = 8` px), scroll to bottom inside `tick().then(...)`. The at-bottom test MUST be evaluated **before** the DOM update (i.e. inside `$effect.pre`), against the `scrollHeight` the operator currently sees. | FR-002 |
 | 3 | When the operator has scrolled UP away from the bottom (the at-bottom test is false), do NOT scroll on content growth — auto-scroll pauses. | FR-003 |
 | 4 | When the operator scrolls back to the bottom, the at-bottom test becomes true again and auto-scroll resumes (rule 2). | FR-003 |
 
-**Mechanism** (Svelte 5 runes — D2): two `$effect`s in `ChatMessage.svelte`:
-- one keyed on `expanded` → rule 1 (open-to-bottom);
-- one keyed on `part.thinking.content` → rules 2..4 (follow-if-at-bottom, else pause).
+**Mechanism** (Svelte 5 runes — D2): two reactive hooks in `ChatMessage.svelte`, split by job:
+- a regular `$effect` keyed on `expanded` → rule 1 (open-to-bottom). The `<pre>` is mounted during the preceding DOM-update phase, so `contentEl` is bound by the time the effect runs; `requestAnimationFrame` defers the scroll one paint so layout is final.
+- an `$effect.pre` keyed on `part.thinking.content` → rules 2..4 (follow-if-at-bottom, else pause). `$effect.pre` runs **before** the DOM update, so `scrollHeight` is the height the operator currently sees and `scrollTop` is the operator's true position — the at-bottom test is meaningful. `tick().then(...)` then scrolls after the DOM update lands the new bottom.
 
-`requestAnimationFrame` is used so the DOM lays out the new content before `scrollHeight` is read (mirrors the existing chat-thread `$effect` in `projects/game/desktop/frontend/src/components/ChatView.svelte`).
+**Why follow-or-pause MUST use `$effect.pre` + `tick()`, not `$effect` + `requestAnimationFrame`**: a regular `$effect` runs *after* the DOM update. By then `scrollHeight` already reflects the newly-appended reasoning while `scrollTop` is still the operator's pre-update position, so `scrollTop + clientHeight >= scrollHeight − TOLERANCE` is false on every content growth — the bubble freezes at the top and never follows the stream. `$effect.pre` reads `scrollHeight` before the new content renders, so the at-bottom test reflects the operator's true position; `tick().then(...)` performs the scroll after the DOM update. This is the Svelte autoscroll pattern (https://svelte.dev/docs/svelte/$effect#$effect.pre).
 
 **Invariants**:
 - A collapsed bubble does not auto-scroll (no observable effect — the content is hidden).

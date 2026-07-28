@@ -35,21 +35,27 @@ The area keeps `overflow-y: auto` and its `max-height: 200px` — only the visib
 
 ## D2 — Think-bubble auto-scroll reactive wiring (US1 / FR-002..004)
 
-**Decision**: In `ChatMessage.svelte`, bind the `.thinking-content` `<pre>` to a local `$state` element ref (`bind:this={contentEl}`). Add an `$effect` that runs when `part.thinking.content` (a reactive prop) or `expanded` changes:
+**Decision**: In `ChatMessage.svelte`, bind the `.thinking-content` `<pre>` to a local `$state` element ref (`bind:this={contentEl}`). Two reactive hooks, split by job:
 
-1. If `expanded` just flipped to true (open) → unconditionally set `contentEl.scrollTop = contentEl.scrollHeight` on `requestAnimationFrame` (FR-004: open scrolled to the bottom).
-2. If `expanded` is true and `part.thinking.content` grew → compute `atBottom = contentEl.scrollTop + contentEl.clientHeight >= contentEl.scrollHeight − TOLERANCE`; if `atBottom`, set `contentEl.scrollTop = contentEl.scrollHeight` on `requestAnimationFrame` (FR-002: follow the stream); if not `atBottom`, do nothing (FR-003: pause while the operator is scrolled up).
+1. **Open-to-bottom** — a regular `$effect` keyed on `expanded`: when `expanded` flips false→true, unconditionally set `contentEl.scrollTop = contentEl.scrollHeight` on `requestAnimationFrame` (FR-004: open scrolled to the bottom). The `<pre>` is mounted during the preceding DOM-update phase (`{#if expanded}`), so `contentEl` is bound by the time the effect runs; no at-bottom check is needed.
+2. **Follow-or-pause** — an `$effect.pre` keyed on `part.thinking.content` (a reactive prop): when `expanded` is true and the content grows, evaluate `atBottom = contentEl.scrollTop + contentEl.clientHeight >= contentEl.scrollHeight − TOLERANCE` **before** the DOM update; if `atBottom`, scroll to bottom inside `tick().then(...)` (FR-002: follow the stream); if not `atBottom`, do nothing (FR-003: pause while the operator is scrolled up).
 
 `TOLERANCE` is a small constant (8 px) to absorb sub-pixel float jitter so "at the bottom" is stable.
 
-**Rationale**: This mirrors the existing chat-thread auto-scroll `$effect` in `projects/game/desktop/frontend/src/components/ChatView.svelte` (lines 188-197: reactively scroll `scrollContainer` to `scrollHeight` on `requestAnimationFrame` when `renderItems` change). The at-bottom guard (`scrollTop + clientHeight >= scrollHeight − tol`) is the standard chat-auto-scroll-with-pause pattern (used by Slack, Discord, terminal viewers). Svelte 5 `$effect` re-runs when its reactive dependencies (`part.thinking.content`, `expanded`) change; `requestAnimationFrame` ensures the DOM has laid out the new content before `scrollHeight` is read.
+**Rationale**: The at-bottom guard (`scrollTop + clientHeight >= scrollHeight − tol`) is the standard chat-auto-scroll-with-pause pattern (used by Slack, Discord, terminal viewers). But the guard's correctness depends on **when** `scrollHeight` is read relative to the DOM update that appends the new reasoning:
 
-The "did `expanded` just flip?" detection: track the previous `expanded` value in a `$state`/closure and compare inside the `$effect`, OR split into two `$effect`s — one keyed on `expanded` (open-to-bottom), one keyed on `part.thinking.content` (follow-or-pause). The two-`$effect` split is cleaner (each has one job); chosen.
+- A regular `$effect` runs *after* the DOM update. By then `scrollHeight` already reflects the newly-appended reasoning while `scrollTop` is still the operator's pre-update position, so `scrollTop + clientHeight >= scrollHeight − TOLERANCE` is false on every content growth — the bubble freezes at the top and never follows the stream. This was the original implementation (commit `eb99d27`) and is the bug confirmed in practice: the operator opens the bubble at the bottom (the open-to-bottom `$effect` works because it has no at-bottom check), but as more reasoning streams in the view stays pinned and the operator must scroll manually.
+- `$effect.pre` runs *before* the DOM update, so `scrollHeight` is the height the operator currently sees and `scrollTop` is the operator's true position — the at-bottom test is meaningful. `tick().then(...)` then performs the scroll after the DOM update lands the new bottom. This is the Svelte autoscroll pattern documented at https://svelte.dev/docs/svelte/$effect#$effect.pre (the canonical example reads `messages.length` for dependency tracking and gates the `tick().then(...)` scroll on an at-bottom test computed from the pre-update geometry).
+
+The open-to-bottom hook keeps the regular `$effect` + `requestAnimationFrame` form (it has no at-bottom check, so the DOM-update timing is harmless — it unconditionally jumps to the bottom regardless of when `scrollHeight` is read; `requestAnimationFrame` defers one paint so layout is final). Splitting the two jobs (`$effect` for open, `$effect.pre` for follow) keeps each hook single-purpose.
+
+The "did `expanded` just flip?" detection: track the previous `expanded` value in a `$state`/closure and compare inside one combined hook, OR split into two hooks — one keyed on `expanded` (open-to-bottom), one keyed on `part.thinking.content` (follow-or-pause). The two-hook split is cleaner (each has one job); chosen.
 
 **Alternatives rejected**:
 - *Always scroll to bottom on content change* — violates FR-003 (must pause when the operator scrolls up).
-- *Svelte action `use:autoscroll`* — adds indirection; inline `$effect` matches the existing ChatView pattern and keeps the scroll logic local to the component that owns the element.
+- *Svelte action `use:autoscroll`* — adds indirection; inline hooks match the existing ChatView pattern and keeps the scroll logic local to the component that owns the element.
 - *`IntersectionObserver` on a sentinel* — over-engineering; the `scrollTop`/`scrollHeight` comparison is simpler, dependency-free, and matches the codebase idiom.
+- *Follow-or-pause as a regular `$effect` + `requestAnimationFrame` (the original `eb99d27` implementation)* — **rejected, confirmed broken in practice**: `$effect` runs after the DOM update, so `scrollHeight` already includes the new reasoning and the at-bottom test is false on every growth; the bubble never follows the stream. Switched to `$effect.pre` + `tick().then(...)`.
 
 ---
 
@@ -324,7 +330,7 @@ The large-test assertions target the **status-line presence and the terminal-rej
 | ID | Topic | Decision |
 |---|---|---|
 | D1 | Hidden-scrollbar CSS (US1) | `scrollbar-width: none` + `::-webkit-scrollbar{display:none}` scoped to `.thinking-content`; keep `overflow-y:auto` |
-| D2 | Auto-scroll wiring (US1) | Two `$effect`s in `ChatMessage.svelte` (open→bottom; content-growth→follow-if-at-bottom, tol 8px); modelled on `ChatView` thread scroll |
+| D2 | Auto-scroll wiring (US1) | An `$effect` (open→bottom) + an `$effect.pre` (content-growth→follow-if-at-bottom via `tick().then`, tol 8px) in `ChatMessage.svelte`; `$effect.pre` is required so the at-bottom test reads pre-update `scrollHeight` (Svelte autoscroll pattern) |
 | D3 | Compact args (US2) | `compactArgs()` = `JSON.stringify(JSON.parse(x))` w/ raw fallback; render inline `<code>` next to the name |
 | D4 | Result formatting (US2) | `<pre class="op-result-message">` with `white-space:pre-wrap; word-break:break-word` |
 | D5 | Collapsible result (US2) | `<details>` (default closed) wrapping the result body; summary = status icon+label; screenshot keeps its own nested `<details>` |

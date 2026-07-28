@@ -246,10 +246,12 @@ let expanded = $state(false);          // existing — the collapse toggle
 let contentEl: HTMLPreElement | undefined = $state();   // bind:this on .thinking-content
 ```
 
-Auto-scroll behaviour (two `$effect`s — D2):
+Auto-scroll behaviour (an `$effect` + an `$effect.pre` — D2):
 
-- **Open-to-bottom** (FR-004): when `expanded` flips false→true, set `contentEl.scrollTop = contentEl.scrollHeight` on `requestAnimationFrame`.
-- **Follow-or-pause** (FR-002/FR-003): when `expanded` is true and `part.thinking.content` grows, compute `atBottom = scrollTop + clientHeight >= scrollHeight − TOLERANCE` (`TOLERANCE = 8` px); if `atBottom`, scroll to bottom on `requestAnimationFrame`; else do nothing (pause while the operator is scrolled up).
+- **Open-to-bottom** (FR-004): a regular `$effect` keyed on `expanded` — when `expanded` flips false→true, set `contentEl.scrollTop = contentEl.scrollHeight` on `requestAnimationFrame`. The `<pre>` is mounted during the preceding DOM-update phase (`{#if expanded}`), so `contentEl` is bound by the time the effect runs; no at-bottom check is needed (the open action unconditionally lands on the bottom).
+- **Follow-or-pause** (FR-002/FR-003): an `$effect.pre` keyed on `part.thinking.content` — when `expanded` is true and the content grows, the at-bottom test `scrollTop + clientHeight >= scrollHeight − TOLERANCE` (`TOLERANCE = 8` px) is evaluated **before** the DOM update (so `scrollHeight` is the height the operator currently sees and `scrollTop` is the operator's true position); if at-bottom, scroll to bottom inside `tick().then(...)` (which resolves after the DOM update lands the new bottom); else do nothing (pause while the operator is scrolled up).
+
+  The `$effect.pre` + `tick().then(...)` pairing is required: a regular `$effect` runs *after* the DOM update, at which point `scrollHeight` already reflects the newly-appended reasoning while `scrollTop` is still the operator's pre-update position, so the at-bottom test is false on every growth and the bubble never follows the stream. This is the Svelte autoscroll pattern (https://svelte.dev/docs/svelte/$effect#$effect.pre).
 
 CSS (D1): the existing `.thinking-content` rule (`max-height: 200px; overflow-y: auto`) gains:
 
