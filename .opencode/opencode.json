@@ -30,7 +30,7 @@
   },
   "permission": {
     "read": {
-      "~/.cache/bazel/_bazel_liukexin/*": "allow"
+      "~/.cache/bazel/_bazel_liukexin/**": "allow"
     }
   }
 }
