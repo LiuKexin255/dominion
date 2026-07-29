@@ -18,6 +18,7 @@ import {
 	buildTools,
 	type ContentBlock,
 	type TurnContent,
+	type TurnContentPart,
 } from "./llm";
 import { OperationBridge } from "./operation-bridge";
 
@@ -884,6 +885,208 @@ describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
 		expect(capturedConfig!.configurable).toMatchObject({
 			thread_id: "sess-metadata",
 		});
+	});
+});
+
+// ===========================================================================
+// AgentAdapterImpl.generateTurn — multi-part aggregated input
+// (US3 / specs/030-queued-chat-input/research.md D3; quickstart.md Scenario 3)
+// ===========================================================================
+//
+// When ≥2 messages are queued during a run they are combined into ONE
+// aggregated HumanMessage carrying multiple content blocks (N text + M image),
+// FIFO. `TurnContent.parts` is that aggregated shape; the flat single-message
+// fields are the N=1/M∈{0,1} backward-compatible case. These tests assert the
+// content-block ordering the model receives.
+
+describe("AgentAdapterImpl.generateTurn multi-part aggregated input (US3)", () => {
+	function captureAgent(): {
+		adapter: AgentAdapterImpl;
+		capturedMessages: BaseMessage[];
+	} {
+		const adapter = new AgentAdapterImpl(
+			fakeTextModel("unused"),
+			"prompt",
+			[],
+			noopBridge(),
+			new MemorySaver(),
+		);
+		const capturedMessages: BaseMessage[] = [];
+		(adapter as unknown as FakeStreamAgent).agent = {
+			streamEvents: async (input?: { messages: BaseMessage[] }) => {
+				if (input) capturedMessages.push(...input.messages);
+				return {
+					messages: (async function* () {
+						yield {
+							reasoning: (async function* () {})(),
+							text: (async function* () {
+								yield "ok";
+							})(),
+						};
+					})(),
+				};
+			},
+		};
+		return { adapter, capturedMessages };
+	}
+
+	it("builds content blocks from N text parts + M image parts in FIFO order", async () => {
+		// Aggregated turn: text A, text B, image (with dims), text C — in that
+		// submission order (research.md D3). The model receives exactly one
+		// HumanMessage whose content blocks preserve the order, with each image
+		// followed by its size-annotation block.
+		const { adapter, capturedMessages } = captureAgent();
+		const parts: TurnContentPart[] = [
+			{ text: "A" },
+			{ text: "B" },
+			{
+				image: {
+					data: "img1",
+					mimeType: "image/png",
+					widthPx: 100,
+					heightPx: 200,
+				},
+			},
+			{ text: "C" },
+		];
+
+		await collect(adapter.generateTurn("t-multipart", { parts }));
+
+		expect(capturedMessages).toHaveLength(1);
+		const msg = capturedMessages[0] as BaseMessage & {
+			_getType?: () => string;
+			content: unknown;
+		};
+		// Exactly one aggregated HumanMessage (research.md D3 / FR-005).
+		expect(msg._getType?.()).toBe("human");
+		expect(msg.content).toEqual([
+			{ type: "text", text: "A" },
+			{ type: "text", text: "B" },
+			{ type: "image_url", image_url: { url: "data:image/png;base64,img1" } },
+			{
+				type: "text",
+				text: "[图片像素尺寸：100×200（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+			},
+			{ type: "text", text: "C" },
+		]);
+	});
+
+	it("builds blocks for multiple images, each followed by its own size annotation", async () => {
+		// Two screenshots with distinct dimensions: each image_url block MUST be
+		// immediately followed by its OWN annotation (the existing per-image
+		// convention, preserved per part — research.md D3).
+		const { adapter, capturedMessages } = captureAgent();
+		const parts: TurnContentPart[] = [
+			{
+				image: {
+					data: "img-a",
+					mimeType: "image/png",
+					widthPx: 10,
+					heightPx: 20,
+				},
+			},
+			{
+				image: {
+					data: "img-b",
+					mimeType: "image/jpeg",
+					widthPx: 30,
+					heightPx: 40,
+				},
+			},
+		];
+
+		await collect(adapter.generateTurn("t-multi-img", { parts }));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		const blocks = msg.content as Array<{
+			type: string;
+			text?: string;
+			image_url?: { url: string };
+		}>;
+		expect(blocks).toEqual([
+			{ type: "image_url", image_url: { url: "data:image/png;base64,img-a" } },
+			{
+				type: "text",
+				text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+			},
+			{
+				type: "image_url",
+				image_url: { url: "data:image/jpeg;base64,img-b" },
+			},
+			{
+				type: "text",
+				text: "[图片像素尺寸：30×40（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+			},
+		]);
+	});
+
+	it("does not append size annotation for an image part missing dimensions", async () => {
+		// An image part without widthPx/heightPx emits only the image_url block
+		// (mirrors the flat-path behaviour — no meaningless annotation).
+		const { adapter, capturedMessages } = captureAgent();
+		const parts: TurnContentPart[] = [
+			{ text: "look" },
+			{ image: { data: "nodim", mimeType: "image/png" } },
+		];
+
+		await collect(adapter.generateTurn("t-multipart-nodim", { parts }));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([
+			{ type: "text", text: "look" },
+			{ type: "image_url", image_url: { url: "data:image/png;base64,nodim" } },
+		]);
+	});
+
+	it("backward compat: flat text-only is the N=1/M=0 case", async () => {
+		// The legacy flat shape {text} MUST produce the same single text block
+		// as before the generalization (handler.ts still builds this shape).
+		const { adapter, capturedMessages } = captureAgent();
+
+		await collect(adapter.generateTurn("t-flat-text", { text: "hello" }));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("backward compat: flat text+image+dims is the N=1/M=1 case", async () => {
+		// The legacy flat shape {text, imageData, ..., widthPx, heightPx} MUST
+		// produce text → image_url → annotation, identical to pre-US3 behaviour.
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			text: "click",
+			imageData: "pngdata",
+			imageMimeType: "image/png",
+			imageWidthPx: 332,
+			imageHeightPx: 508,
+		};
+
+		await collect(adapter.generateTurn("t-flat-multi", content));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([
+			{ type: "text", text: "click" },
+			{ type: "image_url", image_url: { url: "data:image/png;base64,pngdata" } },
+			{
+				type: "text",
+				text: "[图片像素尺寸：332×508（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+			},
+		]);
+	});
+
+	it("parts takes precedence over the flat fields when both are present", async () => {
+		// When `parts` is non-empty it is the source of truth; the flat fields
+		// are ignored (avoids ambiguity for aggregated turns).
+		const { adapter, capturedMessages } = captureAgent();
+		const content: TurnContent = {
+			parts: [{ text: "from-parts" }],
+			text: "from-flat",
+		};
+
+		await collect(adapter.generateTurn("t-precedence", content));
+
+		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
+		expect(msg.content).toEqual([{ type: "text", text: "from-parts" }]);
 	});
 });
 

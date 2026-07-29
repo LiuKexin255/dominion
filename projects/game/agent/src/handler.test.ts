@@ -1212,7 +1212,12 @@ describe("Handler.Connect same-session serialization", () => {
 
     const adapter: AgentAdapter = {
       async *generateTurn(_threadId: string, content: TurnContent) {
-        const userMessage = content.text ?? "";
+        // Read text from the flat `text` OR the aggregated `parts` shape
+        // (combineAll produces `{parts}` for the merged next turn — US3 /
+        // specs/030-queued-chat-input/research.md D3).
+        const userMessage = content.parts
+          ? content.parts.map((p) => p.text ?? "").join("")
+          : content.text ?? "";
         concurrentCount++;
         maxConcurrent = Math.max(maxConcurrent, concurrentCount);
         processedMessages.push(userMessage);

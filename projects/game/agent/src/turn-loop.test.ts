@@ -25,6 +25,18 @@ import { TurnLoop } from "./turn-loop";
 // Test fakes / helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Extract the concatenated text of a `TurnContent` (flat `text` OR the FIFO
+ * `parts` array produced by `combineAll`). Test fakes echo this so they remain
+ * agnostic to the single-message vs aggregated shape.
+ */
+function extractText(content: TurnContent): string {
+  if (content.parts) {
+    return content.parts.map((p) => p.text ?? "").join("");
+  }
+  return content.text ?? "";
+}
+
 /** A releasable gate so a fake turn can simulate an in-flight (blocking) turn. */
 interface Gate {
   promise: Promise<void>;
@@ -45,18 +57,27 @@ function makeGate(): Gate {
  * turn). If `throwAfterGate` is set it rejects instead of yielding (simulating
  * a non-abort turn error). The gate wait is abort-aware so an `abort()` during
  * the wait unblocks the generator (mirroring LangGraph's signal handling).
+ *
+ * The echoed text is the concatenated text of the `TurnContent` (flat OR
+ * aggregated `parts`) via {@link extractText}, so the fake is agnostic to the
+ * single-message vs combined-turn shape.
+ *
+ * Pass `recordCalls` to capture each `generateTurn` content for combine-shape
+ * assertions (US3 multi-message tests).
  */
 function makeEchoAdapter(opts: {
   gate?: Gate;
   throwAfterGate?: string;
+  recordCalls?: TurnContent[];
 } = {}): AgentAdapter {
-  const { gate, throwAfterGate } = opts;
+  const { gate, throwAfterGate, recordCalls } = opts;
   return {
     async *generateTurn(
       _threadId: string,
       content: TurnContent,
       signal?: AbortSignal,
     ): AsyncIterable<ContentBlock> {
+      recordCalls?.push(content);
       if (gate) {
         // Race the gate against an abort so abort() unblocks the await.
         const abort = new Promise<never>((_, reject) => {
@@ -73,7 +94,7 @@ function makeEchoAdapter(opts: {
       if (throwAfterGate) {
         throw new Error(throwAfterGate);
       }
-      yield { type: "text", text: `reply:${content.text ?? ""}` };
+      yield { type: "text", text: `reply:${extractText(content)}` };
     },
     async getState() {
       return null;
@@ -299,5 +320,125 @@ describe("TurnLoop", () => {
     loop.abort();
     expect(loop.isRunning()).toBe(false);
     expect(frames).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // US3 (Phase 4 / T009): multiple queued messages combine into ONE aggregated
+  // turn, FIFO (specs/030-queued-chat-input/research.md D3; quickstart.md
+  // Scenario 3; turn-loop-contract.md loop body).
+  // -------------------------------------------------------------------------
+
+  it("combines ALL pending queued messages into one aggregated turn (FIFO)", async () => {
+    // Scenario 3: submit A (initial), then B, then C while A is in flight. On
+    // A's completion the buffer [B, C] is merged into ONE aggregated
+    // HumanMessage whose parts are [B, C] in submission order — exactly ONE
+    // next turn runs (not one per message).
+    const gate = makeGate();
+    const calls: TurnContent[] = [];
+    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(
+      SID,
+      async () => adapter,
+      emit,
+      PROFILE,
+    );
+
+    loop.submit({ text: "A" });
+    await flush();
+    expect(loop.isRunning()).toBe(true);
+
+    loop.submit({ text: "B" });
+    loop.submit({ text: "C" });
+    expect(loop.queueDepth()).toBe(2);
+
+    gate.resolve();
+    await flush(20);
+
+    // Exactly two generateTurn invocations: turn 1 = A, turn 2 = aggregated
+    // [B, C]. NOT three turns (one-per-message was the Phase 2 behaviour).
+    expect(calls).toHaveLength(2);
+    expect(extractText(calls[0])).toBe("A");
+    // The aggregated turn carries B and C as ordered parts (FR-004/FR-005).
+    expect(calls[1].parts).toEqual([{ text: "B" }, { text: "C" }]);
+
+    // Turn 2's single reply concatenates B+C (one LLM-facing turn).
+    expect(textContents(frames)).toEqual(["reply:A", "reply:BC"]);
+    // Buffer fully drained; single terminal wait.
+    expect(loop.queueDepth()).toBe(0);
+    expect(loop.isRunning()).toBe(false);
+    expect(waitFrames(frames)).toHaveLength(1);
+  });
+
+  it("combines queued messages preserving screenshots in FIFO order", async () => {
+    // An image-bearing queued message MUST survive the combine intact: its
+    // text and screenshot become distinct parts of the aggregated turn in
+    // submission order (research.md D3 — no loss of text or screenshots).
+    const gate = makeGate();
+    const calls: TurnContent[] = [];
+    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(
+      SID,
+      async () => adapter,
+      emit,
+      PROFILE,
+    );
+
+    loop.submit({ text: "first" });
+    await flush();
+    loop.submit({ text: "look", imageData: "img", imageMimeType: "image/png" });
+    loop.submit({ text: "then act" });
+    expect(loop.queueDepth()).toBe(2);
+
+    gate.resolve();
+    await flush(20);
+
+    // One aggregated turn from the two buffered messages; the screenshot
+    // part sits between the two text parts in FIFO order.
+    expect(calls).toHaveLength(2);
+    expect(calls[1].parts).toEqual([
+      {
+        text: "look",
+        image: { data: "img", mimeType: "image/png" },
+      },
+      { text: "then act" },
+    ]);
+    expect(textContents(frames)).toEqual([
+      "reply:first",
+      "reply:lookthen act",
+    ]);
+    expect(loop.queueDepth()).toBe(0);
+    expect(waitFrames(frames)).toHaveLength(1);
+  });
+
+  it("a single queued message still drains as exactly one turn (N=1 combine)", async () => {
+    // Backward-compat boundary: with only ONE buffered message the combine
+    // yields a single-part aggregated turn — behaviour identical to the
+    // Phase 2 single-message drain, just expressed via `parts`.
+    const gate = makeGate();
+    const calls: TurnContent[] = [];
+    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const { emit, frames } = makeRecordingEmit();
+    const loop = new TurnLoop(
+      SID,
+      async () => adapter,
+      emit,
+      PROFILE,
+    );
+
+    loop.submit({ text: "turn-1" });
+    await flush();
+    loop.submit({ text: "turn-2" });
+    expect(loop.queueDepth()).toBe(1);
+
+    gate.resolve();
+    await flush(20);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].parts).toEqual([{ text: "turn-2" }]);
+    expect(textContents(frames)).toEqual(["reply:turn-1", "reply:turn-2"]);
+    expect(loop.queueDepth()).toBe(0);
+    expect(waitFrames(frames)).toHaveLength(1);
   });
 });

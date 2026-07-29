@@ -14,7 +14,8 @@
  * `streamEvents` invocation; no custom persistence. An in-flight `streamEvents`
  * invocation does NOT absorb externally-buffered messages — LangGraph processes
  * one super-step from the checkpoint it loaded, so buffering outside the
- * running graph guarantees the in-flight turn is never disturbed (FR-002;
+ * running graph guarantees the in-flight turn is never disturbed
+ * (specs/030-queued-chat-input/spec.md FR-002;
  * [LangGraph — time-travel / forking](https://docs.langchain.com/oss/javascript/langgraph/use-time-travel)).
  * `interrupt()` is intentionally NOT used: it pauses for REQUIRED input,
  * whereas queued input is OPTIONAL and must never pause the agent
@@ -24,11 +25,11 @@
  * Contract: `specs/030-queued-chat-input/contracts/turn-loop-contract.md`
  * Data model / state transitions: `specs/030-queued-chat-input/data-model.md`
  *
- * Phase 2 scope (T002): single-message drain path — on turn completion the
- * NEXT queued message becomes the next turn (one turn per drain). Phase 4
- * (T009) generalizes `combineAll` to merge ALL pending into one aggregated
- * `HumanMessage`. The `combineAll` abstraction is retained here so Phase 4
- * only swaps its body.
+ * Drain path: on turn completion, ALL pending queued messages are merged into
+ * ONE aggregated `HumanMessage` (multi content blocks, FIFO) and run as a
+ * single next turn on the same `thread_id` (`specs/030-queued-chat-input/research.md`
+ * D3; specs/030-queued-chat-input/spec.md FR-004/FR-005). `combineAll` performs the merge + buffer clear;
+ * `QueueSignal` emission on depth change is wired in Phase 5 (T010).
  */
 
 import { randomUUID } from "node:crypto";
@@ -38,7 +39,13 @@ import { warn } from "@dominion/common-js-logs";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
-import type { AgentAdapter, ContentBlock, TurnContent } from "./llm";
+import type {
+  AgentAdapter,
+  ContentBlock,
+  TurnContent,
+  TurnContentPart,
+} from "./llm";
+import { toParts } from "./llm";
 
 /**
  * FrameSender enum string literals (proto). Defined locally (mirroring
@@ -107,25 +114,31 @@ function timestampNow(): { seconds: number; nanos: number } {
 }
 
 /**
- * Drain the FIFO buffer into the next turn's input.
+ * Drain the FIFO buffer into the next turn's aggregated input.
  *
- * Phase 2 (T002): single-message path — shift the FIRST queued message
- * (FIFO) and run it as the next turn (one turn per drain). The buffer
- * shrinks by one; the loop repeats until empty.
+ * Merges ALL pending `TurnContent`s into ONE aggregated input — a single
+ * `HumanMessage` with multiple content blocks, in FIFO submission order
+ * (`specs/030-queued-chat-input/research.md` D3; specs/030-queued-chat-input/spec.md FR-004/FR-005). Each
+ * buffered message is normalized to parts via `toParts` and concatenated, so
+ * an aggregated turn carries every queued message's text and screenshots
+ * without loss. The buffer is cleared on drain
+ * (`specs/030-queued-chat-input/contracts/turn-loop-contract.md` loop body;
+ * `specs/030-queued-chat-input/data-model.md`).
  *
- * Phase 4 (T009) will generalize this to merge ALL pending messages into ONE
- * aggregated `HumanMessage` (multi content blocks, FIFO) and run it as a
- * single next turn (`specs/030-queued-chat-input/research.md` D3; the
- * `llm.ts` `TurnContent` generalization is T008). The function boundary is
- * retained so Phase 4 only swaps this body.
+ * The `QueueSignal(0)` emission the contract prescribes after the clear is
+ * added in Phase 5 (T010); it is intentionally omitted here.
  */
 function combineAll(buffer: TurnContent[]): TurnContent {
-  const next = buffer.shift();
-  // Callers guard on `buffer.length > 0` before invoking; this is defensive.
-  if (!next) {
+  if (buffer.length === 0) {
+    // Callers guard on `buffer.length > 0` before invoking; this is defensive.
     throw new Error("combineAll: buffer unexpectedly empty");
   }
-  return next;
+  const parts: TurnContentPart[] = [];
+  for (const content of buffer) {
+    parts.push(...toParts(content));
+  }
+  buffer.length = 0;
+  return { parts };
 }
 
 /**
@@ -134,21 +147,24 @@ function combineAll(buffer: TurnContent[]): TurnContent {
  * State machine (`specs/030-queued-chat-input/data-model.md`):
  * - IDLE → submit → RUNNING (start loop).
  * - RUNNING → submit → RUNNING (buffer.push; FIFO).
- * - RUNNING → turn done, buffer non-empty → RUNNING (drain one; next turn,
- *   same thread_id).
+ * - RUNNING → turn done, buffer non-empty → RUNNING (merge ALL pending into
+ *   one aggregated HumanMessage via combineAll; next turn, same thread_id).
  * - RUNNING → turn done, buffer empty → IDLE (emit `wait`).
- * - RUNNING → abort → IDLE (clear buffer FR-011; emit `wait`).
- * - RUNNING → non-abort error → IDLE (emit `warn`; RETAIN buffer FR-015;
- *   emit `wait`).
+ * - RUNNING → abort → IDLE (clear buffer; specs/030-queued-chat-input/spec.md
+ *   FR-011; emit `wait`).
+ * - RUNNING → non-abort error → IDLE (emit `warn`; RETAIN buffer;
+ *   specs/030-queued-chat-input/spec.md FR-015; emit `wait`).
  *
- * Guarantees (mapped to spec FRs):
- * - FR-002: `submit` while RUNNING only touches the buffer; the in-flight
- *   `generateTurn` is never disturbed.
- * - FR-004: FIFO buffer.
- * - FR-006: `wait` emitted iff buffer empty at a turn boundary; never an
- *   empty turn.
- * - FR-011: `abort` clears the buffer + emits `wait`.
- * - FR-015: a non-abort turn error retains the buffer.
+ * Guarantees (mapped to specs/030-queued-chat-input/spec.md FRs):
+ * - specs/030-queued-chat-input/spec.md FR-002: `submit` while RUNNING only
+ *   touches the buffer; the in-flight `generateTurn` is never disturbed.
+ * - specs/030-queued-chat-input/spec.md FR-004: FIFO buffer.
+ * - specs/030-queued-chat-input/spec.md FR-006: `wait` emitted iff buffer
+ *   empty at a turn boundary; never an empty turn.
+ * - specs/030-queued-chat-input/spec.md FR-011: `abort` clears the buffer +
+ *   emits `wait`.
+ * - specs/030-queued-chat-input/spec.md FR-015: a non-abort turn error
+ *   retains the buffer.
  */
 export class TurnLoop {
   private readonly sessionId: string;
@@ -175,7 +191,8 @@ export class TurnLoop {
 
   /**
    * Non-blocking. IDLE ⇒ start the loop with `content` (IDLE→RUNNING).
-   * RUNNING ⇒ append `content` to the FIFO buffer (FR-002: never disturbs the
+   * RUNNING ⇒ append `content` to the FIFO buffer
+   * (specs/030-queued-chat-input/spec.md FR-002: never disturbs the
    * in-flight turn). Returns immediately in both cases.
    *
    * `QueueSignal` emission on submit (depth +1) is added in Phase 5 (T010);
@@ -205,8 +222,8 @@ export class TurnLoop {
 
   /**
    * Abort the in-flight turn (`controller.abort()`) AND clear the buffer
-   * (FR-011). Transitions RUNNING→IDLE and emits `wait` so the desktop
-   * returns to ready. No-op if IDLE.
+   * (specs/030-queued-chat-input/spec.md FR-011). Transitions RUNNING→IDLE
+   * and emits `wait` so the desktop returns to ready. No-op if IDLE.
    *
    * The actual buffer clear + `wait` emission is performed by the loop's
    * abort terminal (`finishAbort`) so there is a single emission owner and no
@@ -228,9 +245,12 @@ export class TurnLoop {
    * same `thread_id` → checkpointer continues) or emits `wait` (idle).
    *
    * Three terminal paths, each setting `running=false`:
-   * - `finishAbort`: buffer cleared (FR-011), `wait` emitted.
-   * - `finishError`: buffer RETAINED (FR-015), `warn` then `wait` emitted.
-   * - `finishIdle`: `wait` emitted (buffer empty at boundary, FR-006).
+   * - `finishAbort`: buffer cleared (specs/030-queued-chat-input/spec.md
+   *   FR-011), `wait` emitted.
+   * - `finishError`: buffer RETAINED (specs/030-queued-chat-input/spec.md
+   *   FR-015), `warn` then `wait` emitted.
+   * - `finishIdle`: `wait` emitted (buffer empty at boundary,
+   *   specs/030-queued-chat-input/spec.md FR-006).
    */
   private async runLoop(initialContent: TurnContent): Promise<void> {
     let current = initialContent;
@@ -263,25 +283,32 @@ export class TurnLoop {
       this.controller = null;
 
       // Abort race: the turn completed normally but `abort()` arrived in the
-      // gap before this checkpoint. Treat as abort (FR-011).
+      // gap before this checkpoint. Treat as abort
+      // (specs/030-queued-chat-input/spec.md FR-011).
       if (this.aborting) {
         this.finishAbort();
         return;
       }
 
-      // Drain (Phase 2: one message per drain via combineAll shift).
+      // Drain: merge ALL pending into ONE aggregated HumanMessage (multi
+      // content blocks, FIFO) and run it as the next turn on the same
+      // thread_id (specs/030-queued-chat-input/contracts/turn-loop-contract.md
+      // loop body; specs/030-queued-chat-input/research.md D3).
+      // combineAll clears the buffer on drain. QueueSignal(depth 0) emission
+      // is added in Phase 5 (T010); intentionally omitted here.
       if (this.buffer.length > 0) {
         current = combineAll(this.buffer);
         continue;
       }
 
-      // Idle: buffer empty at the turn boundary (FR-006).
+      // Idle: buffer empty at the turn boundary
+      // (specs/030-queued-chat-input/spec.md FR-006).
       this.finishIdle();
       return;
     }
   }
 
-  /** Abort terminal: clear buffer (FR-011), emit `wait`, → IDLE. */
+  /** Abort terminal: clear buffer (specs/030-queued-chat-input/spec.md FR-011), emit `wait`, → IDLE. */
   private finishAbort(): void {
     this.buffer = [];
     this.aborting = false;
@@ -290,7 +317,7 @@ export class TurnLoop {
     this.emit(this.waitFrame());
   }
 
-  /** Non-abort error terminal: emit `warn`, RETAIN buffer (FR-015), emit `wait`, → IDLE. */
+  /** Non-abort error terminal: emit `warn`, RETAIN buffer (specs/030-queued-chat-input/spec.md FR-015), emit `wait`, → IDLE. */
   private finishError(err: unknown): void {
     const message = err instanceof Error ? err.message : "Processing error";
     warn("turn loop: turn error, retaining queued buffer", {

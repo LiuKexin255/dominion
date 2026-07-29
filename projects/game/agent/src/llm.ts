@@ -70,19 +70,85 @@ export type ContentBlock =
 const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
+ * One text or image fragment of a turn's user input.
+ *
+ * A multi-part turn (US3 aggregated input,
+ * `specs/030-queued-chat-input/research.md` D3) carries N text parts + M
+ * image parts in FIFO order. When building model content blocks each text
+ * part becomes a `{type:"text"}` block and each image part becomes an
+ * `{type:"image_url"}` block immediately followed by its pixel-size
+ * annotation block (the existing convention — mouse tool coordinates are
+ * interpreted relative to this pixel space).
+ */
+export interface TurnContentPart {
+	text?: string;
+	image?: {
+		data: string;
+		mimeType: string;
+		widthPx?: number;
+		heightPx?: number;
+	};
+}
+
+/**
  * Per-turn user input for `generateTurn`.
  *
- * Only `text` and the `image*` fields become content blocks sent to the model.
- * `imageWidthPx`/`imageHeightPx` are used to append a size-annotation text
- * block so the model knows the exact pixel dimensions of the screenshot
- * (mouse tool coordinates are interpreted relative to this pixel space).
+ * Two shapes, both accepted (`specs/030-queued-chat-input/research.md` D3):
+ * - **Multi-part** (`parts` present): N text parts + M image parts, FIFO. Used
+ *   by `combineAll` (`specs/030-queued-chat-input/contracts/turn-loop-contract.md`)
+ *   when ≥2 queued messages are merged into one aggregated turn. When `parts`
+ *   is non-empty it takes precedence over the flat fields.
+ * - **Flat single-message** (the legacy fields below): one text + one optional
+ *   image. This is the N=1/M∈{0,1} case and is backward compatible —
+ *   `projects/game/agent/src/handler.ts` still builds this shape.
+ *
+ * Only `text`/`image` become content blocks sent to the model. Image
+ * `widthPx`/`heightPx` append a size-annotation text block so the model knows
+ * the screenshot's exact pixel dimensions (mouse tool coordinates are relative
+ * to this pixel space).
  */
 export interface TurnContent {
+	parts?: TurnContentPart[];
 	text?: string;
 	imageData?: string;
 	imageMimeType?: string;
 	imageWidthPx?: number;
 	imageHeightPx?: number;
+}
+
+/**
+ * Normalize a `TurnContent` into an ordered array of parts (FIFO).
+ *
+ * - If `parts` is present and non-empty (multi-part aggregated input), return
+ *   it as-is.
+ * - Otherwise (flat single-message shape) build a one-element parts array from
+ *   the flat `text`/`image*` fields. Returns `[]` when neither text nor image
+ *   is present (the legacy "empty content" behaviour — no blocks emitted).
+ *
+ * This lets `streamFromAgent` build model content blocks from a single code
+ * path regardless of shape, so the flat single-message shape is the N=1/M∈{0,1}
+ * case (backward compatible — `specs/030-queued-chat-input/research.md` D3).
+ */
+export function toParts(content: TurnContent): TurnContentPart[] {
+	if (content.parts && content.parts.length > 0) {
+		return content.parts;
+	}
+	const part: TurnContentPart = {};
+	if (content.text) part.text = content.text;
+	if (content.imageData && content.imageMimeType) {
+		part.image = {
+			data: content.imageData,
+			mimeType: content.imageMimeType,
+			...(content.imageWidthPx !== undefined
+				? { widthPx: content.imageWidthPx }
+				: {}),
+			...(content.imageHeightPx !== undefined
+				? { heightPx: content.imageHeightPx }
+				: {}),
+		};
+	}
+	if (!part.text && !part.image) return [];
+	return [part];
 }
 
 /**
@@ -453,33 +519,48 @@ export class AgentAdapterImpl implements AgentAdapter {
 		signal?: AbortSignal,
 	): AsyncIterable<ContentBlock> {
 		const contentBlocks: { type: string; [key: string]: unknown }[] = [];
-		const hasImage = !!(content.imageData && content.imageMimeType);
-
-		// User text is required (enforced by desktop SendUserTurn). No
-		// synthetic default is injected when text is missing — the caller is
-		// responsible for providing meaningful instructions.
-		if (content.text) {
-			contentBlocks.push({ type: "text", text: content.text });
-		}
-		if (hasImage) {
-			contentBlocks.push({
-				type: "image_url",
-				image_url: {
-					url: `data:${content.imageMimeType};base64,${content.imageData}`,
-				},
-			});
-			// Append an explicit size-annotation text block so the model knows
-			// the screenshot's exact pixel dimensions. Mouse tool coordinates
-			// are interpreted relative to this pixel space, so telling the
-			// model the real width×height prevents it from guessing a
-			// different resolution and picking mis-targeted coordinates.
-			const w = content.imageWidthPx;
-			const h = content.imageHeightPx;
-			if (typeof w === "number" && typeof h === "number" && w > 0 && h > 0) {
+		// Build content blocks from N text parts + M image parts in FIFO order
+		// (`specs/030-queued-chat-input/research.md` D3). Each text part → a
+		// `{type:"text"}` block; each image part → an `{type:"image_url"}`
+		// block immediately followed by its pixel-size annotation block (the
+		// existing convention — mouse tool coordinates are interpreted relative
+		// to this pixel space). `toParts` normalizes the flat single-message
+		// shape into the N=1/M∈{0,1} case (backward compatible).
+		//
+		// Multimodal content blocks within a single HumanMessage are the
+		// model-safe representation of an aggregated turn (one LLM-facing turn,
+		// avoiding back-to-back human messages) — see
+		// [LangChain — Messages concepts](https://js.langchain.com/docs/concepts/messages/).
+		for (const part of toParts(content)) {
+			if (part.text) {
+				contentBlocks.push({ type: "text", text: part.text });
+			}
+			if (part.image) {
 				contentBlocks.push({
-					type: "text",
-					text: `[图片像素尺寸：${w}×${h}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+					type: "image_url",
+					image_url: {
+						url: `data:${part.image.mimeType};base64,${part.image.data}`,
+					},
 				});
+				// Append an explicit size-annotation text block so the model
+				// knows the screenshot's exact pixel dimensions. Mouse tool
+				// coordinates are interpreted relative to this pixel space, so
+				// telling the model the real width×height prevents it from
+				// guessing a different resolution and picking mis-targeted
+				// coordinates.
+				const w = part.image.widthPx;
+				const h = part.image.heightPx;
+				if (
+					typeof w === "number" &&
+					typeof h === "number" &&
+					w > 0 &&
+					h > 0
+				) {
+					contentBlocks.push({
+						type: "text",
+						text: `[图片像素尺寸：${w}×${h}（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]`,
+					});
+				}
 			}
 		}
 
