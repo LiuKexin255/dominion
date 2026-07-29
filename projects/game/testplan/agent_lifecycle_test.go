@@ -171,54 +171,11 @@ func TestProfileSwitchMidConnection(t *testing.T) {
 	}
 }
 
-// TestConnectionConcurrentSerialization verifies that when two WebSocket
-// connections send frames to the same session concurrently, the per-session
-// mutex serializes processing so both responses are delivered without
-// corruption. Kick-on-connect is intentionally not implemented — the mutex
-// serves as a fallback guard against concurrent processing.
-func TestConnectionConcurrentSerialization(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("life-serial-%s", uniqueSuffix())
-
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-
-	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn1.Close()
-
-	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn2.Close()
-
-	sendTextWithProfile(t, conn1, sessionID, profileName, "From conn1")
-	sendTextWithProfile(t, conn2, sessionID, profileName, "From conn2")
-
-	conn1Resp := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool {
-		return frameHasText(f)
-	})
-	conn2Resp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return frameHasText(f)
-	})
-
-	if conn1Resp == nil {
-		t.Fatal("conn1: no text response")
-	}
-	if conn2Resp == nil {
-		t.Fatal("conn2: no text response")
-	}
-	t.Logf("conn1 response: %q", frameText(conn1Resp))
-	t.Logf("conn2 response: %q", frameText(conn2Resp))
-}
+// TestConnectionConcurrentSerialization was removed: the scenario it covered
+// (two concurrent WebSocket connections to the same session both receiving
+// responses) is not supported under spec 030's per-session TurnLoop + single
+// emit sink design, which assumes one active session/connection at a time
+// (specs/030-queued-chat-input/plan.md:38).
 
 // TestGetAgentNeverConnected verifies that GetAgent returns a 200 response
 // with an empty agent_profile_name for a session that has never been
