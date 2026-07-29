@@ -27,7 +27,6 @@ import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { MessagePart } from "../game_types/projects/game/MessagePart";
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
-import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 
@@ -57,8 +56,6 @@ export class Handler implements AgentServiceHandlers {
 
   private promptClient: PromptClient;
   private sessionAgentStore: SessionAgentStore;
-  private mutexes: Map<string, Promise<void>>;
-  private heldMutexes: Set<string>;
 
   constructor(
     promptClient: PromptClient,
@@ -66,36 +63,6 @@ export class Handler implements AgentServiceHandlers {
   ) {
     this.promptClient = promptClient;
     this.sessionAgentStore = sessionAgentStore;
-    this.mutexes = new Map();
-    this.heldMutexes = new Set();
-  }
-
-  // -----------------------------------------------------------------------
-  // Same-session mutex helpers (FIFO, non-reentrant)
-  // -----------------------------------------------------------------------
-
-  private async acquireMutex(sessionId: string): Promise<void> {
-    const prev = this.mutexes.get(sessionId) ?? Promise.resolve();
-    let release!: () => void;
-    const next = new Promise<void>((r) => {
-      release = r;
-    });
-    this.mutexes.set(sessionId, prev.then(() => next));
-    await prev;
-    this.heldMutexes.add(sessionId);
-    (this.mutexes as any)[`_release_${sessionId}`] = release;
-  }
-
-  private releaseMutex(sessionId: string): void {
-    const release = (this.mutexes as any)[`_release_${sessionId}`];
-    if (release) {
-      this.heldMutexes.delete(sessionId);
-      release();
-    }
-  }
-
-  private isMutexHeld(sessionId: string): boolean {
-    return this.heldMutexes.has(sessionId);
   }
 
   // -----------------------------------------------------------------------
@@ -132,7 +99,14 @@ export class Handler implements AgentServiceHandlers {
     const sessionId = extractSessionId(call.request.name ?? "");
     info("refresh agent requested", { sessionId });
 
-    if (this.isMutexHeld(sessionId)) {
+    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
+
+    // Reject Refresh while a turn is in flight: the per-session TurnLoop is now
+    // the single-flight owner (replaces the former per-frame mutex). The loop's
+    // `isRunning()` covers "turn in flight OR draining queued work"
+    // (`specs/030-queued-chat-input/contracts/turn-loop-contract.md`;
+    // `specs/030-queued-chat-input/research.md` D5).
+    if (sessionAgent.isRunning()) {
       warn("refresh agent rejected: turn in-flight", { sessionId });
       callback({
         code: grpc.status.FAILED_PRECONDITION,
@@ -141,7 +115,6 @@ export class Handler implements AgentServiceHandlers {
       return;
     }
 
-    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
     sessionAgent.invalidateAdapter();
     info("refresh agent completed", { sessionId });
 
@@ -201,17 +174,25 @@ export class Handler implements AgentServiceHandlers {
       sessionSinkHandles.clear();
     };
 
-    // Per-turn AbortControllers for sessions with an in-flight generateTurn.
-    // Cleared in finally after the turn resolves OR aborted by abortAllTurns
-    // on stream end/error.
-    const activeTurns = new Map<string, AbortController>();
-    const abortAllTurns = () => {
-      // Snapshot values first: finally blocks will asynchronously delete
-      // entries as each aborted turn unwinds.
-      for (const controller of [...activeTurns.values()]) {
-        controller.abort();
+    // Sessions whose per-session TurnLoop emit sink is THIS stream. On stream
+    // end/error the loop must stop emitting to the dead peer: abortLoops calls
+    // sessionAgent.abort() for each, which clears the queue + emits a final
+    // `wait` and flips the loop to IDLE (FR-011; the AbortController itself is
+    // now owned by the TurnLoop, replacing the former per-stream activeTurns
+    // map — `specs/030-queued-chat-input/research.md` D6).
+    const activeLoopSessions = new Set<string>();
+    const abortLoops = () => {
+      for (const sid of [...activeLoopSessions.values()]) {
+        try {
+          this.sessionAgentStore.getOrCreate(sid).abort();
+        } catch (err) {
+          warn("abortLoops: failed to abort session loop", {
+            sessionId: sid,
+            error: String(err),
+          });
+        }
       }
-      activeTurns.clear();
+      activeLoopSessions.clear();
     };
 
     stream.on("data", async (frame) => {
@@ -248,15 +229,18 @@ export class Handler implements AgentServiceHandlers {
             sessionId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
-              // ACTIVE when a turn is in-flight (shared per-session mutex),
-              // else IDLE when an adapter is bound, else UNSPECIFIED
-              // (data-model.md §1; status-signal.ts).
+              // ACTIVE when the per-session TurnLoop is running (turn in
+              // flight OR draining queued work), else IDLE when an adapter is
+              // bound, else UNSPECIFIED (data-model.md §1; status-signal.ts).
+              // The loop's isRunning() is the single in-flight source,
+              // replacing the former per-frame mutex-held check
+              // (`specs/030-queued-chat-input/research.md` D5).
               flowParts: {
                 parts: [
                   {
                     status: {
                       status: deriveStatusSignal(
-                        this.isMutexHeld(sessionId),
+                        sessionAgent.isRunning(),
                         state.isBound,
                       ),
                     },
@@ -308,8 +292,8 @@ export class Handler implements AgentServiceHandlers {
           }
         }
 
-        // Profile-name guard: reject a mismatched turn before it acquires the
-        // mutex or invokes the adapter. Non-fatal — it only reads state and
+        // Profile-name guard: reject a mismatched turn before it reaches the
+        // TurnLoop or invokes the adapter. Non-fatal — it only reads state and
         // writes frames, so it cannot panic the session agent or block a later
         // turn. The WarnSignal names the bound vs received profile and the
         // WaitSignal returns the desktop to ready (clears its typing
@@ -325,7 +309,7 @@ export class Handler implements AgentServiceHandlers {
           )
         ) {
           const boundProfile = state.activeProfileName ?? "";
-          warn("profile mismatch: rejecting turn before mutex", {
+          warn("profile mismatch: rejecting turn before TurnLoop", {
             sessionId,
             boundProfile,
             receivedProfile: effectiveProfileName,
@@ -387,165 +371,50 @@ export class Handler implements AgentServiceHandlers {
           return;
         }
 
-        await this.acquireMutex(sessionId);
-        const controller = new AbortController();
-        activeTurns.set(sessionId, controller);
-        try {
-          const handle = sessionAgent.getBridge().registerSink((contentEnvelope: AgentFrame) => {
+        // Register the operation-channel sink on the bridge so flow_result
+        // routing continues to work (spec 025 FR-023/FR-025). This is
+        // independent of the TurnLoop's display/wait/warn emit sink below.
+        const handle = sessionAgent.getBridge().registerSink(
+          (contentEnvelope: AgentFrame) => {
             safeWrite(stream, contentEnvelope, sessionId);
-          });
-          sessionSinkHandles.set(sessionId, handle);
+          },
+        );
+        sessionSinkHandles.set(sessionId, handle);
 
-          const adapter = await sessionAgent.getOrCreateAdapter(
-            effectiveProfileName,
-            () => this.promptClient.getProfile(effectiveProfileName),
-          );
-
-          const turnContent: TurnContent = { text: userText };
-          if (imagePart?.data) {
-            turnContent.imageData = bytesToBase64String(imagePart.data);
-            turnContent.imageMimeType = encodingToMime(imagePart.encoding);
-            turnContent.imageWidthPx = imagePart.widthPx;
-            turnContent.imageHeightPx = imagePart.heightPx;
-          }
-
-          let blockCount = 0;
-          for await (const block of adapter.generateTurn(
-            sessionId,
-            turnContent,
-            controller.signal,
-          )) {
-            blockCount++;
-            // Display blocks (text/thinking/tool_call/tool_result) are emitted
-            // as messageParts frames — the conversation channel. Control
-            // signals (wait/warn) are emitted as flowParts frames below.
-            // (data-model.md §4; contracts/content-model-contract.md §4.)
-            if (block.type === "reasoning") {
-              const thinkFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  messageParts: {
-                    parts: [{ thinking: { content: block.reasoning } }],
-                  },
-                },
-              );
-              safeWrite(stream, thinkFrame, sessionId);
-            } else if (block.type === "text") {
-              const textFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  messageParts: {
-                    parts: [{ text: { content: block.text } }],
-                  },
-                },
-              );
-              safeWrite(stream, textFrame, sessionId);
-            } else if (block.type === "tool_call") {
-              const toolCallFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  messageParts: {
-                    parts: [
-                      {
-                        toolCall: {
-                          toolId: block.toolCallId,
-                          name: block.name,
-                          argsJson: JSON.stringify(block.args ?? {}),
-                        },
-                      },
-                    ],
-                  },
-                },
-              );
-              safeWrite(stream, toolCallFrame, sessionId);
-            } else if (block.type === "tool_result") {
-              const toolResultPart: ToolResultPart = {
-                toolId: block.toolCallId,
-                status: block.status as ToolResultPart["status"],
-                message: block.message,
-              };
-              if (block.screenshot) {
-                const screenshot: ImagePart = {
-                  encoding: "IMAGE_ENCODING_PNG",
-                  data: block.screenshot.data,
-                  widthPx: block.screenshot.widthPx,
-                  heightPx: block.screenshot.heightPx,
-                };
-                toolResultPart.screenshot = screenshot;
-              }
-              const toolResultFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  messageParts: { parts: [{ toolResult: toolResultPart }] },
-                },
-              );
-              safeWrite(stream, toolResultFrame, sessionId);
-            }
-          }
-
-          if (controller.signal.aborted) {
-            info("turn aborted on desktop disconnect", { sessionId });
-          } else {
-            info("user content processing completed", {
-              sessionId,
-              blockCount,
-            });
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                agentProfileName: effectiveProfileName,
-                flowParts: { parts: [{ wait: {} }] },
-              },
-            );
-            safeWrite(stream, waitFrame, sessionId);
-          }
-        } catch (err: unknown) {
-          if (controller.signal.aborted) {
-            info("turn aborted on desktop disconnect", { sessionId });
-          } else {
-            const message =
-              err instanceof Error ? err.message : "Processing error";
-            error("LLM processing failed", { sessionId, error: message });
-            const warnFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                flowParts: {
-                  parts: [{ warn: { message: `Processing error: ${message}` } }],
-                },
-              },
-            );
-            safeWrite(stream, warnFrame, sessionId);
-
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                agentProfileName: effectiveProfileName,
-                flowParts: { parts: [{ wait: {} }] },
-              },
-            );
-            safeWrite(stream, waitFrame, sessionId);
-          }
-        } finally {
-          activeTurns.delete(sessionId);
-          this.releaseMutex(sessionId);
+        const turnContent: TurnContent = { text: userText };
+        if (imagePart?.data) {
+          turnContent.imageData = bytesToBase64String(imagePart.data);
+          turnContent.imageMimeType = encodingToMime(imagePart.encoding);
+          turnContent.imageWidthPx = imagePart.widthPx;
+          turnContent.imageHeightPx = imagePart.heightPx;
         }
+
+        // Route the user content to the per-session TurnLoop — the single-
+        // flight owner that replaces the former per-frame
+        // `acquireMutex → generateTurn → releaseMutex` path. The loop drives
+        // `generateTurn`, emits the display blocks + the terminal `wait`
+        // (only on full drain) / `warn` (non-abort error) / abort `wait`
+        // itself; it is now the sole emitter of those control frames
+        // (`specs/030-queued-chat-input/contracts/turn-loop-contract.md`;
+        // `specs/030-queued-chat-input/research.md` D5). `submit` is
+        // non-blocking: a frame arriving while a turn is in flight is buffered
+        // (FR-002) and becomes the next turn on the same thread_id.
+        activeLoopSessions.add(sessionId);
+        sessionAgent.submit(
+          turnContent,
+          effectiveProfileName,
+          () => this.promptClient.getProfile(effectiveProfileName),
+          (frame: AgentFrame) => {
+            safeWrite(stream, frame, sessionId);
+          },
+        );
+        return;
       }
     });
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
-      abortAllTurns();
+      abortLoops();
       cleanupSinks();
       try {
         stream.end();
@@ -556,7 +425,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
-      abortAllTurns();
+      abortLoops();
       cleanupSinks();
     });
   };

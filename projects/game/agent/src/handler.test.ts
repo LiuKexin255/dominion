@@ -30,7 +30,11 @@ import {
 import type { AgentAdapter, AdapterFactory, ContentBlock, AdapterStateSnapshot, TurnContent } from "./llm";
 import { Handler } from "./handler";
 import { SessionAgent } from "./session-agent";
+import type { ProfileFetcher } from "./session-agent";
 import { OperationBridge } from "./operation-bridge";
+import { TurnLoop } from "./turn-loop";
+import type { TurnLoopEmit } from "./turn-loop";
+import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -92,7 +96,16 @@ interface MockSessionAgent {
   getAdapter: ReturnType<typeof vi.fn>;
   invalidateAdapter: ReturnType<typeof vi.fn>;
   getBridge: ReturnType<typeof vi.fn>;
+  submit: ReturnType<typeof vi.fn>;
+  isRunning: ReturnType<typeof vi.fn>;
+  abort: ReturnType<typeof vi.fn>;
   bridge: MockBridge;
+  /**
+   * The real TurnLoop driven by {@link submit}, mirroring how the production
+   * SessionAgent owns one loop per session. Tests assert loop behavior
+   * (serialization, status, abort) through the handler → submit → loop path.
+   */
+  realLoop: TurnLoop | null;
 }
 
 interface MockSessionAgentStore {
@@ -116,21 +129,51 @@ function createMockSessionAgentStore(): MockSessionAgentStore {
   const agents = new Map<string, MockSessionAgent>();
 
   function getAgent(sessionId: string): MockSessionAgent {
-    if (!agents.has(sessionId)) {
-      const bridge = createMockBridge();
-      agents.set(sessionId, {
-        getOrCreateAdapter: vi.fn(),
-        getAdapterState: vi.fn(() => ({
-          activeProfileName: null,
-          isBound: false,
-        })),
-        getAdapter: vi.fn(() => null),
-        invalidateAdapter: vi.fn(),
-        getBridge: vi.fn(() => bridge),
-        bridge,
-      });
+    const existing = agents.get(sessionId);
+    if (existing) {
+      return existing;
     }
-    return agents.get(sessionId)!;
+    const bridge = createMockBridge();
+    // Swappable profile context (mirrors SessionAgent's per-submit update so a
+    // later frame with a different profile resolves the right adapter).
+    const ctx: { profileName: string; fetcher: ProfileFetcher } = {
+      profileName: "",
+      fetcher: async () => { throw new Error("no fetcher"); },
+    };
+    const agent: MockSessionAgent = {
+      getOrCreateAdapter: vi.fn(),
+      getAdapterState: vi.fn(() => ({
+        activeProfileName: null,
+        isBound: false,
+      })),
+      getAdapter: vi.fn(() => null),
+      invalidateAdapter: vi.fn(),
+      getBridge: vi.fn(() => bridge),
+      bridge,
+      realLoop: null,
+      submit: vi.fn((
+        content: TurnContent,
+        profileName: string,
+        fetcher: ProfileFetcher,
+        emit: TurnLoopEmit,
+      ) => {
+        ctx.profileName = profileName;
+        ctx.fetcher = fetcher;
+        if (!agent.realLoop) {
+          agent.realLoop = new TurnLoop(
+            sessionId,
+            async () => agent.getOrCreateAdapter(ctx.profileName, ctx.fetcher),
+            emit,
+            profileName,
+          );
+        }
+        agent.realLoop.submit(content);
+      }),
+      isRunning: vi.fn(() => agent.realLoop?.isRunning() ?? false),
+      abort: vi.fn(() => agent.realLoop?.abort()),
+    };
+    agents.set(sessionId, agent);
+    return agent;
   }
 
   return {
@@ -564,7 +607,7 @@ describe("Handler.Connect profile-name guard", () => {
       (flowWaitFrames[0] as Record<string, unknown>).agentProfileName,
     ).toBe("nonexistent-profile");
 
-    // The mismatched turn never acquired the mutex / invoked the adapter:
+    // The mismatched turn never reached the TurnLoop / invoked the adapter:
     // generateTurn was still called only once (the matching turn), and
     // getOrCreateAdapter was called only once.
     expect(calls).toHaveLength(1);
@@ -886,15 +929,25 @@ describe("Handler.Connect abort lifecycle", () => {
     expect(signal!.aborted).toBe(true);
     expect(yieldedCount()).toBeLessThan(blocks.length);
 
-    // wait/warn now ride as FlowParts kinds; assert none were emitted on abort.
-    const waitWarnFrames = stream.written.filter(
+    // FR-011 (spec 030): the per-session TurnLoop now owns the abort path and
+    // emits exactly ONE terminal `wait` on abort (to return the desktop to
+    // ready), clearing the queue. It is NOT an error, so no `warn` is emitted.
+    const waitFrames = stream.written.filter(
       (f) => {
-        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown }[] } };
         if (fr.payload !== "flowParts") return false;
-        return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+        return (fr.flowParts?.parts ?? []).some((p) => p.wait);
       },
     );
-    expect(waitWarnFrames).toHaveLength(0);
+    const warnFrames = stream.written.filter(
+      (f) => {
+        const fr = f as { payload?: string; flowParts?: { parts?: { warn?: unknown }[] } };
+        if (fr.payload !== "flowParts") return false;
+        return (fr.flowParts?.parts ?? []).some((p) => p.warn);
+      },
+    );
+    expect(waitFrames).toHaveLength(1);
+    expect(warnFrames).toHaveLength(0);
   });
 
   it("stream error aborts in-flight turn", async () => {
@@ -929,15 +982,25 @@ describe("Handler.Connect abort lifecycle", () => {
     expect(signal!.aborted).toBe(true);
     expect(yieldedCount()).toBeLessThan(blocks.length);
 
-    // wait/warn now ride as FlowParts kinds; assert none were emitted on abort.
-    const waitWarnFrames = stream.written.filter(
+    // FR-011 (spec 030): the per-session TurnLoop now owns the abort path and
+    // emits exactly ONE terminal `wait` on abort (to return the desktop to
+    // ready), clearing the queue. It is NOT an error, so no `warn` is emitted.
+    const waitFrames = stream.written.filter(
       (f) => {
-        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+        const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown }[] } };
         if (fr.payload !== "flowParts") return false;
-        return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+        return (fr.flowParts?.parts ?? []).some((p) => p.wait);
       },
     );
-    expect(waitWarnFrames).toHaveLength(0);
+    const warnFrames = stream.written.filter(
+      (f) => {
+        const fr = f as { payload?: string; flowParts?: { parts?: { warn?: unknown }[] } };
+        if (fr.payload !== "flowParts") return false;
+        return (fr.flowParts?.parts ?? []).some((p) => p.warn);
+      },
+    );
+    expect(waitFrames).toHaveLength(1);
+    expect(warnFrames).toHaveLength(0);
   });
 
   it("turn boundary disconnect: abort is a no-op on empty map", async () => {
@@ -960,8 +1023,8 @@ describe("Handler.Connect abort lifecycle", () => {
     const bridge = sessionAgentStore._getAgent("sess-boundary").bridge;
     expect(bridge.unregisterSink).not.toHaveBeenCalled();
 
-    // Turn already completed: finally block deleted the controller from
-    // activeTurns. abortAllTurns must be a no-op, not throw.
+    // Turn already completed: the loop drained to idle, so abort() is a
+    // no-op (the loop is no longer running). abortLoops must not throw.
     stream.emit("end");
     expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
   });
@@ -1030,10 +1093,11 @@ describe("Handler.Connect probes", () => {
   });
 
   it("responds to status probe with 'active' while a turn is in-flight", async () => {
-    // A turn in-flight = the per-session turn mutex is held (acquired before
-    // adapter invocation, released in the turn finally). Drive it with a slow
-    // adapter so the mutex stays held across the probe; isMutexHeld is the
-    // ACTIVE source (specs/021-agent-session-resync/data-model.md §1).
+    // A turn in-flight = the per-session TurnLoop is running (turn in flight OR
+    // draining). Drive it with a slow adapter so the loop stays running across
+    // the probe; the loop's isRunning() is the ACTIVE source, fed to
+    // deriveStatusSignal (specs/030-queued-chat-input/research.md D5;
+    // specs/021-agent-session-resync/data-model.md §1).
     const slowAdapter: AgentAdapter = {
       async *generateTurn(): AsyncIterable<ContentBlock> {
         await new Promise((r) => setTimeout(r, 50));
@@ -1051,12 +1115,12 @@ describe("Handler.Connect probes", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    // Start a turn — acquires the session mutex and parks inside generateTurn.
+    // Start a turn — the TurnLoop runs it and parks inside generateTurn.
     stream.emit("data", userContentFrame("sess-active", "hello", "test-profile"));
     await new Promise((r) => setTimeout(r, 10));
 
-    // Probe while the turn is in-flight (mutex held). The status branch writes
-    // its response synchronously during emit.
+    // Probe while the turn is in-flight (loop running). The status branch
+    // writes its response synchronously during emit.
     stream.emit("data", {
       sessionId: "sess-active",
       payload: "flowParts",
@@ -1066,7 +1130,7 @@ describe("Handler.Connect probes", () => {
     await flush();
 
     // The session is bound, so without the in-flight turn the response would
-    // be IDLE; ACTIVE proves isMutexHeld was consulted.
+    // be IDLE; ACTIVE proves the loop's isRunning() was consulted.
     const statusFrame = stream.written.find(
       (f) => {
         const fr = f as Record<string, unknown>;
@@ -1079,7 +1143,7 @@ describe("Handler.Connect probes", () => {
     const statusPart = (statusFrame!.flowParts as { parts: { status?: { status?: string } }[] }).parts.find((p) => p.status)!.status;
     expect(statusPart).toEqual({ status: "STATUS_SIGNAL_STATUS_ACTIVE" });
 
-    // Let the in-flight turn complete so its finally releases the mutex.
+    // Let the in-flight turn complete so the loop drains to idle.
     await new Promise((r) => setTimeout(r, 60));
   });
 });
@@ -1132,11 +1196,12 @@ describe("Handler.Connect LLM error", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — same-session serialization
+// Tests: Connect — same-session serialization (TurnLoop single-flight)
+// (specs/030-queued-chat-input/research.md D5)
 // ===========================================================================
 
 describe("Handler.Connect same-session serialization", () => {
-  it("serializes concurrent user content frames on same session (FIFO)", async () => {
+  it("routes concurrent user frames through the TurnLoop: no concurrent turns, queued becomes next turn, status ACTIVE/IDLE", async () => {
     const promptClient = createMockPromptClient({
       "test-profile": { model: "m", systemPrompt: "s" },
     });
@@ -1168,13 +1233,88 @@ describe("Handler.Connect same-session serialization", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
+    // Submit two frames in quick succession. The TurnLoop is the single-flight
+    // owner: msg-1 starts the first turn, msg-2 is buffered (FR-002) and
+    // becomes the next turn on the same thread_id once msg-1 completes.
     stream.emit("data", userContentFrame("sess-conc", "msg-1", "test-profile"));
     stream.emit("data", userContentFrame("sess-conc", "msg-2", "test-profile"));
 
+    // Probe status WHILE the first turn is in flight: the loop's isRunning()
+    // is the ACTIVE source (replaces the former per-frame mutex-held check).
+    await new Promise((r) => setTimeout(r, 3));
+    stream.emit("data", {
+      sessionId: "sess-conc",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+      sender: FRAME_SENDER_USER,
+    });
+
     await new Promise((r) => setTimeout(r, 100));
 
+    // No concurrent turns ever ran (single-flight), and the queued msg-2
+    // became the next turn after msg-1 completed (FIFO, auto hand-off).
     expect(maxConcurrent).toBe(1);
     expect(processedMessages).toEqual(["msg-1", "msg-2"]);
+
+    // Exactly one terminal wait (only on full drain, FR-006).
+    const waitFrames = stream.written.filter((f) => {
+      const fr = f as Record<string, unknown>;
+      return (
+        fr.payload === "flowParts" &&
+        (fr.flowParts as { parts: { wait?: unknown }[] }).parts.some(
+          (p) => p.wait,
+        )
+      );
+    });
+    expect(waitFrames).toHaveLength(1);
+
+    // The in-flight probe returned ACTIVE; after full drain the loop is IDLE.
+    const statusResponses = stream.written
+      .filter((f) => {
+        const fr = f as Record<string, unknown>;
+        return (
+          fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { status?: unknown }[] }).parts.some(
+            (p) => p.status,
+          )
+        );
+      })
+      .map(
+        (f) =>
+          (
+            (f as Record<string, unknown>).flowParts as {
+              parts: { status?: { status?: string } }[];
+            }
+          ).parts.find((p) => p.status)!.status!.status,
+      );
+    expect(statusResponses).toContain("STATUS_SIGNAL_STATUS_ACTIVE");
+
+    // After drain, a fresh probe returns IDLE (loop no longer running).
+    stream.emit("data", {
+      sessionId: "sess-conc",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
+      sender: FRAME_SENDER_USER,
+    });
+    await flush();
+    const idleResponse = stream.written
+      .slice()
+      .reverse()
+      .find((f) => {
+        const fr = f as Record<string, unknown>;
+        return (
+          fr.payload === "flowParts" &&
+          (fr.flowParts as { parts: { status?: unknown }[] }).parts.some(
+            (p) => p.status,
+          )
+        );
+      });
+    const idleStatus = (
+      (idleResponse as Record<string, unknown>).flowParts as {
+        parts: { status?: { status?: string } }[];
+      }
+    ).parts.find((p) => p.status)!.status!.status;
+    expect(idleStatus).toBe("STATUS_SIGNAL_STATUS_IDLE");
   });
 });
 
@@ -1305,7 +1445,7 @@ describe("Handler.RefreshAgent", () => {
     await new Promise((r) => setTimeout(r, 60));
   });
 
-  it("releases mutex so subsequent RefreshAgent calls still succeed", async () => {
+  it("with no turn in-flight, subsequent RefreshAgent calls still succeed", async () => {
     const handler = createHandler({ promptClient, sessionAgentStore });
 
     const first = await refreshAgent(handler, "sess-repeat");
@@ -1370,12 +1510,13 @@ describe("SessionAgent.invalidateAdapter integration", () => {
     const throwProvider = async () => {
       throw new Error("not used");
     };
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
+    const agent = new SessionAgent(throwProvider, factory, new MemorySaver(), "sid-integration");
 
     const fetcher = async () => ({
       model: "m",
       systemPrompt: "s",
       toolNames: [],
+      mcpNames: [],
     });
 
     const first = await agent.getOrCreateAdapter("p", fetcher);
@@ -1399,6 +1540,7 @@ describe("SessionAgent.invalidateAdapter integration", () => {
       async () => { throw new Error("x"); },
       async () => { throw new Error("x"); },
       new MemorySaver(),
+      "sid-noop",
     );
 
     expect(() => agent.invalidateAdapter()).not.toThrow();
@@ -1410,6 +1552,7 @@ describe("SessionAgent.invalidateAdapter integration", () => {
       async () => { throw new Error("x"); },
       async () => { throw new Error("x"); },
       new MemorySaver(),
+      "sid-bridge",
     );
 
     const b1 = agent.getBridge();
@@ -1925,14 +2068,16 @@ describe("Handler.Connect safeWrite error containment (spec 026)", () => {
   // Scenario 2 (quickstart.md §Scenario 2; spec FR-001/FR-002; research.md §D):
   // The crash vector — catch-block stream.write() escaping as an unhandled
   // rejection when the stream is already closed. generateTurn throws a
-  // non-abort error (catch enters the else-branch); every stream.write
-  // throws. The data callback MUST complete without crashing, and the
-  // finally block MUST still release the per-session mutex (FR-004/FR-005).
+  // non-abort error (the TurnLoop's finishError path emits warn+wait); every
+  // stream.write throws. The data callback MUST complete without crashing, and
+  // the TurnLoop MUST drain to idle (isRunning()→false) so the session is
+  // recoverable (FR-004/FR-005; spec 030 FR-015 retains the buffer but the
+  // loop terminates).
   //
   // Note: vitest fails the test if the async data-listener's promise
   // rejects, so simply reaching the assertions below proves no unhandled
   // rejection escaped the data callback.
-  it("catch-block write does not crash on closed stream and finally still releases mutex", async () => {
+  it("catch-block write does not crash on closed stream and the loop drains to idle", async () => {
     const throwingAdapter: AgentAdapter = {
       generateTurn(): AsyncIterable<ContentBlock> {
         const it: AsyncIterator<ContentBlock> = {
@@ -1961,10 +2106,10 @@ describe("Handler.Connect safeWrite error containment (spec 026)", () => {
     expect(stream.writeCallCount).toBeGreaterThanOrEqual(2);
     expect(stream.written).toHaveLength(0);
 
-    // FR-004/FR-005: the finally block ran despite the catch-body writes
-    // throwing — the per-session mutex is released, so a RefreshAgent call
-    // succeeds (not FAILED_PRECONDITION). This is the observable proxy for
-    // activeTurns.delete + releaseMutex having executed.
+    // FR-004/FR-005: the TurnLoop drained to idle (isRunning()=false) despite
+    // the catch-body writes throwing — so a RefreshAgent call succeeds (not
+    // FAILED_PRECONDITION). This is the observable proxy for the loop having
+    // terminated cleanly.
     const refreshCall = { request: { name: "sessions/sess-crash/agent" } } as grpc.ServerUnaryCall<
       { name?: string },
       unknown
@@ -2035,25 +2180,32 @@ describe("Handler.Connect safeWrite error containment (spec 026)", () => {
 
     expect(capturedSignal()?.aborted).toBe(true);
 
-    // After abort, no further frames — especially no wait/warn frames — are
-    // written (FR-003 / 017 FR-004). The for-await exits and the post-loop
-    // `if (controller.signal.aborted)` branch only logs info.
+    // FR-011 (spec 030): the per-session TurnLoop owns the abort path and emits
+    // exactly ONE terminal `wait` on abort (clearing the queue, returning the
+    // desktop to ready). In production this write to the now-dead stream is
+    // harmlessly swallowed by `safeWrite`; the fake stream records it, so we
+    // assert the count precisely. No `warn` (abort is not an error).
     const framesAfterAbort = stream.written.slice(writtenBeforeAbort);
-    const waitWarnFramesAfterAbort = framesAfterAbort.filter((f) => {
-      const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown; warn?: unknown }[] } };
+    const waitFramesAfterAbort = framesAfterAbort.filter((f) => {
+      const fr = f as { payload?: string; flowParts?: { parts?: { wait?: unknown }[] } };
       if (fr.payload !== "flowParts") return false;
-      return (fr.flowParts?.parts ?? []).some((p) => p.wait || p.warn);
+      return (fr.flowParts?.parts ?? []).some((p) => p.wait);
     });
-    expect(waitWarnFramesAfterAbort).toHaveLength(0);
+    const warnFramesAfterAbort = framesAfterAbort.filter((f) => {
+      const fr = f as { payload?: string; flowParts?: { parts?: { warn?: unknown }[] } };
+      if (fr.payload !== "flowParts") return false;
+      return (fr.flowParts?.parts ?? []).some((p) => p.warn);
+    });
+    expect(waitFramesAfterAbort).toHaveLength(1);
+    expect(warnFramesAfterAbort).toHaveLength(0);
   });
 
   // Scenario 4 (spec FR-005 / 017 FR-006): mid-turn abort leaves the
   // conversation in a recoverable state. Full checkpoint consistency
   // requires a real checkpointer (covered by the large-test suite, T009);
-  // at the unit level we verify the finally-block resource cleanup
-  // (activeTurns.delete + releaseMutex) executes after the abort path so a
-  // reconnect can immediately start a new turn (017 FR-005 parity).
-  it("mid-turn abort: finally cleanup releases mutex for reconnect", async () => {
+  // at the unit level we verify the TurnLoop drains to idle after the abort
+  // path so a reconnect can immediately start a new turn (017 FR-005 parity).
+  it("mid-turn abort: loop drains to idle so a reconnect can start a new turn", async () => {
     function createAbortParkingAdapter(): {
       adapter: AgentAdapter;
       capturedSignal: () => AbortSignal | undefined;
@@ -2093,9 +2245,9 @@ describe("Handler.Connect safeWrite error containment (spec 026)", () => {
 
     expect(capturedSignal()?.aborted).toBe(true);
 
-    // FR-005: mutex released by finally → RefreshAgent (rejected while the
-    // mutex is held) is accepted immediately, proving the per-session turn
-    // mutex was released so a reconnect can start a new turn.
+    // FR-005: the TurnLoop drained to idle after the abort (isRunning()=false)
+    // → RefreshAgent is accepted immediately, proving the loop terminated so a
+    // reconnect can start a new turn.
     const refreshCall = { request: { name: "sessions/sess-mid-abort/agent" } } as grpc.ServerUnaryCall<
       { name?: string },
       unknown
@@ -2117,8 +2269,8 @@ describe("Handler.Connect safeWrite error containment (spec 026)", () => {
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     // No data frame sent — the session has no in-flight turn. Emitting
-    // "end" triggers abortAllTurns() + cleanupSinks(), both of which must
-    // be no-ops on empty maps.
+    // "end" triggers abortLoops() + cleanupSinks(), both of which must be
+    // no-ops when no session ever registered a loop/sink.
     stream.emit("end");
     await flush();
 

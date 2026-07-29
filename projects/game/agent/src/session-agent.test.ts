@@ -15,7 +15,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatModel } from "./model-provider";
 import { SessionAgent, SessionAgentStore } from "./session-agent";
 import type { ProfileData, ProfileFetcher } from "./session-agent";
-import type { AgentAdapter, AdapterFactory, ContentBlock } from "./llm";
+import type { AgentAdapter, AdapterFactory, ContentBlock, TurnContent } from "./llm";
+import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 
 function createMockAdapter(blocks: ContentBlock[] = []): AgentAdapter {
   return {
@@ -171,6 +172,151 @@ describe("SessionAgent", () => {
 
     expect(a1).toBe(a2);
     expect(created).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// TurnLoop ownership (spec 030 — Phase 2 T003)
+// ===========================================================================
+
+/** An adapter whose turn blocks on a gate before yielding (in-flight turn). */
+function makeGatedAdapter(gate: {
+  promise: Promise<void>;
+  resolve: () => void;
+}): AgentAdapter {
+  return {
+    async *generateTurn(
+      _threadId: string,
+      content: TurnContent,
+      signal?: AbortSignal,
+    ): AsyncIterable<ContentBlock> {
+      // Abort-aware wait so abort() unblocks the in-flight turn.
+      const abort = new Promise<never>((_, reject) => {
+        if (signal?.aborted) reject(new Error("aborted"));
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+      });
+      await Promise.race([gate.promise, abort]).catch(() => undefined);
+      if (signal?.aborted) return;
+      yield { type: "text", text: `reply:${content.text ?? ""}` };
+    },
+    async getState() {
+      return null;
+    },
+  };
+}
+
+function makeGate(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function waitFrameCount(frames: AgentFrame[]): number {
+  return frames.filter((f) => {
+    const fr = f as Record<string, unknown>;
+    return (
+      fr.payload === "flowParts" &&
+      (fr.flowParts as { parts: Record<string, unknown>[] } | undefined)?.parts?.some(
+        (p) => "wait" in p,
+      ) === true
+    );
+  }).length;
+}
+
+describe("SessionAgent TurnLoop ownership", () => {
+  it("lazily constructs the TurnLoop on first submit and drives a turn", async () => {
+    const { factory } = createMockAdapterFactory();
+    const agent = new SessionAgent(
+      throwProvider,
+      factory,
+      new MemorySaver(),
+      "sid-loop",
+    );
+
+    // Before any submission there is no loop → not running.
+    expect(agent.isRunning()).toBe(false);
+
+    const emitted: AgentFrame[] = [];
+    const fetcher = profileFetcherFor("alice");
+    agent.submit(
+      { text: "hello" },
+      "alice",
+      fetcher,
+      (f) => emitted.push(f),
+    );
+
+    // Loop started synchronously.
+    expect(agent.isRunning()).toBe(true);
+
+    // Let the (synchronous-yield) mock turn complete + emit wait.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(agent.isRunning()).toBe(false);
+    expect(waitFrameCount(emitted)).toBe(1);
+  });
+
+  it("isRunning reflects the loop state across submit/abort", async () => {
+    const gate = makeGate();
+    const gatedAdapter = makeGatedAdapter(gate);
+    const factory: AdapterFactory = async () => gatedAdapter;
+    const agent = new SessionAgent(
+      throwProvider,
+      factory,
+      new MemorySaver(),
+      "sid-abort",
+    );
+
+    const emitted: AgentFrame[] = [];
+    agent.submit({ text: "msg-1" }, "alice", profileFetcherFor("alice"), (f) =>
+      emitted.push(f),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Turn is in flight (blocked on gate).
+    expect(agent.isRunning()).toBe(true);
+
+    // Abort delegates to the loop → clears queue, emits wait, → IDLE.
+    agent.abort();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(agent.isRunning()).toBe(false);
+    expect(waitFrameCount(emitted)).toBe(1);
+  });
+
+  it("queues a second submission while running (no second concurrent turn)", async () => {
+    const gate = makeGate();
+    const gatedAdapter = makeGatedAdapter(gate);
+    const factory: AdapterFactory = async () => gatedAdapter;
+    const agent = new SessionAgent(
+      throwProvider,
+      factory,
+      new MemorySaver(),
+      "sid-queue",
+    );
+
+    const emitted: AgentFrame[] = [];
+    agent.submit({ text: "msg-1" }, "alice", profileFetcherFor("alice"), (f) =>
+      emitted.push(f),
+    );
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Second submission while the first turn is in flight is buffered, not
+    // run concurrently.
+    agent.submit({ text: "msg-2" }, "alice", profileFetcherFor("alice"), (f) =>
+      emitted.push(f),
+    );
+    expect(agent.isRunning()).toBe(true);
+
+    gate.resolve();
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Exactly one terminal wait (after both turns drain).
+    expect(agent.isRunning()).toBe(false);
+    expect(waitFrameCount(emitted)).toBe(1);
   });
 });
 

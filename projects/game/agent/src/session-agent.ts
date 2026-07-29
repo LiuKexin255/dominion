@@ -17,7 +17,9 @@ import { MemorySaver } from "@langchain/langgraph";
 
 import { OperationBridge } from "./operation-bridge";
 import type { ChatModel } from "./model-provider";
-import type { AgentAdapter, AdapterFactory } from "./llm";
+import type { AgentAdapter, AdapterFactory, TurnContent } from "./llm";
+import { TurnLoop } from "./turn-loop";
+import type { TurnLoopEmit } from "./turn-loop";
 
 export interface ProfileData {
   model: string;
@@ -44,6 +46,25 @@ export class SessionAgent {
   private bindLock: Promise<void> = Promise.resolve();
   private readonly bridge: OperationBridge;
   private readonly sessionId: string;
+
+  /**
+   * Per-session TurnLoop — the LangGraph-native single-flight + queue owner
+   * (`specs/030-queued-chat-input/contracts/turn-loop-contract.md`). Lazily
+   * constructed on first {@link submit} so a session that never receives a
+   * user-content frame pays no allocation. Conversation continuity across the
+   * loop's auto-continued turns is provided by the {@link checkpointer}
+   * forwarded to the adapter factory.
+   *
+   * The loop's `adapterProvider`/`emit` closures delegate to the swappable
+   * {@link turnLoopProfileName}/{@link turnLoopFetcher}/{@link turnLoopEmit}
+   * fields below: the loop instance is per-session (persistent, retains its
+   * buffer across stream reconnects) while the emit sink + profile context are
+   * per-stream (transient), installed on each {@link submit}.
+   */
+  private turnLoop: TurnLoop | null = null;
+  private turnLoopProfileName: string | null = null;
+  private turnLoopFetcher: ProfileFetcher | null = null;
+  private turnLoopEmit: TurnLoopEmit | null = null;
 
   constructor(
     private readonly getProviderFn: ProviderLookupFn,
@@ -84,8 +105,9 @@ export class SessionAgent {
 
   /**
    * Drop the cached adapter so the next getOrCreateAdapter call rebuilds it
-   * (e.g. after tool_names changed).  Caller MUST reject concurrent turns via
-   * the per-session mutex; invalidateAdapter does not synchronize.
+   * (e.g. after tool_names changed).  Caller MUST reject Refresh while a turn
+   * is in-flight (the handler checks {@link isRunning}); invalidateAdapter
+   * does not synchronize.
    */
   invalidateAdapter(): void {
     if (!this.adapter) {
@@ -103,6 +125,63 @@ export class SessionAgent {
 
   getBridge(): OperationBridge {
     return this.bridge;
+  }
+
+  /**
+   * Route a user-content submission to the per-session {@link TurnLoop} (the
+   * single-flight owner that replaces the per-frame mutex path). Installs the
+   * per-stream `emit` sink and profile context, lazily constructing the loop
+   * on first use (its `adapterProvider` reuses {@link getOrCreateAdapter} and
+   * the shared `MemorySaver` checkpointer). Non-blocking: returns once the
+   * content is started (IDLE) or buffered (RUNNING) — see
+   * `specs/030-queued-chat-input/contracts/turn-loop-contract.md`.
+   *
+   * (`style/javascript.md` §Mock — dependency injection: the adapter provider
+   * and emit sink are injected, so tests pass fakes rather than `vi.mock`.)
+   */
+  submit(
+    content: TurnContent,
+    profileName: string,
+    profileFetcher: ProfileFetcher,
+    emit: TurnLoopEmit,
+  ): void {
+    this.turnLoopProfileName = profileName;
+    this.turnLoopFetcher = profileFetcher;
+    this.turnLoopEmit = emit;
+    if (!this.turnLoop) {
+      this.turnLoop = new TurnLoop(
+        this.sessionId,
+        async () => {
+          // Resolve the bound adapter using the currently-installed profile
+          // context (stable per session — the profile-name guard upstream
+          // ensures a mismatched turn never reaches the loop).
+          const pn = this.turnLoopProfileName ?? profileName;
+          const fetcher = this.turnLoopFetcher ?? profileFetcher;
+          return this.getOrCreateAdapter(pn, fetcher);
+        },
+        (frame) => this.turnLoopEmit?.(frame),
+        profileName,
+      );
+    }
+    this.turnLoop.submit(content);
+  }
+
+  /**
+   * True iff the per-session TurnLoop has a turn in flight or is draining
+   * queued work. The single source for `deriveStatusSignal(isInFlight=…)`
+   * (replaces the former per-frame mutex-held check).
+   */
+  isRunning(): boolean {
+    return this.turnLoop?.isRunning() ?? false;
+  }
+
+  /**
+   * Abort the in-flight turn and clear the queue (FR-011). Called by the
+   * handler on stream end/error so the loop stops emitting to a dead peer.
+   * No-op if no turn is in flight.
+   */
+  abort(): void {
+    this.turnLoop?.abort();
   }
 
   private async serializeBind(
