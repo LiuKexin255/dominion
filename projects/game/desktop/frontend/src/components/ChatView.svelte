@@ -16,7 +16,16 @@
   // A flattened render item. Tool call + result collapse into ONE 'tool' item
   // keyed by tool_id (spec 023 FR-007 / data-model.md §5): a tool_call creates
   // the bubble; a later tool_result with the same tool_id merges into it in
-  // place (no new entry). text/thinking/image keep their own items.
+  // place (no new entry). text/thinking/image keep their own items. A pending
+  // (queued, not-yet-consumed) user message is flagged via the `pending`
+  // field on its 'part' items so it can be visually marked
+  // (specs/030-queued-chat-input/spec.md FR-008). NOTE: per the user decision,
+  // specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
+  // is NOT implemented in this feature —
+  // once a message enters the queue it cannot be deleted: the queue lives in
+  // the backend TurnLoop buffer and the inbound desktop→agent channel defines
+  // no remove semantics
+  // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1).
   type ToolItem = {
     kind: 'tool'
     key: string
@@ -32,13 +41,14 @@
   type RenderItem =
     | { kind: 'warn'; key: string; messageId: string; timestamp: string; message: string }
     | { kind: 'profile'; key: string; profile: string }
-    | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart }
+    | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart; pending?: boolean }
     | ToolItem
 
   let {
     messages,
     processing = false,
     queueCount = 0,
+    pendingMessageIds = [],
     loadingMessages = false,
     messagesError = null,
     onSend,
@@ -49,6 +59,7 @@
     messages: ChatEntry[]
     processing?: boolean
     queueCount?: number
+    pendingMessageIds?: string[]
     loadingMessages?: boolean
     messagesError?: string | null
     onSend: (text: string) => void
@@ -59,6 +70,11 @@
 
   let inputText = $state('')
   let scrollContainer: HTMLDivElement | undefined = $state()
+
+  // pendingIdSet is the O(1) lookup over the frontend-tracked pending message
+  // ids (App.svelte owns the FIFO list; the backend QueueSignal drives the
+  // count — specs/030-queued-chat-input/contracts/queue-channel-contract.md §5).
+  const pendingIdSet = $derived(new Set(pendingMessageIds))
 
   // renderItems flattens the chat entries into an ordered render list, merging
   // a tool_call and its later tool_result (same tool_id) into one evolving
@@ -85,6 +101,7 @@
       } else if (msg.sender !== FrameSender.AGENT) {
         lastAgentProfile = undefined
       }
+      const isPending = msg.sender === FrameSender.USER && pendingIdSet.has(msg.messageId)
       for (const part of parts) {
         const k = messagePartKind(part)
         if (k === 'toolCall') {
@@ -131,7 +148,7 @@
             if (tr.toolId) toolByKey.set(tr.toolId, item)
           }
         } else {
-          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part })
+          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part, pending: isPending || undefined })
         }
       }
       void agentProfileShown
@@ -238,7 +255,7 @@
             </div>
           {:else if kind === 'image'}
             {@const url = imageUrlForPart(item.part.image!)}
-            <div class="msg-row msg-image" class:msg-image-user={item.sender === FrameSender.USER}>
+            <div class="msg-row msg-image" class:msg-image-user={item.sender === FrameSender.USER} class:msg-pending={item.pending}>
               <details class="image-details">
                 <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
                 <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
@@ -246,8 +263,12 @@
             </div>
           {:else if kind === 'text' || kind === 'thinking'}
             <!-- Non-agent text (user / system) and thinking parts render via the
-                 ChatMessage bubble component. -->
-            <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
+                 ChatMessage bubble component. A pending (queued) user message
+                 is visually marked via .msg-pending
+                 (specs/030-queued-chat-input/spec.md FR-008). -->
+            <div class="msg-row" class:msg-pending={item.pending}>
+              <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
+            </div>
           {/if}
         {:else if item.kind === 'tool'}
           {@const resolved = item.result != null}
@@ -333,7 +354,9 @@
     {/if}
 
     {#if queueCount > 0}
-      <div class="queue-indicator">
+      <!-- Phase 5 (T011): queueCount is backend-driven by QueueSignal
+           (specs/030-queued-chat-input/spec.md FR-008). -->
+      <div class="queue-indicator" data-testid="queue-indicator">
         {queueCount} message{queueCount !== 1 ? 's' : ''} queued
       </div>
     {/if}
@@ -478,6 +501,16 @@
     font-size: 11px;
     color: #ffb86c;
     user-select: none;
+  }
+
+  /* ── Pending (queued) message visual mark
+       (specs/030-queued-chat-input/spec.md FR-008). Per the user decision
+       specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
+       is NOT implemented: a message that
+       has entered the backend queue cannot be deleted
+       (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1). ── */
+  .msg-pending {
+    opacity: 0.65;
   }
 
   /* ── Input Area ── */

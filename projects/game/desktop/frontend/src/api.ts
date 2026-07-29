@@ -158,7 +158,10 @@ export interface MouseMoveAndClickPart {
 }
 
 // FlowPart is one control-only block. Exactly one variant field is set; use
-// flowPartKind() to read the active variant.
+// flowPartKind() to read the active variant. The `queue` variant
+// (specs/030-queued-chat-input/spec.md FR-008) carries the per-session queue
+// depth pushed by the backend; see
+// QueueSignal below and specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
 export interface FlowPart {
   mouseMove?: MouseMovePart
   mouseClick?: MouseClickPart
@@ -167,6 +170,7 @@ export interface FlowPart {
   wait?: WaitSignal
   warn?: WarnSignal
   status?: StatusSignal
+  queue?: QueueSignal
 }
 
 export interface FlowParts {
@@ -186,7 +190,7 @@ export function messagePartKind(part: MessagePart): MessagePartKind | undefined 
 }
 
 // Active variant of a FlowPart, or undefined for an empty/unknown part.
-export type FlowPartKind = 'mouseMove' | 'mouseClick' | 'keyboardPress' | 'mouseMoveAndClick' | 'wait' | 'warn' | 'status'
+export type FlowPartKind = 'mouseMove' | 'mouseClick' | 'keyboardPress' | 'mouseMoveAndClick' | 'wait' | 'warn' | 'status' | 'queue'
 
 export function flowPartKind(part: FlowPart): FlowPartKind | undefined {
   if (part.mouseMove) return 'mouseMove'
@@ -196,6 +200,7 @@ export function flowPartKind(part: FlowPart): FlowPartKind | undefined {
   if (part.wait) return 'wait'
   if (part.warn) return 'warn'
   if (part.status) return 'status'
+  if (part.queue) return 'queue'
   return undefined
 }
 
@@ -258,6 +263,18 @@ export type StatusSignalStatus =
 
 export interface StatusSignal {
   status?: StatusSignalStatus
+}
+
+// QueueSignal carries the per-session queue depth pushed by the backend over
+// the flow channel whenever the depth changes (event-driven, not polled). The
+// desktop renders pending messages and transitions them to normal on consume
+// (specs/030-queued-chat-input/spec.md FR-008/FR-009). The proto field
+// `queued_count`
+// (lower_snake_case per [AIP-140](https://google.aip.dev/140)) arrives as
+// `queuedCount` in protojson camelCase. See
+// specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
+export interface QueueSignal {
+  queuedCount?: number
 }
 
 export interface AgentProfile {

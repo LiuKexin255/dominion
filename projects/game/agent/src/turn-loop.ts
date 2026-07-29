@@ -28,8 +28,14 @@
  * Drain path: on turn completion, ALL pending queued messages are merged into
  * ONE aggregated `HumanMessage` (multi content blocks, FIFO) and run as a
  * single next turn on the same `thread_id` (`specs/030-queued-chat-input/research.md`
- * D3; specs/030-queued-chat-input/spec.md FR-004/FR-005). `combineAll` performs the merge + buffer clear;
- * `QueueSignal` emission on depth change is wired in Phase 5 (T010).
+ * D3; specs/030-queued-chat-input/spec.md FR-004/FR-005). `combineAll` performs the merge + buffer clear.
+ *
+ * `QueueSignal` emission (Phase 5 / T010): the loop pushes a `QueueSignal`
+ * FlowPart over the flow channel on every per-session queue-depth change
+ * (submit⇒+1/new depth; drain-to-next-turn⇒0; abort⇒0), per
+ * `specs/030-queued-chat-input/contracts/queue-channel-contract.md` §2. The
+ * idle terminal emits no extra signal (depth is already 0 there), and a
+ * non-abort error retains the buffer so its depth is unchanged (no signal).
  */
 
 import { randomUUID } from "node:crypto";
@@ -125,8 +131,8 @@ function timestampNow(): { seconds: number; nanos: number } {
  * (`specs/030-queued-chat-input/contracts/turn-loop-contract.md` loop body;
  * `specs/030-queued-chat-input/data-model.md`).
  *
- * The `QueueSignal(0)` emission the contract prescribes after the clear is
- * added in Phase 5 (T010); it is intentionally omitted here.
+ * The caller (`runLoop`) emits `QueueSignal(0)` immediately after this clear,
+ * per specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
  */
 function combineAll(buffer: TurnContent[]): TurnContent {
   if (buffer.length === 0) {
@@ -191,13 +197,17 @@ export class TurnLoop {
 
   /**
    * Non-blocking. IDLE ⇒ start the loop with `content` (IDLE→RUNNING).
-   * RUNNING ⇒ append `content` to the FIFO buffer
-   * (specs/030-queued-chat-input/spec.md FR-002: never disturbs the
-   * in-flight turn). Returns immediately in both cases.
+   * RUNNING ⇒ append `content` to the FIFO buffer and push a `QueueSignal`
+   * carrying the new buffer depth
+   * (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2:
+   * "submit while a turn is RUNNING (buffer grows) → QueueSignal(new depth)").
+   * Never disturbs the in-flight turn
+   * (specs/030-queued-chat-input/spec.md FR-002). Returns immediately in both
+   * cases.
    *
-   * `QueueSignal` emission on submit (depth +1) is added in Phase 5 (T010);
-   * it is intentionally omitted here because the proto/emit wiring lands with
-   * T010 and is out of Phase 2 scope.
+   * The IDLE branch emits NO QueueSignal: depth stays 0 there (the message
+   * starts a turn rather than being buffered), so per the contract no
+   * depth-change signal is required.
    */
   submit(content: TurnContent): void {
     if (!this.running) {
@@ -208,6 +218,7 @@ export class TurnLoop {
       return;
     }
     this.buffer.push(content);
+    this.emit(this.queueSignalFrame(this.buffer.length));
   }
 
   /** True iff a turn is in flight or the loop is draining queued work. */
@@ -294,10 +305,16 @@ export class TurnLoop {
       // content blocks, FIFO) and run it as the next turn on the same
       // thread_id (specs/030-queued-chat-input/contracts/turn-loop-contract.md
       // loop body; specs/030-queued-chat-input/research.md D3).
-      // combineAll clears the buffer on drain. QueueSignal(depth 0) emission
-      // is added in Phase 5 (T010); intentionally omitted here.
+      // combineAll clears the buffer on drain; the contract
+      // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2:
+      // "Turn completes and buffer drained into the next turn → QueueSignal(0)")
+      // requires a depth-0 signal right after the clear, before the next turn
+      // starts, so the desktop transitions the pending messages to normal
+      // (specs/030-queued-chat-input/spec.md FR-009) and stays `processing`
+      // across the auto-continued turn boundary (no `wait` here).
       if (this.buffer.length > 0) {
         current = combineAll(this.buffer);
+        this.emit(this.queueSignalFrame(0));
         continue;
       }
 
@@ -308,12 +325,21 @@ export class TurnLoop {
     }
   }
 
-  /** Abort terminal: clear buffer (specs/030-queued-chat-input/spec.md FR-011), emit `wait`, → IDLE. */
+  /**
+   * Abort terminal: clear buffer (specs/030-queued-chat-input/spec.md FR-011),
+   * emit `QueueSignal(0)` then `wait`, → IDLE.
+   *
+   * The depth-0 signal precedes `wait` per
+   * specs/030-queued-chat-input/contracts/queue-channel-contract.md §2
+   * ("Abort clears the buffer → QueueSignal(0) then wait"), so the desktop
+   * drops its pending indicator before the idle `wait` returns it to ready.
+   */
   private finishAbort(): void {
     this.buffer = [];
     this.aborting = false;
     this.running = false;
     this.controller = null;
+    this.emit(this.queueSignalFrame(0));
     this.emit(this.waitFrame());
   }
 
@@ -406,6 +432,21 @@ export class TurnLoop {
     return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
       agentProfileName: this.profileName,
       flowParts: { parts: [{ wait: {} }] },
+    });
+  }
+
+  /**
+   * `QueueSignal` FlowPart frame carrying `depth` as `queued_count`
+   * (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2). The
+   * proto field `queued_count` (lower_snake_case per
+   * [AIP-140 Field names](https://google.aip.dev/140)) is emitted on the JS
+   * wire as `queuedCount` (proto-loader camelCase mapping — see the generated
+   * `FlowPart.queue`/`QueueSignal.queuedCount` in game_types). Sender SYSTEM
+   * matches `wait`/`warn` (control-only signals).
+   */
+  private queueSignalFrame(depth: number): AgentFrame {
+    return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
+      flowParts: { parts: [{ queue: { queuedCount: depth } }] },
     });
   }
 

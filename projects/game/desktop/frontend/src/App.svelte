@@ -76,6 +76,22 @@
   let chatMessages: ChatEntry[] = $state([])
   let processing = $state(false)
   let queueCount = $state(0)
+  // Phase 5 (T011): the backend QueueSignal drives `queueCount` (the indicator
+  // number); the frontend separately tracks WHICH optimistic user messages are
+  // still pending (FIFO list of messageIds) so the desktop can (a) transition
+  // them out of pending on consume (specs/030-queued-chat-input/spec.md
+  // FR-009) and (b) visually mark them pending
+  // (specs/030-queued-chat-input/spec.md FR-008). The count signal carries no
+  // message ids (specs/030-queued-chat-input/contracts/queue-channel-contract.md
+  // §5 "Resolved": the frontend tracks the messages it sent optimistically; the
+  // backend count confirms consumption), so this list is necessarily
+  // frontend-optimistic. NOTE: per the user decision,
+  // specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
+  // is NOT implemented in this feature — once a message enters
+  // the backend TurnLoop queue it cannot be deleted: the queue is server-side
+  // and the inbound desktop→agent channel defines no remove semantics
+  // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1).
+  let pendingMessageIds: string[] = $state([])
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
 
@@ -136,13 +152,14 @@
     // probe then refines it against the agent's real working state
     // (contracts/agent-desktop-channel-contract.md §1).
     processing = false
-    // Phase 3 (frontend-optimistic): the pending-queue count is client-tracked
-    // (no backend QueueSignal wired until Phase 5/T011). Re-entry MUST start
-    // from zero so the indicator reflects only messages genuinely still pending
-    // for this session (specs/030-queued-chat-input/spec.md edge case:
+    // Phase 5: the pending-queue count is backend-driven by QueueSignal
+    // (T011). Re-entry MUST start from zero so the indicator reflects only
+    // messages genuinely still pending for this session
+    // (specs/030-queued-chat-input/spec.md edge case:
     // "Session re-entry with a non-empty queue" — no stale count from a prior
-    // view).
+    // view). The backend replays the real depth if a turn is in flight.
     queueCount = 0
+    pendingMessageIds = []
     // FR-002: debug mode is not persisted; reset to OFF on page/session exit
     // and notify both layers so they stay in sync.
     if (debugMode) {
@@ -577,13 +594,14 @@
       for (const fp of frame.flowParts.parts ?? []) {
         if (fp.wait) {
           processing = false
-          // Phase 3 (frontend-optimistic): the backend TurnLoop emits `wait`
-          // only when the per-session queue is fully drained
-          // (specs/030-queued-chat-input/contracts/queue-channel-contract.md
-          // §3), so every optimistically-pending message has been consumed by
-          // the terminal turn boundary. Clear the count here. Phase 5/T011
-          // replaces this optimistic clear with the backend QueueSignal value.
+          // The backend TurnLoop emits `wait` only when the per-session queue
+          // is fully drained (specs/030-queued-chat-input/contracts/
+          // queue-channel-contract.md §3), after a QueueSignal(0). The count
+          // is therefore already 0 here; this clear is defensive (it guards a
+          // stream that somehow reached `wait` without the trailing
+          // QueueSignal, e.g. an older agent).
           queueCount = 0
+          pendingMessageIds = []
           if (playState === 'processing') playState = 'chat_ready'
         } else if (fp.warn) {
           chatMessages = [...chatMessages, {
@@ -592,6 +610,22 @@
             timestamp,
             warnMessage: fp.warn.message ?? '',
           }]
+        } else if (fp.queue) {
+          // Phase 5 (T011): the pending-queue count is now BACKEND-DRIVEN by
+          // QueueSignal.queued_count (replacing the Phase 3 optimistic ++).
+          // On every depth change the agent pushes this signal
+          // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2).
+          // Consume transition (specs/030-queued-chat-input/spec.md FR-009):
+          // when the depth drops, the drained messages are consumed by the
+          // next turn — transition them out of the pending list so they lose
+          // the pending visual mark and render as normal user turns. The
+          // TurnLoop drains ALL buffered messages into one combined turn (depth
+          // N→0), so a decrease to 0 clears the entire pending list.
+          const depth = fp.queue.queuedCount ?? 0
+          queueCount = depth
+          while (pendingMessageIds.length > depth) {
+            pendingMessageIds.shift()
+          }
         }
         // Operation FlowParts (mouse/keyboard) and status FlowParts are
         // executed by the Go backend / are lifecycle no-ops here — they never
@@ -620,10 +654,16 @@
     // queued === true means an agent turn is already in flight, so this
     // submission is buffered by the backend TurnLoop
     // (specs/030-queued-chat-input/spec.md FR-002) and rendered in a pending
-    // visual state (specs/030-queued-chat-input/spec.md FR-008). Phase 3 tracks
-    // the pending count optimistically on the client (no backend QueueSignal
-    // wired until Phase 5/T011). The frame is always sent immediately —
-    // `SendUserTurn` stays non-blocking
+    // visual state (specs/030-queued-chat-input/spec.md FR-008). Phase 5 (T011)
+    // drives the queue COUNT from the backend QueueSignal (no optimistic ++);
+    // the frontend still tracks WHICH messages are pending optimistically
+    // (pendingMessageIds) so it can visually mark them pending
+    // (specs/030-queued-chat-input/spec.md FR-008) and transition them on
+    // consume (specs/030-queued-chat-input/spec.md FR-009).
+    // (specs/030-queued-chat-input/spec.md FR-010 — removing a queued message
+    // — is intentionally NOT implemented: once submitted the message cannot be
+    // removed from the backend queue.)
+    // The frame is always sent immediately — `SendUserTurn` stays non-blocking
     // (specs/015-desktop-agent-refinement/spec.md) and the backend decides
     // buffer-vs-run.
     const queued = processing
@@ -647,6 +687,14 @@
           timestamp: new Date().toISOString(),
           parts: optimisticParts,
         }]
+        // Track the pending message id (FIFO) so ChatView can visually mark it
+        // pending (specs/030-queued-chat-input/spec.md FR-008) and so a later
+        // QueueSignal depth drop can transition it to normal
+        // (specs/030-queued-chat-input/spec.md FR-009). The count itself is
+        // backend-driven.
+        if (queued) {
+          pendingMessageIds = [...pendingMessageIds, msgId]
+        }
       }
       // `processing` stays true across the queued-turn boundary and is cleared
       // only by the terminal `wait` (specs/030-queued-chat-input/spec.md
@@ -655,7 +703,6 @@
       // otherwise.
       processing = true
       playState = 'processing'
-      if (queued) queueCount++
       const screenshotData = pendingScreenshot?.data ?? ''
       const screenshotWidthPx = pendingScreenshot?.widthPx ?? 0
       const screenshotHeightPx = pendingScreenshot?.heightPx ?? 0
@@ -673,15 +720,17 @@
       if (optimisticIds.length > 0) {
         const idSet = new Set(optimisticIds)
         chatMessages = chatMessages.filter(m => !idSet.has(m.messageId))
+        // Roll back the pending-tracking entry for the failed submission too.
+        pendingMessageIds = pendingMessageIds.filter(id => !idSet.has(id))
       }
       error = String(e)
       // A queued submission failing MUST NOT disturb the in-flight turn:
-      // roll back only the optimistic queue bump and leave `processing` true so
-      // the typing indicator still reflects the still-running turn. Only a
-      // first-message (idle) send failure returns the page to ready.
-      if (queued) {
-        queueCount = Math.max(0, queueCount - 1)
-      } else {
+      // leave `processing` true so the typing indicator still reflects the
+      // still-running turn. The backend QueueSignal is authoritative for the
+      // count, so no local count rollback is needed (the backend never grew
+      // the buffer for a send that failed to arrive). Only a first-message
+      // (idle) send failure returns the page to ready.
+      if (!queued) {
         processing = false
         if (playState === 'processing') playState = 'chat_ready'
       }
@@ -957,6 +1006,7 @@
           messages={chatMessages}
           {processing}
           {queueCount}
+          pendingMessageIds={pendingMessageIds}
           loadingMessages={playState === 'loading_messages'}
           messagesError={messagesError}
           onSend={handleSendChatText}
