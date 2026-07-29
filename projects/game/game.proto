@@ -325,6 +325,12 @@ message FlowPart {
     // NEW (spec 025 FR-023): the desktop's outcome of an executed FlowPart
     // operation, reported on the control channel.
     FlowResultPart        flow_result          = 8;
+    // NEW (spec 030 FR-008): agent-pushed per-session queue-depth signal so
+    // the desktop can render pending messages and transition them to normal
+    // on consume. Additive oneof variant (field tag 9, next free after
+    // flow_result). See
+    // specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
+    QueueSignal           queue                = 9;
   }
 }
 
@@ -443,6 +449,10 @@ message FlowResultPart {
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds — carried
 // by AgentFrame.flow_parts and never rendered as conversation entries. Their
 // message shapes are unchanged from spec 018.
+//
+// QueueSignal (spec 030 FR-008) is an additive FlowPart signal that carries
+// the per-session queue depth; see specs/030-queued-chat-input/contracts/
+// queue-channel-contract.md §2.
 
 // WaitSignal indicates the agent finished a turn and is waiting for input.
 message WaitSignal {
@@ -470,6 +480,18 @@ enum StatusSignalStatus {
 // watches for them and considers the agent lost if none arrive within 10s.
 message StatusSignal {
   StatusSignalStatus status = 1;
+}
+
+// QueueSignal carries the per-session queue depth: the number of user messages
+// currently buffered (waiting to be combined into the next agent turn). The
+// agent pushes it over the flow channel whenever the depth changes (event-
+// driven, not polled); the desktop renders pending messages and transitions
+// them to normal on consume (spec 030 FR-008/FR-009). Additive FlowPart kind;
+// see specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
+message QueueSignal {
+  // Current number of user messages buffered in the per-session queue
+  // (waiting to be combined into the next agent turn).
+  int32 queued_count = 1;
 }
 
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
