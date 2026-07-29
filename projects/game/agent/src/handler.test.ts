@@ -1028,6 +1028,104 @@ describe("Handler.Connect abort lifecycle", () => {
     stream.emit("end");
     expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
   });
+
+  // Edge case (a) from specs/030-queued-chat-input/spec.md: desktop
+  // disconnects mid-turn with messages queued. At the backend, a stream
+  // end triggers abortLoops → sessionAgent.abort() → turnLoop.abort() which
+  // clears the buffer (specs/030-queued-chat-input/spec.md FR-011) and
+  // emits QueueSignal(0) then wait. The queued message is discarded — it is
+  // NOT carried into an auto-continued turn. The "indicator reflects only
+  // genuinely pending messages" property (spec edge case a) is satisfied
+  // because the depth-0 signal precedes the terminal wait, so a reconnecting
+  // desktop sees depth 0 (no stale count).
+  it("disconnect with queued messages: abort clears queue, emits QueueSignal(0)+wait (specs/030-queued-chat-input/spec.md FR-011)", async () => {
+    const blocks: ContentBlock[] = [
+      { type: "text", text: "chunk-1" },
+      { type: "text", text: "chunk-2" },
+    ];
+    const { adapter } = createAbortAwareAdapter(blocks);
+    sessionAgentStore._setBinding(
+      "sess-queue-abort",
+      "helpful-assistant",
+      adapter,
+    );
+
+    const handler = createHandler({ promptClient, sessionAgentStore });
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    // Turn 1 starts (adapter parks after the first yield on the abort signal).
+    stream.emit(
+      "data",
+      userContentFrame("sess-queue-abort", "msg-1", "helpful-assistant"),
+    );
+    await flush();
+
+    // Queue msg-2 while turn 1 is in flight
+    // (specs/030-queued-chat-input/spec.md FR-002: buffered, not concurrent).
+    stream.emit(
+      "data",
+      userContentFrame("sess-queue-abort", "msg-2", "helpful-assistant"),
+    );
+
+    // The submit-while-running emitted a QueueSignal carrying depth 1
+    // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2).
+    const queueDepth1 = stream.written.some((f) => {
+      const fr = f as Record<string, unknown>;
+      if (fr.payload !== "flowParts") return false;
+      return (
+        fr.flowParts as { parts: { queue?: { queuedCount?: number } }[] }
+      ).parts.some((p) => p.queue?.queuedCount === 1);
+    });
+    expect(queueDepth1).toBe(true);
+
+    // Desktop disconnects mid-turn (stream end → abort).
+    stream.emit("end");
+    await flush();
+
+    // specs/030-queued-chat-input/spec.md FR-011: the queued msg-2 was
+    // discarded by the abort — no turn ran for it. Only turn 1's partial
+    // output (chunk-1) reached the stream; chunk-2 was never yielded (the
+    // adapter returned on abort).
+    const agentTextFrames = stream.written.filter(
+      (f) =>
+        (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
+        (f as Record<string, unknown>).payload === "messageParts",
+    );
+    expect(agentTextFrames).toHaveLength(1);
+
+    // The abort terminal emitted QueueSignal(0) BEFORE the terminal wait
+    // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2:
+    // "Abort clears the buffer → QueueSignal(0) then wait").
+    const allFrames = stream.written;
+    const queueZeroIdx = allFrames.findIndex((f) => {
+      const fr = f as Record<string, unknown>;
+      if (fr.payload !== "flowParts") return false;
+      return (
+        fr.flowParts as { parts: { queue?: { queuedCount?: number } }[] }
+      ).parts.some((p) => p.queue?.queuedCount === 0);
+    });
+    const waitIdx = allFrames.findIndex((f) => {
+      const fr = f as Record<string, unknown>;
+      if (fr.payload !== "flowParts") return false;
+      return (fr.flowParts as { parts: { wait?: unknown }[] }).parts.some(
+        (p) => p.wait,
+      );
+    });
+    expect(queueZeroIdx).toBeGreaterThanOrEqual(0);
+    expect(waitIdx).toBeGreaterThan(queueZeroIdx);
+
+    // Exactly one terminal wait (specs/030-queued-chat-input/spec.md FR-011:
+    // abort emits wait to return the desktop to ready).
+    const waitFrames = allFrames.filter((f) => {
+      const fr = f as Record<string, unknown>;
+      if (fr.payload !== "flowParts") return false;
+      return (fr.flowParts as { parts: { wait?: unknown }[] }).parts.some(
+        (p) => p.wait,
+      );
+    });
+    expect(waitFrames).toHaveLength(1);
+  });
 });
 
 // ===========================================================================

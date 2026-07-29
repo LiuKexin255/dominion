@@ -800,6 +800,94 @@ func frameStatus(f *game.AgentFrame) *game.StatusSignal {
 	return nil
 }
 
+// frameQueueSignal returns the QueueSignal in a flow_parts frame, or nil when
+// the frame carries no queue FlowPart. The agent pushes a QueueSignal whenever
+// the per-session queue depth changes (submit⇒new depth, drain⇒0, abort⇒0)
+// per specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
+// Used by the agent-dialog queue-while-running suite to assert depth changes.
+func frameQueueSignal(f *game.AgentFrame) *game.QueueSignal {
+	fp := frameFlowParts(f)
+	if fp == nil {
+		return nil
+	}
+	for _, p := range fp.GetParts() {
+		if q := p.GetQueue(); q != nil {
+			return q
+		}
+	}
+	return nil
+}
+
+// frameHasQueueSignal reports whether a flow_parts frame carries a QueueSignal
+// FlowPart. Used as a drainWSFrame predicate.
+func frameHasQueueSignal(f *game.AgentFrame) bool {
+	return frameQueueSignal(f) != nil
+}
+
+// drainUntilWait reads frames until a wait FlowPart is observed (turn/loop
+// idle) or the read limit is exhausted, returning ALL frames read in order.
+// The wait FlowPart marks the end of a turn or the full drain of the
+// per-session TurnLoop (specs/030-queued-chat-input/contracts/turn-loop-contract.md).
+// Used by the queue-while-running suite to collect the full frame stream for
+// depth-sequence and turn-count analysis.
+func drainUntilWait(t *testing.T, conn *websocket.Conn) []*game.AgentFrame {
+	t.Helper()
+	var frames []*game.AgentFrame
+	for i := 0; i < 60; i++ {
+		frame := readWSFrame(t, conn)
+		frames = append(frames, frame)
+		if frameWait(frame) != nil {
+			return frames
+		}
+	}
+	return frames
+}
+
+// queueSignalDepths extracts the ordered sequence of QueueSignal.queued_count
+// values from a slice of frames (specs/030-queued-chat-input/contracts/
+// queue-channel-contract.md §2). Used to assert the depth-change emission
+// rules: submit⇒+1/new depth, drain-to-next-turn⇒0.
+func queueSignalDepths(frames []*game.AgentFrame) []int32 {
+	var depths []int32
+	for _, f := range frames {
+		if q := frameQueueSignal(f); q != nil {
+			depths = append(depths, q.GetQueuedCount())
+		}
+	}
+	return depths
+}
+
+// countWaitFrames counts how many frames in the slice carry a wait FlowPart.
+// Each wait marks a turn/loop boundary; the queue-while-running suite asserts
+// exactly ONE terminal wait when messages are queued and auto-handed-off
+// (specs/030-queued-chat-input/spec.md FR-006).
+func countWaitFrames(frames []*game.AgentFrame) int {
+	count := 0
+	for _, f := range frames {
+		if frameWait(f) != nil {
+			count++
+		}
+	}
+	return count
+}
+
+// collectTextContents returns the text content of every agent-sent text
+// MessagePart frame in the slice, in order. Used to verify which queued
+// messages produced turns and in what order.
+func collectTextContents(frames []*game.AgentFrame) []string {
+	var texts []string
+	for _, f := range frames {
+		if f.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
+			continue
+		}
+		if !frameHasText(f) {
+			continue
+		}
+		texts = append(texts, frameText(f))
+	}
+	return texts
+}
+
 // messageKind returns the MessagePart-kind string of the first part in a
 // Message's content MessageParts ("text", "thinking", "image", "toolCall",
 // "toolResult"), or "" if the message has no content. Only MessagePart kinds
