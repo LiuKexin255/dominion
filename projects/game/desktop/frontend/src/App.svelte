@@ -136,6 +136,13 @@
     // probe then refines it against the agent's real working state
     // (contracts/agent-desktop-channel-contract.md §1).
     processing = false
+    // Phase 3 (frontend-optimistic): the pending-queue count is client-tracked
+    // (no backend QueueSignal wired until Phase 5/T011). Re-entry MUST start
+    // from zero so the indicator reflects only messages genuinely still pending
+    // for this session (specs/030-queued-chat-input/spec.md edge case:
+    // "Session re-entry with a non-empty queue" — no stale count from a prior
+    // view).
+    queueCount = 0
     // FR-002: debug mode is not persisted; reset to OFF on page/session exit
     // and notify both layers so they stay in sync.
     if (debugMode) {
@@ -570,6 +577,13 @@
       for (const fp of frame.flowParts.parts ?? []) {
         if (fp.wait) {
           processing = false
+          // Phase 3 (frontend-optimistic): the backend TurnLoop emits `wait`
+          // only when the per-session queue is fully drained
+          // (specs/030-queued-chat-input/contracts/queue-channel-contract.md
+          // §3), so every optimistically-pending message has been consumed by
+          // the terminal turn boundary. Clear the count here. Phase 5/T011
+          // replaces this optimistic clear with the backend QueueSignal value.
+          queueCount = 0
           if (playState === 'processing') playState = 'chat_ready'
         } else if (fp.warn) {
           chatMessages = [...chatMessages, {
@@ -603,6 +617,16 @@
     // The SSE chat stream auto-reconnects independently of the agent
     // WebSocket; re-establishing the WS path needs no history re-fetch here.
     const optimisticIds: string[] = []
+    // queued === true means an agent turn is already in flight, so this
+    // submission is buffered by the backend TurnLoop
+    // (specs/030-queued-chat-input/spec.md FR-002) and rendered in a pending
+    // visual state (specs/030-queued-chat-input/spec.md FR-008). Phase 3 tracks
+    // the pending count optimistically on the client (no backend QueueSignal
+    // wired until Phase 5/T011). The frame is always sent immediately —
+    // `SendUserTurn` stays non-blocking
+    // (specs/015-desktop-agent-refinement/spec.md) and the backend decides
+    // buffer-vs-run.
+    const queued = processing
     try {
       // Optimistic user turn: mirror the backend's single user-turn frame,
       // which carries [TextPart, ImagePart] as one PartBlock. One local id →
@@ -624,14 +648,18 @@
           parts: optimisticParts,
         }]
       }
+      // `processing` stays true across the queued-turn boundary and is cleared
+      // only by the terminal `wait` (specs/030-queued-chat-input/spec.md
+      // FR-002): the backend emits `wait` solely on full drain, so re-asserting
+      // true here is a no-op when queued and the correct "turn started" signal
+      // otherwise.
       processing = true
       playState = 'processing'
-      queueCount++
+      if (queued) queueCount++
       const screenshotData = pendingScreenshot?.data ?? ''
       const screenshotWidthPx = pendingScreenshot?.widthPx ?? 0
       const screenshotHeightPx = pendingScreenshot?.heightPx ?? 0
       pendingScreenshot = null
-      queueCount = Math.max(0, queueCount - 1)
       await sendUserTurn(
         selectedSession.sessionId,
         text,
@@ -647,9 +675,16 @@
         chatMessages = chatMessages.filter(m => !idSet.has(m.messageId))
       }
       error = String(e)
-      processing = false
-      queueCount = Math.max(0, queueCount - 1)
-      if (playState === 'processing') playState = 'chat_ready'
+      // A queued submission failing MUST NOT disturb the in-flight turn:
+      // roll back only the optimistic queue bump and leave `processing` true so
+      // the typing indicator still reflects the still-running turn. Only a
+      // first-message (idle) send failure returns the page to ready.
+      if (queued) {
+        queueCount = Math.max(0, queueCount - 1)
+      } else {
+        processing = false
+        if (playState === 'processing') playState = 'chat_ready'
+      }
       log('error', 'chat', `Send failed: ${String(e)}`)
     }
   }

@@ -348,6 +348,11 @@
         <button class="attachment-remove" onclick={onRemoveScreenshot} data-testid="remove-attachment">✕</button>
       </div>
     {/if}
+    <!-- Input stays editable/submittable while an agent turn is in progress
+         (specs/030-queued-chat-input/spec.md FR-001). A submit during a run is
+         buffered by the backend TurnLoop (specs/030-queued-chat-input/spec.md
+         FR-002) and rendered as pending via queueCount; the empty-input guard
+         below is unrelated to the processing state. -->
     <textarea
       class="chat-input"
       data-testid="chat-input"
@@ -355,13 +360,12 @@
       bind:value={inputText}
       onkeydown={handleKeydown}
       rows={1}
-      disabled={processing}
     ></textarea>
     <button
       class="send-btn"
       data-testid="chat-send-btn"
       onclick={handleSend}
-      disabled={processing || (!inputText.trim() && !pendingScreenshot)}
+      disabled={!inputText.trim() && !pendingScreenshot}
     >
       Send
     </button>
