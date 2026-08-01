@@ -59,6 +59,7 @@ use_repo(
     "com_github_minio_minio_go_v7",
     "com_github_pkg_browser",
     "com_github_pkg_errors",
+    "com_github_protoc_contrib_protoc_gen_go_aip",
     "com_github_pterm_pterm",
     "com_github_sabhiram_go_gitignore",
     "com_github_samber_lo",

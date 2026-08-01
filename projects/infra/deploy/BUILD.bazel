@@ -61,6 +61,7 @@ go_proto_library(
         "@rules_go//proto:go_grpc_v2",
         "@rules_go//proto:go_proto",
         "@grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway",
+        "//:go_gen_aip",
     ],
     importpath = "dominion/projects/infra/deploy",
     proto = ":deploy_proto",

@@ -1,8 +1,10 @@
 load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("@rules_go//proto:compiler.bzl", "go_proto_compiler")
 
 # gazelle:prefix dominion
-# gazelle:go_grpc_compilers @rules_go//proto:go_grpc_v2, @rules_go//proto:go_proto, @grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway
+# gazelle:go_grpc_compilers @rules_go//proto:go_grpc_v2, @rules_go//proto:go_proto, @grpc_ecosystem_grpc_gateway//protoc-gen-grpc-gateway:go_gen_grpc_gateway, //:go_gen_aip
+# gazelle:go_proto_compilers @rules_go//proto:go_proto, //:go_gen_aip
 # gazelle:map_kind go_test go_unittest //tools/dev/go:defs.bzl
 # gazelle:alias_kind go_largetest go_test
 
@@ -44,6 +46,20 @@ gazelle(
         "-index=lazy",
     ],
     gazelle = ":gazelle_multilang",
+)
+
+# go_gen_aip wraps protoc-contrib/protoc-gen-go-aip, generating type-safe
+# resource-name parsers (e.g. ParseSessionName) from google.api.resource
+# annotations. Applied to every go_proto_library via the go_grpc_compilers /
+# go_proto_compilers directives above. Mirrors the grpc-gateway compiler
+# precedent. The generated *_aip.pb.resource.go is self-contained (stdlib
+# only); resource-less protos get a `// +build ignore` stub, so workspace-wide
+# application is safe. Spike: experimental/golang/aip_codegen/FINDINGS.md.
+go_proto_compiler(
+    name = "go_gen_aip",
+    plugin = "@com_github_protoc_contrib_protoc_gen_go_aip//cmd/protoc-gen-go-aip:protoc-gen-go-aip",
+    suffix = "_aip.pb.resource.go",
+    visibility = ["//visibility:public"],
 )
 
 # 生成 node_modules（运行时需要）

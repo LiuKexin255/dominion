@@ -88,7 +88,7 @@ service DeployService {
 
 message Environment {
   option (google.api.resource) = {
-    type: "infra.liukexin.com/deploy/Environment"
+    type: "deploy.infra.liukexin.com/Environment"
     pattern: "deploy/scopes/{scope}/environments/{env_name}"
     plural: "environments"
     singular: "environment"
@@ -116,7 +116,7 @@ message Environment {
 // from the perspective of an environment.
 message ServiceEndpoints {
   option (google.api.resource) = {
-    type: "infra.liukexin.com/deploy/ServiceEndpoints"
+    type: "deploy.infra.liukexin.com/ServiceEndpoints"
     pattern: "deploy/scopes/{scope}/environments/{env_name}/apps/{app}/services/{service}/endpoints"
     plural: "serviceEndpoints"
     singular: "serviceEndpoints"
@@ -291,7 +291,7 @@ message GetEnvironmentRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/Environment"
+      type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 }
@@ -300,7 +300,7 @@ message GetServiceEndpointsRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/ServiceEndpoints"
+      type: "deploy.infra.liukexin.com/ServiceEndpoints"
     }
   ];
 
@@ -311,7 +311,7 @@ message ListEnvironmentsRequest {
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "infra.liukexin.com/deploy/Environment"
+      child_type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 
@@ -332,7 +332,7 @@ message CreateEnvironmentRequest {
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "infra.liukexin.com/deploy/Environment"
+      child_type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 
@@ -351,7 +351,7 @@ message DeleteEnvironmentRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/Environment"
+      type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 }
