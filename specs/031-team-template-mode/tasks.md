@@ -30,8 +30,8 @@
 
 ### Tasks
 
-- [ ] T001 Add `mongodb` TS driver to `pnpm-workspace.yaml` catalog (root `pnpm-workspace.yaml` catalog section); run `bazel run @pnpm -- --dir /mnt/code/dominion up` to update lockfile
-- [ ] T002 Add `mongodb` dependency to `projects/game/agent/package.json` dependencies (reference catalog entry from T001); run `bazel run //:gazelle projects/game/agent` to update `projects/game/agent/BUILD.bazel`; verify `bazel build projects/game/agent:lib`
+- [X] T001 Add `mongodb` TS driver to `pnpm-workspace.yaml` catalog (root `pnpm-workspace.yaml` catalog section); run `bazel run @pnpm -- --dir /mnt/code/dominion up` to update lockfile
+- [X] T002 Add `mongodb` dependency to `projects/game/agent/package.json` dependencies (reference catalog entry from T001); run `bazel run //:gazelle projects/game/agent` to update `projects/game/agent/BUILD.bazel`; verify `bazel build projects/game/agent:lib`
 
 ---
 
@@ -62,7 +62,7 @@
 
 ### Tasks
 
-- [ ] T003 Rewrite `projects/game/game.proto` — **先删除后新增**（clean break，参照 `contracts/api-contract.md`）：
+- [X] T003 Rewrite `projects/game/game.proto` — **先删除后新增**（clean break，参照 `contracts/api-contract.md`）：
   - **删除**：`ProxyService`、`AgentService`、`Agent`（message）、`AgentProfile`（message + 全部 Request/Response）、`Skill`（message + 全部 Request/Response）、`RefreshAgentRequest`、`GetAgentRequest`；`Session` pattern 改为 `templates/{template}/sessions/{session}`；`Message` pattern 改为含 agents 分区；`AgentFrame` field 7 `agent_profile_name` 改名 `agent`。
   - **新增**：`message Template`（`google.api.resource` 注解：type `game.liukexin.com/Template`，pattern `templates/{template}`，singular/plural；无任何 RPC，FR-001——见注 1）；`message TeamAgent { string name=1; bool accepts_user_input=2; }`；`message Team`（pattern `templates/{template}/sessions/{session}/team`，含 `repeated TeamAgent agents`）；`TeamService`（`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam`，取代 ProxyService+AgentService）；`message TeamProfile`（pattern `templates/{template}/profiles/{profile}`，含 `string template`（REQUIRED + `resource_reference` type `game.liukexin.com/Template`）+ `oneof spec { SaoleiProfile saolei=10; }`）；`message SaoleiProfile { string player_model=1; string planner_model=2; }`；PromptService 改为 TeamProfile CRUD（CreateTeamProfile/GetTeamProfile/ListTeamProfiles/UpdateTeamProfile/DeleteTeamProfile）。
   - **保留不变**：`MessageParts`/`FlowParts`/`MessagePart`/`FlowPart` 及其子消息（TextPart/ThinkingPart/ImagePart 等）、`FrameSender` enum、其他 enums。`Message` 资源仅改 pattern + 加 `agent` field。
@@ -71,7 +71,7 @@
   - 验证 `bazel build projects/game:game_proto`。
 
 > **注 1（设计修订）**：Template 实现为资源消息（`message Template`，无任何 RPC）而非 proto enum；`Session.template`（OUTPUT_ONLY）/`TeamProfile.template`（REQUIRED）为 `string` + `resource_reference`（值 = 模板资源名 `templates/{template}`）；具体模板值在 gameconst 常量（`SaoleiTemplate`）；资源名解析由 `protoc-gen-go-aip` codegen 生成（`ParseTemplateName` 等），见 `contracts/api-contract.md` §3.1/§5。
-- [ ] T004 Rewrite `projects/game/pkg/gameconst/const.go` — **先删除后新增**（参照 `contracts/api-contract.md` §5）：
+- [X] T004 Rewrite `projects/game/pkg/gameconst/const.go` — **先删除后新增**（参照 `contracts/api-contract.md` §5）：
   - **删除**：`SessionNamePrefix`、`AgentProfileNamePrefix`、`SkillNamePrefix`、`PromptsParent`；`AgentName`/`AgentSessionID`/`AgentProfileName`/`AgentProfileID`/`SkillName`/`SkillID`；对应 error vars（`ErrInvalidAgentProfileName`/`ErrInvalidSkillName`/`ErrInvalidAgentName`）。
   - **新增**：Template 常量与校验——`var SaoleiTemplate = game.TemplateName{TemplateID: "saolei"}`（具体模板值，非 proto enum）、`ValidateTemplateName(name game.TemplateName) error`、`IsKnownTemplateID(segment string) bool`、`ErrInvalidTemplate`。保留 gRPC target 常量（`SessionTarget`/`ProxyTarget`→rename 为 `TeamTarget`/`AgentTarget`/`PromptTarget` 等，按实际 proto service 名调整）、log field 常量。
   - **注 2（设计修订）**：资源名解析不再手写于 gameconst——由 `protoc-gen-go-aip` codegen 生成（`ParseTemplateName`/`ParseSessionName`/`ParseTeamName`/`ParseTeamProfileName`/`ParseMessageName` 及 `ParseName()`/`ParseTemplate()`/`Parent()`），见 `contracts/api-contract.md` §5。
@@ -95,20 +95,20 @@
 
 ### Tasks
 
-- [ ] T005 [P] [US1] Rewrite session service for template-scoped paths in `projects/game/session/handler/handler.go` + `projects/game/session/handler/handler_test.go` — **先删除后新增**：
+- [X] T005 [P] [US1] Rewrite session service for template-scoped paths in `projects/game/session/handler/handler.go` + `projects/game/session/handler/handler_test.go` — **先删除后新增**：
   - `CreateSession`：request parent 从 `sessions` 改为 `templates/{template}`；提取 template 段；proto `Session` 增加 `template` 字段回填；`gameconst.SessionName(template, id)` 替换旧 `SessionName(id)`。
   - `GetSession`/`DeleteSession`：`gameconst.SessionID(name)` 返回 `(template, sessionID)`；校验 template 合法。
   - `ListSessions`：parent 从 `sessions` 改为 `templates/{template}`。
   - `cmd/main.go`：wiring 不变（proxy client → team client 后续 Phase 5 处理 agent 端，此处 proxy→team 由 T006 覆盖）。
   - domain/model.go `Session` struct 加 `Template string` 字段；mongo model.go 加对应 BSON field。
   - 验证 `bazel build projects/game/session:grpc` + `bazel test projects/game/session/...`。
-- [ ] T006 [P] [US1] Rewrite proxy service → TeamService in `projects/game/proxy/handler/handler.go` + `handler_test.go` + `runtime/agentclient/client.go` + `cmd/main.go` — **先删除后新增**：
+- [X] T006 [P] [US1] Rewrite proxy service → TeamService in `projects/game/proxy/handler/handler.go` + `handler_test.go` + `runtime/agentclient/client.go` + `cmd/main.go` — **先删除后新增**：
   - **删除** handler 中 `GetAgent`/`ListMessages`(old)/`ConnectAgent`/`RefreshAgent` 实现。
   - **新增** `GetTeam`（GET `templates/*/sessions/*/team`，解析 `gameconst.TeamSessionID`，lookup owner，调下游 `client.GetTeam`）；`Connect`（bidi stream，端点 `templates/{template}/sessions/{session}/connect`，assign owner 逻辑复用）；`ListMessages`（GET `.../agents/*/messages`，按 agent 分区，解析 `gameconst.MessageAgentParse`）；`RefreshTeam`（POST `.../team:refresh`）。
   - `agentclient/client.go`：`Client` interface 改为 `GetTeam`/`Connect`(TeamService_ConnectClient)/`ListMessages`/`RefreshTeam`；`AgentClient` wrapper 改为 `game.TeamServiceClient`。
   - `agentclient/manager.go`：gRPC target 改为 `game/team:grpc`（或按 proto service 名）。
   - 验证 `bazel build projects/game/proxy/...` + `bazel test projects/game/proxy/...`。
-- [ ] T007 [P] [US1] Rewrite prompt service — delete AgentProfile/Skill, implement TeamProfile CRUD in `projects/game/prompt/domain/model.go` + `domain/repository.go` + `domain/errors.go` + `handler/handler.go` + `handler/handler_test.go` + `runtime/mongo/model.go` + `runtime/mongo/repository.go` + `runtime/mongo/repository_test.go` + `cmd/main.go` — **先删除后新增**：
+- [X] T007 [P] [US1] Rewrite prompt service — delete AgentProfile/Skill, implement TeamProfile CRUD in `projects/game/prompt/domain/model.go` + `domain/repository.go` + `domain/errors.go` + `handler/handler.go` + `handler/handler_test.go` + `runtime/mongo/model.go` + `runtime/mongo/repository.go` + `runtime/mongo/repository_test.go` + `cmd/main.go` — **先删除后新增**：
   - **删除**：`AgentProfile` struct、`Skill` struct、`AgentProfileRepository`/`SkillRepository` interfaces；handler 中全部 AgentProfile/Skill RPC 实现（CreateAgentProfile/GetAgentProfile/ListAgentProfiles/UpdateAgentProfile/DeleteAgentProfile/CreateSkill/GetSkill/ListSkills/DeleteSkill）；mongo `agentProfileDocument`/`skillDocument`/对应 filter；`agent_profiles`/`skills` collection 操作。
   - **新增**：`TeamProfile` domain struct（`TeamProfileName`/`Template`/`SaoleiPlayerModel`/`SaoleiPlannerModel`/`CreateTime`/`UpdateTime`）；`TeamProfileRepository` interface（Create/Get/List/Update/Delete）；handler TeamProfile CRUD（`CreateTeamProfile`/`GetTeamProfile`/`ListTeamProfiles`/`UpdateTeamProfile`/`DeleteTeamProfile`）——校验 `template` 与 oneof 变体一致（FR 禁潜规则）；UpdateTeamProfile 支持 update_mask（含 oneof 成员路径 `saolei.player_model`/`saolei.planner_model`）；mongo `teamProfileDocument`（`team_profiles` 集合，unique index on `team_profile_name`）；repository 实现。
   - `cmd/main.go`：`NewRepository` 改 collection 为 `team_profiles`；wiring 简化（仅 TeamProfileRepository）。
@@ -132,14 +132,14 @@
 
 ### Tasks
 
-- [ ] T008 [US3] Add `SaoleiEventSink` interface and `sink?` parameter to `createSaoleiMcpServer` in `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` + update `projects/game/agent/src/mcp/saolei/saolei-mcp.test.ts` — **先改签名后接线**：
+- [X] T008 [US3] Add `SaoleiEventSink` interface and `sink?` parameter to `createSaoleiMcpServer` in `projects/game/agent/src/mcp/saolei/saolei-mcp.ts` + update `projects/game/agent/src/mcp/saolei/saolei-mcp.test.ts` — **先改签名后接线**：
   - 定义 `export interface SaoleiEventSink { onGameStart(state: GameState): void|Promise<void>; onMove(tool: CellTool, x: number, y: number, state: GameState): void|Promise<void>; onGameEnd(state: GameState, status: "won"|"lost"): void|Promise<void>; }`（参照 `contracts/saolei-sink-contract.md` §1；**不引用 team/strategy/store/teamMemoryId**）。
   - `createSaoleiMcpServer(bridge, boardApi?, sink?)` 增第三可选参数 `sink?: SaoleiEventSink`（默认 `undefined`）。
   - 在 saolei MCP handler 内接线：`saolei_init` recognize 成功后调 `sink?.onGameStart(state)`；`saolei_click`/`saolei_flag` recognize 成功后调 `sink?.onMove(tool, x, y, state)`；`gameStatus(state)`（`:253`）变为 won/lost 时调 `sink?.onGameEnd(state, status)`。
   - **错误隔离**：sink 回调用 try/catch 包裹 + 日志，异常不影响工具返回值（`contracts/saolei-sink-contract.md` §5）。
   - 单测：未传 sink 时全部工具行为不变（对照现有测试基线）；传记录型 sink 后 onGameStart/onMove/onGameEnd 按时机回调且 `status` 为 `"won"|"lost"` 枚举。
   - 验证 `bazel test projects/game/agent:lib_test`（含 saolei-mcp.test.ts）。
-- [ ] T009 [US3] Update `projects/game/agent/src/mcp-host.ts` + `mcp-host.test.ts` — extend `SessionBridgeLookup` to carry team sink:
+- [X] T009 [US3] Update `projects/game/agent/src/mcp-host.ts` + `mcp-host.test.ts` — extend `SessionBridgeLookup` to carry team sink:
   - `SessionBridgeLookup` 类型扩展：返回值增加 `sink?: SaoleiEventSink`（由 SessionTeam 提供，绑定 ephemeral buffer；Phase 5 SessionTeam 实现后注入）。
   - 修正 `mcp-host.ts:9` 过时注释（spec 025 后 `recognized` 状态已存在）。
   - `createSaoleiMcpServer` 调用处传递 `lookup(sessionId).sink`（如有）。
