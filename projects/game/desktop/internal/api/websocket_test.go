@@ -93,7 +93,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 
 	// when: client connects
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "sess-123", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	// We check by reconstructing the expected URL the client would build.
 	// The httptest server URL is http://127.0.0.1:PORT, so convertToWS gives ws://127.0.0.1:PORT
 	wsURL, _ := convertToWS(srv.URL)
-	expectedPath := "/api/v1/sessions/sess-123/connect"
+	expectedPath := "/api/v1/templates/saolei/sessions/sess-123/connect"
 
 	// Make a direct request to verify path — use a second server for path capture
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	defer srv2.Close()
 
 	ws2 := &WSClient{}
-	err = ws2.Connect(context.Background(), srv2.URL, "sess-123", "test-env")
+	err = ws2.Connect(context.Background(), srv2.URL, "saolei", "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 
 	// when: client connects with env header
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "session-1", "production")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "session-1", "production")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 
 	// when: client connects and sends a status signal
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 
 	// when: client connects and sends a messageParts frame with text+image parts
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestWSConnect_Traceparent(t *testing.T) {
 
 	// when: connect with the trace context
 	ws := &WSClient{}
-	err := ws.Connect(ctx, srv.URL, "sess-trace", "test-env")
+	err := ws.Connect(ctx, srv.URL, "saolei", "sess-trace", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestWSClient_CloseDuringRecvFrame_NoDeadlock(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	if err := ws.Connect(context.Background(), srv.URL, "deadlock-test", "test-env"); err != nil {
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "deadlock-test", "test-env"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
 
@@ -475,7 +475,7 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestWSClient_SendRecvFrame_LargeFrame(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	if err := ws.Connect(context.Background(), srv.URL, "large-frame", "test-env"); err != nil {
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "large-frame", "test-env"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
 	defer ws.Close()
@@ -609,7 +609,7 @@ func TestWSClient_RecvFrame_OversizedError(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	if err := ws.Connect(context.Background(), srv.URL, "oversized", "test-env"); err != nil {
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "oversized", "test-env"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
 	defer ws.Close()

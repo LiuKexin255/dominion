@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	game "dominion/projects/game"
-	gameconst "dominion/projects/game/pkg/gameconst"
+	"dominion/projects/game"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -16,6 +15,7 @@ import (
 type SessionView struct {
 	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
+	Template   string `json:"template"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -25,12 +25,21 @@ type ListSessionsView struct {
 	NextPageToken string         `json:"nextPageToken,omitempty"`
 }
 
-// AgentView is the Wails view model for the active session agent.
-// AgentProfileName represents the active profile (may be empty initially,
-// set after the first message).
-type AgentView struct {
-	SessionID        string `json:"sessionId"`
-	AgentProfileName string `json:"agentProfileName"`
+// TeamView is the Wails view model for game.Team: the execution subject of a
+// session with its per-template agents (spec 031-team-template-mode
+// contracts/api-contract.md §3.3).
+type TeamView struct {
+	Name       string           `json:"name"`
+	SessionID  string           `json:"sessionId"`
+	Agents     []*TeamAgentView `json:"agents"`
+	CreateTime string           `json:"createTime,omitempty"`
+}
+
+// TeamAgentView is the Wails view model for game.TeamAgent: one agent inside
+// the team, with its user-input acceptance flag (FR-031).
+type TeamAgentView struct {
+	Name             string `json:"name"`
+	AcceptsUserInput bool   `json:"acceptsUserInput"`
 }
 
 // MessageViewModel is the Wails view model for game.Message. The message
@@ -44,8 +53,59 @@ type MessageViewModel struct {
 	Name       string         `json:"name"`
 	MessageID  string         `json:"messageId"`
 	Sender     string         `json:"sender"`
+	Agent      string         `json:"agent"`
 	CreateTime string         `json:"createTime,omitempty"`
 	Content    map[string]any `json:"content,omitempty"`
+}
+
+// CreateTeamProfileView is the Wails input struct for creating a TeamProfile.
+// The template-specific spec is the typed oneof variant (saolei:
+// SaoleiProfile{player_model, planner_model}) — no generic key-value fields
+// (spec 031-team-template-mode contracts/api-contract.md §3.5).
+type CreateTeamProfileView struct {
+	ProfileName  string `json:"profileName"`
+	PlayerModel  string `json:"playerModel"`
+	PlannerModel string `json:"plannerModel"`
+}
+
+// TeamProfileView is the Wails view model for game.TeamProfile. The spec
+// oneof is flattened per-template: for saolei the active variant
+// (spec.saolei) projects to PlayerModel/PlannerModel.
+type TeamProfileView struct {
+	Name         string `json:"name"`
+	ProfileName  string `json:"profileName"`
+	Template     string `json:"template"`
+	PlayerModel  string `json:"playerModel"`
+	PlannerModel string `json:"plannerModel"`
+}
+
+// ListTeamProfilesView is the Wails view model for game.ListTeamProfilesResponse.
+type ListTeamProfilesView struct {
+	TeamProfiles  []*TeamProfileView `json:"teamProfiles"`
+	NextPageToken string             `json:"nextPageToken,omitempty"`
+}
+
+// ChatStreamHandoff is returned by OpenChatStream and carries the
+// connection parameters the frontend uses to open an EventSource:
+//
+//   - Endpoint: the full SSE endpoint URL
+//     (http://127.0.0.1:<port>/api/v1/chat/stream), stable for the
+//     process lifetime.
+//   - Token: a fresh crypto/rand auth token, rotated on every
+//     OpenChatStream call so a re-entry invalidates old subscribers.
+//   - LastEventID: the highest event ID currently in the log (the
+//     highest ID the frontend has already received). Debug/observability
+//     only; EventSource cannot set Last-Event-ID on the initial connect
+//     so the frontend does NOT consume it as a query param.
+//
+// OpenChatStream seeds history synchronously from ListMessages.
+// Assumption (current single-session desktop scope): history fits in
+// memory. A very large history blocking session entry is acceptable
+// in this version; pagination / async-seed is future work (F11).
+type ChatStreamHandoff struct {
+	Endpoint    string `json:"endpoint"`
+	Token       string `json:"token"`
+	LastEventID int64  `json:"lastEventId"`
 }
 
 // sessionViewFromProto converts a proto Session to a view model.
@@ -56,6 +116,7 @@ func sessionViewFromProto(s *game.Session) *SessionView {
 	return &SessionView{
 		Name:       s.GetName(),
 		SessionID:  s.GetSessionId(),
+		Template:   s.GetTemplate(),
 		CreateTime: timestampString(s.GetCreateTime()),
 	}
 }
@@ -76,14 +137,40 @@ func listSessionsViewFromProto(r *game.ListSessionsResponse) *ListSessionsView {
 	}
 }
 
-// agentViewFromProto converts a proto Agent to a view model.
-func agentViewFromProto(a *game.Agent) *AgentView {
+// teamViewFromProto converts a proto Team to a view model. The session id is
+// derived from the Team resource name
+// (templates/{template}/sessions/{session}/team) so the frontend can scope
+// per-session operations without a separate lookup.
+func teamViewFromProto(t *game.Team) *TeamView {
+	if t == nil {
+		return nil
+	}
+	agents := t.GetAgents()
+	agentViews := make([]*TeamAgentView, len(agents))
+	for i, a := range agents {
+		agentViews[i] = teamAgentViewFromProto(a)
+	}
+	name, err := game.ParseTeamName(t.GetName())
+	sessionID := ""
+	if err == nil {
+		sessionID = name.SessionID
+	}
+	return &TeamView{
+		Name:       t.GetName(),
+		SessionID:  sessionID,
+		Agents:     agentViews,
+		CreateTime: timestampString(t.GetCreateTime()),
+	}
+}
+
+// teamAgentViewFromProto converts a proto TeamAgent to a view model.
+func teamAgentViewFromProto(a *game.TeamAgent) *TeamAgentView {
 	if a == nil {
 		return nil
 	}
-	return &AgentView{
-		SessionID:        a.GetSessionId(),
-		AgentProfileName: a.GetAgentProfileName(),
+	return &TeamAgentView{
+		Name:             a.GetName(),
+		AcceptsUserInput: a.GetAcceptsUserInput(),
 	}
 }
 
@@ -103,6 +190,7 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 			Name:       m.GetName(),
 			MessageID:  m.GetMessageId(),
 			Sender:     m.GetSender().String(),
+			Agent:      m.GetAgent(),
 			CreateTime: timestampString(m.GetCreateTime()),
 			Content:    protoToJSONMap(m.GetContent()),
 		}
@@ -129,61 +217,6 @@ func protoToJSONMap(m proto.Message) map[string]any {
 	return out
 }
 
-// CreateAgentProfileView is the Wails input struct for creating an AgentProfile.
-// McpNames carries selected MCP integrations (e.g. "saolei") per spec
-// 018-saolei-mcp FR-021.
-type CreateAgentProfileView struct {
-	AgentProfileName string   `json:"agentProfileName"`
-	Model            string   `json:"model"`
-	SystemPrompt     string   `json:"systemPrompt"`
-	Enabled          bool     `json:"enabled"`
-	ToolNames        []string `json:"toolNames"`
-	McpNames         []string `json:"mcpNames"`
-}
-
-// AgentProfileView is the Wails view model for game.AgentProfile.
-type AgentProfileView struct {
-	Name             string   `json:"name"`
-	AgentProfileName string   `json:"agentProfileName"`
-	Model            string   `json:"model"`
-	SystemPrompt     string   `json:"systemPrompt"`
-	SkillNames       []string `json:"skillNames"`
-	McpNames         []string `json:"mcpNames"`
-	ToolNames        []string `json:"toolNames"`
-	Enabled          bool     `json:"enabled"`
-	CreateTime       string   `json:"createTime,omitempty"`
-	UpdateTime       string   `json:"updateTime,omitempty"`
-}
-
-// ListAgentProfilesView is the Wails view model for game.ListAgentProfilesResponse.
-type ListAgentProfilesView struct {
-	AgentProfiles []*AgentProfileView `json:"agentProfiles"`
-	NextPageToken string              `json:"nextPageToken,omitempty"`
-}
-
-// ChatStreamHandoff is returned by OpenChatStream and carries the
-// connection parameters the frontend uses to open an EventSource:
-//
-//   - Endpoint: the full SSE endpoint URL
-//     (http://127.0.0.1:<port>/api/v1/chat/stream), stable for the
-//     process lifetime.
-//   - Token: a fresh crypto/rand auth token, rotated on every
-//     OpenChatStream call so a re-entry invalidates old subscribers.
-//   - LastEventID: the highest event ID currently in the log (the
-//     highest ID the frontend has already received). Debug/observability
-//     only; EventSource cannot set Last-Event-ID on the initial connect
-//     so the frontend does NOT consume it as a query param.
-//
-// OpenChatStream seeds history synchronously from ListMessages.
-// Assumption (current single-session desktop scope): history fits in
-// memory. A very large history blocking session entry is acceptable
-// in this version; pagination / async-seed is future work (F11).
-type ChatStreamHandoff struct {
-	Endpoint    string `json:"endpoint"`
-	Token       string `json:"token"`
-	LastEventID int64  `json:"lastEventId"`
-}
-
 // timestampString formats a protobuf Timestamp as an RFC3339 string.
 // Returns "" if t is nil.
 func timestampString(t *timestamppb.Timestamp) string {
@@ -193,36 +226,41 @@ func timestampString(t *timestamppb.Timestamp) string {
 	return t.AsTime().Format(time.RFC3339)
 }
 
-func agentProfileViewFromProto(p *game.AgentProfile) *AgentProfileView {
+// teamProfileViewFromProto converts a proto TeamProfile to a view model. The
+// typed spec oneof is flattened: the active saolei variant projects to
+// PlayerModel/PlannerModel (the only saolei-specialized fields, FR-027).
+func teamProfileViewFromProto(p *game.TeamProfile) *TeamProfileView {
 	if p == nil {
 		return nil
 	}
-	profileID, _ := gameconst.AgentProfileID(p.GetName())
-	return &AgentProfileView{
-		Name:             p.GetName(),
-		AgentProfileName: profileID,
-		Model:            p.GetModel(),
-		SystemPrompt:     p.GetSystemPrompt(),
-		SkillNames:       p.GetSkillNames(),
-		McpNames:         p.GetMcpNames(),
-		ToolNames:        p.GetToolNames(),
-		Enabled:          p.GetEnabled(),
-		CreateTime:       timestampString(p.GetCreateTime()),
-		UpdateTime:       timestampString(p.GetUpdateTime()),
+	profileName := ""
+	if name, err := game.ParseTeamProfileName(p.GetName()); err == nil {
+		profileName = name.ProfileID
 	}
+	saolei := p.GetSaolei()
+	view := &TeamProfileView{
+		Name:        p.GetName(),
+		ProfileName: profileName,
+		Template:    p.GetTemplate(),
+	}
+	if saolei != nil {
+		view.PlayerModel = saolei.GetPlayerModel()
+		view.PlannerModel = saolei.GetPlannerModel()
+	}
+	return view
 }
 
-func listAgentProfilesViewFromProto(r *game.ListAgentProfilesResponse) *ListAgentProfilesView {
+func listTeamProfilesViewFromProto(r *game.ListTeamProfilesResponse) *ListTeamProfilesView {
 	if r == nil {
 		return nil
 	}
-	profiles := r.GetAgentProfiles()
-	views := make([]*AgentProfileView, len(profiles))
+	profiles := r.GetTeamProfiles()
+	views := make([]*TeamProfileView, len(profiles))
 	for i, p := range profiles {
-		views[i] = agentProfileViewFromProto(p)
+		views[i] = teamProfileViewFromProto(p)
 	}
-	return &ListAgentProfilesView{
-		AgentProfiles: views,
+	return &ListTeamProfilesView{
+		TeamProfiles:  views,
 		NextPageToken: r.GetNextPageToken(),
 	}
 }

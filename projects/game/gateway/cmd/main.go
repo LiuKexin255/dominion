@@ -132,13 +132,15 @@ func isWebSocketConnectPath(path string) bool {
 }
 
 // extractSessionID extracts the session segment from a path matching
-// /api/v1/templates/{template}/sessions/{session}/connect
+// /api/v1/templates/{template}/sessions/{session}/connect. It only accepts
+// the full connect path shape (delegating to isWebSocketConnectPath) so a
+// foreign path such as .../sessions/{id}/team never yields a session id.
 func extractSessionID(path string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 7 && parts[4] == "sessions" && parts[5] != "" {
-		return parts[5]
+	if !isWebSocketConnectPath(path) {
+		return ""
 	}
-	return ""
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return parts[5]
 }
 
 // wsStream adapts a WebSocket connection to bind.AgentFrameStream.

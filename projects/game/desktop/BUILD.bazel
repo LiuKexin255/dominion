@@ -27,7 +27,6 @@ go_library(
         "//projects/game/desktop/internal/chatstream",
         "//projects/game/desktop/internal/operation",
         "//projects/game/desktop/internal/trace",
-        "//projects/game/pkg/gameconst",
         "//third_party/github.com/wailsapp/wails/v2:wails",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options",
         "//third_party/github.com/wailsapp/wails/v2/pkg/options/assetserver",

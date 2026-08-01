@@ -46,6 +46,7 @@
 | `SendUserTurn(..., agentProfileName)` | `SendUserTurn(..., agent)` | D12；agent 名称 |
 | `ListMessages(sessionID)` | `ListMessages(template, sessionID, agent)` | 按 agent 分区（FR-005） |
 | `GetAgent(sessionID)` | `GetTeam(template, sessionID)` | 返回 Team（含 agents） |
+| （无对应旧绑定） | `CreateTeam(template, sessionID, profile)` | **显式创建 Team（AIP-133，唯一创建点）**；`profile` 为 TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`（AIP-122，template 段 MUST 与 parent 一致，handler 校验）；GetTeam→NotFound 时 frontend 调此绑定（create-if-missing，决策 2） |
 | `List/Create/.../Update/DeleteAgentProfile` | `...TeamProfile(template, ...)` | TeamProfile CRUD |
 | `List/Create/Get/DeleteSkill` | （移除） | Skill 废弃 |
 

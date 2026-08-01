@@ -18,7 +18,6 @@ import (
 	"dominion/projects/game/desktop/internal/chatstream"
 	"dominion/projects/game/desktop/internal/operation"
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
-	gameconst "dominion/projects/game/pkg/gameconst"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -206,6 +205,7 @@ type App struct {
 	ctx          context.Context
 	selectedMu   sync.Mutex
 	selectedWin  uintptr // handle of the selected window; 0 = none (spec 025 FR-006)
+	template     string  // active template path segment, set on WebSocket connect
 	sessionID    string  // active session set on WebSocket connect
 	recvDone     chan struct{}
 	chatStreams  *chatstream.Registry
@@ -319,9 +319,14 @@ func (a *App) SetConfig(cfg api.Config) error {
 	return nil
 }
 
-// CreateSession creates a game session via the gateway.
+// CreateSession creates a game session under the given template via the
+// gateway. template is the Template path segment (e.g. "saolei"; the
+// Template resource name "templates/{template}", gameconst.SaoleiTemplate).
 // The session ID is generated server-side.
-func (a *App) CreateSession() (*SessionView, error) {
+func (a *App) CreateSession(template string) (*SessionView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("create session: template is required")
+	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
@@ -332,12 +337,14 @@ func (a *App) CreateSession() (*SessionView, error) {
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Creating session", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"correlation_id": corrID,
 	})
-	session, err := a.client.CreateSession(ctx)
+	session, err := a.client.CreateSession(ctx, template)
 	if err != nil {
 		a.logger.Error("backend", "Create session failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
@@ -345,14 +352,18 @@ func (a *App) CreateSession() (*SessionView, error) {
 	}
 	a.logger.Info("backend", "Session created", map[string]any{
 		"session_id":     session.GetSessionId(),
+		"template":       template,
 		"trace_id":       traceID,
 		"correlation_id": corrID,
 	})
 	return sessionViewFromProto(session), nil
 }
 
-// ListSessions lists sessions with pagination support.
-func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, error) {
+// ListSessions lists sessions under a template with pagination support.
+func (a *App) ListSessions(template string, pageSize int, pageToken string) (*ListSessionsView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("list sessions: template is required")
+	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
@@ -363,14 +374,16 @@ func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, e
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Listing sessions", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"page_size":      pageSize,
 		"page_token":     pageToken,
 		"correlation_id": corrID,
 	})
-	resp, err := a.client.ListSessions(ctx, int32(pageSize), pageToken)
+	resp, err := a.client.ListSessions(ctx, template, int32(pageSize), pageToken)
 	if err != nil {
 		a.logger.Error("backend", "List sessions failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
@@ -378,14 +391,21 @@ func (a *App) ListSessions(pageSize int, pageToken string) (*ListSessionsView, e
 	}
 	a.logger.Info("backend", "Sessions listed", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"count":          len(resp.GetSessions()),
 		"correlation_id": corrID,
 	})
 	return listSessionsViewFromProto(resp), nil
 }
 
-// GetSession retrieves a session by ID.
-func (a *App) GetSession(sessionID string) (*SessionView, error) {
+// GetSession retrieves a session by ID under a template.
+func (a *App) GetSession(template, sessionID string) (*SessionView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("get session: template is required")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("get session: session_id is required")
+	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
@@ -396,28 +416,38 @@ func (a *App) GetSession(sessionID string) (*SessionView, error) {
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Getting session", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
-	session, err := a.client.GetSession(ctx, sessionID)
+	session, err := a.client.GetSession(ctx, template, sessionID)
 	if err != nil {
 		a.logger.Error("backend", "Get session failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
 		return nil, err
 	}
 	a.logger.Info("backend", "Session retrieved", map[string]any{
-		"session_id":     sessionID,
 		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
 	return sessionViewFromProto(session), nil
 }
 
-// DeleteSession deletes a session by ID.
-func (a *App) DeleteSession(sessionID string) error {
+// DeleteSession deletes a session by ID under a template.
+func (a *App) DeleteSession(template, sessionID string) error {
+	if template == "" {
+		return fmt.Errorf("delete session: template is required")
+	}
+	if sessionID == "" {
+		return fmt.Errorf("delete session: session_id is required")
+	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
@@ -428,12 +458,15 @@ func (a *App) DeleteSession(sessionID string) error {
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Deleting session", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
-	if err := a.client.DeleteSession(ctx, sessionID); err != nil {
+	if err := a.client.DeleteSession(ctx, template, sessionID); err != nil {
 		a.logger.Error("backend", "Delete session failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
@@ -441,230 +474,9 @@ func (a *App) DeleteSession(sessionID string) error {
 	}
 	a.logger.Info("backend", "Session deleted", map[string]any{
 		"trace_id":       traceID,
-		"correlation_id": corrID,
-	})
-	return nil
-}
-
-// ListAgentProfiles lists agent profiles from the prompt service via the gateway REST API.
-func (a *App) ListAgentProfiles(pageSize int, pageToken string) (*ListAgentProfilesView, error) {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("list agent profiles: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Listing agent profiles", map[string]any{
-		"trace_id":       traceID,
-		"page_size":      pageSize,
-		"correlation_id": corrID,
-	})
-	resp, err := a.client.ListAgentProfiles(ctx, int32(pageSize), pageToken)
-	if err != nil {
-		a.logger.Error("backend", "List agent profiles failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"error":          err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Agent profiles listed", map[string]any{
-		"trace_id":       traceID,
-		"count":          len(resp.GetAgentProfiles()),
-		"correlation_id": corrID,
-	})
-	return listAgentProfilesViewFromProto(resp), nil
-}
-
-// CreateAgentProfile creates a new agent profile via the gateway REST API.
-func (a *App) CreateAgentProfile(req CreateAgentProfileView) (*AgentProfileView, error) {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("create agent profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Creating agent profile", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": req.AgentProfileName,
-	})
-	// PromptsParent is the AIP-156 singleton-namespace parent literal bound
-	// by the proto URI template {parent=prompts}; no Prompt resource exists.
-	protoReq := &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: req.AgentProfileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        req.Model,
-			SystemPrompt: req.SystemPrompt,
-			Enabled:      req.Enabled,
-			ToolNames:    req.ToolNames,
-			McpNames:     req.McpNames,
-		},
-	}
-	profile, err := a.client.CreateAgentProfile(ctx, protoReq)
-	if err != nil {
-		a.logger.Error("backend", "Create agent profile failed", map[string]any{
-			"trace_id":           traceID,
-			"correlation_id":     corrID,
-			"agent_profile_name": req.AgentProfileName,
-			"error":              err.Error(),
-		})
-		return nil, err
-	}
-	createdID, _ := gameconst.AgentProfileID(profile.GetName())
-	a.logger.Info("backend", "Agent profile created", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": createdID,
-	})
-	return agentProfileViewFromProto(profile), nil
-}
-
-// GetAgentProfile retrieves an agent profile by name via the gateway REST API.
-func (a *App) GetAgentProfile(agentProfileName string) (*AgentProfileView, error) {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("get agent profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting agent profile", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": agentProfileName,
-	})
-	profile, err := a.client.GetAgentProfile(ctx, agentProfileName)
-	if err != nil {
-		a.logger.Error("backend", "Get agent profile failed", map[string]any{
-			"trace_id":           traceID,
-			"correlation_id":     corrID,
-			"agent_profile_name": agentProfileName,
-			"error":              err.Error(),
-		})
-		return nil, err
-	}
-	gotID, _ := gameconst.AgentProfileID(profile.GetName())
-	a.logger.Info("backend", "Agent profile retrieved", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": gotID,
-	})
-	return agentProfileViewFromProto(profile), nil
-}
-
-// DeleteAgentProfile deletes an agent profile by name via the gateway REST API.
-func (a *App) DeleteAgentProfile(agentProfileName string) error {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("delete agent profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Deleting agent profile", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": agentProfileName,
-	})
-	err = a.client.DeleteAgentProfile(ctx, agentProfileName)
-	if err != nil {
-		a.logger.Error("backend", "Delete agent profile failed", map[string]any{
-			"trace_id":           traceID,
-			"correlation_id":     corrID,
-			"agent_profile_name": agentProfileName,
-			"error":              err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Agent profile deleted", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": agentProfileName,
-	})
-	return nil
-}
-
-// UpdateAgentProfile partially updates an agent profile via PATCH.
-// Per grpc-gateway binding the profile fields are sent as the PATCH body and
-// updateMaskPaths are sent as repeated update_mask.paths query parameters.
-func (a *App) UpdateAgentProfile(agentProfileName string, profile AgentProfileView, updateMaskPaths []string) (*AgentProfileView, error) {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return nil, fmt.Errorf("update agent profile: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Updating agent profile", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": agentProfileName,
-		"update_mask":        updateMaskPaths,
-	})
-	protoProfile := &game.AgentProfile{
-		Model:        profile.Model,
-		SystemPrompt: profile.SystemPrompt,
-		SkillNames:   profile.SkillNames,
-		McpNames:     profile.McpNames,
-		ToolNames:    profile.ToolNames,
-		Enabled:      profile.Enabled,
-	}
-	updated, err := a.client.UpdateAgentProfile(ctx, agentProfileName, protoProfile, updateMaskPaths)
-	if err != nil {
-		a.logger.Error("backend", "Update agent profile failed", map[string]any{
-			"trace_id":           traceID,
-			"correlation_id":     corrID,
-			"agent_profile_name": agentProfileName,
-			"error":              err.Error(),
-		})
-		return nil, err
-	}
-	a.logger.Info("backend", "Agent profile updated", map[string]any{
-		"trace_id":           traceID,
-		"correlation_id":     corrID,
-		"agent_profile_name": agentProfileName,
-	})
-	return agentProfileViewFromProto(updated), nil
-}
-
-// RefreshAgent refreshes the agent for a session so it reloads its adapter with
-// the latest profile configuration. Called by the UI after a profile update.
-func (a *App) RefreshAgent(sessionID string) error {
-	a.ensureClient()
-	ctx := tracecontext.Ensure(a.ctx)
-	traceID := desktoptrace.TraceIDFromContext(ctx)
-	corrSuffix, err := randomHex(8)
-	if err != nil {
-		return fmt.Errorf("refresh agent: %w", err)
-	}
-	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Refreshing agent", map[string]any{
-		"trace_id":       traceID,
-		"correlation_id": corrID,
+		"template":       template,
 		"session_id":     sessionID,
-	})
-	if err := a.client.RefreshAgent(ctx, sessionID); err != nil {
-		a.logger.Error("backend", "Refresh agent failed", map[string]any{
-			"trace_id":       traceID,
-			"correlation_id": corrID,
-			"session_id":     sessionID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-	a.logger.Info("backend", "Agent refreshed", map[string]any{
-		"trace_id":       traceID,
 		"correlation_id": corrID,
-		"session_id":     sessionID,
 	})
 	return nil
 }
@@ -681,12 +493,15 @@ const maxScreenshotBytes = 5 * 1024 * 1024
 const postActionScreenshotDelay = 500 * time.Millisecond
 
 // SendUserTurn sends a single user turn bundling text and an optional
-// screenshot to the agent via WebSocket, then returns immediately. The
+// screenshot to the team agent via WebSocket, then returns immediately. The
 // inbound response frames are drained asynchronously by recvLoop, which
 // emits each as a Wails "game:frame" event and terminates when a wait
 // signal is received (signalling the agent is done) or RecvFrame errors.
 //
-// The agentProfileName selects which agent profile to use for this session.
+// agent selects which team agent receives the turn (the agent accepting
+// user input — FR-032; saolei: player; D12 replaces the former
+// agentProfileName field). template is the Template path segment; the connect
+// must have been established with the same template/session pair.
 // screenshotData is the raw PNG bytes of the selected window; pass an empty
 // slice when no screenshot is attached. screenshotWidth and screenshotHeight
 // describe the pixel dimensions of screenshotData and are ignored when it is
@@ -698,12 +513,18 @@ const postActionScreenshotDelay = 500 * time.Millisecond
 // and a matching FlowResultPart is sent back over the same WebSocket connection
 // on the control channel (FR-013; spec 025 FR-023/FR-024). The result part
 // carries a post-action screenshot of the selected window (FR-007).
-func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agentProfileName string) error {
+func (a *App) SendUserTurn(template, sessionID string, text string, screenshotData []byte, screenshotWidth int, screenshotHeight int, agent string) error {
+	if template == "" {
+		return fmt.Errorf("send user turn: template is required")
+	}
 	if a.ws == nil {
 		return fmt.Errorf("send user turn: not connected")
 	}
 	if strings.TrimSpace(text) == "" {
 		return fmt.Errorf("send user turn: text is required and cannot be empty")
+	}
+	if agent == "" {
+		return fmt.Errorf("send user turn: agent is required")
 	}
 	if len(screenshotData) > maxScreenshotBytes {
 		return fmt.Errorf("send user turn: screenshot size %d exceeds 5 MiB limit (%d)", len(screenshotData), maxScreenshotBytes)
@@ -738,19 +559,21 @@ func (a *App) SendUserTurn(sessionID string, text string, screenshotData []byte,
 	}
 
 	frame := &game.AgentFrame{
-		SessionId:        sessionID,
-		FrameId:          frameID,
-		CreateTime:       timestamppb.Now(),
-		Sender:           game.FrameSender_FRAME_SENDER_USER,
-		AgentProfileName: agentProfileName,
+		SessionId:  sessionID,
+		FrameId:    frameID,
+		CreateTime: timestamppb.Now(),
+		Sender:     game.FrameSender_FRAME_SENDER_USER,
+		Agent:      agent,
 		Payload: &game.AgentFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: parts},
 		},
 	}
 
 	a.logger.Info("backend", "SendUserTurn: sending user turn frame", map[string]any{
+		"template":         template,
 		"session_id":       sessionID,
 		"frame_id":         frameID,
+		"agent":            agent,
 		"text_len":         len(text),
 		"screenshot_bytes": len(screenshotData),
 	})
@@ -1173,11 +996,11 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	if captureErr != nil {
 		result.Message = fmt.Sprintf("%s (screenshot capture failed: %s)", result.Message, captureErr.Error())
 	} else {
-	// Success path: attach the post-action screenshot (FR-007) only when capture
-	// succeeded. The size guard (FR-005a) rejects oversized payloads before
-	// attachment, recording the rejection in the message. This block is skipped
-	// entirely when capture failed above, so result.Screenshot stays nil. Both
-	// branches fall through to the final log + return.
+		// Success path: attach the post-action screenshot (FR-007) only when capture
+		// succeeded. The size guard (FR-005a) rejects oversized payloads before
+		// attachment, recording the rejection in the message. This block is skipped
+		// entirely when capture failed above, so result.Screenshot stays nil. Both
+		// branches fall through to the final log + return.
 		if len(capturedImg.Data) > maxScreenshotBytes {
 			result.Message = fmt.Sprintf("%s (screenshot exceeds 5 MiB limit)", result.Message)
 		} else {
@@ -1200,45 +1023,154 @@ func (a *App) executeAgentOperation(part *game.FlowPart) *game.FlowResultPart {
 	return result
 }
 
-// GetAgent retrieves the agent for a session.
-func (a *App) GetAgent(sessionID string) (*AgentView, error) {
+// GetTeam retrieves the Team of a session (Wails-bound; desktop-contract §4).
+// The Team must already exist — it is created explicitly via CreateTeam
+// (spec 031 design decision: no lazy creation).
+func (a *App) GetTeam(template, sessionID string) (*TeamView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("get team: template is required")
+	}
 	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
+		return nil, fmt.Errorf("get team: session_id is required")
 	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
 	corrSuffix, err := randomHex(8)
 	if err != nil {
-		return nil, fmt.Errorf("get agent: %w", err)
+		return nil, fmt.Errorf("get team: %w", err)
 	}
 	corrID := "corr-" + corrSuffix
-	a.logger.Info("backend", "Getting agent", map[string]any{
+	a.logger.Info("backend", "Getting team", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
-	agent, err := a.client.GetAgent(ctx, sessionID)
+	team, err := a.client.GetTeam(ctx, template, sessionID)
 	if err != nil {
-		a.logger.Error("backend", "Get agent failed", map[string]any{
+		a.logger.Error("backend", "Get team failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
 		return nil, err
 	}
-	a.logger.Info("backend", "Agent retrieved", map[string]any{
-		"session_id":     sessionID,
+	a.logger.Info("backend", "Team retrieved", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
-	return agentViewFromProto(agent), nil
+	return teamViewFromProto(team), nil
 }
 
-// ListMessages lists all messages for a session's agent.
-func (a *App) ListMessages(sessionID string) ([]*MessageViewModel, error) {
+// CreateTeam creates the per-session singleton Team explicitly (Wails-bound;
+// desktop-contract §4 — AIP-133, the ONLY Team creation point). profile is
+// the TeamProfile full resource name (templates/{template}/profiles/{profile},
+// AIP-122); the server validates its template segment against the session.
+func (a *App) CreateTeam(template, sessionID, profile string) (*TeamView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("create team: template is required")
+	}
 	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
+		return nil, fmt.Errorf("create team: session_id is required")
+	}
+	if profile == "" {
+		return nil, fmt.Errorf("create team: profile is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("create team: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating team", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
+		"profile":        profile,
+		"correlation_id": corrID,
+	})
+	team, err := a.client.CreateTeam(ctx, template, sessionID, profile)
+	if err != nil {
+		a.logger.Error("backend", "Create team failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
+			"profile":        profile,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Team created", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	return teamViewFromProto(team), nil
+}
+
+// RefreshTeam clears the session's short-term memory (Wails-bound;
+// desktop-contract §4 — FR-018). The long-term strategy memory is unaffected.
+func (a *App) RefreshTeam(template, sessionID string) error {
+	if template == "" {
+		return fmt.Errorf("refresh team: template is required")
+	}
+	if sessionID == "" {
+		return fmt.Errorf("refresh team: session_id is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return fmt.Errorf("refresh team: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Refreshing team", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	if err := a.client.RefreshTeam(ctx, template, sessionID); err != nil {
+		a.logger.Error("backend", "Refresh team failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return err
+	}
+	a.logger.Info("backend", "Team refreshed", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
+		"correlation_id": corrID,
+	})
+	return nil
+}
+
+// ListMessages lists messages of one team agent's partition (Wails-bound;
+// desktop-contract §4 — FR-005). agent is the team agent name
+// (e.g. player/planner, from Team.agents).
+func (a *App) ListMessages(template, sessionID, agent string) ([]*MessageViewModel, error) {
+	if template == "" {
+		return nil, fmt.Errorf("list messages: template is required")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("list messages: session_id is required")
+	}
+	if agent == "" {
+		return nil, fmt.Errorf("list messages: agent is required")
 	}
 	a.ensureClient()
 	ctx := tracecontext.Ensure(a.ctx)
@@ -1250,25 +1182,272 @@ func (a *App) ListMessages(sessionID string) ([]*MessageViewModel, error) {
 	corrID := "corr-" + corrSuffix
 	a.logger.Info("backend", "Listing messages", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
+		"agent":          agent,
 		"correlation_id": corrID,
 	})
-	resp, err := a.client.ListMessages(ctx, sessionID)
+	resp, err := a.client.ListMessages(ctx, template, sessionID, agent)
 	if err != nil {
 		a.logger.Error("backend", "List messages failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
+			"session_id":     sessionID,
+			"agent":          agent,
 			"correlation_id": corrID,
 			"error":          err.Error(),
 		})
 		return nil, err
 	}
 	a.logger.Info("backend", "Messages listed", map[string]any{
-		"session_id":     sessionID,
 		"trace_id":       traceID,
+		"template":       template,
+		"session_id":     sessionID,
+		"agent":          agent,
 		"correlation_id": corrID,
 		"count":          len(resp.GetMessages()),
 	})
 	return ToMessageViewModels(resp.GetMessages()), nil
+}
+
+// ListTeamProfiles lists TeamProfiles under a template (Wails-bound;
+// desktop-contract §4 — AIP-132).
+func (a *App) ListTeamProfiles(template string, pageSize int, pageToken string) (*ListTeamProfilesView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("list team profiles: template is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("list team profiles: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Listing team profiles", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"page_size":      pageSize,
+		"correlation_id": corrID,
+	})
+	resp, err := a.client.ListTeamProfiles(ctx, template, int32(pageSize), pageToken)
+	if err != nil {
+		a.logger.Error("backend", "List team profiles failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Team profiles listed", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"count":          len(resp.GetTeamProfiles()),
+		"correlation_id": corrID,
+	})
+	return listTeamProfilesViewFromProto(resp), nil
+}
+
+// CreateTeamProfile creates a new TeamProfile under a template (Wails-bound;
+// desktop-contract §4 — AIP-133). The template-specific spec is the typed
+// oneof variant: for saolei the req's PlayerModel/PlannerModel project to
+// SaoleiProfile (FR-027 — tools/MCP are not configurable, FR-028).
+func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*TeamProfileView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("create team profile: template is required")
+	}
+	if req.ProfileName == "" {
+		return nil, fmt.Errorf("create team profile: profile name is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("create team profile: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Creating team profile", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   req.ProfileName,
+		"correlation_id": corrID,
+	})
+	protoProfile := &game.TeamProfile{
+		// Resource name construction is codegen-owned (spec
+		// 031-team-template-mode contracts/api-contract.md §5).
+		Template: game.TemplateName{TemplateID: template}.String(),
+		Spec: &game.TeamProfile_Saolei{
+			Saolei: &game.SaoleiProfile{
+				PlayerModel:  req.PlayerModel,
+				PlannerModel: req.PlannerModel,
+			},
+		},
+	}
+	profile, err := a.client.CreateTeamProfile(ctx, template, req.ProfileName, protoProfile)
+	if err != nil {
+		a.logger.Error("backend", "Create team profile failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"profile_name":   req.ProfileName,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Team profile created", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   req.ProfileName,
+		"correlation_id": corrID,
+	})
+	return teamProfileViewFromProto(profile), nil
+}
+
+// GetTeamProfile retrieves a TeamProfile by name under a template
+// (Wails-bound; desktop-contract §4 — AIP-131).
+func (a *App) GetTeamProfile(template, profileName string) (*TeamProfileView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("get team profile: template is required")
+	}
+	if profileName == "" {
+		return nil, fmt.Errorf("get team profile: profile name is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("get team profile: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Getting team profile", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	profile, err := a.client.GetTeamProfile(ctx, template, profileName)
+	if err != nil {
+		a.logger.Error("backend", "Get team profile failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"profile_name":   profileName,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Team profile retrieved", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	return teamProfileViewFromProto(profile), nil
+}
+
+// DeleteTeamProfile deletes a TeamProfile by name under a template
+// (Wails-bound; desktop-contract §4 — AIP-135).
+func (a *App) DeleteTeamProfile(template, profileName string) error {
+	if template == "" {
+		return fmt.Errorf("delete team profile: template is required")
+	}
+	if profileName == "" {
+		return fmt.Errorf("delete team profile: profile name is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return fmt.Errorf("delete team profile: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Deleting team profile", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	err = a.client.DeleteTeamProfile(ctx, template, profileName)
+	if err != nil {
+		a.logger.Error("backend", "Delete team profile failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"profile_name":   profileName,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return err
+	}
+	a.logger.Info("backend", "Team profile deleted", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	return nil
+}
+
+// UpdateTeamProfile partially updates a TeamProfile via PATCH (Wails-bound;
+// desktop-contract §4 — AIP-134). Per grpc-gateway binding the profile
+// fields are sent as the PATCH body and updateMaskPaths are sent as repeated
+// update_mask.paths query parameters; the mask supports oneof-member paths
+// (e.g. saolei.player_model / saolei.planner_model).
+func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfileView, updateMaskPaths []string) (*TeamProfileView, error) {
+	if template == "" {
+		return nil, fmt.Errorf("update team profile: template is required")
+	}
+	if profileName == "" {
+		return nil, fmt.Errorf("update team profile: profile name is required")
+	}
+	a.ensureClient()
+	ctx := tracecontext.Ensure(a.ctx)
+	traceID := desktoptrace.TraceIDFromContext(ctx)
+	corrSuffix, err := randomHex(8)
+	if err != nil {
+		return nil, fmt.Errorf("update team profile: %w", err)
+	}
+	corrID := "corr-" + corrSuffix
+	a.logger.Info("backend", "Updating team profile", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"update_mask":    updateMaskPaths,
+		"correlation_id": corrID,
+	})
+	protoProfile := &game.TeamProfile{
+		// Resource name construction is codegen-owned (spec
+		// 031-team-template-mode contracts/api-contract.md §5).
+		Name:     game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
+		Template: game.TemplateName{TemplateID: template}.String(),
+		Spec: &game.TeamProfile_Saolei{
+			Saolei: &game.SaoleiProfile{
+				PlayerModel:  profile.PlayerModel,
+				PlannerModel: profile.PlannerModel,
+			},
+		},
+	}
+	updated, err := a.client.UpdateTeamProfile(ctx, template, profileName, protoProfile, updateMaskPaths)
+	if err != nil {
+		a.logger.Error("backend", "Update team profile failed", map[string]any{
+			"trace_id":       traceID,
+			"template":       template,
+			"profile_name":   profileName,
+			"correlation_id": corrID,
+			"error":          err.Error(),
+		})
+		return nil, err
+	}
+	a.logger.Info("backend", "Team profile updated", map[string]any{
+		"trace_id":       traceID,
+		"template":       template,
+		"profile_name":   profileName,
+		"correlation_id": corrID,
+	})
+	return teamProfileViewFromProto(updated), nil
 }
 
 // ListWindows enumerates visible top-level windows (Windows only).
@@ -1390,9 +1569,11 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 	return img, nil
 }
 
-// ConnectAgent establishes a WebSocket connection for the session.
-// Connects directly without prior agent creation — the agent profile is
-// specified on first SendUserTurn instead.
+// Connect establishes a WebSocket connection for the session under a template
+// (Wails-bound; desktop-contract §4 — FR-004). template is the Template path
+// segment. The Team must already exist (created via CreateTeam); the connect
+// path is /api/v1/templates/{template}/sessions/{sessionID}/connect
+// (contracts/api-contract.md §2.2).
 // After the WebSocket handshake, it performs an application-level probe
 // (round-trip ping) to verify the full path: desktop → gateway → proxy.
 // The probe has a 10-second timeout. On failure, the WebSocket is closed
@@ -1402,16 +1583,19 @@ func (a *App) CaptureScreenshot() (*capture.CapturedImage, error) {
 // (e.g. "STATUS_SIGNAL_STATUS_IDLE") so the frontend can reconcile its typing
 // indicator against the agent's real working state
 // (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
-func (a *App) ConnectAgent(sessionID string) (string, error) {
+func (a *App) Connect(template, sessionID string) (string, error) {
+	if template == "" {
+		return "", fmt.Errorf("connect: template is required")
+	}
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("connect: session_id is required")
 	}
 	ctx := tracecontext.Ensure(a.ctx)
 	traceID := desktoptrace.TraceIDFromContext(ctx)
 
 	corrID, err := randomHex(8)
 	if err != nil {
-		a.logger.Error("backend", "ConnectAgent: failed to generate correlation id", map[string]any{"error": err.Error()})
+		a.logger.Error("backend", "Connect: failed to generate correlation id", map[string]any{"error": err.Error()})
 		corrID = "corr-unknown"
 	} else {
 		corrID = "corr-" + corrID
@@ -1419,6 +1603,7 @@ func (a *App) ConnectAgent(sessionID string) (string, error) {
 
 	a.logger.Info("backend", "Connecting session via WebSocket", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
@@ -1429,9 +1614,10 @@ func (a *App) ConnectAgent(sessionID string) (string, error) {
 	}
 
 	ws := &api.WSClient{}
-	if err := ws.Connect(ctx, a.cfg.GatewayURL, sessionID, a.cfg.Env); err != nil {
+	if err := ws.Connect(ctx, a.cfg.GatewayURL, template, sessionID, a.cfg.Env); err != nil {
 		a.logger.Error("backend", "Connect session failed", map[string]any{
 			"trace_id":       traceID,
+			"template":       template,
 			"session_id":     sessionID,
 			"correlation_id": corrID,
 			"error":          err.Error(),
@@ -1512,9 +1698,11 @@ func (a *App) ConnectAgent(sessionID string) (string, error) {
 	})
 
 	a.ws = ws
+	a.template = template
 	a.sessionID = sessionID
 	a.logger.Info("backend", "Session connected via WebSocket", map[string]any{
 		"trace_id":       traceID,
+		"template":       template,
 		"session_id":     sessionID,
 		"correlation_id": corrID,
 	})
@@ -1561,7 +1749,10 @@ func (a *App) CloseAgent() error {
 	return nil
 }
 
-// OpenChatStream opens (or reopens) the chat push channel for sessionID.
+// OpenChatStream opens (or reopens) the chat push channel for sessionID,
+// seeding it with the given team agent's message partition (messages are
+// partitioned per team agent — FR-005; the frontend opens one stream per
+// active agent tab, Batch 3).
 //
 // On first access the stream is created and seeded synchronously from
 // ListMessages (F11: history fits in memory for a single-session desktop
@@ -1575,9 +1766,12 @@ func (a *App) CloseAgent() error {
 // returns on session leave (F5 ordering): closeAgent closes the WS and
 // waits on recvDone, so recvLoop has already exited by the time the log
 // is dropped.
-func (a *App) OpenChatStream(sessionID string) (*ChatStreamHandoff, error) {
+func (a *App) OpenChatStream(sessionID, agent string) (*ChatStreamHandoff, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("open chat stream: sessionID is empty")
+	}
+	if agent == "" {
+		return nil, fmt.Errorf("open chat stream: agent is empty")
 	}
 	a.ensureClient()
 	if a.chatStreams == nil || a.chatServer == nil {
@@ -1585,7 +1779,7 @@ func (a *App) OpenChatStream(sessionID string) (*ChatStreamHandoff, error) {
 	}
 
 	stream, err := a.chatStreams.Open(sessionID, func() ([]*game.Message, error) {
-		resp, err := a.client.ListMessages(a.ctx, sessionID)
+		resp, err := a.client.ListMessages(a.ctx, a.template, sessionID, agent)
 		if err != nil {
 			return nil, err
 		}
