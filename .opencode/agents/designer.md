@@ -3,7 +3,7 @@ description: 调研、设计与规划者
 mode: primary
 model: zhipuai-coding-plan/glm-5.2
 reasoningEffort: max
-temperature: 0.1
+temperature: 1.0
 tools:
   todowrite: true
 ---

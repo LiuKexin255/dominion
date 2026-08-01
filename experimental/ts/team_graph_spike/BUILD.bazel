@@ -1,0 +1,86 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@aspect_rules_swc//swc:defs.bzl", "swc")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/dev/js:vitest_test.bzl", "vitest_test")
+load("//tools/release:defs.bzl", "artifact_image", "artifact_pkg_js")
+
+npm_link_all_packages(name = "node_modules")
+
+ts_project(
+    name = "lib",
+    srcs = glob(
+        ["src/**/*.ts"],
+        exclude = ["**/*.test.ts"],
+    ),
+    declaration = False,
+    transpiler = swc,
+    tsconfig = ":tsconfig.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/@types/node",
+        ":node_modules/langchain",
+        ":node_modules/zod",
+    ],
+)
+
+js_library(
+    name = "lib_output",
+    srcs = [":lib"],
+)
+
+artifact_pkg_js(
+    name = "server_pkg",
+    app = "game",
+    entrypoint = "src/bootstrap.js",
+    npm_deps = [
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/langchain",
+        ":node_modules/zod",
+    ],
+    service = "team-graph-spike",
+    ts_project = ":lib",
+    runtime_deps = [
+        "//common/js/logs:runtime_pkg",
+        "//common/js/otel:runtime_pkg",
+        "//common/js/resolver:runtime_pkg",
+    ],
+)
+
+artifact_image(
+    name = "cmd_image",
+    app = "game",
+    pkg = ":server_pkg",
+    service = "team-graph-spike",
+    visibility = ["//visibility:public"],
+)
+
+vitest_test(
+    name = "lib_test",
+    size = "small",
+    # style/javascript.md §js_test: test against raw .ts source (NOT :lib),
+    # mirroring projects/game/agent/BUILD.bazel. data mirrors :lib deps so
+    # external npm packages are present in runfiles.
+    data = glob(
+        ["src/**/*.ts"],
+        allow_empty = True,
+    ) + [
+        ":node_modules/@dominion/common-js-logs",
+        ":node_modules/@dominion/common-js-otel",
+        ":node_modules/@dominion/common-js-resolver",
+        ":node_modules/@langchain/core",
+        ":node_modules/@langchain/langgraph",
+        ":node_modules/@langchain/openai",
+        ":node_modules/@types/node",
+        ":node_modules/langchain",
+        ":node_modules/zod",
+    ],
+)

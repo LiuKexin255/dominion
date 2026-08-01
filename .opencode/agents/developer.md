@@ -1,9 +1,9 @@
 ---
 description: SDD 任务的代码开发者，提供 sdd 任务文档和目标，进行代码开发。
 mode: subagent
-model: zhipuai-coding-plan/glm-5.2
+model: opencode-go/deepseek-v4-flash
 reasoningEffort: max
-temperature: 0.3
+temperature: 0.5
 tools:
   todowrite: true
 ---
