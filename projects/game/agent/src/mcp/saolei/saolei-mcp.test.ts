@@ -41,7 +41,7 @@ import {
 	validateMove,
 	isTerminalState,
 } from "./saolei-mcp";
-import type { SaoleiBoardApi, CellTool } from "./saolei-mcp";
+import type { SaoleiBoardApi, CellTool, SaoleiEventSink } from "./saolei-mcp";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
@@ -1176,5 +1176,254 @@ describe("createSaoleiMcpServer: saolei_remain (read-only)", () => {
 		expect(text).toContain("board size 3*1");
 		// Raw -1 present (columnWidth=4 ⇒ row0 is "row0    -   -1   -").
 		expect(text).toMatch(/row0\s+-\s+-1\s+-/);
+	});
+});
+
+// ── event sink (US3 / FR-019..FR-022) ───────────────────────────────────────
+//
+// `SaoleiEventSink` is the optional out-of-band event sink
+// (`specs/031-team-template-mode/contracts/saolei-sink-contract.md`):
+// `onGameStart` after a successful `saolei_init` recognition; `onMove` after
+// a legal cell op's post-dispatch recognition; `onGameEnd` (structured
+// `"won"|"lost"` enum, FR-022) when `gameStatus` turns terminal on a move.
+// `saolei_remain` (read-only) never fires. A throwing/rejecting sink must
+// not affect the tool result (contract §5). No sink registered ⇒ behaviour
+// unchanged (FR-020) — covered by every other describe in this file, which
+// builds servers without a sink.
+
+/** A recorded sink call, discriminated by `kind`. */
+type SinkCall =
+	| { kind: "onGameStart"; state: GameState }
+	| { kind: "onMove"; tool: CellTool; x: number; y: number; state: GameState }
+	| { kind: "onGameEnd"; state: GameState; status: "won" | "lost" };
+
+/** Build a recording `SaoleiEventSink` (DI seam — no `vi.mock`). */
+function makeRecordingSink(): {
+	sink: SaoleiEventSink;
+	calls: SinkCall[];
+} {
+	const calls: SinkCall[] = [];
+	return {
+		sink: {
+			onGameStart: (state) => {
+				calls.push({ kind: "onGameStart", state });
+			},
+			onMove: (tool, x, y, state) => {
+				calls.push({ kind: "onMove", tool, x, y, state });
+			},
+			onGameEnd: (state, status) => {
+				calls.push({ kind: "onGameEnd", state, status });
+			},
+		},
+		calls,
+	};
+}
+
+describe("createSaoleiMcpServer: event sink (FR-019..FR-022)", () => {
+	it("fires onGameStart with the initial state after a successful saolei_init", async () => {
+		const { bridge } = makeFakeBridge();
+		const initial = board(["* *", "* *"]);
+		const fake = makeFakeBoardApi(initial);
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		const result = await callTool(server, "saolei_init", {});
+
+		expectTextOnly(result);
+		expect(recording.calls).toHaveLength(1);
+		const start = recording.calls[0] as Extract<SinkCall, { kind: "onGameStart" }>;
+		expect(start.kind).toBe("onGameStart");
+		expect(start.state).toEqual(initial);
+	});
+
+	it("does NOT fire onGameStart when init recognition fails (FR-017 path)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["*"]));
+		fake.setInit("throw");
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+
+		expect(recording.calls).toHaveLength(0);
+	});
+
+	it("fires onMove after a legal cell op, with tool/x/y and the updated state", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0; // drop the onGameStart call
+		const updated = board(["0 *", "* *"]);
+		fake.setUpdate(updated);
+
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		expectTextOnly(result);
+		expect(recording.calls).toHaveLength(1);
+		const move = recording.calls[0] as Extract<SinkCall, { kind: "onMove" }>;
+		expect(move.kind).toBe("onMove");
+		expect(move.tool).toBe("saolei_click");
+		expect(move.x).toBe(0);
+		expect(move.y).toBe(0);
+		expect(move.state).toEqual(updated);
+	});
+
+	it("fires onMove then onGameEnd('won') when a move completes a win", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+		// The post-move screenshot recognizes the counter-informed winning
+		// board (grid fully revealed/flagged AND decoded 000 counter — spec
+		// 028), so `gameStatus` reads `won` (FR-017 first-hand computation).
+		fake.setUpdate(board(["0 F", "1 1"], COUNTER_ZERO));
+
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		expectTextOnly(result);
+		expect(recording.calls.map((c) => c.kind)).toEqual([
+			"onMove",
+			"onGameEnd",
+		]);
+		const end = recording.calls[1] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(end.status).toBe("won");
+	});
+
+	it("fires onMove then onGameEnd('lost') when a move loses the game", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+		// HIT_MINE present ⇒ terminal loss (`isTerminalState`).
+		fake.setUpdate(board(["X *", "* *"]));
+
+		const result = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		expectTextOnly(result);
+		expect(recording.calls.map((c) => c.kind)).toEqual([
+			"onMove",
+			"onGameEnd",
+		]);
+		const end = recording.calls[1] as Extract<SinkCall, { kind: "onGameEnd" }>;
+		expect(end.status).toBe("lost");
+	});
+
+	it("fires ONLY onMove for an in-progress move (no onGameEnd)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+		fake.setUpdate(board(["0 *", "* *"])); // still playing
+
+		await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		expect(recording.calls.map((c) => c.kind)).toEqual(["onMove"]);
+	});
+
+	it("does NOT fire any sink event for saolei_remain (read-only, contract §3)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["3 F", "* *"]));
+		const recording = makeRecordingSink();
+		const server = createSaoleiMcpServer(bridge, fake.api, recording.sink);
+
+		await callTool(server, "saolei_init", {});
+		recording.calls.length = 0;
+
+		await callTool(server, "saolei_remain", {});
+
+		expect(recording.calls).toHaveLength(0);
+	});
+
+	it("isolates a THROWING sink — the tool result is unchanged (contract §5)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const throwing: SaoleiEventSink = {
+			onGameStart: () => {
+				throw new Error("sink boom");
+			},
+			onMove: () => {
+				throw new Error("sink boom");
+			},
+			onGameEnd: () => {
+				throw new Error("sink boom");
+			},
+		};
+		const server = createSaoleiMcpServer(bridge, fake.api, throwing);
+
+		const initResult = await callTool(server, "saolei_init", {});
+		expect(initResult.content[0].text).toContain("new game started");
+
+		fake.setUpdate(board(["0 *", "* *"]));
+		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		expect(moveResult.content[0].text).toContain(
+			"saolei_click at (0,0) → dispatched",
+		);
+	});
+
+	it("isolates a REJECTING (async) sink — the tool result is unchanged (contract §5)", async () => {
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const rejecting: SaoleiEventSink = {
+			onGameStart: () => Promise.reject(new Error("sink boom")),
+			onMove: () => Promise.reject(new Error("sink boom")),
+			onGameEnd: () => Promise.reject(new Error("sink boom")),
+		};
+		const server = createSaoleiMcpServer(bridge, fake.api, rejecting);
+
+		const initResult = await callTool(server, "saolei_init", {});
+		const text = expectTextOnly(initResult);
+		expect(text).toContain("new game started");
+
+		fake.setUpdate(board(["0 *", "* *"]));
+		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+		expect(moveResult.content[0].text).toContain(
+			"saolei_click at (0,0) → dispatched",
+		);
+	});
+
+	it("isolates a THROWING sink on a game-ending move — onMove+onGameEnd throws leave the tool result unchanged", async () => {
+		// Terminal-move variant of the throwing-sink case: the post-move
+		// screenshot recognizes the counter-informed winning board (grid
+		// fully revealed/flagged AND decoded 000 counter, spec 028), so the
+		// click triggers BOTH `onMove` and `onGameEnd("won")` — both throws
+		// must be isolated by `runSink` (contract §5) and the tool result
+		// must still be the normal `dispatchedText`.
+		const { bridge } = makeFakeBridge();
+		const fake = makeFakeBoardApi(board(["* *", "* *"]));
+		const throwing: SaoleiEventSink = {
+			onGameStart: () => {
+				throw new Error("sink boom");
+			},
+			onMove: () => {
+				throw new Error("sink boom");
+			},
+			onGameEnd: () => {
+				throw new Error("sink boom");
+			},
+		};
+		const server = createSaoleiMcpServer(bridge, fake.api, throwing);
+
+		await callTool(server, "saolei_init", {});
+		fake.setUpdate(board(["0 F", "1 1"], COUNTER_ZERO));
+
+		const moveResult = await callTool(server, "saolei_click", { x: 0, y: 0 });
+
+		expect(moveResult.content[0].text).toContain(
+			"saolei_click at (0,0) → dispatched",
+		);
+		// The terminal path ran: the result carries the won status line.
+		expect(moveResult.content[0].text).toContain("game status: won");
 	});
 });

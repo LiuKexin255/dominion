@@ -5,9 +5,12 @@
  * `/internal/mcp/{session_id}` to a lazily-created, session-bound
  * `McpServer` (`specs/018-saolei-mcp/research.md` D3). Each session's
  * `McpServer` is built by `createSaoleiMcpServer` and closes over that
- * session's `OperationBridge` (FR-002 / FR-026). The saolei MCP is stateless
- * (`specs/023-saolei-mcp-refine/contracts/tool-dispatch-contract.md` §6), so
- * the server carries no per-session game state.
+ * session's `OperationBridge` (FR-002 / FR-026). Since spec 025 the saolei
+ * MCP is NOT stateless: the factory closure holds the per-session recognized
+ * `GameState` (`specs/025-desktop-image-state-refine/contracts/saolei-mcp-contract.md`),
+ * and as of spec 031 it may additionally carry an optional out-of-band event
+ * sink supplied by the team side (`specs/031-team-template-mode/contracts/
+ * saolei-sink-contract.md` §6).
  *
  * Lifecycle (research.md D3 / FR-026): the host process owns the listener;
  * sessions map onto the existing `SessionAgent` lifecycle. Unknown
@@ -26,16 +29,20 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { OperationBridge } from "./operation-bridge";
+import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
 import { createSaoleiMcpServer } from "./mcp/saolei/saolei-mcp";
 
 /**
  * Lookup result for a session id: the session's `OperationBridge`, used to
- * build the session-bound saolei `McpServer`. Returning `undefined` triggers
- * the FR-003 404 path.
+ * build the session-bound saolei `McpServer`, plus an optional out-of-band
+ * event sink supplied by the session's team (`specs/031-team-template-mode/
+ * contracts/saolei-sink-contract.md` §6 — the team binds it to its ephemeral
+ * buffer; `SessionTeam` provides it from Phase 5 on). Returning `undefined`
+ * triggers the FR-003 404 path.
  */
 export interface SessionBridgeLookup {
 	(sessionId: string):
-		| { bridge: OperationBridge }
+		| { bridge: OperationBridge; sink?: SaoleiEventSink }
 		| undefined;
 }
 
@@ -85,7 +92,7 @@ export function createMcpHostApp(lookup: SessionBridgeLookup): express.Express {
 		const looked = lookup(sessionId);
 		if (!looked) return undefined;
 
-		const mcp = createSaoleiMcpServer(looked.bridge);
+		const mcp = createSaoleiMcpServer(looked.bridge, undefined, looked.sink);
 		const transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => randomUUID(),
 			onsessioninitialized: (mcpSessionId) => {

@@ -72,6 +72,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
+import { warn } from "@dominion/common-js-logs";
 import {
 	SaoleiBoard,
 	isWin,
@@ -131,6 +132,37 @@ const WINDOW_MESSAGE = "MOUSE_INPUT_METHOD_WINDOW_MESSAGE";
 
 /** A cell-operation tool name (the three tools that take `(x, y)`). */
 export type CellTool = "saolei_click" | "saolei_flag" | "saolei_chord_click";
+
+/**
+ * Optional out-of-band event sink for the session-bound saolei MCP
+ * (`specs/031-team-template-mode/contracts/saolei-sink-contract.md` §1).
+ *
+ * The interface describes ONLY event shapes — it does NOT reference team /
+ * strategy / store / teamMemoryId concepts (FR-019; spec 031 spec.md). The
+ * team side registers an implementation that writes game state and the
+ * structured end event into its own shared state as the stable signal source
+ * for the planner (FR-021/FR-022). No sink registered ⇒ zero behaviour change
+ * (FR-020).
+ *
+ * All callbacks may return a promise; the MCP awaits them but isolates any
+ * rejection so it never affects the tool result (contract §5).
+ */
+export interface SaoleiEventSink {
+	/** A new game started: after `saolei_init` recognize succeeds. */
+	onGameStart(state: GameState): void | Promise<void>;
+	/** A legal cell operation (click/flag/chord) recognized its new state. */
+	onMove(
+		tool: CellTool,
+		x: number,
+		y: number,
+		state: GameState,
+	): void | Promise<void>;
+	/** The game ended: `gameStatus(state)` ∈ {won, lost} after a move. */
+	onGameEnd(
+		state: GameState,
+		status: "won" | "lost",
+	): void | Promise<void>;
+}
 
 /**
  * Verdict of a strict pre-dispatch validation pass
@@ -576,11 +608,17 @@ type SaoleiToolExtra = { signal: AbortSignal };
  *   FlowPart operations to the desktop (DI seam).
  * @param boardApi The recognition engine (DI seam). Defaults to the
  *   `@dominion/game-saolei-board` wrapper; tests inject a fake.
+ * @param sink    Optional out-of-band event sink (contract
+ *   `specs/031-team-template-mode/contracts/saolei-sink-contract.md` §2).
+ *   Defaults to `undefined` — no sink registered ⇒ tool behaviour is
+ *   unchanged (FR-020). Sink callbacks are error-isolated: a throwing sink
+ *   never affects the tool result (contract §5).
  * @returns The session-bound `McpServer`.
  */
 export function createSaoleiMcpServer(
 	bridge: OperationBridge,
 	boardApi: SaoleiBoardApi = createDefaultBoardApi(),
+	sink?: SaoleiEventSink,
 ): McpServer {
 	const server = new McpServer(
 		{ name: "saolei", version: "0.1.0" },
@@ -617,6 +655,29 @@ export function createSaoleiMcpServer(
 		}
 	}
 
+	/**
+	 * Error-isolated sink invocation (`specs/031-team-template-mode/contracts/
+	 * saolei-sink-contract.md` §5): a throwing or rejecting sink callback
+	 * MUST NOT affect the tool's return value — the error is logged as a
+	 * warning and swallowed. `fn` receives the (possibly `undefined`) sink,
+	 * so a server built without a sink performs a no-op call.
+	 */
+	async function runSink(
+		event: string,
+		fn: (sink: SaoleiEventSink) => void | Promise<void>,
+	): Promise<void> {
+		if (!sink) return;
+		try {
+			await fn(sink);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			warn("saolei mcp sink callback failed", {
+				event,
+				error: msg,
+			});
+		}
+	}
+
 	// ── saolei_init — no arguments ─ FR-019 ──────────────────────────────
 	// Dispatches F2 (new game), then seeds the recognized state from the
 	// returned screenshot. Re-calling re-dispatches F2 and re-seeds (restart).
@@ -640,6 +701,9 @@ export function createSaoleiMcpServer(
 			if (!state) {
 				return textResult(unrecognizableText());
 			}
+			// Sink: a new game started (contract §3 — `onGameStart` fires
+			// after a successful init recognition; FR-019/FR-021).
+			await runSink("onGameStart", (s) => s.onGameStart(state));
 			return textResult(initSuccessText(state));
 		},
 	);
@@ -716,6 +780,17 @@ export function createSaoleiMcpServer(
 				const state = recognize(result, (png) => boardApi.update(png));
 				if (!state) {
 					return textResult(unrecognizableText());
+				}
+				// Sink (contract §3): `onMove` fires after a successful
+				// post-dispatch recognition; when the move ended the game
+				// (`gameStatus` ∈ {won, lost} — the MCP's first-hand
+				// computation, FR-017), `onGameEnd` fires AFTER `onMove`
+				// with the structured status (FR-022). `saolei_remain` never
+				// reaches this path (read-only, no dispatch).
+				await runSink("onMove", (s) => s.onMove(name, x, y, state));
+				const status = gameStatus(state);
+				if (status === "won" || status === "lost") {
+					await runSink("onGameEnd", (s) => s.onGameEnd(state, status));
 				}
 				return textResult(dispatchedText(name, x, y, state));
 			},
