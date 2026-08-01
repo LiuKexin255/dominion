@@ -9,19 +9,11 @@ import (
 // gRPC target constants
 const (
 	SessionTarget = "game/session:grpc"
-	ProxyTarget   = "game/proxy:grpc"
-	AgentTarget   = "game/agent:grpc"
-	PromptTarget  = "game/prompt:grpc"
-
-	SessionNamePrefix      = "sessions/"
-	AgentProfileNamePrefix = "prompts/agentProfiles/"
-	SkillNamePrefix        = "prompts/skills/"
-
-	// PromptsParent is the singleton-namespace parent for AgentProfile and
-	// Skill resources (AIP-156 https://google.aip.dev/156). It exists purely
-	// as a path-prefix segment; no Prompt resource message exists. Create
-	// RPCs under prompts/ carry this literal in their parent field.
-	PromptsParent = "prompts"
+	// TeamTarget is the gRPC target of the TeamService (hosted by the proxy
+	// service, which replaced ProxyService per spec 031-team-template-mode).
+	TeamTarget   = "game/proxy:grpc"
+	AgentTarget  = "game/agent:grpc"
+	PromptTarget = "game/prompt:grpc"
 
 	// Log field constants
 	LogFieldName       = "name"
@@ -30,85 +22,100 @@ const (
 	LogFieldAgentIndex = "agent_index"
 )
 
+// Resource name path segments (AIP-122 https://google.aip.dev/122 collection
+// identifiers). templatesPrefix is the leading segment of every resource name
+// under a template (spec 031-team-template-mode FR-002).
+const (
+	templatesPrefix = "templates/"
+	sessionsSegment = "sessions"
+	teamSegment     = "team"
+	agentsSegment   = "agents"
+	messagesSegment = "messages"
+	profilesSegment = "profiles"
+)
+
 // ErrInvalidSessionName is returned when a session name cannot be parsed.
 var ErrInvalidSessionName = errors.New("invalid session name")
 
-// ErrInvalidAgentProfileName is returned when an agent profile name cannot be parsed.
-var ErrInvalidAgentProfileName = errors.New("invalid agent profile name")
+// ErrInvalidTeamName is returned when a team name cannot be parsed.
+var ErrInvalidTeamName = errors.New("invalid team name")
 
-// ErrInvalidSkillName is returned when a skill name cannot be parsed.
-var ErrInvalidSkillName = errors.New("invalid skill name")
+// ErrInvalidTeamProfileName is returned when a team profile name cannot be parsed.
+var ErrInvalidTeamProfileName = errors.New("invalid team profile name")
 
-// SessionName returns the resource name for a session.
-func SessionName(sessionID string) string {
-	return SessionNamePrefix + sessionID
+// SessionName returns the resource name for a session under a template:
+// "templates/{template}/sessions/{session}".
+func SessionName(template, sessionID string) string {
+	return templatesPrefix + template + "/" + sessionsSegment + "/" + sessionID
 }
 
-// SessionID extracts the session ID from a session resource name.
-// It returns ErrInvalidSessionName if the name is malformed.
-func SessionID(name string) (string, error) {
-	if !strings.HasPrefix(name, SessionNamePrefix) {
-		return "", ErrInvalidSessionName
+// SessionID extracts the template and session ID from a session resource name
+// of the form "templates/{template}/sessions/{session}". It returns
+// ErrInvalidSessionName if the name is malformed.
+func SessionID(name string) (template, sessionID string, err error) {
+	segments := strings.Split(name, "/")
+	if len(segments) != 4 || segments[0] != "templates" || segments[2] != sessionsSegment ||
+		segments[1] == "" || segments[3] == "" {
+		return "", "", ErrInvalidSessionName
 	}
-	id := strings.TrimPrefix(name, SessionNamePrefix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", ErrInvalidSessionName
-	}
-	return id, nil
+	return segments[1], segments[3], nil
 }
 
-// AgentName returns the resource name for an agent.
-func AgentName(sessionID string) string {
-	return SessionNamePrefix + sessionID + "/agent"
+// TeamName returns the resource name for a session's team:
+// "templates/{template}/sessions/{session}/team".
+func TeamName(template, sessionID string) string {
+	return SessionName(template, sessionID) + "/" + teamSegment
 }
 
-// ErrInvalidAgentName is returned when an agent name cannot be parsed.
-var ErrInvalidAgentName = errors.New("invalid agent name")
-
-const agentNameSuffix = "/agent"
-
-// AgentSessionID extracts the session ID from an agent resource name of the
-// form "sessions/{session}/agent". It returns ErrInvalidAgentName if the name
-// is malformed.
-func AgentSessionID(name string) (string, error) {
-	if !strings.HasSuffix(name, agentNameSuffix) {
-		return "", ErrInvalidAgentName
+// TeamSessionID extracts the template and session ID from a team resource name
+// of the form "templates/{template}/sessions/{session}/team". It returns
+// ErrInvalidTeamName if the name is malformed.
+func TeamSessionID(name string) (template, sessionID string, err error) {
+	segments := strings.Split(name, "/")
+	if len(segments) != 5 || segments[0] != "templates" || segments[2] != sessionsSegment ||
+		segments[4] != teamSegment || segments[1] == "" || segments[3] == "" {
+		return "", "", ErrInvalidTeamName
 	}
-	return SessionID(strings.TrimSuffix(name, agentNameSuffix))
+	return segments[1], segments[3], nil
 }
 
-// AgentProfileName returns the resource name for an agent profile.
-func AgentProfileName(profileID string) string {
-	return AgentProfileNamePrefix + profileID
+// MessageAgentName returns the resource name for a message in a team agent's
+// message partition (FR-005):
+// "templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}".
+func MessageAgentName(template, sessionID, agent, messageID string) string {
+	return TeamName(template, sessionID) + "/" + agentsSegment + "/" + agent +
+		"/" + messagesSegment + "/" + messageID
 }
 
-// AgentProfileID extracts the agent profile ID from a resource name.
-// It returns ErrInvalidAgentProfileName if the name is malformed.
-func AgentProfileID(name string) (string, error) {
-	if !strings.HasPrefix(name, AgentProfileNamePrefix) {
-		return "", ErrInvalidAgentProfileName
+// MessageAgentParse extracts the template, session ID and agent name from a
+// message resource name of the form
+// "templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}".
+// A message name is a team resource name with a partition suffix, so a
+// malformed name is reported as ErrInvalidTeamName.
+func MessageAgentParse(name string) (template, sessionID, agent string, err error) {
+	segments := strings.Split(name, "/")
+	if len(segments) != 9 || segments[0] != "templates" || segments[2] != sessionsSegment ||
+		segments[4] != teamSegment || segments[5] != agentsSegment || segments[7] != messagesSegment ||
+		segments[1] == "" || segments[3] == "" || segments[6] == "" || segments[8] == "" {
+		return "", "", "", ErrInvalidTeamName
 	}
-	id := strings.TrimPrefix(name, AgentProfileNamePrefix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", ErrInvalidAgentProfileName
-	}
-	return id, nil
+	return segments[1], segments[3], segments[6], nil
 }
 
-// SkillName returns the resource name for a skill.
-func SkillName(skillID string) string {
-	return SkillNamePrefix + skillID
+// TeamProfileName returns the resource name for a team profile under a
+// template: "templates/{template}/profiles/{profile}".
+func TeamProfileName(template, profileID string) string {
+	return templatesPrefix + template + "/" + profilesSegment + "/" + profileID
 }
 
-// SkillID extracts the skill ID from a resource name.
-// It returns ErrInvalidSkillName if the name is malformed.
-func SkillID(name string) (string, error) {
-	if !strings.HasPrefix(name, SkillNamePrefix) {
-		return "", ErrInvalidSkillName
+// TeamProfileID extracts the template and profile ID from a team profile
+// resource name of the form "templates/{template}/profiles/{profile}". It
+// returns ErrInvalidTeamProfileName if the name is malformed.
+func TeamProfileID(name string) (template, profileID string, err error) {
+	segments := strings.Split(name, "/")
+	if len(segments) != 4 || segments[0] != "templates" || segments[2] != profilesSegment ||
+		segments[1] == "" || segments[3] == "" {
+		return "", "", ErrInvalidTeamProfileName
 	}
-	id := strings.TrimPrefix(name, SkillNamePrefix)
-	if id == "" || strings.Contains(id, "/") {
-		return "", ErrInvalidSkillName
-	}
-	return id, nil
+	return segments[1], segments[3], nil
 }

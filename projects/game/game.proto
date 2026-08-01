@@ -12,156 +12,138 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "dominion/projects/game";
 
-// SessionService manages Session resources — the top-level container for a
-// game session.
+// SessionService manages Session resources — the per-template container for
+// a game session.
 //
-// Prefix Path: /api/v1/sessions
+// Prefix Path: /api/v1/templates/{template}/sessions
 service SessionService {
-  // CreateSession creates a new Session. AIP-133: https://google.aip.dev/133
+  // CreateSession creates a new Session under a template.
+  // AIP-133: https://google.aip.dev/133
   rpc CreateSession(CreateSessionRequest) returns (Session) {
     option (google.api.http) = {
-      post: "/api/v1/sessions"
+      post: "/api/v1/{parent=templates/*}/sessions"
       body: "session"
     };
-    option (google.api.method_signature) = "session,session_id";
+    option (google.api.method_signature) = "parent,session";
   }
 
+  // ListSessions lists Sessions under a template. AIP-132: https://google.aip.dev/132
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {
     option (google.api.http) = {
-      get: "/api/v1/sessions"
+      get: "/api/v1/{parent=templates/*}/sessions"
     };
+    option (google.api.method_signature) = "parent";
   }
 
+  // GetSession gets a Session. AIP-131: https://google.aip.dev/131
   rpc GetSession(GetSessionRequest) returns (Session) {
     option (google.api.http) = {
-      get: "/api/v1/{name=sessions/*}"
+      get: "/api/v1/{name=templates/*/sessions/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
+  // DeleteSession deletes a Session. AIP-135: https://google.aip.dev/135
   rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      delete: "/api/v1/{name=sessions/*}"
+      delete: "/api/v1/{name=templates/*/sessions/*}"
     };
     option (google.api.method_signature) = "name";
   }
 }
 
-// ProxyService manages Agent resources within a Session and provides a
-// bidirectional stream for real-time agent communication.
+// TeamService manages the Team resource within a Session and provides a
+// bidirectional stream for real-time team communication. It replaces the
+// former ProxyService/AgentService pair (clean break, spec
+// 031-team-template-mode): the Team is the session's execution subject and
+// its messages are partitioned per team agent.
 //
-// Prefix Path: /api/v1/sessions/{session}/agent
-service ProxyService {
-  rpc GetAgent(GetAgentRequest) returns (Agent) {
+// Prefix Path: /api/v1/templates/{template}/sessions/{session}
+service TeamService {
+  // GetTeam gets the Team of a Session. AIP-131: https://google.aip.dev/131
+  rpc GetTeam(GetTeamRequest) returns (Team) {
     option (google.api.http) = {
-      get: "/api/v1/{name=sessions/*/agent}"
+      get: "/api/v1/{name=templates/*/sessions/*/team}"
     };
     option (google.api.method_signature) = "name";
   }
 
+  // Connect establishes a bidirectional streaming channel for team
+  // communication. Each frame carries exactly one payload: a MessageParts of
+  // content or a single FlowParts control batch. User-input frames are
+  // routed to the team agent that accepts user input (FR-032). No REST
+  // binding: bidirectional streaming RPCs are not natively supported over
+  // HTTP/1.1 (AIP-127 https://google.aip.dev/127).
+  rpc Connect(stream AgentFrame) returns (stream AgentFrame);
+
+  // ListMessages lists Messages of one team agent's partition.
+  // AIP-132: https://google.aip.dev/132
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse) {
     option (google.api.http) = {
-      get: "/api/v1/{parent=sessions/*}/messages"
+      get: "/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages"
     };
     option (google.api.method_signature) = "parent";
   }
 
-  // ConnectAgent establishes a bidirectional streaming channel for agent
-  // communication. Each frame carries exactly one payload: a PartBlock of
-  // content or a single control signal.
-  rpc ConnectAgent(stream AgentFrame) returns (stream AgentFrame);
-
-  rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty) {
+  // RefreshTeam clears the session's short-term memory (messages); the
+  // long-term strategy memory is unaffected (FR-018). AIP-136 custom method:
+  // https://google.aip.dev/136
+  rpc RefreshTeam(RefreshTeamRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      post: "/api/v1/{name=sessions/*/agent}:refresh"
+      post: "/api/v1/{name=templates/*/sessions/*/team}:refresh"
       body: "*"
     };
     option (google.api.method_signature) = "name";
   }
 }
 
-// AgentService provides agent-side operations and a bidirectional stream for
-// agent-to-agent communication.
+// PromptService manages TeamProfile resources for per-template team
+// configuration. Each TeamProfile carries a typed oneof spec that is
+// specialized per template (saolei: SaoleiProfile). It replaces the former
+// AgentProfile/Skill management (clean break, spec 031-team-template-mode).
 //
-// Prefix Path: /api/v1/agents
-service AgentService {
-  rpc GetAgent(GetAgentRequest) returns (Agent);
-  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
-  rpc Connect(stream AgentFrame) returns (stream AgentFrame);
-  rpc RefreshAgent(RefreshAgentRequest) returns (google.protobuf.Empty);
-}
-
-// PromptService manages AgentProfile and Skill resources for agent
-// configuration. Resources live under the `prompts/` singleton namespace
-// (AIP-156 https://google.aip.dev/156 — collection-less container used purely
-// as a path prefix; no Prompt resource message exists).
-//
-// Prefix Path: /api/v1/prompts
+// Prefix Path: /api/v1/templates/{template}/profiles
 service PromptService {
-  // CreateAgentProfile creates a new AgentProfile under prompts.
+  // CreateTeamProfile creates a new TeamProfile under a template.
   // AIP-133: https://google.aip.dev/133
-  rpc CreateAgentProfile(CreateAgentProfileRequest) returns (AgentProfile) {
+  rpc CreateTeamProfile(CreateTeamProfileRequest) returns (TeamProfile) {
     option (google.api.http) = {
-      post: "/api/v1/{parent=prompts}/agentProfiles"
-      body: "agent_profile"
+      post: "/api/v1/{parent=templates/*}/profiles"
+      body: "team_profile"
     };
-    option (google.api.method_signature) = "parent,agent_profile,agent_profile_id";
+    option (google.api.method_signature) = "parent,team_profile,team_profile_id";
   }
 
-  rpc GetAgentProfile(GetAgentProfileRequest) returns (AgentProfile) {
+  // GetTeamProfile gets a TeamProfile. AIP-131: https://google.aip.dev/131
+  rpc GetTeamProfile(GetTeamProfileRequest) returns (TeamProfile) {
     option (google.api.http) = {
-      get: "/api/v1/{name=prompts/agentProfiles/*}"
-    };
-    option (google.api.method_signature) = "name";
-  }
-
-  rpc ListAgentProfiles(ListAgentProfilesRequest) returns (ListAgentProfilesResponse) {
-    option (google.api.http) = {
-      get: "/api/v1/{parent=prompts}/agentProfiles"
-    };
-  }
-
-  rpc DeleteAgentProfile(DeleteAgentProfileRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/api/v1/{name=prompts/agentProfiles/*}"
+      get: "/api/v1/{name=templates/*/profiles/*}"
     };
     option (google.api.method_signature) = "name";
   }
 
-  // UpdateAgentProfile updates an AgentProfile. AIP-134: https://google.aip.dev/134
-  rpc UpdateAgentProfile(UpdateAgentProfileRequest) returns (AgentProfile) {
+  // ListTeamProfiles lists TeamProfiles under a template.
+  // AIP-132: https://google.aip.dev/132
+  rpc ListTeamProfiles(ListTeamProfilesRequest) returns (ListTeamProfilesResponse) {
     option (google.api.http) = {
-      patch: "/api/v1/{agent_profile.name=prompts/agentProfiles/*}"
-      body: "agent_profile"
+      get: "/api/v1/{parent=templates/*}/profiles"
     };
-    option (google.api.method_signature) = "agent_profile,update_mask";
+    option (google.api.method_signature) = "parent";
   }
 
-  // CreateSkill creates a new Skill under prompts. AIP-133: https://google.aip.dev/133
-  rpc CreateSkill(CreateSkillRequest) returns (Skill) {
+  // UpdateTeamProfile updates a TeamProfile. AIP-134: https://google.aip.dev/134
+  rpc UpdateTeamProfile(UpdateTeamProfileRequest) returns (TeamProfile) {
     option (google.api.http) = {
-      post: "/api/v1/{parent=prompts}/skills"
-      body: "skill"
+      patch: "/api/v1/{team_profile.name=templates/*/profiles/*}"
+      body: "team_profile"
     };
-    option (google.api.method_signature) = "parent,skill,skill_id";
+    option (google.api.method_signature) = "team_profile,update_mask";
   }
 
-  rpc GetSkill(GetSkillRequest) returns (Skill) {
+  // DeleteTeamProfile deletes a TeamProfile. AIP-135: https://google.aip.dev/135
+  rpc DeleteTeamProfile(DeleteTeamProfileRequest) returns (google.protobuf.Empty) {
     option (google.api.http) = {
-      get: "/api/v1/{name=prompts/skills/*}"
-    };
-    option (google.api.method_signature) = "name";
-  }
-
-  rpc ListSkills(ListSkillsRequest) returns (ListSkillsResponse) {
-    option (google.api.http) = {
-      get: "/api/v1/{parent=prompts}/skills"
-    };
-  }
-
-  rpc DeleteSkill(DeleteSkillRequest) returns (google.protobuf.Empty) {
-    option (google.api.http) = {
-      delete: "/api/v1/{name=prompts/skills/*}"
+      delete: "/api/v1/{name=templates/*/profiles/*}"
     };
     option (google.api.method_signature) = "name";
   }
@@ -169,33 +151,96 @@ service PromptService {
 
 // ─── Shared Resources ──────────────────────────────────────────────────────
 
-// Session is the top-level container for a game session.
+// Template is the top-level resource-hierarchy path segment (AIP-126
+// enumeration; values prefixed with the enum name). It is a fixed enum
+// constant set — NOT a resource: no CRUD/List RPCs exist for templates
+// (FR-001). The set is expected to grow infrequently as new templates are
+// added.
+enum Template {
+  // Default value. This value is unused.
+  TEMPLATE_UNSPECIFIED = 0;
+
+  // The saolei (minesweeper) template: player + planner team graph.
+  TEMPLATE_SAOLEI = 1;
+}
+
+// Session is the per-template container for a game session.
 message Session {
   option (google.api.resource) = {
     type: "game.liukexin.com/Session"
-    pattern: "sessions/{session}"
+    pattern: "templates/{template}/sessions/{session}"
     plural: "sessions"
     singular: "session"
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  string session_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
-  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // Derived from the parent "templates/{template}" at create time; clients do
+  // not set it in the resource body.
+  Template template = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string session_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
-// Agent represents an agent within a game session.
-message Agent {
+// TeamAgent describes one agent inside a Team. The agent name is known to
+// the template's graph schema (saolei: player/planner); it is not a
+// standalone resource — it is the message-partition and frame-routing
+// dimension (FR-005/FR-023).
+message TeamAgent {
+  // Agent name within the team (e.g. player/planner).
+  string name = 1;
+  // Whether the agent accepts user input (FR-031). saolei: player=true,
+  // planner=false.
+  bool accepts_user_input = 2;
+}
+
+// Team is the execution subject of a Session, replacing the former Agent
+// resource (clean break, FR-003). It comes into existence with the session's
+// Connect and cannot be created independently; its agents are exported from
+// the template's graph schema definition (typed, not hard-coded by clients).
+message Team {
   option (google.api.resource) = {
-    type: "game.liukexin.com/Agent"
-    pattern: "sessions/{session}/agent"
-    plural: "agents"
-    singular: "agent"
+    type: "game.liukexin.com/Team"
+    pattern: "templates/{template}/sessions/{session}/team"
+    plural: "teams"
+    singular: "team"
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  string session_id = 2 [(google.api.field_behavior) = REQUIRED];
+  repeated TeamAgent agents = 2;
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
-  string agent_profile_name = 4;
+}
+
+// TeamProfile is the per-template team configuration resource, replacing the
+// former AgentProfile/Skill resources (clean break, FR-006/FR-007). The
+// template field MUST agree with the active oneof variant — the handler
+// validates the consistency (no implicit rules). The spec is a typed oneof,
+// never a blob (directive: typed oneof/enum, no unformatted generic).
+message TeamProfile {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/TeamProfile"
+    pattern: "templates/{template}/profiles/{profile}"
+    plural: "teamProfiles"
+    singular: "teamProfile"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  Template template = 2 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Template-specialized configuration (typed oneof). Exactly one variant
+  // must be set, matching the `template` field.
+  oneof spec {
+    SaoleiProfile saolei = 10;
+  }
+}
+
+// SaoleiProfile is the saolei-template TeamProfile specialization: player and
+// planner LLM model selection only (FR-027). Tools/MCP are fixed by the
+// template itself and are NOT configurable here (FR-028).
+message SaoleiProfile {
+  string player_model = 1;
+  string planner_model = 2;
 }
 
 // FrameSender identifies the originator of an AgentFrame.
@@ -511,7 +556,10 @@ message AgentFrame {
   reserved "invoke_id", "sequence";
 
   FrameSender sender = 6;
-  string agent_profile_name = 7;
+  // The team agent that produced the frame (e.g. player/planner); replaces
+  // the former agent_profile_name (clean break, spec 031-team-template-mode
+  // D12 / FR-023). Field 7 keeps its number; only the name changes.
+  string agent = 7;
 
   // Exactly one payload per frame: a batch of display blocks OR a batch of
   // control blocks (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4).
@@ -526,35 +574,32 @@ message AgentFrame {
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
-// state (history). Its content is a MessageParts (display blocks only) — the
-// identical shape a live AgentFrame's message_parts payload carries, so
-// history and live view render identically. Control blocks (FlowParts) never
-// appear here (spec 023 FR-004).
+// state (history), partitioned per team agent (FR-005). Its content is a
+// MessageParts (display blocks only) — the identical shape a live
+// AgentFrame's message_parts payload carries, so history and live view render
+// identically. Control blocks (FlowParts) never appear here (spec 023 FR-004).
 message Message {
   option (google.api.resource) = {
     type: "game.liukexin.com/Message"
-    pattern: "sessions/{session}/agent/messages/{message}"
+    pattern: "templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}"
     plural: "messages"
     singular: "message"
   };
 
-  string name = 1;
-  string message_id = 2;
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string message_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
   FrameSender sender = 3;
-  google.protobuf.Timestamp create_time = 4;
+  // The team agent this message belongs to; matches the {agent} path segment.
+  string agent = 4;
+  google.protobuf.Timestamp create_time = 5;
 
   // Content blocks (display only) — identical shape to AgentFrame's
   // message_parts payload (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §5).
-  MessageParts content = 5;
-
-  // Removed (clean break, spec 023 C2): the former PartBlock content (field 5
-  // type changed from PartBlock to MessageParts) and the legacy flat content
-  // fields (type / image_data / operation / operation_result).
-  reserved 6, 7, 8, 9;
-  reserved "type", "image_data", "operation", "operation_result";
+  MessageParts content = 6;
 }
 
-// ListMessagesRequest lists Messages under a Session's agent.
+// ListMessagesRequest lists Messages under one team agent's partition
+// (parent "templates/{template}/sessions/{session}/team/agents/{agent}").
 // AIP-132: https://google.aip.dev/132
 message ListMessagesRequest {
   string parent = 1 [
@@ -573,60 +618,35 @@ message ListMessagesResponse {
   string next_page_token = 2;
 }
 
-// AgentProfile describes the configuration for creating an agent.
-message AgentProfile {
-  option (google.api.resource) = {
-    type: "game.liukexin.com/AgentProfile"
-    pattern: "prompts/agentProfiles/{agent_profile}"
-    plural: "agentProfiles"
-    singular: "agentProfile"
-  };
-
-  reserved 2;
-  reserved "agent_profile_name";
-
-  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  string model = 3;
-  string system_prompt = 4;
-  repeated string skill_names = 5;
-  repeated string mcp_names = 6;
-  bool enabled = 7;
-  repeated string tool_names = 10;
-  google.protobuf.Timestamp create_time = 8;
-  google.protobuf.Timestamp update_time = 9;
-}
-
-// Skill represents a tool-independent skill definition.
-message Skill {
-  option (google.api.resource) = {
-    type: "game.liukexin.com/Skill"
-    pattern: "prompts/skills/{skill}"
-    plural: "skills"
-    singular: "skill"
-  };
-
-  reserved 2;
-  reserved "skill_name";
-
-  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  string content = 3;
-  bool enabled = 4;
-  google.protobuf.Timestamp create_time = 5;
-  google.protobuf.Timestamp update_time = 6;
-}
-
 // ─── Request Messages ──────────────────────────────────────────────────────
 
-// CreateSessionRequest creates a Session. AIP-133: https://google.aip.dev/133
-// session_id is empty when the caller defers ID generation to the server.
+// CreateSessionRequest creates a Session under a template. AIP-133:
+// https://google.aip.dev/133. session_id is empty when the caller defers ID
+// generation to the server.
 message CreateSessionRequest {
-  Session session = 1 [(google.api.field_behavior) = REQUIRED];
+  // The template to create the session in. Format: templates/{template}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Session"
+    }
+  ];
   string session_id = 2;
+  Session session = 3 [(google.api.field_behavior) = REQUIRED];
 }
 
+// ListSessionsRequest lists Sessions under a template. AIP-132:
+// https://google.aip.dev/132
 message ListSessionsRequest {
-  int32 page_size = 1;
-  string page_token = 2;
+  // The template to list sessions from. Format: templates/{template}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Session"
+    }
+  ];
+  int32 page_size = 2;
+  string page_token = 3;
 }
 
 message ListSessionsResponse {
@@ -652,139 +672,83 @@ message DeleteSessionRequest {
   ];
 }
 
-message GetAgentRequest {
+message GetTeamRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/Agent"
+      type: "game.liukexin.com/Team"
     }
   ];
 }
 
-message RefreshAgentRequest {
+// RefreshTeamRequest refreshes a Session's Team (clears short-term memory).
+// AIP-136 custom method: https://google.aip.dev/136
+message RefreshTeamRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/Agent"
+      type: "game.liukexin.com/Team"
     }
   ];
 }
 
-// CreateAgentProfileRequest creates an AgentProfile under prompts.
+// CreateTeamProfileRequest creates a TeamProfile under a template.
 // AIP-133: https://google.aip.dev/133
-message CreateAgentProfileRequest {
+message CreateTeamProfileRequest {
+  // The template to create the profile in. Format: templates/{template}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "game.liukexin.com/AgentProfile"
+      child_type: "game.liukexin.com/TeamProfile"
     }
   ];
-  string agent_profile_id = 2 [(google.api.field_behavior) = REQUIRED];
-  AgentProfile agent_profile = 3 [(google.api.field_behavior) = REQUIRED];
-
-  // Former flat fields (model/system_prompt/skill_names/mcp_names/enabled/
-  // tool_names/agent_profile_name) moved onto the AgentProfile message at
-  // field 3, per AIP-133's "the resource field carries the request body"
-  // template.
-  reserved 4, 5, 6, 7;
-  reserved "model", "system_prompt", "skill_names", "mcp_names", "enabled", "tool_names", "agent_profile_name";
+  string team_profile_id = 2 [(google.api.field_behavior) = REQUIRED];
+  TeamProfile team_profile = 3 [(google.api.field_behavior) = REQUIRED];
 }
 
-// UpdateAgentProfileRequest updates an AgentProfile. AIP-134: https://google.aip.dev/134
-// The resource's name field (AgentProfile.name, pattern
-// prompts/agentProfiles/{agent_profile}) is the target identity, surfaced in
-// the HTTP path via {agent_profile.name=...}. The standalone `name` field at
-// proto field 1 is removed (AIP-134 carries identity on the resource itself).
-// Field 2 (now agent_profile) keeps its number for wire compatibility with
-// the prior `profile` field.
-message UpdateAgentProfileRequest {
-  reserved 1;
-  reserved "name";
-
-  AgentProfile agent_profile = 2 [(google.api.field_behavior) = REQUIRED];
-  google.protobuf.FieldMask update_mask = 3;
-}
-
-message GetAgentProfileRequest {
+message GetTeamProfileRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/AgentProfile"
+      type: "game.liukexin.com/TeamProfile"
     }
   ];
 }
 
-// ListAgentProfilesRequest lists AgentProfiles under prompts.
+// ListTeamProfilesRequest lists TeamProfiles under a template.
 // AIP-132: https://google.aip.dev/132
-message ListAgentProfilesRequest {
+message ListTeamProfilesRequest {
+  // The template to list profiles from. Format: templates/{template}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "game.liukexin.com/AgentProfile"
+      child_type: "game.liukexin.com/TeamProfile"
     }
   ];
   int32 page_size = 2;
   string page_token = 3;
 }
 
-message ListAgentProfilesResponse {
-  repeated AgentProfile agent_profiles = 1;
+message ListTeamProfilesResponse {
+  repeated TeamProfile team_profiles = 1;
   string next_page_token = 2;
 }
 
-message DeleteAgentProfileRequest {
+// UpdateTeamProfileRequest updates a TeamProfile. AIP-134:
+// https://google.aip.dev/134. The resource's name field (TeamProfile.name,
+// pattern templates/{template}/profiles/{profile}) is the target identity,
+// surfaced in the HTTP path via {team_profile.name=...}. update_mask supports
+// oneof-member paths (e.g. saolei.player_model / saolei.planner_model).
+message UpdateTeamProfileRequest {
+  TeamProfile team_profile = 1 [(google.api.field_behavior) = REQUIRED];
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+message DeleteTeamProfileRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "game.liukexin.com/AgentProfile"
-    }
-  ];
-}
-
-// CreateSkillRequest creates a Skill under prompts. AIP-133: https://google.aip.dev/133
-message CreateSkillRequest {
-  string parent = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      child_type: "game.liukexin.com/Skill"
-    }
-  ];
-  string skill_id = 2 [(google.api.field_behavior) = REQUIRED];
-  Skill skill = 3 [(google.api.field_behavior) = REQUIRED];
-
-  reserved "skill_name", "content", "enabled";
-}
-
-message GetSkillRequest {
-  string name = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      type: "game.liukexin.com/Skill"
-    }
-  ];
-}
-
-message ListSkillsRequest {
-  string parent = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      child_type: "game.liukexin.com/Skill"
-    }
-  ];
-  int32 page_size = 2;
-  string page_token = 3;
-}
-
-message ListSkillsResponse {
-  repeated Skill skills = 1;
-  string next_page_token = 2;
-}
-
-message DeleteSkillRequest {
-  string name = 1 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = {
-      type: "game.liukexin.com/Skill"
+      type: "game.liukexin.com/TeamProfile"
     }
   ];
 }
