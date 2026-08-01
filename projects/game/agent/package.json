@@ -12,6 +12,7 @@
         "@modelcontextprotocol/sdk": "catalog:",
         "express": "catalog:",
         "langchain": "catalog:",
+        "mongodb": "catalog:",
         "zod": "catalog:",
         "@dominion/common-js-logs": "workspace:*",
         "@dominion/common-js-otel": "workspace:*",

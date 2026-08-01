@@ -44,6 +44,7 @@ ts_project(
         ":node_modules/@types/node",
         ":node_modules/express",
         ":node_modules/langchain",
+        ":node_modules/mongodb",
         ":node_modules/zod",
     ],
 )
@@ -179,6 +180,7 @@ vitest_test(
         ":node_modules/@types/node",
         ":node_modules/express",
         ":node_modules/langchain",
+        ":node_modules/mongodb",
         ":node_modules/zod",
     ],
 )

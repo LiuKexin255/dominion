@@ -37,6 +37,7 @@ catalog:
   express: "^5.2.1"
   langchain: "^1.5.4"
   marked: "^18.0.5"
+  mongodb: "^7.5.0"
   pngjs: "^7.0.0"
   svelte: "^5.33.0"
   svelte-check: "^4.6.0"
