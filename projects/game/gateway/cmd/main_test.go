@@ -31,14 +31,17 @@ func TestIsWebSocketConnectPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{path: "/api/v1/sessions/abc/connect", want: true},
-		{path: "api/v1/sessions/abc/connect", want: true},
-		{path: "/api/v1/sessions/abc/connect/", want: true},
-		{path: "/api/v1/sessions//connect", want: false},
-		{path: "/api/v1/sessions/abc", want: false},
-		{path: "/api/v1/sessions/connect", want: false},
-		{path: "/api/v1/sessions/abc/foo/bar", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc/connect", want: true},
+		{path: "api/v1/templates/saolei/sessions/abc/connect", want: true},
+		{path: "/api/v1/templates/saolei/sessions/abc/connect/", want: true},
+		{path: "/api/v1/templates//sessions/abc/connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions//connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc", want: false},
+		{path: "/api/v1/templates/saolei/sessions/connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc/foo/bar", want: false},
 		{path: "/api/v1/agents", want: false},
+		// Top-level sessions paths no longer exist (FR-002 clean break).
+		{path: "/api/v1/sessions/abc/connect", want: false},
 	}
 
 	for _, tt := range tests {
@@ -56,10 +59,11 @@ func TestExtractSessionID(t *testing.T) {
 		path string
 		want string
 	}{
-		{path: "/api/v1/sessions/abc123/connect", want: "abc123"},
-		{path: "/api/v1/sessions/x-y-z/connect", want: "x-y-z"},
-		{path: "/api/v1/sessions//connect", want: ""},
+		{path: "/api/v1/templates/saolei/sessions/abc123/connect", want: "abc123"},
+		{path: "/api/v1/templates/saolei/sessions/x-y-z/connect", want: "x-y-z"},
+		{path: "/api/v1/templates/saolei/sessions//connect", want: ""},
 		{path: "/api/v1/agents", want: ""},
+		{path: "/api/v1/sessions/abc/connect", want: ""},
 	}
 
 	for _, tt := range tests {
@@ -105,17 +109,17 @@ func TestIsCleanClose(t *testing.T) {
 // Integration tests: handleWebSocketConnect with real WebSocket + gRPC
 // ---------------------------------------------------------------------------
 
-// mockProxyServer implements game.ProxyServiceServer for testing.
-type mockProxyServer struct {
-	game.UnimplementedProxyServiceServer
+// mockTeamServer implements game.TeamServiceServer for testing.
+type mockTeamServer struct {
+	game.UnimplementedTeamServiceServer
 
-	// onConnect is called when ConnectAgent is invoked. It receives the
+	// onConnect is called when Connect is invoked. It receives the
 	// gRPC stream and can read/write AgentFrames. It should return when
 	// done or on error.
-	onConnect func(stream game.ProxyService_ConnectAgentServer) error
+	onConnect func(stream game.TeamService_ConnectServer) error
 }
 
-func (m *mockProxyServer) ConnectAgent(stream game.ProxyService_ConnectAgentServer) error {
+func (m *mockTeamServer) Connect(stream game.TeamService_ConnectServer) error {
 	if m.onConnect != nil {
 		return m.onConnect(stream)
 	}
@@ -133,11 +137,11 @@ func (m *mockProxyServer) ConnectAgent(stream game.ProxyService_ConnectAgentServ
 
 // setupTestGRPC starts a gRPC server with the given mock and returns the
 // client connection. Caller must call conn.Close() and cancel() when done.
-func setupTestGRPC(t *testing.T, mock game.ProxyServiceServer) (*grpc.ClientConn, context.CancelFunc) {
+func setupTestGRPC(t *testing.T, mock game.TeamServiceServer) (*grpc.ClientConn, context.CancelFunc) {
 	t.Helper()
 
 	srv := grpc.NewServer()
-	game.RegisterProxyServiceServer(srv, mock)
+	game.RegisterTeamServiceServer(srv, mock)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -179,8 +183,8 @@ func wsURL(httpURL string) string {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			// The server should not receive any frames since the client
 			// sends invalid protobuf.
 			_, err := stream.Recv()
@@ -188,18 +192,18 @@ func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	// Create a test HTTP server that routes to handleWebSocketConnect.
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -230,8 +234,8 @@ func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
 func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -241,17 +245,17 @@ func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -313,8 +317,8 @@ func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			// Echo each received frame back.
 			for {
 				frame, err := stream.Recv()
@@ -328,17 +332,17 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/echo-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/echo-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -402,15 +406,15 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_MissingSessionID(t *testing.T) {
-	proxyConn, _ := setupTestGRPC(t, &mockProxyServer{})
+	teamConn, _ := setupTestGRPC(t, &mockTeamServer{})
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	// Use path without a valid session ID.
-	resp, err := http.Get(httpSrv.URL + "/api/v1/sessions//connect")
+	resp, err := http.Get(httpSrv.URL + "/api/v1/templates/saolei/sessions//connect")
 	if err != nil {
 		t.Fatalf("http get: %v", err)
 	}
@@ -426,23 +430,23 @@ func TestHandleWebSocketConnect_MissingSessionID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			return status.Error(codes.Internal, "test internal error")
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/err-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/err-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -483,8 +487,8 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -494,10 +498,10 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
@@ -505,7 +509,7 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	defer cancel()
 
 	// Connect with session "from-url" in the URL path.
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/from-url/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/from-url/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -607,8 +611,8 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	serverRecv := make(chan struct{})
 	serverDone := make(chan struct{})
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			defer close(serverDone)
 			// Block until the test signals or the stream errors.
 			_, err := stream.Recv()
@@ -617,14 +621,14 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	// Use a WaitGroup to detect when handleWebSocketConnect returns.
 	var handlerDone sync.WaitGroup
 	handlerDone.Add(1)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 		handlerDone.Done()
 	}))
 	defer httpSrv.Close()
@@ -632,7 +636,7 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/leak-test/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/leak-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -671,8 +675,8 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 	statusSent := make(chan struct{})
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -697,17 +701,17 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/shot-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/shot-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -813,8 +817,8 @@ func TestReadLimitSet(t *testing.T) {
 	// has been raised. The default ReadLimit is 32768 bytes; we send 64KB.
 	// If ReadLimit were not set, the read would be rejected.
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -828,17 +832,17 @@ func TestReadLimitSet(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/limit-test/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/limit-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
