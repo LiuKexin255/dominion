@@ -110,8 +110,9 @@ Ephemeral buffer (per session, 进程内)
 
 ## 5. RefreshTeam（FR-018）
 
-- 经 `context-middleware`（`projects/game/agent/src/context-middleware.ts`，已预留扩展点）的 **`beforeModel`** 钩子（spike D14 A4 实测 middleware 可返回 `REMOVE_ALL_MESSAGES`）。
-- 对 `playerMessages` 与 `plannerMessages` 各发 `RemoveMessage({id: REMOVE_ALL_MESSAGES})`（`@langchain/langgraph` 全量清空原语，D8；spike D14 A1 实测 per-channel 独立清空）。
+- 经 `context-middleware`（`projects/game/agent/src/context-middleware.ts`，已预留扩展点）的 **`graph.updateState` 直清**：`refreshTeamChannels(graph, sessionId)` 一次 `graph.updateState({ configurable: { thread_id: sessionId } }, clearChannel("playerMessages") + clearChannel("plannerMessages"))`（updateState 的更新经各通道 `messagesStateReducer` 应用，checkpointer 语义）。
+- 对 `playerMessages` 与 `plannerMessages` 各发一个 `RemoveMessage({id: REMOVE_ALL_MESSAGES})`（`@langchain/langgraph` 全量清空原语，D8；spike D14 A1 实测 per-channel 独立清空——清 `playerMessages` 不影响 `plannerMessages`）。
+- **偏离说明（相对原 "beforeModel 钩子" 措辞，用户已接受）**：原设计措辞为 `context-middleware` 的 `beforeModel` 钩子返回 `{ messages: [RemoveMessage(REMOVE_ALL_MESSAGES)] }`（spike D14 A4 实测 middleware 可返回该值）。该措辞在 Batch 1 架构下**不可行**：player/planner 的 `createAgent` 不带自身 checkpointer（D14 A2），其 middleware 只见 createAgent 自身的 `{messages}` 通道，无法触达外层图的 `playerMessages`/`plannerMessages`（两通道持久化在外层单一 `MemorySaver`，D14 A3）。`graph.updateState` 直清两通道是架构上正确的落地，满足 FR-018 意图（清两通道、策略保留、gameEnded 不动）。
 - 策略（StrategyStore/mongo）与 gameEnded 控制状态不在清空范围（策略保留；gameEnded 由 planner 正常清除）。
 - **测试断言坑**（spike D14 注意事项 3）：`gameEnded` 终值为 `null`（planner 跑完即清）；断言"局结束"应检查 `plannerMessages` 非空，而非终态 `gameEnded`。
 

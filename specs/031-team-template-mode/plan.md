@@ -8,7 +8,7 @@
 
 将 game agent 从"单 session 单 agent"架构升级为"模板（Team 模板）+ LangGraph StateGraph 多 agent team"架构（survey: `survey/agent-team-mode.md`）。核心变更：
 
-1. **API 资源层级重构（clean break）**：引入 Template 顶层路径段（Template 资源消息，codegen 驱动资源名解析；具体值在 gameconst 常量，仅 `saolei`），Session/Team/Connect/Message/TeamProfile 全部改挂到 `templates/{template}/...` 下；废弃并移除 `Agent`、`AgentProfile`、`Skill` 资源及其 RPC；`RefreshAgent`→`RefreshTeam`。
+1. **API 资源层级重构（clean break）**：引入 Template 顶层路径段（Template 资源消息，codegen 驱动资源名解析；具体值在 gameconst 常量，仅 `saolei`），Session/Team/Connect/Message/TeamProfile 全部改挂到 `templates/{template}/...` 下；废弃并移除 `Agent`、`AgentProfile`、`Skill` 资源及其 RPC；`RefreshAgent`→`RefreshTeam`；**新增 `CreateTeam` RPC（AIP-133）显式创建 Team（携带 profile），取代原"随 Connect 隐式创建/固定默认 profile"的懒加载模式**（见「Team 显式创建」节）。
 2. **saolei 模板 team graph**：StateGraph 含 `player`（独占桌面控制 + saolei MCP）与 `planner`（每局结束触发一次复盘，经 `update_strategy` 写策略）。策略为长期记忆（**持久化到 MongoDB，经当前 mongo 服务**），以 session id 为键；其余 message 为短期记忆（内存 checkpointer），仅由 `RefreshTeam` 清空。
 3. **saolei MCP 旁路 sink**：MCP 提供结构化事件 sink 注册接口（不耦合 team mode），模板侧注册 sink 将游戏状态/结束事件写入进程内 state，驱动 planner 触发。
 4. **desktop 多标签页 + 模板控制面**：对话区按 team 内 agent 分 tab；agent 增加"是否接受用户输入"属性（saolei 中 planner 屏蔽输入）；profile 页面按模板特化（typed oneof，非 blob）。
@@ -16,6 +16,18 @@
 **重构方向**（需求方 directive 1）：本次为大规模重构，以**移除旧设计代码、添加新代码**为大方向，不做兼容补丁。
 
 **通用 vs 特化设计原则**（需求方 directive 2）：proto 与 desktop 设计优先通用；模板特化用 **typed `oneof`/枚举**表达，**禁止用 `bytes`/`string`/blob 等"非格式化"方式实现"通用"，禁止为通用引入"潜规则"**（隐式约定）。
+
+## Team 显式创建（CreateTeam RPC，Phase 5 实现决策）
+
+> 需求方新增设计决策（实现于 Phase 5 Batch 2，2026-07-30）：Team 为 per-session 单例资源，**必须经 `CreateTeam` 显式创建**；不存在隐式/懒加载创建。契约细节见 [`contracts/api-contract.md`](./contracts/api-contract.md) §2.2（含幂等注）。
+
+- **显式创建（AIP-133）**：`TeamService` 新增 `rpc CreateTeam(CreateTeamRequest) returns (Team)`；`CreateTeamRequest { parent=Session 资源名; profile=TeamProfile 资源名 }`（`templates/{template}/profiles/{profile}`，AIP-122——profile 的 template 段 MUST 与 parent 一致，handler 校验，禁潜规则）。Team 资源 id 为字面量 `team`，无 body、无 team_id 字段。
+- **取代懒加载**：原"Team 随 Connect 隐式创建/固定默认 profile"模式移除。`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` 均要求 Team 已创建（未创建 → NOT_FOUND，无自动创建）。
+- **profile 绑定**：team 由创建时传入的 profile 构建（player/planner 模型绑定）；**移除 `DEFAULT_TEAM_PROFILE`**（消除"session 用哪个 profile"的方案 gap）。desktop（Phase 6）将按"发消息时 GetTeam → NotFound → CreateTeam(profile)"的 create-if-missing 流程调用。
+- **owner 分配迁移**：proxy 层 `CreateTeam` 为**唯一 owner 分配点**（`assignOwner`，`ErrOwnerAlreadyExists` 并发竞态下重读既有 owner 而非报错）；`Connect` 改为 `lookupOwner`（不再分配 owner）。
+- **幂等规则（用户细化）**：重复 `CreateTeam`——profile 相同 → 幂等返回既有 Team（per-session 单例 + desktop 多标签页竞态重试场景，相对 AIP-133 严格 ALREADY_EXISTS 的偏离）；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）。profile 比较在 agent 层 `SessionTeamStore.create`（map 记录每 session 创建时所用 profile）。
+
+**实现落点**：proto `projects/game/game.proto`（`CreateTeam`/`CreateTeamRequest`）；proxy `projects/game/proxy/handler/handler.go`（`CreateTeam`/`assignOwner`/`lookupOwner`）；agent `projects/game/agent/src/handler.ts`（`CreateTeam` handler + 未创建 NOT_FOUND）与 `projects/game/agent/src/session-team.ts`（`SessionTeamStore.create`/`get`，取代 `getOrCreate` 懒加载）。
 
 ## Technical Context
 
@@ -45,7 +57,7 @@
 
 **Constraints**: clean break（不考虑历史数据兼容，需求方确认）；proto 必须通用+typed（无 blob/无潜规则）；LangChain 1.0 `createAgent` 与 swarm/supervisor 包不兼容（survey §3.1⚠️），team graph 用原生 StateGraph + 自定义条件边。
 
-**Spike 验证（已完成）**：LangGraph ^1.4.8 关键 API 假设已由 `experimental/ts/team_graph_spike/`（testplan + fake-llm + vitest）实测**全部确认**（`research.md` D14）：`REMOVE_ALL_MESSAGES` per-channel 清空、createAgent 作外层图节点（不带自身 checkpointer，消息由外层 `MemorySaver` 持有）、单 TeamState+per-agent 通道序列化、middleware 钩子面（`beforeModel` 落地 RefreshTeam）。**实现须用 `Annotation.Root`（非 zod StateSchema）**，并注意 TS2883 导出坑（详见 D14 注意事项 + `contracts/team-graph-contract.md` §1）。
+**Spike 验证（已完成）**：LangGraph ^1.4.8 关键 API 假设已由 `experimental/ts/team_graph_spike/`（testplan + fake-llm + vitest）实测**全部确认**（`research.md` D14）：`REMOVE_ALL_MESSAGES` per-channel 清空、createAgent 作外层图节点（不带自身 checkpointer，消息由外层 `MemorySaver` 持有）、单 TeamState+per-agent 通道序列化、middleware 钩子面。**实现须用 `Annotation.Root`（非 zod StateSchema）**，并注意 TS2883 导出坑（详见 D14 注意事项 + `contracts/team-graph-contract.md` §1）。RefreshTeam 最终**未**落地于 `beforeModel` 钩子，而是经外层 `graph.updateState` 直清两通道（`context-middleware.ts` `refreshTeamChannels`；createAgent 无自身 checkpointer，middleware 无法触达外层通道——偏离说明见 `contracts/team-graph-contract.md` §5）。
 
 **Scale/Scope**: 单运维者研究型应用（扫雷 agent）；当前固定单模板 `saolei`，但设计须为多模板扩展留位（typed oneof）。
 
@@ -94,7 +106,7 @@ projects/game/
 ├── game.proto                         # 【重写】资源层级、服务、消息（见 contracts/api-contract.md）
 ├── pkg/gameconst/const.go             # 【重写】常量（gRPC target/log field/Template 值）；资源名解析由 protoc-gen-go-aip codegen 生成
 ├── session/                           # 【改】SessionService：session 挂到 templates/{template}/下
-├── proxy/                             # 【改】ProxyService→Team 视图：GetTeam/Connect/ListMessages/RefreshTeam
+├── proxy/                             # 【改】ProxyService→Team 视图：CreateTeam（唯一 owner 分配点）/GetTeam/Connect/ListMessages/RefreshTeam
 ├── prompt/                            # 【改】PromptService：管理 TeamProfile（oneof）；移除 AgentProfile/Skill（不涉 Strategy）
 │   ├── domain/model.go                #   TeamProfile 领域模型
 │   └── runtime/mongo/repository.go    #   mongo 仓储（team_profiles 集合）
@@ -103,7 +115,7 @@ projects/game/
 │   │   ├── server.ts                  #   进程级 wiring（team graph + StrategyStore + mongo 客户端）
 │   │   ├── team/                      #   【新增】saolei 模板：TeamGraph builder、TeamState、player（createAgent 全 loop）/planner 节点、update_strategy、teamSink
 │   │   ├── strategy-store.ts          #   【新增】StrategyStore 接口 + MongoStrategyStore（agent 直连 mongo 持久化策略）
-│   │   ├── session-team.ts            #   【新增】SessionTeam（取代 SessionAgent，持有 team graph + 状态 buffer）
+│   │   ├── session-team.ts            #   【新增】SessionTeam（取代 SessionAgent，持有 team graph + 状态 buffer）+ SessionTeamStore（create(profile)/get，CreateTeam 唯一创建点）
 │   │   ├── mcp/saolei/saolei-mcp.ts   #   【改】createSaoleiMcpServer 增 sink? 参数；recognize 后调 sink；修过时注释
 │   │   ├── mcp-host.ts                #   【改】lookup 传递 sink/state buffer；修过时注释
 │   │   ├── context-middleware.ts      #   【改】REMOVE_ALL_MESSAGES 清空（FR-018 RefreshTeam）

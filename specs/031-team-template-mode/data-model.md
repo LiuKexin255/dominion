@@ -48,8 +48,8 @@
 | `accepts_user_input` | bool | 是否接受用户输入（FR-031）；saolei: player=true, planner=false |
 
 - **关系**：属于一个 Session；含若干 TeamAgent；TeamAgent 非独立资源（消息分区/frame 归位维度）。
-- **生命周期**：Team 随 Session 连接（Connect）而存在；不可独立创建。
-- **来源**：`agents` 由 agent 服务从模板定义（code）导出。
+- **生命周期**：经 `CreateTeam` RPC **显式创建**（AIP-133；请求携带 parent Session 与 profile——TeamProfile 资源名，FR-033）；**非**随 Connect 隐式创建（原懒加载模式已移除）。Team 未创建时 `GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` → NOT_FOUND。重复 `CreateTeam`：profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）。
+- **来源**：`agents` 由 agent 服务从模板定义（code）导出；team 实例由创建时传入的 profile 构建（player/planner 模型绑定）。
 
 ### 1.4 Message（按 agent 分区）
 
@@ -199,6 +199,7 @@ Template (resource message, path segment)
 ## 5. 移除的实体（clean break）
 
 - `Agent` 资源（`sessions/{session}/agent`）→ 由 Team 取代。
+- Team 隐式创建（随 Connect 懒加载 + 固定默认 profile）→ 由 `CreateTeam` 显式创建取代（FR-033）。
 - `AgentProfile` 资源（`prompts/agentProfiles/*`）+ 其 CRUD RPC → 由 TeamProfile（oneof）取代。
 - `Skill` 资源（`prompts/skills/*`，API 管理的自定义 skill）+ 其 RPC → 移除。MCP 配套内置 skill（`projects/game/agent/src/skill/`）**保留不受影响**（FR-007）。
 - `RefreshAgent` → `RefreshTeam`。

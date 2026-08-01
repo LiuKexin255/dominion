@@ -166,6 +166,8 @@ interface TeamState {
 - ❌ 删除整个 checkpointer thread：影响控制状态（gameEnded 等），过粗。
 - ❌ `summarizationMiddleware`：survey §7.2 指出其 checkpoint 增长 bug（deepagents#2876），且诉求是"清空"非"摘要"。
 
+**实现结果（Phase 5 Batch 2，2026-07-30，用户已接受偏离）**：最终**未**落地于 middleware 钩子，而是 `context-middleware.ts` 的 `refreshTeamChannels` 经**外层 `graph.updateState({ configurable: { thread_id } }, clearChannel("playerMessages") + clearChannel("plannerMessages"))`** 直清两通道（per-channel `RemoveMessage({id: REMOVE_ALL_MESSAGES})`，spike A1 实测 per-channel 独立）。**根因**：player/planner 的 `createAgent` 不带自身 checkpointer（D14 A2），其 middleware 只见 createAgent 自身的 `{messages}` 通道，无法触达外层 `playerMessages`/`plannerMessages`（两通道持久化在外层单一 `MemorySaver`，D14 A3）；`graph.updateState` 的更新经各通道 `messagesStateReducer` 应用（checkpointer 语义），是架构上正确的落地（详见 `contracts/team-graph-contract.md` §5 偏离说明）。本 Decision 原结论保留作为历史记录。
+
 来源：FR-018；survey §7.2；`projects/game/agent/src/context-middleware.ts`；`@langchain/langgraph` `REMOVE_ALL_MESSAGES`。
 
 ---
@@ -244,6 +246,7 @@ export interface SaoleiEventSink {
 - **A2 createAgent 内嵌外层图节点 ✅ confirmed**：player 节点调 `createAgent.invoke()`，内部 tool loop 跑到 LLM 自停，返回后外层读 `gameEnded` 路由。**关键：createAgent 不带自身 checkpointer（`checkpointer?` 可选），单次 invoke 跑完整 agent loop；消息历史由外层单一 `MemorySaver` 持有。** → D6 "player=createAgent 全 loop" 成立。
 - **A3 单 TeamState + per-agent 通道 ✅ confirmed（架构 i 成立）**：单一外层 `MemorySaver` 即可序列化 `playerMessages`+`plannerMessages`+`gameEnded`（`getState().values` 一次取回）；per-agent 历史从单一 checkpointer 重建，**无需分离 createAgent**（架构 ii 更重且非必要）。→ D5 维持。
 - **A4 middleware 钩子面 ✅ confirmed**：6 个钩子 = `beforeAgent`/`beforeModel`/`wrapModelCall`/`afterModel`/`wrapToolCall`/`afterAgent`。**无独立 `afterTool`，`wrapToolCall` 包揽其职且更强**。middleware 可返回 `REMOVE_ALL_MESSAGES`。→ RefreshTeam 落地点 = 现有 `context-middleware.ts` 的 `beforeModel`（D8）。
+  > **实现结果（2026-07-30，用户已接受偏离）**：RefreshTeam 最终**未**落地于 `beforeModel` 钩子，而是经外层 `graph.updateState` 直清两通道（`context-middleware.ts` 的 `refreshTeamChannels`，per-channel `RemoveMessage(REMOVE_ALL_MESSAGES)`，A1）。根因：createAgent 不带自身 checkpointer（A2），其 middleware 无法触达外层通道（A3）；`updateState` 走 channel reducer，是正确落地。详见 `contracts/team-graph-contract.md` §5 偏离说明。
 - **A5 ChatOpenAI→fake-llm 端到端 ✅ confirmed**：`guitar run` 全绿，player/planner 各产出消息、strategy 写入。
 - **A6 结构化 flag 条件路由 ✅ confirmed**：条件边读非 messages 字段 `gameEnded` 正确路由（非 null→planner、null→END）。
 
