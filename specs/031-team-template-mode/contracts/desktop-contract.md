@@ -18,6 +18,7 @@
 - **agent 列表来自后端** `Team.agents`（typed `TeamAgent[]`，GetTeam 返回，D3），**desktop 不硬编码 agent 名**（通用渲染）。
 - frame 按 `AgentFrame.agent`（D12，取代 `agent_profile_name`）归入对应 agent 的 tab。
 - 现有按 `agentProfileName` 合并消息的逻辑（`App.svelte` `handleMessageParts`）改为按 `agent` 归位 + 合并。
+- **SSE 流**：Go chatstream Registry 为 per-session 单流（每次 Open 轮换 token 踢掉旧订阅者，`desktop/internal/chatstream/stream.go`），故 frontend **每 session 只开一条流**（`openChatStream(sessionID, 首个 agent)`，seed = 该 agent 的消息分区）；其余 agent 的历史经 `listMessages(template, sessionID, agent)` 按 tab 拉取；live frame 按 `agent` 归位。seed replay 的 frame 不带 `agent` 字段（Go `SeedFromHistory` 省略），按 seed agent 归位，并按 `frameId` 与 listMessages 历史去重。
 
 ### 2.1 输入路由与屏蔽（FR-031/FR-032）
 
@@ -27,7 +28,14 @@
 
 ### 2.2 未知 agent 名称（edge case）
 
-- 若 frame 的 `agent` 不在 `Team.agents` 内：归位策略（丢弃/归入默认 tab）由 `tasks.md` 定（约束：契约字段存在；不崩溃）。
+- 若 frame 的 `agent` 不在 `Team.agents` 内：**归入默认 tab（`Team.agents` 首个 agent）并打 warn 日志**（丢弃会丢数据；归入默认 tab 保证可观测、不崩溃；约束：契约字段存在）。
+
+### 2.3 Team create-if-missing（决策 2，FR-033）
+
+- Team 必须经 `CreateTeam` **显式创建**（AIP-133；GetTeam/Connect/ListMessages/RefreshTeam 未创建 → NOT_FOUND，无懒加载）。
+- **desktop 流程（发送消息/进入会话时）**：`getTeam(template, sessionID)` → **失败（典型 NOT_FOUND）** → `createTeam(template, sessionID, defaultProfileResourceName)` → 继续（connect/sendUserTurn 前确保 Team 存在）。
+- **默认 profile 简化（Phase 6）**：本阶段 desktop 固定使用默认 profile `templates/{template}/profiles/default`（AIP-122 完整资源名）；**profile 选择 UX 推迟到 Phase 7**（ProfileManagement / TeamProfile CRUD）。
+- **并发安全**：重复 `CreateTeam` 且 profile 相同 → 幂等返回既有 Team（api-contract §2.2 幂等注），多 tab 竞态下 create 失败可重读 GetTeam 收敛。
 
 ## 3. Profile 页面特化（`ProfileManagement`）
 
@@ -54,10 +62,12 @@
 
 ## 5. frontend 类型变更（`projects/game/desktop/frontend/src/api.ts`）
 
-- 新增本地 `Template` 常量（与 proto Template 资源一致）、`Team`/`TeamAgent` 接口。
-- `AgentFrame.agentProfileName` → `agent`（D12）。
-- `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（含 oneof `spec`）/`SaoleiProfile`。
-- 绑定 wrapper 随 §4 调整。
+- 新增本地 `Template` 常量（`TEMPLATE_SAOLEI = "saolei"`，Template 路径段，与 proto Template 资源 / gameconst 常量一致，FR-024）与 `TEMPLATES` 列表（仅本地常量，无模板列表 API）。
+- 新增 `Team`（`{name, sessionId, agents: TeamAgent[], createTime?}`）/`TeamAgent`（`{name, acceptsUserInput}`）接口——对应 Wails `TeamView`/`TeamAgentView`。
+- `Session` 增 `template` 字段（Wails `SessionView`）。
+- `AgentFrame.agentProfileName` → `agent`（D12）；`Message` 增 `agent` 字段（按 agent 分区，FR-005）。
+- `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（Wails `TeamProfileView`——typed oneof `spec.saolei` 被 Go view model 拍平为顶层 `playerModel`/`plannerModel`，未设置变体时缺失）/`SaoleiProfile`（`{playerModel, plannerModel}`）/`CreateTeamProfileRequest`/`ListTeamProfilesResponse`。
+- 绑定 wrapper 随 §4 调整：`createSession(template)`/`connect(template, sessionID)`/`getTeam(template, sessionID)`/`createTeam(template, sessionID, profile)`/`refreshTeam(template, sessionID)`/`sendUserTurn(template, sessionID, text, screenshot..., agent)`/`listMessages(template, sessionID, agent)`/TeamProfile CRUD/`openChatStream(sessionID, agent)`。
 
 ## 6. 验证要点
 
@@ -65,3 +75,4 @@
 - 对话多 tab，agent 列表来自 `Team.agents`（不硬编码）；frame 按 `agent` 归位（FR-025）。
 - planner tab 屏蔽输入（`accepts_user_input=false`，FR-032）。
 - saolei profile 页仅 player/planner 模型选择（FR-029），由 typed oneof 驱动。
+- 发送消息/进入会话前 Team 存在（GetTeam→NotFound→CreateTeam(默认 profile)，决策 2）。

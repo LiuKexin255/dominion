@@ -1,5 +1,31 @@
 <script lang="ts">
-  import type { AgentProfile, CreateAgentProfileRequest } from '../api'
+  // Phase 6 (T024) removed AgentProfile/CreateAgentProfileRequest from api.ts
+  // (replaced by TeamProfile — spec 031-team-template-mode). This component's
+  // TeamProfile rewrite is Phase 7 (T028); until then it keeps its form logic
+  // unchanged and declares the removed types locally so it compiles
+  // standalone (it is no longer wired into App.svelte in Phase 6).
+  interface AgentProfile {
+    name: string
+    agentProfileName: string
+    model: string
+    systemPrompt: string
+    skillNames: string[]
+    mcpNames: string[]
+    toolNames: string[]
+    enabled: boolean
+    createTime?: string
+    updateTime?: string
+  }
+
+  interface CreateAgentProfileRequest {
+    agentProfileName: string
+    model?: string
+    systemPrompt?: string
+    skillNames?: string[]
+    mcpNames?: string[]
+    toolNames?: string[]
+    enabled?: boolean
+  }
 
   const MODEL_OPTIONS: { value: string; label: string }[] = [
     { value: 'opencode-go/glm-5.2', label: 'GLM-5.2' },

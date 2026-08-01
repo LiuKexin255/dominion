@@ -15,6 +15,22 @@ declare global {
   }
 }
 
+// ─── Template (local constant control plane, FR-024) ────────────────────────
+//
+// The desktop holds the Template list as LOCAL constants and MUST NOT fetch a
+// template-list API (spec 031-team-template-mode spec.md FR-024). The values
+// are the Template resource path segments, matching the proto Template
+// resource / gameconst constants (`game.TemplateName{TemplateID: "saolei"}`,
+// specs/031-team-template-mode/contracts/api-contract.md §3.1). Current known
+// templates: saolei only.
+
+export const TEMPLATE_SAOLEI = 'saolei'
+
+/** Local template constants — the top-level control plane (FR-024). */
+export const TEMPLATES: string[] = [TEMPLATE_SAOLEI]
+
+// ─── Core types ─────────────────────────────────────────────────────────────
+
 export interface Config {
   gateway_url: string
   env: string
@@ -23,13 +39,25 @@ export interface Config {
 export interface Session {
   name: string
   sessionId: string
+  template: string
   createTime: string
 }
 
-export interface Agent {
+// Team is the execution subject of a session: a per-template set of agents
+// (replaces the old single-agent `Agent`; spec 031-team-template-mode
+// data-model.md §1.3). Returned by getTeam/createTeam.
+export interface Team {
+  name: string
   sessionId: string
+  agents: TeamAgent[]
   createTime?: string
-  agentProfileName: string
+}
+
+// TeamAgent is one agent inside the team, with its user-input acceptance flag
+// (FR-031). saolei: player=true (accepts input), planner=false (observe-only).
+export interface TeamAgent {
+  name: string
+  acceptsUserInput: boolean
 }
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
@@ -277,26 +305,41 @@ export interface QueueSignal {
   queuedCount?: number
 }
 
-export interface AgentProfile {
+// ─── TeamProfile (replaces AgentProfile; typed oneof spec, D1) ─────────────
+//
+// Documentation-type interface: describes the shape of the spec.saolei oneof
+// variant (FR-027 — only the player/planner model choices; tools/MCP are
+// template-fixed, FR-028). TeamProfile flattens playerModel/plannerModel into
+// top-level fields (mirroring the Go TeamProfileView — desktop/view_model.go),
+// so this interface is retained purely as typed documentation of the variant
+// shape and is not referenced at runtime.
+export interface SaoleiProfile {
+  playerModel: string
+  plannerModel: string
+}
+
+export interface TeamProfile {
   name: string
-  agentProfileName: string
-  model: string
-  systemPrompt: string
-  skillNames: string[]
-  mcpNames: string[]
-  toolNames: string[]
-  enabled: boolean
+  profileName: string
+  template: string
+  // spec.saolei → SaoleiProfile (flattened): the Wails view model lifts the
+  // oneof variant fields to the TeamProfile top level (desktop/view_model.go
+  // TeamProfileView); absent when the variant is unset.
+  playerModel?: string
+  plannerModel?: string
   createTime?: string
   updateTime?: string
 }
 
-export interface Skill {
-  name: string
-  skillName: string
-  content: string
-  enabled: boolean
-  createTime?: string
-  updateTime?: string
+export interface CreateTeamProfileRequest {
+  profileName: string
+  playerModel?: string
+  plannerModel?: string
+}
+
+export interface ListTeamProfilesResponse {
+  teamProfiles: TeamProfile[]
+  nextPageToken: string
 }
 
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
@@ -304,25 +347,29 @@ export interface Skill {
 // AgentFrame is the transport unit exchanged over WebSocket / gRPC streams.
 // A frame carries exactly one payload (protojson flattens the oneof): a batch
 // of display blocks (messageParts) OR a batch of control blocks (flowParts).
+// `agent` (D12) replaces the former agentProfileName: it names the team agent
+// the frame belongs to (FR-023), and is the dimension frames are routed into
+// per-agent tabs by (FR-025).
 export interface AgentFrame {
   sessionId?: string
   frameId?: string
   createTime?: string
   sender?: FrameSender | string
-  agentProfileName?: string
+  agent?: string
   messageParts?: MessageParts
   flowParts?: FlowParts
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
-// state (history). Its content is a MessageParts (display blocks only) — the
-// identical shape a live AgentFrame's messageParts payload carries, so history
-// and live view render identically (spec 023 FR-009). Control blocks
-// (FlowParts) never appear here.
+// state (history), partitioned per team agent (FR-005). Its content is a
+// MessageParts (display blocks only) — the identical shape a live AgentFrame's
+// messageParts payload carries, so history and live view render identically
+// (spec 023 FR-009). Control blocks (FlowParts) never appear here.
 export interface Message {
   name?: string
   messageId?: string
   sender?: FrameSender | string
+  agent?: string
   createTime?: string
   content?: MessageParts
 }
@@ -356,71 +403,39 @@ export interface CapturedImage {
   encoding: string
 }
 
-// ─── Prompt Service Types ──────────────────────────────────────────────────
-
-export interface CreateAgentProfileRequest {
-  agentProfileName: string
-  model?: string
-  systemPrompt?: string
-  skillNames?: string[]
-  mcpNames?: string[]
-  toolNames?: string[]
-  enabled?: boolean
-}
-
-export interface UpdateAgentProfileRequest {
-  agentProfileName: string
-  agentProfile: AgentProfile
-  updateMask?: string[]
-}
-
-export interface ListAgentProfilesResponse {
-  agentProfiles: AgentProfile[]
-  nextPageToken: string
-}
-
-export interface CreateSkillRequest {
-  skillName: string
-  content?: string
-  enabled?: boolean
-}
-
-export interface ListSkillsResponse {
-  skills: Skill[]
-  nextPageToken: string
-}
+// ─── Wails bindings (desktop-contract §4) ──────────────────────────────────
+// Signatures mirror the Go *App methods (projects/game/desktop/app.go).
+// Template-scoped methods take the Template path segment (e.g. "saolei");
+// SendUserTurn/ListMessages take the team agent name (D12).
 
 interface WailsApp {
   GetConfig(): Promise<Config>
   SetConfig(cfg: Config): Promise<void>
-  CreateSession(): Promise<Session>
-  ListSessions(pageSize: number, pageToken: string): Promise<ListSessionsResponse>
-  GetSession(sessionID: string): Promise<Session>
-  DeleteSession(sessionID: string): Promise<void>
-  GetAgent(sessionID: string): Promise<Agent>
+  CreateSession(template: string): Promise<Session>
+  ListSessions(template: string, pageSize: number, pageToken: string): Promise<ListSessionsResponse>
+  GetSession(template: string, sessionID: string): Promise<Session>
+  DeleteSession(template: string, sessionID: string): Promise<void>
+  GetTeam(template: string, sessionID: string): Promise<Team>
+  CreateTeam(template: string, sessionID: string, profile: string): Promise<Team>
   ListWindows(): Promise<WindowRef[]>
   SetSelectedWindow(hwnd: number): Promise<void>
   CaptureScreenshot(): Promise<CapturedImage>
-  ConnectAgent(sessionID: string): Promise<string>
+  Connect(template: string, sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
   SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
-  SendUserTurn(sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agentProfileName: string): Promise<void>
-  ListMessages(sessionID: string): Promise<Message[]>
+  SendUserTurn(template: string, sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agent: string): Promise<void>
+  ListMessages(template: string, sessionID: string, agent: string): Promise<Message[]>
   CloseChatStream(sessionID: string): Promise<void>
-  OpenChatStream(sessionID: string): Promise<ChatStreamHandoff>
+  OpenChatStream(sessionID: string, agent: string): Promise<ChatStreamHandoff>
 
-  // Prompt Service
-  CreateAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile>
-  GetAgentProfile(agentProfileName: string): Promise<AgentProfile>
-  ListAgentProfiles(pageSize: number, pageToken: string): Promise<ListAgentProfilesResponse>
-  UpdateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile>
-  DeleteAgentProfile(agentProfileName: string): Promise<void>
-  CreateSkill(req: CreateSkillRequest): Promise<Skill>
-  GetSkill(skillName: string): Promise<Skill>
-  ListSkills(pageSize: number, pageToken: string): Promise<ListSkillsResponse>
-  DeleteSkill(skillName: string): Promise<void>
+  // Prompt Service — TeamProfile CRUD (replaces AgentProfile/Skill).
+  ListTeamProfiles(template: string, pageSize: number, pageToken: string): Promise<ListTeamProfilesResponse>
+  CreateTeamProfile(template: string, req: CreateTeamProfileRequest): Promise<TeamProfile>
+  GetTeamProfile(template: string, profileName: string): Promise<TeamProfile>
+  UpdateTeamProfile(template: string, profileName: string, profile: TeamProfile, updateMaskPaths: string[]): Promise<TeamProfile>
+  DeleteTeamProfile(template: string, profileName: string): Promise<void>
 
-  RefreshAgent(sessionID: string): Promise<void>
+  RefreshTeam(template: string, sessionID: string): Promise<void>
 
   // Debug control plane — desktop debug mode. The Go bound methods are added to
   // *App in their story phases (T005 SetDebugMode, T010 ConfirmToolResult); this
@@ -446,34 +461,44 @@ export async function setConfig(cfg: Config): Promise<void> {
   return a.SetConfig(cfg)
 }
 
-export async function createSession(): Promise<Session> {
+export async function createSession(template: string): Promise<Session> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateSession()
+  return a.CreateSession(template)
 }
 
-export async function listSessions(pageSize: number, pageToken: string): Promise<ListSessionsResponse> {
+export async function listSessions(template: string, pageSize: number, pageToken: string): Promise<ListSessionsResponse> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.ListSessions(pageSize, pageToken)
+  return a.ListSessions(template, pageSize, pageToken)
 }
 
-export async function getSession(sessionID: string): Promise<Session> {
+export async function getSession(template: string, sessionID: string): Promise<Session> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.GetSession(sessionID)
+  return a.GetSession(template, sessionID)
 }
 
-export async function deleteSession(sessionID: string): Promise<void> {
+export async function deleteSession(template: string, sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.DeleteSession(sessionID)
+  return a.DeleteSession(template, sessionID)
 }
 
-export async function getAgent(sessionID: string): Promise<Agent> {
+export async function getTeam(template: string, sessionID: string): Promise<Team> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.GetAgent(sessionID)
+  return a.GetTeam(template, sessionID)
+}
+
+// createTeam explicitly creates the per-session singleton Team (AIP-133 —
+// the ONLY Team creation point, FR-033). profile is the TeamProfile full
+// resource name (templates/{template}/profiles/{profile}); repeated create
+// with the same profile is idempotent (api-contract §2.2 idempotency note).
+export async function createTeam(template: string, sessionID: string, profile: string): Promise<Team> {
+  const a = app()
+  if (!a) throw new Error('Wails runtime not available')
+  return a.CreateTeam(template, sessionID, profile)
 }
 
 /** @deprecated Use chat-based interfaces instead. */
@@ -495,10 +520,10 @@ export async function captureScreenshot(): Promise<CapturedImage> {
   return a.CaptureScreenshot()
 }
 
-export async function connectAgent(sessionID: string): Promise<string> {
+export async function connect(template: string, sessionID: string): Promise<string> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.ConnectAgent(sessionID)
+  return a.Connect(template, sessionID)
 }
 
 export async function closeAgent(): Promise<void> {
@@ -513,23 +538,28 @@ export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
   return a.SendAgentFrame(frame)
 }
 
+// sendUserTurn routes the user turn to the named team agent (the agent
+// accepting user input — FR-032; saolei: player). agent replaces the former
+// agentProfileName (D12).
 export async function sendUserTurn(
+  template: string,
   sessionID: string,
   text: string,
   screenshotData: string,
   screenshotWidth: number,
   screenshotHeight: number,
-  agentProfileName: string,
+  agent: string,
 ): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.SendUserTurn(sessionID, text, screenshotData, screenshotWidth, screenshotHeight, agentProfileName)
+  return a.SendUserTurn(template, sessionID, text, screenshotData, screenshotWidth, screenshotHeight, agent)
 }
 
-export async function listMessages(sessionId: string): Promise<Message[]> {
+// listMessages lists one team agent's message partition (FR-005).
+export async function listMessages(template: string, sessionId: string, agent: string): Promise<Message[]> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.ListMessages(sessionId)
+  return a.ListMessages(template, sessionId, agent)
 }
 
 export async function closeChatStream(sessionId: string): Promise<void> {
@@ -538,72 +568,53 @@ export async function closeChatStream(sessionId: string): Promise<void> {
   return a.CloseChatStream(sessionId)
 }
 
-export async function openChatStream(sessionId: string): Promise<ChatStreamHandoff> {
+// openChatStream opens the chat push channel seeded with one team agent's
+// message partition. The Go chatstream Registry is per-session (single stream,
+// RotateToken on every open — desktop/internal/chatstream/stream.go), so the
+// frontend opens ONE stream per session (seeded by the first team agent) and
+// routes inbound frames by AgentFrame.agent.
+export async function openChatStream(sessionId: string, agent: string): Promise<ChatStreamHandoff> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.OpenChatStream(sessionId)
+  return a.OpenChatStream(sessionId, agent)
 }
 
 // ─── Prompt Service Wrappers ───────────────────────────────────────────────
 
-export async function createAgentProfile(req: CreateAgentProfileRequest): Promise<AgentProfile> {
+export async function listTeamProfiles(template: string, pageSize: number, pageToken: string): Promise<ListTeamProfilesResponse> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateAgentProfile(req)
+  return a.ListTeamProfiles(template, pageSize, pageToken)
 }
 
-export async function getAgentProfile(agentProfileName: string): Promise<AgentProfile> {
+export async function createTeamProfile(template: string, req: CreateTeamProfileRequest): Promise<TeamProfile> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.GetAgentProfile(agentProfileName)
+  return a.CreateTeamProfile(template, req)
 }
 
-export async function listAgentProfiles(pageSize: number, pageToken: string): Promise<ListAgentProfilesResponse> {
+export async function getTeamProfile(template: string, profileName: string): Promise<TeamProfile> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.ListAgentProfiles(pageSize, pageToken)
+  return a.GetTeamProfile(template, profileName)
 }
 
-export async function deleteAgentProfile(agentProfileName: string): Promise<void> {
+export async function updateTeamProfile(template: string, profileName: string, profile: TeamProfile, updateMaskPaths: string[]): Promise<TeamProfile> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.DeleteAgentProfile(agentProfileName)
+  return a.UpdateTeamProfile(template, profileName, profile, updateMaskPaths)
 }
 
-export async function createSkill(req: CreateSkillRequest): Promise<Skill> {
+export async function deleteTeamProfile(template: string, profileName: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.CreateSkill(req)
+  return a.DeleteTeamProfile(template, profileName)
 }
 
-export async function getSkill(skillName: string): Promise<Skill> {
+export async function refreshTeam(template: string, sessionID: string): Promise<void> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
-  return a.GetSkill(skillName)
-}
-
-export async function listSkills(pageSize: number, pageToken: string): Promise<ListSkillsResponse> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.ListSkills(pageSize, pageToken)
-}
-
-export async function deleteSkill(skillName: string): Promise<void> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.DeleteSkill(skillName)
-}
-
-export async function updateAgentProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]): Promise<AgentProfile> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.UpdateAgentProfile(agentProfileName, profile, updateMaskPaths)
-}
-
-export async function refreshAgent(sessionID: string): Promise<void> {
-  const a = app()
-  if (!a) throw new Error('Wails runtime not available')
-  return a.RefreshAgent(sessionID)
+  return a.RefreshTeam(template, sessionID)
 }
 
 // ─── Debug Control Plane Wrappers ──────────────────────────────────────────

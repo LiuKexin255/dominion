@@ -1,24 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Agent, AgentFrame, Config, AgentProfile, CreateAgentProfileRequest, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
-  import { FrameSender } from './api'
+  import type { Session, Team, TeamAgent, AgentFrame, Config, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
+  import { FrameSender, TEMPLATE_SAOLEI, TEMPLATES } from './api'
   import {
     setConfig,
     createSession,
     listSessions,
     deleteSession,
-    getAgent,
-    connectAgent,
+    getTeam,
+    createTeam,
+    connect,
     closeAgent,
-    listAgentProfiles,
-    createAgentProfile,
-    deleteAgentProfile,
-    updateAgentProfile,
-    refreshAgent,
+    refreshTeam,
     listWindows,
     setSelectedWindow,
     captureScreenshot,
     sendUserTurn,
+    listMessages,
     openChatStream,
     closeChatStream,
     setDebugMode,
@@ -31,13 +29,16 @@
   import SessionList from './components/SessionList.svelte'
   import ChatView from './components/ChatView.svelte'
   import OperationConfirmDrawer from './components/OperationConfirmDrawer.svelte'
-  import ProfileManagement from './components/ProfileManagement.svelte'
-  import AgentSidebar from './components/AgentSidebar.svelte'
+  import TeamSidebar from './components/TeamSidebar.svelte'
   import LogPanel from './components/LogPanel.svelte'
   import ScreenshotModal from './components/ScreenshotModal.svelte'
 
   // --- Page state ---
-  let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
+  // The template is the TOP-LEVEL control plane: it is a local constant and
+  // switching it MUST NOT issue any template-list API request (FR-024).
+  // Session listing/creation are scoped to the active template.
+  let page = $state<'sessions' | 'chat'>('sessions')
+  let template = $state(TEMPLATE_SAOLEI)
 
   // --- Types ---
   type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -53,11 +54,13 @@
   // Parts (a content frame's PartBlock.parts); a warn entry carries a control
   // signal rendered as a warning bubble. mergeKind is an internal hint used to
   // fold consecutive streaming text/thinking chunks into a single bubble.
+  // `agent` (D12) names the team agent the entry belongs to (replaces the
+  // former agentProfileName) — the per-tab routing dimension (FR-025).
   type ChatEntry = {
     messageId: string
     sender: FrameSender
     timestamp: string
-    agentProfileName?: string
+    agent?: string
     parts?: MessagePart[]
     warnMessage?: string
     mergeKind?: 'text' | 'thinking' | 'mixed'
@@ -66,31 +69,34 @@
   // --- App-level state ---
   let selectedSession: Session | null = $state(null)
   let sessions: Session[] = $state([])
-  let agent: Agent | null = $state(null)
+  let team: Team | null = $state(null)
   let connectionState: ConnectionState = $state('disconnected')
   let logEntries: LogEntry[] = $state([])
   let loading = $state(false)
   let error: string | null = $state(null)
 
-  // --- Chat state ---
-  let chatMessages: ChatEntry[] = $state([])
+  // --- Team / multi-tab chat state ---
+  // teamAgents comes from getTeam().agents (typed TeamAgent[]) — the desktop
+  // does NOT hardcode agent names; the tab set is driven by the backend
+  // (FR-025). selectedAgent is the active tab; user input routes to it and
+  // only when it accepts user input (FR-032).
+  let teamAgents: TeamAgent[] = $state([])
+  let selectedAgent = $state('')
+  // Per-agent message buckets — frames are routed by AgentFrame.agent.
+  let chatMessages: Record<string, ChatEntry[]> = $state({})
+  // Dedupe between the listMessages history fetch and the chat-stream seed
+  // replay (same messageId/frameId): the Go chatstream seeds the session
+  // stream with ONE agent's partition and re-delivers it on connect
+  // (desktop/internal/chatstream/stream.go), which would otherwise duplicate
+  // the history rows for that agent. Reset on session entry.
+  let renderedMessageIds: Set<string> = new Set()
+  // The agent the session chat stream was opened (seeded) with. Seed-replay
+  // frames carry NO agent field (Go SeedFromHistory omits it), so they are
+  // routed to this agent.
+  let seedAgent = $state('')
+
   let processing = $state(false)
   let queueCount = $state(0)
-  // Phase 5 (T011): the backend QueueSignal drives `queueCount` (the indicator
-  // number); the frontend separately tracks WHICH optimistic user messages are
-  // still pending (FIFO list of messageIds) so the desktop can (a) transition
-  // them out of pending on consume (specs/030-queued-chat-input/spec.md
-  // FR-009) and (b) visually mark them pending
-  // (specs/030-queued-chat-input/spec.md FR-008). The count signal carries no
-  // message ids (specs/030-queued-chat-input/contracts/queue-channel-contract.md
-  // §5 "Resolved": the frontend tracks the messages it sent optimistically; the
-  // backend count confirms consumption), so this list is necessarily
-  // frontend-optimistic. NOTE: per the user decision,
-  // specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
-  // is NOT implemented in this feature — once a message enters
-  // the backend TurnLoop queue it cannot be deleted: the queue is server-side
-  // and the inbound desktop→agent channel defines no remove semantics
-  // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1).
   let pendingMessageIds: string[] = $state([])
   let playState = $state<PlayState>('connecting')
   let messagesError = $state<string | null>(null)
@@ -114,7 +120,10 @@
   // The chat dialog is delivered over a renderer-initiated EventSource (spec
   // 016) instead of the host→webview `game:frame` channel, which silently
   // dropped frames once the desktop window lost foreground. History replay and
-  // live streaming share this single channel.
+  // live streaming share this single channel. The Go chatstream is per-session
+  // (one stream, token rotation on every open), so the desktop opens ONE
+  // stream per session (seeded by the first team agent) and routes inbound
+  // frames by AgentFrame.agent into per-agent tabs.
   let chatStreamHandoff: ChatStreamHandoff | null = $state(null)
   let currentEventSource: EventSource | null = $state(null)
   let openingPromise: Promise<void> | null = $state(null)
@@ -122,15 +131,6 @@
   let chunkState: Map<string, ChunkState> = $state(new Map())
   let consecutiveErrors = $state(0)
   const ERROR_THRESHOLD = 3
-
-  // --- Profile state ---
-  let profiles: AgentProfile[] = $state([])
-  let selectedProfile = $state('')
-
-  // --- Profile management state ---
-  let managedProfiles: AgentProfile[] = $state([])
-  let profileMgmtLoading = $state(false)
-  let profileMgmtError: string | null = $state(null)
 
   // --- Config state ---
   let gatewayURL = $state('https://game.liukexin.com')
@@ -171,6 +171,9 @@
     // events arrive asynchronously; clearing here avoids a flicker of stale
     // rows on the next session entry (contracts/debug-drawer-contract.md §5).
     heldOperations = []
+    // Per-session chat state (multi-tab).
+    chatMessages = {}
+    renderedMessageIds = new Set()
   }
 
   // Push the selected window handle to the backend on every dropdown change.
@@ -276,12 +279,24 @@
     }
   }
 
+  // handleTemplateChange switches the top-level template control plane. The
+  // template list is a LOCAL constant (TEMPLATES) — switching performs NO
+  // network request (FR-024). Sessions are template-scoped, so switching
+  // returns to the sessions page and re-lists for the new template.
+  function handleTemplateChange() {
+    selectedSession = null
+    team = null
+    page = 'sessions'
+    void handleRefresh()
+    log('info', 'template', `Switched template (local constant, no request): ${template}`)
+  }
+
   // --- SessionList handlers ---
   async function handleRefresh() {
     try {
       loading = true
       error = null
-      const resp = await listSessions(50, '')
+      const resp = await listSessions(template, 50, '')
       sessions = resp.sessions
       log('info', 'sessions', `Listed ${sessions.length} sessions`)
     } catch (e: unknown) {
@@ -296,7 +311,7 @@
     try {
       loading = true
       error = null
-      const session = await createSession()
+      const session = await createSession(template)
       log('info', 'sessions', `Session created: ${session.sessionId}`)
       await handleRefresh()
     } catch (e: unknown) {
@@ -311,7 +326,7 @@
     try {
       loading = true
       error = null
-      await deleteSession(sessionId)
+      await deleteSession(template, sessionId)
       log('info', 'sessions', `Session deleted: ${sessionId}`)
       await handleRefresh()
     } catch (e: unknown) {
@@ -322,65 +337,152 @@
     }
   }
 
+  // defaultTeamProfileName builds the TeamProfile full resource name used by
+  // create-if-missing (templates/{template}/profiles/default, AIP-122).
+  //
+  // SIMPLIFICATION (Phase 6, decision 2): the desktop pins the `default`
+  // profile — profile SELECTION UX is deferred to Phase 7
+  // (ProfileManagement / TeamProfile CRUD). The `default` name itself is a
+  // convention the desktop assumes to exist for the template.
+  function defaultTeamProfileName(tpl: string): string {
+    return `templates/${tpl}/profiles/default`
+  }
+
+  // ensureTeam returns the session's Team, creating it when missing
+  // (create-if-missing, decision 2 — desktop-contract §2.3). The Team MUST
+  // exist before connect/sendUserTurn (FR-033: GetTeam/Connect return
+  // NOT_FOUND before CreateTeam; no lazy creation). CreateTeam with the same
+  // profile is idempotent (api-contract §2.2), so a concurrent create race
+  // (multi-tab) resolves via a re-read.
+  async function ensureTeam(): Promise<Team | null> {
+    if (!selectedSession) return null
+    const tpl = template
+    const sessionId = selectedSession.sessionId
+    try {
+      return await getTeam(tpl, sessionId)
+    } catch (e) {
+      // GetTeam failed (typically NOT_FOUND — team not yet created).
+      log('info', 'team', `GetTeam failed (${String(e)}); creating team with default profile`)
+      try {
+        return await createTeam(tpl, sessionId, defaultTeamProfileName(tpl))
+      } catch (e2) {
+        // Concurrent create may have won; re-read (idempotent create would
+        // also have returned the existing team).
+        log('warn', 'team', `CreateTeam failed (${String(e2)}); re-reading team`)
+        try {
+          return await getTeam(tpl, sessionId)
+        } catch {
+          // All three attempts failed (get → create → re-read): the team
+          // could not be ensured. Fail soft — the contract is "null on
+          // failure", never throw.
+          return null
+        }
+      }
+    }
+  }
+
+  function agentAcceptsInput(agentName: string): boolean {
+    const a = teamAgents.find(a => a.name === agentName)
+    return a?.acceptsUserInput ?? false
+  }
+
   async function handleSelectSession(session: Session) {
     resetPlayPageState()
     selectedSession = session
-    agent = null
+    team = null
+    teamAgents = []
+    selectedAgent = ''
+    seedAgent = ''
     error = null
     messagesError = null
     connectionState = 'disconnected'
-    chatMessages = []
-
-    await loadProfiles()
-
-    if (profiles.length > 0 && !selectedProfile) {
-      selectedProfile = profiles[0].agentProfileName
-    }
 
     page = 'chat'
     handleLoadWindows()
     playState = 'connecting'
+
+    // Team must exist before connect (FR-033) — create-if-missing (decision 2).
+    const t = await ensureTeam()
+    if (!t) {
+      playState = 'connection_error'
+      messagesError = 'Failed to load team. Retry to enter the session.'
+      return
+    }
+    team = t
+    // Tab set comes from Team.agents — never hardcoded (FR-025).
+    teamAgents = t.agents ?? []
+    if (teamAgents.length === 0) {
+      playState = 'connection_error'
+      messagesError = 'Team has no agents.'
+      return
+    }
+    // Default tab = first team agent. The session chat stream is seeded with
+    // this agent's message partition.
+    selectedAgent = teamAgents[0].name
+    seedAgent = teamAgents[0].name
+
+    // The casts widen the $state type: TS narrows `connectionState` to the
+    // literal 'disconnected' after the assignment above (control-flow
+    // analysis), so a bare comparison with 'connected' would be flagged as
+    // TS2367 (no overlap). The explicit ConnectionState cast restores the
+    // declared union type for the comparison.
     if ((connectionState as ConnectionState) !== 'connected') {
-      await handleConnectAgent()
+      await handleConnect()
     }
 
     if ((connectionState as ConnectionState) === 'connected') {
+      // The stream delivers the seeded agent's history replay + live frames;
+      // per-agent history for the remaining tabs is fetched separately.
       await openSseStream()
+      await loadAgentHistories()
     } else {
       playState = 'connection_error'
     }
   }
 
-  async function loadProfiles() {
-    try {
-      const resp = await listAgentProfiles(50, '')
-      profiles = resp.agentProfiles
-      log('info', 'agent', `Loaded ${profiles.length} agent profiles`)
-    } catch (e: unknown) {
-      log('warn', 'agent', `Failed to load profiles: ${String(e)}`)
-    }
-  }
-
-  async function handleGetAgent() {
+  // loadAgentHistories fetches each team agent's message partition
+  // (ListMessages is per-agent, FR-005) into its tab bucket. Entries already
+  // rendered from the stream seed replay (same messageId/frameId) are skipped.
+  async function loadAgentHistories() {
     if (!selectedSession) return
-    try {
-      loading = true
-      error = null
-      agent = await getAgent(selectedSession.sessionId)
-      log('info', 'agent', `Agent: ${JSON.stringify(agent)}`)
-    } catch (e: unknown) {
-      error = String(e)
-      log('error', 'agent', `Get agent failed: ${String(e)}`)
-    } finally {
-      loading = false
+    const tpl = template
+    const sessionId = selectedSession.sessionId
+    for (const agent of teamAgents) {
+      try {
+        const msgs = await listMessages(tpl, sessionId, agent.name)
+        const entries: ChatEntry[] = []
+        for (const m of msgs) {
+          const mid = m.messageId
+          if (mid && renderedMessageIds.has(mid)) continue
+          if (mid) renderedMessageIds.add(mid)
+          const parts = m.content?.parts ?? []
+          if (parts.length === 0) continue
+          entries.push({
+            messageId: mid ?? crypto.randomUUID(),
+            sender: resolveSender(m.sender),
+            timestamp: m.createTime ?? '',
+            agent: agent.name,
+            parts,
+          })
+        }
+        if (entries.length > 0) {
+          chatMessages = {
+            ...chatMessages,
+            [agent.name]: [...(chatMessages[agent.name] ?? []), ...entries],
+          }
+        }
+        log('info', 'chat', `Loaded ${entries.length} history messages for agent ${agent.name}`)
+      } catch (e: unknown) {
+        log('warn', 'chat', `Failed to load history for agent ${agent.name}: ${String(e)}`)
+      }
     }
   }
 
-  async function handleConnectAgent() {
+  async function handleConnect() {
     if (!selectedSession) return
     try {
       connectionState = 'connecting'
-      const status = await connectAgent(selectedSession.sessionId)
+      const status = await connect(template, selectedSession.sessionId)
       connectionState = 'connected'
       // Reconcile the typing indicator against the agent's reported working
       // state (contracts/agent-desktop-channel-contract.md §1): ACTIVE means a
@@ -392,11 +494,11 @@
         processing = false
         playState = 'chat_ready'
       }
-      log('info', 'agent', 'Agent connected via WebSocket')
+      log('info', 'team', 'Session connected via WebSocket')
     } catch (e: unknown) {
       connectionState = 'error'
       error = String(e)
-      log('error', 'agent', `Connect agent failed: ${String(e)}`)
+      log('error', 'team', `Connect failed: ${String(e)}`)
     }
   }
 
@@ -423,6 +525,22 @@
     if (parts.every(p => p.text != null)) return 'text'
     if (parts.every(p => p.thinking != null)) return 'thinking'
     return 'mixed'
+  }
+
+  // frameBucketAgent resolves the per-agent tab a frame belongs to (D12
+  // routing). Live frames carry AgentFrame.agent; seeded history replay frames
+  // carry no agent field (Go SeedFromHistory omits it), so they fall back to
+  // seedAgent. A frame whose agent is NOT in Team.agents (unknown agent edge
+  // case, desktop-contract §2.2) is routed into the default (first) tab with a
+  // warning — never dropped, never crashes.
+  function frameBucketAgent(frame: AgentFrame): string {
+    const raw = frame.agent ?? seedAgent
+    if (raw && teamAgents.some(a => a.name === raw)) return raw
+    const fallback = teamAgents[0]?.name ?? ''
+    if (raw && raw !== fallback) {
+      log('warn', 'chat', `Frame from unknown agent "${raw}" routed to default tab "${fallback}"`)
+    }
+    return fallback
   }
 
   // wireChatEventSource builds an EventSource for the chat push stream from a
@@ -489,7 +607,9 @@
     deduper = makeDeduper()
     consecutiveErrors = 0
     try {
-      const handoff = await openChatStream(selectedSession.sessionId)
+      // The stream is seeded with the first team agent's partition (the Go
+      // chatstream is per-session — see api.ts openChatStream).
+      const handoff = await openChatStream(selectedSession.sessionId, seedAgent)
       chatStreamHandoff = handoff
       currentEventSource = wireChatEventSource(handoff, selectedSession.sessionId)
     } catch (e: unknown) {
@@ -504,7 +624,7 @@
   async function reopenChatStream(sessionID: string): Promise<void> {
     chunkState = new Map()
     try {
-      const handoff = await openChatStream(sessionID)
+      const handoff = await openChatStream(sessionID, seedAgent)
       chatStreamHandoff = handoff
       currentEventSource = wireChatEventSource(handoff, sessionID)
     } catch (e: unknown) {
@@ -526,30 +646,38 @@
     consecutiveErrors = 0
   }
 
-  // handleMessageParts renders a messageParts frame. One frameId maps to one
-  // chat entry containing ALL of the frame's parts (a user-turn frame carrying
-  // [TextPart, ImagePart] is a single grouped entry, never split per-part).
+  // handleMessageParts renders a messageParts frame into the tab bucket of the
+  // frame's agent (D12 routing). One frameId maps to one chat entry containing
+  // ALL of the frame's parts (a user-turn frame carrying [TextPart, ImagePart]
+  // is a single grouped entry, never split per-part).
   //
   // Streaming exception: the agent emits many small text/thinking chunks as
   // separate messageParts frames. To preserve the legacy single-bubble
   // streaming UX, consecutive agent messageParts frames that are purely
-  // TextPart (or purely ThinkingPart) and share the same agentProfileName fold
-  // into the preceding entry by concatenating content onto the trailing
-  // same-kind part. Every other messageParts frame (image, tool_call,
-  // tool_result, mixed) starts a new entry. (data-model.md §4; spec 023 FR-005.)
+  // TextPart (or purely ThinkingPart) and share the same agent fold into the
+  // preceding entry by concatenating content onto the trailing same-kind part.
+  // Every other messageParts frame (image, tool_call, tool_result, mixed)
+  // starts a new entry. (data-model.md §4; spec 023 FR-005.)
   function handleMessageParts(frame: AgentFrame, block: { parts?: MessagePart[] }, timestamp: string) {
     const incomingParts = block.parts ?? []
     // Graceful degradation: a messageParts frame with zero parts is a no-op.
     if (incomingParts.length === 0) return
 
+    const agent = frameBucketAgent(frame)
+    if (!agent) return
+
+    // Dedupe history-vs-seed overlap (see renderedMessageIds).
+    if (frame.frameId && renderedMessageIds.has(frame.frameId)) return
+    if (frame.frameId) renderedMessageIds.add(frame.frameId)
+
     const sender = resolveSender(frame.sender)
-    const profile = frame.agentProfileName
     const kind = homogeneousStreamKind(incomingParts)
+    const list = chatMessages[agent] ?? []
 
     if (sender === FrameSender.AGENT && (kind === 'text' || kind === 'thinking')) {
-      const last = chatMessages[chatMessages.length - 1]
+      const last = list[list.length - 1]
       if (last && last.sender === FrameSender.AGENT
-          && last.agentProfileName === profile
+          && last.agent === agent
           && last.mergeKind === kind
           && last.parts && last.parts.length > 0) {
         const trailing = last.parts[last.parts.length - 1]
@@ -561,19 +689,22 @@
         } else if (kind === 'thinking' && trailing.thinking) {
           trailing.thinking.content += joined
         }
-        chatMessages = [...chatMessages]
+        chatMessages = { ...chatMessages, [agent]: [...list] }
         return
       }
     }
 
-    chatMessages = [...chatMessages, {
-      messageId: frame.frameId ?? crypto.randomUUID(),
-      sender,
-      timestamp,
-      agentProfileName: profile,
-      parts: incomingParts,
-      mergeKind: kind,
-    }]
+    chatMessages = {
+      ...chatMessages,
+      [agent]: [...list, {
+        messageId: frame.frameId ?? crypto.randomUUID(),
+        sender,
+        timestamp,
+        agent,
+        parts: incomingParts,
+        mergeKind: kind,
+      }],
+    }
   }
 
   function handleAgentFrame(frame: AgentFrame) {
@@ -584,6 +715,7 @@
     logDebug('frontend', 'inbound chat frame', {
       frame_id: frame.frameId,
       sender: frame.sender,
+      agent: frame.agent,
     })
     // A frame carries exactly one payload (protojson flattens the oneof):
     // messageParts (display — rendered) OR flowParts (control — drives
@@ -604,12 +736,16 @@
           pendingMessageIds = []
           if (playState === 'processing') playState = 'chat_ready'
         } else if (fp.warn) {
-          chatMessages = [...chatMessages, {
-            messageId: frame.frameId ?? crypto.randomUUID(),
-            sender: FrameSender.SYSTEM,
-            timestamp,
-            warnMessage: fp.warn.message ?? '',
-          }]
+          const agent = frameBucketAgent(frame)
+          chatMessages = {
+            ...chatMessages,
+            [agent]: [...(chatMessages[agent] ?? []), {
+              messageId: frame.frameId ?? crypto.randomUUID(),
+              sender: FrameSender.SYSTEM,
+              timestamp,
+              warnMessage: fp.warn.message ?? '',
+            }],
+          }
         } else if (fp.queue) {
           // Phase 5 (T011): the pending-queue count is now BACKEND-DRIVEN by
           // QueueSignal.queued_count (replacing the Phase 3 optimistic ++).
@@ -636,11 +772,27 @@
 
   async function handleSendChatText(text: string) {
     if (!selectedSession) return
-    // Auto-connect fallback if WS dropped (sendUserTurn relies on the backend connection)
+    // FR-032: input routes to the currently selected agent, and only when it
+    // accepts user input (saolei: player; planner tabs are blocked in the UI —
+    // this guard is the second line of defense).
+    const targetAgent = selectedAgent
+    if (!targetAgent || !agentAcceptsInput(targetAgent)) {
+      messagesError = 'This agent does not accept user input.'
+      return
+    }
+    // Auto-connect fallback if WS dropped (sendUserTurn relies on the backend
+    // connection). The Team must exist before connect (FR-033) —
+    // create-if-missing (decision 2).
     const wasConnected = connectionState === 'connected'
     if (!wasConnected) {
+      const t = await ensureTeam()
+      if (!t) {
+        playState = 'connection_error'
+        messagesError = 'Connection failed. Retry to send your message.'
+        return
+      }
       playState = 'connecting'
-      await handleConnectAgent()
+      await handleConnect()
     }
     const nowConnected = connectionState === 'connected'
     if (!nowConnected) {
@@ -670,7 +822,8 @@
     try {
       // Optimistic user turn: mirror the backend's single user-turn frame,
       // which carries [TextPart, ImagePart] as one PartBlock. One local id →
-      // one entry holding all submitted parts (text and/or screenshot).
+      // one entry holding all submitted parts (text and/or screenshot). The
+      // entry lands in the target agent's tab bucket.
       const optimisticParts: MessagePart[] = []
       if (text.trim()) optimisticParts.push({ text: { content: text } })
       if (pendingScreenshot) {
@@ -681,12 +834,16 @@
       if (optimisticParts.length > 0) {
         const msgId = crypto.randomUUID()
         optimisticIds.push(msgId)
-        chatMessages = [...chatMessages, {
-          messageId: msgId,
-          sender: FrameSender.USER,
-          timestamp: new Date().toISOString(),
-          parts: optimisticParts,
-        }]
+        chatMessages = {
+          ...chatMessages,
+          [targetAgent]: [...(chatMessages[targetAgent] ?? []), {
+            messageId: msgId,
+            sender: FrameSender.USER,
+            timestamp: new Date().toISOString(),
+            agent: targetAgent,
+            parts: optimisticParts,
+          }],
+        }
         // Track the pending message id (FIFO) so ChatView can visually mark it
         // pending (specs/030-queued-chat-input/spec.md FR-008) and so a later
         // QueueSignal depth drop can transition it to normal
@@ -708,18 +865,23 @@
       const screenshotHeightPx = pendingScreenshot?.heightPx ?? 0
       pendingScreenshot = null
       await sendUserTurn(
+        template,
         selectedSession.sessionId,
         text,
         screenshotData,
         screenshotWidthPx,
         screenshotHeightPx,
-        selectedProfile,
+        targetAgent,
       )
-      log('info', 'chat', `Sent to agent: ${text.substring(0, 60)}`)
+      log('info', 'chat', `Sent to agent ${targetAgent}: ${text.substring(0, 60)}`)
     } catch (e: unknown) {
       if (optimisticIds.length > 0) {
         const idSet = new Set(optimisticIds)
-        chatMessages = chatMessages.filter(m => !idSet.has(m.messageId))
+        const bucket = chatMessages[targetAgent] ?? []
+        chatMessages = {
+          ...chatMessages,
+          [targetAgent]: bucket.filter(m => !idSet.has(m.messageId)),
+        }
         // Roll back the pending-tracking entry for the failed submission too.
         pendingMessageIds = pendingMessageIds.filter(id => !idSet.has(id))
       }
@@ -736,10 +898,6 @@
       }
       log('error', 'chat', `Send failed: ${String(e)}`)
     }
-  }
-
-  function handleSelectProfile(profileName: string) {
-    selectedProfile = profileName
   }
 
   async function handleBackToSessions() {
@@ -766,8 +924,10 @@
     }
     resetPlayPageState()
     selectedSession = null
-    agent = null
-    chatMessages = []
+    team = null
+    teamAgents = []
+    selectedAgent = ''
+    seedAgent = ''
     playState = 'connecting'
     page = 'sessions'
   }
@@ -794,11 +954,13 @@
         // ignore close errors
       }
       resetPlayPageState()
-      await deleteSession(sessionId)
+      await deleteSession(template, sessionId)
       log('info', 'sessions', `Session deleted: ${sessionId}`)
       selectedSession = null
-      agent = null
-      chatMessages = []
+      team = null
+      teamAgents = []
+      selectedAgent = ''
+      seedAgent = ''
       page = 'sessions'
       await handleRefresh()
     } catch (e: unknown) {
@@ -809,51 +971,30 @@
     }
   }
 
+  // --- Team handlers ---
+  // handleRefreshTeam triggers RefreshTeam (FR-018): the backend clears the
+  // session's short-term memory. The local per-agent buckets and dedup state
+  // are reset and histories are re-read so the tabs reflect the cleared state
+  // (the strategy long-term memory is unaffected).
+  async function handleRefreshTeam() {
+    if (!selectedSession) return
+    refreshing = true
+    try {
+      await refreshTeam(template, selectedSession.sessionId)
+      log('info', 'team', 'Team refreshed (short-term memory cleared, FR-018)')
+      chatMessages = {}
+      renderedMessageIds = new Set()
+      await loadAgentHistories()
+    } catch (e: unknown) {
+      log('error', 'team', `Refresh team failed: ${String(e)}`)
+    } finally {
+      refreshing = false
+    }
+  }
+
   // --- Log handler ---
   function handleClearLogs() {
     logEntries = []
-  }
-
-  // --- Profile management handlers ---
-  async function handleEnterProfiles() {
-    profileMgmtLoading = true
-    profileMgmtError = null
-    try {
-      const resp = await listAgentProfiles(100, '')
-      managedProfiles = resp.agentProfiles
-    } catch (err) {
-      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
-    } finally {
-      profileMgmtLoading = false
-    }
-    page = 'profiles'
-  }
-
-  async function handleRefreshProfiles() {
-    profileMgmtLoading = true
-    profileMgmtError = null
-    try {
-      const resp = await listAgentProfiles(100, '')
-      managedProfiles = resp.agentProfiles
-    } catch (err) {
-      profileMgmtError = err instanceof Error ? err.message : 'Failed to load profiles'
-    } finally {
-      profileMgmtLoading = false
-    }
-  }
-
-  async function handleCreateProfile(req: CreateAgentProfileRequest) {
-    await createAgentProfile(req)
-    await handleRefreshProfiles()
-    const resp = await listAgentProfiles(50, '')
-    profiles = resp.agentProfiles
-  }
-
-  async function handleDeleteProfile(agentProfileName: string) {
-    await deleteAgentProfile(agentProfileName)
-    await handleRefreshProfiles()
-    const resp = await listAgentProfiles(50, '')
-    profiles = resp.agentProfiles
   }
 
   // --- Window + Screenshot handlers ---
@@ -896,42 +1037,6 @@
   function handleZoom(url: string) {
     zoomedImageUrl = url
   }
-
-  async function handleUpdateProfile(agentProfileName: string, profile: AgentProfile, updateMaskPaths: string[]) {
-    await updateAgentProfile(agentProfileName, profile, updateMaskPaths)
-    const resp = await listAgentProfiles(100, '')
-    managedProfiles = resp.agentProfiles
-    profiles = resp.agentProfiles
-    // Auto-refresh (FR-026) — ISOLATED error handling
-    if (selectedSession && connectionState === 'connected' && playState !== 'processing') {
-      try {
-        await refreshAgent(selectedSession.sessionId)
-      } catch (e: unknown) {
-        log('warn', 'agent', `refresh failed (may be in-flight): ${String(e)}`)
-      }
-    }
-  }
-
-  async function handleRefreshAgent() {
-    if (!selectedSession) return
-    refreshing = true
-    try {
-      await refreshAgent(selectedSession.sessionId)
-      log('info', 'agent', 'Agent refreshed')
-    } catch (e: unknown) {
-      log('error', 'agent', `Refresh agent failed: ${String(e)}`)
-    } finally {
-      refreshing = false
-    }
-  }
-
-  function handleBackFromProfiles() {
-    if (selectedSession) {
-      page = 'chat'
-    } else {
-      page = 'sessions'
-    }
-  }
 </script>
 
 <div class="app-container">
@@ -945,8 +1050,17 @@
       <label for="env">Env</label>
       <input id="env" type="text" bind:value={env} placeholder="environment" />
     </div>
+    <div class="config-row">
+      <!-- Top-level template control plane (FR-024): the option list is the
+           LOCAL TEMPLATES constant; switching issues NO network request. -->
+      <label for="template-select">Template</label>
+      <select id="template-select" data-testid="template-select" bind:value={template} onchange={handleTemplateChange}>
+        {#each TEMPLATES as t}
+          <option value={t}>{t}</option>
+        {/each}
+      </select>
+    </div>
     <button class="btn btn-primary" onclick={handleApplyConfig} disabled={loading}>Apply Config</button>
-    <button class="btn" onclick={handleEnterProfiles} disabled={loading}>Agent Profiles</button>
   </div>
 
   <!-- Page Content (middle) -->
@@ -963,22 +1077,37 @@
     />
   {:else if page === 'chat'}
     <div class="chat-layout">
-      <AgentSidebar
-        {agent}
+      <TeamSidebar
+        {team}
         {connectionState}
-        {profiles}
-        {playState}
-        selectedProfile={selectedProfile}
-        onSelectProfile={handleSelectProfile}
+        selectedAgent={selectedAgent}
+        onSelectAgent={(name) => (selectedAgent = name)}
         onDeleteSession={handleDeleteSession}
         onBack={handleBackToSessions}
-        onRefresh={handleRefreshAgent}
+        onRefresh={handleRefreshTeam}
         {refreshing}
         {loading}
       />
       <div class="chat-main">
         <div class="chat-top-bar">
           <span class="session-label">Session: <strong>{selectedSession?.sessionId ?? ''}</strong></span>
+          <!-- Multi-tab conversation: one tab per team agent, driven by
+               Team.agents — never hardcoded (FR-025). -->
+          <div class="agent-tabs" data-testid="agent-tabs">
+            {#each teamAgents as agent (agent.name)}
+              <button
+                class="agent-tab"
+                class:active={agent.name === selectedAgent}
+                onclick={() => (selectedAgent = agent.name)}
+                data-testid="agent-tab"
+              >
+                {agent.name}
+                {#if !agent.acceptsUserInput}
+                  <span class="tab-badge observe" title="Does not accept user input (FR-032)">observe</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
           <select class="window-select" data-testid="window-select" bind:value={selectedWindowHandle}>
             <option value={undefined} disabled selected={selectedWindowHandle == null}>Select window...</option>
             {#each windows as w}
@@ -1003,7 +1132,7 @@
           onConfirm={handleConfirm}
         />
         <ChatView
-          messages={chatMessages}
+          messages={chatMessages[selectedAgent] ?? []}
           {processing}
           {queueCount}
           pendingMessageIds={pendingMessageIds}
@@ -1013,20 +1142,10 @@
           onZoom={handleZoom}
           pendingScreenshot={pendingScreenshot ? { dataUrl: pendingScreenshot.dataUrl, widthPx: pendingScreenshot.widthPx, heightPx: pendingScreenshot.heightPx } : null}
           onRemoveScreenshot={handleRemoveScreenshot}
+          inputEnabled={agentAcceptsInput(selectedAgent)}
         />
       </div>
     </div>
-  {:else if page === 'profiles'}
-    <ProfileManagement
-      profiles={managedProfiles}
-      loading={profileMgmtLoading}
-      error={profileMgmtError}
-      onCreate={handleCreateProfile}
-      onDelete={handleDeleteProfile}
-      onRefresh={handleRefreshProfiles}
-      onUpdate={handleUpdateProfile}
-      onBack={handleBackFromProfiles}
-    />
   {/if}
 
   <!-- Log Panel (bottom, always visible) -->
@@ -1061,6 +1180,7 @@
     background: #16213e;
     border-radius: 6px;
     border: 1px solid #0f3460;
+    flex-wrap: wrap;
   }
 
   .session-label {
@@ -1070,6 +1190,46 @@
 
   .session-label strong {
     color: #e0e0e0;
+  }
+
+  .agent-tabs {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .agent-tab {
+    padding: 4px 10px;
+    font-size: 12px;
+    background: #0f3460;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #a0a0b0;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .agent-tab:hover:not(:disabled) {
+    background: #1a4a80;
+    border-color: #4a9eff;
+    color: #e0e0e0;
+  }
+
+  .agent-tab.active {
+    background: rgba(74, 158, 255, 0.15);
+    border-color: #4a9eff;
+    color: #e0e0e0;
+  }
+
+  .tab-badge.observe {
+    font-size: 9px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: rgba(255, 184, 108, 0.12);
+    color: #ffb86c;
   }
 
   .window-select {

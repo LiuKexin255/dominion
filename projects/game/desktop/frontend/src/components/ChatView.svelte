@@ -8,7 +8,9 @@
     messageId: string
     sender: FrameSender
     timestamp: string
-    agentProfileName?: string
+    // D12: team agent name (replaces the former agentProfileName). Each tab
+    // shows one agent's bucket, so this labels the agent run (FR-025).
+    agent?: string
     parts?: MessagePart[]
     warnMessage?: string
   }
@@ -32,7 +34,7 @@
     messageId: string
     sender: FrameSender
     timestamp: string
-    agentProfileName?: string
+    agent?: string
     toolId?: string
     name?: string
     argsJson?: string
@@ -55,6 +57,7 @@
     onZoom = () => {},
     pendingScreenshot = null,
     onRemoveScreenshot = () => {},
+    inputEnabled = true,
   }: {
     messages: ChatEntry[]
     processing?: boolean
@@ -66,6 +69,9 @@
     onZoom?: (url: string) => void
     pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
     onRemoveScreenshot?: () => void
+    // FR-032: false for agents that do not accept user input (saolei:
+    // planner) — the tab becomes an observe-only view.
+    inputEnabled?: boolean
   } = $props()
 
   let inputText = $state('')
@@ -83,8 +89,7 @@
   const renderItems = $derived.by<RenderItem[]>(() => {
     const items: RenderItem[] = []
     const toolByKey = new Map<string, ToolItem>()
-    let agentProfileShown = false
-    let lastAgentProfile: string | undefined = undefined
+    let lastAgent: string | undefined = undefined
     for (const msg of messages) {
       if (msg.warnMessage != null) {
         items.push({ kind: 'warn', key: msg.messageId, messageId: msg.messageId, timestamp: msg.timestamp, message: msg.warnMessage })
@@ -92,14 +97,13 @@
       }
       const parts = msg.parts ?? []
       if (parts.length === 0) continue
-      // Agent profile label: show once per consecutive agent run when the
-      // profile changes.
-      if (msg.sender === FrameSender.AGENT && msg.agentProfileName && msg.agentProfileName !== lastAgentProfile) {
-        items.push({ kind: 'profile', key: msg.messageId + '-profile', profile: msg.agentProfileName })
-        lastAgentProfile = msg.agentProfileName
-        agentProfileShown = true
+      // Agent label: show once per consecutive agent run when the agent
+      // changes (D12 — the entry's agent name).
+      if (msg.sender === FrameSender.AGENT && msg.agent && msg.agent !== lastAgent) {
+        items.push({ kind: 'profile', key: msg.messageId + '-profile', profile: msg.agent })
+        lastAgent = msg.agent
       } else if (msg.sender !== FrameSender.AGENT) {
-        lastAgentProfile = undefined
+        lastAgent = undefined
       }
       const isPending = msg.sender === FrameSender.USER && pendingIdSet.has(msg.messageId)
       for (const part of parts) {
@@ -118,7 +122,7 @@
               messageId: msg.messageId,
               sender: msg.sender,
               timestamp: msg.timestamp,
-              agentProfileName: msg.agentProfileName,
+              agent: msg.agent,
               toolId: tc.toolId,
               name: tc.name,
               argsJson: tc.argsJson,
@@ -140,7 +144,7 @@
               messageId: msg.messageId,
               sender: msg.sender,
               timestamp: msg.timestamp,
-              agentProfileName: msg.agentProfileName,
+              agent: msg.agent,
               toolId: tr.toolId,
               result: tr,
             }
@@ -151,12 +155,12 @@
           items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part, pending: isPending || undefined })
         }
       }
-      void agentProfileShown
     }
     return items
   })
 
   function handleSend() {
+    if (!inputEnabled) return
     const text = inputText.trim()
     if (!text && !pendingScreenshot) return
     onSend(text)
@@ -164,6 +168,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (!inputEnabled) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -362,8 +367,14 @@
     {/if}
   </div>
 
-  <!-- Input Area -->
+  <!-- Input Area. FR-032: blocked (observe-only) for agents that do not
+       accept user input (saolei: planner). -->
   <div class="chat-input-area">
+    {#if !inputEnabled}
+      <div class="observe-hint" data-testid="observe-only-hint">
+        Observe only — this agent does not accept user input (FR-032).
+      </div>
+    {/if}
     {#if pendingScreenshot}
       <div class="pending-attachment" data-testid="pending-attachment">
         <img class="attachment-thumb clickable" src={pendingScreenshot.dataUrl} alt="Screenshot attachment" onclick={() => onZoom(pendingScreenshot.dataUrl)} />
@@ -383,12 +394,13 @@
       bind:value={inputText}
       onkeydown={handleKeydown}
       rows={1}
+      disabled={!inputEnabled}
     ></textarea>
     <button
       class="send-btn"
       data-testid="chat-send-btn"
       onclick={handleSend}
-      disabled={!inputText.trim() && !pendingScreenshot}
+      disabled={!inputEnabled || (!inputText.trim() && !pendingScreenshot)}
     >
       Send
     </button>
@@ -521,6 +533,15 @@
     padding: 8px;
     border-top: 1px solid #0f3460;
     background: #1a1a2e;
+  }
+
+  /* FR-032 observe-only hint (planner tab) */
+  .observe-hint {
+    width: 100%;
+    font-size: 11px;
+    color: #ffb86c;
+    font-style: italic;
+    user-select: none;
   }
 
   /* ── Pending Attachment Preview ── */
