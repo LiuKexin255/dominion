@@ -67,8 +67,8 @@ export const PLAYER_SYSTEM_PROMPT = appendSkillBodyToPrompt(
 );
 
 /**
- * DI seam overriding `langchain`'s `createAgent` (same pattern as
- * `llm.ts` `AgentAdapterImpl` — `style/javascript.md` §测试: DI over
+ * DI seam overriding `langchain`'s `createAgent` (same pattern as the
+ * former `llm.ts` adapter path — `style/javascript.md` §测试: DI over
  * `vi.mock`). Tests inject a spy to assert the options passed; the node calls
  * the returned agent's `invoke({ messages })`.
  */

@@ -1,41 +1,53 @@
 /**
- * turn-loop.ts — LangGraph-native queue + single-flight turn loop.
+ * turn-loop.ts — queue + single-flight turn loop (spec 030 semantics).
  *
- * Replaces the per-frame `acquireMutex → generateTurn → releaseMutex` path
- * (`projects/game/agent/src/handler.ts`). One instance is owned per session by
- * `SessionAgent`. Conversation continuity across auto-continued turns is
- * provided natively by the existing `MemorySaver` checkpointer: the loop
- * re-invokes `AgentAdapter.generateTurn` (= LangGraph `streamEvents(v3)`) on
- * the SAME `thread_id`, so each turn picks up where the last one left off
- * ([LangGraph — Add memory](https://docs.langchain.com/oss/javascript/langgraph/add-memory);
- * [Use functional API — multi-turn](https://docs.langchain.com/oss/javascript/langgraph/use-functional-api)).
+ * The loop owns the single-flight + FIFO-queue semantics of spec 030
+ * (specs/030-queued-chat-input/contracts/turn-loop-contract.md) for the TEAM
+ * architecture (specs/031-team-template-mode/research.md D10): one user input
+ * → one team turn = one graph invoke, driven through an injected
+ * {@link TurnRunner} instead of the former single-agent `AgentAdapter`
+ * (`specs/031-team-template-mode/tasks.md` T017 — the runner decouples the
+ * loop from the adapter path that Phase 5 removed). The team graph's
+ * `gameEnded` is handled INSIDE a turn by the conditional edge, so a turn
+ * never requires external continuation and single-flight is preserved.
+ *
+ * One instance is owned per session by `SessionTeam`. Conversation continuity
+ * across auto-continued turns is provided by the team graph's outer
+ * `MemorySaver` checkpointer: the runner re-invokes `streamEvents` on the
+ * SAME `thread_id` (= session id, FR-013), so each turn picks up where the
+ * last one left off
+ * ([LangGraph — Add memory](https://docs.langchain.com/oss/javascript/langgraph/add-memory)).
  *
  * The "queue" is a transient FIFO of pending `TurnContent`s awaiting the next
- * `streamEvents` invocation; no custom persistence. An in-flight `streamEvents`
- * invocation does NOT absorb externally-buffered messages — LangGraph processes
- * one super-step from the checkpoint it loaded, so buffering outside the
- * running graph guarantees the in-flight turn is never disturbed
+ * turn invocation; no custom persistence. An in-flight invocation does NOT
+ * absorb externally-buffered messages — the graph processes one super-step
+ * from the checkpoint it loaded, so buffering outside the running graph
+ * guarantees the in-flight turn is never disturbed
  * (specs/030-queued-chat-input/spec.md FR-002;
  * [LangGraph — time-travel / forking](https://docs.langchain.com/oss/javascript/langgraph/use-time-travel)).
  * `interrupt()` is intentionally NOT used: it pauses for REQUIRED input,
  * whereas queued input is OPTIONAL and must never pause the agent
- * (`specs/030-queued-chat-input/research.md` D2;
+ * (specs/030-queued-chat-input/research.md D2;
  * [LangGraph — interrupts](https://docs.langchain.com/oss/javascript/langgraph/interrupts)).
  *
- * Contract: `specs/030-queued-chat-input/contracts/turn-loop-contract.md`
- * Data model / state transitions: `specs/030-queued-chat-input/data-model.md`
+ * Data model / state transitions: specs/030-queued-chat-input/data-model.md
  *
  * Drain path: on turn completion, ALL pending queued messages are merged into
  * ONE aggregated `HumanMessage` (multi content blocks, FIFO) and run as a
- * single next turn on the same `thread_id` (`specs/030-queued-chat-input/research.md`
+ * single next turn on the same `thread_id` (specs/030-queued-chat-input/research.md
  * D3; specs/030-queued-chat-input/spec.md FR-004/FR-005). `combineAll` performs the merge + buffer clear.
  *
- * `QueueSignal` emission (Phase 5 / T010): the loop pushes a `QueueSignal`
- * FlowPart over the flow channel on every per-session queue-depth change
- * (submit⇒+1/new depth; drain-to-next-turn⇒0; abort⇒0), per
+ * `QueueSignal` emission: the loop pushes a `QueueSignal` FlowPart over the
+ * flow channel on every per-session queue-depth change (submit⇒+1/new depth;
+ * drain-to-next-turn⇒0; abort⇒0), per
  * `specs/030-queued-chat-input/contracts/queue-channel-contract.md` §2. The
  * idle terminal emits no extra signal (depth is already 0 there), and a
  * non-abort error retains the buffer so its depth is unchanged (no signal).
+ *
+ * Frames carry the team `agent` field (specs/031-team-template-mode D12):
+ * display blocks carry the producing agent's name; control signals
+ * (`wait`/`warn`/`QueueSignal`) carry the session's primary agent
+ * (`agentName`, the accepts-user-input agent — "player" for saolei).
  */
 
 import { randomUUID } from "node:crypto";
@@ -46,7 +58,6 @@ import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type {
-  AgentAdapter,
   ContentBlock,
   TurnContent,
   TurnContentPart,
@@ -85,11 +96,26 @@ const PAYLOAD_ONEOF_KEYS = ["messageParts", "flowParts"] as const;
 export type TurnLoopEmit = (frame: AgentFrame) => void;
 
 /**
- * Lazy resolver of the bound `AgentAdapter` for a turn. Reuses
- * `SessionAgent.getOrCreateAdapter` so the cached adapter is served and the
- * existing `MemorySaver` checkpointer is forwarded unchanged.
+ * One streamed team-turn output: a `ContentBlock` plus the team agent that
+ * produced it (the frame's `agent` value, specs/031-team-template-mode D12).
+ * The team graph's nodes stream their channel updates per node, so the
+ * runner attributes each block to `player`/`planner` (FR-023).
  */
-export type AdapterProvider = () => Promise<AgentAdapter>;
+export interface TurnBlock {
+  agent: string;
+  block: ContentBlock;
+}
+
+/**
+ * Lazy resolver of a team turn's stream. Replaces the former
+ * `AdapterProvider` (`AgentAdapter.generateTurn`): the team architecture
+ * decouples the loop from the adapter (specs/031-team-template-mode/research.md
+ * D10 — `SessionTeam` provides the team-graph-invoke runner).
+ */
+export type TurnRunner = (
+  content: TurnContent,
+  signal?: AbortSignal,
+) => AsyncIterable<TurnBlock>;
 
 /**
  * Build an outbound `AgentFrame` envelope, tagging the `payload` oneof case
@@ -174,9 +200,10 @@ function combineAll(buffer: TurnContent[]): TurnContent {
  */
 export class TurnLoop {
   private readonly sessionId: string;
-  private readonly adapterProvider: AdapterProvider;
+  private readonly runner: TurnRunner;
   private readonly emit: TurnLoopEmit;
-  private readonly profileName: string;
+  /** The session's primary agent — stamped on control frames (`agent`). */
+  private readonly agentName: string;
 
   private buffer: TurnContent[] = [];
   private running = false;
@@ -185,14 +212,14 @@ export class TurnLoop {
 
   constructor(
     sessionId: string,
-    adapterProvider: AdapterProvider,
+    runner: TurnRunner,
     emit: TurnLoopEmit,
-    profileName: string,
+    agentName: string,
   ) {
     this.sessionId = sessionId;
-    this.adapterProvider = adapterProvider;
+    this.runner = runner;
     this.emit = emit;
-    this.profileName = profileName;
+    this.agentName = agentName;
   }
 
   /**
@@ -251,9 +278,10 @@ export class TurnLoop {
   }
 
   /**
-   * The RUNNING-state loop body. Drives `generateTurn`, emits display frames,
-   * and on turn completion either drains the next queued message (next turn,
-   * same `thread_id` → checkpointer continues) or emits `wait` (idle).
+   * The RUNNING-state loop body. Drives the injected {@link TurnRunner}
+   * (one team graph invoke per turn), emits display frames, and on turn
+   * completion either drains the next queued message (next turn, same
+   * `thread_id` → checkpointer continues) or emits `wait` (idle).
    *
    * Three terminal paths, each setting `running=false`:
    * - `finishAbort`: buffer cleared (specs/030-queued-chat-input/spec.md
@@ -266,8 +294,8 @@ export class TurnLoop {
   private async runLoop(initialContent: TurnContent): Promise<void> {
     let current = initialContent;
     // Top-of-loop abort check covers the drain gap (between turn completion
-    // and the next `generateTurn` start) where `controller.abort()` would
-    // target an already-completed controller.
+    // and the next turn start) where `controller.abort()` would target an
+    // already-completed controller.
     while (true) {
       if (this.aborting) {
         this.finishAbort();
@@ -275,13 +303,11 @@ export class TurnLoop {
       }
       this.controller = new AbortController();
       try {
-        const adapter = await this.adapterProvider();
-        for await (const block of adapter.generateTurn(
-          this.sessionId,
+        for await (const { agent, block } of this.runner(
           current,
           this.controller.signal,
         )) {
-          this.emit(this.displayFrame(block));
+          this.emit(this.displayFrame(block, agent));
         }
       } catch (err: unknown) {
         if (this.controller.signal.aborted || this.aborting) {
@@ -371,12 +397,13 @@ export class TurnLoop {
   /**
    * Map a streamed `ContentBlock` to a display `AgentFrame` (messageParts).
    * The block→MessagePart framing matches `handler.ts` exactly so live and
-   * loop-emitted output are identical.
+   * loop-emitted output are identical. The frame's `agent` field carries the
+   * producing team agent's name (specs/031-team-template-mode D12).
    */
-  private displayFrame(block: ContentBlock): AgentFrame {
+  private displayFrame(block: ContentBlock, agent: string): AgentFrame {
     if (block.type === "reasoning") {
       return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
-        agentProfileName: this.profileName,
+        agent,
         messageParts: {
           parts: [{ thinking: { content: block.reasoning } }],
         },
@@ -384,7 +411,7 @@ export class TurnLoop {
     }
     if (block.type === "text") {
       return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
-        agentProfileName: this.profileName,
+        agent,
         messageParts: {
           parts: [{ text: { content: block.text } }],
         },
@@ -392,7 +419,7 @@ export class TurnLoop {
     }
     if (block.type === "tool_call") {
       return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
-        agentProfileName: this.profileName,
+        agent,
         messageParts: {
           parts: [
             {
@@ -422,15 +449,15 @@ export class TurnLoop {
       toolResultPart.screenshot = screenshot;
     }
     return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
-      agentProfileName: this.profileName,
+      agent,
       messageParts: { parts: [{ toolResult: toolResultPart }] },
     });
   }
 
-  /** `wait` FlowPart frame (sender SYSTEM, carries profileName). */
+  /** `wait` FlowPart frame (sender SYSTEM, carries the session agent). */
   private waitFrame(): AgentFrame {
     return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
-      agentProfileName: this.profileName,
+      agent: this.agentName,
       flowParts: { parts: [{ wait: {} }] },
     });
   }

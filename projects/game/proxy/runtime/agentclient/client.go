@@ -17,6 +17,7 @@ var _ Client = (*AgentClient)(nil)
 
 // Client is the interface for downstream agent (TeamService) operations.
 type Client interface {
+	CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error)
 	GetTeam(ctx context.Context, req *game.GetTeamRequest) (*game.Team, error)
 	ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error)
 	Connect(ctx context.Context, opts ...grpc.CallOption) (game.TeamService_ConnectClient, error)
@@ -38,6 +39,12 @@ type AgentClient struct {
 // NewAgentClient creates a new gRPC client to the agent service using the given connection.
 var NewAgentClient = func(conn *grpc.ClientConn) Client {
 	return &AgentClient{client: game.NewTeamServiceClient(conn)}
+}
+
+// CreateTeam forwards a CreateTeam call to the agent service (the agent
+// builds the session's team graph from the requested TeamProfile).
+func (c *AgentClient) CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error) {
+	return c.client.CreateTeam(ctx, req)
 }
 
 // GetTeam returns the Team of a session.

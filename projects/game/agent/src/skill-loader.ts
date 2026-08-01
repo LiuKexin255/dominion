@@ -111,9 +111,9 @@ export function loadSkillsForMcp(mcpNames: string[]): string {
  * skill body is appended to the systemPrompt so the model receives the
  * guidance. When no skill matches, the prompt is returned unchanged.
  *
- * Used by `AgentAdapterImpl.create` (`llm.ts`) at session-bind time;
- * the augmented prompt is then carried by the existing systemPrompt plumbing
- * (`session-agent.ts` → `AdapterFactory`).
+ * Used by the saolei team graph's player node (`team/player.ts`) at graph
+ * build time; the augmented prompt is baked into the player's static system
+ * prompt (template-fixed assembly, specs/031-team-template-mode FR-028).
  *
  * @param systemPrompt The original profile systemPrompt.
  * @param mcpNames The profile's `mcp_names` entries.

@@ -1,6 +1,6 @@
 /**
- * turn-loop.test.ts — Unit tests for the LangGraph-native queue + single-flight
- * loop (`turn-loop.ts`).
+ * turn-loop.test.ts — Unit tests for the queue + single-flight turn loop
+ * (`turn-loop.ts`).
  *
  * Covers the Phase 2 (T002) contract cases:
  *  - submit-while-idle starts the loop.
@@ -17,7 +17,13 @@
  * error retains buffer⇒no signal
  * (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2).
  *
- * Mock strategy (`style/javascript.md` §Mock): the `adapterProvider` and the
+ * Phase 5 Batch 2 (specs/031-team-template-mode T017): the loop's turn
+ * dependency is the injected {@link TurnRunner} (a `(content, signal) =>
+ * AsyncIterable<TurnBlock>` team-graph runner — research.md D10), replacing
+ * the former `AgentAdapter` provider; frames carry the team `agent` field
+ * (D12).
+ *
+ * Mock strategy (`style/javascript.md` §Mock): the `runner` and the
  * `emit` sink are constructor-injected dependencies — tests pass plain
  * fakes/stubs (no `vi.mock` module interception; see
  * [vitest — Mocking Modules Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)).
@@ -25,9 +31,10 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { AgentAdapter, ContentBlock, TurnContent } from "./llm";
+import type { ContentBlock, TurnContent } from "./llm";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 import { TurnLoop } from "./turn-loop";
+import type { TurnBlock, TurnRunner } from "./turn-loop";
 
 // ---------------------------------------------------------------------------
 // Test fakes / helpers
@@ -60,53 +67,51 @@ function makeGate(): Gate {
 }
 
 /**
- * Fake adapter that echoes the turn's text as a `reply:<text>` block. If a
- * `gate` is supplied it awaits it before yielding (simulating an in-flight
- * turn). If `throwAfterGate` is set it rejects instead of yielding (simulating
- * a non-abort turn error). The gate wait is abort-aware so an `abort()` during
- * the wait unblocks the generator (mirroring LangGraph's signal handling).
+ * Fake team-graph turn runner that echoes the turn's text as a `reply:<text>`
+ * block tagged with the given `agent`. If a `gate` is supplied it awaits it
+ * before yielding (simulating an in-flight turn). If `throwAfterGate` is set
+ * it rejects instead of yielding (simulating a non-abort turn error). The
+ * gate wait is abort-aware so an `abort()` during the wait unblocks the
+ * generator (mirroring LangGraph's signal handling).
  *
  * The echoed text is the concatenated text of the `TurnContent` (flat OR
  * aggregated `parts`) via {@link extractText}, so the fake is agnostic to the
  * single-message vs combined-turn shape.
  *
- * Pass `recordCalls` to capture each `generateTurn` content for combine-shape
+ * Pass `recordCalls` to capture each runner input for combine-shape
  * assertions (US3 multi-message tests).
  */
-function makeEchoAdapter(opts: {
-  gate?: Gate;
-  throwAfterGate?: string;
-  recordCalls?: TurnContent[];
-} = {}): AgentAdapter {
+function makeEchoRunner(
+  agent: string,
+  opts: {
+    gate?: Gate;
+    throwAfterGate?: string;
+    recordCalls?: TurnContent[];
+  } = {},
+): TurnRunner {
   const { gate, throwAfterGate, recordCalls } = opts;
-  return {
-    async *generateTurn(
-      _threadId: string,
-      content: TurnContent,
-      signal?: AbortSignal,
-    ): AsyncIterable<ContentBlock> {
-      recordCalls?.push(content);
-      if (gate) {
-        // Race the gate against an abort so abort() unblocks the await.
-        const abort = new Promise<never>((_, reject) => {
-          if (signal?.aborted) reject(new Error("aborted"));
-          signal?.addEventListener("abort", () => reject(new Error("aborted")), {
-            once: true,
-          });
+  return async function* echoRunner(
+    content: TurnContent,
+    signal?: AbortSignal,
+  ): AsyncIterable<TurnBlock> {
+    recordCalls?.push(content);
+    if (gate) {
+      // Race the gate against an abort so abort() unblocks the await.
+      const abort = new Promise<never>((_, reject) => {
+        if (signal?.aborted) reject(new Error("aborted"));
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
         });
-        await Promise.race([gate.promise, abort]).catch(() => {
-          // Swallow: the signal.aborted check below gates yielding.
-        });
-        if (signal?.aborted) return;
-      }
-      if (throwAfterGate) {
-        throw new Error(throwAfterGate);
-      }
-      yield { type: "text", text: `reply:${extractText(content)}` };
-    },
-    async getState() {
-      return null;
-    },
+      });
+      await Promise.race([gate.promise, abort]).catch(() => {
+        // Swallow: the signal.aborted check below gates yielding.
+      });
+      if (signal?.aborted) return;
+    }
+    if (throwAfterGate) {
+      throw new Error(throwAfterGate);
+    }
+    yield { agent, block: { type: "text", text: `reply:${extractText(content)}` } };
   };
 }
 
@@ -192,7 +197,7 @@ function flush(ms = 0): Promise<void> {
 }
 
 const SID = "sid-loop";
-const PROFILE = "p-loop";
+const AGENT = "player";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -200,13 +205,13 @@ const PROFILE = "p-loop";
 
 describe("TurnLoop", () => {
   it("submit while idle starts the loop and emits blocks + a terminal wait", async () => {
-    const adapter = makeEchoAdapter();
+    const adapter = makeEchoRunner("player");
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     expect(loop.isRunning()).toBe(false);
@@ -229,13 +234,13 @@ describe("TurnLoop", () => {
 
   it("submit while running buffers and does not disturb the in-flight turn", async () => {
     const gate = makeGate();
-    const adapter = makeEchoAdapter({ gate });
+    const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     // Turn 1 starts and blocks in generateTurn on the gate.
@@ -268,13 +273,13 @@ describe("TurnLoop", () => {
   });
 
   it("emits exactly one terminal wait when the buffer is empty", async () => {
-    const adapter = makeEchoAdapter();
+    const adapter = makeEchoRunner("player");
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     loop.submit({ text: "only" });
@@ -288,13 +293,13 @@ describe("TurnLoop", () => {
 
   it("abort clears the buffer and emits wait (FR-011)", async () => {
     const gate = makeGate();
-    const adapter = makeEchoAdapter({ gate });
+    const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     // Turn 1 in flight (blocked on gate); queue a second message.
@@ -322,13 +327,13 @@ describe("TurnLoop", () => {
 
   it("non-abort turn error retains the buffer and emits warn (FR-015)", async () => {
     const gate = makeGate();
-    const adapter = makeEchoAdapter({ gate, throwAfterGate: "boom" });
+    const adapter = makeEchoRunner("player", { gate, throwAfterGate: "boom" });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     // Turn 1 in flight; queue a second message before the error fires.
@@ -357,13 +362,13 @@ describe("TurnLoop", () => {
   });
 
   it("abort when idle is a no-op", async () => {
-    const adapter = makeEchoAdapter();
+    const adapter = makeEchoRunner("player");
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     // IDLE abort must not emit anything or flip state.
@@ -385,13 +390,13 @@ describe("TurnLoop", () => {
     // next turn runs (not one per message).
     const gate = makeGate();
     const calls: TurnContent[] = [];
-    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const adapter = makeEchoRunner("player", { gate, recordCalls: calls });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     loop.submit({ text: "A" });
@@ -430,13 +435,13 @@ describe("TurnLoop", () => {
     // submission order (research.md D3 — no loss of text or screenshots).
     const gate = makeGate();
     const calls: TurnContent[] = [];
-    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const adapter = makeEchoRunner("player", { gate, recordCalls: calls });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     loop.submit({ text: "first" });
@@ -472,13 +477,13 @@ describe("TurnLoop", () => {
     // Phase 2 single-message drain, just expressed via `parts`.
     const gate = makeGate();
     const calls: TurnContent[] = [];
-    const adapter = makeEchoAdapter({ gate, recordCalls: calls });
+    const adapter = makeEchoRunner("player", { gate, recordCalls: calls });
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
-      async () => adapter,
+      adapter,
       emit,
-      PROFILE,
+      AGENT,
     );
 
     loop.submit({ text: "turn-1" });
@@ -508,9 +513,9 @@ describe("TurnLoop", () => {
     // signal sequence MUST be [1, 2, 3] — one signal per submit, each carrying
     // the buffer length AFTER the push (queue-channel-contract.md §2).
     const gate = makeGate();
-    const adapter = makeEchoAdapter({ gate });
+    const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, async () => adapter, emit, PROFILE);
+    const loop = new TurnLoop(SID, adapter, emit, AGENT);
 
     loop.submit({ text: "A" });
     await flush();
@@ -537,9 +542,9 @@ describe("TurnLoop", () => {
     // Contract §2: "Loop reaches idle (emits wait) — depth is already 0; no
     // extra signal required." A single turn with no queue drains straight to
     // idle, so NO QueueSignal is emitted at all.
-    const adapter = makeEchoAdapter();
+    const adapter = makeEchoRunner("player");
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, async () => adapter, emit, PROFILE);
+    const loop = new TurnLoop(SID, adapter, emit, AGENT);
 
     loop.submit({ text: "solo" });
     await flush();
@@ -553,9 +558,9 @@ describe("TurnLoop", () => {
     // depth-0 signal MUST precede the terminal wait so the desktop drops the
     // pending indicator before returning to ready.
     const gate = makeGate();
-    const adapter = makeEchoAdapter({ gate });
+    const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, async () => adapter, emit, PROFILE);
+    const loop = new TurnLoop(SID, adapter, emit, AGENT);
 
     loop.submit({ text: "in-flight" });
     await flush();

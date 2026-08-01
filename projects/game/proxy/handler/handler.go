@@ -3,9 +3,10 @@
 //
 // The handler owns owner resolution, agent-client routing, and bidirectional
 // stream binding directly. There is no separate service layer: GetTeam/
-// ListMessages/RefreshTeam require an existing owner (Connect is the only RPC
-// that allocates one), which mirrors that a Team is not independently
-// creatable — it only comes into existence when a desktop connects.
+// Connect/ListMessages/RefreshTeam require an existing owner (CreateTeam is
+// the only RPC that allocates one) — the Team must be created explicitly via
+// CreateTeam before any other TeamService RPC (no lazy creation on Connect,
+// spec 031-team-template-mode design decision: Agent 移除懒加载模式).
 package handler
 
 import (
@@ -51,9 +52,44 @@ func NewTeamHandler(
 	}
 }
 
+// CreateTeam creates the Team of a Session explicitly (AIP-133:
+// https://google.aip.dev/133). This is the ONLY RPC that allocates an owner
+// for a session: an owner is picked and persisted here (assignOwner), then
+// the request — carrying the TeamProfile full resource name — is forwarded
+// to the agent owning the session, which builds the team graph. All other
+// TeamService RPCs (GetTeam/Connect/ListMessages/RefreshTeam) require the
+// owner to already exist: the former lazy owner allocation on Connect was
+// removed (Agent 移除懒加载模式 — spec 031-team-template-mode design decision).
+func (h *TeamHandler) CreateTeam(ctx context.Context, req *game.CreateTeamRequest) (*game.Team, error) {
+	name, err := game.ParseSessionName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	owner, err := h.assignOwner(ctx, name.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := h.agentClient(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	team, err := client.CreateTeam(ctx, req)
+	if err != nil {
+		logs.Error(ctx, "create team: downstream call failed",
+			event.String("session_id", name.SessionID),
+			event.Err(err),
+		)
+		return nil, propagateAgentError(err, "create team")
+	}
+	return team, nil
+}
+
 // GetTeam returns the Team resource identified by name
 // (templates/{template}/sessions/{session}/team). The owner must already
-// exist; it is created only by Connect.
+// exist; it is created only by CreateTeam.
 func (h *TeamHandler) GetTeam(ctx context.Context, req *game.GetTeamRequest) (*game.Team, error) {
 	name, err := req.ParseName()
 	if err != nil {
@@ -112,10 +148,11 @@ func (h *TeamHandler) ListMessages(ctx context.Context, req *game.ListMessagesRe
 }
 
 // Connect establishes a bidirectional streaming channel for team
-// communication (spec 031-team-template-mode FR-004). This is the only RPC
-// that allocates an owner for a session: if no owner exists yet, one is
-// picked and persisted before the stream is bound. The first frame's
-// session_id carries the full session resource name
+// communication (spec 031-team-template-mode FR-004). The owner must already
+// exist (CreateTeam is the only RPC that allocates one): Connect does NOT
+// allocate an owner anymore — a session without a created team yields
+// NotFound, consistent with GetTeam/ListMessages/RefreshTeam. The first
+// frame's session_id carries the full session resource name
 // ("templates/{template}/sessions/{session}").
 func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 	ctx := stream.Context()
@@ -130,7 +167,7 @@ func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 		return status.Error(codes.InvalidArgument, "session_id must be a session resource name of the form templates/{template}/sessions/{session}")
 	}
 
-	owner, err := h.assignOwner(ctx, name.SessionID)
+	owner, err := h.lookupOwner(ctx, name.SessionID)
 	if err != nil {
 		return err
 	}
@@ -167,7 +204,7 @@ func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 }
 
 // RefreshTeam forwards a RefreshTeam request to the agent owning the session.
-// The owner must already exist (Connect must have run first).
+// The owner must already exist (CreateTeam must have run first).
 func (h *TeamHandler) RefreshTeam(ctx context.Context, req *game.RefreshTeamRequest) (*emptypb.Empty, error) {
 	name, err := req.ParseName()
 	if err != nil {
@@ -209,7 +246,7 @@ func parseMessagesParent(parent string) (template, sessionID, agent string, err 
 }
 
 // lookupOwner returns the existing owner for a session or a mapped status error.
-// It does NOT create an owner; only Connect allocates one.
+// It does NOT create an owner; only CreateTeam allocates one.
 func (h *TeamHandler) lookupOwner(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := h.ownerStore.Get(ctx, sessionID)
 	if err != nil {
@@ -223,7 +260,10 @@ func (h *TeamHandler) lookupOwner(ctx context.Context, sessionID string) (*domai
 }
 
 // assignOwner returns the existing owner for a session, or picks and persists a
-// new one when no owner exists yet. Used only by Connect.
+// new one when no owner exists yet. Used only by CreateTeam (idempotent: a
+// repeated CreateTeam for an already-created session reuses its owner). Under
+// a concurrent-create race the persisted owner wins: ErrOwnerAlreadyExists
+// from Create re-reads the existing owner instead of erroring (S1).
 func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
 	owner, err := h.ownerStore.Get(ctx, sessionID)
 	if err == nil {
@@ -259,6 +299,25 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 		CreateTime: now,
 	}
 	if err := h.ownerStore.Create(ctx, owner); err != nil {
+		// Concurrent CreateTeam race: another request already persisted an
+		// owner for this session. The proxy-layer owner allocation is
+		// idempotent — re-read the winner's owner instead of surfacing
+		// AlreadyExists (S1; the agent-side profile check is independent).
+		if errors.Is(err, domain.ErrOwnerAlreadyExists) {
+			existing, getErr := h.ownerStore.Get(ctx, sessionID)
+			if getErr != nil {
+				logs.Error(ctx, "assign owner: re-read after race failed",
+					event.String("session_id", sessionID),
+					event.Err(getErr),
+				)
+				return nil, mapDomainError(getErr)
+			}
+			logs.Info(ctx, "owner already allocated by concurrent create team; reusing it",
+				event.String("session_id", sessionID),
+				event.Int("agent_index", existing.OwnerIndex),
+			)
+			return existing, nil
+		}
 		logs.Error(ctx, "assign owner: create record failed",
 			event.String("session_id", sessionID),
 			event.Err(err),
@@ -266,7 +325,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 		return nil, mapDomainError(err)
 	}
 
-	logs.Info(ctx, "owner created on connect",
+	logs.Info(ctx, "owner created on create team",
 		event.String("session_id", sessionID),
 		event.String("owner", pickedRef.Owner),
 		event.Int("agent_index", pickedRef.OwnerIndex),

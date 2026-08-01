@@ -60,6 +60,22 @@ service SessionService {
 //
 // Prefix Path: /api/v1/templates/{template}/sessions/{session}
 service TeamService {
+  // CreateTeam creates the Team of a Session explicitly (AIP-133:
+  // https://google.aip.dev/133). The Team is a per-session singleton — its
+  // resource id is the literal "team" — so the request carries the parent
+  // Session and the TeamProfile (full resource name) the team is built from.
+  // CreateTeam is the ONLY Team creation point: GetTeam/Connect/ListMessages/
+  // RefreshTeam require the Team to already exist (no lazy creation — the
+  // former implicit creation with a fixed default profile is removed, spec
+  // 031-team-template-mode design decision).
+  rpc CreateTeam(CreateTeamRequest) returns (Team) {
+    option (google.api.http) = {
+      post: "/api/v1/{parent=templates/*/sessions/*}/team"
+      body: "*"
+    };
+    option (google.api.method_signature) = "parent,profile";
+  }
+
   // GetTeam gets the Team of a Session. AIP-131: https://google.aip.dev/131
   rpc GetTeam(GetTeamRequest) returns (Team) {
     option (google.api.http) = {
@@ -202,9 +218,10 @@ message TeamAgent {
 }
 
 // Team is the execution subject of a Session, replacing the former Agent
-// resource (clean break, FR-003). It comes into existence with the session's
-// Connect and cannot be created independently; its agents are exported from
-// the template's graph schema definition (typed, not hard-coded by clients).
+// resource (clean break, FR-003). It is created explicitly via CreateTeam
+// (AIP-133) — the only creation point — and cannot be created lazily or
+// independently; its agents are exported from the template's graph schema
+// definition (typed, not hard-coded by clients).
 message Team {
   option (google.api.resource) = {
     type: "game.liukexin.com/Team"
@@ -691,6 +708,34 @@ message GetTeamRequest {
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
       type: "game.liukexin.com/Team"
+    }
+  ];
+}
+
+// CreateTeamRequest creates the Team of a Session (AIP-133:
+// https://google.aip.dev/133). The Team is a per-session singleton (resource
+// id = the literal "team"), so there is no resource body and no
+// team_id field: the parent Session plus the TeamProfile (full resource
+// name, AIP-122) identify the team and its configuration. The profile's
+// template segment MUST match the parent's template segment — the handler
+// validates the consistency (no implicit rules).
+message CreateTeamRequest {
+  // The session under which the Team is created.
+  // Format: templates/{template}/sessions/{session}
+  string parent = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      child_type: "game.liukexin.com/Team"
+    }
+  ];
+  // The TeamProfile the team is built from (resolves the template's
+  // player/planner models). Full resource name so the template is explicit
+  // and validated against the parent.
+  // Format: templates/{template}/profiles/{profile}
+  string profile = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = {
+      type: "game.liukexin.com/TeamProfile"
     }
   ];
 }

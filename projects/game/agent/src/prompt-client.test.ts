@@ -2,14 +2,9 @@
  * Tests for PromptClient.
  *
  * Reliable pattern (FR-009): the PromptClient ctor accepts an injected gRPC
- * client (DI seam), so getProfile/close/warmup tests pass a `vi.fn()`-backed
+ * client (DI seam), so getTeamProfile/close/warmup tests pass a `vi.fn()`-backed
  * client and need NO module-level `vi.mock`. The channel-option tests use the
- * exported `buildChannelOptionsForTest()` factory seam. Previously this file
- * relied on module-level `vi.mock` of `@grpc/grpc-js` / `node:fs` /
- * `@grpc/proto-loader` / `@dominion/common-js-grpc-resolver`, which the
- * pre-compiled `:lib` bypasses under Bazel js_test (see research.md §2 and
- * style/javascript.md §测试). `registerDominionResolver` now runs only on the
- * real-construction path, so DI-seamed construction no longer triggers it.
+ * exported `buildChannelOptionsForTest()` factory seam.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -23,64 +18,68 @@ import {
 
 describe("PromptClient", () => {
   let mockClient: {
-    getAgentProfile: ReturnType<typeof vi.fn>;
+    getTeamProfile: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
-    // Create a fresh mock client for each test
     mockClient = {
-      getAgentProfile: vi.fn(),
+      getTeamProfile: vi.fn(),
       close: vi.fn(),
     };
   });
 
-  describe("getProfile", () => {
-    // The real gRPC stub contract (prompt-client.ts getProfile) is
-    // getAgentProfile(request, metadata, options, callback) with request
-    // { name: "prompts/agentProfiles/<profile>" }. Mocks must match that
-    // 4-arg shape so the 4th positional arg is the callback (FR-012).
-    it("returns model and systemPrompt for a valid profile", async () => {
+  describe("getTeamProfile", () => {
+    // The real gRPC stub contract (prompt-client.ts getTeamProfile) is
+    // getTeamProfile(request, metadata, options, callback) with request
+    // { name: "templates/<template>/profiles/<profile>" }. Mocks must match
+    // that 4-arg shape so the 4th positional arg is the callback.
+    it("returns playerModel and plannerModel from the saolei oneof variant", async () => {
+      const template = "saolei";
       const profileName = "my-profile";
-      const expectedModel = "opencode-go/deepseek-v4-pro";
-      const expectedSystemPrompt = "You are a helpful assistant.";
+      const expectedPlayerModel = "opencode-go/deepseek-v4-pro";
+      const expectedPlannerModel = "opencode-go/deepseek-v4";
 
-      mockClient.getAgentProfile.mockImplementation(
+      mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
           _options: { deadline: Date },
-          cb: (err: null, response: { model: string; systemPrompt: string; toolNames: string[]; mcpNames?: string[] }) => void,
+          cb: (err: null, response: { spec: string; saolei: { playerModel: string; plannerModel: string } }) => void,
         ) => {
           cb(null, {
-            model: expectedModel,
-            systemPrompt: expectedSystemPrompt,
-            toolNames: ["mouse_move"],
-            mcpNames: ["saolei"],
+            spec: "saolei",
+            saolei: {
+              playerModel: expectedPlayerModel,
+              plannerModel: expectedPlannerModel,
+            },
           });
         },
       );
 
       const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile(profileName);
+      const result = await client.getTeamProfile(template, profileName);
 
       expect(result).toEqual({
-        model: expectedModel,
-        systemPrompt: expectedSystemPrompt,
-        toolNames: ["mouse_move"],
-        mcpNames: ["saolei"],
+        playerModel: expectedPlayerModel,
+        plannerModel: expectedPlannerModel,
       });
+      expect(mockClient.getTeamProfile).toHaveBeenCalledTimes(1);
+      expect(mockClient.getTeamProfile).toHaveBeenCalledWith(
+        { name: `templates/${template}/profiles/${profileName}` },
+        expect.any(Object),
+        expect.any(Object),
+        expect.any(Function),
+      );
     });
 
     it("throws with NOT_FOUND for a missing profile", async () => {
-      const profileName = "nonexistent-profile";
-
       const notFoundError = Object.assign(
-        new Error("Agent profile not found"),
+        new Error("Team profile not found"),
         { code: 5 }, // grpc.status.NOT_FOUND
       );
 
-      mockClient.getAgentProfile.mockImplementation(
+      mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
@@ -93,55 +92,18 @@ describe("PromptClient", () => {
 
       const client = new PromptClient(mockClient as any);
 
-      await expect(client.getProfile(profileName)).rejects.toThrow(
-        "Agent profile not found",
-      );
-    });
-
-    it("correctly extracts model and systemPrompt from the response", async () => {
-      const profileName = "data-profile";
-      const model = "opencode-go/deepseek-v4";
-      const systemPrompt = "You are a code assistant.";
-
-      mockClient.getAgentProfile.mockImplementation(
-        (
-          _req: { name: string },
-          _metadata: unknown,
-          _options: { deadline: Date },
-          cb: (
-            err: null,
-            response: { model: string; systemPrompt: string; toolNames: string[] },
-          ) => void,
-        ) => {
-          cb(null, { model, systemPrompt, toolNames: [] });
-        },
-      );
-
-      const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile(profileName);
-
-      expect(result.model).toBe(model);
-      expect(result.systemPrompt).toBe(systemPrompt);
-      expect(result.toolNames).toEqual([]);
-
-      expect(mockClient.getAgentProfile).toHaveBeenCalledTimes(1);
-      expect(mockClient.getAgentProfile).toHaveBeenCalledWith(
-        { name: `prompts/agentProfiles/${profileName}` },
-        expect.any(Object),
-        expect.any(Object),
-        expect.any(Function),
+      await expect(client.getTeamProfile("saolei", "nonexistent")).rejects.toThrow(
+        "Team profile not found",
       );
     });
 
     it("propagates non-NOT_FOUND gRPC errors", async () => {
-      const profileName = "error-profile";
-
       const error = Object.assign(
         new Error("Service unavailable"),
         { code: 14 }, // grpc.status.UNAVAILABLE
       );
 
-      mockClient.getAgentProfile.mockImplementation(
+      mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
@@ -154,105 +116,47 @@ describe("PromptClient", () => {
 
       const client = new PromptClient(mockClient as any);
 
-      await expect(client.getProfile(profileName)).rejects.toThrow(
+      await expect(client.getTeamProfile("saolei", "error-profile")).rejects.toThrow(
         "Service unavailable",
       );
     });
 
-    it("extracts toolNames from the response", async () => {
-      mockClient.getAgentProfile.mockImplementation(
+    it("throws when the oneof spec is unset (contract violation, no silent fallback)", async () => {
+      mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
           _options: { deadline: Date },
-          cb: (
-            err: null,
-            response: { model: string; systemPrompt: string; toolNames: string[] },
-          ) => void,
+          cb: (err: null, response: { spec?: string }) => void,
         ) => {
-          cb(null, {
-            model: "m",
-            systemPrompt: "s",
-            toolNames: ["mouse_move", "mouse_click"],
-          });
+          cb(null, {});
         },
       );
 
       const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile("tools-profile");
 
-      expect(result.toolNames).toEqual(["mouse_move", "mouse_click"]);
+      await expect(client.getTeamProfile("saolei", "no-spec")).rejects.toThrow(
+        /oneof spec must be saolei/,
+      );
     });
 
-    it("defaults toolNames to empty array when absent in response", async () => {
-      mockClient.getAgentProfile.mockImplementation(
+    it("throws when the oneof spec is a non-saolei variant (saolei is the only template)", async () => {
+      mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
           _options: { deadline: Date },
-          cb: (
-            err: null,
-            response: { model: string; systemPrompt: string; toolNames?: string[] },
-          ) => void,
+          cb: (err: null, response: { spec: string; other?: unknown }) => void,
         ) => {
-          cb(null, { model: "m", systemPrompt: "s" });
+          cb(null, { spec: "other" });
         },
       );
 
       const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile("no-tools");
 
-      expect(result.toolNames).toEqual([]);
-    });
-
-    // Spec 018-saolei-mcp FR-021 / data-model.md §9: mcpNames carries the
-    // profile's MCP integrations (e.g. "saolei"). The field defaults to []
-    // for older profiles that omit it on the wire.
-    it("extracts mcpNames from the response", async () => {
-      mockClient.getAgentProfile.mockImplementation(
-        (
-          _req: { name: string },
-          _metadata: unknown,
-          _options: { deadline: Date },
-          cb: (
-            err: null,
-            response: { model: string; systemPrompt: string; toolNames: string[]; mcpNames: string[] },
-          ) => void,
-        ) => {
-          cb(null, {
-            model: "m",
-            systemPrompt: "s",
-            toolNames: [],
-            mcpNames: ["saolei"],
-          });
-        },
+      await expect(client.getTeamProfile("saolei", "other-spec")).rejects.toThrow(
+        /oneof spec must be saolei/,
       );
-
-      const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile("mcp-profile");
-
-      expect(result.mcpNames).toEqual(["saolei"]);
-    });
-
-    it("defaults mcpNames to empty array when absent in response", async () => {
-      mockClient.getAgentProfile.mockImplementation(
-        (
-          _req: { name: string },
-          _metadata: unknown,
-          _options: { deadline: Date },
-          cb: (
-            err: null,
-            response: { model: string; systemPrompt: string; toolNames?: string[] },
-          ) => void,
-        ) => {
-          cb(null, { model: "m", systemPrompt: "s" });
-        },
-      );
-
-      const client = new PromptClient(mockClient as any);
-      const result = await client.getProfile("no-mcp");
-
-      expect(result.mcpNames).toEqual([]);
     });
   });
 
@@ -270,10 +174,6 @@ describe("PromptClient", () => {
     // module-level vi.mock.
     it("configures keepalive and reconnect-backoff channel options", () => {
       const options = buildChannelOptionsForTest();
-      // KEEPALIVE_OPTIONS in prompt-client.ts deliberately sets a 5-min
-      // keepalive interval (grpc-go rejects pings more frequent than 5 min)
-      // and disables ping-without-calls. The test asserts that documented
-      // intent, not a stale 30s/1 value.
       expect(options?.["grpc.keepalive_time_ms"]).toBe(300_000);
       expect(options?.["grpc.keepalive_timeout_ms"]).toBe(10_000);
       expect(options?.["grpc.keepalive_permit_without_calls"]).toBe(0);

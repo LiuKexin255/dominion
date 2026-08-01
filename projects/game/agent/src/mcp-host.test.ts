@@ -51,11 +51,11 @@ vi.mock("./mcp/saolei/saolei-mcp", async (importOriginal) => {
 });
 
 /**
- * Minimal in-memory fake of `SessionAgentStore` — maps session ids to fresh
- * `OperationBridge` instances, plus an optional team sink per session (spec
- * 031 — the lookup result shape is `{ bridge, sink? }`). Matches the
- * production `SessionAgentStore.get` surface the host consumes (a `{ bridge }`
- * return on hit, `undefined` on miss).
+ * Minimal in-memory fake of the session lookup surface — maps session ids to
+ * fresh `OperationBridge` instances, plus an optional team sink per session
+ * (spec 031 — the lookup result shape is `{ bridge, sink? }`). Matches the
+ * production `SessionTeamStore.get` surface the host consumes (a `{ bridge,
+ * sink? }` return on hit, `undefined` on miss).
  */
 function makeFakeStore(
 	sessionIds: string[],

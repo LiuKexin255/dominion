@@ -107,6 +107,25 @@ export interface TeamGraphHandle {
 		getState(
 			config: Record<string, unknown>,
 		): Promise<{ values: TeamStateValue } | null>;
+		/**
+		 * Edit the thread's state (Batch 2 — RefreshTeam, FR-018). Values
+		 * flow through the channels' reducers (checkpointer semantics), so
+		 * `RemoveMessage({ id: REMOVE_ALL_MESSAGES })` per channel clears
+		 * that channel (spike A1; contract §5).
+		 */
+		updateState(
+			config: Record<string, unknown>,
+			values: Partial<TeamStateValue>,
+		): Promise<unknown>;
+		/**
+		 * Stream a team turn (Batch 2 — `SessionTeam.runTeamTurn`). Yields
+		 * per-node `updates` events; the turn completes on its own
+		 * (`gameEnded` is handled inside by the conditional edge).
+		 */
+		streamEvents(
+			input: Partial<TeamStateValue>,
+			config?: Record<string, unknown>,
+		): Promise<unknown>;
 	};
 	/** The single outer `MemorySaver` bound to the graph (A3). */
 	checkpointer: MemorySaver;

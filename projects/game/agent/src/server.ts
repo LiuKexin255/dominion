@@ -1,31 +1,122 @@
 /**
- * server.ts — Game agent gRPC server.
+ * server.ts — Game agent gRPC server (TeamService).
  *
- * Loads game.proto, wires service dependencies (secret, prompt client,
- * ModelProviderCache, SessionAgentStore, shared MemorySaver, compiled
- * StateGraph, handler), registers AgentService on a gRPC server, and
- * starts listening.
+ * Loads game.proto, wires the team-service dependencies and registers the
+ * TeamService (which replaced AgentService, specs/031-team-template-mode/
+ * contracts/api-contract.md §2.2):
+ *
+ * - **PromptClient** → `getTeamProfile` (the saolei TeamProfile's
+ *   player/planner model specs, §2.3).
+ * - **ModelProviderCache** → per-model `ChatModel` singletons for the
+ *   player/planner agents.
+ * - **Mongo client** → `MongoStrategyStore` (`strategies` collection; the
+ *   strategy is persisted by the agent service itself, NOT via the prompt
+ *   service — strategy-store-contract.md §2). The client resolves the
+ *   current `game/mongo` instance via the dominion resolver and derives the
+ *   mongo credentials deterministically (same scheme as the Go
+ *   `common/gopkg/mongo` client — `dominion/common/gopkg/mongo/client.go`).
+ * - **SessionTeamStore** → per-session compiled saolei team graph (buildTeamGraph)
+ *   with the saolei MCP tools wired as the player's tools (FR-010).
+ * - **MCP host** → per-session saolei McpServer with the team sink injected
+ *   (specs/031-team-template-mode/contracts/saolei-sink-contract.md §6;
+ *   T009 extension point).
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHmac } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { info, warn } from "@dominion/common-js-logs";
 import { registerDominionResolver } from "@dominion/common-js-grpc-resolver";
-import {
-  MemorySaver,
-} from "@langchain/langgraph";
+import { createResolver } from "@dominion/common-js-resolver";
+import { MongoClient } from "mongodb";
+import type { EndpointResolver } from "@dominion/common-js-resolver";
 import type { ProtoGrpcType } from "../game_types/game";
 
 import { readSecret } from "./secrets";
 import { PromptClient } from "./prompt-client";
 import { ModelProviderCache } from "./model-provider";
-import { AgentAdapterImpl } from "./llm";
-import type { AdapterFactory } from "./llm";
-import { SessionAgentStore } from "./session-agent";
+import type { ChatModel } from "./model-provider";
+import { MongoStrategyStore, STRATEGIES_COLLECTION } from "./strategy-store";
+import { SessionTeamStore } from "./session-team";
+import { SessionTeam } from "./session-team";
 import { Handler } from "./handler";
-import { startMcpHost } from "./mcp-host";
+import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host";
+import { buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
+import { createEphemeralGameBuffer } from "./team/team-sink";
+import { buildTeamGraph } from "./team/graph";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** The mongo database shared with the prompt service (same instance). */
+const MONGO_DB_NAME = "game_prompt";
+
+/** The dominion mongo target (app/service — deploy.yaml `infra mongodb`). */
+const MONGO_TARGET = { app: "game", service: "mongo", port: { kind: "number", port: 27017 } as const };
+
+// ---------------------------------------------------------------------------
+// Mongo client (deterministic credentials — mirrors common/gopkg/mongo)
+// ---------------------------------------------------------------------------
+
+const MONGO_PASSWORD_HMAC_KEY = "dominion-mongo-stable-password";
+const MONGO_PASSWORD_ALPHABET =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const MONGO_PASSWORD_MIN_LEN = 24;
+const MONGO_USERNAME = "admin";
+const MONGO_AUTH_DB = "admin";
+
+/**
+ * Deterministically derive the mongo admin password — the TS port of
+ * `generateStablePassword` (`common/gopkg/mongo/credentials.go`): HMAC-SHA256
+ * over the NUL-joined inputs with the fixed domain key, mapped onto the
+ * alphabet. Kept byte-identical so the agent connects to the same mongo
+ * instance the Go services use.
+ */
+function generateStablePassword(...inputs: string[]): string {
+  const mac = createHmac("sha256", MONGO_PASSWORD_HMAC_KEY);
+  mac.update(inputs.map((i) => i.trim()).join("\u0000"));
+  const sum = mac.digest();
+
+  let encoded = "";
+  for (const b of sum) {
+    encoded += MONGO_PASSWORD_ALPHABET[b % MONGO_PASSWORD_ALPHABET.length];
+  }
+  if (encoded.length >= MONGO_PASSWORD_MIN_LEN) {
+    return encoded;
+  }
+  while (encoded.length < MONGO_PASSWORD_MIN_LEN) {
+    for (const b of sum) {
+      encoded += MONGO_PASSWORD_ALPHABET[b % MONGO_PASSWORD_ALPHABET.length];
+      if (encoded.length >= MONGO_PASSWORD_MIN_LEN) break;
+    }
+  }
+  return encoded;
+}
+
+/**
+ * Create and connect the mongo client for the current `game/mongo` instance
+ * (strategy-store-contract.md §2 — connection config mirrors the prompt
+ * service's approach: resolve the endpoint, derive the credentials).
+ */
+async function createMongoClient(
+  resolver: EndpointResolver,
+): Promise<MongoClient> {
+  const endpoints = await resolver.resolve(MONGO_TARGET);
+  if (endpoints.length === 0) {
+    throw new Error("resolve mongo endpoint for game/mongo: no ready endpoints found");
+  }
+  const address = endpoints[0];
+  const envName = (process.env.DOMINION_ENVIRONMENT ?? "").trim() || "default";
+  const password = generateStablePassword("game", envName, "mongo");
+  const uri = `mongodb://${MONGO_USERNAME}:${password}@${address}/${MONGO_AUTH_DB}?authSource=${MONGO_AUTH_DB}`;
+  info("mongo client initializing", { address, db: MONGO_DB_NAME });
+  const client = new MongoClient(uri);
+  await client.connect();
+  return client;
+}
 
 // ---------------------------------------------------------------------------
 // Proto loading
@@ -76,8 +167,17 @@ function buildCredentials(): grpc.ServerCredentials {
 // Exported startServer
 // ---------------------------------------------------------------------------
 
+export interface StartServerOverrides {
+  /**
+   * Model lookup override (DI seam — the test artifact
+   * `bootstrap-test.ts` swaps the provider cache for the resolver-aware
+   * fake-llm ChatModel; `style/javascript.md` §测试).
+   */
+  getProvider?: (modelSpec: string) => Promise<ChatModel>;
+}
+
 export async function startServer(
-  adapterFactoryOverride?: AdapterFactory,
+  overrides: StartServerOverrides = {},
 ): Promise<grpc.Server> {
   registerDominionResolver();
 
@@ -93,8 +193,6 @@ export async function startServer(
     warn("prompt service not ready after warmup; deferring to first RPC");
   }
 
-  const checkpointer = new MemorySaver();
-
   const openaiBaseUrl =
     process.env.OPENCODE_OPENAI_BASE_URL ||
     process.env.OPENCODE_BASE_URL ||
@@ -107,47 +205,58 @@ export async function startServer(
     anthropicBaseUrl,
     providerSecret,
   );
+  const getProvider = overrides.getProvider ?? ((spec: string) => providerCache.getProvider(spec));
 
-  const adapterFactory: AdapterFactory =
-    adapterFactoryOverride ??
-    (async (
-      getProvider,
-      systemPrompt,
-      toolNames,
-      bridge,
-      cp,
-      mcpNames,
-      sessionId,
-    ) => {
-      const chatModel = await getProvider();
-      return AgentAdapterImpl.create(
-        chatModel,
-        systemPrompt,
-        toolNames,
-        bridge,
-        cp,
-        mcpNames,
-        sessionId,
+  // Strategy long-term memory: the agent persists it itself (D4 revision #5);
+  // the graph is injected with the mongo-backed store.
+  const resolver = createResolver();
+  const mongoClient = await createMongoClient(resolver);
+  const strategyStore = new MongoStrategyStore(
+    mongoClient.db(MONGO_DB_NAME).collection(STRATEGIES_COLLECTION) as never,
+  );
+  await strategyStore.ensureIndexes();
+  info("strategy store ready", { collection: STRATEGIES_COLLECTION });
+
+  // Per-session team: resolve the requested TeamProfile's models (the
+  // template + profile name come from the CreateTeam request — no fixed
+  // default profile), wire the saolei MCP tools as the player's tools
+  // (FR-010/FR-028), compile the team graph.
+  const sessionTeamStore = new SessionTeamStore(
+    async (sessionId, template, profileName) => {
+      const profile = await promptClient.getTeamProfile(
+        template,
+        profileName,
       );
-    });
-
-  const sessionAgentStore = new SessionAgentStore(
-    (modelSpec: string) => providerCache.getProvider(modelSpec),
-    adapterFactory,
-    checkpointer,
+      const playerModel = await getProvider(profile.playerModel);
+      const plannerModel = await getProvider(profile.plannerModel);
+      const buffer = createEphemeralGameBuffer();
+      const playerTools = await buildSaoleiMcpTools(
+        sessionId,
+        DEFAULT_MCP_PORT,
+        defaultMcpClientFactory,
+      );
+      const handle = buildTeamGraph({
+        playerModel,
+        plannerModel,
+        strategyStore,
+        buffer,
+        sessionId,
+        playerTools,
+      });
+      return new SessionTeam(handle, buffer, sessionId);
+    },
   );
 
-  const handler = new Handler(
-    promptClient,
-    sessionAgentStore,
-  );
+  const handler = new Handler(sessionTeamStore);
 
-  // FR-001: start the localhost MCP HTTP host alongside the gRPC server.
-  // The host looks sessions up via `SessionAgentStore.get` and lazily
-  // builds a session-bound saolei McpServer per request.
+  // FR-001 + saolei-sink-contract.md §6: the localhost MCP HTTP host
+  // resolves each session to its bridge AND the team sink (T009 extension
+  // point) so the saolei MCP events land in the session's ephemeral buffer.
   startMcpHost((sessionId: string) => {
-    const agent = sessionAgentStore.get(sessionId);
-    return agent ? { bridge: agent.getBridge() } : undefined;
+    const team = sessionTeamStore.get(sessionId);
+    return team
+      ? { bridge: team.getBridge(), sink: team.getSink() }
+      : undefined;
   });
 
   const proto = loadProto();
@@ -159,7 +268,7 @@ export async function startServer(
     "grpc.max_send_message_length": 8 * 1024 * 1024,
   });
   server.addService(
-    proto.projects.game.AgentService.service,
+    proto.projects.game.TeamService.service,
     handler as any,
   );
 

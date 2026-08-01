@@ -1,106 +1,27 @@
 /**
- * llm.test.ts — Tests for AgentAdapterImpl.
- *
- * The adapter receives a pre-created ChatModel (from ModelProviderCache)
- * at construction time.  createAgent compiles eagerly.  generateTurn takes
- * threadId and a multimodal TurnContent (text + optional image).
+ * llm.test.ts — Tests for the shared LLM types/helpers retained after the
+ * single-agent adapter path was removed
+ * (specs/031-team-template-mode/tasks.md T022): `buildTools`, `toParts`,
+ * `buildContentBlocks`, and the message-history helpers.
  */
 
-import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
-import { fakeModel } from "@langchain/core/testing";
-import { MemorySaver } from "@langchain/langgraph";
-import { tool } from "langchain";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { HumanMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
+import { describe, expect, it } from "vitest";
 
 import {
-	AgentAdapterImpl,
 	buildTools,
+	buildContentBlocks,
+	toParts,
+	extractToolCalls,
+	readToolResultStatus,
 	type ContentBlock,
 	type TurnContent,
-	type TurnContentPart,
 } from "./llm";
 import { OperationBridge } from "./operation-bridge";
-
-// Helpers
-
-type FakeStreamAgent = {
-	agent: {
-		streamEvents: (
-			input?: { messages: BaseMessage[] },
-			config?: { signal?: AbortSignal; [k: string]: unknown },
-		) => Promise<{
-			messages: AsyncGenerator<{
-				reasoning: AsyncGenerator<string>;
-				text: AsyncGenerator<string>;
-			}>;
-			toolCalls?: AsyncIterable<{
-				name: string;
-				callId: string;
-				input: unknown;
-			}>;
-			/** Raw event stream (GraphRunStream `[Symbol.asyncIterator]`).
-			 * Models the tool-result events read by `consumeToolResults`
-			 * (contract §7 fallback). */
-			[Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
-			output?: PromiseLike<unknown>;
-		}>;
-	};
-};
-
-/** An empty async iterable, used for the toolCalls projection on fakes that
- *  do not exercise tool emission. */
-function emptyAsync<T>(): AsyncIterable<T> {
-	return (async function* () {})();
-}
 
 function noopBridge(): OperationBridge {
 	return new OperationBridge();
 }
-
-async function collect(
-	iter: AsyncIterable<ContentBlock>,
-): Promise<ContentBlock[]> {
-	const blocks: ContentBlock[] = [];
-	for await (const block of iter) {
-		blocks.push(block);
-	}
-	return blocks;
-}
-
-function fakeTextModel(text: string, turns = 1) {
-	// fakeModel().respond() queues one response consumed per model invocation;
-	// a multi-turn test must queue one response per turn or FakeModel throws
-	// "no response queued for invocation N".
-	let model = fakeModel();
-	for (let i = 0; i < turns; i++) {
-		model = model.respond(
-			new AIMessage({
-				content: [{ type: "text", text }],
-			}),
-		);
-	}
-	return model;
-}
-
-function fakeThinkingModel(reasoning: string, text: string, turns = 1) {
-	let model = fakeModel();
-	for (let i = 0; i < turns; i++) {
-		model = model.respond(
-			new AIMessage({
-				content: [
-					{ type: "reasoning", reasoning },
-					{ type: "text", text },
-				],
-			}),
-		);
-	}
-	return model;
-}
-
-beforeEach(() => {
-	vi.clearAllMocks();
-});
 
 // ===========================================================================
 // buildTools — toolNames → StructuredToolInterface[] mapping
@@ -140,1330 +61,130 @@ describe("buildTools", () => {
 });
 
 // ===========================================================================
-// AgentAdapterImpl constructor
+// toParts — TurnContent normalization (spec 030 D3)
 // ===========================================================================
 
-describe("AgentAdapterImpl constructor", () => {
-	it("implements the AgentAdapter interface", () => {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("hi"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		expect(typeof adapter.generateTurn).toBe("function");
+describe("toParts", () => {
+	it("passes through a non-empty parts array", () => {
+		const parts = [{ text: "a" }, { text: "b" }];
+		expect(toParts({ parts })).toBe(parts);
 	});
 
-	it("generateTurn accepts 3 parameters (threadId, content, signal)", () => {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("hi"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		expect(adapter.generateTurn.length).toBe(3);
+	it("builds a single text part from the flat shape", () => {
+		expect(toParts({ text: "hi" })).toEqual([{ text: "hi" }]);
 	});
 
-	it("constructs without error when toolNames includes the mouse tools", () => {
+	it("builds a single image part with size annotations from the flat shape", () => {
 		expect(
-			() =>
-				new AgentAdapterImpl(
-					fakeTextModel("hi"),
-					"prompt",
-					["mouse_move", "mouse_click"],
-					noopBridge(),
-					new MemorySaver(),
-				),
-		).not.toThrow();
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.generateTurn — ContentBlock streaming
-// ===========================================================================
-
-describe("AgentAdapterImpl.generateTurn ContentBlock streaming", () => {
-	it("yields text ContentBlock for text-only response", async () => {
-		const model = fakeTextModel("The answer is 42.");
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const blocks = await collect(
-			adapter.generateTurn("t-text", { text: "Hi" }),
-		);
-
-		expect(blocks.length).toBeGreaterThan(0);
-		const textBlocks = blocks.filter((b) => b.type === "text");
-		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
-		expect(textBlocks[0].text).toBe("The answer is 42.");
-	});
-
-	it("yields reasoning ContentBlock before text ContentBlock", async () => {
-		const model = fakeThinkingModel("Let me think...", "Done.");
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const blocks = await collect(
-			adapter.generateTurn("t-think", { text: "Why?" }),
-		);
-
-		const reasoningBlocks = blocks.filter((b) => b.type === "reasoning");
-		const textBlocks = blocks.filter((b) => b.type === "text");
-
-		expect(reasoningBlocks.length).toBeGreaterThanOrEqual(1);
-		expect(textBlocks.length).toBeGreaterThanOrEqual(1);
-
-		let lastReasoningIdx = -1;
-		let firstTextIdx = -1;
-		for (let i = 0; i < blocks.length; i++) {
-			if (blocks[i].type === "reasoning") lastReasoningIdx = i;
-			if (blocks[i].type === "text" && firstTextIdx === -1) firstTextIdx = i;
-		}
-		if (lastReasoningIdx >= 0 && firstTextIdx >= 0) {
-			expect(lastReasoningIdx).toBeLessThan(firstTextIdx);
-		}
-	});
-
-	it("all yielded blocks have type 'reasoning' or 'text'", async () => {
-		const model = fakeThinkingModel("Thinking", "Text");
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const blocks = await collect(
-			adapter.generateTurn("t-types", { text: "go" }),
-		);
-
-		for (const block of blocks) {
-			expect(["reasoning", "text"]).toContain(block.type);
-		}
-	});
-
-	it("yields reasoning from additional_kwargs before text blocks", async () => {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async () => ({
-				messages: (async function* () {
-					yield {
-						reasoning: (async function* () {
-							yield "I should greet the user";
-						})(),
-						text: (async function* () {
-							yield "Hello";
-						})(),
-					};
-				})(),
+			toParts({
+				imageData: "AAAA",
+				imageMimeType: "image/png",
+				imageWidthPx: 100,
+				imageHeightPx: 200,
 			}),
-		};
-
-		const blocks = await collect(
-			adapter.generateTurn("t-additional-kwargs", { text: "Hi" }),
-		);
-
-		expect(blocks).toHaveLength(2);
-		expect(blocks[0]).toEqual({
-			type: "reasoning",
-			reasoning: "I should greet the user",
-		});
-		expect(blocks[1]).toEqual({ type: "text", text: "Hello" });
-	});
-
-	it("yields text blocks when additional_kwargs is absent", async () => {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async () => ({
-				messages: (async function* () {
-					yield {
-						reasoning: (async function* () {})(),
-						text: (async function* () {
-							yield "Just text";
-						})(),
-					};
-				})(),
-			}),
-		};
-
-		const blocks = await collect(
-			adapter.generateTurn("t-no-additional-kwargs", { text: "Hi" }),
-		);
-
-		expect(blocks).toHaveLength(1);
-		expect(blocks[0]).toEqual({ type: "text", text: "Just text" });
-	});
-
-	it("generateTurn respects AbortSignal — stream stops on abort", async () => {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		let capturedSignal: AbortSignal | undefined;
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async (
-				_input?: { messages: BaseMessage[] },
-				config?: { signal?: AbortSignal; [k: string]: unknown },
-			) => {
-				const signal = config?.signal;
-				capturedSignal = signal;
-				return {
-					messages: (async function* () {
-						yield {
-							reasoning: (async function* () {})(),
-							text: (async function* () {
-								yield "first";
-								await new Promise<void>((resolve) => {
-									if (signal) {
-										if (signal.aborted) resolve();
-										else
-											signal.addEventListener(
-												"abort",
-												() => resolve(),
-												{ once: true },
-											);
-									} else {
-										resolve();
-									}
-								});
-							})(),
-						};
-					})(),
-				};
-			},
-		};
-
-		const controller = new AbortController();
-		const blocks: ContentBlock[] = [];
-		for await (const block of adapter.generateTurn(
-			"t-abort",
-			{ text: "hi" },
-			controller.signal,
-		)) {
-			blocks.push(block);
-			if (blocks.length === 1) {
-				controller.abort();
-			}
-		}
-
- 		expect(blocks).toHaveLength(1);
- 		expect(blocks[0]).toEqual({ type: "text", text: "first" });
- 		expect(capturedSignal).toBeTruthy();
- 		expect(capturedSignal?.aborted).toBe(true);
- 	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.generateTurn — tool_call / tool_result emission (T006;
-// contracts/tool-dispatch-contract.md §7; research.md D5; quickstart §4)
-// ===========================================================================
-
-describe("AgentAdapterImpl.generateTurn tool_call/tool_result streaming", () => {
-	it("yields a tool_call block then a tool_result block carrying the real status (quickstart Scenario 4)", async () => {
-		// US2 / quickstart.md Scenario 4: the live tool_result MUST carry the
-		// real status. The fake injects the REAL production event shape — a
-		// LangGraph ProtocolEvent `{method:"tools",
-		// params:{data:{event:"tool-finished", output:<ToolMessage>}}}` (this
-		// is the empirically-verified shape the v3 GraphRunStream emits; see
-		// extractToolOutput doc). Iterating generateTurn MUST yield a tool_call
-		// block followed by a tool_result block whose status equals the carried
-		// real value (FR-009: live≡history).
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-
-		// The completed tool's ToolMessage — content (message + screenshot) +
-		// additional_kwargs (real status) — exactly what buildToolResultMessage
-		// (US2) writes and what the live path must read (contract §7 fallback).
-		const toolMessage = {
-			tool_call_id: "call_1",
-			name: "saolei_click",
-			additional_kwargs: {
-				toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED",
-			},
-			content: [
-				{ type: "text", text: "ok" },
-				{
-					type: "image_url",
-					image_url: { url: "data:image/png;base64,AAAA" },
-				},
-				{
-					type: "text",
-					text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-				},
-			],
-		};
-		// Raw stream events: the ProtocolEvent shape production emits (verified
-		// pinned @langchain/langgraph ^1.4.8). Non-tool events (lifecycle/
-		// messages/etc.) are omitted — consumeToolResults ignores them.
-		async function* rawEvents() {
-			yield {
-				method: "tools",
-				params: { data: { event: "tool-finished", output: toolMessage } },
-			};
-		}
-
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async () => ({
-				messages: (async function* () {
-					yield {
-						reasoning: (async function* () {})(),
-						text: (async function* () {
-							yield "calling tool";
-						})(),
-					};
-				})(),
-				toolCalls: (async function* () {
-					yield {
-						name: "saolei_click",
-						callId: "call_1",
-						input: { x: 3, y: 4 },
-					};
-				})(),
-				[Symbol.asyncIterator]: () => rawEvents()[Symbol.asyncIterator](),
-				output: Promise.resolve(),
-			}),
-		};
-
-		const collected = await collect(
-			adapter.generateTurn("t-tool", { text: "go" }),
-		);
-
-		// tool_call precedes tool_result and carries the model's invocation.
-		const callIdx = collected.findIndex((b) => b.type === "tool_call");
-		expect(callIdx).toBeGreaterThanOrEqual(0);
-		expect(collected[callIdx]).toEqual({
-			type: "tool_call",
-			name: "saolei_click",
-			args: { x: 3, y: 4 },
-			toolCallId: "call_1",
-		});
-
-		const resultBlock = collected.find(
-			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
-				b.type === "tool_result",
-		);
-		expect(resultBlock).toBeDefined();
-		expect(resultBlock!.toolCallId).toBe("call_1");
-		// US2: the live tool_result carries the REAL status read from the
-		// ToolMessage.additional_kwargs.toolResultStatus (FR-009).
-		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
-		expect(resultBlock!.message).toBe("ok");
-		expect(resultBlock!.screenshot).toBeDefined();
-		expect(resultBlock!.screenshot!.data).toBe("AAAA");
-		expect(resultBlock!.screenshot!.widthPx).toBe(10);
-		expect(resultBlock!.screenshot!.heightPx).toBe(20);
-
-		// tool_call precedes its tool_result.
-		const resultIdx = collected.findIndex((b) => b.type === "tool_result");
-		expect(callIdx).toBeLessThan(resultIdx);
-	});
-
-	it("live tool_result defaults to UNSPECIFIED (not FAILED) when the ToolMessage carries no status (FR-014/FR-015)", async () => {
-		// spec US2 acceptance 3 / FR-014: a result whose real status is
-		// unavailable shows neutral, NEVER FAILED.
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const toolMessage = {
-			tool_call_id: "call_x",
-			name: "mouse_move",
-			content: [{ type: "text", text: "done" }],
-			// NOTE: no additional_kwargs.toolResultStatus.
-		};
-		async function* rawEvents() {
-			yield {
-				method: "tools",
-				params: { data: { event: "tool-finished", output: toolMessage } },
-			};
-		}
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async () => ({
-				messages: (async function* () {
-					yield {
-						reasoning: (async function* () {})(),
-						text: (async function* () {})(),
-					};
-				})(),
-				toolCalls: (async function* () {
-					yield {
-						name: "mouse_move",
-						callId: "call_x",
-						input: { x_px: 1, y_px: 2 },
-					};
-				})(),
-				[Symbol.asyncIterator]: () => rawEvents()[Symbol.asyncIterator](),
-				output: Promise.resolve(),
-			}),
-		};
-
-		const collected = await collect(
-			adapter.generateTurn("t-nostatus", { text: "go" }),
-		);
-		const resultBlock = collected.find(
-			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
-				b.type === "tool_result",
-		);
-		expect(resultBlock).toBeDefined();
-		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
-	});
-
-	it("real createAgent stream: live tool_result carries the real status end-to-end (empirical, pinned langchain)", async () => {
-		// The strongest fidelity test for quickstart Scenario 4: a REAL
-		// createAgent (via AgentAdapterImpl, no fake stream) + a tool that
-		// returns a ToolMessage carrying additional_kwargs.toolResultStatus.
-		// Drives a real turn through generateTurn — the internal
-		// streamEvents(v3) GraphRunStream is the actual production stream, so
-		// this validates the ProtocolEvent → extractToolOutput path against the
-		// real LangChain runtime (not a fake). Guards against the live
-		// tool_result silently going missing if a future LangChain version
-		// changes the internal event shape.
-		const probe = tool(
-			async (_args, config): Promise<ToolMessage> => {
-				const tcId =
-					(config as { toolCall?: { id?: string } } | undefined)?.toolCall
-						?.id ?? "real-fallback";
-				return new ToolMessage({
-					content: [
-						{ type: "text", text: "ok" },
-						{
-							type: "image_url",
-							image_url: { url: "data:image/png;base64,AAAA" },
-						},
-						{
-							type: "text",
-							text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-						},
-					],
-					tool_call_id: tcId,
-					name: "probe",
-					additional_kwargs: { toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED" },
-				});
-			},
-			{ name: "probe", description: "test probe", schema: z.object({}) },
-		);
-		const model = fakeModel()
-			.respondWithTools([{ name: "probe", args: {} }])
-			.respond(new AIMessage("done"));
-		// Real createAgent (createAgentFn undefined → default) with the probe
-		// tool injected via the `tools` param.
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-			undefined,
-			[probe],
-		);
-
-		const collected = await collect(
-			adapter.generateTurn("real-stream", { text: "call probe" }),
-		);
-
-		// The model's tool_call surfaced as a live tool_call block.
-		expect(collected.some((b) => b.type === "tool_call")).toBe(true);
-		// The real production stream surfaced the tool's ToolMessage, and the
-		// live tool_result carries the REAL status from additional_kwargs.
-		const resultBlock = collected.find(
-			(b): b is Extract<ContentBlock, { type: "tool_result" }> =>
-				b.type === "tool_result",
-		);
-		expect(resultBlock).toBeDefined();
-		expect(resultBlock!.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
-		expect(resultBlock!.message).toBe("ok");
-		expect(resultBlock!.screenshot).toBeDefined();
-		expect(resultBlock!.screenshot!.data).toBe("AAAA");
-	});
-
-	it("emits no tool blocks when stream.toolCalls is absent", async () => {
-		// Defensive: a stream without the toolCalls projection (none of the
-		// existing fakes provide it) yields only text/reasoning — consumeToolCalls
-		// is a no-op.
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("plain"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const blocks = await collect(
-			adapter.generateTurn("t-no-tools", { text: "hi" }),
-		);
-		expect(blocks.some((b) => b.type.startsWith("tool"))).toBe(false);
-	});
-});
-
-// ===========================================================================
-// mergeIterables — error propagation (a sub-stream rejection MUST surface to
-// the generateTurn caller, not become an unhandled process-killing rejection)
-// ===========================================================================
-
-describe("AgentAdapterImpl.generateTurn error propagation through merged streams", () => {
-	it("propagates a sub-stream rejection to the generateTurn caller", async () => {
-		// One sub-stream rejects mid-flight: the underlying LangGraph stream
-		// broke. Without the mergeIterables catch the IIFE rejection would be
-		// dropped (unhandled rejection); with it, the error propagates so the
-		// caller (handler) perceives the stream failure.
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const streamErr = new Error("STREAM BROKE");
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async () => ({
-				// messages sub-stream yields one text delta, then the raw-event
-				// sub-stream rejects — simulating the underlying stream dying.
-				messages: (async function* () {
-					yield {
-						reasoning: (async function* () {})(),
-						text: (async function* () {
-							yield "partial";
-						})(),
-					};
-				})(),
-				toolCalls: emptyAsync(),
-				[Symbol.asyncIterator]: (): AsyncIterator<unknown> => ({
-					// Rejects on first .next() — models a sub-stream that dies
-					// mid-flight (the underlying LangGraph stream broke).
-					next: () => Promise.reject(streamErr),
-				}),
-				output: Promise.resolve(),
-			}),
-		};
-
-		await expect(
-			collect(adapter.generateTurn("t-merge-err", { text: "go" })),
-		).rejects.toBe(streamErr);
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.generateTurn — multimodal HumanMessage construction
-// ===========================================================================
-
-describe("AgentAdapterImpl.generateTurn multimodal HumanMessage", () => {
-	function captureAgent(): {
-		adapter: AgentAdapterImpl;
-		capturedMessages: BaseMessage[];
-	} {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const capturedMessages: BaseMessage[] = [];
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async (input?: { messages: BaseMessage[] }) => {
-				if (input) capturedMessages.push(...input.messages);
-				return {
-					messages: (async function* () {
-						yield {
-							reasoning: (async function* () {})(),
-							text: (async function* () {
-								yield "ok";
-							})(),
-						};
-					})(),
-				};
-			},
-		};
-		return { adapter, capturedMessages };
-	}
-
-	it("builds both text and image blocks when text + image provided", async () => {
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "click here",
-			imageData: "base64data",
-			imageMimeType: "image/png",
-		};
-
-		await collect(adapter.generateTurn("t-multi", content));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & {
-			_getType?: () => string;
-			content: unknown;
-		};
-		expect(msg._getType?.()).toBe("human");
-		expect(Array.isArray(msg.content)).toBe(true);
-		expect(msg.content).toEqual([
-			{ type: "text", text: "click here" },
-			{
-				type: "image_url",
-				image_url: { url: "data:image/png;base64,base64data" },
-			},
-		]);
-	});
-
-	it("builds a single text block when only text is provided", async () => {
-		const { adapter, capturedMessages } = captureAgent();
-
-		await collect(adapter.generateTurn("t-text-only", { text: "hello" }));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
-	});
-
-	it("does not inject default text when image is present without text", async () => {
-		// Regression guard: the old code injected "如图所示" when text was
-		// empty and an image was present. That default is removed — the
-		// desktop SendUserTurn now requires non-empty text, and the adapter
-		// no longer fabricates placeholder instructions.
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			imageData: "imgdata",
-			imageMimeType: "image/jpeg",
-		};
-
-		await collect(adapter.generateTurn("t-img-only", content));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([
-			{
-				type: "image_url",
-				image_url: { url: "data:image/jpeg;base64,imgdata" },
-			},
-		]);
-	});
-
-	it("appends a size-annotation text block after image when dimensions are provided", async () => {
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "click the centre",
-			imageData: "pngdata",
-			imageMimeType: "image/png",
-			imageWidthPx: 332,
-			imageHeightPx: 508,
-		};
-
-		await collect(adapter.generateTurn("t-size", content));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		const blocks = msg.content as Array<{ type: string; text?: string }>;
-		expect(blocks).toHaveLength(3);
-		expect(blocks[0]).toEqual({ type: "text", text: "click the centre" });
-		expect(blocks[1].type).toBe("image_url");
-		expect(blocks[2]).toEqual({
-			type: "text",
-			text: "[图片像素尺寸：332×508（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-		});
-	});
-
-	it("does not append size annotation when image dimensions are missing", async () => {
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "hello",
-			imageData: "imgdata",
-			imageMimeType: "image/png",
-		};
-
-		await collect(adapter.generateTurn("t-no-dims", content));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		const blocks = msg.content as Array<{ type: string }>;
-		expect(blocks).toHaveLength(2);
-		expect(blocks[0].type).toBe("text");
-		expect(blocks[1].type).toBe("image_url");
-	});
-
-	it("does not append size annotation when image dimensions are zero or negative", async () => {
-		// Regression guard for the `w > 0 && h > 0` precondition at
-		// llm.ts:223. FR-014's annotation must only appear when both
-		// dimensions are strictly positive; zero/negative — which would
-		// produce a meaningless "0×0" annotation — must skip it. This
-		// complements the absent-dims test above by covering the boundary.
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "hello",
-			imageData: "imgdata",
-			imageMimeType: "image/png",
-			imageWidthPx: 0,
-			imageHeightPx: -1,
-		};
-
-		await collect(adapter.generateTurn("t-zero-dims", content));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		const blocks = msg.content as Array<{ type: string }>;
-		expect(blocks).toHaveLength(2);
-		expect(blocks[0].type).toBe("text");
-		expect(blocks[1].type).toBe("image_url");
-	});
-
-	it("does not add default text when neither text nor image is provided", async () => {
-		const { adapter, capturedMessages } = captureAgent();
-
-		await collect(adapter.generateTurn("t-empty", {}));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([]);
-	});
-
-	it("passes session_id metadata to streamEvents so LLM observability sees the session", async () => {
-		// The threadId IS the sessionId. LangChain invocation metadata flows
-		// through the callback/tracing pipeline so LLM-side consoles can
-		// correlate model calls back to the originating session.
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		let capturedConfig: Record<string, unknown> | undefined;
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async (
-				_input?: { messages: BaseMessage[] },
-				config?: Record<string, unknown>,
-			) => {
-				if (config) capturedConfig = config;
-				return {
-					messages: (async function* () {
-						yield {
-							reasoning: (async function* () {})(),
-							text: (async function* () {
-								yield "ok";
-							})(),
-						};
-					})(),
-				};
-			},
-		};
-
-		await collect(adapter.generateTurn("sess-metadata", { text: "hi" }));
-
-		expect(capturedConfig).toBeDefined();
-		expect(capturedConfig!.metadata).toMatchObject({
-			session_id: "sess-metadata",
-		});
-		expect(capturedConfig!.configurable).toMatchObject({
-			thread_id: "sess-metadata",
-		});
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.generateTurn — multi-part aggregated input
-// (US3 / specs/030-queued-chat-input/research.md D3; quickstart.md Scenario 3)
-// ===========================================================================
-//
-// When ≥2 messages are queued during a run they are combined into ONE
-// aggregated HumanMessage carrying multiple content blocks (N text + M image),
-// FIFO. `TurnContent.parts` is that aggregated shape; the flat single-message
-// fields are the N=1/M∈{0,1} backward-compatible case. These tests assert the
-// content-block ordering the model receives.
-
-describe("AgentAdapterImpl.generateTurn multi-part aggregated input (US3)", () => {
-	function captureAgent(): {
-		adapter: AgentAdapterImpl;
-		capturedMessages: BaseMessage[];
-	} {
-		const adapter = new AgentAdapterImpl(
-			fakeTextModel("unused"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-		const capturedMessages: BaseMessage[] = [];
-		(adapter as unknown as FakeStreamAgent).agent = {
-			streamEvents: async (input?: { messages: BaseMessage[] }) => {
-				if (input) capturedMessages.push(...input.messages);
-				return {
-					messages: (async function* () {
-						yield {
-							reasoning: (async function* () {})(),
-							text: (async function* () {
-								yield "ok";
-							})(),
-						};
-					})(),
-				};
-			},
-		};
-		return { adapter, capturedMessages };
-	}
-
-	it("builds content blocks from N text parts + M image parts in FIFO order", async () => {
-		// Aggregated turn: text A, text B, image (with dims), text C — in that
-		// submission order (research.md D3). The model receives exactly one
-		// HumanMessage whose content blocks preserve the order, with each image
-		// followed by its size-annotation block.
-		const { adapter, capturedMessages } = captureAgent();
-		const parts: TurnContentPart[] = [
-			{ text: "A" },
-			{ text: "B" },
+		).toEqual([
 			{
 				image: {
-					data: "img1",
+					data: "AAAA",
 					mimeType: "image/png",
 					widthPx: 100,
 					heightPx: 200,
 				},
 			},
-			{ text: "C" },
-		];
-
-		await collect(adapter.generateTurn("t-multipart", { parts }));
-
-		expect(capturedMessages).toHaveLength(1);
-		const msg = capturedMessages[0] as BaseMessage & {
-			_getType?: () => string;
-			content: unknown;
-		};
-		// Exactly one aggregated HumanMessage (research.md D3 / FR-005).
-		expect(msg._getType?.()).toBe("human");
-		expect(msg.content).toEqual([
-			{ type: "text", text: "A" },
-			{ type: "text", text: "B" },
-			{ type: "image_url", image_url: { url: "data:image/png;base64,img1" } },
-			{
-				type: "text",
-				text: "[图片像素尺寸：100×200（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-			},
-			{ type: "text", text: "C" },
 		]);
 	});
 
-	it("builds blocks for multiple images, each followed by its own size annotation", async () => {
-		// Two screenshots with distinct dimensions: each image_url block MUST be
-		// immediately followed by its OWN annotation (the existing per-image
-		// convention, preserved per part — research.md D3).
-		const { adapter, capturedMessages } = captureAgent();
-		const parts: TurnContentPart[] = [
-			{
-				image: {
-					data: "img-a",
-					mimeType: "image/png",
-					widthPx: 10,
-					heightPx: 20,
-				},
-			},
-			{
-				image: {
-					data: "img-b",
-					mimeType: "image/jpeg",
-					widthPx: 30,
-					heightPx: 40,
-				},
-			},
-		];
+	it("returns [] when the content is empty", () => {
+		expect(toParts({})).toEqual([]);
+	});
+});
 
-		await collect(adapter.generateTurn("t-multi-img", { parts }));
+// ===========================================================================
+// buildContentBlocks — TurnContent → model content blocks
+// ===========================================================================
 
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		const blocks = msg.content as Array<{
-			type: string;
-			text?: string;
-			image_url?: { url: string };
-		}>;
-		expect(blocks).toEqual([
-			{ type: "image_url", image_url: { url: "data:image/png;base64,img-a" } },
-			{
-				type: "text",
-				text: "[图片像素尺寸：10×20（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-			},
-			{
-				type: "image_url",
-				image_url: { url: "data:image/jpeg;base64,img-b" },
-			},
-			{
-				type: "text",
-				text: "[图片像素尺寸：30×40（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-			},
+describe("buildContentBlocks", () => {
+	it("maps text parts to text blocks", () => {
+		expect(buildContentBlocks({ text: "go" })).toEqual([
+			{ type: "text", text: "go" },
 		]);
 	});
 
-	it("does not append size annotation for an image part missing dimensions", async () => {
-		// An image part without widthPx/heightPx emits only the image_url block
-		// (mirrors the flat-path behaviour — no meaningless annotation).
-		const { adapter, capturedMessages } = captureAgent();
-		const parts: TurnContentPart[] = [
-			{ text: "look" },
-			{ image: { data: "nodim", mimeType: "image/png" } },
-		];
-
-		await collect(adapter.generateTurn("t-multipart-nodim", { parts }));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([
-			{ type: "text", text: "look" },
-			{ type: "image_url", image_url: { url: "data:image/png;base64,nodim" } },
-		]);
-	});
-
-	it("backward compat: flat text-only is the N=1/M=0 case", async () => {
-		// The legacy flat shape {text} MUST produce the same single text block
-		// as before the generalization (handler.ts still builds this shape).
-		const { adapter, capturedMessages } = captureAgent();
-
-		await collect(adapter.generateTurn("t-flat-text", { text: "hello" }));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([{ type: "text", text: "hello" }]);
-	});
-
-	it("backward compat: flat text+image+dims is the N=1/M=1 case", async () => {
-		// The legacy flat shape {text, imageData, ..., widthPx, heightPx} MUST
-		// produce text → image_url → annotation, identical to pre-US3 behaviour.
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			text: "click",
-			imageData: "pngdata",
+	it("maps an image part to an image_url block plus a pixel-size annotation", () => {
+		const blocks = buildContentBlocks({
+			imageData: "AAAA",
 			imageMimeType: "image/png",
-			imageWidthPx: 332,
-			imageHeightPx: 508,
-		};
-
-		await collect(adapter.generateTurn("t-flat-multi", content));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([
-			{ type: "text", text: "click" },
-			{ type: "image_url", image_url: { url: "data:image/png;base64,pngdata" } },
-			{
-				type: "text",
-				text: "[图片像素尺寸：332×508（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-			},
-		]);
-	});
-
-	it("parts takes precedence over the flat fields when both are present", async () => {
-		// When `parts` is non-empty it is the source of truth; the flat fields
-		// are ignored (avoids ambiguity for aggregated turns).
-		const { adapter, capturedMessages } = captureAgent();
-		const content: TurnContent = {
-			parts: [{ text: "from-parts" }],
-			text: "from-flat",
-		};
-
-		await collect(adapter.generateTurn("t-precedence", content));
-
-		const msg = capturedMessages[0] as BaseMessage & { content: unknown };
-		expect(msg.content).toEqual([{ type: "text", text: "from-parts" }]);
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl — Checkpoint persistence
-// ===========================================================================
-
-describe("AgentAdapterImpl checkpoint persistence", () => {
-	it("getState returns both HumanMessage and AIMessage after generateTurn", async () => {
-		const model = fakeThinkingModel("Let me think...", "Done.");
-		const cp = new MemorySaver();
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			cp,
-		);
-
-		await collect(adapter.generateTurn("ckpt-1", { text: "Hello" }));
-
-		const state = await adapter.getState("ckpt-1");
-		expect(state).not.toBeNull();
-		const messages = state!.values.messages ?? [];
-		expect(messages.length).toBeGreaterThanOrEqual(2);
-
-		const hasHuman = messages.some(
-			(m: BaseMessage) => (m as any)._getType?.() === "human",
-		);
-		const hasAI = messages.some(
-			(m: BaseMessage) => (m as any)._getType?.() === "ai",
-		);
-		expect(hasHuman).toBe(true);
-		expect(hasAI).toBe(true);
-	});
-
-	it("getState returns accumulated messages after multiple turns", async () => {
-		const model = fakeTextModel("response", 2);
-		const cp = new MemorySaver();
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			cp,
-		);
-
-		await collect(adapter.generateTurn("ckpt-2", { text: "first" }));
-		await collect(adapter.generateTurn("ckpt-2", { text: "second" }));
-
-		const state = await adapter.getState("ckpt-2");
-		expect(state).not.toBeNull();
-		const messages = state!.values.messages ?? [];
-		expect(messages.length).toBeGreaterThanOrEqual(4);
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl — WrapModelCall middleware (SystemMessage stripping)
-// ===========================================================================
-
-describe("AgentAdapterImpl WrapModelCall middleware", () => {
-	it("strips SystemMessages from state before model invocation", async () => {
-		const model = fakeModel()
-			.respond(
-				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
-			)
-			.respond(
-				new AIMessage({ content: [{ type: "text", text: "OK" }] }),
-			);
-		const cp = new MemorySaver();
-
-		const adapter = new AgentAdapterImpl(
-			model,
-			"system-prompt-1",
-			[],
-			noopBridge(),
-			cp,
-		);
-
-		await collect(adapter.generateTurn("t-mw", { text: "msg1" }));
-		await collect(adapter.generateTurn("t-mw", { text: "msg2" }));
-
-		for (const call of model.calls) {
-			const systemMsgs = call.messages.filter(
-				(m: any) => m._getType?.() === "system",
-			);
-			// Per 011 (research.md L117-126) createAgent injects the current
-			// profile's systemPrompt as a SystemMessage each turn; the middleware
-			// strips only STALE cross-profile SystemMessages (plan.md L255), so
-			// the current systemPrompt remains. Same profile ("system-prompt-1")
-			// both turns ⇒ exactly one SystemMessage carrying the current prompt,
-			// with no stale/duplicate contamination.
-			expect(systemMsgs).toHaveLength(1);
-			// createAgent injects the systemPrompt as a SystemMessage whose
-			// content is a text content-block array.
-			expect(systemMsgs[0].content).toEqual([
-				{ type: "text", text: "system-prompt-1" },
-			]);
-		}
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.generateTurn — error propagation
-// ===========================================================================
-
-describe("AgentAdapterImpl.generateTurn error propagation", () => {
-	it("propagates error when the model responds with an error", async () => {
-		const model = fakeModel().respond(new Error("SIMULATED MODEL ERROR"));
-		const adapter = new AgentAdapterImpl(
-			model,
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-		);
-
-		await expect(
-			collect(adapter.generateTurn("t-err2", { text: "hi" })),
-		).rejects.toThrow();
-	});
-});
-
-// ===========================================================================
-// AgentAdapterImpl.create — saolei MCP integration (spec 018-saolei-mcp T011)
-// ===========================================================================
-//
-// The async factory merges MCP-client tools (FR-002b) with mouse-filtered
-// native tools (FR-012). Tests inject a fake `mcpClientFactory` so no real
-// HTTP loopback is required (style/javascript.md §测试 — DI seam).
-
-import type { StructuredToolInterface } from "@langchain/core/tools";
-import type { McpClientFactory } from "./llm";
-
-function fakeTool(name: string): StructuredToolInterface {
-	// Minimal StructuredToolInterface stub; only `name` is observed by the
-	// tests in this block.
-	return { name } as unknown as StructuredToolInterface;
-}
-
-describe("AgentAdapterImpl.create saolei integration", () => {
-	it("non-saolei profile: skips MCP client, keeps mouse tools (backward-compat)", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>();
-
-		const adapter = await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"prompt",
-			["mouse_move", "mouse_click"],
-			noopBridge(),
-			new MemorySaver(),
-			[], // mcpNames — no saolei
-			"sess-no-mcp",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		expect(adapter).toBeInstanceOf(AgentAdapterImpl);
-		// No MCP client is built for non-saolei profiles.
-		expect(mcpClientFactory).not.toHaveBeenCalled();
-		// Mouse tools are kept verbatim (no FR-012 filtering).
-		const config = createAgentFn.mock.calls[0][0];
-		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
-		expect(toolNames).toEqual(["mouse_move", "mouse_click"]);
-	});
-
-	it("saolei profile: excludes mouse tools (FR-012)", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>(async (_config) => ({
-			getTools: async () => [],
-		}));
-
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"prompt",
-			["mouse_move", "mouse_click"],
-			noopBridge(),
-			new MemorySaver(),
-			["saolei"], // mcpNames — saolei
-			"sess-saolei",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		const config = createAgentFn.mock.calls[0][0];
-		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
-		// FR-012: mouse tools MUST NOT be exposed for saolei profiles.
-		expect(toolNames).not.toContain("mouse_move");
-		expect(toolNames).not.toContain("mouse_click");
-	});
-
-	it("saolei profile: builds MCP client at the per-session URL (FR-002b)", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>(async (config) => {
-			// Assert the URL passed to MultiServerMCPClient matches the
-			// per-session endpoint form (FR-001 / FR-002b).
-			const entry = (config as { saolei?: { url?: string } }).saolei;
-			expect(entry?.url).toBe(
-				"http://localhost:9999/internal/mcp/sess-url-test",
-			);
-		return {
-			getTools: async () => [
-				fakeTool("saolei_init"),
-				fakeTool("saolei_click"),
-				fakeTool("saolei_flag"),
-				fakeTool("saolei_chord_click"),
-			],
-		};
+			imageWidthPx: 640,
+			imageHeightPx: 480,
 		});
-
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-			["saolei"],
-			"sess-url-test",
-			{ createAgentFn, mcpClientFactory, mcpPort: 9999 },
-		);
-
-		// The MCP client was constructed exactly once with the per-session URL.
-		expect(mcpClientFactory).toHaveBeenCalledTimes(1);
+		expect(blocks[0]).toEqual({
+			type: "image_url",
+			image_url: { url: "data:image/png;base64,AAAA" },
+		});
+		expect(blocks[1]).toEqual({
+			type: "text",
+			text: "[图片像素尺寸：640×480（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
+		});
 	});
 
-	it("saolei profile: getTools() output is fed to createAgent", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const saoleiTools = [
-			fakeTool("saolei_init"),
-			fakeTool("saolei_click"),
-			fakeTool("saolei_flag"),
-			fakeTool("saolei_chord_click"),
-		];
-		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
-			getTools: async () => saoleiTools,
-		}));
+	it("skips the size annotation when dimensions are absent", () => {
+		const blocks = buildContentBlocks({
+			imageData: "AAAA",
+			imageMimeType: "image/png",
+		});
+		expect(blocks).toHaveLength(1);
+	});
 
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"prompt",
-			["mouse_move"], // present in toolNames but must be filtered out
-			noopBridge(),
-			new MemorySaver(),
-			["saolei"],
-			"sess-tools",
-			{ createAgentFn, mcpClientFactory, mcpPort: 12345 },
-		);
-
-		const config = createAgentFn.mock.calls[0][0];
-		const toolNames = config.tools.map((t: StructuredToolInterface) => t.name);
-		// The four stateless saolei tools are present; mouse_move is absent;
-		// saolei_update is absent (removed — spec 023 FR-016).
-		expect(toolNames).toEqual([
-			"saolei_init",
-			"saolei_click",
-			"saolei_flag",
-			"saolei_chord_click",
+	it("maps aggregated multi-part input FIFO", () => {
+		const blocks = buildContentBlocks({
+			parts: [
+				{ text: "first" },
+				{ text: "second" },
+				{ image: { data: "BB", mimeType: "image/png" } },
+			],
+		});
+		expect(blocks.map((b) => b.type)).toEqual([
+			"text",
+			"text",
+			"image_url",
 		]);
 	});
 });
 
 // ===========================================================================
-// AgentAdapterImpl.create — built-in skill injection (spec 018-saolei-mcp T018)
+// extractToolCalls / readToolResultStatus — history helpers
 // ===========================================================================
-//
-// FR-023/024/025 + research.md D9: when mcpNames includes "saolei", the
-// built-in saolei skill body is appended to the systemPrompt before the
-// adapter is constructed. Non-saolei profiles MUST NOT receive the body.
-// quickstart.md Scenario 5 is the independent validation.
 
-import { SKILL_PROMPT_SEPARATOR, loadSkillBody } from "./skill-loader";
-
-describe("AgentAdapterImpl.create skill injection (FR-023/024/025)", () => {
-	it("saolei profile: appends the skill body to the systemPrompt", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
-			getTools: async () => [],
-		}));
-
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"base-system-prompt",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-			["saolei"],
-			"sess-skill-on",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		const config = createAgentFn.mock.calls[0][0];
-		const prompt: string = config.systemPrompt;
-		// The original prompt is preserved as the prefix.
-		expect(prompt.startsWith("base-system-prompt")).toBe(true);
-		// The skill body is appended after the separator (research.md D9).
-		expect(prompt).toContain(
-			"base-system-prompt" + SKILL_PROMPT_SEPARATOR + "# saolei",
-		);
-		// Stable content markers from the saolei skill body (spec 025 FR-021:
-		// text-board return + strict validation; the "Stateless design" /
-		// read-screenshot guidance from spec 023 is removed).
-		expect(prompt).toContain("saolei_init");
-		expect(prompt).toContain("saolei_click");
-		expect(prompt).toContain("Recognized text board");
-		expect(prompt).toContain("Move validation");
-		// The old read-screenshot guidance is gone (FR-021).
-		expect(prompt).not.toContain("Stateless design");
-		// The saolei_update tool is NOT documented as a callable tool (no
-		// section header); the skill only mentions it in "When NOT to use"
-		// to tell the model it does not exist.
-		expect(prompt).not.toContain("### saolei_update");
-		expect(prompt).not.toContain("Cell status enum");
+describe("extractToolCalls", () => {
+	it("extracts tool_calls from an AIMessage", () => {
+		const msg = new AIMessage({
+			content: "calling",
+			tool_calls: [
+				{ name: "saolei_click", args: { x: 1 }, id: "tc-1" },
+			],
+		});
+		expect(extractToolCalls(msg)).toEqual([
+			{ name: "saolei_click", args: { x: 1 }, id: "tc-1" },
+		]);
 	});
 
-	it("saolei profile: appended body equals loadSkillBody('saolei') verbatim", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>(async () => ({
-			getTools: async () => [],
-		}));
+	it("returns [] for messages without tool_calls", () => {
+		expect(extractToolCalls(new HumanMessage("hi"))).toEqual([]);
+	});
+});
 
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"p",
-			[],
-			noopBridge(),
-			new MemorySaver(),
-			["saolei"],
-			"sess-skill-body",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
-		const expected = "p" + SKILL_PROMPT_SEPARATOR + loadSkillBody("saolei");
-		expect(prompt).toBe(expected);
+describe("readToolResultStatus", () => {
+	it("reads the real status from additional_kwargs", () => {
+		const msg = new ToolMessage({
+			content: "ok",
+			tool_call_id: "tc-1",
+			additional_kwargs: { toolResultStatus: "TOOL_RESULT_STATUS_SUCCEEDED" },
+		});
+		expect(readToolResultStatus(msg)).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
 	});
 
-	it("non-saolei profile: does NOT inject the skill body (FR-024 negative)", async () => {
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>();
-
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"base-system-prompt",
-			["mouse_move"],
-			noopBridge(),
-			new MemorySaver(),
-			[], // mcpNames — no saolei
-			"sess-skill-off",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
-		// The prompt is returned unchanged — no separator, no skill markers.
-		expect(prompt).toBe("base-system-prompt");
-		expect(prompt).not.toContain("# saolei");
-		expect(prompt).not.toContain(SKILL_PROMPT_SEPARATOR);
-		expect(prompt).not.toContain("saolei_init");
-	});
-
-	it("profile with an unknown mcp_name: does NOT inject any skill body", async () => {
-		// FR-025 scope guard + FR-024: only registered built-in skills are
-		// injected; an unknown mcp_name triggers no injection.
-		const createAgentFn = vi.fn((config: any) => ({ config }));
-		const mcpClientFactory = vi.fn<McpClientFactory>();
-
-		await AgentAdapterImpl.create(
-			fakeTextModel("hi"),
-			"base",
-			["mouse_move"],
-			noopBridge(),
-			new MemorySaver(),
-			["some-other-mcp"],
-			"sess-unknown-mcp",
-			{ createAgentFn, mcpClientFactory },
-		);
-
-		const prompt: string = createAgentFn.mock.calls[0][0].systemPrompt;
-		expect(prompt).toBe("base");
-		expect(prompt).not.toContain(SKILL_PROMPT_SEPARATOR);
+	it("defaults to UNSPECIFIED (never FAILED) when absent", () => {
+		const msg = new ToolMessage({ content: "ok", tool_call_id: "tc-1" });
+		expect(readToolResultStatus(msg)).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
 	});
 });

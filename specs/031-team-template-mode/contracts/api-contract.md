@@ -33,14 +33,17 @@
 
 ### 2.2 TeamService（取代 ProxyService；`templates/{template}/sessions/{session}/...`）
 
-> 原 `ProxyService`/`AgentService`（重复）合并为 TeamService。Team 不可独立创建，随 Connect 存在。
+> 原 `ProxyService`/`AgentService`（重复）合并为 TeamService。**Team 由 `CreateTeam` 显式创建（设计决策：新增 CreateTeam RPC，Agent 移除懒加载模式）**——不再随 Connect 隐式存在。`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` 均要求 Team 已创建（未创建 → NOT_FOUND）；profile 由 CreateTeamRequest 显式传入，不再使用固定默认 profile。
 
 | RPC | 方法/路径 | 说明 |
 |---|---|---|
-| `GetTeam` | GET `/api/v1/{name=templates/*/sessions/*/team}` | 返回 Team（含 `agents` 描述，D3） |
-| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame` |
-| `ListMessages` | GET `/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages` | 按 agent 分区（FR-005） |
-| `RefreshTeam` | POST `/api/v1/{name=templates/*/sessions/*/team}:refresh` | 取代 RefreshAgent（FR-008）；清空短期记忆（FR-018） |
+| `CreateTeam` | POST `/api/v1/{parent=templates/*/sessions/*}/team`（body `"*"`） | **AIP-133 显式创建（唯一创建点）**：请求携带 parent Session + profile（TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，AIP-122——template 段 MUST 与 parent 一致，handler 校验，禁潜规则）；响应为 Team 资源。代理侧为唯一 owner 分配点；重复 create：**profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）**（per-session 单例，desktop create-if-missing 流程可安全重试；仅 profile 相同时才不返回 AIP-133 严格 ALREADY_EXISTS，理由：单例资源 + 桌面竞态场景，见下注） |
+| `GetTeam` | GET `/api/v1/{name=templates/*/sessions/*/team}` | 返回 Team（含 `agents` 描述，D3）；未创建 → NOT_FOUND |
+| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame`。**不分配 owner/不创建 Team**——未创建 → NOT_FOUND（agent 端经 stream error 通道下发该状态） |
+| `ListMessages` | GET `/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages` | 按 agent 分区（FR-005）；未创建 → NOT_FOUND |
+| `RefreshTeam` | POST `/api/v1/{name=templates/*/sessions/*/team}:refresh` | 取代 RefreshAgent（FR-008）；清空短期记忆（FR-018）；未创建 → NOT_FOUND |
+
+> **幂等 create 注（相对 AIP-133 的偏离，用户细化决策）**：AIP-133（https://google.aip.dev/133）要求重复创建返回 `ALREADY_EXISTS`。本契约将 Team 视为 per-session 单例（资源 id 为字面量 `team`），且 desktop 的"发送消息时 NotFound 则 CreateTeam"流程天然存在并发重试（多标签页竞态）——**重复 create 且 profile 相同**时返回既有 Team（幂等）而非 ALREADY_EXISTS，避免竞态下桌面收到伪错误；**重复 create 且 profile 不同**时返回 ALREADY_EXISTS（details 携带既有 profile），因该重入并非幂等重试而是配置不一致。profile 比较在 agent 层（`SessionTeamStore.create`，map 记录每 session 创建时所用 profile）；proxy 层 owner 分配独立幂等（`assignOwner` 在 `ErrOwnerAlreadyExists` 并发竞态下重读既有 owner 而非报错）。该偏离在实现与测试中显式记录。
 
 `Connect` 用户输入帧路由给"接受用户输入"的 agent（FR-032；saolei 中 player）。frame `AgentFrame.agent` 标识来源 agent。
 
