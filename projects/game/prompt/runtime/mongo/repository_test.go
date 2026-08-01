@@ -25,77 +25,80 @@ func (r *fakeSingleResult) Decode(v interface{}) error {
 	if r.err != nil {
 		return r.err
 	}
-	switch target := v.(type) {
-	case *agentProfileDocument:
-		src, ok := r.doc.(*agentProfileDocument)
-		if !ok {
-			return errors.New("invalid decode target type")
-		}
-		*target = *src
-	case *skillDocument:
-		src, ok := r.doc.(*skillDocument)
-		if !ok {
-			return errors.New("invalid decode target type")
-		}
-		*target = *src
-	default:
+	target, ok := v.(*teamProfileDocument)
+	if !ok {
 		return errors.New("invalid decode target type")
 	}
+	src, ok := r.doc.(*teamProfileDocument)
+	if !ok {
+		return errors.New("invalid decode target type")
+	}
+	*target = *src
 	return nil
 }
 
-// profileFakeCollection implements collectionOps with in-memory storage for agent profiles.
-type profileFakeCollection struct {
-	docs      map[string]*agentProfileDocument
+// teamProfileFakeCollection implements collectionOps with in-memory storage
+// for team profiles.
+type teamProfileFakeCollection struct {
+	docs      map[string]*teamProfileDocument
 	docsOrder []string
 }
 
-func newProfileFakeCollection() *profileFakeCollection {
-	return &profileFakeCollection{
-		docs: map[string]*agentProfileDocument{},
+func newTeamProfileFakeCollection() *teamProfileFakeCollection {
+	return &teamProfileFakeCollection{
+		docs: map[string]*teamProfileDocument{},
 	}
 }
 
-func (c *profileFakeCollection) InsertOne(_ context.Context, document interface{}, _ ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
-	doc, ok := document.(*agentProfileDocument)
+func (c *teamProfileFakeCollection) InsertOne(_ context.Context, document interface{}, _ ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
+	doc, ok := document.(*teamProfileDocument)
 	if !ok {
 		return nil, errors.New("invalid document type")
 	}
-	if _, exists := c.docs[doc.AgentProfileName]; exists {
+	if _, exists := c.docs[doc.TeamProfileName]; exists {
 		return nil, mongodriver.WriteException{
 			WriteErrors: []mongodriver.WriteError{
 				{Code: 11000, Message: "duplicate key error"},
 			},
 		}
 	}
-	c.docs[doc.AgentProfileName] = doc
-	c.docsOrder = append(c.docsOrder, doc.AgentProfileName)
+	c.docs[doc.TeamProfileName] = doc
+	c.docsOrder = append(c.docsOrder, doc.TeamProfileName)
 	return &mongodriver.InsertOneResult{}, nil
 }
 
-func (c *profileFakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*options.FindOneOptions) singleResult {
-	f, ok := filter.(agentProfileFilter)
-	if !ok {
+func (c *teamProfileFakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*options.FindOneOptions) singleResult {
+	// The update path filters by bson.M{team_profile_name}; the get/delete
+	// paths use the typed teamProfileFilter.
+	var name, template string
+	switch f := filter.(type) {
+	case teamProfileFilter:
+		name, template = f.TeamProfileName, f.Template
+	case bson.M:
+		name, _ = f[fieldTeamProfileName].(string)
+		template, _ = f[fieldTemplate].(string)
+	default:
 		return &fakeSingleResult{err: errors.New("invalid filter type")}
 	}
-	doc, exists := c.docs[f.AgentProfileName]
-	if !exists {
+	doc, exists := c.docs[name]
+	if !exists || (template != "" && doc.Template != template) {
 		return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
 	}
 	return &fakeSingleResult{doc: doc}
 }
 
-func (c *profileFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
-	f, ok := filter.(agentProfileFilter)
+func (c *teamProfileFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
+	f, ok := filter.(teamProfileFilter)
 	if !ok {
 		return nil, errors.New("invalid filter type")
 	}
-	if _, exists := c.docs[f.AgentProfileName]; !exists {
+	doc, exists := c.docs[f.TeamProfileName]
+	if !exists || doc.Template != f.Template {
 		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
 	}
-	delete(c.docs, f.AgentProfileName)
+	delete(c.docs, f.TeamProfileName)
 	for i, id := range c.docsOrder {
-		if id == f.AgentProfileName {
+		if id == f.TeamProfileName {
 			c.docsOrder = append(c.docsOrder[:i], c.docsOrder[i+1:]...)
 			break
 		}
@@ -103,44 +106,37 @@ func (c *profileFakeCollection) DeleteOne(_ context.Context, filter interface{},
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
-func (c *profileFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
-	f, ok := filter.(agentProfileFilter)
+func (c *teamProfileFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
+	f, ok := filter.(bson.M)
 	if !ok {
 		return nil, errors.New("invalid filter type")
 	}
-	doc, ok := replacement.(*agentProfileDocument)
+	doc, ok := replacement.(*teamProfileDocument)
 	if !ok {
 		return nil, errors.New("invalid replacement type")
 	}
-	existing, exists := c.docs[f.AgentProfileName]
+	name, ok := f[fieldTeamProfileName].(string)
+	if !ok {
+		return nil, errors.New("invalid filter: missing team_profile_name")
+	}
+	existing, exists := c.docs[name]
 	if !exists {
 		return &mongodriver.UpdateResult{MatchedCount: 0, ModifiedCount: 0}, nil
 	}
 	doc.ID = existing.ID
-	c.docs[f.AgentProfileName] = doc
+	c.docs[name] = doc
 	return &mongodriver.UpdateResult{MatchedCount: 1, ModifiedCount: 1}, nil
 }
 
-func (c *profileFakeCollection) Indexes() mongodriver.IndexView {
+func (c *teamProfileFakeCollection) Indexes() mongodriver.IndexView {
 	return mongodriver.IndexView{}
 }
 
-func (c *profileFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
+func (c *teamProfileFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
 	findOpts := options.Find()
 	for _, o := range opts {
 		if o != nil {
 			findOpts = o
-		}
-	}
-
-	var sortKeys []string
-	var sortDirs []int
-	if findOpts.Sort != nil {
-		if s, ok := findOpts.Sort.(bson.D); ok {
-			for _, e := range s {
-				sortKeys = append(sortKeys, e.Key)
-				sortDirs = append(sortDirs, e.Value.(int))
-			}
 		}
 	}
 
@@ -149,17 +145,22 @@ func (c *profileFakeCollection) Find(_ context.Context, filter interface{}, opts
 		limit = *findOpts.Limit
 	}
 
-	var filtered []*agentProfileDocument
+	var filtered []*teamProfileDocument
 	filterMap, isMap := filter.(bson.M)
 
 	for _, name := range c.docsOrder {
 		doc := c.docs[name]
 
 		if isMap {
-			if gtVal, hasGT := filterMap[fieldAgentProfileName]; hasGT {
+			if tmpl, hasTmpl := filterMap[fieldTemplate]; hasTmpl {
+				if doc.Template != tmpl {
+					continue
+				}
+			}
+			if gtVal, hasGT := filterMap[fieldTeamProfileName]; hasGT {
 				if gtMap, ok := gtVal.(bson.M); ok {
 					if gt, ok2 := gtMap["$gt"]; ok2 {
-						if doc.AgentProfileName <= gt.(string) {
+						if doc.TeamProfileName <= gt.(string) {
 							continue
 						}
 					}
@@ -170,29 +171,9 @@ func (c *profileFakeCollection) Find(_ context.Context, filter interface{}, opts
 		filtered = append(filtered, doc)
 	}
 
-	if len(sortKeys) > 0 {
+	if len(filtered) > 1 {
 		sort.Slice(filtered, func(i, j int) bool {
-			for k := 0; k < len(sortKeys); k++ {
-				var cmp int
-				switch sortKeys[k] {
-				case fieldAgentProfileName:
-					si, sj := filtered[i].AgentProfileName, filtered[j].AgentProfileName
-					if si < sj {
-						cmp = -1
-					} else if si > sj {
-						cmp = 1
-					}
-				default:
-					continue
-				}
-				if sortDirs[k] == -1 {
-					cmp = -cmp
-				}
-				if cmp != 0 {
-					return cmp < 0
-				}
-			}
-			return false
+			return filtered[i].TeamProfileName < filtered[j].TeamProfileName
 		})
 	}
 
@@ -200,16 +181,16 @@ func (c *profileFakeCollection) Find(_ context.Context, filter interface{}, opts
 		filtered = filtered[:limit]
 	}
 
-	return &profileFakeCursor{docs: filtered}, nil
+	return &teamProfileFakeCursor{docs: filtered}, nil
 }
 
-// profileFakeCursor implements cursorOps with in-memory results.
-type profileFakeCursor struct {
-	docs []*agentProfileDocument
+// teamProfileFakeCursor implements cursorOps with in-memory results.
+type teamProfileFakeCursor struct {
+	docs []*teamProfileDocument
 }
 
-func (c *profileFakeCursor) All(_ context.Context, results interface{}) error {
-	ptr, ok := results.(*[]*agentProfileDocument)
+func (c *teamProfileFakeCursor) All(_ context.Context, results interface{}) error {
+	ptr, ok := results.(*[]*teamProfileDocument)
 	if !ok {
 		return errors.New("invalid results target type")
 	}
@@ -217,445 +198,300 @@ func (c *profileFakeCursor) All(_ context.Context, results interface{}) error {
 	return nil
 }
 
-func (c *profileFakeCursor) Close(_ context.Context) error {
+func (c *teamProfileFakeCursor) Close(_ context.Context) error {
 	return nil
 }
 
-// skillFakeCollection implements collectionOps with in-memory storage for skills.
-type skillFakeCollection struct {
-	docs      map[string]*skillDocument
-	docsOrder []string
-}
-
-func newSkillFakeCollection() *skillFakeCollection {
-	return &skillFakeCollection{
-		docs: map[string]*skillDocument{},
-	}
-}
-
-func (c *skillFakeCollection) InsertOne(_ context.Context, document interface{}, _ ...*options.InsertOneOptions) (*mongodriver.InsertOneResult, error) {
-	doc, ok := document.(*skillDocument)
-	if !ok {
-		return nil, errors.New("invalid document type")
-	}
-	if _, exists := c.docs[doc.SkillName]; exists {
-		return nil, mongodriver.WriteException{
-			WriteErrors: []mongodriver.WriteError{
-				{Code: 11000, Message: "duplicate key error"},
-			},
-		}
-	}
-	c.docs[doc.SkillName] = doc
-	c.docsOrder = append(c.docsOrder, doc.SkillName)
-	return &mongodriver.InsertOneResult{}, nil
-}
-
-func (c *skillFakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*options.FindOneOptions) singleResult {
-	f, ok := filter.(skillFilter)
-	if !ok {
-		return &fakeSingleResult{err: errors.New("invalid filter type")}
-	}
-	doc, exists := c.docs[f.SkillName]
-	if !exists {
-		return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
-	}
-	return &fakeSingleResult{doc: doc}
-}
-
-func (c *skillFakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*options.DeleteOptions) (*mongodriver.DeleteResult, error) {
-	f, ok := filter.(skillFilter)
-	if !ok {
-		return nil, errors.New("invalid filter type")
-	}
-	if _, exists := c.docs[f.SkillName]; !exists {
-		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
-	}
-	delete(c.docs, f.SkillName)
-	for i, id := range c.docsOrder {
-		if id == f.SkillName {
-			c.docsOrder = append(c.docsOrder[:i], c.docsOrder[i+1:]...)
-			break
-		}
-	}
-	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
-}
-
-func (c *skillFakeCollection) ReplaceOne(_ context.Context, filter interface{}, replacement interface{}, _ ...*options.ReplaceOptions) (*mongodriver.UpdateResult, error) {
-	return nil, errors.New("ReplaceOne not supported on skill collection in tests")
-}
-
-func (c *skillFakeCollection) Indexes() mongodriver.IndexView {
-	return mongodriver.IndexView{}
-}
-
-func (c *skillFakeCollection) Find(_ context.Context, filter interface{}, opts ...*options.FindOptions) (cursorOps, error) {
-	findOpts := options.Find()
-	for _, o := range opts {
-		if o != nil {
-			findOpts = o
-		}
-	}
-
-	var limit int64
-	if findOpts.Limit != nil {
-		limit = *findOpts.Limit
-	}
-
-	var filtered []*skillDocument
-	filterMap, isMap := filter.(bson.M)
-
-	for _, name := range c.docsOrder {
-		doc := c.docs[name]
-
-		if isMap {
-			if gtVal, hasGT := filterMap[fieldSkillName]; hasGT {
-				if gtMap, ok := gtVal.(bson.M); ok {
-					if gt, ok2 := gtMap["$gt"]; ok2 {
-						if doc.SkillName <= gt.(string) {
-							continue
-						}
-					}
-				}
-			}
-		}
-
-		filtered = append(filtered, doc)
-	}
-
-	if limit > 0 && int64(len(filtered)) > limit {
-		filtered = filtered[:limit]
-	}
-
-	return &skillFakeCursor{docs: filtered}, nil
-}
-
-// skillFakeCursor implements cursorOps with in-memory results.
-type skillFakeCursor struct {
-	docs []*skillDocument
-}
-
-func (c *skillFakeCursor) All(_ context.Context, results interface{}) error {
-	ptr, ok := results.(*[]*skillDocument)
-	if !ok {
-		return errors.New("invalid results target type")
-	}
-	*ptr = c.docs
-	return nil
-}
-
-func (c *skillFakeCursor) Close(_ context.Context) error {
-	return nil
-}
-
-// newTestRepo creates a Repository backed by fake collections.
-func newTestRepo() *Repository {
-	return &Repository{
-		profiles: newProfileFakeCollection(),
-		skills:   newSkillFakeCollection(),
+// newTestRepo creates a teamProfileRepository backed by a fake collection.
+func newTestRepo() *teamProfileRepository {
+	return &teamProfileRepository{
+		collection: newTeamProfileFakeCollection(),
 	}
 }
 
 // --- Tests ---
 
-func TestAgentProfileCreateGet(t *testing.T) {
+func TestTeamProfileCreateGet(t *testing.T) {
 	ctx := context.Background()
 
 	// given
 	repo := newTestRepo()
-	profile := &domain.AgentProfile{
-		AgentProfileName: "test-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "You are a helpful assistant.",
-		SkillNames:       []string{"skill-a"},
-		MCPNames:         []string{"mcp-b"},
-		Enabled:          true,
+	profile := &domain.TeamProfile{
+		TeamProfileName:    "default",
+		Template:           "saolei",
+		SaoleiPlayerModel:  "opencode-go/deepseek-v4-pro",
+		SaoleiPlannerModel: "opencode-go/deepseek-v4-pro",
 	}
 
 	// when - create
-	err := repo.CreateAgentProfile(ctx, profile)
+	err := repo.CreateTeamProfile(ctx, profile)
 
 	// then
 	if err != nil {
-		t.Fatalf("CreateAgentProfile() unexpected error: %v", err)
+		t.Fatalf("CreateTeamProfile() unexpected error: %v", err)
 	}
 
 	// when - get
-	got, err := repo.GetAgentProfile(ctx, "test-profile")
+	got, err := repo.GetTeamProfile(ctx, "saolei", "default")
 
 	// then
 	if err != nil {
-		t.Fatalf("GetAgentProfile() unexpected error: %v", err)
+		t.Fatalf("GetTeamProfile() unexpected error: %v", err)
 	}
-	if got.AgentProfileName != "test-profile" {
-		t.Fatalf("GetAgentProfile() name = %q, want %q", got.AgentProfileName, "test-profile")
+	if got.TeamProfileName != "default" {
+		t.Fatalf("GetTeamProfile() name = %q, want %q", got.TeamProfileName, "default")
 	}
-	if got.Model != "opencode-go/deepseek-v4-pro" {
-		t.Fatalf("GetAgentProfile() model = %q, want %q", got.Model, "opencode-go/deepseek-v4-pro")
+	if got.Template != "saolei" {
+		t.Fatalf("GetTeamProfile() template = %q, want %q", got.Template, "saolei")
 	}
-	if got.SystemPrompt != "You are a helpful assistant." {
-		t.Fatalf("GetAgentProfile() system_prompt = %q, want %q", got.SystemPrompt, "You are a helpful assistant.")
+	if got.SaoleiPlayerModel != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("GetTeamProfile() player_model = %q, want %q", got.SaoleiPlayerModel, "opencode-go/deepseek-v4-pro")
+	}
+	if got.SaoleiPlannerModel != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("GetTeamProfile() planner_model = %q, want %q", got.SaoleiPlannerModel, "opencode-go/deepseek-v4-pro")
 	}
 	if got.CreateTime.IsZero() {
-		t.Fatalf("GetAgentProfile() create_time is zero, expected non-zero timestamp")
+		t.Fatalf("GetTeamProfile() create_time is zero, expected non-zero timestamp")
 	}
 	if got.UpdateTime.IsZero() {
-		t.Fatalf("GetAgentProfile() update_time is zero, expected non-zero timestamp")
+		t.Fatalf("GetTeamProfile() update_time is zero, expected non-zero timestamp")
 	}
 }
 
-func TestSkillCreateGet(t *testing.T) {
+func TestTeamProfileCreateDuplicate(t *testing.T) {
 	ctx := context.Background()
 
 	// given
 	repo := newTestRepo()
-	skill := &domain.Skill{
-		SkillName: "test-skill",
-		Content:   "You are an expert coder.",
-		Enabled:   true,
+	profile := &domain.TeamProfile{
+		TeamProfileName: "default",
+		Template:        "saolei",
 	}
-
-	// when - create
-	err := repo.CreateSkill(ctx, skill)
-
-	// then
+	err := repo.CreateTeamProfile(ctx, profile)
 	if err != nil {
-		t.Fatalf("CreateSkill() unexpected error: %v", err)
-	}
-
-	// when - get
-	got, err := repo.GetSkill(ctx, "test-skill")
-
-	// then
-	if err != nil {
-		t.Fatalf("GetSkill() unexpected error: %v", err)
-	}
-	if got.SkillName != "test-skill" {
-		t.Fatalf("GetSkill() name = %q, want %q", got.SkillName, "test-skill")
-	}
-	if got.Content != "You are an expert coder." {
-		t.Fatalf("GetSkill() content = %q, want %q", got.Content, "You are an expert coder.")
-	}
-	if got.CreateTime.IsZero() {
-		t.Fatalf("GetSkill() create_time is zero, expected non-zero timestamp")
-	}
-}
-
-func TestAgentProfileCreateDuplicate(t *testing.T) {
-	ctx := context.Background()
-
-	// given
-	repo := newTestRepo()
-	profile := &domain.AgentProfile{
-		AgentProfileName: "test-profile",
-		Model:            "opencode-go/deepseek-v4-pro",
-	}
-	err := repo.CreateAgentProfile(ctx, profile)
-	if err != nil {
-		t.Fatalf("CreateAgentProfile() first insert unexpected error: %v", err)
+		t.Fatalf("CreateTeamProfile() first insert unexpected error: %v", err)
 	}
 
 	// when - create duplicate
-	err = repo.CreateAgentProfile(ctx, profile)
+	err = repo.CreateTeamProfile(ctx, profile)
 
 	// then
 	if err == nil {
-		t.Fatalf("CreateAgentProfile() duplicate expected error, got nil")
+		t.Fatalf("CreateTeamProfile() duplicate expected error, got nil")
 	}
 	if !errors.Is(err, domain.ErrAlreadyExists) {
-		t.Fatalf("CreateAgentProfile() error = %v, want ErrAlreadyExists", err)
+		t.Fatalf("CreateTeamProfile() error = %v, want ErrAlreadyExists", err)
 	}
 }
 
-func TestAgentProfileGetNotFound(t *testing.T) {
+func TestTeamProfileGetNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// given
 	repo := newTestRepo()
 
-	// when
-	_, err := repo.GetAgentProfile(ctx, "nonexistent")
+	// when - missing profile
+	_, err := repo.GetTeamProfile(ctx, "saolei", "nonexistent")
 
 	// then
 	if err == nil {
-		t.Fatalf("GetAgentProfile() expected error, got nil")
+		t.Fatalf("GetTeamProfile() expected error, got nil")
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("GetAgentProfile() error = %v, want ErrNotFound", err)
+		t.Fatalf("GetTeamProfile() error = %v, want ErrNotFound", err)
+	}
+
+	// given - profile exists under another template
+	profile := &domain.TeamProfile{
+		TeamProfileName: "default",
+		Template:        "saolei",
+	}
+	if err := repo.CreateTeamProfile(ctx, profile); err != nil {
+		t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
+	}
+
+	// when - get with mismatched template
+	_, err = repo.GetTeamProfile(ctx, "other-template", "default")
+
+	// then
+	if err == nil {
+		t.Fatalf("GetTeamProfile() with mismatched template expected error, got nil")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetTeamProfile() with mismatched template error = %v, want ErrNotFound", err)
 	}
 }
 
-func TestAgentProfileList(t *testing.T) {
+func TestTeamProfileList(t *testing.T) {
 	ctx := context.Background()
 
-	// given - seed 3 profiles
+	// given - seed 3 saolei profiles and 1 other-template profile
 	repo := newTestRepo()
-	profiles := []*domain.AgentProfile{
-		{AgentProfileName: "alpha", Model: "opencode-go/deepseek-v4-pro"},
-		{AgentProfileName: "bravo", Model: "opencode-go/deepseek-v4-pro"},
-		{AgentProfileName: "charlie", Model: "opencode-go/deepseek-v4-pro"},
+	profiles := []*domain.TeamProfile{
+		{TeamProfileName: "alpha", Template: "saolei", SaoleiPlayerModel: "m1"},
+		{TeamProfileName: "bravo", Template: "saolei", SaoleiPlayerModel: "m1"},
+		{TeamProfileName: "charlie", Template: "saolei", SaoleiPlayerModel: "m1"},
+		{TeamProfileName: "delta", Template: "other-template", SaoleiPlayerModel: "m1"},
 	}
 	for _, p := range profiles {
-		err := repo.CreateAgentProfile(ctx, p)
+		err := repo.CreateTeamProfile(ctx, p)
 		if err != nil {
-			t.Fatalf("CreateAgentProfile() seed unexpected error: %v", err)
+			t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
 		}
 	}
 
 	// when - first page with pageSize=2
-	result, nextToken, err := repo.ListAgentProfiles(ctx, 2, "")
+	result, nextToken, err := repo.ListTeamProfiles(ctx, "saolei", 2, "")
 
-	// then - first page has 2 profiles (ASC: alpha, bravo) with next token
+	// then - first page has 2 saolei profiles (ASC: alpha, bravo) with next token
 	if err != nil {
-		t.Fatalf("ListAgentProfiles() unexpected error: %v", err)
+		t.Fatalf("ListTeamProfiles() unexpected error: %v", err)
 	}
 	if len(result) != 2 {
-		t.Fatalf("ListAgentProfiles() got %d profiles, want 2", len(result))
+		t.Fatalf("ListTeamProfiles() got %d profiles, want 2", len(result))
 	}
-	if result[0].AgentProfileName != "alpha" {
-		t.Fatalf("ListAgentProfiles() first name = %q, want %q", result[0].AgentProfileName, "alpha")
+	if result[0].TeamProfileName != "alpha" {
+		t.Fatalf("ListTeamProfiles() first name = %q, want %q", result[0].TeamProfileName, "alpha")
 	}
-	if result[1].AgentProfileName != "bravo" {
-		t.Fatalf("ListAgentProfiles() second name = %q, want %q", result[1].AgentProfileName, "bravo")
+	if result[1].TeamProfileName != "bravo" {
+		t.Fatalf("ListTeamProfiles() second name = %q, want %q", result[1].TeamProfileName, "bravo")
 	}
 	if nextToken == "" {
-		t.Fatalf("ListAgentProfiles() next_token is empty, want non-empty")
+		t.Fatalf("ListTeamProfiles() next_token is empty, want non-empty")
 	}
 
 	// when - second page using cursor from first page
-	result2, nextToken2, err := repo.ListAgentProfiles(ctx, 2, nextToken)
+	result2, nextToken2, err := repo.ListTeamProfiles(ctx, "saolei", 2, nextToken)
 
-	// then - second page has 1 profile, no next token
+	// then - second page has 1 profile (charlie), no next token; delta excluded
 	if err != nil {
-		t.Fatalf("ListAgentProfiles() page 2 unexpected error: %v", err)
+		t.Fatalf("ListTeamProfiles() page 2 unexpected error: %v", err)
 	}
 	if len(result2) != 1 {
-		t.Fatalf("ListAgentProfiles() page 2 got %d profiles, want 1", len(result2))
+		t.Fatalf("ListTeamProfiles() page 2 got %d profiles, want 1", len(result2))
 	}
-	if result2[0].AgentProfileName != "charlie" {
-		t.Fatalf("ListAgentProfiles() page 2 name = %q, want %q", result2[0].AgentProfileName, "charlie")
+	if result2[0].TeamProfileName != "charlie" {
+		t.Fatalf("ListTeamProfiles() page 2 name = %q, want %q", result2[0].TeamProfileName, "charlie")
 	}
 	if nextToken2 != "" {
-		t.Fatalf("ListAgentProfiles() page 2 next_token = %q, want empty", nextToken2)
+		t.Fatalf("ListTeamProfiles() page 2 next_token = %q, want empty", nextToken2)
 	}
 }
 
-func TestAgentProfileDelete(t *testing.T) {
+func TestTeamProfileUpdate(t *testing.T) {
 	ctx := context.Background()
 
-	// given
+	// given - seed a profile
 	repo := newTestRepo()
-	profile := &domain.AgentProfile{
-		AgentProfileName: "to-delete",
-		Model:            "opencode-go/deepseek-v4-pro",
+	seed := &domain.TeamProfile{
+		TeamProfileName:    "updatable",
+		Template:           "saolei",
+		SaoleiPlayerModel:  "model-a",
+		SaoleiPlannerModel: "model-b",
 	}
-	err := repo.CreateAgentProfile(ctx, profile)
+	if err := repo.CreateTeamProfile(ctx, seed); err != nil {
+		t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
+	}
+
+	original, err := repo.GetTeamProfile(ctx, "saolei", "updatable")
 	if err != nil {
-		t.Fatalf("CreateAgentProfile() seed unexpected error: %v", err)
+		t.Fatalf("GetTeamProfile() seed unexpected error: %v", err)
 	}
 
-	// when
-	err = repo.DeleteAgentProfile(ctx, "to-delete")
-
-	// then
-	if err != nil {
-		t.Fatalf("DeleteAgentProfile() unexpected error: %v", err)
-	}
-
-	// when - get after delete
-	_, err = repo.GetAgentProfile(ctx, "to-delete")
-
-	// then
-	if err == nil {
-		t.Fatalf("GetAgentProfile() after delete expected error, got nil")
-	}
-	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("GetAgentProfile() after delete error = %v, want ErrNotFound", err)
-	}
-}
-
-func TestAgentProfileUpdate(t *testing.T) {
-	ctx := context.Background()
-
-	// given - seed a profile with tool_names
-	repo := newTestRepo()
-	seed := &domain.AgentProfile{
-		AgentProfileName: "updatable",
-		Model:            "opencode-go/deepseek-v4-pro",
-		SystemPrompt:     "original prompt",
-		SkillNames:       []string{"skill-a"},
-		MCPNames:         []string{"mcp-a"},
-		Enabled:          true,
-		ToolNames:        []string{"mouse"},
-	}
-	if err := repo.CreateAgentProfile(ctx, seed); err != nil {
-		t.Fatalf("CreateAgentProfile() seed unexpected error: %v", err)
-	}
-
-	original, err := repo.GetAgentProfile(ctx, "updatable")
-	if err != nil {
-		t.Fatalf("GetAgentProfile() seed unexpected error: %v", err)
-	}
-
-	// when - replace tool_names with an empty slice
+	// when - update player model
 	updated := *original
-	updated.Model = "opencode-go/deepseek-v4-pro"
-	updated.ToolNames = []string{}
-	updated.SystemPrompt = "edited prompt"
-	persisted, err := repo.UpdateAgentProfile(ctx, &updated)
+	updated.SaoleiPlayerModel = "model-c"
+	persisted, err := repo.UpdateTeamProfile(ctx, &updated)
 
 	// then
 	if err != nil {
-		t.Fatalf("UpdateAgentProfile() unexpected error: %v", err)
+		t.Fatalf("UpdateTeamProfile() unexpected error: %v", err)
 	}
-	if persisted.SystemPrompt != "edited prompt" {
-		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q", persisted.SystemPrompt, "edited prompt")
+	if persisted.SaoleiPlayerModel != "model-c" {
+		t.Fatalf("UpdateTeamProfile() player_model = %q, want %q", persisted.SaoleiPlayerModel, "model-c")
 	}
-	if len(persisted.ToolNames) != 0 {
-		t.Fatalf("UpdateAgentProfile() tool_names = %v, want empty", persisted.ToolNames)
+	if persisted.SaoleiPlannerModel != "model-b" {
+		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q", persisted.SaoleiPlannerModel, "model-b")
 	}
 	if !persisted.CreateTime.Equal(original.CreateTime) {
-		t.Fatalf("UpdateAgentProfile() create_time changed: got %v, want %v", persisted.CreateTime, original.CreateTime)
+		t.Fatalf("UpdateTeamProfile() create_time changed: got %v, want %v", persisted.CreateTime, original.CreateTime)
 	}
 
 	// when - re-read from repository
-	reread, err := repo.GetAgentProfile(ctx, "updatable")
+	reread, err := repo.GetTeamProfile(ctx, "saolei", "updatable")
 
 	// then - persisted value matches
 	if err != nil {
-		t.Fatalf("GetAgentProfile() after update unexpected error: %v", err)
+		t.Fatalf("GetTeamProfile() after update unexpected error: %v", err)
 	}
-	if reread.SystemPrompt != "edited prompt" {
-		t.Fatalf("GetAgentProfile() after update system_prompt = %q, want %q", reread.SystemPrompt, "edited prompt")
-	}
-	if len(reread.ToolNames) != 0 {
-		t.Fatalf("GetAgentProfile() after update tool_names = %v, want empty", reread.ToolNames)
-	}
-	if reread.Model != "opencode-go/deepseek-v4-pro" {
-		t.Fatalf("GetAgentProfile() after update model = %q, want %q", reread.Model, "opencode-go/deepseek-v4-pro")
-	}
-	if len(reread.SkillNames) != 1 || reread.SkillNames[0] != "skill-a" {
-		t.Fatalf("GetAgentProfile() after update skill_names = %v, want [skill-a]", reread.SkillNames)
+	if reread.SaoleiPlayerModel != "model-c" {
+		t.Fatalf("GetTeamProfile() after update player_model = %q, want %q", reread.SaoleiPlayerModel, "model-c")
 	}
 }
 
-func TestAgentProfileUpdateNotFound(t *testing.T) {
+func TestTeamProfileUpdateNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// given
 	repo := newTestRepo()
-	profile := &domain.AgentProfile{
-		AgentProfileName: "ghost",
-		Model:            "opencode-go/deepseek-v4-pro",
+	profile := &domain.TeamProfile{
+		TeamProfileName: "ghost",
+		Template:        "saolei",
 	}
 
 	// when
-	_, err := repo.UpdateAgentProfile(ctx, profile)
+	_, err := repo.UpdateTeamProfile(ctx, profile)
 
 	// then
 	if err == nil {
-		t.Fatalf("UpdateAgentProfile() expected error, got nil")
+		t.Fatalf("UpdateTeamProfile() expected error, got nil")
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("UpdateAgentProfile() error = %v, want ErrNotFound", err)
+		t.Fatalf("UpdateTeamProfile() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestTeamProfileDelete(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newTestRepo()
+	profile := &domain.TeamProfile{
+		TeamProfileName: "to-delete",
+		Template:        "saolei",
+	}
+	err := repo.CreateTeamProfile(ctx, profile)
+	if err != nil {
+		t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
+	}
+
+	// when - delete with mismatched template
+	err = repo.DeleteTeamProfile(ctx, "other-template", "to-delete")
+
+	// then - not found
+	if err == nil {
+		t.Fatalf("DeleteTeamProfile() with mismatched template expected error, got nil")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("DeleteTeamProfile() with mismatched template error = %v, want ErrNotFound", err)
+	}
+
+	// when - delete
+	err = repo.DeleteTeamProfile(ctx, "saolei", "to-delete")
+
+	// then
+	if err != nil {
+		t.Fatalf("DeleteTeamProfile() unexpected error: %v", err)
+	}
+
+	// when - get after delete
+	_, err = repo.GetTeamProfile(ctx, "saolei", "to-delete")
+
+	// then
+	if err == nil {
+		t.Fatalf("GetTeamProfile() after delete expected error, got nil")
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetTeamProfile() after delete error = %v, want ErrNotFound", err)
 	}
 }

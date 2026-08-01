@@ -2,7 +2,7 @@
 
 **Feature**: `031-team-template-mode` | **Spec**: [`spec.md`](../spec.md) | **Research**: D1/D2/D3/D12
 
-> AIP 风格（https://google.aip.dev）gRPC API 契约。clean break：移除 Agent/AgentProfile/Skill/RefreshAgent，新增 Template（路径段枚举）/Team/TeamProfile/RefreshTeam。**通用优先、typed oneof/枚举、禁 blob/禁潜规则**（directive ②）。本契约给出语义与关键字段；字段号由实现时 protoc 流程确定并保留 reserved 卫生。
+> AIP 风格（https://google.aip.dev）gRPC API 契约。clean break：移除 Agent/AgentProfile/Skill/RefreshAgent，新增 Template（资源消息）/Team/TeamProfile/RefreshTeam。**通用优先、typed oneof/枚举、禁 blob/禁潜规则**（directive ②）。本契约给出语义与关键字段；字段号由实现时 protoc 流程确定并保留 reserved 卫生。
 
 ---
 
@@ -14,9 +14,9 @@
 | **Team** | `templates/{template}/sessions/{session}/team` | 取代 Agent（FR-003） |
 | **Message** | `templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}` | 按 team 内 agent 分区（FR-005）；`{agent}`=agent 名称 |
 | **TeamProfile** | `templates/{template}/profiles/{profile}` | 取代 AgentProfile（FR-006）；prompt 服务管理 |
-| Template | （仅路径段 + `Template` 枚举） | 无资源消息、无 CRUD/List RPC（FR-001） |
+| **Template** | `templates/{template}` | 资源消息（`message Template`），无 CRUD/List RPC（FR-001）；具体值由 gameconst 常量表示 |
 
-`{template}` ∈ `Template` 枚举（当前仅 `saolei`）。`{agent}` ∈ 模板 graph schema 已知 agent 名称（saolei: `player`/`planner`）。
+`{template}` ∈ Template 资源名（gameconst 常量，当前仅 `saolei`）。`{agent}` ∈ 模板 graph schema 已知 agent 名称（saolei: `player`/`planner`）。
 
 ---
 
@@ -62,14 +62,21 @@
 
 ## 3. 关键消息（语义）
 
-### 3.1 `Template`（enum）
+### 3.1 `Template`（资源消息，无 RPC）
 
 ```proto
-enum Template {
-  TEMPLATE_UNSPECIFIED = 0;
-  TEMPLATE_SAOLEI = 1;
+message Template {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Template"
+    pattern: "templates/{template}"
+    singular: "template"
+    plural: "templates"
+  };
+  string name = 1 [(Identify)];
 }
 ```
+
+无任何 RPC（FR-001）。存在目的：(1) `Session.template`/`TeamProfile.template` 的 typed 引用目标；(2) 驱动 `protoc-gen-go-aip` codegen 生成 `ParseTemplateName`/`TemplateName`，资源名解析全由 codegen 承担（无手写 parent 解析）。具体模板值（当前仅 `saolei`）以 gameconst 常量表示（`SaoleiTemplate = game.TemplateName{TemplateID: "saolei"}`），非 proto enum、非裸 string。
 
 ### 3.2 `Session`
 
@@ -78,7 +85,8 @@ message Session {
   option (google.api.resource) = { type: "game.liukexin.com/Session"
     pattern: "templates/{template}/sessions/{session}" ... };
   string name = 1 [(Identify)];
-  Template template = 2;          // typed（D2）
+  string template = 2 [OutputOnly, (google.api.resource_reference) = { type: "game.liukexin.com/Template" }];
+      // 值 = 模板资源名（如 "templates/saolei"）；OUTPUT_ONLY，创建时由父路径派生
   string session_id = 3 [OutputOnly];
   google.protobuf.Timestamp create_time = 4 [OutputOnly];
 }
@@ -121,7 +129,8 @@ message Message {
 message TeamProfile {
   option (google.api.resource) = { pattern: "templates/{template}/profiles/{profile}" ... };
   string name = 1;
-  Template template = 2;          // 与 oneof 变体一致（handler 校验，禁潜规则）
+  string template = 2 [Required, (google.api.resource_reference) = { type: "game.liukexin.com/Template" }];
+      // 值 = 模板资源名；客户端提供，handler 校验与 parent 及 oneof 变体一致（禁潜规则）
   google.protobuf.Timestamp create_time = 3;
   google.protobuf.Timestamp update_time = 4;
   oneof spec {
@@ -154,19 +163,18 @@ message AgentFrame {
 - 服务：`ProxyService`、`AgentService`（→ 合并为 `TeamService`）。
 - 资源/RPC：`Agent`、`AgentProfile`（含 Create/Get/List/Update/Delete）、`Skill`（含 Create/Get/List/Delete）、`RefreshAgent`、`ConnectAgent`（→ `Connect`）。
 - 字段：`Agent.agent_profile_name`、`AgentFrame.agent_profile_name`、`prompts/` 单例命名空间（`gameconst.PromptsParent`）。
+- `enum Template`（设计修订移除）：具体模板值改由 gameconst 常量（`game.TemplateName` 资源对象）表示，非 proto enum。
 - 保留：MCP 配套内置 skill（`projects/game/agent/src/skill/`，FR-007）；`MessageParts`/`FlowPart` 等 Part 模型（spec 023/025/030）。
 
-## 5. 资源名解析（`gameconst`，需重写）
+## 5. 资源名解析（codegen 驱动）
 
-- `SessionName(template, id)` / `SessionID(name)` 解析 `templates/{template}/sessions/{session}`（含 template 段）。
-- `TeamName(template, session)` / `TeamSessionID(name)` 解析 `.../team`。
-- `MessageAgentName(...)` 解析 `.../agents/{agent}/messages/{message}`（提取 template/session/agent）。
-- `TeamProfileName(template, id)` 解析 `templates/{template}/profiles/{profile}`。
+- 资源名解析全部由 `protoc-gen-go-aip` codegen 生成（`dominion/projects/game` 包）：`ParseTemplateName`/`ParseSessionName`/`ParseTeamName`/`ParseTeamProfileName`/`ParseMessageName`，及各消息的 `ParseName()`/`ParseTemplate()`/`Parent()`——不再手写 parent 解析。
+- `gameconst` 不再含手写资源名解析器，仅保留：gRPC target 常量（`SessionTarget`/`TeamTarget`/`AgentTarget`/`PromptTarget`）、log field 常量、Template 常量与校验（`SaoleiTemplate`/`ValidateTemplateName`/`IsKnownTemplateID`/`ErrInvalidTemplate`）。
 - 移除 `AgentProfileName`/`SkillName`/`PromptsParent` 相关。
 
 ## 6. 验证要点
 
-- Template 无 CRUD/List RPC；所有模板引用为 typed `Template` 枚举（无裸 string）。
+- Template 无 CRUD/List RPC；模板引用为 Template 资源（`string` + `resource_reference`，codegen 解析）；具体值由 gameconst 常量表示（非裸 string、非 proto enum）。
 - TeamProfile `template` 字段与 oneof 变体一致性由 handler 校验（禁潜规则）。
 - `Team.agents` typed 暴露，desktop 通用渲染（不硬编码 agent 名）。
 - Strategy 由 agent 服务自身持久化（mongo），不经 prompt 服务、无公开 REST（见 `strategy-store-contract.md`）。

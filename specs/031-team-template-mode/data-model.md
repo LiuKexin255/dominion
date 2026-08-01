@@ -8,22 +8,23 @@
 
 ## 1. API 资源实体（proto 层）
 
-### 1.1 Template（路径段，无资源消息）
+### 1.1 Template（资源消息，无 CRUD）
 
 | 属性 | 类型 | 说明 |
 |---|---|---|
-| 枚举值 | `enum Template { TEMPLATE_UNSPECIFIED=0; TEMPLATE_SAOLEI=1; }` | typed 枚举，仅作路径段与字段值（D2）。当前仅 `saolei`。无 CRUD/List RPC。 |
+| 资源消息 | `message Template`（`google.api.resource` 注解，pattern `templates/{template}`） | 无任何 RPC（FR-001）。存在目的：(1) `Session.template`/`TeamProfile.template` 的 typed 引用目标；(2) 驱动 `protoc-gen-go-aip` codegen 生成 `ParseTemplateName`/`TemplateName`（无手写 parent 解析）。 |
+| 具体值 | gameconst 常量：`var SaoleiTemplate = game.TemplateName{TemplateID: "saolei"}` | 具体模板值以 AIP 生成的资源对象常量表示（非 proto enum、非裸 string）。当前仅 `saolei`；`ValidateTemplateName`/`IsKnownTemplateID` 校验。 |
 
-- **身份/唯一性**：枚举常量，非资源 id。
+- **身份/唯一性**：资源名（`templates/{template}`），非枚举常量。
 - **关系**：是 API 资源层级的根；Session、TeamProfile 挂在其下。
-- **生命周期**：无（代码常量，随发布变更）。
+- **生命周期**：无（常量随发布变更）。
 
 ### 1.2 Session
 
 | 属性 | 类型 | 说明 |
 |---|---|---|
 | `name` | string (IDENTIFIER) | `templates/{template}/sessions/{session}` |
-| `template` | `Template` (typed enum) | 该 session 所属模板 |
+| `template` | string (OUTPUT_ONLY, resource_reference) | 模板资源名（`templates/{template}`，如 `templates/saolei`）；创建时由 parent 派生 |
 | `session_id` | string (OUTPUT_ONLY) | 服务端生成 |
 | `create_time` | Timestamp (OUTPUT_ONLY) | |
 
@@ -70,7 +71,7 @@
 | 属性 | 类型 | 说明 |
 |---|---|---|
 | `name` | string (IDENTIFIER) | `templates/{template}/profiles/{profile}` |
-| `template` | `Template` (typed enum) | 与 oneof 变体一致（handler 校验） |
+| `template` | string (REQUIRED, resource_reference) | 模板资源名（`templates/{template}`）；客户端提供，handler 校验与 parent 及 oneof 变体一致（禁潜规则） |
 | `create_time` / `update_time` | Timestamp | |
 | `spec` | `oneof` | typed 模板特化配置（D1） |
 
@@ -181,7 +182,7 @@
 ## 4. 实体关系总览
 
 ```text
-Template (enum, path segment)
+Template (resource message, path segment)
   ├── Session: templates/{template}/sessions/{session}
   │     └── Team: .../team  { agents: [TeamAgent{name, accepts_user_input}] }
   │           ├── player (accepts_user_input=true)  ── 独占 saolei MCP / 桌面控制

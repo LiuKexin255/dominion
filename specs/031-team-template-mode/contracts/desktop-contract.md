@@ -2,14 +2,14 @@
 
 **Feature**: `031-team-template-mode` | **Spec**: [`spec.md`](../spec.md) | **Research**: D3/D12
 
-> desktop（Wails + Svelte）改造：模板作为顶层控制面（枚举常量），session 对话页多标签页（按 team agent），frame 按 agent 归位，profile 页按模板特化（typed oneof）。**通用优先、typed、禁硬编码 agent 名/禁潜规则**（directive ②）。
+> desktop（Wails + Svelte）改造：模板作为顶层控制面（本地常量），session 对话页多标签页（按 team agent），frame 按 agent 归位，profile 页按模板特化（typed oneof）。**通用优先、typed、禁硬编码 agent 名/禁潜规则**（directive ②）。
 
 ---
 
 ## 1. 模板控制面（顶层）
 
-- desktop 持 **Template 枚举常量**（`TEMPLATE_SAOLEI`，与 proto `Template` 一致，FR-024）。
-- 顶层切换模板基于本地枚举常量，**不发起模板列表 API 请求**（FR-024）。
+- desktop 持**本地 Template 常量**（`saolei`，与 proto Template 资源 / gameconst 常量一致，FR-024）。
+- 顶层切换模板基于本地常量，**不发起模板列表 API 请求**（FR-024）。
 - 不同模板：**大部分页面通用**，**少数页面特性化**（FR-026）。
 
 ## 2. 多标签页对话（`ChatView` / `App.svelte`）
@@ -40,7 +40,7 @@
 
 | 旧绑定 | 新绑定 | 说明 |
 |---|---|---|
-| `CreateSession()` | `CreateSession(template)` | 指定模板（typed enum） |
+| `CreateSession()` | `CreateSession(template)` | 指定模板（Template 资源名） |
 | `ConnectAgent(sessionID)` | `Connect(template, sessionID)` | FR-004 端点 |
 | `RefreshAgent(sessionID)` | `RefreshTeam(template, sessionID)` | FR-008 |
 | `SendUserTurn(..., agentProfileName)` | `SendUserTurn(..., agent)` | D12；agent 名称 |
@@ -53,14 +53,14 @@
 
 ## 5. frontend 类型变更（`projects/game/desktop/frontend/src/api.ts`）
 
-- 新增 `Template` 枚举（与 proto 一致）、`Team`/`TeamAgent` 接口。
+- 新增本地 `Template` 常量（与 proto Template 资源一致）、`Team`/`TeamAgent` 接口。
 - `AgentFrame.agentProfileName` → `agent`（D12）。
 - `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（含 oneof `spec`）/`SaoleiProfile`。
 - 绑定 wrapper 随 §4 调整。
 
 ## 6. 验证要点
 
-- 顶层模板切换基于本地枚举、无网络请求（FR-024）。
+- 顶层模板切换基于本地常量、无网络请求（FR-024）。
 - 对话多 tab，agent 列表来自 `Team.agents`（不硬编码）；frame 按 `agent` 归位（FR-025）。
 - planner tab 屏蔽输入（`accepts_user_input=false`，FR-032）。
 - saolei profile 页仅 player/planner 模型选择（FR-029），由 typed oneof 驱动。

@@ -122,7 +122,7 @@ Ephemeral buffer (per session, 进程内)
 - `SessionTeam`（取代 `SessionAgent`）：持有 team graph 实例 + per-session ephemeral buffer + `StrategyStore` 引用 + `OperationBridge`（player 独占）。
 - `TurnLoop`：单飞/队列语义保留复用（一个 user 输入 → 一次 team turn = 一次 graph invoke）；`gameEnded` 在 turn 内由条件边处理，不破坏单飞。
 - `OperationBridge`：保留（player 独占使用，planner 不操作）。
-- 模板选择：路径段 `{template}`（typed enum）→ 路由到 `src/team/` 对应 builder（当前仅 saolei，D11）。
+- 模板选择：路径段 `{template}`（Template 资源，值见 gameconst 常量）→ 路由到 `src/team/` 对应 builder（当前仅 saolei，D11）。
 
 ---
 

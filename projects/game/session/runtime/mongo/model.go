@@ -11,11 +11,13 @@ import (
 const (
 	fieldCreateTime = "create_time"
 	fieldSessionID  = "session_id"
+	fieldTemplate   = "template"
 )
 
 // sessionDocument stores Session documents in MongoDB.
 // Name is not stored in BSON; it is synthesized at the handler boundary.
 type sessionDocument struct {
+	Template   string    `bson:"template"`
 	SessionID  string    `bson:"session_id"`
 	CreateTime time.Time `bson:"create_time"`
 }
@@ -27,6 +29,7 @@ func (d *sessionDocument) toDomain() *domain.Session {
 	}
 
 	return &domain.Session{
+		Template:   d.Template,
 		SessionID:  d.SessionID,
 		CreateTime: d.CreateTime,
 	}
@@ -40,6 +43,7 @@ func sessionDocumentFromDomain(s *domain.Session) *sessionDocument {
 	}
 
 	return &sessionDocument{
+		Template:   s.Template,
 		SessionID:  s.SessionID,
 		CreateTime: s.CreateTime,
 	}

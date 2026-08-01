@@ -12,7 +12,6 @@ import (
 	"dominion/common/gopkg/otel"
 
 	game "dominion/projects/game"
-	"dominion/projects/game/prompt/domain"
 	"dominion/projects/game/prompt/handler"
 	mongort "dominion/projects/game/prompt/runtime/mongo"
 
@@ -21,9 +20,6 @@ import (
 )
 
 var port = flag.String("port", "50051", "Port to listen on")
-
-var _ domain.AgentProfileRepository = (*mongort.Repository)(nil)
-var _ domain.SkillRepository = (*mongort.Repository)(nil)
 
 func main() {
 	flag.Parse()
@@ -40,7 +36,7 @@ func main() {
 
 	repo := mongort.NewRepository(mongoClient, "game_prompt")
 
-	h := handler.NewHandler(repo, repo)
+	h := handler.NewHandler(repo)
 
 	grpcServer := grpcgo.NewServer(pgrpc.ServiceDefault()...)
 	game.RegisterPromptServiceServer(grpcServer, h)

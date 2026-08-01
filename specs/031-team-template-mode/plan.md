@@ -8,7 +8,7 @@
 
 将 game agent 从"单 session 单 agent"架构升级为"模板（Team 模板）+ LangGraph StateGraph 多 agent team"架构（survey: `survey/agent-team-mode.md`）。核心变更：
 
-1. **API 资源层级重构（clean break）**：引入 Template 顶层路径段（固定枚举，仅 `saolei`），Session/Team/Connect/Message/TeamProfile 全部改挂到 `templates/{template}/...` 下；废弃并移除 `Agent`、`AgentProfile`、`Skill` 资源及其 RPC；`RefreshAgent`→`RefreshTeam`。
+1. **API 资源层级重构（clean break）**：引入 Template 顶层路径段（Template 资源消息，codegen 驱动资源名解析；具体值在 gameconst 常量，仅 `saolei`），Session/Team/Connect/Message/TeamProfile 全部改挂到 `templates/{template}/...` 下；废弃并移除 `Agent`、`AgentProfile`、`Skill` 资源及其 RPC；`RefreshAgent`→`RefreshTeam`。
 2. **saolei 模板 team graph**：StateGraph 含 `player`（独占桌面控制 + saolei MCP）与 `planner`（每局结束触发一次复盘，经 `update_strategy` 写策略）。策略为长期记忆（**持久化到 MongoDB，经当前 mongo 服务**），以 session id 为键；其余 message 为短期记忆（内存 checkpointer），仅由 `RefreshTeam` 清空。
 3. **saolei MCP 旁路 sink**：MCP 提供结构化事件 sink 注册接口（不耦合 team mode），模板侧注册 sink 将游戏状态/结束事件写入进程内 state，驱动 planner 触发。
 4. **desktop 多标签页 + 模板控制面**：对话区按 team 内 agent 分 tab；agent 增加"是否接受用户输入"属性（saolei 中 planner 屏蔽输入）；profile 页面按模板特化（typed oneof，非 blob）。
@@ -92,7 +92,7 @@ specs/031-team-template-mode/
 ```text
 projects/game/
 ├── game.proto                         # 【重写】资源层级、服务、消息（见 contracts/api-contract.md）
-├── pkg/gameconst/const.go             # 【重写】资源名解析（templates/{template}/...）
+├── pkg/gameconst/const.go             # 【重写】常量（gRPC target/log field/Template 值）；资源名解析由 protoc-gen-go-aip codegen 生成
 ├── session/                           # 【改】SessionService：session 挂到 templates/{template}/下
 ├── proxy/                             # 【改】ProxyService→Team 视图：GetTeam/Connect/ListMessages/RefreshTeam
 ├── prompt/                            # 【改】PromptService：管理 TeamProfile（oneof）；移除 AgentProfile/Skill（不涉 Strategy）
@@ -113,7 +113,7 @@ projects/game/
 ├── desktop/
 │   ├── app.go                         # 【改】Wails 绑定：CreateSession(template)/Connect/RefreshTeam/SendUserTurn(agent)/ListMessages(agent)/TeamProfile CRUD
 │   └── frontend/src/
-│       ├── api.ts                     # 【改】类型 + 绑定（Template 枚举、Team/TeamAgent、agent 字段）
+│       ├── api.ts                     # 【改】类型 + 绑定（Template 常量、Team/TeamAgent、agent 字段）
 │       ├── App.svelte                 # 【改】模板控制面 + 多 tab 路由
 │       └── components/                # 【改/新增】ChatView 多 tab、ProfileManagement 特化、AgentSidebar→TeamSidebar
 └── testplan/                          # 【新增/改】saolei team 端到端大型测试计划

@@ -7,15 +7,11 @@ import (
 	"testing"
 	"time"
 
+	game "dominion/projects/game"
 	"dominion/projects/game/session/domain"
 
-	game "dominion/projects/game"
-	gameconst "dominion/projects/game/pkg/gameconst"
-
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // mockIDGenerator implements domain.IDGenerator for handler testing.
@@ -51,31 +47,6 @@ func (m *mockSessionRepo) List(ctx context.Context, pageSize int, cursor *domain
 	return m.listFn(ctx, pageSize, cursor)
 }
 
-// mockProxyClient implements game.ProxyServiceClient for handler testing.
-type mockProxyClient struct {
-}
-
-func (m *mockProxyClient) GetAgent(_ context.Context, _ *game.GetAgentRequest, _ ...grpc.CallOption) (*game.Agent, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockProxyClient) ListMessages(_ context.Context, _ *game.ListMessagesRequest, _ ...grpc.CallOption) (*game.ListMessagesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockProxyClient) ConnectAgent(_ context.Context, _ ...grpc.CallOption) (game.ProxyService_ConnectAgentClient, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-func (m *mockProxyClient) RefreshAgent(_ context.Context, _ *game.RefreshAgentRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented")
-}
-
-// noopProxyClient returns a proxy client whose methods always succeed.
-func noopProxyClient() *mockProxyClient {
-	return &mockProxyClient{}
-}
-
 // fixedIDGenerator returns an ID generator that always returns the given id.
 func fixedIDGenerator(id string) *mockIDGenerator {
 	return &mockIDGenerator{
@@ -89,30 +60,39 @@ func TestCreateSession(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name     string
-		idGen    *mockIDGenerator
-		mock     *mockSessionRepo
-		wantName string
-		wantID   string
-		wantCode codes.Code
+		name         string
+		req          *game.CreateSessionRequest
+		idGen        *mockIDGenerator
+		mock         *mockSessionRepo
+		wantName     string
+		wantID       string
+		wantTemplate string
+		wantCode     codes.Code
 	}{
 		{
-			name:  "success - handler generates ID and returns proto with correct name",
+			name:  "success - handler generates ID and returns proto with template-scoped name",
+			req:   &game.CreateSessionRequest{Parent: "templates/saolei"},
 			idGen: fixedIDGenerator("test-id-123"),
 			mock: &mockSessionRepo{
 				createFn: func(_ context.Context, s *domain.Session) (*domain.Session, error) {
+					if s.Template != "saolei" {
+						t.Fatalf("repo.Create() template = %q, want %q", s.Template, "saolei")
+					}
 					return &domain.Session{
+						Template:   s.Template,
 						SessionID:  s.SessionID,
 						CreateTime: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 					}, nil
 				},
 			},
-			wantName: "sessions/test-id-123",
-			wantID:   "test-id-123",
-			wantCode: codes.OK,
+			wantName:     "templates/saolei/sessions/test-id-123",
+			wantID:       "test-id-123",
+			wantTemplate: "templates/saolei",
+			wantCode:     codes.OK,
 		},
 		{
 			name:  "already exists - returns AlreadyExists status",
+			req:   &game.CreateSessionRequest{Parent: "templates/saolei"},
 			idGen: fixedIDGenerator("test-id-123"),
 			mock: &mockSessionRepo{
 				createFn: func(_ context.Context, _ *domain.Session) (*domain.Session, error) {
@@ -123,6 +103,7 @@ func TestCreateSession(t *testing.T) {
 		},
 		{
 			name: "id generation fails - returns Internal status",
+			req:  &game.CreateSessionRequest{Parent: "templates/saolei"},
 			idGen: &mockIDGenerator{
 				newIDFn: func(_ context.Context) (string, error) {
 					return "", errors.New("crypto failure")
@@ -131,15 +112,29 @@ func TestCreateSession(t *testing.T) {
 			mock:     &mockSessionRepo{},
 			wantCode: codes.Internal,
 		},
+		{
+			name:     "invalid parent - no templates prefix returns InvalidArgument",
+			req:      &game.CreateSessionRequest{Parent: "sessions"},
+			idGen:    fixedIDGenerator("test-id-123"),
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid parent - unknown template returns InvalidArgument",
+			req:      &game.CreateSessionRequest{Parent: "templates/unknown-template"},
+			idGen:    fixedIDGenerator("test-id-123"),
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock, tt.idGen, noopProxyClient())
+			handler := NewSessionHandler(tt.mock, tt.idGen)
 
 			// when
-			got, err := handler.CreateSession(ctx, &game.CreateSessionRequest{})
+			got, err := handler.CreateSession(ctx, tt.req)
 
 			// then
 			assertStatusCode(t, err, tt.wantCode)
@@ -152,6 +147,9 @@ func TestCreateSession(t *testing.T) {
 			if got.GetSessionId() != tt.wantID {
 				t.Fatalf("CreateSession() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
 			}
+			if got.GetTemplate() != tt.wantTemplate {
+				t.Fatalf("CreateSession() template = %v, want %v", got.GetTemplate(), tt.wantTemplate)
+			}
 		})
 	}
 }
@@ -162,10 +160,12 @@ func TestListSessions(t *testing.T) {
 	t.Run("success - returns all sessions", func(t *testing.T) {
 		// given
 		sessionA := &domain.Session{
+			Template:   "saolei",
 			SessionID:  "aaa",
 			CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		}
 		sessionB := &domain.Session{
+			Template:   "saolei",
 			SessionID:  "bbb",
 			CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
 		}
@@ -177,10 +177,10 @@ func TestListSessions(t *testing.T) {
 				}, nil
 			},
 		}
-		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 		// when
-		got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+		got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 10})
 
 		// then
 		assertStatusCode(t, err, codes.OK)
@@ -190,12 +190,26 @@ func TestListSessions(t *testing.T) {
 		if got.GetSessions()[0].GetSessionId() != "aaa" {
 			t.Fatalf("ListSessions()[0] session_id = %q, want %q", got.GetSessions()[0].GetSessionId(), "aaa")
 		}
+		if got.GetSessions()[0].GetName() != "templates/saolei/sessions/aaa" {
+			t.Fatalf("ListSessions()[0] name = %q, want %q", got.GetSessions()[0].GetName(), "templates/saolei/sessions/aaa")
+		}
 		if got.GetSessions()[1].GetSessionId() != "bbb" {
 			t.Fatalf("ListSessions()[1] session_id = %q, want %q", got.GetSessions()[1].GetSessionId(), "bbb")
 		}
 		if got.GetNextPageToken() != "" {
 			t.Fatalf("ListSessions() next_page_token = %q, want empty", got.GetNextPageToken())
 		}
+	})
+
+	t.Run("invalid parent returns InvalidArgument", func(t *testing.T) {
+		// given
+		handler := NewSessionHandler(&mockSessionRepo{}, fixedIDGenerator("unused"))
+
+		// when
+		_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "sessions"})
+
+		// then
+		assertStatusCode(t, err, codes.InvalidArgument)
 	})
 }
 
@@ -204,9 +218,9 @@ func TestListSessions_Pagination(t *testing.T) {
 
 	t.Run("success - paginates with page_size and page_token", func(t *testing.T) {
 		// given
-		session1 := &domain.Session{SessionID: "s1", CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
-		session2 := &domain.Session{SessionID: "s2", CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)}
-		session3 := &domain.Session{SessionID: "s3", CreateTime: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)}
+		session1 := &domain.Session{Template: "saolei", SessionID: "s1", CreateTime: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+		session2 := &domain.Session{Template: "saolei", SessionID: "s2", CreateTime: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)}
+		session3 := &domain.Session{Template: "saolei", SessionID: "s3", CreateTime: time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)}
 
 		nextPageCursor := &domain.ListPageCursor{
 			SessionID:  "s2",
@@ -231,10 +245,10 @@ func TestListSessions_Pagination(t *testing.T) {
 				}, nil
 			},
 		}
-		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+		handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 		// when - first page
-		page1, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 2})
+		page1, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 2})
 
 		// then
 		assertStatusCode(t, err, codes.OK)
@@ -247,6 +261,7 @@ func TestListSessions_Pagination(t *testing.T) {
 
 		// when - second page
 		page2, err := handler.ListSessions(ctx, &game.ListSessionsRequest{
+			Parent:    "templates/saolei",
 			PageSize:  2,
 			PageToken: page1.GetNextPageToken(),
 		})
@@ -277,21 +292,22 @@ func TestGetSession(t *testing.T) {
 	}{
 		{
 			name: "success - returns proto session",
-			req:  &game.GetSessionRequest{Name: "sessions/abc123"},
+			req:  &game.GetSessionRequest{Name: "templates/saolei/sessions/abc123"},
 			mock: &mockSessionRepo{
 				getFn: func(_ context.Context, sessionID string) (*domain.Session, error) {
 					return &domain.Session{
+						Template:   "saolei",
 						SessionID:  sessionID,
 						CreateTime: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 					}, nil
 				},
 			},
-			wantName: "sessions/abc123",
+			wantName: "templates/saolei/sessions/abc123",
 			wantCode: codes.OK,
 		},
 		{
 			name: "not found - returns NotFound status",
-			req:  &game.GetSessionRequest{Name: "sessions/missing"},
+			req:  &game.GetSessionRequest{Name: "templates/saolei/sessions/missing"},
 			mock: &mockSessionRepo{
 				getFn: func(_ context.Context, _ string) (*domain.Session, error) {
 					return nil, domain.ErrNotFound
@@ -300,20 +316,26 @@ func TestGetSession(t *testing.T) {
 			wantCode: codes.NotFound,
 		},
 		{
-			name:     "invalid name - no prefix returns InvalidArgument",
-			req:      &game.GetSessionRequest{Name: "invalid"},
+			name:     "invalid name - no templates prefix returns InvalidArgument",
+			req:      &game.GetSessionRequest{Name: "sessions/abc123"},
+			mock:     &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid name - unknown template returns InvalidArgument",
+			req:      &game.GetSessionRequest{Name: "templates/nope/sessions/abc123"},
 			mock:     &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "invalid name - empty ID returns InvalidArgument",
-			req:      &game.GetSessionRequest{Name: "sessions/"},
+			req:      &game.GetSessionRequest{Name: "templates/saolei/sessions/"},
 			mock:     &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "invalid name - extra path separator returns InvalidArgument",
-			req:      &game.GetSessionRequest{Name: "sessions/a/b"},
+			req:      &game.GetSessionRequest{Name: "templates/saolei/sessions/a/b"},
 			mock:     &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
@@ -322,7 +344,7 @@ func TestGetSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mock, fixedIDGenerator("unused"), noopProxyClient())
+			handler := NewSessionHandler(tt.mock, fixedIDGenerator("unused"))
 
 			// when
 			got, err := handler.GetSession(ctx, tt.req)
@@ -330,11 +352,6 @@ func TestGetSession(t *testing.T) {
 			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
-				if tt.wantCode == codes.InvalidArgument {
-					if !errors.Is(err, gameconst.ErrInvalidSessionName) {
-						t.Logf("errors.Is(err, gameconst.ErrInvalidSessionName) = false (expected: gRPC status wrapper does not preserve sentinel errors via %%w)")
-					}
-				}
 				return
 			}
 			if got.GetName() != tt.wantName {
@@ -355,7 +372,7 @@ func TestDeleteSession(t *testing.T) {
 	}{
 		{
 			name: "success - session deleted",
-			req:  &game.DeleteSessionRequest{Name: "sessions/abc123"},
+			req:  &game.DeleteSessionRequest{Name: "templates/saolei/sessions/abc123"},
 			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, sessionID string) error {
 					if sessionID != "abc123" {
@@ -368,7 +385,7 @@ func TestDeleteSession(t *testing.T) {
 		},
 		{
 			name: "repo NotFound - returns NotFound",
-			req:  &game.DeleteSessionRequest{Name: "sessions/missing"},
+			req:  &game.DeleteSessionRequest{Name: "templates/saolei/sessions/missing"},
 			mockRepo: &mockSessionRepo{
 				deleteFn: func(_ context.Context, _ string) error {
 					return domain.ErrNotFound
@@ -377,20 +394,26 @@ func TestDeleteSession(t *testing.T) {
 			wantCode: codes.NotFound,
 		},
 		{
-			name:     "invalid name - no prefix returns InvalidArgument",
-			req:      &game.DeleteSessionRequest{Name: "invalid"},
+			name:     "invalid name - no templates prefix returns InvalidArgument",
+			req:      &game.DeleteSessionRequest{Name: "sessions/abc123"},
+			mockRepo: &mockSessionRepo{},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name:     "invalid name - unknown template returns InvalidArgument",
+			req:      &game.DeleteSessionRequest{Name: "templates/nope/sessions/abc123"},
 			mockRepo: &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "invalid name - empty ID returns InvalidArgument",
-			req:      &game.DeleteSessionRequest{Name: "sessions/"},
+			req:      &game.DeleteSessionRequest{Name: "templates/saolei/sessions/"},
 			mockRepo: &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
 		{
 			name:     "invalid name - extra path separator returns InvalidArgument",
-			req:      &game.DeleteSessionRequest{Name: "sessions/a/b"},
+			req:      &game.DeleteSessionRequest{Name: "templates/saolei/sessions/a/b"},
 			mockRepo: &mockSessionRepo{},
 			wantCode: codes.InvalidArgument,
 		},
@@ -399,7 +422,7 @@ func TestDeleteSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			handler := NewSessionHandler(tt.mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+			handler := NewSessionHandler(tt.mockRepo, fixedIDGenerator("unused"))
 
 			// when
 			got, err := handler.DeleteSession(ctx, tt.req)
@@ -407,11 +430,6 @@ func TestDeleteSession(t *testing.T) {
 			// then
 			assertStatusCode(t, err, tt.wantCode)
 			if tt.wantCode != codes.OK {
-				if tt.wantCode == codes.InvalidArgument {
-					if !errors.Is(err, gameconst.ErrInvalidSessionName) {
-						t.Logf("errors.Is(err, gameconst.ErrInvalidSessionName) = false (expected: gRPC status wrapper does not preserve sentinel errors via %%w)")
-					}
-				}
 				return
 			}
 			if got == nil {
@@ -463,11 +481,12 @@ func Test_toStatusError(t *testing.T) {
 
 func Test_sessionToProto(t *testing.T) {
 	tests := []struct {
-		name     string
-		session  *domain.Session
-		wantNil  bool
-		wantName string
-		wantID   string
+		name         string
+		session      *domain.Session
+		wantNil      bool
+		wantName     string
+		wantID       string
+		wantTemplate string
 	}{
 		{
 			name:    "nil session returns nil",
@@ -477,21 +496,25 @@ func Test_sessionToProto(t *testing.T) {
 		{
 			name: "session with fields",
 			session: &domain.Session{
+				Template:   "saolei",
 				SessionID:  "test",
 				CreateTime: time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
-			wantNil:  false,
-			wantName: "sessions/test",
-			wantID:   "test",
+			wantNil:      false,
+			wantName:     "templates/saolei/sessions/test",
+			wantID:       "test",
+			wantTemplate: "templates/saolei",
 		},
 		{
 			name: "session with zero create time has no create_time",
 			session: &domain.Session{
+				Template:  "saolei",
 				SessionID: "notime",
 			},
-			wantNil:  false,
-			wantName: "sessions/notime",
-			wantID:   "notime",
+			wantNil:      false,
+			wantName:     "templates/saolei/sessions/notime",
+			wantID:       "notime",
+			wantTemplate: "templates/saolei",
 		},
 	}
 
@@ -513,6 +536,9 @@ func Test_sessionToProto(t *testing.T) {
 			if got.GetSessionId() != tt.wantID {
 				t.Fatalf("sessionToProto() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
 			}
+			if got.GetTemplate() != tt.wantTemplate {
+				t.Fatalf("sessionToProto() template = %v, want %v", got.GetTemplate(), tt.wantTemplate)
+			}
 		})
 	}
 }
@@ -530,10 +556,10 @@ func TestListSessions_DefaultPageSize(t *testing.T) {
 			return &domain.ListSessionsResult{}, nil
 		},
 	}
-	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 	// when
-	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 0})
+	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 0})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -547,10 +573,10 @@ func TestListSessions_MaxPageSizeExceeded(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	handler := NewSessionHandler(&mockSessionRepo{}, fixedIDGenerator("unused"), noopProxyClient())
+	handler := NewSessionHandler(&mockSessionRepo{}, fixedIDGenerator("unused"))
 
 	// when
-	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 2000})
+	_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 2000})
 
 	// then
 	assertStatusCode(t, err, codes.InvalidArgument)
@@ -569,10 +595,10 @@ func TestListSessions_NextPageToken(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 	// when
-	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 10})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -592,10 +618,10 @@ func TestListSessions_EmptyResult(t *testing.T) {
 			return nil, nil
 		},
 	}
-	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+	handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 	// when
-	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageSize: 10})
+	got, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageSize: 10})
 
 	// then
 	assertStatusCode(t, err, codes.OK)
@@ -651,10 +677,10 @@ func TestListSessions_InvalidToken(t *testing.T) {
 					return &domain.ListSessionsResult{}, nil
 				},
 			}
-			handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"), noopProxyClient())
+			handler := NewSessionHandler(mockRepo, fixedIDGenerator("unused"))
 
 			// when
-			_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{PageToken: tt.pageToken})
+			_, err := handler.ListSessions(ctx, &game.ListSessionsRequest{Parent: "templates/saolei", PageToken: tt.pageToken})
 
 			// then
 			assertStatusCode(t, err, tt.wantCode)

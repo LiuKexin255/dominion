@@ -151,17 +151,21 @@ service PromptService {
 
 // ─── Shared Resources ──────────────────────────────────────────────────────
 
-// Template is the top-level resource-hierarchy path segment (AIP-126
-// enumeration; values prefixed with the enum name). It is a fixed enum
-// constant set — NOT a resource: no CRUD/List RPCs exist for templates
-// (FR-001). The set is expected to grow infrequently as new templates are
-// added.
-enum Template {
-  // Default value. This value is unused.
-  TEMPLATE_UNSPECIFIED = 0;
+// Template is the top-level resource-hierarchy path segment. It is a resource
+// with NO standard methods (FR-001): its concrete values are a fixed set,
+// declared as constants in gameconst (not a proto enum). This message exists
+// (1) as the typed reference target for Session.template / TeamProfile.template,
+// and (2) to drive protoc-gen-go-aip codegen of ParseTemplateName, so resource
+// name parsing is fully codegen-driven (no hand-written parent parser).
+message Template {
+  option (google.api.resource) = {
+    type: "game.liukexin.com/Template"
+    pattern: "templates/{template}"
+    singular: "template"
+    plural: "templates"
+  };
 
-  // The saolei (minesweeper) template: player + planner team graph.
-  TEMPLATE_SAOLEI = 1;
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
 }
 
 // Session is the per-template container for a game session.
@@ -174,9 +178,13 @@ message Session {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  // Derived from the parent "templates/{template}" at create time; clients do
-  // not set it in the resource body.
-  Template template = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The template resource name this session belongs to (e.g.
+  // "templates/saolei"). Derived from the parent "templates/{template}" at
+  // create time; clients do not set it in the resource body.
+  string template = 2 [
+    (google.api.field_behavior) = OUTPUT_ONLY,
+    (google.api.resource_reference) = { type: "game.liukexin.com/Template" }
+  ];
   string session_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
@@ -224,7 +232,13 @@ message TeamProfile {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  Template template = 2 [(google.api.field_behavior) = REQUIRED];
+  // The template resource name this profile belongs to (e.g.
+  // "templates/saolei"). Client-provided; the handler validates it against
+  // the resource-name template segment and the active oneof spec variant.
+  string template = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference) = { type: "game.liukexin.com/Template" }
+  ];
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 

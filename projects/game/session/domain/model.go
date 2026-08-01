@@ -5,8 +5,12 @@ import (
 	"time"
 )
 
-// Session represents a game session domain entity.
+// Session represents a game session domain entity, scoped to a template
+// (spec 031-team-template-mode FR-002: templates/{template}/sessions/{session}).
 type Session struct {
+	// Template is the template path segment this session belongs to
+	// (e.g. "saolei").
+	Template string
 	// SessionID is the unique identifier for this session.
 	SessionID string
 	// CreateTime is the timestamp when this session was created.

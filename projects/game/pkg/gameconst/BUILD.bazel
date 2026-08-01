@@ -6,10 +6,14 @@ go_library(
     srcs = ["const.go"],
     importpath = "dominion/projects/game/pkg/gameconst",
     visibility = ["//visibility:public"],
+    deps = ["//projects/game"],
 )
 
 go_unittest(
     name = "gameconst_test",
     srcs = ["const_test.go"],
-    deps = [":gameconst"],
+    deps = [
+        ":gameconst",
+        "//projects/game",
+    ],
 )

@@ -19,8 +19,8 @@
 
 ### 1.1 proto / 资源名解析（`gameconst`）
 
-- 验证 `SessionName`/`SessionID`/`TeamName`/`MessageAgentName`/`TeamProfileName` 解析新层级（[`contracts/api-contract.md`](./contracts/api-contract.md) §5）。
-- 验证 `Template` 枚举与路径段一致；旧解析（顶层 `sessions/*`、`prompts/*`）已移除。
+- 验证生成的资源名解析器（`game.ParseSessionName`/`ParseTeamName`/`ParseTeamProfileName`/`ParseMessageName`/`ParseTemplateName`）解析新层级（[`contracts/api-contract.md`](./contracts/api-contract.md) §5）。
+- 验证 Template 资源名（gameconst 常量）与路径段一致；旧解析（顶层 `sessions/*`、`prompts/*`）已移除。
 
 ### 1.2 prompt 服务（TeamProfile）
 

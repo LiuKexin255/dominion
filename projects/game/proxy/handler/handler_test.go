@@ -8,7 +8,6 @@ import (
 
 	game "dominion/projects/game"
 	"dominion/projects/game/pkg/bind"
-	gameconst "dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/proxy/domain"
 	"dominion/projects/game/proxy/runtime/agentclient"
 
@@ -100,25 +99,32 @@ func (p *mockOwnerPicker) Pick(_ context.Context, _ string, _ []*agentclient.Con
 
 // mockAgentClient implements agentclient.Client for testing.
 type mockAgentClient struct {
-	getAgentErr        error
+	getTeamResult      *game.Team
+	getTeamErr         error
 	listMessagesResult *game.ListMessagesResponse
 	listMessagesErr    error
 	connectErr         error
-	agentStream        game.AgentService_ConnectClient
-	refreshAgentResult *emptypb.Empty
-	refreshAgentErr    error
-	lastRefreshReq     *game.RefreshAgentRequest
+	agentStream        game.TeamService_ConnectClient
+	refreshTeamResult  *emptypb.Empty
+	refreshTeamErr     error
+	lastRefreshReq     *game.RefreshTeamRequest
+	lastGetTeamReq     *game.GetTeamRequest
 }
 
-func (c *mockAgentClient) GetAgent(_ context.Context, req *game.GetAgentRequest) (*game.Agent, error) {
-	if c.getAgentErr != nil {
-		return nil, c.getAgentErr
+func (c *mockAgentClient) GetTeam(_ context.Context, req *game.GetTeamRequest) (*game.Team, error) {
+	c.lastGetTeamReq = req
+	if c.getTeamErr != nil {
+		return nil, c.getTeamErr
 	}
-	name := req.GetName()
-	sessionID, _ := gameconst.AgentSessionID(name)
-	return &game.Agent{
-		Name:      name,
-		SessionId: sessionID,
+	if c.getTeamResult != nil {
+		return c.getTeamResult, nil
+	}
+	return &game.Team{
+		Name: req.GetName(),
+		Agents: []*game.TeamAgent{
+			{Name: "player", AcceptsUserInput: true},
+			{Name: "planner", AcceptsUserInput: false},
+		},
 	}, nil
 }
 
@@ -136,25 +142,25 @@ func (c *mockAgentClient) ListMessages(_ context.Context, req *game.ListMessages
 	}, nil
 }
 
-func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.AgentService_ConnectClient, error) {
+func (c *mockAgentClient) Connect(_ context.Context, _ ...grpc.CallOption) (game.TeamService_ConnectClient, error) {
 	if c.connectErr != nil {
 		return nil, c.connectErr
 	}
 	return c.agentStream, nil
 }
 
-func (c *mockAgentClient) RefreshAgent(_ context.Context, req *game.RefreshAgentRequest) (*emptypb.Empty, error) {
+func (c *mockAgentClient) RefreshTeam(_ context.Context, req *game.RefreshTeamRequest) (*emptypb.Empty, error) {
 	c.lastRefreshReq = req
-	if c.refreshAgentErr != nil {
-		return nil, c.refreshAgentErr
+	if c.refreshTeamErr != nil {
+		return nil, c.refreshTeamErr
 	}
-	if c.refreshAgentResult != nil {
-		return c.refreshAgentResult, nil
+	if c.refreshTeamResult != nil {
+		return c.refreshTeamResult, nil
 	}
 	return &emptypb.Empty{}, nil
 }
 
-// mockAgentStream implements game.AgentService_ConnectClient for testing.
+// mockAgentStream implements game.TeamService_ConnectClient for testing.
 type mockAgentStream struct {
 	recvCh  <-chan *game.AgentFrame
 	sendCh  chan<- *game.AgentFrame
@@ -184,7 +190,7 @@ func (s *mockAgentStream) Context() context.Context     { return context.Backgro
 func (s *mockAgentStream) SendMsg(m interface{}) error  { return nil }
 func (s *mockAgentStream) RecvMsg(m interface{}) error  { return nil }
 
-// mockProxyStream implements game.ProxyService_ConnectAgentServer for testing.
+// mockProxyStream implements game.TeamService_ConnectServer for testing.
 type mockProxyStream struct {
 	ctx    context.Context
 	recvCh <-chan *game.AgentFrame
@@ -230,9 +236,12 @@ func setMockNewAgentClient(mockClient agentclient.Client) func() {
 	return func() { agentclient.NewAgentClient = old }
 }
 
-const testAgentName = "sessions/sid/agent"
+const (
+	testTeamName       = "templates/saolei/sessions/sid/team"
+	testMessagesParent = "templates/saolei/sessions/sid/team/agents/player"
+)
 
-func TestGetAgent(t *testing.T) {
+func TestGetTeam(t *testing.T) {
 	ctx := context.Background()
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
 
@@ -243,15 +252,22 @@ func TestGetAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		agent, err := h.GetAgent(ctx, &game.GetAgentRequest{Name: testAgentName})
+		team, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: testTeamName})
 
 		if err != nil {
-			t.Fatalf("GetAgent() unexpected error: %v", err)
+			t.Fatalf("GetTeam() unexpected error: %v", err)
 		}
-		if agent.GetSessionId() != "sid" {
-			t.Fatalf("GetAgent().SessionId = %q, want %q", agent.GetSessionId(), "sid")
+		if team.GetName() != testTeamName {
+			t.Fatalf("GetTeam() name = %q, want %q", team.GetName(), testTeamName)
+		}
+		if len(team.GetAgents()) != 2 {
+			t.Fatalf("GetTeam() got %d agents, want 2", len(team.GetAgents()))
+		}
+		// downstream receives the caller's team name unchanged
+		if agentMock.lastGetTeamReq.GetName() != testTeamName {
+			t.Fatalf("downstream GetTeam name = %q, want %q", agentMock.lastGetTeamReq.GetName(), testTeamName)
 		}
 	})
 
@@ -262,47 +278,47 @@ func TestGetAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, mgr, &mockBinder{})
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		_, err := h.GetAgent(ctx, &game.GetAgentRequest{Name: "sessions/never-connected/agent"})
+		_, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: "templates/saolei/sessions/never-connected/team"})
 
 		if err == nil {
-			t.Fatalf("GetAgent() expected error, got nil")
+			t.Fatalf("GetTeam() expected error, got nil")
 		}
 		if status.Code(err) != codes.NotFound {
-			t.Fatalf("GetAgent() status = %v, want NotFound", status.Code(err))
+			t.Fatalf("GetTeam() status = %v, want NotFound", status.Code(err))
 		}
 		if _, ok := store.records["never-connected"]; ok {
-			t.Fatal("GetAgent() unexpectedly created an owner")
+			t.Fatal("GetTeam() unexpectedly created an owner")
 		}
 	})
 
 	t.Run("invalid name returns InvalidArgument", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.GetAgent(ctx, &game.GetAgentRequest{Name: "invalid-format"})
+		_, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: "invalid-format"})
 
 		if err == nil {
-			t.Fatalf("GetAgent() expected error, got nil")
+			t.Fatalf("GetTeam() expected error, got nil")
 		}
 		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("GetAgent() status = %v, want InvalidArgument", status.Code(err))
+			t.Fatalf("GetTeam() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
 	t.Run("agent error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
 		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
-		agentMock := &mockAgentClient{getAgentErr: status.Error(codes.NotFound, "agent not found")}
+		agentMock := &mockAgentClient{getTeamErr: status.Error(codes.NotFound, "team not found")}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.GetAgent(ctx, &game.GetAgentRequest{Name: testAgentName})
+		_, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: testTeamName})
 
 		if status.Code(err) != codes.NotFound {
-			t.Fatalf("GetAgent() status = %v, want NotFound", status.Code(err))
+			t.Fatalf("GetTeam() status = %v, want NotFound", status.Code(err))
 		}
 	})
 }
@@ -318,9 +334,9 @@ func TestListMessages(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		resp, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: "sessions/sid"})
+		resp, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: testMessagesParent})
 
 		if err != nil {
 			t.Fatalf("ListMessages() unexpected error: %v", err)
@@ -331,9 +347,9 @@ func TestListMessages(t *testing.T) {
 	})
 
 	t.Run("missing owner returns NotFound", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: "sessions/missing"})
+		_, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: "templates/saolei/sessions/missing/team/agents/player"})
 
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("ListMessages() status = %v, want NotFound", status.Code(err))
@@ -341,7 +357,7 @@ func TestListMessages(t *testing.T) {
 	})
 
 	t.Run("invalid parent returns InvalidArgument", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
 		_, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: "invalid-format"})
 
@@ -349,9 +365,19 @@ func TestListMessages(t *testing.T) {
 			t.Fatalf("ListMessages() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
+
+	t.Run("invalid parent - missing agents segment returns InvalidArgument", func(t *testing.T) {
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+
+		_, err := h.ListMessages(ctx, &game.ListMessagesRequest{Parent: "templates/saolei/sessions/sid/team"})
+
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("ListMessages() status = %v, want InvalidArgument", status.Code(err))
+		}
+	})
 }
 
-func TestConnectAgent(t *testing.T) {
+func TestConnect(t *testing.T) {
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
 
 	t.Run("happy path with existing owner", func(t *testing.T) {
@@ -363,12 +389,12 @@ func TestConnectAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		err := h.ConnectAgent(makeProxyStream("sid"))
+		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
 
 		if err != nil {
-			t.Fatalf("ConnectAgent() unexpected error: %v", err)
+			t.Fatalf("Connect() unexpected error: %v", err)
 		}
 	})
 
@@ -381,39 +407,49 @@ func TestConnectAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, mgr, &mockBinder{})
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		err := h.ConnectAgent(makeProxyStream("new-session"))
+		err := h.Connect(makeProxyStream("templates/saolei/sessions/new-session"))
 
 		if err != nil {
-			t.Fatalf("ConnectAgent() unexpected error: %v", err)
+			t.Fatalf("Connect() unexpected error: %v", err)
 		}
 		if _, ok := store.records["new-session"]; !ok {
-			t.Fatal("ConnectAgent() did not create owner")
+			t.Fatal("Connect() did not create owner")
 		}
 	})
 
 	t.Run("empty session_id", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		err := h.ConnectAgent(makeProxyStream(""))
+		err := h.Connect(makeProxyStream(""))
 
 		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("ConnectAgent() status = %v, want InvalidArgument", status.Code(err))
+			t.Fatalf("Connect() status = %v, want InvalidArgument", status.Code(err))
+		}
+	})
+
+	t.Run("session_id without templates prefix", func(t *testing.T) {
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+
+		err := h.Connect(makeProxyStream("sid"))
+
+		if status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("Connect() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
 	t.Run("recv error", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
 		recvCh := make(chan *game.AgentFrame)
 		close(recvCh)
 		stream := &mockProxyStream{ctx: context.Background(), recvCh: recvCh}
 
-		err := h.ConnectAgent(stream)
+		err := h.Connect(stream)
 
 		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("ConnectAgent() status = %v, want InvalidArgument", status.Code(err))
+			t.Fatalf("Connect() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
@@ -422,12 +458,12 @@ func TestConnectAgent(t *testing.T) {
 		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
 		mgr := &mockManager{getErr: errors.New("no connection")}
 
-		h := NewProxyHandler(store, picker, mgr, &mockBinder{})
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		err := h.ConnectAgent(makeProxyStream("sid"))
+		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
 
 		if status.Code(err) != codes.Internal {
-			t.Fatalf("ConnectAgent() status = %v, want Internal", status.Code(err))
+			t.Fatalf("Connect() status = %v, want Internal", status.Code(err))
 		}
 	})
 
@@ -440,17 +476,17 @@ func TestConnectAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{err: errors.New("bind failed")})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{err: errors.New("bind failed")})
 
-		err := h.ConnectAgent(makeProxyStream("sid"))
+		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
 
 		if err == nil {
-			t.Fatalf("ConnectAgent() expected error, got nil")
+			t.Fatalf("Connect() expected error, got nil")
 		}
 	})
 }
 
-func TestRefreshAgent(t *testing.T) {
+func TestRefreshTeam(t *testing.T) {
 	ctx := context.Background()
 	picker := &mockOwnerPicker{ref: agentclient.ConnRef{OwnerIndex: 1, Owner: "agent-1"}}
 
@@ -461,21 +497,21 @@ func TestRefreshAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		resp, err := h.RefreshAgent(ctx, &game.RefreshAgentRequest{Name: testAgentName})
+		resp, err := h.RefreshTeam(ctx, &game.RefreshTeamRequest{Name: testTeamName})
 
 		if err != nil {
-			t.Fatalf("RefreshAgent() unexpected error: %v", err)
+			t.Fatalf("RefreshTeam() unexpected error: %v", err)
 		}
 		if resp == nil {
-			t.Fatal("RefreshAgent() got nil response, want non-nil Empty")
+			t.Fatal("RefreshTeam() got nil response, want non-nil Empty")
 		}
 		if agentMock.lastRefreshReq == nil {
-			t.Fatal("RefreshAgent() did not call downstream agent RefreshAgent")
+			t.Fatal("RefreshTeam() did not call downstream agent RefreshTeam")
 		}
-		if agentMock.lastRefreshReq.GetName() != testAgentName {
-			t.Fatalf("downstream RefreshAgent name = %q, want %q", agentMock.lastRefreshReq.GetName(), testAgentName)
+		if agentMock.lastRefreshReq.GetName() != testTeamName {
+			t.Fatalf("downstream RefreshTeam name = %q, want %q", agentMock.lastRefreshReq.GetName(), testTeamName)
 		}
 	})
 
@@ -486,28 +522,28 @@ func TestRefreshAgent(t *testing.T) {
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, mgr, &mockBinder{})
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		_, err := h.RefreshAgent(ctx, &game.RefreshAgentRequest{Name: "sessions/no-owner/agent"})
+		_, err := h.RefreshTeam(ctx, &game.RefreshTeamRequest{Name: "templates/saolei/sessions/no-owner/team"})
 
 		if status.Code(err) != codes.NotFound {
-			t.Fatalf("RefreshAgent() status = %v, want NotFound", status.Code(err))
+			t.Fatalf("RefreshTeam() status = %v, want NotFound", status.Code(err))
 		}
 		if agentMock.lastRefreshReq != nil {
-			t.Fatal("RefreshAgent() unexpectedly called downstream agent for missing session")
+			t.Fatal("RefreshTeam() unexpectedly called downstream agent for missing session")
 		}
 		if _, ok := store.records["no-owner"]; ok {
-			t.Fatal("RefreshAgent() unexpectedly created owner")
+			t.Fatal("RefreshTeam() unexpectedly created owner")
 		}
 	})
 
 	t.Run("invalid name returns InvalidArgument", func(t *testing.T) {
-		h := NewProxyHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.RefreshAgent(ctx, &game.RefreshAgentRequest{Name: ""})
+		_, err := h.RefreshTeam(ctx, &game.RefreshTeamRequest{Name: ""})
 
 		if status.Code(err) != codes.InvalidArgument {
-			t.Fatalf("RefreshAgent() status = %v, want InvalidArgument", status.Code(err))
+			t.Fatalf("RefreshTeam() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
@@ -518,28 +554,28 @@ func TestRefreshAgent(t *testing.T) {
 		restore := setMockNewAgentClient(&mockAgentClient{})
 		defer restore()
 
-		h := NewProxyHandler(store, picker, mgr, &mockBinder{})
+		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		_, err := h.RefreshAgent(ctx, &game.RefreshAgentRequest{Name: testAgentName})
+		_, err := h.RefreshTeam(ctx, &game.RefreshTeamRequest{Name: testTeamName})
 
 		if status.Code(err) != codes.Internal {
-			t.Fatalf("RefreshAgent() status = %v, want Internal", status.Code(err))
+			t.Fatalf("RefreshTeam() status = %v, want Internal", status.Code(err))
 		}
 	})
 
 	t.Run("downstream error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
 		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
-		agentMock := &mockAgentClient{refreshAgentErr: status.Error(codes.FailedPrecondition, "turn in flight")}
+		agentMock := &mockAgentClient{refreshTeamErr: status.Error(codes.FailedPrecondition, "turn in flight")}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
 
-		h := NewProxyHandler(store, picker, &mockManager{}, &mockBinder{})
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		_, err := h.RefreshAgent(ctx, &game.RefreshAgentRequest{Name: testAgentName})
+		_, err := h.RefreshTeam(ctx, &game.RefreshTeamRequest{Name: testTeamName})
 
 		if status.Code(err) != codes.FailedPrecondition {
-			t.Fatalf("RefreshAgent() status = %v, want FailedPrecondition", status.Code(err))
+			t.Fatalf("RefreshTeam() status = %v, want FailedPrecondition", status.Code(err))
 		}
 	})
 }
@@ -567,13 +603,82 @@ func TestMapDomainError(t *testing.T) {
 	}
 }
 
+func TestParseMessagesParent(t *testing.T) {
+	tests := []struct {
+		name        string
+		parent      string
+		want        string
+		wantSession string
+		wantAgent   string
+		wantErr     bool
+	}{
+		{
+			name:        "valid parent",
+			parent:      "templates/saolei/sessions/abc/team/agents/player",
+			want:        "saolei",
+			wantSession: "abc",
+			wantAgent:   "player",
+		},
+		{
+			name:    "missing agents segment",
+			parent:  "templates/saolei/sessions/abc/team",
+			wantErr: true,
+		},
+		{
+			name:    "old agent partition",
+			parent:  "templates/saolei/sessions/abc/agent",
+			wantErr: true,
+		},
+		{
+			name:    "empty agent",
+			parent:  "templates/saolei/sessions/abc/team/agents/",
+			wantErr: true,
+		},
+		{
+			name:    "extra segment",
+			parent:  "templates/saolei/sessions/abc/team/agents/player/messages",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			parent:  "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, gotSession, gotAgent, err := parseMessagesParent(tt.parent)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseMessagesParent(%q) expected error, got nil", tt.parent)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseMessagesParent(%q) unexpected error: %v", tt.parent, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseMessagesParent(%q) template = %q, want %q", tt.parent, got, tt.want)
+			}
+			if gotSession != tt.wantSession {
+				t.Fatalf("parseMessagesParent(%q) session = %q, want %q", tt.parent, gotSession, tt.wantSession)
+			}
+			if gotAgent != tt.wantAgent {
+				t.Fatalf("parseMessagesParent(%q) agent = %q, want %q", tt.parent, gotAgent, tt.wantAgent)
+			}
+		})
+	}
+}
+
 // makeProxyStream builds a mockProxyStream whose first Recv yields a status
-// FlowPart frame carrying the given sessionID. status is a FlowPart kind
-// (spec 023 C3 / FR-003 — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
-func makeProxyStream(sessionID string) *mockProxyStream {
+// FlowPart frame carrying the given session resource name. status is a
+// FlowPart kind (spec 023 C3 / FR-003 — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
+func makeProxyStream(sessionName string) *mockProxyStream {
 	recvCh := make(chan *game.AgentFrame, 1)
 	recvCh <- &game.AgentFrame{
-		SessionId: sessionID,
+		SessionId: sessionName,
 		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 		}}},

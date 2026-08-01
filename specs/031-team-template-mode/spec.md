@@ -49,11 +49,11 @@
 
 ### User Story 1 - Template 与 Team 资源层级重构 (Priority: P1)
 
-运维/开发者通过 API 与 desktop 操作游戏会话时，资源模型从"单 session 单 agent"重构为"模板顶层 → session → team（多 agent）"。Template 成为顶层资源路径段（当前固定枚举仅 `saolei`，无 List/CRUD RPC）；Session 挂在模板下；原 Agent 资源被 Team 资源取代；WebSocket connect、Message、TeamProfile 路径相应调整；现有 `AgentProfile` 与 `Skill` 资源（API 管理的自定义 skill）被废弃，TeamProfile 由现有 prompt 服务承接管理。
+运维/开发者通过 API 与 desktop 操作游戏会话时，资源模型从"单 session 单 agent"重构为"模板顶层 → session → team（多 agent）"。Template 成为顶层资源路径段（当前固定常量仅 `saolei`，无 List/CRUD RPC）；Session 挂在模板下；原 Agent 资源被 Team 资源取代；WebSocket connect、Message、TeamProfile 路径相应调整；现有 `AgentProfile` 与 `Skill` 资源（API 管理的自定义 skill）被废弃，TeamProfile 由现有 prompt 服务承接管理。
 
 **Why this priority**: 资源层级是整个控制面的契约地基。下游的 team graph 行为、desktop 多标签页、profile 特化全部依赖新的资源路径与 proto 契约。不先确定契约，其余故事无法落地（宪法原则 III 接口优先设计）。
 
-**Independent Test**: 可通过 proto 契约与各服务 API 路由独立验证：Template 为固定路径段枚举（仅 `saolei`），Session/Team/Connect/Message/TeamProfile 路径符合契约，`AgentProfile`/`Skill` 的 RPC 与资源消息已移除，prompt 服务转而管理 TeamProfile，MCP 配套的内置 skill 不受影响。
+**Independent Test**: 可通过 proto 契约与各服务 API 路由独立验证：Template 为固定路径段常量（仅 `saolei`，gameconst），Session/Team/Connect/Message/TeamProfile 路径符合契约，`AgentProfile`/`Skill` 的 RPC 与资源消息已移除，prompt 服务转而管理 TeamProfile，MCP 配套的内置 skill 不受影响。
 
 **Acceptance Scenarios**:
 
@@ -62,7 +62,7 @@
 3. **Given** 一个会话，**When** 建立 WebSocket 双向流时，**Then** 连接端点为 `templates/{template}/sessions/{session}/connect`。
 4. **Given** 一个 team 中的某个 agent（如 `player`），**When** 列出其消息历史时，**Then** 路径为 `templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}`（消息按 team 内 agent 分区，`{agent}` 为模板 schema 中已知的 agent 名称）。
 5. **Given** prompt 服务，**When** 管理 team 配置时，**Then** 资源为 `templates/{template}/profiles/{profile}`（TeamProfile），且 `AgentProfile`（`prompts/agentProfiles/*`）与 `Skill`（`prompts/skills/*`）的 RPC 及资源消息已废弃移除。
-6. **Given** API，**When** 查询模板列表时，**Then** 不存在 Template 的 List/Get/Create/Update/Delete RPC（模板为固定枚举常量，仅作路径段）。
+6. **Given** API，**When** 查询模板列表时，**Then** 不存在 Template 的 List/Get/Create/Update/Delete RPC（模板为固定常量，仅作路径段）。
 
 ---
 
@@ -107,15 +107,15 @@ saolei MCP 提供一个可注册的旁路事件 sink 接口（仅定义事件形
 
 ### User Story 4 - Desktop 多 Agent 标签页与模板控制面 (Priority: P2)
 
-desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，不调用模板列表 API）；不同模板控制面大部分页面通用，少数页面按模板特性化。session 对话页面由单列改为多标签页，每个 tab 对应 team 中的一个 agent；`AgentFrame` 移除 `agent_profile_name`，改为携带 agent 名称（如 `player`），用于表示该消息来自 team 中的哪个 agent，使各 tab 能正确归位消息。
+desktop 将模板作为顶层控制面进行切换（使用本地模板常量，不调用模板列表 API）；不同模板控制面大部分页面通用，少数页面按模板特性化。session 对话页面由单列改为多标签页，每个 tab 对应 team 中的一个 agent；`AgentFrame` 移除 `agent_profile_name`，改为携带 agent 名称（如 `player`），用于表示该消息来自 team 中的哪个 agent，使各 tab 能正确归位消息。
 
 **Why this priority**: 这是 team 模型对最终用户的呈现层。它依赖 US1/US2 的契约与行为落地，本身不改变后端能力，但对"可观测地理解多 agent 协作"至关重要。优先级 P2 是因为它可在核心后端就绪后作为独立展现层交付。
 
-**Independent Test**: 可在 US1/US2 契约就绪后独立验证：desktop 顶层可切换模板（枚举常量）；进入会话后对话区按 team 的 agent 分为多个 tab；收到的 frame 按 agent 名称归入对应 tab；frame 不再携带 `agent_profile_name` 而携带 agent 名称。
+**Independent Test**: 可在 US1/US2 契约就绪后独立验证：desktop 顶层可切换模板（本地常量）；进入会话后对话区按 team 的 agent 分为多个 tab；收到的 frame 按 agent 名称归入对应 tab；frame 不再携带 `agent_profile_name` 而携带 agent 名称。
 
 **Acceptance Scenarios**:
 
-1. **Given** desktop 顶层控制面，**When** 用户切换模板时，**Then** 切换基于本地模板枚举常量完成，且不发起任何模板列表 API 请求。
+1. **Given** desktop 顶层控制面，**When** 用户切换模板时，**Then** 切换基于本地模板常量完成，且不发起任何模板列表 API 请求。
 2. **Given** 模板控制面，**When** 进入某模板时，**Then** 大部分页面通用，少数页面按该模板特性化（saolei 的 profile 页面特化处理）。
 3. **Given** 一个 saolei 会话的对话页面，**When** 渲染时，**Then** 对话区呈现多个标签页，每个 tab 对应 team 中的一个 agent（`player`、`planner`）。
 4. **Given** 来自不同 agent 的消息，**When** 收到一个 `AgentFrame`，**Then** 该 frame 携带 agent 名称（而非 `agent_profile_name`），并被归入对应 agent 的 tab。
@@ -148,7 +148,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 - **planner 复盘期间出错**：planner 的 LLM 调用或 `update_strategy` 失败时，不应使整局崩溃或重复触发 planner；具体重试/降级语义由 plan 决定（survey Q5 关联）。
 - **gameEnded 标志生命周期**：planner 处理后由谁清除结束标志、如何避免重复触发，为 survey Q5 明确留待方案阶段决策的项；本 spec 仅约束"planner 每局仅触发一次"的行为结果。
 - **同一会话多局**：策略作为长期记忆在多局间累积；多局由 LLM（player 开新局）或用户（新输入）驱动，graph schema 不强制多局自动循环（FR-009）。短期记忆**不在每局开始或其他时机自动清空**（需求方确认），仅由 `RefreshTeam`（FR-018）显式清空。
-- **模板切换与会话并存**：当前固定枚举仅 `saolei`，模板切换与会话并存场景暂不构成实际路径；未来引入第二模板时再约束。
+- **模板切换与会话并存**：当前固定常量仅 `saolei`，模板切换与会话并存场景暂不构成实际路径；未来引入第二模板时再约束。
 - **agent 名称未知/缺失**：若 frame 携带的 agent 名称不在当前模板 schema 内，desktop 归位策略（丢弃/归入默认 tab）由 plan 决定，本 spec 约束契约字段存在。
 - **MCP sink 回调抛错**：sink 实现抛错不应影响 MCP 工具主流程（游戏操作仍正常返回）；具体隔离方式由 plan 决定。
 
@@ -158,7 +158,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 
 #### 资源层级与 API 契约
 
-- **FR-001**: 系统 MUST 引入 Template 作为顶层资源路径段。Template 为固定枚举（当前仅 `saolei`），仅作为路径段存在；系统 MUST NOT 提供 Template 的 List/Get/Create/Update/Delete RPC（无模板列表 API）。
+- **FR-001**: 系统 MUST 引入 Template 作为顶层资源路径段。Template 为资源（`message Template`，pattern `templates/{template}`，无任何 RPC）；具体模板值以 gameconst 常量（资源对象，当前仅 `saolei`）表示，非 proto enum、非裸 string。系统 MUST NOT 提供 Template 的 List/Get/Create/Update/Delete RPC（无模板列表 API）。
 - **FR-002**: Session 资源 MUST 嵌套于模板下，资源路径 MUST 为 `templates/{template}/sessions/{session}`；MUST NOT 保留顶层 `sessions/{session}` 路径（破坏性重构，clean break）。
 - **FR-003**: 原 Agent 资源 MUST 被 Team 资源取代：Team 资源路径 MUST 为 `templates/{template}/sessions/{session}/team`。Agent 资源消息与相关 RPC MUST 移除。
 - **FR-004**: WebSocket 双向流连接端点 MUST 为 `templates/{template}/sessions/{session}/connect`（原 `sessions/{session}/connect` 调整）。
@@ -193,7 +193,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 #### AgentFrame 与 desktop
 
 - **FR-023**: `AgentFrame` MUST 移除 `agent_profile_name` 字段，改为携带 team 内 agent 名称的字段（如 `player`），用于表示该消息来自 team 中的哪个 agent。
-- **FR-024**: desktop MUST 将模板作为顶层控制面进行切换，且 MUST 使用本地模板枚举常量；MUST NOT 发起模板列表 API 请求。
+- **FR-024**: desktop MUST 将模板作为顶层控制面进行切换，且 MUST 使用本地模板常量；MUST NOT 发起模板列表 API 请求。
 - **FR-025**: desktop 的 session 对话页面 MUST 呈现多个标签页，每个 tab 对应 team 中的一个 agent；来自某 agent 的 frame MUST 归入其对应 tab。
 - **FR-026**: desktop 不同模板的控制面 MUST 大部分页面通用，少数页面按模板特性化；saolei 模板的 profile 页面 MUST 特化处理（见 FR-029）。
 
@@ -214,7 +214,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 
 ### Key Entities *(include if feature involves data)*
 
-- **Template**：顶层资源路径段，对应一套 graph schema 及配套组件。当前固定枚举仅 `saolei`，无 CRUD/List RPC（`templates/{template}`，仅作路径段）。是 API 资源层级的根。
+- **Template**：顶层资源路径段，对应一套 graph schema 及配套组件。资源消息（`message Template`，pattern `templates/{template}`），无 CRUD/List RPC；具体值以 gameconst 常量表示（当前仅 `saolei`）。是 API 资源层级的根。
 - **Team**：会话内的多 agent 执行主体，取代原 Agent 资源（`templates/{template}/sessions/{session}/team`）。一个 Team 对应模板的一个 StateGraph 实例，含若干按模板 schema 定义的 agent（saolei 为 `player`+`planner`）。
 - **Agent（team 内）**：Team 中由模板 graph schema 定义的执行角色，由其名称标识（如 `player`/`planner`）。非独立资源，是消息分区与 frame 归位的维度。每个 agent 在 schema 中声明"是否接受用户输入"属性（FR-031）：`player` 独占桌面控制且接受用户输入，`planner` 每局结束复盘且不接受用户输入（desktop 屏蔽其输入）。
 - **TeamProfile**：模板特化的 team 配置资源，由 prompt 服务承接管理（`templates/{template}/profiles/{profile}`）。每个模板自有 profile 格式；saolei 的 TeamProfile 仅含 player/planner 模型选择。
@@ -231,7 +231,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 - **SC-003**: 策略在会话内跨局累积并被 player/planner 共享——planner 经 `update_strategy` 写入的策略，能在后续局中被 player 作为当前态势读取、被 planner 作为 system 上下文读取。
 - **SC-004**: 执行 `RefreshTeam` 后，短期对话消息被清空，而策略仍可被读取（长期与短期记忆解耦可验证）。
 - **SC-005**: saolei MCP 在不注册 sink 时与升级前行为完全一致；注册 sink 后能输出结构化局结束状态，且 MCP 代码不引用任何 team mode 概念（解耦可由代码审查验证）。
-- **SC-006**: desktop 进入会话后，对话按 team 内 agent 分为多个标签页，frame 按 agent 名称正确归位；用户输入仅对声明为"接受用户输入"的 agent 开放（saolei 仅 `player`），其余 agent 的 tab 屏蔽输入；顶层模板切换基于本地枚举常量、无网络请求。
+- **SC-006**: desktop 进入会话后，对话按 team 内 agent 分为多个标签页，frame 按 agent 名称正确归位；用户输入仅对声明为"接受用户输入"的 agent 开放（saolei 仅 `player`），其余 agent 的 tab 屏蔽输入；顶层模板切换基于本地模板常量、无网络请求。
 - **SC-007**: saolei 模板的配置仅含 player/planner 两个模型选择，tools/mcp 由模板固定装配、不可经 profile 配置；desktop profile 页面对该模板特化渲染。
 - **SC-008**: 大型测试（经 testplan skill 完整部署→测试→清理执行）全部用例通过，覆盖 SC-002/SC-003/SC-004 所述团队行为。
 
@@ -239,7 +239,7 @@ desktop 将模板作为顶层控制面进行切换（使用模板枚举常量，
 
 - **破坏性重构（clean break，需求方确认）**：本特性对 API 层级与 proto 采取破坏性重构，**不考虑历史数据兼容与迁移**（需求方确认忽略既有 session、`AgentProfile`、`Skill` 数据）；不提供旧层级→新层级的在线迁移或双写，开发/测试环境重建。参考本仓库既有惯例（如 `specs/023-saolei-mcp-refine` 的 clean break）。
 - **Message 路径为会话级作用域（需求方确认）**：Message 完整路径确认为 `templates/{template}/sessions/{session}/team/agents/{agent}/messages/{message}`（需求方确认初稿简写遗漏了 `sessions/{session}/` 段，见 Clarifications「补充澄清」）。`plan.md` 据此设计 proto 资源 pattern。
-- **Template 仅作路径段、无资源消息**：因无 List/CRUD RPC（FR-001），Template 不需要独立的 proto `Template` 资源消息；它在 proto 中体现为 `{template}` 路径段与一个枚举常量集合。是否仍定义最小 `Template` 消息以遵循 AIP-131 资源风格，由 `plan.md` 决定。
+- **Template 为资源消息、无 RPC（设计修订已决）**：Template 定义为 `message Template`（pattern `templates/{template}`，无任何 RPC），作为 `Session.template`/`TeamProfile.template` 的 typed 引用目标并驱动 codegen（`ParseTemplateName`）；具体模板值以 gameconst 常量（`game.TemplateName` 资源对象）表示，非 proto enum、非裸 string。原"仅路径段、无资源消息"的假定被该设计修订取代（见 `contracts/api-contract.md` §3.1）。
 - **`AgentFrame` agent 名称字段的 proto 表示**：需求方要求"移除 `agent_profile_name`，改为 agent 名称"。具体采用字段重命名（复用字段号）还是移除旧字段+新增字段，属 proto 兼容性细节，由 `plan.md` 依据本仓库 clean break 惯例决定；本 spec 仅约束语义（字段表示 team 内 agent 名称）。
 - **survey Q5（gameEnded 标志生命周期）明确留待方案阶段决策**：planner 处理后由谁清除 gameEvent/gameEnded 标志、如何避免重复触发，本 spec 不约束具体实现，仅在 FR-011/FR-017 约束"planner 每局仅触发一次"的行为结果。
 - **planner 复盘期间错误处理**：planner 的 LLM 调用或 `update_strategy` 失败时的重试/降级语义未在需求中指定，留待 `plan.md` 设计（与 survey Q5 关联）。

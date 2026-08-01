@@ -3,38 +3,31 @@ package domain
 
 import "time"
 
-// AgentProfile describes the configuration for creating an agent.
-type AgentProfile struct {
-	// AgentProfileName is the business identifier for this profile.
-	AgentProfileName string
-	// Model is the model spec in {provider}/{model} format (e.g., "opencode-go/deepseek-v4-pro").
-	Model string
-	// SystemPrompt is the system prompt for the agent.
-	SystemPrompt string
-	// SkillNames are names of skills referenced by this profile.
-	SkillNames []string
-	// MCPNames are names of MCP servers referenced by this profile.
-	MCPNames []string
-	// Enabled indicates whether this profile is enabled.
-	Enabled bool
-	// ToolNames are names of tools referenced by this profile.
-	ToolNames []string
+// TeamProfile is the per-template team configuration entity (spec
+// 031-team-template-mode FR-006). It replaces the former AgentProfile/Skill
+// resources (clean break): the configuration is a typed, template-specialized
+// spec — the saolei template only carries the player/planner LLM model
+// choices (FR-027), while tools/MCP are fixed by the template itself (FR-028).
+type TeamProfile struct {
+	// TeamProfileName is the business identifier for this profile.
+	TeamProfileName string
+	// Template is the template path segment this profile belongs to
+	// (e.g. "saolei").
+	Template string
+	// SaoleiPlayerModel is the saolei template's player LLM model choice
+	// (spec.saolei.player_model, {provider}/{model} format).
+	SaoleiPlayerModel string
+	// SaoleiPlannerModel is the saolei template's planner LLM model choice
+	// (spec.saolei.planner_model).
+	SaoleiPlannerModel string
 	// CreateTime is the timestamp when this profile was created.
 	CreateTime time.Time
 	// UpdateTime is the timestamp when this profile was last updated.
 	UpdateTime time.Time
 }
 
-// Skill represents a tool-independent skill definition.
-type Skill struct {
-	// SkillName is the business identifier for this skill.
-	SkillName string
-	// Content is the skill content (text).
-	Content string
-	// Enabled indicates whether this skill is enabled.
-	Enabled bool
-	// CreateTime is the timestamp when this skill was created.
-	CreateTime time.Time
-	// UpdateTime is the timestamp when this skill was last updated.
-	UpdateTime time.Time
-}
+// DefaultListTeamProfilesPageSize is the default page size when listing team profiles.
+const DefaultListTeamProfilesPageSize = 100
+
+// MaxListTeamProfilesPageSize is the maximum allowed page size when listing team profiles.
+const MaxListTeamProfilesPageSize = 1000

@@ -37,7 +37,7 @@
 
 ## Phase 2: Foundational (Proto & gameconst Rewrite)
 
-**Purpose**: 重写 proto 资源层级契约与资源名解析——所有 user story 的契约地基（宪法原则 III 接口优先）。clean break：移除 Agent/AgentProfile/Skill/ProxyService/AgentService/RefreshAgent，新增 Template 枚举/TeamService/Team/TeamAgent/TeamProfile/SaoleiProfile。
+**Purpose**: 重写 proto 资源层级契约与资源名解析——所有 user story 的契约地基（宪法原则 III 接口优先）。clean break：移除 Agent/AgentProfile/Skill/ProxyService/AgentService/RefreshAgent，新增 Template 资源消息/TeamService/Team/TeamAgent/TeamProfile/SaoleiProfile。
 
 **⚠️ CRITICAL**: 本 phase 完成后 proto 编译通过，但下游 Go 服务/TS agent target 将引用已移除的类型而编译失败——后续 Phase 3-5 逐步修复。这是大型重构的预期行为。
 
@@ -47,7 +47,7 @@
   - [AIP-121 Resource-oriented design](https://google.aip.dev/121)
   - [AIP-122 Resource names](https://google.aip.dev/122)
   - [AIP-123 Resource types](https://google.aip.dev/123)
-  - [AIP-126 Enumerations](https://google.aip.dev/126)（Template enum）
+  - [AIP-126 Enumerations](https://google.aip.dev/126)（FrameSender 等 enum；Template 设计修订后为资源消息，见 T003 注 1）
   - [AIP-127 HTTP and gRPC Transcoding](https://google.aip.dev/127)
   - [AIP-131 Standard methods: Get](https://google.aip.dev/131)
   - [AIP-132 Standard methods: List](https://google.aip.dev/132)
@@ -64,15 +64,18 @@
 
 - [ ] T003 Rewrite `projects/game/game.proto` — **先删除后新增**（clean break，参照 `contracts/api-contract.md`）：
   - **删除**：`ProxyService`、`AgentService`、`Agent`（message）、`AgentProfile`（message + 全部 Request/Response）、`Skill`（message + 全部 Request/Response）、`RefreshAgentRequest`、`GetAgentRequest`；`Session` pattern 改为 `templates/{template}/sessions/{session}`；`Message` pattern 改为含 agents 分区；`AgentFrame` field 7 `agent_profile_name` 改名 `agent`。
-  - **新增**：`enum Template { TEMPLATE_UNSPECIFIED=0; TEMPLATE_SAOLEI=1; }`；`message TeamAgent { string name=1; bool accepts_user_input=2; }`；`message Team`（pattern `templates/{template}/sessions/{session}/team`，含 `repeated TeamAgent agents`）；`TeamService`（`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam`，取代 ProxyService+AgentService）；`message TeamProfile`（pattern `templates/{template}/profiles/{profile}`，含 `Template template` + `oneof spec { SaoleiProfile saolei=10; }`）；`message SaoleiProfile { string player_model=1; string planner_model=2; }`；PromptService 改为 TeamProfile CRUD（CreateTeamProfile/GetTeamProfile/ListTeamProfiles/UpdateTeamProfile/DeleteTeamProfile）。
+  - **新增**：`message Template`（`google.api.resource` 注解：type `game.liukexin.com/Template`，pattern `templates/{template}`，singular/plural；无任何 RPC，FR-001——见注 1）；`message TeamAgent { string name=1; bool accepts_user_input=2; }`；`message Team`（pattern `templates/{template}/sessions/{session}/team`，含 `repeated TeamAgent agents`）；`TeamService`（`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam`，取代 ProxyService+AgentService）；`message TeamProfile`（pattern `templates/{template}/profiles/{profile}`，含 `string template`（REQUIRED + `resource_reference` type `game.liukexin.com/Template`）+ `oneof spec { SaoleiProfile saolei=10; }`）；`message SaoleiProfile { string player_model=1; string planner_model=2; }`；PromptService 改为 TeamProfile CRUD（CreateTeamProfile/GetTeamProfile/ListTeamProfiles/UpdateTeamProfile/DeleteTeamProfile）。
   - **保留不变**：`MessageParts`/`FlowParts`/`MessagePart`/`FlowPart` 及其子消息（TextPart/ThinkingPart/ImagePart 等）、`FrameSender` enum、其他 enums。`Message` 资源仅改 pattern + 加 `agent` field。
   - **SessionService RPCs**：pattern 从 `sessions/*` 改为 `templates/*/sessions/*`（CreateSession parent=`templates/{template}`）。
   - 每个 Service/Method 保留注释（`style/api.md` 要求 Service 注释含 Prefix Path）。
   - 验证 `bazel build projects/game:game_proto`。
+
+> **注 1（设计修订）**：Template 实现为资源消息（`message Template`，无任何 RPC）而非 proto enum；`Session.template`（OUTPUT_ONLY）/`TeamProfile.template`（REQUIRED）为 `string` + `resource_reference`（值 = 模板资源名 `templates/{template}`）；具体模板值在 gameconst 常量（`SaoleiTemplate`）；资源名解析由 `protoc-gen-go-aip` codegen 生成（`ParseTemplateName` 等），见 `contracts/api-contract.md` §3.1/§5。
 - [ ] T004 Rewrite `projects/game/pkg/gameconst/const.go` — **先删除后新增**（参照 `contracts/api-contract.md` §5）：
   - **删除**：`SessionNamePrefix`、`AgentProfileNamePrefix`、`SkillNamePrefix`、`PromptsParent`；`AgentName`/`AgentSessionID`/`AgentProfileName`/`AgentProfileID`/`SkillName`/`SkillID`；对应 error vars（`ErrInvalidAgentProfileName`/`ErrInvalidSkillName`/`ErrInvalidAgentName`）。
-  - **新增**：`SessionName(template, sessionID) → "templates/{template}/sessions/{sessionID}"`；`SessionID(name) → (template, sessionID, error)`（解析含 template 段）；`TeamName(template, sessionID) → ".../team"`；`TeamSessionID(name) → (template, sessionID, error)`；`MessageAgentName(template, sessionID, agent, messageID) → ".../agents/{agent}/messages/{message}"`；`MessageAgentParse(name) → (template, sessionID, agent, error)`；`TeamProfileName(template, profileID)`；`TeamProfileID(name)`；`ErrInvalidTeamName`/`ErrInvalidTeamProfileName`。保留 gRPC target 常量（`SessionTarget`/`ProxyTarget`→rename 为 `TeamTarget`/`AgentTarget`/`PromptTarget` 等，按实际 proto service 名调整）、log field 常量。
-  - 验证 `bazel build projects/game/pkg/gameconst` + `bazel test projects/game/pkg/gameconst`（更新或新增 const_test.go 验证新解析函数）。
+  - **新增**：Template 常量与校验——`var SaoleiTemplate = game.TemplateName{TemplateID: "saolei"}`（具体模板值，非 proto enum）、`ValidateTemplateName(name game.TemplateName) error`、`IsKnownTemplateID(segment string) bool`、`ErrInvalidTemplate`。保留 gRPC target 常量（`SessionTarget`/`ProxyTarget`→rename 为 `TeamTarget`/`AgentTarget`/`PromptTarget` 等，按实际 proto service 名调整）、log field 常量。
+  - **注 2（设计修订）**：资源名解析不再手写于 gameconst——由 `protoc-gen-go-aip` codegen 生成（`ParseTemplateName`/`ParseSessionName`/`ParseTeamName`/`ParseTeamProfileName`/`ParseMessageName` 及 `ParseName()`/`ParseTemplate()`/`Parent()`），见 `contracts/api-contract.md` §5。
+  - 验证 `bazel build projects/game/pkg/gameconst` + `bazel test projects/game/pkg/gameconst`（更新或新增 const_test.go 验证 Template 常量与校验）。
 
 **Checkpoint**: proto + gameconst 就绪。下游各服务 target 待 Phase 3-5 修复。
 

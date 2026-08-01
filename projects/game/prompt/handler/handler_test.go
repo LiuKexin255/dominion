@@ -7,7 +7,6 @@ import (
 	"time"
 
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/gameconst"
 	"dominion/projects/game/prompt/domain"
 
 	"google.golang.org/grpc/codes"
@@ -15,590 +14,565 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
-// inMemoryAgentProfileRepo implements domain.AgentProfileRepository for testing.
-type inMemoryAgentProfileRepo struct {
+// inMemoryTeamProfileRepo implements domain.TeamProfileRepository for testing.
+type inMemoryTeamProfileRepo struct {
 	mu       sync.Mutex
-	profiles map[string]*domain.AgentProfile
+	profiles map[string]*domain.TeamProfile
 }
 
-func newInMemoryAgentProfileRepo() *inMemoryAgentProfileRepo {
-	return &inMemoryAgentProfileRepo{profiles: make(map[string]*domain.AgentProfile)}
+func newInMemoryTeamProfileRepo() *inMemoryTeamProfileRepo {
+	return &inMemoryTeamProfileRepo{profiles: make(map[string]*domain.TeamProfile)}
 }
 
-func (r *inMemoryAgentProfileRepo) CreateAgentProfile(_ context.Context, profile *domain.AgentProfile) error {
+func (r *inMemoryTeamProfileRepo) CreateTeamProfile(_ context.Context, profile *domain.TeamProfile) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.profiles[profile.AgentProfileName]; exists {
+	if _, exists := r.profiles[profile.TeamProfileName]; exists {
 		return domain.ErrAlreadyExists
 	}
-	r.profiles[profile.AgentProfileName] = profile
+	r.profiles[profile.TeamProfileName] = profile
 	return nil
 }
 
-func (r *inMemoryAgentProfileRepo) GetAgentProfile(_ context.Context, profileName string) (*domain.AgentProfile, error) {
+func (r *inMemoryTeamProfileRepo) GetTeamProfile(_ context.Context, template, profileName string) (*domain.TeamProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.profiles[profileName]
-	if !ok {
+	if !ok || p.Template != template {
 		return nil, domain.ErrNotFound
 	}
 	return p, nil
 }
 
-func (r *inMemoryAgentProfileRepo) UpdateAgentProfile(_ context.Context, profile *domain.AgentProfile) (*domain.AgentProfile, error) {
+func (r *inMemoryTeamProfileRepo) UpdateTeamProfile(_ context.Context, profile *domain.TeamProfile) (*domain.TeamProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	existing, ok := r.profiles[profile.AgentProfileName]
+	existing, ok := r.profiles[profile.TeamProfileName]
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
 	clone := *profile
 	clone.CreateTime = existing.CreateTime
-	r.profiles[profile.AgentProfileName] = &clone
+	r.profiles[profile.TeamProfileName] = &clone
 	return &clone, nil
 }
 
-func (r *inMemoryAgentProfileRepo) ListAgentProfiles(_ context.Context, pageSize int, pageToken string) ([]*domain.AgentProfile, string, error) {
+func (r *inMemoryTeamProfileRepo) ListTeamProfiles(_ context.Context, template string, pageSize int, pageToken string) ([]*domain.TeamProfile, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	result := make([]*domain.AgentProfile, 0, len(r.profiles))
+	result := make([]*domain.TeamProfile, 0, len(r.profiles))
 	for _, p := range r.profiles {
-		result = append(result, p)
+		if p.Template == template {
+			result = append(result, p)
+		}
 	}
 	return result, "", nil
 }
 
-func (r *inMemoryAgentProfileRepo) DeleteAgentProfile(_ context.Context, profileName string) error {
+func (r *inMemoryTeamProfileRepo) DeleteTeamProfile(_ context.Context, template, profileName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.profiles[profileName]; !ok {
+	p, ok := r.profiles[profileName]
+	if !ok || p.Template != template {
 		return domain.ErrNotFound
 	}
 	delete(r.profiles, profileName)
 	return nil
 }
 
-// inMemorySkillRepo implements domain.SkillRepository for testing.
-type inMemorySkillRepo struct {
-	mu     sync.Mutex
-	skills map[string]*domain.Skill
-}
-
-func newInMemorySkillRepo() *inMemorySkillRepo {
-	return &inMemorySkillRepo{skills: make(map[string]*domain.Skill)}
-}
-
-func (r *inMemorySkillRepo) CreateSkill(_ context.Context, skill *domain.Skill) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, exists := r.skills[skill.SkillName]; exists {
-		return domain.ErrAlreadyExists
+// saoleiProfile returns a proto TeamProfile with the saolei spec variant set.
+// template is the template resource name (e.g. "templates/saolei").
+func saoleiProfile(template string) *game.TeamProfile {
+	return &game.TeamProfile{
+		Template: template,
+		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+			PlayerModel:  "opencode-go/deepseek-v4-pro",
+			PlannerModel: "opencode-go/deepseek-v4-pro",
+		}},
 	}
-	r.skills[skill.SkillName] = skill
-	return nil
 }
 
-func (r *inMemorySkillRepo) GetSkill(_ context.Context, skillName string) (*domain.Skill, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	s, ok := r.skills[skillName]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	return s, nil
-}
-
-func (r *inMemorySkillRepo) ListSkills(_ context.Context, pageSize int, pageToken string) ([]*domain.Skill, string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	result := make([]*domain.Skill, 0, len(r.skills))
-	for _, s := range r.skills {
-		result = append(result, s)
-	}
-	return result, "", nil
-}
-
-func (r *inMemorySkillRepo) DeleteSkill(_ context.Context, skillName string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.skills[skillName]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(r.skills, skillName)
-	return nil
-}
-
-func TestPromptService_CreateGetAgentProfile(t *testing.T) {
+func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
 
-	createReq := &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "test-profile",
-		AgentProfile: &game.AgentProfile{
-			Model:        "opencode-go/deepseek-v4-pro",
-			SystemPrompt: "You are a helpful assistant.",
-			SkillNames:   []string{"skill-a"},
-			McpNames:     []string{"mcp-server-1"},
-			Enabled:      true,
-		},
+	createReq := &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "default",
+		TeamProfile:   saoleiProfile("templates/saolei"),
 	}
 
 	// when — create
-	created, err := h.CreateAgentProfile(ctx, createReq)
+	created, err := h.CreateTeamProfile(ctx, createReq)
 
 	// then — create succeeds
 	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "prompts/agentProfiles/test-profile" {
-		t.Fatalf("CreateAgentProfile() name = %q, want %q", created.GetName(), "prompts/agentProfiles/test-profile")
+	if created.GetName() != "templates/saolei/profiles/default" {
+		t.Fatalf("CreateTeamProfile() name = %q, want %q", created.GetName(), "templates/saolei/profiles/default")
 	}
-	if created.GetModel() != "opencode-go/deepseek-v4-pro" {
-		t.Fatalf("CreateAgentProfile() model = %q, want %q", created.GetModel(), "opencode-go/deepseek-v4-pro")
+	if created.GetTemplate() != "templates/saolei" {
+		t.Fatalf("CreateTeamProfile() template = %q, want %q", created.GetTemplate(), "templates/saolei")
 	}
-	if created.GetSystemPrompt() != "You are a helpful assistant." {
-		t.Fatalf("CreateAgentProfile() system_prompt = %q, want %q", created.GetSystemPrompt(), "You are a helpful assistant.")
+	if created.GetSaolei().GetPlayerModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("CreateTeamProfile() player_model = %q, want %q", created.GetSaolei().GetPlayerModel(), "opencode-go/deepseek-v4-pro")
 	}
-	if len(created.GetSkillNames()) != 1 || created.GetSkillNames()[0] != "skill-a" {
-		t.Fatalf("CreateAgentProfile() skill_names = %v, want [skill-a]", created.GetSkillNames())
-	}
-	if created.GetEnabled() != true {
-		t.Fatalf("CreateAgentProfile() enabled = %v, want true", created.GetEnabled())
+	if created.GetSaolei().GetPlannerModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("CreateTeamProfile() planner_model = %q, want %q", created.GetSaolei().GetPlannerModel(), "opencode-go/deepseek-v4-pro")
 	}
 	if created.GetCreateTime() == nil {
-		t.Fatal("CreateAgentProfile() create_time is nil, want non-nil")
+		t.Fatal("CreateTeamProfile() create_time is nil, want non-nil")
 	}
 
 	// when — get
-	getReq := &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/test-profile"}
-	got, err := h.GetAgentProfile(ctx, getReq)
+	getReq := &game.GetTeamProfileRequest{Name: "templates/saolei/profiles/default"}
+	got, err := h.GetTeamProfile(ctx, getReq)
 
 	// then — get returns same profile
 	assertStatusCode(t, err, codes.OK)
 	if got.GetName() != created.GetName() {
-		t.Fatalf("GetAgentProfile() name = %q, want %q", got.GetName(), created.GetName())
+		t.Fatalf("GetTeamProfile() name = %q, want %q", got.GetName(), created.GetName())
 	}
-	if got.GetModel() != created.GetModel() {
-		t.Fatalf("GetAgentProfile() model = %q, want %q", got.GetModel(), created.GetModel())
+	if got.GetTemplate() != created.GetTemplate() {
+		t.Fatalf("GetTeamProfile() template = %v, want %v", got.GetTemplate(), created.GetTemplate())
+	}
+	if got.GetSaolei().GetPlayerModel() != created.GetSaolei().GetPlayerModel() {
+		t.Fatalf("GetTeamProfile() player_model = %q, want %q", got.GetSaolei().GetPlayerModel(), created.GetSaolei().GetPlayerModel())
 	}
 }
 
-func TestPromptService_CreateGetSkill(t *testing.T) {
+func TestPromptService_CreateTeamProfileValidation(t *testing.T) {
 	ctx := context.Background()
 
-	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	createReq := &game.CreateSkillRequest{
-		Parent:  gameconst.PromptsParent,
-		SkillId: "my-skill",
-		Skill: &game.Skill{
-			Content: "You know how to browse the web.",
-			Enabled: true,
+	tests := []struct {
+		name    string
+		req     *game.CreateTeamProfileRequest
+		wantErr bool
+	}{
+		{
+			name: "invalid parent - no templates prefix",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "profiles",
+				TeamProfileId: "default",
+				TeamProfile:   saoleiProfile("templates/saolei"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid parent - unknown template",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "templates/unknown-template",
+				TeamProfileId: "default",
+				TeamProfile:   saoleiProfile("templates/saolei"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "template mismatch with parent",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "templates/saolei",
+				TeamProfileId: "default",
+				TeamProfile:   saoleiProfile("templates/xxx"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "template without saolei spec variant",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "templates/saolei",
+				TeamProfileId: "default",
+				TeamProfile:   &game.TeamProfile{Template: "templates/saolei"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "unspecified template without spec",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "templates/saolei",
+				TeamProfileId: "default",
+				TeamProfile:   &game.TeamProfile{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "profile id with slash",
+			req: &game.CreateTeamProfileRequest{
+				Parent:        "templates/saolei",
+				TeamProfileId: "bad/id",
+				TeamProfile:   saoleiProfile("templates/saolei"),
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty team_profile_id is rejected (REQUIRED per proto)",
+			req: &game.CreateTeamProfileRequest{
+				Parent:      "templates/saolei",
+				TeamProfile: saoleiProfile("templates/saolei"),
+			},
+			wantErr: true,
 		},
 	}
 
-	// when — create
-	created, err := h.CreateSkill(ctx, createReq)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			h := NewHandler(newInMemoryTeamProfileRepo())
 
-	// then — create succeeds
-	assertStatusCode(t, err, codes.OK)
-	if created.GetName() != "prompts/skills/my-skill" {
-		t.Fatalf("CreateSkill() name = %q, want %q", created.GetName(), "prompts/skills/my-skill")
-	}
-	if created.GetContent() != "You know how to browse the web." {
-		t.Fatalf("CreateSkill() content = %q, want %q", created.GetContent(), "You know how to browse the web.")
-	}
-	if created.GetEnabled() != true {
-		t.Fatalf("CreateSkill() enabled = %v, want true", created.GetEnabled())
-	}
+			// when
+			_, err := h.CreateTeamProfile(ctx, tt.req)
 
-	// when — get
-	getReq := &game.GetSkillRequest{Name: "prompts/skills/my-skill"}
-	got, err := h.GetSkill(ctx, getReq)
-
-	// then — get returns same skill
-	assertStatusCode(t, err, codes.OK)
-	if got.GetName() != created.GetName() {
-		t.Fatalf("GetSkill() name = %q, want %q", got.GetName(), created.GetName())
-	}
-	if got.GetContent() != created.GetContent() {
-		t.Fatalf("GetSkill() content = %q, want %q", got.GetContent(), created.GetContent())
+			// then
+			assertStatusCode(t, err, codes.InvalidArgument)
+			if !tt.wantErr {
+				t.Fatalf("CreateTeamProfile() expected success, got error: %v", err)
+			}
+		})
 	}
 }
 
-func TestPromptService_ProfileNotFound(t *testing.T) {
+func TestPromptService_TeamProfileNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	h := NewHandler(newInMemoryTeamProfileRepo())
 
 	// when — get missing profile
-	_, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/nonexistent"})
+	_, err := h.GetTeamProfile(ctx, &game.GetTeamProfileRequest{Name: "templates/saolei/profiles/nonexistent"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
 }
 
-func TestPromptService_CreateGetAgentProfileWithToolNames(t *testing.T) {
+func TestPromptService_ListTeamProfiles(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
 
-	createReq := &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "tools-profile",
-		AgentProfile: &game.AgentProfile{
-			Model:        "opencode-go/deepseek-v4-pro",
-			SystemPrompt: "You can click things.",
-			ToolNames:    []string{"mouse", "keyboard"},
-			Enabled:      true,
-		},
-	}
-
-	// when — create
-	created, err := h.CreateAgentProfile(ctx, createReq)
-
-	// then — tool_names echoed on create response
-	assertStatusCode(t, err, codes.OK)
-	if len(created.GetToolNames()) != 2 {
-		t.Fatalf("CreateAgentProfile() tool_names len = %d, want 2", len(created.GetToolNames()))
-	}
-	if created.GetToolNames()[0] != "mouse" || created.GetToolNames()[1] != "keyboard" {
-		t.Fatalf("CreateAgentProfile() tool_names = %v, want [mouse keyboard]", created.GetToolNames())
-	}
-
-	// when — get
-	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/tools-profile"})
-
-	// then — tool_names persisted and returned
-	assertStatusCode(t, err, codes.OK)
-	if len(got.GetToolNames()) != 2 {
-		t.Fatalf("GetAgentProfile() tool_names len = %d, want 2", len(got.GetToolNames()))
-	}
-	if got.GetToolNames()[0] != "mouse" || got.GetToolNames()[1] != "keyboard" {
-		t.Fatalf("GetAgentProfile() tool_names = %v, want [mouse keyboard]", got.GetToolNames())
-	}
-}
-
-func TestPromptService_UpdateAgentProfileToolNamesViaFieldMask(t *testing.T) {
-	ctx := context.Background()
-
-	// given — seed profile with tool_names=["mouse"]
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "mask-profile",
-		AgentProfile: &game.AgentProfile{
-			Model:        "opencode-go/deepseek-v4-pro",
-			SystemPrompt: "original prompt",
-			ToolNames:    []string{"mouse"},
-			Enabled:      true,
-		},
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "default",
+		TeamProfile:   saoleiProfile("templates/saolei"),
 	})
 	assertStatusCode(t, err, codes.OK)
 
-	// when — update tool_names to [] via FieldMask
-	updateReq := &game.UpdateAgentProfileRequest{
-		AgentProfile: &game.AgentProfile{
-			Name:      "prompts/agentProfiles/mask-profile",
-			ToolNames: []string{},
-		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
-	}
-	updated, err := h.UpdateAgentProfile(ctx, updateReq)
+	// when
+	listResp, err := h.ListTeamProfiles(ctx, &game.ListTeamProfilesRequest{Parent: "templates/saolei"})
 
-	// then — tool_names cleared, other fields preserved
+	// then
 	assertStatusCode(t, err, codes.OK)
-	if len(updated.GetToolNames()) != 0 {
-		t.Fatalf("UpdateAgentProfile() tool_names = %v, want empty", updated.GetToolNames())
+	if len(listResp.GetTeamProfiles()) != 1 {
+		t.Fatalf("ListTeamProfiles() got %d profiles, want 1", len(listResp.GetTeamProfiles()))
 	}
-	if updated.GetSystemPrompt() != "original prompt" {
-		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q (FieldMask should not touch)", updated.GetSystemPrompt(), "original prompt")
-	}
-	if updated.GetModel() != "opencode-go/deepseek-v4-pro" {
-		t.Fatalf("UpdateAgentProfile() model = %q, want %q (FieldMask should not touch)", updated.GetModel(), "opencode-go/deepseek-v4-pro")
-	}
-	if !updated.GetEnabled() {
-		t.Fatalf("UpdateAgentProfile() enabled = false, want true (FieldMask should not touch)")
-	}
-	if updated.GetUpdateTime() == nil {
-		t.Fatal("UpdateAgentProfile() update_time is nil, want non-nil")
-	}
-	if updated.GetCreateTime() == nil {
-		t.Fatal("UpdateAgentProfile() create_time is nil, want non-nil")
+	if listResp.GetTeamProfiles()[0].GetName() != "templates/saolei/profiles/default" {
+		t.Fatalf("ListTeamProfiles()[0] name = %q, want %q", listResp.GetTeamProfiles()[0].GetName(), "templates/saolei/profiles/default")
 	}
 
-	// when — re-fetch
-	got, err := h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/mask-profile"})
+	// when — invalid parent
+	_, err = h.ListTeamProfiles(ctx, &game.ListTeamProfilesRequest{Parent: "profiles"})
 
-	// then — persisted
-	assertStatusCode(t, err, codes.OK)
-	if len(got.GetToolNames()) != 0 {
-		t.Fatalf("GetAgentProfile() after update tool_names = %v, want empty", got.GetToolNames())
-	}
+	// then
+	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
-func TestPromptService_UpdateAgentProfileUnknownFieldMaskPath(t *testing.T) {
+func TestPromptService_UpdateTeamProfileViaFieldMask(t *testing.T) {
 	ctx := context.Background()
 
 	// given — seed profile
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
 
-	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "unknown-path-profile",
-		AgentProfile: &game.AgentProfile{
-			Model: "opencode-go/deepseek-v4-pro",
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "mask-profile",
+		TeamProfile:   saoleiProfile("templates/saolei"),
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update player_model only via FieldMask (oneof member path)
+	updateReq := &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/mask-profile",
+			Template: "templates/saolei",
+			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+				PlayerModel: "opencode-go/gpt-5",
+			}},
 		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
+	}
+	updated, err := h.UpdateTeamProfile(ctx, updateReq)
+
+	// then — player_model updated, planner_model preserved
+	assertStatusCode(t, err, codes.OK)
+	if updated.GetSaolei().GetPlayerModel() != "opencode-go/gpt-5" {
+		t.Fatalf("UpdateTeamProfile() player_model = %q, want %q", updated.GetSaolei().GetPlayerModel(), "opencode-go/gpt-5")
+	}
+	if updated.GetSaolei().GetPlannerModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlannerModel(), "opencode-go/deepseek-v4-pro")
+	}
+	if updated.GetUpdateTime() == nil {
+		t.Fatal("UpdateTeamProfile() update_time is nil, want non-nil")
+	}
+	if updated.GetCreateTime() == nil {
+		t.Fatal("UpdateTeamProfile() create_time is nil, want non-nil")
+	}
+
+	// when — re-fetch
+	got, err := h.GetTeamProfile(ctx, &game.GetTeamProfileRequest{Name: "templates/saolei/profiles/mask-profile"})
+
+	// then — persisted
+	assertStatusCode(t, err, codes.OK)
+	if got.GetSaolei().GetPlayerModel() != "opencode-go/gpt-5" {
+		t.Fatalf("GetTeamProfile() after update player_model = %q, want %q", got.GetSaolei().GetPlayerModel(), "opencode-go/gpt-5")
+	}
+}
+
+func TestPromptService_UpdateTeamProfileWholeSpec(t *testing.T) {
+	ctx := context.Background()
+
+	// given — seed profile
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
+
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "whole-spec",
+		TeamProfile:   saoleiProfile("templates/saolei"),
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update the whole saolei spec via FieldMask path "saolei"
+	updateReq := &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/whole-spec",
+			Template: "templates/saolei",
+			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+				PlayerModel:  "model-p",
+				PlannerModel: "model-l",
+			}},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"saolei"}},
+	}
+	updated, err := h.UpdateTeamProfile(ctx, updateReq)
+
+	// then
+	assertStatusCode(t, err, codes.OK)
+	if updated.GetSaolei().GetPlayerModel() != "model-p" {
+		t.Fatalf("UpdateTeamProfile() player_model = %q, want %q", updated.GetSaolei().GetPlayerModel(), "model-p")
+	}
+	if updated.GetSaolei().GetPlannerModel() != "model-l" {
+		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q", updated.GetSaolei().GetPlannerModel(), "model-l")
+	}
+}
+
+func TestPromptService_UpdateTeamProfileValidation(t *testing.T) {
+	ctx := context.Background()
+
+	// given
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
+
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "unknown-path-profile",
+		TeamProfile:   saoleiProfile("templates/saolei"),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update with unknown FieldMask path
-	updateReq := &game.UpdateAgentProfileRequest{
-		AgentProfile: &game.AgentProfile{
-			Name: "prompts/agentProfiles/unknown-path-profile",
+	_, err = h.UpdateTeamProfile(ctx, &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/unknown-path-profile",
+			Template: "templates/saolei",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
-	}
-	_, err = h.UpdateAgentProfile(ctx, updateReq)
+	})
 
 	// then — returns InvalidArgument
 	assertStatusCode(t, err, codes.InvalidArgument)
+
+	// when — update with an explicit template that agrees with the resource
+	// name: must succeed (template consistency against the name is validated)
+	_, err = h.UpdateTeamProfile(ctx, &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/unknown-path-profile",
+			Template: "templates/saolei",
+			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+				PlayerModel: "x",
+			}},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
+	})
+
+	// then — returns OK
+	assertStatusCode(t, err, codes.OK)
 }
 
-func TestPromptService_UpdateAgentProfileNotFound(t *testing.T) {
+func TestPromptService_UpdateTeamProfileNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// given
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	h := NewHandler(newInMemoryTeamProfileRepo())
 
 	// when — update missing profile
-	updateReq := &game.UpdateAgentProfileRequest{
-		AgentProfile: &game.AgentProfile{
-			Name:  "prompts/agentProfiles/ghost",
-			Model: "opencode-go/deepseek-v4-pro",
+	updateReq := &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/ghost",
+			Template: "templates/saolei",
+			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+				PlayerModel: "opencode-go/deepseek-v4-pro",
+			}},
 		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"model"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
 	}
-	_, err := h.UpdateAgentProfile(ctx, updateReq)
+	_, err := h.UpdateTeamProfile(ctx, updateReq)
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
 }
 
-func TestPromptService_UpdateAgentProfileMultipleFields(t *testing.T) {
-	ctx := context.Background()
-
-	// given — seed
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
-
-	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "multi-mask",
-		AgentProfile: &game.AgentProfile{
-			Model:        "opencode-go/deepseek-v4-pro",
-			SystemPrompt: "before",
-			Enabled:      true,
-		},
-	})
-	assertStatusCode(t, err, codes.OK)
-
-	// when — update model + system_prompt + enabled simultaneously
-	updateReq := &game.UpdateAgentProfileRequest{
-		AgentProfile: &game.AgentProfile{
-			Name:         "prompts/agentProfiles/multi-mask",
-			Model:        "opencode-go/gpt-5",
-			SystemPrompt: "after",
-			Enabled:      false,
-		},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"model", "system_prompt", "enabled"}},
-	}
-	updated, err := h.UpdateAgentProfile(ctx, updateReq)
-
-	// then — all masked fields updated
-	assertStatusCode(t, err, codes.OK)
-	if updated.GetModel() != "opencode-go/gpt-5" {
-		t.Fatalf("UpdateAgentProfile() model = %q, want %q", updated.GetModel(), "opencode-go/gpt-5")
-	}
-	if updated.GetSystemPrompt() != "after" {
-		t.Fatalf("UpdateAgentProfile() system_prompt = %q, want %q", updated.GetSystemPrompt(), "after")
-	}
-	if updated.GetEnabled() {
-		t.Fatalf("UpdateAgentProfile() enabled = true, want false")
-	}
-}
-
-func Test_applyAgentProfileMask(t *testing.T) {
-	existing := &domain.AgentProfile{
-		AgentProfileName: "p",
-		Model:            "old-model",
-		SystemPrompt:     "old",
-		SkillNames:       []string{"s1"},
-		MCPNames:         []string{"m1"},
-		Enabled:          true,
-		ToolNames:        []string{"t1"},
+func Test_applyTeamProfileMask(t *testing.T) {
+	existing := &domain.TeamProfile{
+		TeamProfileName:    "p",
+		Template:           "saolei",
+		SaoleiPlayerModel:  "old-player",
+		SaoleiPlannerModel: "old-planner",
 	}
 
 	tests := []struct {
-		name      string
-		patch     *game.AgentProfile
-		mask      *fieldmaskpb.FieldMask
-		wantModel string
-		wantTools []string
-		wantErr   bool
+		name        string
+		patch       *game.TeamProfile
+		mask        *fieldmaskpb.FieldMask
+		wantPlayer  string
+		wantPlanner string
+		wantErr     bool
 	}{
 		{
-			name:      "nil mask leaves existing unchanged",
-			patch:     &game.AgentProfile{Model: "ignored"},
-			mask:      nil,
-			wantModel: "old-model",
-			wantTools: []string{"t1"},
+			name:        "nil mask with saolei patch replaces whole spec",
+			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p", PlannerModel: "new-l"}}},
+			mask:        nil,
+			wantPlayer:  "new-p",
+			wantPlanner: "new-l",
 		},
 		{
-			name:      "empty mask paths leaves existing unchanged",
-			patch:     &game.AgentProfile{Model: "ignored"},
-			mask:      &fieldmaskpb.FieldMask{Paths: nil},
-			wantModel: "old-model",
-			wantTools: []string{"t1"},
+			name:        "nil mask without spec leaves existing unchanged",
+			patch:       &game.TeamProfile{Template: "templates/saolei"},
+			mask:        nil,
+			wantPlayer:  "old-player",
+			wantPlanner: "old-planner",
 		},
 		{
-			name:      "single field model",
-			patch:     &game.AgentProfile{Model: "new-model"},
-			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model"}},
-			wantModel: "new-model",
-			wantTools: []string{"t1"},
+			name:        "empty mask paths without spec leaves existing unchanged",
+			patch:       &game.TeamProfile{Template: "templates/saolei"},
+			mask:        &fieldmaskpb.FieldMask{Paths: nil},
+			wantPlayer:  "old-player",
+			wantPlanner: "old-planner",
 		},
 		{
-			name:      "tool_names cleared to empty slice",
-			patch:     &game.AgentProfile{ToolNames: []string{}},
-			mask:      &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
-			wantModel: "old-model",
-			wantTools: []string{},
+			name:        "saolei.player_model only",
+			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p"}}},
+			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
+			wantPlayer:  "new-p",
+			wantPlanner: "old-planner",
 		},
 		{
-			name:      "tool_names replaced",
-			patch:     &game.AgentProfile{ToolNames: []string{"a", "b"}},
-			mask:      &fieldmaskpb.FieldMask{Paths: []string{"tool_names"}},
-			wantModel: "old-model",
-			wantTools: []string{"a", "b"},
+			name:        "saolei.planner_model only",
+			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlannerModel: "new-l"}}},
+			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.planner_model"}},
+			wantPlayer:  "old-player",
+			wantPlanner: "new-l",
 		},
 		{
-			name:      "multiple fields masked",
-			patch:     &game.AgentProfile{Model: "new", ToolNames: []string{"x"}, Enabled: false},
-			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model", "tool_names", "enabled"}},
-			wantModel: "new",
-			wantTools: []string{"x"},
+			name:        "both oneof member paths",
+			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p2", PlannerModel: "l2"}}},
+			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model", "saolei.planner_model"}},
+			wantPlayer:  "p2",
+			wantPlanner: "l2",
+		},
+		{
+			name:        "whole saolei path replaces both",
+			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p3", PlannerModel: "l3"}}},
+			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei"}},
+			wantPlayer:  "p3",
+			wantPlanner: "l3",
 		},
 		{
 			name:    "unknown path returns error",
-			patch:   &game.AgentProfile{},
+			patch:   &game.TeamProfile{},
 			mask:    &fieldmaskpb.FieldMask{Paths: []string{"bogus"}},
 			wantErr: true,
 		},
 		{
 			name:    "unknown path mixed with valid still errors",
-			patch:   &game.AgentProfile{Model: "new"},
-			mask:    &fieldmaskpb.FieldMask{Paths: []string{"model", "bogus"}},
+			patch:   &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new"}}},
+			mask:    &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model", "bogus"}},
 			wantErr: true,
 		},
 		{
-			name:      "nil patch with valid mask returns copy of existing",
-			patch:     nil,
-			mask:      &fieldmaskpb.FieldMask{Paths: []string{"model"}},
-			wantModel: "old-model",
-			wantTools: []string{"t1"},
+			name:    "whole saolei path without spec returns error",
+			patch:   &game.TeamProfile{},
+			mask:    &fieldmaskpb.FieldMask{Paths: []string{"saolei"}},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			got, err := applyAgentProfileMask(existing, tt.patch, tt.mask)
+			got, err := applyTeamProfileMask(existing, tt.patch, tt.mask)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("applyAgentProfileMask() expected error, got nil")
+					t.Fatalf("applyTeamProfileMask() expected error, got nil")
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("applyAgentProfileMask() unexpected error: %v", err)
+				t.Fatalf("applyTeamProfileMask() unexpected error: %v", err)
 			}
-			if got.Model != tt.wantModel {
-				t.Fatalf("applyAgentProfileMask() model = %q, want %q", got.Model, tt.wantModel)
+			if got.SaoleiPlayerModel != tt.wantPlayer {
+				t.Fatalf("applyTeamProfileMask() player_model = %q, want %q", got.SaoleiPlayerModel, tt.wantPlayer)
 			}
-			if tt.wantTools == nil {
-				if got.ToolNames != nil {
-					t.Fatalf("applyAgentProfileMask() tool_names = %v, want nil", got.ToolNames)
-				}
-			} else {
-				if len(got.ToolNames) != len(tt.wantTools) {
-					t.Fatalf("applyAgentProfileMask() tool_names len = %d, want %d", len(got.ToolNames), len(tt.wantTools))
-				}
-				for i, want := range tt.wantTools {
-					if got.ToolNames[i] != want {
-						t.Fatalf("applyAgentProfileMask() tool_names[%d] = %q, want %q", i, got.ToolNames[i], want)
-					}
-				}
+			if got.SaoleiPlannerModel != tt.wantPlanner {
+				t.Fatalf("applyTeamProfileMask() planner_model = %q, want %q", got.SaoleiPlannerModel, tt.wantPlanner)
 			}
 			// Ensure existing was not mutated.
-			if existing.Model != "old-model" {
-				t.Fatalf("applyAgentProfileMask() mutated existing: model = %q", existing.Model)
+			if existing.SaoleiPlayerModel != "old-player" {
+				t.Fatalf("applyTeamProfileMask() mutated existing: player_model = %q", existing.SaoleiPlayerModel)
 			}
-			if len(existing.ToolNames) != 1 || existing.ToolNames[0] != "t1" {
-				t.Fatalf("applyAgentProfileMask() mutated existing tool_names = %v", existing.ToolNames)
+			if existing.SaoleiPlannerModel != "old-planner" {
+				t.Fatalf("applyTeamProfileMask() mutated existing: planner_model = %q", existing.SaoleiPlannerModel)
 			}
 		})
 	}
 }
 
-func TestPromptService_DeleteSuccess(t *testing.T) {
+func TestPromptService_DeleteTeamProfile(t *testing.T) {
 	ctx := context.Background()
 
 	// given — create a profile first
-	profileRepo := newInMemoryAgentProfileRepo()
-	skillRepo := newInMemorySkillRepo()
-	h := NewHandler(profileRepo, skillRepo)
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
 
-	_, err := h.CreateAgentProfile(ctx, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: "to-delete",
-		AgentProfile: &game.AgentProfile{
-			Model:   "opencode-go/deepseek-v4-pro",
-			Enabled: true,
-		},
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "to-delete",
+		TeamProfile:   saoleiProfile("templates/saolei"),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — delete
-	_, err = h.DeleteAgentProfile(ctx, &game.DeleteAgentProfileRequest{Name: "prompts/agentProfiles/to-delete"})
+	_, err = h.DeleteTeamProfile(ctx, &game.DeleteTeamProfileRequest{Name: "templates/saolei/profiles/to-delete"})
 
 	// then — delete succeeds
 	assertStatusCode(t, err, codes.OK)
 
 	// when — get deleted profile
-	_, err = h.GetAgentProfile(ctx, &game.GetAgentProfileRequest{Name: "prompts/agentProfiles/to-delete"})
+	_, err = h.GetTeamProfile(ctx, &game.GetTeamProfileRequest{Name: "templates/saolei/profiles/to-delete"})
 
 	// then — returns NotFound
 	assertStatusCode(t, err, codes.NotFound)
@@ -644,10 +618,10 @@ func Test_toStatusError(t *testing.T) {
 	}
 }
 
-func Test_agentProfileToProto(t *testing.T) {
+func Test_teamProfileToProto(t *testing.T) {
 	tests := []struct {
 		name     string
-		profile  *domain.AgentProfile
+		profile  *domain.TeamProfile
 		wantNil  bool
 		wantName string
 	}{
@@ -658,84 +632,48 @@ func Test_agentProfileToProto(t *testing.T) {
 		},
 		{
 			name: "profile with fields",
-			profile: &domain.AgentProfile{
-				AgentProfileName: "test",
-				Model:            "opencode-go/deepseek-v4-pro",
-				Enabled:          true,
-				CreateTime:       time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
-				UpdateTime:       time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
+			profile: &domain.TeamProfile{
+				TeamProfileName:    "test",
+				Template:           "saolei",
+				SaoleiPlayerModel:  "opencode-go/deepseek-v4-pro",
+				SaoleiPlannerModel: "opencode-go/deepseek-v4-pro",
+				CreateTime:         time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
+				UpdateTime:         time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
 			wantNil:  false,
-			wantName: "prompts/agentProfiles/test",
+			wantName: "templates/saolei/profiles/test",
 		},
 		{
 			name: "profile with zero times has no timestamps",
-			profile: &domain.AgentProfile{
-				AgentProfileName: "notime",
+			profile: &domain.TeamProfile{
+				TeamProfileName: "notime",
+				Template:        "saolei",
 			},
 			wantNil:  false,
-			wantName: "prompts/agentProfiles/notime",
+			wantName: "templates/saolei/profiles/notime",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// when
-			got := agentProfileToProto(tt.profile)
+			got := teamProfileToProto(tt.profile)
 
 			// then
 			if tt.wantNil {
 				if got != nil {
-					t.Fatalf("agentProfileToProto() = %v, want nil", got)
+					t.Fatalf("teamProfileToProto() = %v, want nil", got)
 				}
 				return
 			}
 			if got.GetName() != tt.wantName {
-				t.Fatalf("agentProfileToProto() name = %q, want %q", got.GetName(), tt.wantName)
+				t.Fatalf("teamProfileToProto() name = %q, want %q", got.GetName(), tt.wantName)
 			}
-		})
-	}
-}
-
-func Test_skillToProto(t *testing.T) {
-	tests := []struct {
-		name     string
-		skill    *domain.Skill
-		wantNil  bool
-		wantName string
-	}{
-		{
-			name:    "nil skill returns nil",
-			skill:   nil,
-			wantNil: true,
-		},
-		{
-			name: "skill with fields",
-			skill: &domain.Skill{
-				SkillName:  "test",
-				Content:    "some content",
-				Enabled:    true,
-				CreateTime: time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
-			},
-			wantNil:  false,
-			wantName: "prompts/skills/test",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// when
-			got := skillToProto(tt.skill)
-
-			// then
-			if tt.wantNil {
-				if got != nil {
-					t.Fatalf("skillToProto() = %v, want nil", got)
-				}
-				return
+			if got.GetTemplate() != "templates/saolei" {
+				t.Fatalf("teamProfileToProto() template = %q, want %q", got.GetTemplate(), "templates/saolei")
 			}
-			if got.GetName() != tt.wantName {
-				t.Fatalf("skillToProto() name = %q, want %q", got.GetName(), tt.wantName)
+			if got.GetSaolei() == nil {
+				t.Fatalf("teamProfileToProto() saolei spec is nil, want set")
 			}
 		})
 	}
