@@ -223,9 +223,9 @@
 
 ## Phase 7: User Story 5 - 模板特化的 TeamProfile 配置 (Priority: P2)
 
-**Goal**: saolei 的 TeamProfile 仅含 player/planner 模型选择；desktop profile 页对该模板特化渲染；tools/mcp 由模板固定装配不可经 profile 配置。
+**Goal**: saolei 的 TeamProfile 含 player/planner 模型选择 + 各自 base 提示词（FR-034，语义 A）；desktop profile 页对该模板特化渲染；tools/mcp 由模板固定装配不可经 profile 配置。
 
-**Independent Test**: prompt 服务管理 `templates/saolei/profiles/{profile}`；TeamProfile 仅含 player/planner 模型（FR-027）；tools/mcp 模板固定装配（FR-028）；desktop profile 页特化渲染（FR-029）。
+**Independent Test**: prompt 服务管理 `templates/saolei/profiles/{profile}`；TeamProfile 含 player/planner 模型 + 各自 base 提示词（FR-027/FR-034，空值回退模板默认 base）；tools/mcp 模板固定装配（FR-028）；desktop profile 页特化渲染（FR-029）。
 
 ### 文档清单
 
@@ -235,9 +235,10 @@
 
 ### Tasks
 
-- [X] T028 [US5] Rewrite `projects/game/desktop/frontend/src/components/ProfileManagement.svelte` — **先删除后新增**：删除通用 AgentProfile 表单（model/systemPrompt/skillNames/mcpNames/toolNames/enabled 字段）；按当前模板的 TeamProfile typed oneof 渲染特化表单——saolei：仅 `player_model` / `planner_model` 选择（FR-029），无 tools/mcp/skill 字段（FR-027/FR-028，模板固定装配）。CRUD 经新 TeamProfile bindings（T024）。
+- [ ] T028 [US5] Rewrite `projects/game/desktop/frontend/src/components/ProfileManagement.svelte` — **先删除后新增**：删除通用 AgentProfile 表单（model/systemPrompt/skillNames/mcpNames/toolNames/enabled 字段）；按当前模板的 TeamProfile typed oneof 渲染特化表单——saolei：`player_model` / `planner_model` 选择 + `player_prompt` / `planner_prompt` 输入（textarea，空值回退模板默认 base，FR-034），无 tools/mcp/skill 字段（FR-027/FR-028，模板固定装配）。CRUD 经新 TeamProfile bindings（T024）。
+- [ ] T032 [US5] SaoleiProfile prompt 端到端：proto `SaoleiProfile` 加 `player_prompt`/`planner_prompt` 字段（field 3/4，空字符串=未设置）+ codegen；agent `player.ts`/`planner.ts` 读 profile prompt（语义 A：空值回退模板默认 base，player 的 saolei skill body 始终追加）；desktop `ProfileManagement.svelte` 加 prompt 输入；prompt 服务存储校验；testplan profile 创建带 prompt。FR-027/FR-034。
 
-**Checkpoint**: TeamProfile 配置面完整。saolei profile 仅模型选择，tools/mcp 模板装配。
+**Checkpoint**: TeamProfile 配置面完整。saolei profile 模型选择 + base 提示词，tools/mcp 模板装配。
 
 ---
 
@@ -253,7 +254,7 @@
 
 ### Tasks
 
-- [X] T029 Create saolei team large test cases in `projects/game/testplan/` — 参照 `quickstart.md` §2.1 用例表：新增/改造 Go test 文件覆盖 team-connect（FR-003/FR-004）、player-exclusive-control（FR-010）、planner-trigger-per-game（FR-011/D6）、strategy-shared-persistent（FR-013/FR-014/FR-015）、refresh-team-clears-short-term（FR-018/D8）、message-partition-by-agent（FR-005）、team-profile-crud（FR-006/FR-027）。改造 `helpers_test.go` 适配新资源路径（`templates/saolei/sessions/...`）。更新 `system_test.yaml`（新增 saolei-team suite）+ `deploy_agent.yaml`（拓扑复用，确保 agent_test image 含新 team graph 代码）。新增 fake-llm testdata（planner update_strategy 响应）到 `projects/game/fake-llm/service/testdata/`。声明 `go_largetest` target 在 `projects/game/testplan/BUILD.bazel`。验证 `bazel build projects/game/testplan:...`。
+- [X] T029 Create saolei team large test cases in `projects/game/testplan/` — 参照 `quickstart.md` §2.1 用例表：新增/改造 Go test 文件覆盖 team-connect（FR-003/FR-004）、player-exclusive-control（FR-010）、planner-trigger-per-game（FR-011/D6）、strategy-shared-persistent（FR-013/FR-014/FR-015）、refresh-team-clears-short-term（FR-018/D8）、message-partition-by-agent（FR-005）、team-profile-crud（FR-006/FR-027/FR-034，profile 创建带 prompt）。改造 `helpers_test.go` 适配新资源路径（`templates/saolei/sessions/...`）。更新 `system_test.yaml`（新增 saolei-team suite）+ `deploy_agent.yaml`（拓扑复用，确保 agent_test image 含新 team graph 代码）。新增 fake-llm testdata（planner update_strategy 响应）到 `projects/game/fake-llm/service/testdata/`。声明 `go_largetest` target 在 `projects/game/testplan/BUILD.bazel`。验证 `bazel build projects/game/testplan:...`。
 - [ ] T030 Execute large test via testplan skill — 加载 testplan skill；阅读 `style/large_test.md`；执行 `guitar run projects/game/testplan/<saolei-team-plan>.yaml`（完整部署→测试→清理闭环）。**验收标准：所有测试用例全部通过（all cases passed）**。存在任何 failed/flaky 即验收未过，修复后重跑至全绿（宪法原则 VI）。
 - [ ] T031 Full repository build + test verification — 执行 `bazel build //...` + `bazel test //...` 确保全仓库编译与单测通过（所有 phase 完成后的最终验证）。修复任何遗留编译错误或测试失败。
 
@@ -305,7 +306,7 @@ Phase 4 (US3 MCP sink) ──────→ Phase 5 (US2 Team graph)
 - Phase 4: T008→T009 sequential（mcp-host 依赖 saolei-mcp 的 sink 类型）
 - Phase 5: T010/T011 **可并行**（strategy-store 与 team/state.ts 独立）；T012-T016 sequential（依赖链：update-strategy→team-sink→player→planner→graph）；T017→T017a→T018-T022 sequential（session-team→CreateTeam 垂直落地→middleware→prompt-client→handler→server→delete-old）
 - Phase 6: T023/T024 **可并行**（view_model.go 与 api.ts 独立）；T025→T026→T027 sequential（app.go→App.svelte→TeamSidebar）
-- Phase 7: T028 sequential（单文件）
+- Phase 7: T028→T032 sequential（ProfileManagement.svelte 与 prompt 端到端同属 profile 特化；T032 依赖 T028 的表单基础）
 - Phase 8: T029→T030→T031 sequential
 
 ---

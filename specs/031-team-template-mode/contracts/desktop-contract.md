@@ -40,8 +40,8 @@
 ## 3. Profile 页面特化（`ProfileManagement`）
 
 - 按**当前模板**的 TeamProfile 渲染特化表单（FR-029）。
-- 表单字段由 TeamProfile 的 **typed oneof 变体**驱动（`spec.saolei` → `SaoleiProfile{player_model, planner_model}`），**非通用 key-value 表单**、**非硬编码潜规则**（D1）。
-- saolei：仅渲染 `player_model` / `planner_model` 选择；tools/mcp/skill 不可配置（FR-027，模板固定装配）。
+- 表单字段由 TeamProfile 的 **typed oneof 变体**驱动（`spec.saolei` → `SaoleiProfile{player_model, planner_model, player_prompt, planner_prompt}`），**非通用 key-value 表单**、**非硬编码潜规则**（D1）。
+- saolei：渲染 `player_model` / `planner_model` 选择 + `player_prompt` / `planner_prompt` 输入（textarea，空值表示使用模板默认 base，FR-034）；tools/mcp/skill 不可配置（FR-027，模板固定装配）。
 - CRUD 经新 TeamProfile 绑定（取代 AgentProfile 绑定，`app.go` `List/Create/Get/Delete/UpdateAgentProfile` → `...TeamProfile`）。
 
 ## 4. Wails 绑定变更（`projects/game/desktop/app.go`）
@@ -66,7 +66,7 @@
 - 新增 `Team`（`{name, sessionId, agents: TeamAgent[], createTime?}`）/`TeamAgent`（`{name, acceptsUserInput}`）接口——对应 Wails `TeamView`/`TeamAgentView`。
 - `Session` 增 `template` 字段（Wails `SessionView`）。
 - `AgentFrame.agentProfileName` → `agent`（D12）；`Message` 增 `agent` 字段（按 agent 分区，FR-005）。
-- `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（Wails `TeamProfileView`——typed oneof `spec.saolei` 被 Go view model 拍平为顶层 `playerModel`/`plannerModel`，未设置变体时缺失）/`SaoleiProfile`（`{playerModel, plannerModel}`）/`CreateTeamProfileRequest`/`ListTeamProfilesResponse`。
+- `AgentProfile`/`Skill` 接口移除；新增 `TeamProfile`（Wails `TeamProfileView`——typed oneof `spec.saolei` 被 Go view model 拍平为顶层 `playerModel`/`plannerModel`/`playerPrompt`/`plannerPrompt`，未设置变体时缺失）/`SaoleiProfile`（`{playerModel, plannerModel, playerPrompt, plannerPrompt}`）/`CreateTeamProfileRequest`/`ListTeamProfilesResponse`。
 - 绑定 wrapper 随 §4 调整：`createSession(template)`/`connect(template, sessionID)`/`getTeam(template, sessionID)`/`createTeam(template, sessionID, profile)`/`refreshTeam(template, sessionID)`/`sendUserTurn(template, sessionID, text, screenshot..., agent)`/`listMessages(template, sessionID, agent)`/TeamProfile CRUD/`openChatStream(sessionID, agent)`。
 
 ## 6. 验证要点
@@ -74,5 +74,5 @@
 - 顶层模板切换基于本地常量、无网络请求（FR-024）。
 - 对话多 tab，agent 列表来自 `Team.agents`（不硬编码）；frame 按 `agent` 归位（FR-025）。
 - planner tab 屏蔽输入（`accepts_user_input=false`，FR-032）。
-- saolei profile 页仅 player/planner 模型选择（FR-029），由 typed oneof 驱动。
+- saolei profile 页渲染 player/planner 模型选择 + base 提示词输入（FR-029/FR-034），由 typed oneof 驱动。
 - 发送消息/进入会话前 Team 存在（GetTeam→NotFound→CreateTeam(默认 profile)，决策 2）。

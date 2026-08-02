@@ -143,6 +143,8 @@ message TeamProfile {
 message SaoleiProfile {
   string player_model = 1;
   string planner_model = 2;
+  string player_prompt = 3;   // 可选；空字符串=未设置=回退模板默认 base（FR-034，见 [`spec.md`](../spec.md)）
+  string planner_prompt = 4;  // 可选；空字符串=未设置=回退模板默认 base（FR-034，见 [`spec.md`](../spec.md)）
 }
 ```
 

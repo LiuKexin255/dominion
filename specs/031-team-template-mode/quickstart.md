@@ -37,7 +37,7 @@
 ### 1.4 desktop frontend（多 tab + profile 特化）
 
 - frame 按 `agent` 归位（D12）；agent 列表来自 `Team.agents`；`accepts_user_input=false` 的 tab 屏蔽输入（[`contracts/desktop-contract.md`](./contracts/desktop-contract.md)）。
-- saolei profile 表单仅 player/planner 模型（typed oneof 驱动）。
+- saolei profile 表单渲染 player/planner 模型选择 + base 提示词输入（typed oneof 驱动，FR-034）。
 
 ---
 
@@ -57,7 +57,7 @@
 | **strategy-shared-persistent** | planner `update_strategy` 写策略 → 下一局 player 作为当前态势读取、planner 作为 system 读取；策略以 session id 隔离 | FR-013/FR-014/FR-015 |
 | **refresh-team-clears-short-term** | `RefreshTeam` 后短期消息清空、策略仍可读 | FR-018/D8 |
 | **message-partition-by-agent** | ListMessages 按 agent 分区（player/planner 各自流） | FR-005 |
-| **team-profile-crud** | TeamProfile（saolei）CRUD；tools/mcp 不可配 | FR-006/FR-027 |
+| **team-profile-crud** | TeamProfile（saolei）CRUD（含 player/planner 模型 + base 提示词）；tools/mcp 不可配 | FR-006/FR-027/FR-034 |
 | **sink-decoupled** | （可在 agent 单测兼测）MCP 无 team mode 耦合引用 | FR-019 |
 
 ### 2.2 运行步骤（testplan skill）
@@ -78,7 +78,7 @@
 4. 一局结束 → `planner` tab 出现复盘消息（planner 触发一次）；策略更新。
 5. 切到 `planner` tab：输入被屏蔽（仅观察，FR-032）。
 6. `RefreshTeam` → `player`/`planner` tab 短期消息清空，但 player 下一局仍按当前策略落子（策略保留）。
-7. 进入 saolei profile 页：仅 player/planner 模型可选（FR-029）。
+7. 进入 saolei profile 页：player/planner 模型选择 + base 提示词输入（FR-029/FR-034）。
 
 ---
 

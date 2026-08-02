@@ -23,10 +23,14 @@ message TeamProfile {
 message SaoleiProfile {
   string player_model = 1;
   string planner_model = 2;
+  string player_prompt = 3;   // 可选；空字符串=未设置=回退模板默认 base（FR-034）
+  string planner_prompt = 4;  // 可选；空字符串=未设置=回退模板默认 base（FR-034）
 }
 ```
 
-**Rationale**: 需求方 directive ② 明确"不要用 bytes/string 等"非格式化方式实现"通用"，"不要为通用引入潜规则"。`oneof` 是**通用容器机制**（一个 profile 资源），每个变体是**具名 typed 特化**（FR-027 saolei 仅 player/planner 模型）。新增模板 = 新增一个 `oneof` 变体 + 一个 message，类型安全、无 blob、无隐式约定。`template` 字段与激活的 oneof 变体必须一致（handler 校验，避免"潜规则"）。
+**Rationale**: 需求方 directive ② 明确"不要用 bytes/string 等"非格式化方式实现"通用"，"不要为通用引入潜规则"。`oneof` 是**通用容器机制**（一个 profile 资源），每个变体是**具名 typed 特化**（FR-027 saolei 含 player/planner 模型选择与各自可选 base 提示词 `player_prompt`/`planner_prompt`，空值回退模板默认 base，FR-034）。新增模板 = 新增一个 `oneof` 变体 + 一个 message，类型安全、无 blob、无隐式约定。`template` 字段与激活的 oneof 变体必须一致（handler 校验，避免"潜规则"）。
+
+> **修订说明（2026-08-02，需求方确认语义 A）**：SaoleiProfile 增加可选 `player_prompt`/`planner_prompt`（base 提示词）——原设计"prompt 由模板固定装配"修订为"**base 提示词可由 profile 配置**（空值回退模板默认 base；player 的 saolei skill body 始终由模板追加）"，见 [`spec.md`](../spec.md) FR-034。tools/mcp/skill 仍不可经 profile 配置（FR-027/FR-028）。
 
 **Alternatives**:
 - ❌ `string json_config` / `bytes config_payload` + 各端自行反序列化：被 directive ② 明确禁止（非格式化、潜规则）。

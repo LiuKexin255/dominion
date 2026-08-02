@@ -81,9 +81,11 @@
 |---|---|---|
 | `player_model` | string | player LLM 模型选择（{provider}/{model}） |
 | `planner_model` | string | planner LLM 模型选择 |
+| `player_prompt` | string | player 的 base 提示词；空字符串 = 回退模板默认 base（saolei skill body 始终由模板追加，FR-034） |
+| `planner_prompt` | string | planner 的 base 提示词；空字符串 = 回退模板默认 base（FR-034） |
 
 - **关系**：属于一个 Template。
-- **约束**：saolei 的 TeamProfile **仅**含 player/planner 模型；不含 tools/mcp/skill 字段（FR-027，由模板固定装配 FR-028）。
+- **约束**：saolei 的 TeamProfile 含 player/planner 模型与各自的 base 提示词（可选，空值回退模板默认 base，FR-034）；不含 tools/mcp/skill 字段（FR-027，由模板固定装配 FR-028）。
 - **存储**：MongoDB `team_profiles` 集合（prompt 服务 mongo 仓储）。
 
 ### 1.6 AgentFrame（传输信封，字段变更）

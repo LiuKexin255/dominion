@@ -40,7 +40,7 @@ START → [player] ──条件边(读 state.gameEnded)──→ [planner] ─�
 - **形态**：player 节点为 **`createAgent`（内部 agent loop，跑到 LLM 自行决定停下为止）**——一次 player 节点运行 = 一次完整对局（LLM 落子直至停止）。graph **不**在 player loop 内中途移交。
 - **输入**：`playerMessages`（含用户输入）。
 - **工具**：saolei MCP 工具（`saolei_init`/`saolei_click`/`saolei_flag`/`saolei_remain` 等，FR-010）。仅 player 持有。
-- **策略注入**：节点进入时由代码层读 `StrategyStore.get(sessionId)`（无记录返回 `""`，D4/#3），作为"当前态势"注入 player prompt（FR-015；player 无读取工具）。
+- **策略注入**：节点进入时由代码层读 `StrategyStore.get(sessionId)`（无记录返回 `""`，D4/#3），作为"当前态势"注入 player prompt（FR-015；player 无读取工具）。player 的 **base 提示词**取自 `SaoleiProfile.player_prompt`（空值回退模板默认 base），saolei skill body 始终由模板追加到 base 之后（FR-034，见 [`spec.md`](../spec.md)）。
 - **后处理（createAgent 返回后执行一次）**：读 ephemeral buffer 的 `gameEvent` → 若未 consumed，写 `TeamState.gameEnded = status`（D6 步骤 4）。
 - **流式输出**：`ContentBlock` → `AgentFrame`（`agent="player"`）。
 - **是否接受用户输入**：`true`（FR-031）。
@@ -48,7 +48,7 @@ START → [player] ──条件边(读 state.gameEnded)──→ [planner] ─�
 ### 2.2 planner 节点（每局结束触发一次；不控制桌面）
 
 - **触发**：仅由条件边在 `gameEnded ≠ null` 时路由进入；**每局结束恰好触发一次**（FR-011/D6）。
-- **输入**：`plannerMessages`；system 上下文 = [复盘指令] + [当前策略（`StrategyStore.get`，初始 `""`，FR-014/#3）]；复盘输入 = ephemeral buffer 的 `gameState`（D6 步骤 6）。
+- **输入**：`plannerMessages`；system 上下文 = [base 提示词（取自 `SaoleiProfile.planner_prompt`，空值回退模板默认 base，FR-034，见 [`spec.md`](../spec.md)）] + [复盘指令] + [当前策略（`StrategyStore.get`，初始 `""`，FR-014/#3）]；复盘输入 = ephemeral buffer 的 `gameState`（D6 步骤 6）。
 - **工具**：仅 `update_strategy`（写 `StrategyStore`，FR-012）；无其他读取工具。
 - **`update_strategy` 重试**：由 **planner 节点内部**自行处理（重试/降级）；graph 调度**不**因 `update_strategy` 失败而重路由 planner（需求方 #6）。
 - **节点返回后（graph 执行）**：graph 无条件 **`TeamState.gameEnded = null`** + 标记 buffer `gameEvent.consumed=true`（D6 步骤 6；无论 update_strategy 成败）→ 路由回 player（FR-009：是否开新局由 player LLM/用户驱动）。

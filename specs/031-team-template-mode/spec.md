@@ -45,6 +45,16 @@
 - Q: session 删除是否清理 strategy？ → A: 暂不清理（strategy 管理后续优化）。
 - ✅ LangGraph JS ^1.4.8 关键 API（`REMOVE_ALL_MESSAGES`、createAgent 作外层图节点、middleware 钩子）已由 spike `experimental/ts/team_graph_spike/` 实测确认（见 `research.md` D14）。
 
+### Session 2026-08-02 (补充澄清：SaoleiProfile base 提示词)
+
+需求方确认的设计补充（语义 A），落实于 FR-034（spec 更新，见 FR-027 的 MAY 扩展）：
+
+- **SaoleiProfile 增加两个可选 string 字段**：`player_prompt`（proto field 3）、`planner_prompt`（proto field 4）；**空字符串 = 未设置 = 回退模板默认 base**。
+- **player**：base 提示词由 `player_prompt` 提供；空字符串回退模板默认 base；**saolei skill body 始终由模板追加**到 base 之后（不受 profile 影响）。最终组装语义 = `appendSkillBodyToPrompt(profile.player_prompt !== "" ? profile.player_prompt : 模板默认base, ["saolei"])`。
+- **planner**：base 提示词由 `planner_prompt` 提供；空字符串回退模板默认 base（planner 无 skill body 追加）。
+- **FR-028 不变**：tools/mcp 仍由模板固定装配，不在 profile 配置。
+- **策略注入语义不变**：FR-014（system 注入 planner）、FR-015（当前态势注入 player）不受影响。
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Template 与 Team 资源层级重构 (Priority: P1)
@@ -127,18 +137,18 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 
 ### User Story 5 - 模板特化的 TeamProfile 配置 (Priority: P2)
 
-每个模板对应一套自己的 graph schema，并各自拥有自己的 profile 格式；saolei 模板的 profile 不是"通用 agent 配置"，而仅包括 player 与 planner 的 LLM 模型选择——其余 tools 与 mcp 由模板自身决定，无需配置。TeamProfile 资源由现有 prompt 服务承接管理（路径 `templates/{template}/profiles/{profile}`），desktop 为每个模板的 profile 页面特化处理。
+每个模板对应一套自己的 graph schema，并各自拥有自己的 profile 格式；saolei 模板的 profile 不是"通用 agent 配置"，而包括 player 与 planner 的 LLM 模型选择与各自的 base 提示词（可选；空值回退模板默认 base；player 的 saolei skill body 始终由模板追加，FR-034）——其余 tools 与 mcp 由模板自身决定，无需配置。TeamProfile 资源由现有 prompt 服务承接管理（路径 `templates/{template}/profiles/{profile}`），desktop 为每个模板的 profile 页面特化处理。
 
 **Why this priority**: 配置面让运维能为 saolei team 选择 player/planner 模型；其"模板特化"语义确立了未来多模板扩展的形态。依赖 US1 的 TeamProfile 资源契约，可在后端就绪后独立交付。
 
-**Independent Test**: 可独立验证：prompt 服务在 `templates/{template}/profiles/{profile}` 下管理 TeamProfile；saolei 的 TeamProfile 仅含 player/planner 两个模型字段；该模板的 tools/mcp 由模板决定、不可在 profile 中配置；desktop 的 profile 页面对 saolei 模板特化渲染（仅模型选择）。
+**Independent Test**: 可独立验证：prompt 服务在 `templates/{template}/profiles/{profile}` 下管理 TeamProfile；saolei 的 TeamProfile 含 player/planner 模型选择 + 各自可选 base 提示词（`player_prompt`/`planner_prompt`，空值回退模板默认 base，FR-034）；该模板的 tools/mcp 由模板决定、不可在 profile 中配置；desktop 的 profile 页面对 saolei 模板特化渲染（模型选择 + base 提示词输入）。
 
 **Acceptance Scenarios**:
 
 1. **Given** prompt 服务，**When** 创建/读取 saolei 模板的配置时，**Then** 资源路径为 `templates/saolei/profiles/{profile}`，且其内容为模板特化的 TeamProfile。
-2. **Given** saolei 的 TeamProfile，**When** 审查其可配置字段，**Then** 仅包含 player 模型与 planner 模型的选择，不含 tools/mcp/skill 等字段（这些由模板决定）。
-3. **Given** saolei 模板，**When** team 构建时，**Then** player/planner 绑定各自所选模型，而 tools（saolei MCP、`update_strategy`）与 mcp 由模板固定装配，不读取 profile 中的工具配置。
-4. **Given** desktop 的 profile 页面，**When** 进入 saolei 模板时，**Then** 页面针对该模板特化（仅渲染 player/planner 模型选择），而非通用 agent 配置表单。
+2. **Given** saolei 的 TeamProfile，**When** 审查其可配置字段，**Then** 包含 player 模型与 planner 模型的选择，以及各自的 base 提示词（`player_prompt`/`planner_prompt`，可选，空值回退模板默认 base），不含 tools/mcp/skill 等字段（这些由模板决定）。
+3. **Given** saolei 模板，**When** team 构建时，**Then** player/planner 绑定各自所选模型；player/planner 的 base 提示词取自 profile（`player_prompt`/`planner_prompt`，空值回退模板默认 base；player 的 saolei skill body 始终由模板追加，FR-034）；而 tools（saolei MCP、`update_strategy`）与 mcp 由模板固定装配，不读取 profile 中的工具配置。
+4. **Given** desktop 的 profile 页面，**When** 进入 saolei 模板时，**Then** 页面针对该模板特化（渲染 player/planner 模型选择与各自的 base 提示词输入），而非通用 agent 配置表单。
 
 ---
 
@@ -200,9 +210,10 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 
 #### TeamProfile 配置
 
-- **FR-027**: saolei 模板的 TeamProfile MUST 仅包含 player 模型与 planner 模型的选择；MUST NOT 包含 tools/mcp/skill 等可配置字段。
+- **FR-027**: saolei 模板的 TeamProfile MUST 包含 player/planner 模型选择，并 MAY 包含 player/planner 的 base 提示词（`player_prompt`/`planner_prompt`，空字符串时回退模板默认 base，见 FR-034）；MUST NOT 包含 tools/mcp/skill 等可配置字段。
 - **FR-028**: saolei 模板的 tools（saolei MCP、`update_strategy`）与 mcp MUST 由模板自身固定装配，MUST NOT 读取 profile 中的工具配置。
-- **FR-029**: desktop 的 profile 页面 MUST 对 saolei 模板特化渲染（仅 player/planner 模型选择），而非通用 agent 配置表单。
+- **FR-029**: desktop 的 profile 页面 MUST 对 saolei 模板特化渲染（player/planner 模型选择 + 各自 base 提示词输入），而非通用 agent 配置表单。
+- **FR-034**: saolei 模板的 player base 提示词 MUST 由 `SaoleiProfile.player_prompt` 提供（空字符串时回退模板默认 base），且 saolei skill body MUST 始终由模板追加到 base 之后（不受 profile 影响）；planner 的 base 提示词 MUST 由 `SaoleiProfile.planner_prompt` 提供（空字符串时回退模板默认 base）。策略注入语义（FR-014 system 注入 planner、FR-015 当前态势注入 player）不变。
 
 #### 大型测试（验收）
 
@@ -222,7 +233,7 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 - **Template**：顶层资源路径段，对应一套 graph schema 及配套组件。资源消息（`message Template`，pattern `templates/{template}`），无 CRUD/List RPC；具体值以 gameconst 常量表示（当前仅 `saolei`）。是 API 资源层级的根。
 - **Team**：会话内的多 agent 执行主体，取代原 Agent 资源（`templates/{template}/sessions/{session}/team`）。一个 Team 对应模板的一个 StateGraph 实例，含若干按模板 schema 定义的 agent（saolei 为 `player`+`planner`）。**经 `CreateTeam` 显式创建（FR-033，请求携带 profile 构建 team）**，非随 Connect 隐式存在。
 - **Agent（team 内）**：Team 中由模板 graph schema 定义的执行角色，由其名称标识（如 `player`/`planner`）。非独立资源，是消息分区与 frame 归位的维度。每个 agent 在 schema 中声明"是否接受用户输入"属性（FR-031）：`player` 独占桌面控制且接受用户输入，`planner` 每局结束复盘且不接受用户输入（desktop 屏蔽其输入）。
-- **TeamProfile**：模板特化的 team 配置资源，由 prompt 服务承接管理（`templates/{template}/profiles/{profile}`）。每个模板自有 profile 格式；saolei 的 TeamProfile 仅含 player/planner 模型选择。
+- **TeamProfile**：模板特化的 team 配置资源，由 prompt 服务承接管理（`templates/{template}/profiles/{profile}`）。每个模板自有 profile 格式；saolei 的 TeamProfile 含 player/planner 模型选择与各自的 base 提示词（`player_prompt`/`planner_prompt`，可选，空值回退模板默认 base，FR-034）。
 - **Strategy（策略，长期记忆）**：player 与 planner 共享的长期记忆，以 session id 为键存储于长期记忆层，独立于短期消息。初始由 system 注入 planner，之后由 `update_strategy` 更新；player 经代码层作为"当前态势"读取。`RefreshTeam` 不影响策略。
 - **Short-term messages（短期记忆）**：team 运行过程中的对话/工具消息，存储于内存 checkpointer；`RefreshTeam` 时被清空。
 - **SaoleiEventSink（旁路事件 sink）**：saolei MCP 提供的可选事件注册接口，仅定义事件形状（含结构化局结束状态）；默认无 sink 时行为不变，模板侧注册实现将游戏状态/结束事件写入共享 state。
@@ -237,7 +248,7 @@ desktop 将模板作为顶层控制面进行切换（使用本地模板常量，
 - **SC-004**: 执行 `RefreshTeam` 后，短期对话消息被清空，而策略仍可被读取（长期与短期记忆解耦可验证）。
 - **SC-005**: saolei MCP 在不注册 sink 时与升级前行为完全一致；注册 sink 后能输出结构化局结束状态，且 MCP 代码不引用任何 team mode 概念（解耦可由代码审查验证）。
 - **SC-006**: desktop 进入会话后，对话按 team 内 agent 分为多个标签页，frame 按 agent 名称正确归位；用户输入仅对声明为"接受用户输入"的 agent 开放（saolei 仅 `player`），其余 agent 的 tab 屏蔽输入；顶层模板切换基于本地模板常量、无网络请求。
-- **SC-007**: saolei 模板的配置仅含 player/planner 两个模型选择，tools/mcp 由模板固定装配、不可经 profile 配置；desktop profile 页面对该模板特化渲染。
+- **SC-007**: saolei 模板的配置含 player/planner 模型选择与各自的 base 提示词（可选，空值回退模板默认 base），tools/mcp 由模板固定装配、不可经 profile 配置；desktop profile 页面对该模板特化渲染。
 - **SC-008**: 大型测试（经 testplan skill 完整部署→测试→清理执行）全部用例通过，覆盖 SC-002/SC-003/SC-004 所述团队行为。
 
 ## Assumptions

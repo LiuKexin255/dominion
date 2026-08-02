@@ -23,7 +23,7 @@
 
 - **显式创建（AIP-133）**：`TeamService` 新增 `rpc CreateTeam(CreateTeamRequest) returns (Team)`；`CreateTeamRequest { parent=Session 资源名; profile=TeamProfile 资源名 }`（`templates/{template}/profiles/{profile}`，AIP-122——profile 的 template 段 MUST 与 parent 一致，handler 校验，禁潜规则）。Team 资源 id 为字面量 `team`，无 body、无 team_id 字段。
 - **取代懒加载**：原"Team 随 Connect 隐式创建/固定默认 profile"模式移除。`GetTeam`/`Connect`/`ListMessages`/`RefreshTeam` 均要求 Team 已创建（未创建 → NOT_FOUND，无自动创建）。
-- **profile 绑定**：team 由创建时传入的 profile 构建（player/planner 模型绑定）；**移除 `DEFAULT_TEAM_PROFILE`**（消除"session 用哪个 profile"的方案 gap）。desktop（Phase 6）将按"发消息时 GetTeam → NotFound → CreateTeam(profile)"的 create-if-missing 流程调用。
+- **profile 绑定**：team 由创建时传入的 profile 构建（player/planner 模型与各自 base 提示词绑定——`SaoleiProfile.player_prompt`/`planner_prompt`，空值回退模板默认 base，FR-034，见 [`spec.md`](./spec.md)）；**移除 `DEFAULT_TEAM_PROFILE`**（消除"session 用哪个 profile"的方案 gap）。desktop（Phase 6）将按"发消息时 GetTeam → NotFound → CreateTeam(profile)"的 create-if-missing 流程调用。
 - **owner 分配迁移**：proxy 层 `CreateTeam` 为**唯一 owner 分配点**（`assignOwner`，`ErrOwnerAlreadyExists` 并发竞态下重读既有 owner 而非报错）；`Connect` 改为 `lookupOwner`（不再分配 owner）。
 - **幂等规则（用户细化）**：重复 `CreateTeam`——profile 相同 → 幂等返回既有 Team（per-session 单例 + desktop 多标签页竞态重试场景，相对 AIP-133 严格 ALREADY_EXISTS 的偏离）；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）。profile 比较在 agent 层 `SessionTeamStore.create`（map 记录每 session 创建时所用 profile）。
 
