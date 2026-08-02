@@ -82,7 +82,7 @@ description: "Task list for 032-guitar-deploy-failure-state"
 
 - [X] T006 [P] 更新 `tools/release/deploy/README.md`：在「命令」小节（apply/del/list/scope 旁）增补 `deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>` 用法与说明。
 - [X] T007 [P] 更新 `tools/test/guitar/README.md`：在「输出格式」小节说明部署不成功时附加的「环境状态」诊断输出（醒目头部 + `deploy describe` 顶格文本），并备注 describe 失败降级。
-- [ ] T008 全量验证门禁：运行 `bazel build //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿；随后按 [quickstart.md](./quickstart.md) 执行端到端验证 1（`deploy describe <env>` 单命令，需可访问 deploy service）、验证 2（失败路径核心场景，**必做**——优先采用构造成本最低的场景 A：suite `timeout` 或全局 `--timeout` 设极短（如 `--timeout=20s`）触发超时；仅当环境确无法构造失败场景时方可豁免，且须在任务完成记录中说明原因）、验证 3（成功路径回归），并执行「边界验证」三例（非 TTY 无 ANSI 码、环境创建前失败、describe 自身失败降级），确认失败路径诊断输出符合预期。
+- [X] T008 全量验证门禁：运行 `bazel build //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿；随后按 [quickstart.md](./quickstart.md) 执行端到端验证 1（`deploy describe <env>` 单命令，需可访问 deploy service）、验证 2（失败路径核心场景，**必做**——优先采用构造成本最低的场景 A：suite `timeout` 或全局 `--timeout` 设极短（如 `--timeout=20s`）触发超时；仅当环境确无法构造失败场景时方可豁免，且须在任务完成记录中说明原因）、验证 3（成功路径回归），并执行「边界验证」三例（非 TTY 无 ANSI 码、环境创建前失败、describe 自身失败降级），确认失败路径诊断输出符合预期。
 
 ---
 
@@ -141,3 +141,16 @@ Task: "T007 更新 tools/test/guitar/README.md 输出格式小节"
 - 每个实现 task 完成后即 `bazel build`+`bazel test` 对应 target（小颗粒度反馈环）
 - 依宪法原则 VI，本特性为 CLI 工具改动（非服务型应用），大型测试不作强制门禁；端到端验证见 quickstart.md（需 deploy service 访问）
 - 改动不涉及 deploy service、不改 deploy apply/del 既有行为（仅扩展 formatState 的 list 副作用已由 T001 测试覆盖）
+
+## T008 端到端验证执行记录（2026-08-02）
+
+测试内容：`experimental/ts/grpc_hello_world/testplan/interface_test.yaml`（deploy.yaml 含 service + gateway 两个 artifact，env `liukexin.{{run}}`）。
+
+- **编译 + 单测门禁**：`bazel build //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 通过；`bazel test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿（2/2 PASSED）。
+- **验证 1（describe 单命令）**：`deploy describe liukexin.d032desc`（READY 实环境）输出 `状态: 就绪` / `说明: ready` / 服务列表 / `最近调和: -` / `最近成功: 2026-08-02T13:12:26Z`，退出码 0；`deploy describe liukexin.no032a` → `环境 liukexin.no032a 不存在`，退出码 1。
+- **验证 2（失败路径核心场景，scenario A 短超时，必做）**：`guitar run ... --timeout=5s` → deploy apply 被杀（env 已创建、滚动发布中）→ 打印 `  --- 环境状态 (env=liukexin.ltdn8qn2) ---` 头部 + 顶格 describe（`状态: 等待滚动发布`、`服务:` 列出 service+gateway、时间戳 `-`）→ `Cleanup` 执行（env 已删除）→ 原始错误保留 `deploy apply ...: signal: killed`。满足 FR-001/FR-002/FR-004/FR-006/FR-007、SC-002/SC-003/SC-004。
+- **验证 3（成功路径回归）**：`guitar run ... --timeout=20s` → deploy 成功（就绪）→ test PASS → cleanup，**无**诊断头部。满足 FR-008/SC-005。
+- **边界 1（非 TTY 无 ANSI）**：验证 2 输出经 `| tee` 管道，grep `\x1b\[` 无命中。满足 FR-009。
+- **边界 2（环境创建前失败）**：`guitar run ... --timeout=2s` → deploy apply 被杀（env 未创建）→ describe 返回 not-found（stdout `环境 ... 不存在`）+ stderr 降级 `warning: 获取环境 ... 状态失败`，原始错误保留、不崩溃、cleanup 仍尝试。满足 FR-005/FR-006。
+- **边界 3（describe 自身失败降级）**：边界 2 已实测降级机制（describe 非零退出 → warning）；单测 `TestRun/deploy_failure_with_describe_degradation` 精确覆盖。
+- **FAILED 终态渲染**（SC-001）未单独构造实环境（scenario B），由 `describe` 的 message 字段渲染已验证（READY 显示 `说明: ready`）+ 单测 `TestDescribeCommand/failed_with_message_and_services` 覆盖 FAILED+message 渲染。
