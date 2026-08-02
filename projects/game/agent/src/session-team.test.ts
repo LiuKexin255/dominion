@@ -21,6 +21,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "./strategy-store";
 import { SessionTeam, SessionTeamStore, TeamAlreadyExistsError } from "./session-team";
+import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
 import type { TeamStateValue } from "./team/state";
@@ -78,8 +79,12 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 		sessionId,
 		playerTools: [buildGameEndingPlayerTool(buffer)],
 	});
-	const team = new SessionTeam(handle, buffer, sessionId, TID);
-	return { team, store, buffer, sessionId };
+	// Pre-built bridge/sink like the production factory (server.ts): the
+	// SessionTeam constructor no longer creates them internally.
+	const bridge = new OperationBridge();
+	const sink = createTeamSink(buffer);
+	const team = new SessionTeam(handle, buffer, sessionId, TID, bridge, sink);
+	return { team, store, buffer, sessionId, bridge, sink };
 }
 
 /** Recording emit sink collecting every frame the loop pushes. */
@@ -187,10 +192,11 @@ describe("SessionTeam", () => {
 	});
 
 	it("getBridge returns the session bridge and getSink binds the ephemeral buffer", async () => {
-		const { team, buffer, sessionId } = buildTestTeam("st-surface");
-		expect(team.getBridge()).toBeDefined();
-		const sink = team.getSink();
-		expect(sink).toBeDefined();
+		const { team, buffer, sessionId, bridge, sink } = buildTestTeam("st-surface");
+		// The injected instances ARE the exposed ones (the MCP host and the
+		// graph player must share one bridge / one sink — server.ts factory).
+		expect(team.getBridge()).toBe(bridge);
+		expect(team.getSink()).toBe(sink);
 		// The sink writes the session's ephemeral buffer (D7).
 		sink.onGameEnd(makeState(), "lost");
 		expect(buffer.gameEvent).not.toBeNull();

@@ -10,6 +10,11 @@
  * is handled inside the turn by the conditional edge, so a turn never
  * requires external continuation and single-flight is preserved).
  *
+ * The `OperationBridge` and team `SaoleiEventSink` are NOT constructed here:
+ * the store factory (server.ts) pre-builds them against the session's
+ * ephemeral buffer and injects them via the constructor (see the constructor
+ * doc — this breaks the CreateTeam→MCP-host circular dependency).
+ *
  * - **Turn runner**: {@link SessionTeam.runTeamTurn} drives the compiled
  *   graph's `streamEvents` on the session's thread (thread_id = session id,
  *   FR-013) and converts each node's channel update into a stream of
@@ -20,7 +25,10 @@
  *   untouched.
  * - **MCP host surface**: {@link SessionTeam.getBridge} / {@link SessionTeam.getSink}
  *   feed the `SessionBridgeLookup` (mcp-host.ts) so the saolei MCP server is
- *   built per session with the team sink bound to this session's buffer.
+ *   built per session with the team sink bound to this session's buffer. The
+ *   instances are the SAME ones injected by the store factory (server.ts
+ *   pre-registers them before `buildSaoleiMcpTools` connects — see
+ *   `server.ts` for the circular-dependency rationale).
  *
  * `SessionTeamStore` (replaces `SessionAgentStore`) maps session id →
  * `SessionTeam`, creating entries ONLY through the explicit
@@ -34,7 +42,7 @@
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 
-import { OperationBridge } from "./operation-bridge";
+import type { OperationBridge } from "./operation-bridge";
 import { TurnLoop } from "./turn-loop";
 import type { TurnLoopEmit } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
@@ -44,7 +52,6 @@ import { parseToolResultFields } from "./tools/shared/result-blocks";
 import { refreshTeamChannels } from "./context-middleware";
 import type { TeamGraphHandle } from "./team/graph";
 import type { TeamStateValue } from "./team/state";
-import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import type { EphemeralGameBuffer } from "./team/team-sink";
 import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
 
@@ -93,19 +100,32 @@ export class SessionTeam {
 	 * @param sessionId   The dominion session id (thread id + strategy key).
 	 * @param template    The session's template path segment (from the
 	 *   CreateTeam parent, AIP-133).
+	 * @param bridge      The session's `OperationBridge` (player-exclusive,
+	 *   FR-010), pre-built by the store factory (server.ts). NOT constructed
+	 *   here: the factory registers it with the MCP-host bridge registry
+	 *   BEFORE `buildSaoleiMcpTools` connects (so the host's
+	 *   `SessionBridgeLookup` hits during team creation) and then injects the
+	 *   SAME instance here — the graph player's operation bridge and the
+	 *   mcp-host-served one must be identical (specs/031-team-template-mode/
+	 *   contracts/saolei-sink-contract.md §6).
+	 * @param sink        The team `SaoleiEventSink` bound to `buffer`
+	 *   (`createTeamSink`), pre-built by the store factory for the same
+	 *   reason — one sink per session, shared by the McpServer and the team.
 	 */
 	constructor(
 		graphHandle: TeamGraphHandle,
 		buffer: EphemeralGameBuffer,
 		sessionId: string,
 		template: string,
+		bridge: OperationBridge,
+		sink: SaoleiEventSink,
 	) {
 		this.graphHandle = graphHandle;
 		this.buffer = buffer;
 		this.sessionId = sessionId;
 		this.template = template;
-		this.bridge = new OperationBridge();
-		this.sink = createTeamSink(buffer);
+		this.bridge = bridge;
+		this.sink = sink;
 	}
 
 	/** The session's `OperationBridge` (player-exclusive, FR-010). */

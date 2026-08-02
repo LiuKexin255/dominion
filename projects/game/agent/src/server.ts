@@ -44,7 +44,9 @@ import { SessionTeam } from "./session-team";
 import { Handler } from "./handler";
 import { startMcpHost, DEFAULT_MCP_PORT } from "./mcp-host";
 import { buildSaoleiMcpTools, defaultMcpClientFactory } from "./llm";
-import { createEphemeralGameBuffer } from "./team/team-sink";
+import { OperationBridge } from "./operation-bridge";
+import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
+import type { SaoleiEventSink } from "./mcp/saolei/saolei-mcp";
 import { buildTeamGraph } from "./team/graph";
 
 // ---------------------------------------------------------------------------
@@ -217,10 +219,36 @@ export async function startServer(
   await strategyStore.ensureIndexes();
   info("strategy store ready", { collection: STRATEGIES_COLLECTION });
 
+  // Per-session bridge/sink early-registration registry — the MCP host's
+  // `SessionBridgeLookup` source. Entries are set by the team factory BEFORE
+  // `buildSaoleiMcpTools` connects (and deleted when the factory fails), so
+  // the host can build the session's McpServer during team creation without
+  // the SessionTeam existing yet (circular-dependency break — see the
+  // factory below). Shape matches `SessionBridgeLookup`'s result
+  // (mcp-host.ts) with the sink always present.
+  const sessionBridges = new Map<
+    string,
+    { bridge: OperationBridge; sink: SaoleiEventSink }
+  >();
+
   // Per-session team: resolve the requested TeamProfile's models (the
   // template + profile name come from the CreateTeam request — no fixed
   // default profile), wire the saolei MCP tools as the player's tools
   // (FR-010/FR-028), compile the team graph.
+  //
+  // Circular-dependency break (large-test T030 finding): the MCP host's
+  // `SessionBridgeLookup` must HIT while the player tools are being built,
+  // because `buildSaoleiMcpTools` connects to the host's
+  // `/internal/mcp/{sessionId}` endpoint inside the factory — before the
+  // SessionTeamStore has cached the team. The host needs the session's
+  // `{bridge, sink}` to build the McpServer, but the SessionTeam only exists
+  // at the END of the factory. Both the bridge and the sink depend only on
+  // the ephemeral buffer (which the factory creates early), so they are
+  // pre-built and registered in {@link sessionBridges} BEFORE
+  // `buildSaoleiMcpTools` connects, and the SAME instances are injected into
+  // the SessionTeam — the graph player's operation bridge and the
+  // mcp-host-served one are identical (specs/031-team-template-mode/
+  // contracts/saolei-sink-contract.md §6).
   const sessionTeamStore = new SessionTeamStore(
     async (sessionId, template, profileName) => {
       const profile = await promptClient.getTeamProfile(
@@ -230,20 +258,42 @@ export async function startServer(
       const playerModel = await getProvider(profile.playerModel);
       const plannerModel = await getProvider(profile.plannerModel);
       const buffer = createEphemeralGameBuffer();
-      const playerTools = await buildSaoleiMcpTools(
-        sessionId,
-        DEFAULT_MCP_PORT,
-        defaultMcpClientFactory,
-      );
-      const handle = buildTeamGraph({
-        playerModel,
-        plannerModel,
-        strategyStore,
-        buffer,
-        sessionId,
-        playerTools,
-      });
-      return new SessionTeam(handle, buffer, sessionId, template);
+      const bridge = new OperationBridge();
+      const sink = createTeamSink(buffer);
+      sessionBridges.set(sessionId, { bridge, sink });
+      try {
+        const playerTools = await buildSaoleiMcpTools(
+          sessionId,
+          DEFAULT_MCP_PORT,
+          defaultMcpClientFactory,
+        );
+        const handle = buildTeamGraph({
+          playerModel,
+          plannerModel,
+          strategyStore,
+          buffer,
+          sessionId,
+          playerTools,
+        });
+        return new SessionTeam(
+          handle,
+          buffer,
+          sessionId,
+          template,
+          bridge,
+          sink,
+        );
+      } catch (err) {
+        // Team creation failed → drop the early registration so the session
+        // is NOT visible to the MCP host (an orphaned entry would answer
+        // /internal/mcp/{sessionId} with a server bound to a team that never
+        // materialized). The MCP host caches a created server per session, so
+        // a retry after a post-connect failure reuses that server — the
+        // pre-registered bridge/sink of a LATER retry then does not match it;
+        // this edge (a failed team graph compile) is accepted and noted here.
+        sessionBridges.delete(sessionId);
+        throw err;
+      }
     },
   );
 
@@ -252,12 +302,10 @@ export async function startServer(
   // FR-001 + saolei-sink-contract.md §6: the localhost MCP HTTP host
   // resolves each session to its bridge AND the team sink (T009 extension
   // point) so the saolei MCP events land in the session's ephemeral buffer.
-  startMcpHost((sessionId: string) => {
-    const team = sessionTeamStore.get(sessionId);
-    return team
-      ? { bridge: team.getBridge(), sink: team.getSink() }
-      : undefined;
-  });
+  // The lookup reads the early-registration registry (NOT the team store —
+  // the store only caches the team AFTER the factory resolves, so it misses
+  // during `buildSaoleiMcpTools`'s in-factory connect; the registry hits).
+  startMcpHost((sessionId: string) => sessionBridges.get(sessionId));
 
   const proto = loadProto();
   const credentials = buildCredentials();

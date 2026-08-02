@@ -25,6 +25,7 @@ import type { GameState } from "@dominion/game-saolei-board";
 import { FakeStrategyStore } from "./strategy-store";
 import { Handler } from "./handler";
 import { SessionTeam, SessionTeamStore } from "./session-team";
+import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
@@ -110,7 +111,11 @@ function createTeamStore(gate?: Gate): {
         sessionId,
         playerTools: [buildGameEndingPlayerTool(buffer, gate)],
       });
-      return new SessionTeam(handle, buffer, sessionId, template);
+      // Pre-built bridge/sink like the production factory (server.ts) — the
+      // SessionTeam constructor no longer creates them internally.
+      const bridge = new OperationBridge();
+      const sink = createTeamSink(buffer);
+      return new SessionTeam(handle, buffer, sessionId, template, bridge, sink);
     },
   );
   return { store, strategies };
