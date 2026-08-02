@@ -76,6 +76,14 @@ func (r *Reporter) Step(label string) {
 	fmt.Fprintf(r.w, "  %s\n", label)
 }
 
+// DeployDiagnostics prints a prominent header line marking the start of the
+// environment-state diagnostics block emitted when a suite's deploy step fails
+// (contract: specs/032-guitar-deploy-failure-state/contracts/guitar-integration.md).
+// Output is never colored — structural text only, like Step and SuiteHeader.
+func (r *Reporter) DeployDiagnostics(envName string) {
+	fmt.Fprintf(r.w, "  --- 环境状态 (env=%s) ---\n", envName)
+}
+
 // SuiteResult records the outcome of a single suite execution, consumed by
 // Summary to print an end-of-run recap.
 type SuiteResult struct {

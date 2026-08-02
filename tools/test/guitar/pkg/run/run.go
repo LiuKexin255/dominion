@@ -19,12 +19,13 @@ import (
 )
 
 const (
-	bazelBinary          = "bazel"
-	bazelTestCommand     = "test"
-	bazelLargeTestConfig = "--config=largetest"
-	deployBinary         = "deploy"
-	deployApplyCommand   = "apply"
-	deployDeleteCommand  = "del"
+	bazelBinary           = "bazel"
+	bazelTestCommand      = "test"
+	bazelLargeTestConfig  = "--config=largetest"
+	deployBinary          = "deploy"
+	deployApplyCommand    = "apply"
+	deployDescribeCommand = "describe"
+	deployDeleteCommand   = "del"
 )
 
 var (
@@ -149,6 +150,7 @@ func runSuite(ctx context.Context, suite *guitarconfig.Suite, r *Reporter) (err 
 
 	r.Step("Deploy")
 	if applyErr := runCommand(ctx, deployBinary, deployApplyCommand, "--run", runID, deployPath); applyErr != nil {
+		diagnoseDeployFailure(ctx, r, fullEnvName)
 		return fmt.Errorf("deploy apply %s: %w", suite.Deploy, applyErr)
 	}
 
@@ -158,6 +160,23 @@ func runSuite(ctx context.Context, suite *guitarconfig.Suite, r *Reporter) (err 
 	}
 
 	return nil
+}
+
+// diagnoseDeployFailure prints environment-state diagnostics after a deploy
+// step fails: a prominent header followed by `deploy describe` output flowing
+// through to the console (contract:
+// specs/032-guitar-deploy-failure-state/contracts/guitar-integration.md).
+//
+// The describe call uses a non-cancelable context — deploy failures often mean
+// the original context is already canceled (e.g. a timeout), which would
+// cancel the describe immediately — plus an explicit short timeout so it
+// cannot stall the subsequent cleanup. Its own failure is degraded to a
+// stderr warning and never replaces the original deploy error.
+func diagnoseDeployFailure(ctx context.Context, r *Reporter, fullEnvName string) {
+	r.DeployDiagnostics(fullEnvName)
+	if describeErr := runCommand(context.WithoutCancel(ctx), deployBinary, deployDescribeCommand, "--timeout=10s", fullEnvName); describeErr != nil {
+		fmt.Fprintf(stderr, "warning: 获取环境 %s 状态失败: %v\n", fullEnvName, describeErr)
+	}
 }
 
 func runTests(ctx context.Context, suite *guitarconfig.Suite, envName string) error {
