@@ -73,6 +73,8 @@ artifact_pkg_js(
         ":node_modules/@modelcontextprotocol/sdk",
         ":node_modules/express",
         ":node_modules/langchain",
+        ":node_modules/mongodb",
+        ":node_modules/zod",
     ],
     runtime_protos = [
         "//projects/game:game_proto",
@@ -118,6 +120,8 @@ artifact_pkg_js(
         ":node_modules/@modelcontextprotocol/sdk",
         ":node_modules/express",
         ":node_modules/langchain",
+        ":node_modules/mongodb",
+        ":node_modules/zod",
     ],
     runtime_protos = [
         "//projects/game:game_proto",
