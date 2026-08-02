@@ -146,6 +146,16 @@ func TestListCommand(t *testing.T) {
 			wantOutput: "",
 		},
 		{
+			name:   "waiting rollout environment",
+			scope:  "dev",
+			status: http.StatusOK,
+			response: &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{{
+				Name:   "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT},
+			}}},
+			wantOutput: "dev.api\t等待滚动发布",
+		},
+		{
 			name:          "no scope error",
 			status:        http.StatusOK,
 			response:      &deploy.ListEnvironmentsResponse{},

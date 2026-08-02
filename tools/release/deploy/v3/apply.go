@@ -245,6 +245,8 @@ func formatState(s deploy.EnvironmentState) string {
 		return "失败"
 	case deploy.EnvironmentState_ENVIRONMENT_STATE_DELETING:
 		return "删除中"
+	case deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT:
+		return "等待滚动发布"
 	default:
 		return ""
 	}
