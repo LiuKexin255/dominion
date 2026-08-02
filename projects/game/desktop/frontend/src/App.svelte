@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Team, TeamAgent, AgentFrame, Config, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
+  import type { Session, Team, TeamAgent, TeamProfile, CreateTeamProfileRequest, AgentFrame, Config, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
   import { FrameSender, TEMPLATE_SAOLEI, TEMPLATES } from './api'
   import {
     setConfig,
@@ -19,6 +19,10 @@
     listMessages,
     openChatStream,
     closeChatStream,
+    listTeamProfiles,
+    createTeamProfile,
+    updateTeamProfile,
+    deleteTeamProfile,
     setDebugMode,
     confirmToolResult,
   } from './api'
@@ -30,14 +34,17 @@
   import ChatView from './components/ChatView.svelte'
   import OperationConfirmDrawer from './components/OperationConfirmDrawer.svelte'
   import TeamSidebar from './components/TeamSidebar.svelte'
+  import ProfileManagement from './components/ProfileManagement.svelte'
   import LogPanel from './components/LogPanel.svelte'
   import ScreenshotModal from './components/ScreenshotModal.svelte'
 
   // --- Page state ---
   // The template is the TOP-LEVEL control plane: it is a local constant and
   // switching it MUST NOT issue any template-list API request (FR-024).
-  // Session listing/creation are scoped to the active template.
-  let page = $state<'sessions' | 'chat'>('sessions')
+  // Session listing/creation are scoped to the active template; the profiles
+  // page is the TeamProfile config surface, specialized per template (FR-026/
+  // FR-029 — specs/031-team-template-mode/spec.md).
+  let page = $state<'sessions' | 'chat' | 'profiles'>('sessions')
   let template = $state(TEMPLATE_SAOLEI)
 
   // --- Types ---
@@ -143,6 +150,14 @@
   let capturing = $state(false)
   let refreshing = $state(false)
   let zoomedImageUrl: string | null = $state(null)
+
+  // --- TeamProfile management state (Phase 7 T028) ---
+  // The profiles page manages TeamProfiles of the CURRENT template (the page
+  // is specialized per template — FR-026/FR-029; managedProfiles is scoped to
+  // `template`, which always equals the template used to enter the page).
+  let managedProfiles: TeamProfile[] = $state([])
+  let profileMgmtLoading = $state(false)
+  let profileMgmtError: string | null = $state(null)
 
   function resetPlayPageState() {
     pendingScreenshot = null
@@ -997,6 +1012,56 @@
     logEntries = []
   }
 
+  // --- TeamProfile management handlers (Phase 7 T028) ---
+  // The profiles page manages TeamProfiles of the CURRENT template via the
+  // TeamProfile Wails bindings (T024 — projects/game/desktop/frontend/src/
+  // api.ts); the page is specialized per template (FR-026/FR-029).
+  async function handleEnterProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listTeamProfiles(template, 100, '')
+      managedProfiles = resp.teamProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load team profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+    page = 'profiles'
+  }
+
+  async function handleRefreshProfiles() {
+    profileMgmtLoading = true
+    profileMgmtError = null
+    try {
+      const resp = await listTeamProfiles(template, 100, '')
+      managedProfiles = resp.teamProfiles
+    } catch (err) {
+      profileMgmtError = err instanceof Error ? err.message : 'Failed to load team profiles'
+    } finally {
+      profileMgmtLoading = false
+    }
+  }
+
+  async function handleCreateTeamProfile(req: CreateTeamProfileRequest) {
+    await createTeamProfile(template, req)
+    await handleRefreshProfiles()
+  }
+
+  async function handleUpdateTeamProfile(profileName: string, profile: TeamProfile, updateMaskPaths: string[]) {
+    await updateTeamProfile(template, profileName, profile, updateMaskPaths)
+    await handleRefreshProfiles()
+  }
+
+  async function handleDeleteTeamProfile(profileName: string) {
+    await deleteTeamProfile(template, profileName)
+    await handleRefreshProfiles()
+  }
+
+  function handleBackFromProfiles() {
+    page = 'sessions'
+  }
+
   // --- Window + Screenshot handlers ---
   async function handleLoadWindows() {
     try {
@@ -1065,16 +1130,32 @@
 
   <!-- Page Content (middle) -->
   {#if page === 'sessions'}
-    <SessionList
-      {sessions}
-      selectedSessionId={selectedSession?.sessionId ?? null}
-      {loading}
-      {error}
-      onSelect={handleSelectSession}
-      onRefresh={handleRefresh}
-      onCreate={handleCreate}
-      onDelete={handleDelete}
-    />
+    <div class="sessions-page">
+      <div class="sessions-toolbar">
+        <span class="sessions-template">Template: {template}</span>
+        <!-- Navigation entry to the profiles page (Phase 7 T028): loads the
+             current template's TeamProfile list, then opens the page
+             (FR-026/FR-029). -->
+        <button
+          class="btn btn-small"
+          data-testid="team-profiles-btn"
+          onclick={handleEnterProfiles}
+          disabled={loading || profileMgmtLoading}
+        >
+          Team Profiles
+        </button>
+      </div>
+      <SessionList
+        {sessions}
+        selectedSessionId={selectedSession?.sessionId ?? null}
+        {loading}
+        {error}
+        onSelect={handleSelectSession}
+        onRefresh={handleRefresh}
+        onCreate={handleCreate}
+        onDelete={handleDelete}
+      />
+    </div>
   {:else if page === 'chat'}
     <div class="chat-layout">
       <TeamSidebar
@@ -1146,6 +1227,21 @@
         />
       </div>
     </div>
+  {:else if page === 'profiles'}
+    <!-- TeamProfile config page, specialized per template (FR-026/FR-029):
+         saolei renders only the player/planner model form (FR-027) — the
+         typed oneof variant drives the form (contracts/desktop-contract.md §3). -->
+    <ProfileManagement
+      {template}
+      profiles={managedProfiles}
+      loading={profileMgmtLoading}
+      error={profileMgmtError}
+      onCreate={handleCreateTeamProfile}
+      onDelete={handleDeleteTeamProfile}
+      onRefresh={handleRefreshProfiles}
+      onUpdate={handleUpdateTeamProfile}
+      onBack={handleBackFromProfiles}
+    />
   {/if}
 
   <!-- Log Panel (bottom, always visible) -->
@@ -1157,6 +1253,38 @@
 </div>
 
 <style>
+  .sessions-page {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .sessions-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #16213e;
+    border-radius: 6px;
+    border: 1px solid #0f3460;
+    font-size: 12px;
+    color: #a0a0b0;
+    flex-shrink: 0;
+  }
+
+  .sessions-template {
+    font-weight: 600;
+  }
+
+  .sessions-page :global(.session-list) {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+  }
+
   .chat-layout {
     display: flex;
     gap: 8px;

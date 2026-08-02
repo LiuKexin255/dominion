@@ -235,7 +235,7 @@
 
 ### Tasks
 
-- [ ] T028 [US5] Rewrite `projects/game/desktop/frontend/src/components/ProfileManagement.svelte` — **先删除后新增**：删除通用 AgentProfile 表单（model/systemPrompt/skillNames/mcpNames/toolNames/enabled 字段）；按当前模板的 TeamProfile typed oneof 渲染特化表单——saolei：仅 `player_model` / `planner_model` 选择（FR-029），无 tools/mcp/skill 字段（FR-027/FR-028，模板固定装配）。CRUD 经新 TeamProfile bindings（T024）。
+- [X] T028 [US5] Rewrite `projects/game/desktop/frontend/src/components/ProfileManagement.svelte` — **先删除后新增**：删除通用 AgentProfile 表单（model/systemPrompt/skillNames/mcpNames/toolNames/enabled 字段）；按当前模板的 TeamProfile typed oneof 渲染特化表单——saolei：仅 `player_model` / `planner_model` 选择（FR-029），无 tools/mcp/skill 字段（FR-027/FR-028，模板固定装配）。CRUD 经新 TeamProfile bindings（T024）。
 
 **Checkpoint**: TeamProfile 配置面完整。saolei profile 仅模型选择，tools/mcp 模板装配。
 
