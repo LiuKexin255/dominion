@@ -120,15 +120,21 @@ export type TurnRunner = (
 /**
  * Build an outbound `AgentFrame` envelope, tagging the `payload` oneof case
  * from whichever payload key is present (same convention as `handler.ts`).
+ * `templateId` is the session's template path segment (bare, REQUIRED by the
+ * proto contract — specs/031-team-template-mode/contracts/api-contract.md §3.6);
+ * it is carried alongside `sessionId` so every outbound frame is
+ * self-describing.
  */
 function buildFrame(
   sessionId: string,
+  templateId: string,
   sender: (typeof FrameSender)[keyof typeof FrameSender],
   payload: Partial<AgentFrame>,
 ): AgentFrame {
   const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
   return {
     sessionId,
+    templateId,
     frameId: randomUUID(),
     sender,
     createTime: timestampNow(),
@@ -200,6 +206,9 @@ function combineAll(buffer: TurnContent[]): TurnContent {
  */
 export class TurnLoop {
   private readonly sessionId: string;
+  /** The session's template id (bare path segment, e.g. "saolei") — stamped
+   * on every outbound frame alongside sessionId (REQUIRED, api-contract.md §3.6). */
+  private readonly templateId: string;
   private readonly runner: TurnRunner;
   private readonly emit: TurnLoopEmit;
   /** The session's primary agent — stamped on control frames (`agent`). */
@@ -212,11 +221,13 @@ export class TurnLoop {
 
   constructor(
     sessionId: string,
+    templateId: string,
     runner: TurnRunner,
     emit: TurnLoopEmit,
     agentName: string,
   ) {
     this.sessionId = sessionId;
+    this.templateId = templateId;
     this.runner = runner;
     this.emit = emit;
     this.agentName = agentName;
@@ -402,7 +413,7 @@ export class TurnLoop {
    */
   private displayFrame(block: ContentBlock, agent: string): AgentFrame {
     if (block.type === "reasoning") {
-      return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
         agent,
         messageParts: {
           parts: [{ thinking: { content: block.reasoning } }],
@@ -410,7 +421,7 @@ export class TurnLoop {
       });
     }
     if (block.type === "text") {
-      return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
         agent,
         messageParts: {
           parts: [{ text: { content: block.text } }],
@@ -418,7 +429,7 @@ export class TurnLoop {
       });
     }
     if (block.type === "tool_call") {
-      return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
         agent,
         messageParts: {
           parts: [
@@ -448,7 +459,7 @@ export class TurnLoop {
       };
       toolResultPart.screenshot = screenshot;
     }
-    return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_AGENT, {
+    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
       agent,
       messageParts: { parts: [{ toolResult: toolResultPart }] },
     });
@@ -456,7 +467,7 @@ export class TurnLoop {
 
   /** `wait` FlowPart frame (sender SYSTEM, carries the session agent). */
   private waitFrame(): AgentFrame {
-    return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
+    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
       agent: this.agentName,
       flowParts: { parts: [{ wait: {} }] },
     });
@@ -472,14 +483,14 @@ export class TurnLoop {
    * matches `wait`/`warn` (control-only signals).
    */
   private queueSignalFrame(depth: number): AgentFrame {
-    return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
+    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
       flowParts: { parts: [{ queue: { queuedCount: depth } }] },
     });
   }
 
   /** `warn` FlowPart frame (sender SYSTEM). */
   private warnFrame(message: string): AgentFrame {
-    return buildFrame(this.sessionId, FrameSender.FRAME_SENDER_SYSTEM, {
+    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
       flowParts: {
         parts: [{ warn: { message: `Processing error: ${message}` } }],
       },

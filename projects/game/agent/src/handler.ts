@@ -271,12 +271,14 @@ export class Handler implements TeamServiceHandlers {
 
     const buildFrame = (
       sessionId: string,
+      templateId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
     ): AgentFrame => {
       const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
       return {
         sessionId,
+        templateId,
         frameId: randomUUID(),
         sender,
         createTime: timestampNow(),
@@ -324,11 +326,15 @@ export class Handler implements TeamServiceHandlers {
     };
 
     stream.on("data", async (frame) => {
-      // The frame's session_id may be the full session resource name
-      // ("templates/{template}/sessions/{session}" — proxy-side Connect
-      // forwards the first frame verbatim, see projects/game/proxy/handler/
-      // handler.go) or a bare session id.
+      // The gateway injects the BARE session_id (and template_id) from the
+      // connect URL path into every inbound frame (specs/031-team-template-mode/
+      // contracts/api-contract.md §2.2), so the normal path always yields a
+      // bare session id. extractSessionId additionally tolerates the full
+      // resource-name form defensively (legacy/direct-proxy callers), and
+      // frame.templateId is read verbatim (bare by construction) with an
+      // empty-string fallback for the same defensive path.
       const sessionId = extractSessionId(frame.sessionId ?? "");
+      const templateId = frame.templateId ?? "";
       if (!sessionId) {
         warn("connect frame with no session id", {});
         return;
@@ -364,6 +370,7 @@ export class Handler implements TeamServiceHandlers {
           const team = this.sessionTeamStore.get(sessionId);
           const statusFrame: AgentFrame = buildFrame(
             sessionId,
+            templateId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
@@ -419,6 +426,7 @@ export class Handler implements TeamServiceHandlers {
           });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
+            templateId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
@@ -436,6 +444,7 @@ export class Handler implements TeamServiceHandlers {
           safeWrite(stream, warnFrame, sessionId);
           const waitFrame: AgentFrame = buildFrame(
             sessionId,
+            templateId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
@@ -811,9 +820,11 @@ function parseMessagesParent(parent: string): {
 }
 
 /**
- * Extract the session id from a frame's `session_id`: either the full
- * session resource name "templates/{template}/sessions/{session}" (proxy-side
- * Connect forwards the first frame verbatim) or a bare session id.
+ * Extract the session id from a frame's `session_id`. The gateway injects
+ * the BARE session id into every inbound frame (api-contract.md §2.2), so
+ * the normal path returns it unchanged; the full resource-name form
+ * "templates/{template}/sessions/{session}" is tolerated defensively
+ * (legacy/direct-proxy callers) and reduced to the bare id.
  */
 function extractSessionId(value: string): string {
   const match = value.match(

@@ -39,7 +39,7 @@
 |---|---|---|
 | `CreateTeam` | POST `/api/v1/{parent=templates/*/sessions/*}/team`（body `"*"`） | **AIP-133 显式创建（唯一创建点）**：请求携带 parent Session + profile（TeamProfile 完整资源名 `templates/{template}/profiles/{profile}`，AIP-122——template 段 MUST 与 parent 一致，handler 校验，禁潜规则）；响应为 Team 资源。代理侧为唯一 owner 分配点；重复 create：**profile 相同 → 幂等返回既有 Team；profile 不同 → ALREADY_EXISTS（details 携带既有 profile）**（per-session 单例，desktop create-if-missing 流程可安全重试；仅 profile 相同时才不返回 AIP-133 严格 ALREADY_EXISTS，理由：单例资源 + 桌面竞态场景，见下注） |
 | `GetTeam` | GET `/api/v1/{name=templates/*/sessions/*/team}` | 返回 Team（含 `agents` 描述，D3）；未创建 → NOT_FOUND |
-| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame`。**不分配 owner/不创建 Team**——未创建 → NOT_FOUND（agent 端经 stream error 通道下发该状态） |
+| `Connect` | bidi stream（无 REST） | 端点 `templates/{template}/sessions/{session}/connect`（FR-004）；stream `AgentFrame`。**不分配 owner/不创建 Team**——未创建 → NOT_FOUND（agent 端经 stream error 通道下发该状态）。**帧路由对**：frame 携带 `template_id`+`session_id`（均裸段；gateway 从 connect URL 路径注入两字段，覆盖客户端值）；proxy 据此对直接构造 Session 资源名（`game.SessionName{TemplateID, SessionID}`，不再解析全名） |
 | `ListMessages` | GET `/api/v1/{parent=templates/*/sessions/*/team/agents/*}/messages` | 按 agent 分区（FR-005）；未创建 → NOT_FOUND |
 | `RefreshTeam` | POST `/api/v1/{name=templates/*/sessions/*/team}:refresh` | 取代 RefreshAgent（FR-008）；清空短期记忆（FR-018）；未创建 → NOT_FOUND |
 
@@ -150,11 +150,12 @@ message SaoleiProfile {
 
 ```proto
 message AgentFrame {
-  string session_id = 1 [Required];
+  string session_id = 1 [Required];   // 裸 session id（{session} 段）
   string frame_id = 2;
   google.protobuf.Timestamp create_time = 3;
   FrameSender sender = 6;
   string agent = 7;               // 取代 agent_profile_name（field 7 重命名）
+  string template_id = 8 [Required];   // 裸 template id（{template} 段）；与 session_id 构成路由对——gateway 从 connect URL 注入，proxy 据此构造 Session 资源名（§2.2）
   oneof payload { MessageParts message_parts = 11; FlowParts flow_parts = 12; }
 }
 ```

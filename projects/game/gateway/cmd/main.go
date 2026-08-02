@@ -131,33 +131,37 @@ func isWebSocketConnectPath(path string) bool {
 		parts[5] != "" && parts[6] == "connect"
 }
 
-// extractSessionID extracts the session segment from a path matching
-// /api/v1/templates/{template}/sessions/{session}/connect. It only accepts
-// the full connect path shape (delegating to isWebSocketConnectPath) so a
-// foreign path such as .../sessions/{id}/team never yields a session id.
-func extractSessionID(path string) string {
+// extractConnectIdentity extracts the template and session segments from a
+// path matching /api/v1/templates/{template}/sessions/{session}/connect. It
+// only accepts the full connect path shape (delegating to
+// isWebSocketConnectPath) so a foreign path such as
+// .../sessions/{id}/team never yields a template/session id.
+func extractConnectIdentity(path string) (template, session string) {
 	if !isWebSocketConnectPath(path) {
-		return ""
+		return "", ""
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return parts[5]
+	return parts[3], parts[5]
 }
 
 // wsStream adapts a WebSocket connection to bind.AgentFrameStream.
 // It handles binary-protobuf serialization/deserialization and injects the
-// sessionID from the URL path into every received frame, overwriting
-// any client-supplied value.
+// templateID/sessionID from the URL path into every received frame,
+// overwriting any client-supplied value. The proxy reconstructs the session
+// resource name from this pair without parsing (spec
+// 031-team-template-mode contracts/api-contract.md §2.2).
 //
 // ctx holds the HTTP request context so that Read/Write respect request
 // cancellation (e.g. client disconnect).
 type wsStream struct {
-	ctx       context.Context
-	conn      *websocket.Conn
-	sessionID string
+	ctx        context.Context
+	conn       *websocket.Conn
+	templateID string
+	sessionID  string
 }
 
 // Recv reads a binary frame from the WebSocket, unmarshals it as an
-// AgentFrame (protobuf wire format), and injects the sessionID
+// AgentFrame (protobuf wire format), and injects the templateID/sessionID
 // from the URL path. proto.Unmarshal preserves unknown fields per the proto
 // spec, maintaining the forward-compatibility that protojson's DiscardUnknown
 // previously provided
@@ -171,7 +175,9 @@ func (s *wsStream) Recv() (*game.AgentFrame, error) {
 	if err := proto.Unmarshal(data, &frame); err != nil {
 		return nil, errors.Join(errProtocol, err)
 	}
-	// CRITICAL: inject sessionID from URL path — always wins over client-supplied value
+	// CRITICAL: inject templateID/sessionID from URL path — always wins over
+	// client-supplied values.
+	frame.TemplateId = s.templateID
 	frame.SessionId = s.sessionID
 	return &frame, nil
 }
@@ -205,9 +211,9 @@ func isProtocolError(err error) bool {
 // binary frames in both directions. proto.Unmarshal preserves unknown
 // fields for forward compatibility.
 func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
-	sessionID := extractSessionID(r.URL.Path)
-	if sessionID == "" {
-		http.Error(w, "missing session_id", http.StatusBadRequest)
+	templateID, sessionID := extractConnectIdentity(r.URL.Path)
+	if templateID == "" || sessionID == "" {
+		http.Error(w, "missing template_id or session_id", http.StatusBadRequest)
 		return
 	}
 
@@ -216,6 +222,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	})
 	if err != nil {
 		logs.Error(r.Context(), "ws accept failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -223,6 +230,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	}
 	defer conn.CloseNow()
 	logs.Info(r.Context(), "ws connected",
+		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 	)
 
@@ -233,18 +241,20 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	stream, err := teamClient.Connect(r.Context())
 	if err != nil {
 		logs.Error(r.Context(), "team Connect: stream creation failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
 		return
 	}
 
-	ws := &wsStream{ctx: r.Context(), conn: conn, sessionID: sessionID}
+	ws := &wsStream{ctx: r.Context(), conn: conn, templateID: templateID, sessionID: sessionID}
 	b := bind.NewBinder()
 	err = b.Bind(ws, stream)
 
 	if err == nil {
 		logs.Info(r.Context(), "agent connect stream closed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -252,6 +262,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	}
 	if isCleanClose(err) {
 		logs.Info(r.Context(), "agent connect stream closed (clean)",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -259,6 +270,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 	}
 	if isProtocolError(err) {
 		logs.Warn(r.Context(), "agent connect: protocol error",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -266,6 +278,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 		return
 	}
 	logs.Error(r.Context(), "agent connect: internal error",
+		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.Err(err),
 	)

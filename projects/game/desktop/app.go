@@ -560,6 +560,7 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 
 	frame := &game.AgentFrame{
 		SessionId:  sessionID,
+		TemplateId: template,
 		FrameId:    frameID,
 		CreateTime: timestamppb.Now(),
 		Sender:     game.FrameSender_FRAME_SENDER_USER,
@@ -626,8 +627,9 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				"error":       err.Error(),
 			})
 			a.chatStreams.Append(sessionID, &game.AgentFrame{
-				SessionId: sessionID,
-				FrameId:   frameID,
+				SessionId:  sessionID,
+				TemplateId: a.template,
+				FrameId:    frameID,
 				Payload: &game.AgentFrame_FlowParts{
 					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 						{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}},
@@ -668,6 +670,7 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				// reacts; not rendered as a chat bubble by ChatView.
 				a.chatStreams.Append(sessionID, &game.AgentFrame{
 					SessionId:  resp.GetSessionId(),
+					TemplateId: a.template,
 					FrameId:    resp.GetFrameId(),
 					CreateTime: resp.GetCreateTime(),
 					Sender:     resp.GetSender(),
@@ -726,6 +729,7 @@ func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) erro
 
 	resultFrame := &game.AgentFrame{
 		SessionId:  sessionID,
+		TemplateId: a.template,
 		FrameId:    resultFrameID,
 		CreateTime: timestamppb.Now(),
 		Sender:     game.FrameSender_FRAME_SENDER_USER,
@@ -1631,6 +1635,7 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
 	probeFrame := &game.AgentFrame{
 		SessionId:  sessionID,
+		TemplateId: template,
 		FrameId:    probeFrameID,
 		CreateTime: timestamppb.Now(),
 		Payload: &game.AgentFrame_FlowParts{

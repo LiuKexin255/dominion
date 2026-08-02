@@ -568,7 +568,7 @@ func TestConnect(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
-		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
+		err := h.Connect(makeProxyStream("saolei", "sid"))
 
 		if err != nil {
 			t.Fatalf("Connect() unexpected error: %v", err)
@@ -586,7 +586,7 @@ func TestConnect(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		err := h.Connect(makeProxyStream("templates/saolei/sessions/new-session"))
+		err := h.Connect(makeProxyStream("saolei", "new-session"))
 
 		// Connect must NOT allocate an owner anymore — CreateTeam is the only
 		// allocation point (Agent 移除懒加载模式).
@@ -598,20 +598,20 @@ func TestConnect(t *testing.T) {
 		}
 	})
 
-	t.Run("empty session_id", func(t *testing.T) {
+	t.Run("missing template_id", func(t *testing.T) {
 		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		err := h.Connect(makeProxyStream(""))
+		err := h.Connect(makeProxyStream("", "sid"))
 
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("Connect() status = %v, want InvalidArgument", status.Code(err))
 		}
 	})
 
-	t.Run("session_id without templates prefix", func(t *testing.T) {
+	t.Run("missing session_id", func(t *testing.T) {
 		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		err := h.Connect(makeProxyStream("sid"))
+		err := h.Connect(makeProxyStream("saolei", ""))
 
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("Connect() status = %v, want InvalidArgument", status.Code(err))
@@ -639,7 +639,7 @@ func TestConnect(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
 
-		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
+		err := h.Connect(makeProxyStream("saolei", "sid"))
 
 		if status.Code(err) != codes.Internal {
 			t.Fatalf("Connect() status = %v, want Internal", status.Code(err))
@@ -657,7 +657,7 @@ func TestConnect(t *testing.T) {
 
 		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{err: errors.New("bind failed")})
 
-		err := h.Connect(makeProxyStream("templates/saolei/sessions/sid"))
+		err := h.Connect(makeProxyStream("saolei", "sid"))
 
 		if err == nil {
 			t.Fatalf("Connect() expected error, got nil")
@@ -852,12 +852,14 @@ func TestParseMessagesParent(t *testing.T) {
 }
 
 // makeProxyStream builds a mockProxyStream whose first Recv yields a status
-// FlowPart frame carrying the given session resource name. status is a
+// FlowPart frame carrying the given template/session id pair (both bare
+// segments; the gateway injects them from the connect URL path). status is a
 // FlowPart kind (spec 023 C3 / FR-003 — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
-func makeProxyStream(sessionName string) *mockProxyStream {
+func makeProxyStream(templateID, sessionID string) *mockProxyStream {
 	recvCh := make(chan *game.AgentFrame, 1)
 	recvCh <- &game.AgentFrame{
-		SessionId: sessionName,
+		TemplateId: templateID,
+		SessionId:  sessionID,
 		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 		}}},

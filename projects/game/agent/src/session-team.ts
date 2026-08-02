@@ -76,6 +76,9 @@ export class SessionTeam {
 	private readonly bridge: OperationBridge;
 	private readonly sink: SaoleiEventSink;
 	private readonly sessionId: string;
+	/** The session's template path segment (e.g. "saolei") — the templateId
+	 * stamped on every outbound AgentFrame (REQUIRED, api-contract.md §3.6). */
+	private readonly template: string;
 
 	private turnLoop: TurnLoop | null = null;
 	private turnLoopEmit: TurnLoopEmit | null = null;
@@ -88,15 +91,19 @@ export class SessionTeam {
 	 * @param buffer      The per-session ephemeral game buffer (D7). Owned by
 	 *   this session; the sink writes it, the graph nodes read it.
 	 * @param sessionId   The dominion session id (thread id + strategy key).
+	 * @param template    The session's template path segment (from the
+	 *   CreateTeam parent, AIP-133).
 	 */
 	constructor(
 		graphHandle: TeamGraphHandle,
 		buffer: EphemeralGameBuffer,
 		sessionId: string,
+		template: string,
 	) {
 		this.graphHandle = graphHandle;
 		this.buffer = buffer;
 		this.sessionId = sessionId;
+		this.template = template;
 		this.bridge = new OperationBridge();
 		this.sink = createTeamSink(buffer);
 	}
@@ -151,6 +158,7 @@ export class SessionTeam {
 		if (!this.turnLoop) {
 			this.turnLoop = new TurnLoop(
 				this.sessionId,
+				this.template,
 				(content_, signal) => this.runTeamTurn(content_, signal),
 				(frame) => this.turnLoopEmit?.(frame),
 				PRIMARY_AGENT_NAME,

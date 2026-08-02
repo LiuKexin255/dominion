@@ -90,7 +90,8 @@
 
 | 属性 | 类型 | 说明 |
 |---|---|---|
-| `session_id` | string (REQUIRED) | |
+| `session_id` | string (REQUIRED) | 裸 session id（`templates/{template}/sessions/{session}` 的 `{session}` 段），与 `template_id` 构成帧的路由对 |
+| `template_id` | string (REQUIRED) | 裸 template id（`{template}` 段，如 `saolei`）；与 `session_id` 对称。**gateway 从 connect URL 路径注入**（`templates/{template}/sessions/{session}/connect`，覆盖客户端值）；proxy 据此对直接构造 Session 资源名（不再解析全名）——见 [`contracts/api-contract.md`](./contracts/api-contract.md) §2.2 |
 | `frame_id` | string | |
 | `create_time` | Timestamp | |
 | `sender` | `FrameSender` | |

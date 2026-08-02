@@ -100,7 +100,7 @@ function createTeamStore(gate?: Gate): {
 } {
   const strategies = new FakeStrategyStore();
   const store = new SessionTeamStore(
-    async (sessionId, _template, _profileName) => {
+    async (sessionId, template, _profileName) => {
       const buffer = createEphemeralGameBuffer();
       const handle = buildTeamGraph({
         playerModel: playOneGamePlayerModel(),
@@ -110,7 +110,7 @@ function createTeamStore(gate?: Gate): {
         sessionId,
         playerTools: [buildGameEndingPlayerTool(buffer, gate)],
       });
-      return new SessionTeam(handle, buffer, sessionId);
+      return new SessionTeam(handle, buffer, sessionId, template);
     },
   );
   return { store, strategies };
@@ -192,7 +192,9 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-/** Build an inbound user messageParts frame (TextPart, sender USER). */
+/** Build an inbound user messageParts frame (TextPart, sender USER). The
+ * gateway injects both template_id and session_id into inbound frames
+ * (api-contract.md §2.2), so tests carry them like the real path. */
 function userContentFrame(
   sessionId: string,
   text: string,
@@ -200,6 +202,7 @@ function userContentFrame(
 ) {
   return {
     sessionId,
+    templateId: "saolei",
     payload: "messageParts",
     messageParts: { parts: [{ text: { content: text } }] },
     sender: FRAME_SENDER_USER,
@@ -616,9 +619,12 @@ describe("Handler.Connect flow result + status", () => {
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    // No team yet → UNSPECIFIED.
+    // No team yet → UNSPECIFIED. The inbound frame carries the gateway-
+    // injected template_id; the response must carry it back (api-contract.md
+    // §2.2).
     stream.emit("data", {
       sessionId: "sess-status",
+      templateId: "saolei",
       payload: "flowParts",
       flowParts: { parts: [{ status: {} }] },
     });
@@ -636,6 +642,8 @@ describe("Handler.Connect flow result + status", () => {
         first.flowParts.parts[0].status.status,
       ),
     ).toBe(true);
+    expect((statusFrames[0] as { templateId?: string }).templateId).toBe("saolei");
+    expect((statusFrames[0] as { sessionId?: string }).sessionId).toBe("sess-status");
   });
 });
 

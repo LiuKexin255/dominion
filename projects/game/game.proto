@@ -592,6 +592,13 @@ message AgentFrame {
   // D12 / FR-023). Field 7 keeps its number; only the name changes.
   string agent = 7;
 
+  // The template id routing key (bare segment, e.g. "saolei"); the companion
+  // of session_id. The gateway injects both from the connect URL path
+  // (templates/{template}/sessions/{session}/connect); the proxy reconstructs
+  // the session resource name from the pair without parsing
+  // (specs/031-team-template-mode/contracts/api-contract.md §2.2, FR-004).
+  string template_id = 8 [(google.api.field_behavior) = REQUIRED];
+
   // Exactly one payload per frame: a batch of display blocks OR a batch of
   // control blocks (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4).
   oneof payload {

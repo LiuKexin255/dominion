@@ -243,7 +243,7 @@ export async function startServer(
         sessionId,
         playerTools,
       });
-      return new SessionTeam(handle, buffer, sessionId);
+      return new SessionTeam(handle, buffer, sessionId, template);
     },
   );
 

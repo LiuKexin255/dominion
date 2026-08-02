@@ -26,6 +26,9 @@ import { buildTeamGraph } from "./team/graph";
 import type { TeamStateValue } from "./team/state";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 
+/** Template id of the test sessions (saolei — CreateTeam default in tests). */
+const TID = "saolei";
+
 function makeState(): GameState {
 	return {
 		width: 3,
@@ -75,7 +78,7 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 		sessionId,
 		playerTools: [buildGameEndingPlayerTool(buffer)],
 	});
-	const team = new SessionTeam(handle, buffer, sessionId);
+	const team = new SessionTeam(handle, buffer, sessionId, TID);
 	return { team, store, buffer, sessionId };
 }
 

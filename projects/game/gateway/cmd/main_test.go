@@ -54,23 +54,27 @@ func TestIsWebSocketConnectPath(t *testing.T) {
 	}
 }
 
-func TestExtractSessionID(t *testing.T) {
+func TestExtractConnectIdentity(t *testing.T) {
 	tests := []struct {
-		path string
-		want string
+		path         string
+		wantTemplate string
+		wantSession  string
 	}{
-		{path: "/api/v1/templates/saolei/sessions/abc123/connect", want: "abc123"},
-		{path: "/api/v1/templates/saolei/sessions/x-y-z/connect", want: "x-y-z"},
-		{path: "/api/v1/templates/saolei/sessions//connect", want: ""},
-		{path: "/api/v1/agents", want: ""},
-		{path: "/api/v1/sessions/abc/connect", want: ""},
+		{path: "/api/v1/templates/saolei/sessions/abc123/connect", wantTemplate: "saolei", wantSession: "abc123"},
+		{path: "/api/v1/templates/saolei/sessions/x-y-z/connect", wantTemplate: "saolei", wantSession: "x-y-z"},
+		{path: "/api/v1/templates/saolei/sessions//connect", wantTemplate: "", wantSession: ""},
+		{path: "/api/v1/agents", wantTemplate: "", wantSession: ""},
+		{path: "/api/v1/sessions/abc/connect", wantTemplate: "", wantSession: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := extractSessionID(tt.path)
-			if got != tt.want {
-				t.Fatalf("extractSessionID(%q) = %q, want %q", tt.path, got, tt.want)
+			gotTemplate, gotSession := extractConnectIdentity(tt.path)
+			if gotTemplate != tt.wantTemplate {
+				t.Fatalf("extractConnectIdentity(%q) template = %q, want %q", tt.path, gotTemplate, tt.wantTemplate)
+			}
+			if gotSession != tt.wantSession {
+				t.Fatalf("extractConnectIdentity(%q) session = %q, want %q", tt.path, gotSession, tt.wantSession)
 			}
 		})
 	}
@@ -290,6 +294,9 @@ func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 	// Wait for the gRPC server to receive the frame.
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "test-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "test-session")
 		}
@@ -382,6 +389,9 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
+	if recvFrame.GetTemplateId() != "saolei" {
+		t.Fatalf("template_id = %q, want %q", recvFrame.GetTemplateId(), "saolei")
+	}
 	if recvFrame.GetSessionId() != "echo-session" {
 		t.Fatalf("session_id = %q, want %q", recvFrame.GetSessionId(), "echo-session")
 	}
@@ -536,6 +546,9 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q (should be from URL, not protobuf)", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "from-url" {
 			t.Fatalf("session_id = %q, want %q (should be from URL, not protobuf)", f.GetSessionId(), "from-url")
 		}
@@ -757,6 +770,9 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "shot-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
 		}

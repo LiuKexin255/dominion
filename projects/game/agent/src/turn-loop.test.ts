@@ -197,6 +197,7 @@ function flush(ms = 0): Promise<void> {
 }
 
 const SID = "sid-loop";
+const TID = "saolei";
 const AGENT = "player";
 
 // ---------------------------------------------------------------------------
@@ -209,6 +210,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -225,6 +227,11 @@ describe("TurnLoop", () => {
     expect(loop.isRunning()).toBe(false);
     expect(textContents(frames)).toEqual(["reply:hello"]);
     expect(waitFrames(frames)).toHaveLength(1);
+    // Every outbound frame carries the REQUIRED template_id alongside
+    // session_id (api-contract.md §3.6): the gateway/desktop inject both, the
+    // agent passes its session-scoped template through on outbound frames.
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames.every((f) => f.sessionId === SID && f.templateId === TID)).toBe(true);
     // Phase 5 (T010): an IDLE submit starts a turn (depth stays 0), so NO
     // QueueSignal is emitted
     // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §2:
@@ -238,6 +245,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -277,6 +285,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -297,6 +306,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -331,6 +341,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -366,6 +377,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -394,6 +406,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -439,6 +452,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -481,6 +495,7 @@ describe("TurnLoop", () => {
     const { emit, frames } = makeRecordingEmit();
     const loop = new TurnLoop(
       SID,
+      TID,
       adapter,
       emit,
       AGENT,
@@ -515,7 +530,7 @@ describe("TurnLoop", () => {
     const gate = makeGate();
     const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, adapter, emit, AGENT);
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
 
     loop.submit({ text: "A" });
     await flush();
@@ -544,7 +559,7 @@ describe("TurnLoop", () => {
     // idle, so NO QueueSignal is emitted at all.
     const adapter = makeEchoRunner("player");
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, adapter, emit, AGENT);
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
 
     loop.submit({ text: "solo" });
     await flush();
@@ -560,7 +575,7 @@ describe("TurnLoop", () => {
     const gate = makeGate();
     const adapter = makeEchoRunner("player", { gate });
     const { emit, frames } = makeRecordingEmit();
-    const loop = new TurnLoop(SID, adapter, emit, AGENT);
+    const loop = new TurnLoop(SID, TID, adapter, emit, AGENT);
 
     loop.submit({ text: "in-flight" });
     await flush();

@@ -152,8 +152,10 @@ func (h *TeamHandler) ListMessages(ctx context.Context, req *game.ListMessagesRe
 // exist (CreateTeam is the only RPC that allocates one): Connect does NOT
 // allocate an owner anymore — a session without a created team yields
 // NotFound, consistent with GetTeam/ListMessages/RefreshTeam. The first
-// frame's session_id carries the full session resource name
-// ("templates/{template}/sessions/{session}").
+// frame carries the routing pair template_id/session_id (both bare segments,
+// injected by the gateway from the connect URL path —
+// specs/031-team-template-mode/contracts/api-contract.md §2.2); the session
+// resource name is reconstructed from the pair without parsing.
 func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 	ctx := stream.Context()
 
@@ -162,10 +164,10 @@ func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 		return status.Errorf(codes.InvalidArgument, "failed to receive initial frame: %v", err)
 	}
 
-	name, err := game.ParseSessionName(frame.GetSessionId())
-	if err != nil {
-		return status.Error(codes.InvalidArgument, "session_id must be a session resource name of the form templates/{template}/sessions/{session}")
+	if frame.GetTemplateId() == "" || frame.GetSessionId() == "" {
+		return status.Error(codes.InvalidArgument, "frame must carry both template_id and session_id")
 	}
+	name := game.SessionName{TemplateID: frame.GetTemplateId(), SessionID: frame.GetSessionId()}
 
 	owner, err := h.lookupOwner(ctx, name.SessionID)
 	if err != nil {
