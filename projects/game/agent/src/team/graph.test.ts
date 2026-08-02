@@ -15,7 +15,7 @@
  * having RUN (`plannerMessages` non-empty / strategy written).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
@@ -24,12 +24,16 @@ import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "../strategy-store";
+import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
 import {
 	createEphemeralGameBuffer,
 	createTeamSink,
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
+import { DEFAULT_PLAYER_BASE } from "./player";
+import type { CreateAgentFn } from "./player";
+import { DEFAULT_PLANNER_BASE } from "./planner";
 import type { TeamStateValue } from "./state";
 
 /** A minimal recognizable GameState (3x3, all empty cells). */
@@ -84,6 +88,9 @@ function buildTestGraph(
 		playerModel?: ReturnType<typeof playOneGamePlayerModel>;
 		plannerModel?: ReturnType<typeof updateStrategyPlannerModel>;
 		sessionId?: string;
+		playerBasePrompt?: string;
+		plannerBasePrompt?: string;
+		createAgentFn?: CreateAgentFn;
 	} = {},
 ) {
 	const store = overrides.store ?? new FakeStrategyStore();
@@ -97,6 +104,9 @@ function buildTestGraph(
 		buffer,
 		sessionId,
 		playerTools: [buildGameEndingPlayerTool(buffer)],
+		playerBasePrompt: overrides.playerBasePrompt ?? "",
+		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
+		createAgentFn: overrides.createAgentFn,
 	});
 	return { graph, checkpointer, store, buffer, sessionId };
 }
@@ -372,6 +382,8 @@ describe("team graph — strategy injection edge cases", () => {
 			buffer,
 			sessionId: "graph-test",
 			playerTools: [failingTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
 		});
 
 		const result = (await graph.invoke(
@@ -385,5 +397,80 @@ describe("team graph — strategy injection edge cases", () => {
 		expect(result.gameEnded).toBeNull();
 		expect(result.plannerMessages).toEqual([]);
 		expect(await store.get("graph-test")).toBe("");
+	});
+});
+
+describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)", () => {
+	/**
+	 * Spy createAgentFn (DI seam) capturing the `systemPrompt` of each node's
+	 * agent. The player's prompt always carries the appended saolei skill
+	 * body (SKILL_PROMPT_SEPARATOR); the planner's is a bare base — that
+	 * distinguishes the two calls without depending on build order.
+	 */
+	function captureSystemPrompts(): {
+		createAgentFn: CreateAgentFn;
+		playerSystemPrompt(): string;
+		plannerSystemPrompt(): string;
+	} {
+		const calls: string[] = [];
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			calls.push(config.systemPrompt ?? "");
+			return { invoke: async () => ({ messages: [] as BaseMessage[] }) };
+		});
+		return {
+			createAgentFn,
+			playerSystemPrompt: () =>
+				calls.find((p) => p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
+			plannerSystemPrompt: () =>
+				calls.find((p) => !p.includes(SKILL_PROMPT_SEPARATOR)) ?? "",
+		};
+	}
+
+	it("player: non-empty player_prompt overrides the base AND the saolei skill body is still appended (FR-034)", () => {
+		const profilePrompt = "你是自定义的 player 操作者。";
+		const { createAgentFn, playerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ playerBasePrompt: profilePrompt, createAgentFn });
+
+		// Semantics A: final assembly = appendSkillBodyToPrompt(profile
+		// prompt, ["saolei"]) — starts with the profile prompt and still
+		// carries the template-appended skill body.
+		const prompt = playerSystemPrompt();
+		expect(prompt.startsWith(profilePrompt)).toBe(true);
+		expect(prompt).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(prompt).toBe(appendSkillBodyToPrompt(profilePrompt, ["saolei"]));
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+	});
+
+	it("player: empty player_prompt falls back to DEFAULT_PLAYER_BASE with the skill body appended (FR-034)", () => {
+		const { createAgentFn, playerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ createAgentFn }); // playerBasePrompt defaults to ""
+
+		const prompt = playerSystemPrompt();
+		expect(prompt.startsWith(DEFAULT_PLAYER_BASE)).toBe(true);
+		expect(prompt).toContain(SKILL_PROMPT_SEPARATOR);
+		expect(prompt).toBe(
+			appendSkillBodyToPrompt(DEFAULT_PLAYER_BASE, ["saolei"]),
+		);
+		expect(createAgentFn).toHaveBeenCalled();
+	});
+
+	it("planner: non-empty planner_prompt is used as the systemPrompt verbatim (FR-034)", () => {
+		const profilePrompt = "你是自定义的 planner 复盘者。";
+		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ plannerBasePrompt: profilePrompt, createAgentFn });
+
+		expect(plannerSystemPrompt()).toBe(profilePrompt);
+		// The planner appends NO skill body (FR-012/FR-034).
+		expect(plannerSystemPrompt()).not.toContain(SKILL_PROMPT_SEPARATOR);
+		expect(createAgentFn).toHaveBeenCalled();
+	});
+
+	it("planner: empty planner_prompt falls back to DEFAULT_PLANNER_BASE (FR-034)", () => {
+		const { createAgentFn, plannerSystemPrompt } = captureSystemPrompts();
+		buildTestGraph({ createAgentFn }); // plannerBasePrompt defaults to ""
+
+		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
+		expect(createAgentFn).toHaveBeenCalled();
 	});
 });

@@ -217,10 +217,12 @@ func TestTeamProfileCreateGet(t *testing.T) {
 	// given
 	repo := newTestRepo()
 	profile := &domain.TeamProfile{
-		TeamProfileName:    "default",
-		Template:           "saolei",
-		SaoleiPlayerModel:  "opencode-go/deepseek-v4-pro",
-		SaoleiPlannerModel: "opencode-go/deepseek-v4-pro",
+		TeamProfileName:     "default",
+		Template:            "saolei",
+		SaoleiPlayerModel:   "opencode-go/deepseek-v4-pro",
+		SaoleiPlannerModel:  "opencode-go/deepseek-v4-pro",
+		SaoleiPlayerPrompt:  "player base prompt",
+		SaoleiPlannerPrompt: "planner base prompt",
 	}
 
 	// when - create
@@ -249,6 +251,12 @@ func TestTeamProfileCreateGet(t *testing.T) {
 	}
 	if got.SaoleiPlannerModel != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("GetTeamProfile() planner_model = %q, want %q", got.SaoleiPlannerModel, "opencode-go/deepseek-v4-pro")
+	}
+	if got.SaoleiPlayerPrompt != "player base prompt" {
+		t.Fatalf("GetTeamProfile() player_prompt = %q, want %q", got.SaoleiPlayerPrompt, "player base prompt")
+	}
+	if got.SaoleiPlannerPrompt != "planner base prompt" {
+		t.Fatalf("GetTeamProfile() planner_prompt = %q, want %q", got.SaoleiPlannerPrompt, "planner base prompt")
 	}
 	if got.CreateTime.IsZero() {
 		t.Fatalf("GetTeamProfile() create_time is zero, expected non-zero timestamp")
@@ -384,10 +392,12 @@ func TestTeamProfileUpdate(t *testing.T) {
 	// given - seed a profile
 	repo := newTestRepo()
 	seed := &domain.TeamProfile{
-		TeamProfileName:    "updatable",
-		Template:           "saolei",
-		SaoleiPlayerModel:  "model-a",
-		SaoleiPlannerModel: "model-b",
+		TeamProfileName:     "updatable",
+		Template:            "saolei",
+		SaoleiPlayerModel:   "model-a",
+		SaoleiPlannerModel:  "model-b",
+		SaoleiPlayerPrompt:  "player base prompt",
+		SaoleiPlannerPrompt: "planner base prompt",
 	}
 	if err := repo.CreateTeamProfile(ctx, seed); err != nil {
 		t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
@@ -413,6 +423,12 @@ func TestTeamProfileUpdate(t *testing.T) {
 	if persisted.SaoleiPlannerModel != "model-b" {
 		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q", persisted.SaoleiPlannerModel, "model-b")
 	}
+	if persisted.SaoleiPlayerPrompt != "player base prompt" {
+		t.Fatalf("UpdateTeamProfile() player_prompt = %q, want %q (update should not touch)", persisted.SaoleiPlayerPrompt, "player base prompt")
+	}
+	if persisted.SaoleiPlannerPrompt != "planner base prompt" {
+		t.Fatalf("UpdateTeamProfile() planner_prompt = %q, want %q (update should not touch)", persisted.SaoleiPlannerPrompt, "planner base prompt")
+	}
 	if !persisted.CreateTime.Equal(original.CreateTime) {
 		t.Fatalf("UpdateTeamProfile() create_time changed: got %v, want %v", persisted.CreateTime, original.CreateTime)
 	}
@@ -426,6 +442,9 @@ func TestTeamProfileUpdate(t *testing.T) {
 	}
 	if reread.SaoleiPlayerModel != "model-c" {
 		t.Fatalf("GetTeamProfile() after update player_model = %q, want %q", reread.SaoleiPlayerModel, "model-c")
+	}
+	if reread.SaoleiPlayerPrompt != "player base prompt" {
+		t.Fatalf("GetTeamProfile() after update player_prompt = %q, want %q", reread.SaoleiPlayerPrompt, "player base prompt")
 	}
 }
 

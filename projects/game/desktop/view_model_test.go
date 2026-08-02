@@ -274,8 +274,10 @@ func TestTeamProfileViewFromProto(t *testing.T) {
 		Template: "templates/saolei",
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
-				PlayerModel:  "openai/gpt-4o",
-				PlannerModel: "anthropic/claude-3-5-sonnet",
+				PlayerModel:   "openai/gpt-4o",
+				PlannerModel:  "anthropic/claude-3-5-sonnet",
+				PlayerPrompt:  "player base prompt",
+				PlannerPrompt: "planner base prompt",
 			},
 		},
 	}
@@ -299,6 +301,12 @@ func TestTeamProfileViewFromProto(t *testing.T) {
 	if view.PlannerModel != "anthropic/claude-3-5-sonnet" {
 		t.Fatalf("expected PlannerModel %q, got %q", "anthropic/claude-3-5-sonnet", view.PlannerModel)
 	}
+	if view.PlayerPrompt != "player base prompt" {
+		t.Fatalf("expected PlayerPrompt %q, got %q", "player base prompt", view.PlayerPrompt)
+	}
+	if view.PlannerPrompt != "planner base prompt" {
+		t.Fatalf("expected PlannerPrompt %q, got %q", "planner base prompt", view.PlannerPrompt)
+	}
 
 	// and: JSON marshalling uses camelCase
 	data, err := json.Marshal(view)
@@ -314,6 +322,12 @@ func TestTeamProfileViewFromProto(t *testing.T) {
 	}
 	if !strings.Contains(jsonStr, `"plannerModel"`) {
 		t.Fatalf("expected JSON to contain 'plannerModel', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"playerPrompt"`) {
+		t.Fatalf("expected JSON to contain 'playerPrompt', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"plannerPrompt"`) {
+		t.Fatalf("expected JSON to contain 'plannerPrompt', got: %s", jsonStr)
 	}
 	if strings.Contains(jsonStr, `"player_model"`) {
 		t.Fatalf("expected JSON to NOT contain 'player_model', got: %s", jsonStr)
@@ -347,7 +361,12 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 				Name:     "templates/saolei/profiles/p1",
 				Template: "templates/saolei",
 				Spec: &game.TeamProfile_Saolei{
-					Saolei: &game.SaoleiProfile{PlayerModel: "a/b", PlannerModel: "c/d"},
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "a/b",
+						PlannerModel:  "c/d",
+						PlayerPrompt:  "p1 player prompt",
+						PlannerPrompt: "p1 planner prompt",
+					},
 				},
 			},
 			{
@@ -370,6 +389,12 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 	}
 	if view.TeamProfiles[0].PlayerModel != "a/b" {
 		t.Fatalf("expected first PlayerModel %q, got %q", "a/b", view.TeamProfiles[0].PlayerModel)
+	}
+	if view.TeamProfiles[0].PlayerPrompt != "p1 player prompt" {
+		t.Fatalf("expected first PlayerPrompt %q, got %q", "p1 player prompt", view.TeamProfiles[0].PlayerPrompt)
+	}
+	if view.TeamProfiles[0].PlannerPrompt != "p1 planner prompt" {
+		t.Fatalf("expected first PlannerPrompt %q, got %q", "p1 planner prompt", view.TeamProfiles[0].PlannerPrompt)
 	}
 	if view.TeamProfiles[1].ProfileName != "p2" {
 		t.Fatalf("expected second ProfileName %q, got %q", "p2", view.TeamProfiles[1].ProfileName)

@@ -78,6 +78,8 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 		buffer,
 		sessionId,
 		playerTools: [buildGameEndingPlayerTool(buffer)],
+		playerBasePrompt: "",
+		plannerBasePrompt: "",
 	});
 	// Pre-built bridge/sink like the production factory (server.ts): the
 	// SessionTeam constructor no longer creates them internally.
@@ -123,6 +125,31 @@ function waitCount(frames: AgentFrame[]): number {
 
 function flush(ms = 60): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Poll `frames` until `predicate` matches (or fail after `timeoutMs`). */
+async function waitForFrame(
+	frames: AgentFrame[],
+	predicate: (f: AgentFrame) => boolean,
+	timeoutMs: number,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (frames.some(predicate)) return;
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	throw new Error("timed out waiting for frame");
+}
+
+/** Collect messageParts frames carrying a `toolCall` / `toolResult` part. */
+function partFrames(frames: AgentFrame[], kind: "toolCall" | "toolResult"): AgentFrame[] {
+	return frames.filter((f) => {
+		const fr = f as Record<string, unknown>;
+		if (fr.payload !== "messageParts") return false;
+		return (fr.messageParts as { parts: Record<string, unknown>[] }).parts.some(
+			(p) => kind in p,
+		);
+	});
 }
 
 describe("SessionTeam", () => {
@@ -202,6 +229,109 @@ describe("SessionTeam", () => {
 		expect(buffer.gameEvent).not.toBeNull();
 		expect(buffer.gameEvent?.status).toBe("lost");
 		expect(sessionId).toBe("st-surface");
+	});
+
+	it("streams the player's tool_call frame BEFORE the tool's awaited operation resolves (async dispatch)", async () => {
+		// Regression for the T030 deadlock (031-team-template-mode large test):
+		// the saolei tools await the desktop's FlowResult via
+		// `OperationBridge.dispatch` (operation-bridge.ts `dispatch`), so the
+		// player createAgent loop cannot finish while a dispatch is pending —
+		// a node-level `updates` stream would never emit the tool_call frame,
+		// and the desktop (which replies only after seeing tool_call +
+		// operation) deadlocks. The turn runner must emit tool_call frames
+		// from the fine-grained stream events BEFORE the tool resolves.
+		const buffer = createEphemeralGameBuffer();
+		const bridge = new OperationBridge();
+		const sink = createTeamSink(buffer);
+		const asyncMove = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				// Real OperationBridge: awaits the desktop's FlowResultPart.
+				const result = await bridge.dispatch({
+					keyboardPress: { key: "KEYBOARD_KEY_F2" },
+				});
+				return `moved to (${x},${y}); status=${result.status}`;
+			},
+			{
+				name: "async_saolei_move",
+				description: "Async saolei move awaiting the desktop.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const handle = buildTeamGraph({
+			playerModel: fakeModel()
+				.respondWithTools([{ name: "async_saolei_move", args: { x: 1, y: 1 } }])
+				.respond(new AIMessage("done, stopping")),
+			plannerModel: fakeModel().respond(new AIMessage("ok")),
+			strategyStore: new FakeStrategyStore(),
+			buffer,
+			sessionId: "st-async-dispatch",
+			playerTools: [asyncMove],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+		const team = new SessionTeam(
+			handle,
+			buffer,
+			"st-async-dispatch",
+			TID,
+			bridge,
+			sink,
+		);
+		const { emit, frames } = recordingEmit();
+		const dispatched: AgentFrame[] = [];
+		bridge.registerSink((frame) => dispatched.push(frame));
+
+		team.submit({ text: "开始游戏" }, emit);
+
+		// Do NOT wait for the turn to complete: poll until the tool_call
+		// frame is emitted while the tool is still awaiting its operation.
+		await waitForFrame(frames, (f) => partFrames([f], "toolCall").length > 0, 5000);
+
+		// The tool has NOT resolved yet — the player node cannot have
+		// completed, so the turn must still be running (this is exactly the
+		// condition under which the old node-updates stream deadlocked).
+		expect(team.isRunning()).toBe(true);
+		// The operation was dispatched to the desktop (operation channel).
+		expect(dispatched.length).toBe(1);
+		const toolId = (
+			(dispatched[0] as Record<string, unknown>).flowParts as {
+				parts: { keyboardPress: { toolId: string } }[];
+			}
+		).parts[0].keyboardPress.toolId;
+
+		// The desktop replies → the dispatch resolves → the agent loop
+		// continues → the turn completes.
+		bridge.handleResult({
+			toolId,
+			status: "TOOL_RESULT_STATUS_SUCCEEDED",
+			message: "ok",
+		});
+		await flush();
+
+		expect(team.isRunning()).toBe(false);
+		expect(waitCount(frames)).toBe(1);
+		// The turn streamed the full player exchange (tool_call + tool_result),
+		// with the same block content the channel replay would have produced.
+		const callFrames = partFrames(frames, "toolCall");
+		expect(callFrames.length).toBe(1);
+		const callPart = (
+			(callFrames[0] as Record<string, unknown>).messageParts as {
+				parts: { toolCall: { name: string; argsJson: string; toolId: string } }[];
+			}
+		).parts[0].toolCall;
+		expect(callPart.name).toBe("async_saolei_move");
+		expect(JSON.parse(callPart.argsJson)).toEqual({ x: 1, y: 1 });
+		const resFrames = partFrames(frames, "toolResult");
+		expect(resFrames.length).toBe(1);
+		const resPart = (
+			(resFrames[0] as Record<string, unknown>).messageParts as {
+				parts: { toolResult: { status: string; message: string } }[];
+			}
+		).parts[0].toolResult;
+		// The tool returned a plain string (no ToolMessage), so the status is
+		// neutral UNSPECIFIED — same as the checkpointed ToolMessage.
+		expect(resPart.status).toBe("TOOL_RESULT_STATUS_UNSPECIFIED");
+		expect(resPart.message).toContain("status=TOOL_RESULT_STATUS_SUCCEEDED");
 	});
 });
 

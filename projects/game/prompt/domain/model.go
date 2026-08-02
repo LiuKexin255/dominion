@@ -20,6 +20,14 @@ type TeamProfile struct {
 	// SaoleiPlannerModel is the saolei template's planner LLM model choice
 	// (spec.saolei.planner_model).
 	SaoleiPlannerModel string
+	// SaoleiPlayerPrompt is the saolei player's base prompt (spec.saolei.player_prompt;
+	// empty = unset = agent falls back to the template default base,
+	// specs/031-team-template-mode/spec.md FR-034).
+	SaoleiPlayerPrompt string
+	// SaoleiPlannerPrompt is the saolei planner's base prompt (spec.saolei.planner_prompt;
+	// empty = unset = agent falls back to the template default base,
+	// specs/031-team-template-mode/spec.md FR-034).
+	SaoleiPlannerPrompt string
 	// CreateTime is the timestamp when this profile was created.
 	CreateTime time.Time
 	// UpdateTime is the timestamp when this profile was last updated.

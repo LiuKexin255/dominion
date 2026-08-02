@@ -75,6 +75,8 @@ async function runOneGameTurn(sessionId: string) {
     buffer,
     sessionId,
     playerTools: [buildGameEndingPlayerTool(buffer)],
+    playerBasePrompt: "",
+    plannerBasePrompt: "",
   });
 
   await graph.invoke(
@@ -140,6 +142,8 @@ describe("refreshTeamChannels (FR-018)", () => {
       buffer,
       sessionId: "ctx-refresh-empty",
       playerTools: [],
+      playerBasePrompt: "",
+      plannerBasePrompt: "",
     });
 
     await expect(refreshTeamChannels(graph, "ctx-refresh-empty")).resolves.toBeUndefined();

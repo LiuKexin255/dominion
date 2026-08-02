@@ -52,19 +52,21 @@ export const PLAYER_AGENT_NAME = "player";
 const STRATEGY_MESSAGE_ID = "player-strategy-current";
 
 /**
- * The player's static system prompt (template-fixed assembly, FR-028) with
- * the built-in saolei skill body appended (the skill guidance the previous
- * single-agent path injected for saolei profiles — `skill-loader.ts`
- * `appendSkillBodyToPrompt`; spec 018 FR-023/024). The CURRENT strategy is
- * NOT part of this static prompt — it is injected per entry (FR-015).
+ * The player's DEFAULT base prompt (the template-fixed fallback base, FR-034
+ * semantics A — used when `SaoleiProfile.player_prompt` is empty, see
+ * `specs/031-team-template-mode/spec.md` FR-034). The saolei skill body is
+ * ALWAYS appended by the template on top of the base
+ * (`appendSkillBodyToPrompt(base, ["saolei"])`), whether the base is the
+ * profile override or this default — the skill guidance the previous
+ * single-agent path injected for saolei profiles (spec 018 FR-023/024). The
+ * CURRENT strategy is NOT part of this static prompt — it is injected per
+ * entry (FR-015).
  */
-export const PLAYER_SYSTEM_PROMPT = appendSkillBodyToPrompt(
+export const DEFAULT_PLAYER_BASE =
 	"你是扫雷游戏的操作者（player）。你的职责是操作桌面上的扫雷窗口完成一局游戏：" +
-		"使用 saolei 工具落子（开新局、点击/标记/双击揭示格子、查询剩余雷数），" +
-		"根据返回的文本棋盘持续推理并落子，直到一局以 won/lost 结束或你判断应当停止。" +
-		"你独占桌面控制，不要等待其他 agent 的指令；每局结束后你可以自行决定是否开新局。",
-	["saolei"],
-);
+	"使用 saolei 工具落子（开新局、点击/标记/双击揭示格子、查询剩余雷数），" +
+	"根据返回的文本棋盘持续推理并落子，直到一局以 won/lost 结束或你判断应当停止。" +
+	"你独占桌面控制，不要等待其他 agent 的指令；每局结束后你可以自行决定是否开新局。";
 
 /**
  * DI seam overriding `langchain`'s `createAgent` (same pattern as the
@@ -87,6 +89,14 @@ export interface PlayerNodeDeps {
 	sessionId: string;
 	/** The player's tools (saolei MCP in production; fakes in tests). */
 	tools: StructuredToolInterface[];
+	/**
+	 * The player's base prompt from `SaoleiProfile.player_prompt` (FR-034
+	 * semantics A — empty string = unset = fall back to the template default
+	 * `DEFAULT_PLAYER_BASE`; the saolei skill body is ALWAYS appended by the
+	 * template regardless of this value, see `specs/031-team-template-mode/
+	 * spec.md` FR-034).
+	 */
+	playerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
@@ -116,10 +126,19 @@ export function createPlayerNode(
 
 	// No checkpointer: stateless per-invoke agent loop (A2/A3); the outer
 	// graph's MemorySaver owns per-agent history.
+	//
+	// FR-034 semantics A: the base prompt is the profile's player_prompt when
+	// non-empty, else the template default; the saolei skill body is ALWAYS
+	// appended by the template on top of the base (unaffected by the profile)
+	// — `specs/031-team-template-mode/spec.md` FR-034.
+	const systemPrompt = appendSkillBodyToPrompt(
+		deps.playerBasePrompt !== "" ? deps.playerBasePrompt : DEFAULT_PLAYER_BASE,
+		["saolei"],
+	);
 	const playerAgent = createAgentFn({
 		model: deps.model,
 		tools: deps.tools,
-		systemPrompt: PLAYER_SYSTEM_PROMPT,
+		systemPrompt,
 	});
 
 	return async (state: TeamStateValue): Promise<Partial<TeamStateValue>> => {

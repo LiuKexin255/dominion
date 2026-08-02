@@ -308,14 +308,18 @@ export interface QueueSignal {
 // ─── TeamProfile (replaces AgentProfile; typed oneof spec, D1) ─────────────
 //
 // Documentation-type interface: describes the shape of the spec.saolei oneof
-// variant (FR-027 — only the player/planner model choices; tools/MCP are
-// template-fixed, FR-028). TeamProfile flattens playerModel/plannerModel into
-// top-level fields (mirroring the Go TeamProfileView — desktop/view_model.go),
-// so this interface is retained purely as typed documentation of the variant
-// shape and is not referenced at runtime.
+// variant (FR-027 — player/planner model choices plus the optional base
+// prompts player_prompt/planner_prompt; empty = template default base,
+// FR-034; tools/MCP are template-fixed, FR-028). TeamProfile flattens
+// playerModel/plannerModel/playerPrompt/plannerPrompt into top-level fields
+// (mirroring the Go TeamProfileView — desktop/view_model.go), so this
+// interface is retained purely as typed documentation of the variant shape
+// and is not referenced at runtime.
 export interface SaoleiProfile {
   playerModel: string
   plannerModel: string
+  playerPrompt: string
+  plannerPrompt: string
 }
 
 export interface TeamProfile {
@@ -324,9 +328,13 @@ export interface TeamProfile {
   template: string
   // spec.saolei → SaoleiProfile (flattened): the Wails view model lifts the
   // oneof variant fields to the TeamProfile top level (desktop/view_model.go
-  // TeamProfileView); absent when the variant is unset.
+  // TeamProfileView); absent when the variant is unset. The base prompts are
+  // optional — empty means "unset" and falls back to the template default
+  // base (spec 031-team-template-mode spec.md FR-034).
   playerModel?: string
   plannerModel?: string
+  playerPrompt?: string
+  plannerPrompt?: string
   createTime?: string
   updateTime?: string
 }
@@ -335,6 +343,8 @@ export interface CreateTeamProfileRequest {
   profileName: string
   playerModel?: string
   plannerModel?: string
+  playerPrompt?: string
+  plannerPrompt?: string
 }
 
 export interface ListTeamProfilesResponse {

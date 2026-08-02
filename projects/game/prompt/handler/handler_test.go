@@ -86,8 +86,10 @@ func saoleiProfile(template string) *game.TeamProfile {
 	return &game.TeamProfile{
 		Template: template,
 		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
-			PlayerModel:  "opencode-go/deepseek-v4-pro",
-			PlannerModel: "opencode-go/deepseek-v4-pro",
+			PlayerModel:   "opencode-go/deepseek-v4-pro",
+			PlannerModel:  "opencode-go/deepseek-v4-pro",
+			PlayerPrompt:  "player base prompt",
+			PlannerPrompt: "planner base prompt",
 		}},
 	}
 }
@@ -122,6 +124,12 @@ func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	if created.GetSaolei().GetPlannerModel() != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("CreateTeamProfile() planner_model = %q, want %q", created.GetSaolei().GetPlannerModel(), "opencode-go/deepseek-v4-pro")
 	}
+	if created.GetSaolei().GetPlayerPrompt() != "player base prompt" {
+		t.Fatalf("CreateTeamProfile() player_prompt = %q, want %q", created.GetSaolei().GetPlayerPrompt(), "player base prompt")
+	}
+	if created.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+		t.Fatalf("CreateTeamProfile() planner_prompt = %q, want %q", created.GetSaolei().GetPlannerPrompt(), "planner base prompt")
+	}
 	if created.GetCreateTime() == nil {
 		t.Fatal("CreateTeamProfile() create_time is nil, want non-nil")
 	}
@@ -140,6 +148,12 @@ func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	}
 	if got.GetSaolei().GetPlayerModel() != created.GetSaolei().GetPlayerModel() {
 		t.Fatalf("GetTeamProfile() player_model = %q, want %q", got.GetSaolei().GetPlayerModel(), created.GetSaolei().GetPlayerModel())
+	}
+	if got.GetSaolei().GetPlayerPrompt() != created.GetSaolei().GetPlayerPrompt() {
+		t.Fatalf("GetTeamProfile() player_prompt = %q, want %q", got.GetSaolei().GetPlayerPrompt(), created.GetSaolei().GetPlayerPrompt())
+	}
+	if got.GetSaolei().GetPlannerPrompt() != created.GetSaolei().GetPlannerPrompt() {
+		t.Fatalf("GetTeamProfile() planner_prompt = %q, want %q", got.GetSaolei().GetPlannerPrompt(), created.GetSaolei().GetPlannerPrompt())
 	}
 }
 
@@ -305,13 +319,19 @@ func TestPromptService_UpdateTeamProfileViaFieldMask(t *testing.T) {
 	}
 	updated, err := h.UpdateTeamProfile(ctx, updateReq)
 
-	// then — player_model updated, planner_model preserved
+	// then — player_model updated, planner_model and prompts preserved
 	assertStatusCode(t, err, codes.OK)
 	if updated.GetSaolei().GetPlayerModel() != "opencode-go/gpt-5" {
 		t.Fatalf("UpdateTeamProfile() player_model = %q, want %q", updated.GetSaolei().GetPlayerModel(), "opencode-go/gpt-5")
 	}
 	if updated.GetSaolei().GetPlannerModel() != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlannerModel(), "opencode-go/deepseek-v4-pro")
+	}
+	if updated.GetSaolei().GetPlayerPrompt() != "player base prompt" {
+		t.Fatalf("UpdateTeamProfile() player_prompt = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlayerPrompt(), "player base prompt")
+	}
+	if updated.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+		t.Fatalf("UpdateTeamProfile() planner_prompt = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlannerPrompt(), "planner base prompt")
 	}
 	if updated.GetUpdateTime() == nil {
 		t.Fatal("UpdateTeamProfile() update_time is nil, want non-nil")
@@ -327,6 +347,64 @@ func TestPromptService_UpdateTeamProfileViaFieldMask(t *testing.T) {
 	assertStatusCode(t, err, codes.OK)
 	if got.GetSaolei().GetPlayerModel() != "opencode-go/gpt-5" {
 		t.Fatalf("GetTeamProfile() after update player_model = %q, want %q", got.GetSaolei().GetPlayerModel(), "opencode-go/gpt-5")
+	}
+}
+
+func TestPromptService_UpdateTeamProfilePromptViaFieldMask(t *testing.T) {
+	ctx := context.Background()
+
+	// given — seed profile with models and prompts
+	repo := newInMemoryTeamProfileRepo()
+	h := NewHandler(repo)
+
+	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
+		Parent:        "templates/saolei",
+		TeamProfileId: "prompt-profile",
+		TeamProfile:   saoleiProfile("templates/saolei"),
+	})
+	assertStatusCode(t, err, codes.OK)
+
+	// when — update player_prompt only via FieldMask (oneof member path)
+	updateReq := &game.UpdateTeamProfileRequest{
+		TeamProfile: &game.TeamProfile{
+			Name:     "templates/saolei/profiles/prompt-profile",
+			Template: "templates/saolei",
+			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+				PlayerPrompt: "custom player base",
+			}},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_prompt"}},
+	}
+	updated, err := h.UpdateTeamProfile(ctx, updateReq)
+
+	// then — player_prompt updated, other fields preserved
+	assertStatusCode(t, err, codes.OK)
+	if updated.GetSaolei().GetPlayerPrompt() != "custom player base" {
+		t.Fatalf("UpdateTeamProfile() player_prompt = %q, want %q", updated.GetSaolei().GetPlayerPrompt(), "custom player base")
+	}
+	if updated.GetSaolei().GetPlayerModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("UpdateTeamProfile() player_model = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlayerModel(), "opencode-go/deepseek-v4-pro")
+	}
+	if updated.GetSaolei().GetPlannerModel() != "opencode-go/deepseek-v4-pro" {
+		t.Fatalf("UpdateTeamProfile() planner_model = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlannerModel(), "opencode-go/deepseek-v4-pro")
+	}
+	if updated.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+		t.Fatalf("UpdateTeamProfile() planner_prompt = %q, want %q (FieldMask should not touch)", updated.GetSaolei().GetPlannerPrompt(), "planner base prompt")
+	}
+	if updated.GetUpdateTime() == nil {
+		t.Fatal("UpdateTeamProfile() update_time is nil, want non-nil")
+	}
+
+	// when — re-fetch
+	got, err := h.GetTeamProfile(ctx, &game.GetTeamProfileRequest{Name: "templates/saolei/profiles/prompt-profile"})
+
+	// then — persisted
+	assertStatusCode(t, err, codes.OK)
+	if got.GetSaolei().GetPlayerPrompt() != "custom player base" {
+		t.Fatalf("GetTeamProfile() after update player_prompt = %q, want %q", got.GetSaolei().GetPlayerPrompt(), "custom player base")
+	}
+	if got.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+		t.Fatalf("GetTeamProfile() after update planner_prompt = %q, want %q (FieldMask should not touch)", got.GetSaolei().GetPlannerPrompt(), "planner base prompt")
 	}
 }
 
@@ -436,68 +514,104 @@ func TestPromptService_UpdateTeamProfileNotFound(t *testing.T) {
 
 func Test_applyTeamProfileMask(t *testing.T) {
 	existing := &domain.TeamProfile{
-		TeamProfileName:    "p",
-		Template:           "saolei",
-		SaoleiPlayerModel:  "old-player",
-		SaoleiPlannerModel: "old-planner",
+		TeamProfileName:     "p",
+		Template:            "saolei",
+		SaoleiPlayerModel:   "old-player",
+		SaoleiPlannerModel:  "old-planner",
+		SaoleiPlayerPrompt:  "old-player-prompt",
+		SaoleiPlannerPrompt: "old-planner-prompt",
 	}
 
 	tests := []struct {
-		name        string
-		patch       *game.TeamProfile
-		mask        *fieldmaskpb.FieldMask
-		wantPlayer  string
-		wantPlanner string
-		wantErr     bool
+		name              string
+		patch             *game.TeamProfile
+		mask              *fieldmaskpb.FieldMask
+		wantPlayer        string
+		wantPlanner       string
+		wantPlayerPrompt  string
+		wantPlannerPrompt string
+		wantErr           bool
 	}{
 		{
-			name:        "nil mask with saolei patch replaces whole spec",
-			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p", PlannerModel: "new-l"}}},
-			mask:        nil,
-			wantPlayer:  "new-p",
-			wantPlanner: "new-l",
+			name:              "nil mask with saolei patch replaces whole spec",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p", PlannerModel: "new-l"}}},
+			mask:              nil,
+			wantPlayer:        "new-p",
+			wantPlanner:       "new-l",
+			wantPlayerPrompt:  "",
+			wantPlannerPrompt: "",
 		},
 		{
-			name:        "nil mask without spec leaves existing unchanged",
-			patch:       &game.TeamProfile{Template: "templates/saolei"},
-			mask:        nil,
-			wantPlayer:  "old-player",
-			wantPlanner: "old-planner",
+			name:              "nil mask without spec leaves existing unchanged",
+			patch:             &game.TeamProfile{Template: "templates/saolei"},
+			mask:              nil,
+			wantPlayer:        "old-player",
+			wantPlanner:       "old-planner",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
 		},
 		{
-			name:        "empty mask paths without spec leaves existing unchanged",
-			patch:       &game.TeamProfile{Template: "templates/saolei"},
-			mask:        &fieldmaskpb.FieldMask{Paths: nil},
-			wantPlayer:  "old-player",
-			wantPlanner: "old-planner",
+			name:              "empty mask paths without spec leaves existing unchanged",
+			patch:             &game.TeamProfile{Template: "templates/saolei"},
+			mask:              &fieldmaskpb.FieldMask{Paths: nil},
+			wantPlayer:        "old-player",
+			wantPlanner:       "old-planner",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
 		},
 		{
-			name:        "saolei.player_model only",
-			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p"}}},
-			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
-			wantPlayer:  "new-p",
-			wantPlanner: "old-planner",
+			name:              "saolei.player_model only",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "new-p"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model"}},
+			wantPlayer:        "new-p",
+			wantPlanner:       "old-planner",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
 		},
 		{
-			name:        "saolei.planner_model only",
-			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlannerModel: "new-l"}}},
-			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.planner_model"}},
-			wantPlayer:  "old-player",
-			wantPlanner: "new-l",
+			name:              "saolei.planner_model only",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlannerModel: "new-l"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei.planner_model"}},
+			wantPlayer:        "old-player",
+			wantPlanner:       "new-l",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
 		},
 		{
-			name:        "both oneof member paths",
-			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p2", PlannerModel: "l2"}}},
-			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model", "saolei.planner_model"}},
-			wantPlayer:  "p2",
-			wantPlanner: "l2",
+			name:              "both oneof member paths",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p2", PlannerModel: "l2"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_model", "saolei.planner_model"}},
+			wantPlayer:        "p2",
+			wantPlanner:       "l2",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
 		},
 		{
-			name:        "whole saolei path replaces both",
-			patch:       &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p3", PlannerModel: "l3"}}},
-			mask:        &fieldmaskpb.FieldMask{Paths: []string{"saolei"}},
-			wantPlayer:  "p3",
-			wantPlanner: "l3",
+			name:              "saolei.player_prompt only",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerPrompt: "new-prompt"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei.player_prompt"}},
+			wantPlayer:        "old-player",
+			wantPlanner:       "old-planner",
+			wantPlayerPrompt:  "new-prompt",
+			wantPlannerPrompt: "old-planner-prompt",
+		},
+		{
+			name:              "saolei.planner_prompt only",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlannerPrompt: "new-planner-prompt"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei.planner_prompt"}},
+			wantPlayer:        "old-player",
+			wantPlanner:       "old-planner",
+			wantPlayerPrompt:  "old-player-prompt",
+			wantPlannerPrompt: "new-planner-prompt",
+		},
+		{
+			name:              "whole saolei path replaces both",
+			patch:             &game.TeamProfile{Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{PlayerModel: "p3", PlannerModel: "l3", PlayerPrompt: "pp3", PlannerPrompt: "lp3"}}},
+			mask:              &fieldmaskpb.FieldMask{Paths: []string{"saolei"}},
+			wantPlayer:        "p3",
+			wantPlanner:       "l3",
+			wantPlayerPrompt:  "pp3",
+			wantPlannerPrompt: "lp3",
 		},
 		{
 			name:    "unknown path returns error",
@@ -540,12 +654,24 @@ func Test_applyTeamProfileMask(t *testing.T) {
 			if got.SaoleiPlannerModel != tt.wantPlanner {
 				t.Fatalf("applyTeamProfileMask() planner_model = %q, want %q", got.SaoleiPlannerModel, tt.wantPlanner)
 			}
+			if got.SaoleiPlayerPrompt != tt.wantPlayerPrompt {
+				t.Fatalf("applyTeamProfileMask() player_prompt = %q, want %q", got.SaoleiPlayerPrompt, tt.wantPlayerPrompt)
+			}
+			if got.SaoleiPlannerPrompt != tt.wantPlannerPrompt {
+				t.Fatalf("applyTeamProfileMask() planner_prompt = %q, want %q", got.SaoleiPlannerPrompt, tt.wantPlannerPrompt)
+			}
 			// Ensure existing was not mutated.
 			if existing.SaoleiPlayerModel != "old-player" {
 				t.Fatalf("applyTeamProfileMask() mutated existing: player_model = %q", existing.SaoleiPlayerModel)
 			}
 			if existing.SaoleiPlannerModel != "old-planner" {
 				t.Fatalf("applyTeamProfileMask() mutated existing: planner_model = %q", existing.SaoleiPlannerModel)
+			}
+			if existing.SaoleiPlayerPrompt != "old-player-prompt" {
+				t.Fatalf("applyTeamProfileMask() mutated existing: player_prompt = %q", existing.SaoleiPlayerPrompt)
+			}
+			if existing.SaoleiPlannerPrompt != "old-planner-prompt" {
+				t.Fatalf("applyTeamProfileMask() mutated existing: planner_prompt = %q", existing.SaoleiPlannerPrompt)
 			}
 		})
 	}
@@ -633,12 +759,14 @@ func Test_teamProfileToProto(t *testing.T) {
 		{
 			name: "profile with fields",
 			profile: &domain.TeamProfile{
-				TeamProfileName:    "test",
-				Template:           "saolei",
-				SaoleiPlayerModel:  "opencode-go/deepseek-v4-pro",
-				SaoleiPlannerModel: "opencode-go/deepseek-v4-pro",
-				CreateTime:         time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
-				UpdateTime:         time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
+				TeamProfileName:     "test",
+				Template:            "saolei",
+				SaoleiPlayerModel:   "opencode-go/deepseek-v4-pro",
+				SaoleiPlannerModel:  "opencode-go/deepseek-v4-pro",
+				SaoleiPlayerPrompt:  "player base prompt",
+				SaoleiPlannerPrompt: "planner base prompt",
+				CreateTime:          time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
+				UpdateTime:          time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
 			wantNil:  false,
 			wantName: "templates/saolei/profiles/test",
@@ -674,6 +802,12 @@ func Test_teamProfileToProto(t *testing.T) {
 			}
 			if got.GetSaolei() == nil {
 				t.Fatalf("teamProfileToProto() saolei spec is nil, want set")
+			}
+			if got.GetSaolei().GetPlayerPrompt() != tt.profile.SaoleiPlayerPrompt {
+				t.Fatalf("teamProfileToProto() player_prompt = %q, want %q", got.GetSaolei().GetPlayerPrompt(), tt.profile.SaoleiPlayerPrompt)
+			}
+			if got.GetSaolei().GetPlannerPrompt() != tt.profile.SaoleiPlannerPrompt {
+				t.Fatalf("teamProfileToProto() planner_prompt = %q, want %q", got.GetSaolei().GetPlannerPrompt(), tt.profile.SaoleiPlannerPrompt)
 			}
 		})
 	}

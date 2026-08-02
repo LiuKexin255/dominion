@@ -58,10 +58,13 @@ const STRATEGY_MESSAGE_ID = "planner-strategy-current";
 const MAX_PLANNER_ATTEMPTS = 3;
 
 /**
- * The planner's static review directive (template-fixed, FR-014 — the
- * current strategy is injected per entry, NOT baked into this prompt).
+ * The planner's DEFAULT base prompt (the template-fixed fallback base, FR-034
+ * semantics A — used when `SaoleiProfile.planner_prompt` is empty, see
+ * `specs/031-team-template-mode/spec.md` FR-034). The planner appends NO
+ * skill body (it holds no saolei tools, FR-012). The current strategy is
+ * injected per entry (FR-014), NOT baked into this prompt.
  */
-export const PLANNER_SYSTEM_PROMPT =
+export const DEFAULT_PLANNER_BASE =
 	"你是扫雷团队的复盘规划者（planner）。每局游戏结束后你会收到本局的终局棋盘" +
 	"与当前策略。你的职责：复盘本局表现（判断策略是否有效），" +
 	"若你认为策略需要更新，调用 update_strategy 写入新策略（新策略将整体替换旧策略）；" +
@@ -78,6 +81,13 @@ export interface PlannerNodeDeps {
 	buffer: EphemeralGameBuffer;
 	/** Session id — the StrategyStore key and the checkpoint thread id. */
 	sessionId: string;
+	/**
+	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034
+	 * semantics A — empty string = unset = fall back to the template default
+	 * `DEFAULT_PLANNER_BASE`; the planner appends NO skill body, see
+	 * `specs/031-team-template-mode/spec.md` FR-034).
+	 */
+	plannerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
@@ -155,10 +165,16 @@ export function createPlannerNode(
 	const { strategyStore, buffer, sessionId } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
+	// FR-034 semantics A: the base prompt is the profile's planner_prompt
+	// when non-empty, else the template default; NO skill body is appended
+	// (the planner holds no saolei tools, FR-012) —
+	// `specs/031-team-template-mode/spec.md` FR-034.
+	const systemPrompt =
+		deps.plannerBasePrompt !== "" ? deps.plannerBasePrompt : DEFAULT_PLANNER_BASE;
 	const plannerAgent = createAgentFn({
 		model: deps.model,
 		tools: [buildUpdateStrategyTool(strategyStore, sessionId)],
-		systemPrompt: PLANNER_SYSTEM_PROMPT,
+		systemPrompt,
 	});
 
 	return async (state: TeamStateValue): Promise<Partial<TeamStateValue>> => {

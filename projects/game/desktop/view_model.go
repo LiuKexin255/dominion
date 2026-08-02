@@ -60,23 +60,32 @@ type MessageViewModel struct {
 
 // CreateTeamProfileView is the Wails input struct for creating a TeamProfile.
 // The template-specific spec is the typed oneof variant (saolei:
-// SaoleiProfile{player_model, planner_model}) — no generic key-value fields
-// (spec 031-team-template-mode contracts/api-contract.md §3.5).
+// SaoleiProfile{player_model, planner_model, player_prompt, planner_prompt}) —
+// no generic key-value fields (spec 031-team-template-mode
+// contracts/api-contract.md §3.5). The base prompts are optional: empty means
+// "unset" and falls back to the template default base (spec
+// 031-team-template-mode spec.md FR-034).
 type CreateTeamProfileView struct {
-	ProfileName  string `json:"profileName"`
-	PlayerModel  string `json:"playerModel"`
-	PlannerModel string `json:"plannerModel"`
+	ProfileName   string `json:"profileName"`
+	PlayerModel   string `json:"playerModel"`
+	PlannerModel  string `json:"plannerModel"`
+	PlayerPrompt  string `json:"playerPrompt"`
+	PlannerPrompt string `json:"plannerPrompt"`
 }
 
 // TeamProfileView is the Wails view model for game.TeamProfile. The spec
 // oneof is flattened per-template: for saolei the active variant
-// (spec.saolei) projects to PlayerModel/PlannerModel.
+// (spec.saolei) projects to PlayerModel/PlannerModel and the optional base
+// prompts PlayerPrompt/PlannerPrompt (empty = template default base, spec
+// 031-team-template-mode spec.md FR-034).
 type TeamProfileView struct {
-	Name         string `json:"name"`
-	ProfileName  string `json:"profileName"`
-	Template     string `json:"template"`
-	PlayerModel  string `json:"playerModel"`
-	PlannerModel string `json:"plannerModel"`
+	Name          string `json:"name"`
+	ProfileName   string `json:"profileName"`
+	Template      string `json:"template"`
+	PlayerModel   string `json:"playerModel"`
+	PlannerModel  string `json:"plannerModel"`
+	PlayerPrompt  string `json:"playerPrompt"`
+	PlannerPrompt string `json:"plannerPrompt"`
 }
 
 // ListTeamProfilesView is the Wails view model for game.ListTeamProfilesResponse.
@@ -228,7 +237,10 @@ func timestampString(t *timestamppb.Timestamp) string {
 
 // teamProfileViewFromProto converts a proto TeamProfile to a view model. The
 // typed spec oneof is flattened: the active saolei variant projects to
-// PlayerModel/PlannerModel (the only saolei-specialized fields, FR-027).
+// PlayerModel/PlannerModel and the optional base prompts
+// PlayerPrompt/PlannerPrompt (empty = template default base — the only
+// saolei-specialized fields, FR-027/FR-034, spec 031-team-template-mode
+// spec.md).
 func teamProfileViewFromProto(p *game.TeamProfile) *TeamProfileView {
 	if p == nil {
 		return nil
@@ -246,6 +258,8 @@ func teamProfileViewFromProto(p *game.TeamProfile) *TeamProfileView {
 	if saolei != nil {
 		view.PlayerModel = saolei.GetPlayerModel()
 		view.PlannerModel = saolei.GetPlannerModel()
+		view.PlayerPrompt = saolei.GetPlayerPrompt()
+		view.PlannerPrompt = saolei.GetPlannerPrompt()
 	}
 	return view
 }

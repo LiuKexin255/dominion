@@ -110,6 +110,8 @@ function createTeamStore(gate?: Gate): {
         buffer,
         sessionId,
         playerTools: [buildGameEndingPlayerTool(buffer, gate)],
+        playerBasePrompt: "",
+        plannerBasePrompt: "",
       });
       // Pre-built bridge/sink like the production factory (server.ts) — the
       // SessionTeam constructor no longer creates them internally.

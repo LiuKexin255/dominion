@@ -47,6 +47,16 @@ export interface TeamProfileResult {
   playerModel: string;
   /** The planner agent's LLM model spec (SaoleiProfile.planner_model). */
   plannerModel: string;
+  /**
+   * The player's base prompt (SaoleiProfile.player_prompt; empty string =
+   * unset = template default base, FR-034).
+   */
+  playerPrompt: string;
+  /**
+   * The planner's base prompt (SaoleiProfile.planner_prompt; empty string =
+   * unset = template default base, FR-034).
+   */
+  plannerPrompt: string;
 }
 
 function buildClientCredentials(): grpc.ChannelCredentials {
@@ -197,6 +207,10 @@ export class PromptClient {
           resolve({
             playerModel: response.saolei.playerModel ?? "",
             plannerModel: response.saolei.plannerModel ?? "",
+            // FR-034: base prompts are optional — empty string = unset =
+            // template default base (the graph falls back internally).
+            playerPrompt: response.saolei.playerPrompt ?? "",
+            plannerPrompt: response.saolei.plannerPrompt ?? "",
           });
         },
       );

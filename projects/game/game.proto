@@ -267,11 +267,20 @@ message TeamProfile {
 }
 
 // SaoleiProfile is the saolei-template TeamProfile specialization: player and
-// planner LLM model selection only (FR-027). Tools/MCP are fixed by the
-// template itself and are NOT configurable here (FR-028).
+// planner LLM model selection plus each agent's optional base prompt (empty =
+// unset = fall back to the template default base, FR-034 of
+// specs/031-team-template-mode/spec.md). Tools/MCP are fixed by the template
+// itself and are NOT configurable here (FR-028).
 message SaoleiProfile {
   string player_model = 1;
   string planner_model = 2;
+  // The player's base prompt; empty = unset = fall back to the template
+  // default base (the saolei skill body is always appended by the template,
+  // FR-034 of specs/031-team-template-mode/spec.md).
+  string player_prompt = 3;
+  // The planner's base prompt; empty = unset = fall back to the template
+  // default base (FR-034 of specs/031-team-template-mode/spec.md).
+  string planner_prompt = 4;
 }
 
 // FrameSender identifies the originator of an AgentFrame.

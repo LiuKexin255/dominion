@@ -257,6 +257,10 @@ export async function startServer(
       );
       const playerModel = await getProvider(profile.playerModel);
       const plannerModel = await getProvider(profile.plannerModel);
+      // FR-034: base prompts from the profile (empty string = unset = the
+      // template default base, resolved inside the player/planner nodes).
+      const playerBasePrompt = profile.playerPrompt ?? "";
+      const plannerBasePrompt = profile.plannerPrompt ?? "";
       const buffer = createEphemeralGameBuffer();
       const bridge = new OperationBridge();
       const sink = createTeamSink(buffer);
@@ -274,6 +278,8 @@ export async function startServer(
           buffer,
           sessionId,
           playerTools,
+          playerBasePrompt,
+          plannerBasePrompt,
         });
         return new SessionTeam(
           handle,

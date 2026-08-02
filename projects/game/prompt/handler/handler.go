@@ -69,12 +69,14 @@ func (h *Handler) CreateTeamProfile(ctx context.Context, req *game.CreateTeamPro
 
 	now := time.Now()
 	profile := &domain.TeamProfile{
-		TeamProfileName:    profileID,
-		Template:           tplName.TemplateID,
-		SaoleiPlayerModel:  tp.GetSaolei().GetPlayerModel(),
-		SaoleiPlannerModel: tp.GetSaolei().GetPlannerModel(),
-		CreateTime:         now,
-		UpdateTime:         now,
+		TeamProfileName:     profileID,
+		Template:            tplName.TemplateID,
+		SaoleiPlayerModel:   tp.GetSaolei().GetPlayerModel(),
+		SaoleiPlannerModel:  tp.GetSaolei().GetPlannerModel(),
+		SaoleiPlayerPrompt:  tp.GetSaolei().GetPlayerPrompt(),
+		SaoleiPlannerPrompt: tp.GetSaolei().GetPlannerPrompt(),
+		CreateTime:          now,
+		UpdateTime:          now,
 	}
 
 	if err := h.teamProfileRepo.CreateTeamProfile(ctx, profile); err != nil {
@@ -242,8 +244,10 @@ func teamProfileToProto(p *domain.TeamProfile) *game.TeamProfile {
 		Name:     game.TeamProfileName{TemplateID: p.Template, ProfileID: p.TeamProfileName}.String(),
 		Template: game.TemplateName{TemplateID: p.Template}.String(),
 		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
-			PlayerModel:  p.SaoleiPlayerModel,
-			PlannerModel: p.SaoleiPlannerModel,
+			PlayerModel:   p.SaoleiPlayerModel,
+			PlannerModel:  p.SaoleiPlannerModel,
+			PlayerPrompt:  p.SaoleiPlayerPrompt,
+			PlannerPrompt: p.SaoleiPlannerPrompt,
 		}},
 	}
 	if !p.CreateTime.IsZero() {
@@ -260,7 +264,7 @@ func teamProfileToProto(p *domain.TeamProfile) *game.TeamProfile {
 // via update_mask, including the saolei oneof member paths (AIP-161
 // https://google.aip.dev/161).
 var teamProfileMaskFields = []string{
-	"saolei", "saolei.player_model", "saolei.planner_model",
+	"saolei", "saolei.player_model", "saolei.planner_model", "saolei.player_prompt", "saolei.planner_prompt",
 }
 
 // applyTeamProfileMask returns a copy of existing with the masked fields
@@ -298,10 +302,16 @@ func applyTeamProfileMask(existing *domain.TeamProfile, patch *game.TeamProfile,
 			}
 			updated.SaoleiPlayerModel = s.GetPlayerModel()
 			updated.SaoleiPlannerModel = s.GetPlannerModel()
+			updated.SaoleiPlayerPrompt = s.GetPlayerPrompt()
+			updated.SaoleiPlannerPrompt = s.GetPlannerPrompt()
 		case "saolei.player_model":
 			updated.SaoleiPlayerModel = patch.GetSaolei().GetPlayerModel()
 		case "saolei.planner_model":
 			updated.SaoleiPlannerModel = patch.GetSaolei().GetPlannerModel()
+		case "saolei.player_prompt":
+			updated.SaoleiPlayerPrompt = patch.GetSaolei().GetPlayerPrompt()
+		case "saolei.planner_prompt":
+			updated.SaoleiPlannerPrompt = patch.GetSaolei().GetPlannerPrompt()
 		}
 	}
 

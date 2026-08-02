@@ -34,24 +34,28 @@ describe("PromptClient", () => {
     // getTeamProfile(request, metadata, options, callback) with request
     // { name: "templates/<template>/profiles/<profile>" }. Mocks must match
     // that 4-arg shape so the 4th positional arg is the callback.
-    it("returns playerModel and plannerModel from the saolei oneof variant", async () => {
+    it("returns playerModel, plannerModel and the base prompts from the saolei oneof variant", async () => {
       const template = "saolei";
       const profileName = "my-profile";
       const expectedPlayerModel = "opencode-go/deepseek-v4-pro";
       const expectedPlannerModel = "opencode-go/deepseek-v4";
+      const expectedPlayerPrompt = "你是自定义的 player。";
+      const expectedPlannerPrompt = "你是自定义的 planner。";
 
       mockClient.getTeamProfile.mockImplementation(
         (
           _req: { name: string },
           _metadata: unknown,
           _options: { deadline: Date },
-          cb: (err: null, response: { spec: string; saolei: { playerModel: string; plannerModel: string } }) => void,
+          cb: (err: null, response: { spec: string; saolei: { playerModel: string; plannerModel: string; playerPrompt: string; plannerPrompt: string } }) => void,
         ) => {
           cb(null, {
             spec: "saolei",
             saolei: {
               playerModel: expectedPlayerModel,
               plannerModel: expectedPlannerModel,
+              playerPrompt: expectedPlayerPrompt,
+              plannerPrompt: expectedPlannerPrompt,
             },
           });
         },
@@ -63,6 +67,8 @@ describe("PromptClient", () => {
       expect(result).toEqual({
         playerModel: expectedPlayerModel,
         plannerModel: expectedPlannerModel,
+        playerPrompt: expectedPlayerPrompt,
+        plannerPrompt: expectedPlannerPrompt,
       });
       expect(mockClient.getTeamProfile).toHaveBeenCalledTimes(1);
       expect(mockClient.getTeamProfile).toHaveBeenCalledWith(
@@ -71,6 +77,37 @@ describe("PromptClient", () => {
         expect.any(Object),
         expect.any(Function),
       );
+    });
+
+    it("defaults unset base prompts to empty strings (FR-034 — empty = template default base)", async () => {
+      mockClient.getTeamProfile.mockImplementation(
+        (
+          _req: { name: string },
+          _metadata: unknown,
+          _options: { deadline: Date },
+          cb: (err: null, response: { spec: string; saolei: { playerModel: string; plannerModel: string } }) => void,
+        ) => {
+          // proto-loader `defaults: true` fills missing scalar fields with
+          // their zero values — the client must still surface "" explicitly.
+          cb(null, {
+            spec: "saolei",
+            saolei: {
+              playerModel: "m1",
+              plannerModel: "m2",
+            },
+          });
+        },
+      );
+
+      const client = new PromptClient(mockClient as any);
+      const result = await client.getTeamProfile("saolei", "no-prompts");
+
+      expect(result).toEqual({
+        playerModel: "m1",
+        plannerModel: "m2",
+        playerPrompt: "",
+        plannerPrompt: "",
+      });
     });
 
     it("throws with NOT_FOUND for a missing profile", async () => {

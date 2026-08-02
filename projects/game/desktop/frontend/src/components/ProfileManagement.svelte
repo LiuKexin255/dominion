@@ -4,16 +4,20 @@
 
   // ─── Typed oneof variant dispatch (D1) ───────────────────────────────────
   // The profile form is specialized per template by the TeamProfile typed
-  // oneof (spec.saolei → SaoleiProfile{player_model, planner_model} —
-  // specs/031-team-template-mode/data-model.md §1.5). Dispatch is a TYPED
-  // template→variant map — NOT a generic key-value form and NOT a hardcoded
-  // template-name rule (specs/031-team-template-mode/contracts/
-  // desktop-contract.md §3; spec.md FR-029). A new template adds a typed
-  // variant here and a typed form branch below (extension point).
+  // oneof (spec.saolei → SaoleiProfile{player_model, planner_model,
+  // player_prompt, planner_prompt} — specs/031-team-template-mode/
+  // data-model.md §1.5; the prompts are optional, empty = template default
+  // base, FR-034). Dispatch is a TYPED template→variant map — NOT a generic
+  // key-value form and NOT a hardcoded template-name rule
+  // (specs/031-team-template-mode/contracts/desktop-contract.md §3;
+  // spec.md FR-029). A new template adds a typed variant here and a typed
+  // form branch below (extension point).
   interface SaoleiProfileVariant {
     kind: 'saolei'
     playerModelLabel: string
     plannerModelLabel: string
+    playerPromptLabel: string
+    plannerPromptLabel: string
   }
 
   type ProfileVariant = SaoleiProfileVariant
@@ -23,6 +27,8 @@
       kind: 'saolei',
       playerModelLabel: 'Player Model',
       plannerModelLabel: 'Planner Model',
+      playerPromptLabel: 'Player Base Prompt',
+      plannerPromptLabel: 'Planner Base Prompt',
     },
   }
 
@@ -84,6 +90,8 @@
   let formName = $state('')
   let formPlayerModel = $state('')
   let formPlannerModel = $state('')
+  let formPlayerPrompt = $state('')
+  let formPlannerPrompt = $state('')
   let createError = $state<string | null>(null)
   let creating = $state(false)
 
@@ -94,9 +102,14 @@
   let editingName = $state<string | null>(null)
   let editPlayerModel = $state('')
   let editPlannerModel = $state('')
+  let editPlayerPrompt = $state('')
+  let editPlannerPrompt = $state('')
   let editError = $state<string | null>(null)
   let saving = $state(false)
 
+  // canSubmit/canSave validate only the required fields — the base prompts
+  // are OPTIONAL (empty = template default base, FR-034), so they must not
+  // gate submission.
   let canSubmit = $derived(
     formName.trim() !== '' && formPlayerModel !== '' && formPlannerModel !== '' && !creating,
   )
@@ -111,6 +124,8 @@
     formName = ''
     formPlayerModel = ''
     formPlannerModel = ''
+    formPlayerPrompt = ''
+    formPlannerPrompt = ''
   }
 
   function cancelCreateForm() {
@@ -129,6 +144,8 @@
         profileName: formName.trim(),
         playerModel: formPlayerModel,
         plannerModel: formPlannerModel,
+        playerPrompt: formPlayerPrompt,
+        plannerPrompt: formPlannerPrompt,
       })
       resetForm()
       showCreateForm = false
@@ -143,6 +160,8 @@
     editingName = profile.profileName
     editPlayerModel = profile.playerModel ?? ''
     editPlannerModel = profile.plannerModel ?? ''
+    editPlayerPrompt = profile.playerPrompt ?? ''
+    editPlannerPrompt = profile.plannerPrompt ?? ''
     editError = null
   }
 
@@ -161,13 +180,19 @@
         ...profile,
         playerModel: editPlayerModel,
         plannerModel: editPlannerModel,
+        playerPrompt: editPlayerPrompt,
+        plannerPrompt: editPlannerPrompt,
       }
       // oneof-member update_mask paths (AIP-161): the prompt service applies
-      // saolei.player_model / saolei.planner_model (T007 — specs/
-      // 031-team-template-mode/tasks.md Phase 3).
+      // saolei.player_model / saolei.planner_model / saolei.player_prompt /
+      // saolei.planner_prompt (T007 — specs/031-team-template-mode/tasks.md
+      // Phase 3; FR-034). The desktop form submits the full saolei form, so
+      // all four paths are in the mask.
       await onUpdate(profile.profileName, updated, [
         'saolei.player_model',
         'saolei.planner_model',
+        'saolei.player_prompt',
+        'saolei.planner_prompt',
       ])
       editingName = null
     } catch (err) {
@@ -258,6 +283,26 @@
                   <option value={opt.value}>{opt.label}</option>
                 {/each}
               </select>
+            </div>
+
+            <div class="form-field">
+              <label for="profile-player-prompt">{variant.playerPromptLabel}</label>
+              <textarea
+                id="profile-player-prompt"
+                rows="3"
+                bind:value={formPlayerPrompt}
+                placeholder="Optional — leave empty to use the template default base prompt (FR-034)"
+              ></textarea>
+            </div>
+
+            <div class="form-field">
+              <label for="profile-planner-prompt">{variant.plannerPromptLabel}</label>
+              <textarea
+                id="profile-planner-prompt"
+                rows="3"
+                bind:value={formPlannerPrompt}
+                placeholder="Optional — leave empty to use the template default base prompt (FR-034)"
+              ></textarea>
             </div>
 
             <div class="form-buttons">
@@ -370,6 +415,26 @@
                         <option value={opt.value}>{opt.label}</option>
                       {/each}
                     </select>
+                  </div>
+
+                  <div class="form-field">
+                    <label for={`edit-player-prompt-${profile.profileName}`}>{variant.playerPromptLabel}</label>
+                    <textarea
+                      id={`edit-player-prompt-${profile.profileName}`}
+                      rows="3"
+                      bind:value={editPlayerPrompt}
+                      placeholder="Optional — leave empty to use the template default base prompt (FR-034)"
+                    ></textarea>
+                  </div>
+
+                  <div class="form-field">
+                    <label for={`edit-planner-prompt-${profile.profileName}`}>{variant.plannerPromptLabel}</label>
+                    <textarea
+                      id={`edit-planner-prompt-${profile.profileName}`}
+                      rows="3"
+                      bind:value={editPlannerPrompt}
+                      placeholder="Optional — leave empty to use the template default base prompt (FR-034)"
+                    ></textarea>
                   </div>
 
                   <div class="form-buttons">
@@ -497,6 +562,22 @@
   }
 
   .form-field input[type='text']:focus {
+    outline: none;
+    border-color: #4a9eff;
+  }
+
+  .form-field textarea {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    background: #1a1a2e;
+    border: 1px solid #1a3a6e;
+    border-radius: 4px;
+    color: #e0e0e0;
+    resize: vertical;
+  }
+
+  .form-field textarea:focus {
     outline: none;
     border-color: #4a9eff;
   }

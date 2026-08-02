@@ -841,11 +841,16 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 			profile: &game.TeamProfile{
 				Template: "templates/saolei",
 				Spec: &game.TeamProfile_Saolei{
-					Saolei: &game.SaoleiProfile{PlayerModel: "openai/gpt-4o", PlannerModel: "anthropic/claude-3-5-sonnet"},
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "openai/gpt-4o",
+						PlannerModel:  "anthropic/claude-3-5-sonnet",
+						PlayerPrompt:  "player base prompt",
+						PlannerPrompt: "planner base prompt",
+					},
 				},
 			},
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`,
 			wantErr:    false,
 		},
 		{
@@ -892,6 +897,9 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerModel() != tt.profile.GetSaolei().GetPlayerModel() {
 					t.Errorf("expected player_model %q, got %+v", tt.profile.GetSaolei().GetPlayerModel(), got.GetSaolei())
 				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerPrompt() != tt.profile.GetSaolei().GetPlayerPrompt() {
+					t.Errorf("expected player_prompt %q, got %q", tt.profile.GetSaolei().GetPlayerPrompt(), got.GetSaolei().GetPlayerPrompt())
+				}
 
 				w.WriteHeader(tt.statusCode)
 				w.Write([]byte(tt.respBody))
@@ -927,6 +935,12 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 			}
 			if profile.GetSaolei().GetPlannerModel() != "anthropic/claude-3-5-sonnet" {
 				t.Errorf("expected planner_model %q, got %q", "anthropic/claude-3-5-sonnet", profile.GetSaolei().GetPlannerModel())
+			}
+			if profile.GetSaolei().GetPlayerPrompt() != "player base prompt" {
+				t.Errorf("expected player_prompt %q, got %q", "player base prompt", profile.GetSaolei().GetPlayerPrompt())
+			}
+			if profile.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+				t.Errorf("expected planner_prompt %q, got %q", "planner base prompt", profile.GetSaolei().GetPlannerPrompt())
 			}
 		})
 	}
@@ -1120,13 +1134,22 @@ func TestClient_UpdateTeamProfile(t *testing.T) {
 				Name:     "templates/saolei/profiles/my-profile",
 				Template: "templates/saolei",
 				Spec: &game.TeamProfile_Saolei{
-					Saolei: &game.SaoleiProfile{PlayerModel: "openai/gpt-5"},
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "openai/gpt-5",
+						PlayerPrompt:  "custom player base",
+						PlannerPrompt: "custom planner base",
+					},
 				},
 			},
-			updateMaskPaths: []string{"saolei.player_model"},
-			statusCode:      http.StatusOK,
-			respBody:        `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5"}}`,
-			wantErr:         false,
+			updateMaskPaths: []string{
+				"saolei.player_model",
+				"saolei.planner_model",
+				"saolei.player_prompt",
+				"saolei.planner_prompt",
+			},
+			statusCode: http.StatusOK,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`,
+			wantErr:    false,
 		},
 		{
 			name:        "not found",
@@ -1163,6 +1186,9 @@ func TestClient_UpdateTeamProfile(t *testing.T) {
 				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerModel() != tt.profile.GetSaolei().GetPlayerModel() {
 					t.Errorf("expected player_model %q, got %q", tt.profile.GetSaolei().GetPlayerModel(), got.GetSaolei().GetPlayerModel())
 				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerPrompt() != tt.profile.GetSaolei().GetPlayerPrompt() {
+					t.Errorf("expected player_prompt %q, got %q", tt.profile.GetSaolei().GetPlayerPrompt(), got.GetSaolei().GetPlayerPrompt())
+				}
 				w.WriteHeader(tt.statusCode)
 				w.Write([]byte(tt.respBody))
 			}))
@@ -1191,6 +1217,12 @@ func TestClient_UpdateTeamProfile(t *testing.T) {
 			}
 			if updated.GetSaolei().GetPlayerModel() != "openai/gpt-5" {
 				t.Errorf("expected player_model %q, got %q", "openai/gpt-5", updated.GetSaolei().GetPlayerModel())
+			}
+			if updated.GetSaolei().GetPlayerPrompt() != "custom player base" {
+				t.Errorf("expected player_prompt %q, got %q", "custom player base", updated.GetSaolei().GetPlayerPrompt())
+			}
+			if updated.GetSaolei().GetPlannerPrompt() != "custom planner base" {
+				t.Errorf("expected planner_prompt %q, got %q", "custom planner base", updated.GetSaolei().GetPlannerPrompt())
 			}
 		})
 	}

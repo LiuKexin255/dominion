@@ -1256,7 +1256,9 @@ func (a *App) ListTeamProfiles(template string, pageSize int, pageToken string) 
 // CreateTeamProfile creates a new TeamProfile under a template (Wails-bound;
 // desktop-contract §4 — AIP-133). The template-specific spec is the typed
 // oneof variant: for saolei the req's PlayerModel/PlannerModel project to
-// SaoleiProfile (FR-027 — tools/MCP are not configurable, FR-028).
+// SaoleiProfile, plus the optional PlayerPrompt/PlannerPrompt base prompts
+// (empty = template default base, FR-034 — tools/MCP are not configurable,
+// FR-027/FR-028).
 func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*TeamProfileView, error) {
 	if template == "" {
 		return nil, fmt.Errorf("create team profile: template is required")
@@ -1284,8 +1286,10 @@ func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*Te
 		Template: game.TemplateName{TemplateID: template}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
-				PlayerModel:  req.PlayerModel,
-				PlannerModel: req.PlannerModel,
+				PlayerModel:   req.PlayerModel,
+				PlannerModel:  req.PlannerModel,
+				PlayerPrompt:  req.PlayerPrompt,
+				PlannerPrompt: req.PlannerPrompt,
 			},
 		},
 	}
@@ -1399,7 +1403,8 @@ func (a *App) DeleteTeamProfile(template, profileName string) error {
 // desktop-contract §4 — AIP-134). Per grpc-gateway binding the profile
 // fields are sent as the PATCH body and updateMaskPaths are sent as repeated
 // update_mask.paths query parameters; the mask supports oneof-member paths
-// (e.g. saolei.player_model / saolei.planner_model).
+// (e.g. saolei.player_model / saolei.planner_model / saolei.player_prompt /
+// saolei.planner_prompt).
 func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfileView, updateMaskPaths []string) (*TeamProfileView, error) {
 	if template == "" {
 		return nil, fmt.Errorf("update team profile: template is required")
@@ -1429,8 +1434,10 @@ func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfil
 		Template: game.TemplateName{TemplateID: template}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
-				PlayerModel:  profile.PlayerModel,
-				PlannerModel: profile.PlannerModel,
+				PlayerModel:   profile.PlayerModel,
+				PlannerModel:  profile.PlannerModel,
+				PlayerPrompt:  profile.PlayerPrompt,
+				PlannerPrompt: profile.PlannerPrompt,
 			},
 		},
 	}

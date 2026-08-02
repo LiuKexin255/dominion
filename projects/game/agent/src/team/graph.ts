@@ -150,6 +150,16 @@ export interface TeamGraphDeps {
 	 * built internally (planner holds no other tools, FR-012).
 	 */
 	playerTools: StructuredToolInterface[];
+	/**
+	 * The player's base prompt from `SaoleiProfile.player_prompt` (FR-034 —
+	 * empty = template default; skill body always appended by the template).
+	 */
+	playerBasePrompt: string;
+	/**
+	 * The planner's base prompt from `SaoleiProfile.planner_prompt` (FR-034 —
+	 * empty = template default; no skill body appended).
+	 */
+	plannerBasePrompt: string;
 	/** Optional createAgent override (DI seam, defaults to the real one). */
 	createAgentFn?: CreateAgentFn;
 }
@@ -178,6 +188,7 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		buffer: deps.buffer,
 		sessionId: deps.sessionId,
 		tools: deps.playerTools,
+		playerBasePrompt: deps.playerBasePrompt,
 		createAgentFn: deps.createAgentFn,
 	});
 	const plannerNode = createPlannerNode({
@@ -185,6 +196,7 @@ export function buildTeamGraph(deps: TeamGraphDeps): TeamGraphHandle {
 		strategyStore: deps.strategyStore,
 		buffer: deps.buffer,
 		sessionId: deps.sessionId,
+		plannerBasePrompt: deps.plannerBasePrompt,
 		createAgentFn: deps.createAgentFn,
 	});
 
