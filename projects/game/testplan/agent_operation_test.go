@@ -1,29 +1,27 @@
-// Package testplan contains agent operation-result integration tests.
+// Package testplan contains agent operation-dispatch integration tests.
 //
-// agent_operation_test.go validates the agent's mouse-tool dispatch chain
-// end-to-end against the deployed agent (spec 025 spec.md FR-023..FR-026;
-// specs/023-saolei-mcp-refine/quickstart.md Scenario 7 / SC-001):
-// a user turn makes the model emit a real mouse_move tool_call, the agent
-// emits a tool_call MessagePart frame (live conversation channel), dispatches
-// a MouseMovePart FlowPart through OperationBridge (control channel), and the
-// test — playing the desktop — reads that operation Part and replies with a
-// FlowResultPart (spec 025 FR-023/FR-024 — control channel; was a display
-// tool_result MessagePart before 025). The agent's bridge.handleResult
-// resolves the pending dispatch from the FlowResultPart, the model continues,
-// and the agent emits a display tool_result MessagePart whose status is the
-// REAL outcome (native mouse tool — D4). Both the succeeded and failed
-// result paths are covered, plus the screenshot-forwarding path
-// (FlowResultPart.screenshot → mouse tool's display tool_result.screenshot,
-// spec 025 FR-025/FR-026).
+// agent_operation_test.go validates the OperationBridge dispatch loop
+// end-to-end against the deployed saolei TEAM graph: a user turn makes the
+// team's player agent emit a real saolei tool_call (spec
+// 031-team-template-mode FR-010 — the player is the ONLY agent holding the
+// saolei MCP tools; the tools are template-fixed per FR-028, the former
+// per-profile mouse tools are gone), the agent emits a tool_call MessagePart
+// frame (live conversation channel), dispatches a FlowPart through
+// OperationBridge (control channel), and the test — playing the desktop —
+// reads that operation Part and replies with a FlowResultPart (spec 025
+// FR-023/FR-024 — control channel). The agent's bridge.handleResult resolves
+// the pending dispatch from the FlowResultPart and the model continues.
 //
-// spec 023 D10 decoupling is asserted: the dispatched FlowPart carries a
-// bridge-minted operation-channel tool_id that is NOT the conversation-channel
-// tool_call.id (research.md D10; data-model.md §4).
-//
-// Feature 015 split the single "mouse" tool into "mouse_move"
-// (coordinates only) and "mouse_click" (click_type only, at current cursor
-// position). The profiles below declare the split tool names so the agent
-// compiles with the post-015 tool surface.
+// This suite is the post-031 equivalent of the former mouse-tool dispatch
+// suite (spec 023 D10 decoupling is asserted: the dispatched FlowPart carries
+// a bridge-minted operation-channel tool_id that is NOT the conversation-
+// channel tool_call.id — research.md D10; data-model.md §4). The mouse_move
+// tool itself no longer exists: the saolei template fixes the player's tools
+// to the saolei MCP tools (FR-028), so the dispatch chain is driven with
+// saolei_init/saolei_click instead. The mouse-specific screenshot-forwarding
+// behaviour (FlowResultPart.screenshot → display tool_result.screenshot, spec
+// 025 FR-025) is intentionally NOT covered here — saolei tool results are
+// TEXT boards and never carry screenshots (spec 025 FR-022).
 package testplan
 
 import (
@@ -33,101 +31,113 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/gameconst"
 )
 
-// mouseSplitToolNames and expectedMouseMoveSuccessText live in
-// helpers_test.go — shared by the agent_operation and agent_checkpoint
-// suites (style/large_test.md §反模式3 — do not copy helpers).
-
-// TestAgentOperationResultSuccess drives a real mouse_move tool_call from a
-// user turn (the fake-LLM "mouse-trigger" Message), lets the agent dispatch
-// the MouseMovePart through OperationBridge, and replies with a SUCCEEDED
-// FlowResultPart (spec 025 FR-023/FR-024 — control channel). The model then
-// continues with text, proving the full model→tool_call→dispatch→result
-// chain fires and the connection survives.
+// TestAgentOperationDispatchLoopSuccess drives a real saolei_click dispatch
+// loop from a user turn (the fake-LLM "saolei-start" Message): the player
+// agent executes saolei_init (F2 dispatch), the test replies with a
+// recognizable in-progress board screenshot, the fake-LLM chains
+// saolei_click{3,4} → saolei_click{5,6} (each dispatching a
+// MouseMoveAndClickPart), and the chain closes with the final text. The
+// assertions focus on the DISPATCH MECHANICS (spec 023 D10 decoupling +
+// conversation-channel grouping) rather than the text-board return contract
+// (covered by agent_saolei_test.go):
 //
-// Live emission (spec 023 FR-006) is asserted: the agent emits a tool_call
-// MessagePart frame before the operation and a tool_result MessagePart frame
-// after the reply. The dispatched FlowPart's bridge-minted tool_id MUST
-// differ from the conversation-channel tool_call.id (decoupling, research.md
-// D10). The native mouse tool carries the REAL status (D4) — SUCCEEDED here.
-// The display tool_result is emitted by the AGENT from the mouse tool's
-// LLM result (spec 025 FR-024/FR-025); the FlowResultPart the test sends
-// back is control-only and never appears in the conversation history.
-func TestAgentOperationResultSuccess(t *testing.T) {
+//  1. The live tool_call MessagePart frame and the dispatched operation
+//     FlowPart frame both arrive (they race on the WS — collected in a
+//     single pass by readToolCallAndOperation).
+//  2. D10 decoupling: the dispatched FlowPart's bridge-minted tool_id
+//     differs from the conversation-channel tool_call.id.
+//  3. The display tool_result frame groups by the conversation tool_call.id
+//     (LangChain auto-wires ToolMessage.tool_call_id).
+//  4. The model continues with the terminal text — the dispatch→result loop
+//     completed and the connection survived.
+//  5. ListMessages surfaces the saolei tool_call/tool_result MessageParts
+//     with no operation FlowPart leaking into Message.content (FR-005).
+func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	profileName := fmt.Sprintf("op-suc-%s", uniqueSuffix())
+	profileName := "op-suc-" + uniqueSuffix()
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "Operation result test agent.",
-			ToolNames:    mouseSplitToolNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: a user turn matching the "mouse-trigger" keyword makes fake-LLM
-	// return a mouse_move tool_call (the dispatch fix — Message.tool_call).
-	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
+	// when: a user turn matching the "saolei-start" keyword makes fake-LLM
+	// return a saolei_init tool_call.
+	sendText(t, conn, sessionID, "please start saolei game")
 
-	// then (1)+(2): the agent emits a tool_call MessagePart frame (live
-	// conversation channel — spec 023 FR-006/D5) AND dispatches a
-	// MouseMovePart FlowPart through OperationBridge (control channel). The
-	// two frames race on the WS (dispatch sink-writes synchronously inside
-	// the tool fn while stream.toolCalls yields asynchronously), so a single
-	// read pass collects both without dropping either (see readToolCallAndOperation
-	// doc).
-	toolCallFrame, opFrame := readToolCallAndOperation(t, conn)
+	// then (1)+(2): the player emits a tool_call MessagePart frame AND
+	// dispatches the F2 KeyboardPressPart FlowPart through OperationBridge.
+	// The two frames race on the WS (dispatch sink-writes synchronously
+	// inside the tool fn while stream.toolCalls yields asynchronously), so a
+	// single read pass collects both without dropping either.
+	toolCallFrame, initOpFrame := readToolCallAndOperation(t, conn)
 	toolCall := frameToolCall(toolCallFrame)
-	if toolCall.GetName() != "mouse_move" {
-		t.Errorf("tool_call.name = %q, want mouse_move (FR-002)", toolCall.GetName())
+	if toolCall.GetName() != "saolei_init" {
+		t.Errorf("tool_call.name = %q, want saolei_init (FR-002)", toolCall.GetName())
 	}
 	if toolCall.GetToolId() == "" {
 		t.Error("tool_call.tool_id is empty — the conversation-channel id (LangChain tool_call.id) must be present for bubble grouping (FR-008)")
 	}
-	if toolCall.GetArgsJson() == "" {
-		t.Error("tool_call.args_json is empty — the model's arguments must be carried verbatim (research.md D3)")
+	kp := frameKeyboardPress(initOpFrame)
+	if kp == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
+			initOpFrame.GetFlowParts().GetParts())
 	}
-	mm := frameMouseMove(opFrame)
-	if mm == nil {
-		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart FlowPart; frame parts: %v",
-			opFrame.GetFlowParts().GetParts())
-	}
-	if mm.GetXPx() != 100 || mm.GetYPx() != 200 {
-		t.Errorf("mouse_move coords = (%d,%d), want (100,200) from the tool_call args", mm.GetXPx(), mm.GetYPx())
+	if kp.GetKey() != game.KeyboardKey_KEYBOARD_KEY_F2 {
+		t.Errorf("saolei_init key = %v, want KEYBOARD_KEY_F2 (spec 025 FR-019 retained)", kp.GetKey())
 	}
 
-	// then (3): D10 decoupling — the dispatched FlowPart's tool_id is a
-	// bridge-minted operation-channel UUID, NOT the conversation-channel
-	// tool_call.id (research.md D10; data-model.md §4).
-	if mm.GetToolId() == "" {
+	// D10 decoupling: the dispatched FlowPart's tool_id is a bridge-minted
+	// operation-channel UUID, NOT the conversation-channel tool_call.id
+	// (research.md D10; data-model.md §4).
+	if kp.GetToolId() == "" {
 		t.Error("dispatched FlowPart.tool_id is empty — the bridge must mint an operation-channel id (D10)")
 	}
-	if mm.GetToolId() == toolCall.GetToolId() {
+	if kp.GetToolId() == toolCall.GetToolId() {
 		t.Errorf("decoupling violated (D10): FlowPart.tool_id (%q) == tool_call.id (%q); the two channels MUST NOT share an id",
-			mm.GetToolId(), toolCall.GetToolId())
+			kp.GetToolId(), toolCall.GetToolId())
 	}
 
-	// The test (desktop) replies SUCCEEDED. The result text intentionally
-	// avoids the "button"/"out of bounds" substrings so fake-LLM's
-	// mouse-move-success-text (terminal) closes the tool loop with text
-	// rather than chaining into another tool_call.
-	respondToOperation(t, conn, sessionID, opFrame,
-		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200")
+	// The test (desktop) replies with a recognizable in-progress board so
+	// the recognition engine seeds/updates the state.
+	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+	respondToOperationWithScreenshot(t, conn, sessionID, initOpFrame,
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
 
-	// then (4): the agent emits a tool_result MessagePart frame carrying
-	// the REAL status (native mouse tool — D4; spec 023 FR-006/D5). The
-	// conversation-channel tool_id matches the earlier tool_call.id
-	// (LangChain auto-wires ToolMessage.tool_call_id — bubble grouping).
+	// The fake-LLM fixture chains saolei_init → saolei_click{3,4} →
+	// saolei_click{5,6} → final text (sample_saolei_tools.yaml). Play the
+	// desktop through both cell dispatches, asserting each dispatch carries
+	// the centre of the cell the model targeted (saolei_fixtures_test.go —
+	// WM client-space centres: (3,4)→(136,248), (5,6)→(200,312)).
+	clickSteps := []struct {
+		cellX, cellY     int32
+		centerX, centerY int32
+	}{
+		{saoleiClick1X, saoleiClick1Y, saoleiClick1CenterX, saoleiClick1CenterY},
+		{saoleiClick2X, saoleiClick2Y, saoleiClick2CenterX, saoleiClick2CenterY},
+	}
+	for _, step := range clickSteps {
+		clickFrame := readOperationFrame(t, conn)
+		mmc := frameMouseMoveAndClick(clickFrame)
+		if mmc == nil {
+			t.Fatalf("saolei_click(%d,%d) did not dispatch a MouseMoveAndClickPart FlowPart; frame parts: %v",
+				step.cellX, step.cellY, clickFrame.GetFlowParts().GetParts())
+		}
+		if err := assertMouseMoveAndClick(mmc, step.centerX, step.centerY,
+			game.MouseClickAction_MOUSE_CLICK_ACTION_LEFT_CLICK); err != nil {
+			t.Errorf("saolei_click(%d,%d) dispatch mismatch: %v", step.cellX, step.cellY, err)
+		}
+		respondToOperationWithScreenshot(t, conn, sessionID, clickFrame,
+			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+			fmt.Sprintf("cell at (%d,%d) revealed", step.cellX, step.cellY), screenshot)
+	}
+
+	// then (3): the display tool_result frame groups by the conversation
+	// tool_call.id of the FIRST saolei_init call (the init result follows
+	// the init dispatch; bubble grouping by LangChain tool_call.id).
 	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
 	if toolResultFrame == nil {
 		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
@@ -137,265 +147,112 @@ func TestAgentOperationResultSuccess(t *testing.T) {
 		t.Errorf("tool_result.tool_id = %q, want %q (conversation-channel grouping by LangChain tool_call.id)",
 			toolResult.GetToolId(), toolCall.GetToolId())
 	}
-	if toolResult.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED {
-		t.Errorf("tool_result.status = %v, want SUCCEEDED (native mouse tool carries the REAL status — D4)",
+	// saolei is an MCP tool — the reconstructed status is neutral
+	// (TOOL_RESULT_STATUS_UNSPECIFIED, never FAILED) per spec 023 D12.
+	if toolResult.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_UNSPECIFIED {
+		t.Errorf("saolei tool_result.status = %v, want UNSPECIFIED (neutral — spec 023 D12)",
 			toolResult.GetStatus())
 	}
 
-	// then (5): the model continues with the terminal text frame — the
-	// connection survived the real dispatch→result cycle.
+	// then (4): the model continues with the terminal text frame — the
+	// connection survived the real dispatch→result cycles.
 	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {
-		t.Fatal("connection unusable after successful tool result — agent did not recover")
+		t.Fatal("connection unusable after saolei dispatch loop — agent did not recover")
 	}
-	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
-		t.Errorf("post-result text = %q, want to contain %q", frameText(textFrame), expectedMouseMoveSuccessText)
+	if !strings.Contains(frameText(textFrame), expectedSaoleiFinalText) {
+		t.Errorf("post-result text = %q, want to contain %q", frameText(textFrame), expectedSaoleiFinalText)
 	}
 
-	// then (6): ListMessages returns the history with the mouse_move
-	// tool_call and the SUCCEEDED tool_result MessageParts (FR-009).
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if !messagesContainToolCall(lmr.GetMessages(), "mouse_move") {
-		t.Errorf("ListMessages did not surface a mouse_move tool_call MessagePart (FR-006/FR-009)")
+	// then (5): ListMessages returns the history with the saolei tool_call
+	// and tool_result MessageParts (FR-009) and no operation FlowPart leaks
+	// into Message.content (FR-005).
+	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
+	if !messagesContainToolCall(lmr.GetMessages(), "saolei_init") {
+		t.Errorf("ListMessages did not surface a saolei_init tool_call MessagePart (FR-006/FR-009)")
 	}
-	if !messagesContainToolResultStatus(lmr.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED) {
-		t.Errorf("ListMessages did not surface a SUCCEEDED tool_result MessagePart (FR-013 / D4)")
+	if !messagesContainToolCall(lmr.GetMessages(), "saolei_click") {
+		t.Errorf("ListMessages did not surface a saolei_click tool_call MessagePart (FR-006/FR-009)")
 	}
-	// No operation FlowPart appears in Message.content (FR-005).
 	assertMessageContentDisplayOnly(t, lmr.GetMessages())
 }
 
-// TestAgentOperationResultFailed drives the same mouse_move tool_call but
-// replies with a FAILED ToolResultPart. The agent must handle the failure
-// gracefully: the model continues and the connection remains usable for the
-// subsequent turn. The result text avoids the "out of bounds"/"button"
-// substrings so fake-LLM's terminal mouse-move-success-text closes the loop.
+// TestAgentOperationDispatchFailureRecovers drives a saolei_init dispatch
+// whose FlowResultPart reports FAILED with NO screenshot. The recognition
+// engine cannot decode a board (no screenshot — FR-017 invalidates the
+// session state), so saolei_init returns the "unable to recognize" outcome
+// instead of a board. The test asserts:
 //
-// The native mouse tool's REAL FAILED status is asserted both in the live
-// tool_result frame and in ListMessages history (D4 — failed live ⇒ failed
-// in history; spec 023 FR-013).
-func TestAgentOperationResultFailed(t *testing.T) {
+//  1. The recognition-failure tool_result is surfaced (deterministic: the
+//     init outcome is fixed).
+//  2. The connection remains usable: a SECOND turn (greeting keyword)
+//     completes normally — a failed dispatch must not wedge the per-session
+//     TurnLoop.
+//
+// The post-failure chain is deliberately NOT asserted: with the state
+// invalidated, the fake-LLM tool-result matcher finds no candidate for the
+// follow-up click (the rejection text carries no "(3,4)"/"(5,6)"
+// coordinates) and falls back to a random tool response, which is
+// nondeterministic by design (matcher.go no-match fallback).
+func TestAgentOperationDispatchFailureRecovers(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	profileName := fmt.Sprintf("op-fail-%s", uniqueSuffix())
+	profileName := "op-fail-" + uniqueSuffix()
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "Operation failure test agent.",
-			ToolNames:    mouseSplitToolNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: a user turn triggers the mouse_move tool_call.
-	sendTextWithProfile(t, conn, sessionID, profileName, "position cursor over the icon")
+	// when: a user turn triggers the saolei_init tool_call.
+	sendText(t, conn, sessionID, "please start saolei game")
 
-	// Collect the live tool_call frame and the dispatched operation frame in
-	// a single pass — the two race on the WS (see readToolCallAndOperation doc).
-	toolCallFrame, opFrame := readToolCallAndOperation(t, conn)
-	toolCall := frameToolCall(toolCallFrame)
-	if frameMouseMove(opFrame) == nil {
-		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart FlowPart; frame parts: %v",
+	// Collect the live tool_call frame and the dispatched F2 operation frame
+	// in a single pass — the two race on the WS.
+	_, opFrame := readToolCallAndOperation(t, conn)
+	if frameKeyboardPress(opFrame) == nil {
+		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart; frame parts: %v",
 			opFrame.GetFlowParts().GetParts())
 	}
 
-	// D10 decoupling: bridge-minted op id ≠ conversation tool_call.id.
-	if opToolID := frameOperationToolID(opFrame); opToolID == "" || opToolID == toolCall.GetToolId() {
-		t.Errorf("decoupling violated (D10): op tool_id = %q, tool_call.id = %q", opToolID, toolCall.GetToolId())
-	}
-
-	// The desktop rejects the operation (FAILED). The message avoids
-	// "out of bounds"/"button" so fake-LLM closes the loop with text.
+	// The desktop rejects the operation (FAILED) and attaches NO screenshot.
 	respondToOperation(t, conn, sessionID, opFrame,
-		game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED, "desktop rejected coordinate")
+		game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED, "desktop rejected operation")
 
-	// then: the live tool_result frame carries the REAL FAILED status (D4).
-	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
-	if toolResultFrame == nil {
+	// then (1): the recognition-failure tool_result is surfaced (FR-017 —
+	// a failed/no-screenshot result invalidates the recognized state).
+	failedResult := drainWSFrame(t, conn, frameHasToolResult)
+	if failedResult == nil {
 		t.Fatal("did not receive a tool_result MessagePart frame after the failed desktop reply (FR-006)")
 	}
-	if got := frameToolResult(toolResultFrame).GetStatus(); got != game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED {
-		t.Errorf("live tool_result.status = %v, want FAILED (native mouse tool carries the REAL status — D4)", got)
+	if !strings.Contains(frameToolResult(failedResult).GetMessage(), "unable to recognize") {
+		t.Errorf("failed tool_result message = %q, want to contain \"unable to recognize\" (FR-017)",
+			frameToolResult(failedResult).GetMessage())
 	}
 
-	// The model must recover: it receives the failed result and continues
-	// with a text response (or a warn). The connection remains usable.
-	afterResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return frameHasText(f) || frameWarn(f) != nil
-	})
-	if afterResp == nil {
-		t.Fatal("connection unusable after failed tool result — agent did not recover")
-	}
-	switch {
-	case frameWarn(afterResp) != nil:
-		t.Logf("connection survived failed tool result (warn): %q", frameWarn(afterResp).GetMessage())
-	case strings.Contains(frameText(afterResp), expectedMouseMoveSuccessText):
-		t.Logf("connection survived failed tool result: %q", frameText(afterResp))
-	default:
-		t.Logf("connection survived failed tool result: %q", frameText(afterResp))
-	}
-
-	// then: ListMessages history reflects the real FAILED status — failed
-	// live ⇒ failed in history (spec 023 FR-013; data-model.md §6).
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	if !messagesContainToolResultStatus(lmr.GetMessages(), game.ToolResultStatus_TOOL_RESULT_STATUS_FAILED) {
-		t.Errorf("ListMessages did not surface a FAILED tool_result MessagePart — the real FAILED status must survive history (FR-013/D4)")
-	}
-	// No operation FlowPart appears in Message.content (FR-005).
-	assertMessageContentDisplayOnly(t, lmr.GetMessages())
-}
-
-// TestAgentOperationFlowResultCarriesScreenshot verifies spec 025 FR-025/FR-026
-// end-to-end: a FlowResultPart.screenshot sent on the CONTROL channel by the
-// desktop is consumed by the agent's OperationBridge.handleResult, forwarded
-// by the native mouse tool into its display tool_result MessagePart, and
-// reaches the model as a display-channel screenshot. This is the mouse-tool
-// translation described in contracts/flow-result-contract.md §6 ("Native
-// mouse: reads screenshot from FlowResultPart → emits display tool_result
-// text + screenshot"), and it is the path that was previously carried by the
-// (now control-only) display tool_result before 025 separated the channels.
-//
-// The screenshot the test attaches to the FlowResultPart is small (1×1 PNG)
-// — the assertion is structural (screenshot survives the control→display
-// translation and appears in the live display tool_result frame and in
-// ListMessages history), not about image bytes, which fake-LLM ignores.
-func TestAgentOperationFlowResultCarriesScreenshot(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("op-shot-%s", uniqueSuffix())
-
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "Operation screenshot forwarding test agent.",
-			ToolNames:    mouseSplitToolNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn.Close()
-
-	// when: a mouse_move tool_call dispatches.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please move the mouse now")
-	_, opFrame := readToolCallAndOperation(t, conn)
-	if frameMouseMove(opFrame) == nil {
-		t.Fatalf("mouse_move tool_call did not dispatch a MouseMovePart FlowPart; frame parts: %v",
-			opFrame.GetFlowParts().GetParts())
-	}
-
-	// The test (desktop) replies with a SUCCEEDED FlowResultPart that carries
-	// a screenshot on the CONTROL channel (spec 025 FR-026). The mouse tool
-	// copies that screenshot into its display tool_result (FR-025).
-	respondToOperationWithScreenshot(t, conn, sessionID, opFrame,
-		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "cursor moved to 100,200",
-		buildImageFrame(sessionID))
-
-	// then (1): the agent emits a display tool_result MessagePart frame whose
-	// screenshot is the one carried by the FlowResultPart (control→display
-	// translation). The message intentionally avoids the "button"/"out of
-	// bounds" substrings so fake-LLM's mouse-move-success-text closes the loop.
-	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
-	if toolResultFrame == nil {
-		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
-	}
-	liveResult := frameToolResult(toolResultFrame)
-	if liveResult.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED {
-		t.Errorf("live tool_result.status = %v, want SUCCEEDED (native mouse tool carries the REAL status — D4)",
-			liveResult.GetStatus())
-	}
-	if liveResult.GetScreenshot() == nil {
-		t.Fatal("live tool_result.screenshot is nil — the FlowResultPart.screenshot MUST be forwarded into the mouse tool's display tool_result (spec 025 FR-025/FR-026)")
-	}
-	if len(liveResult.GetScreenshot().GetData()) == 0 {
-		t.Error("live tool_result.screenshot.data is empty — the screenshot bytes did not survive the control→display translation")
-	}
-
-	// then (2): the model continues with the terminal text frame — the
-	// connection survived the dispatch→result cycle.
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
-		return frameHasText(f)
-	})
-	if textFrame == nil {
-		t.Fatal("connection unusable after tool result — agent did not recover")
-	}
-	if !strings.Contains(frameText(textFrame), expectedMouseMoveSuccessText) {
-		t.Errorf("post-result text = %q, want to contain %q", frameText(textFrame), expectedMouseMoveSuccessText)
-	}
-
-	// then (3): ListMessages history carries the display tool_result with the
-	// screenshot (FR-009 — live and history render identically).
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
-	historyScreenshotFound := false
-	for _, m := range lmr.GetMessages() {
-		for _, p := range m.GetContent().GetParts() {
-			if tr := p.GetToolResult(); tr != nil && tr.GetScreenshot() != nil {
-				historyScreenshotFound = true
-				if len(tr.GetScreenshot().GetData()) == 0 {
-					t.Error("history tool_result.screenshot.data is empty — the screenshot bytes did not survive checkpoint reconstruction")
-				}
-			}
-		}
-	}
-	if !historyScreenshotFound {
-		t.Error("ListMessages did not surface a tool_result MessagePart carrying a screenshot — the display screenshot MUST survive history (spec 025 FR-025 / spec 023 FR-009)")
-	}
-	// No operation FlowPart appears in Message.content (FR-005); the
-	// FlowResultPart is control-only and never enters the conversation.
-	assertMessageContentDisplayOnly(t, lmr.GetMessages())
-}
-
-// TestAgentMouseSplitToolBinding verifies that a profile declaring the
-// post-015 split tool names (mouse_move + mouse_click) binds successfully and
-// the agent processes a text turn without error. This is a regression guard
-// for the US2 buildTools wiring: the legacy single "mouse" name is no longer
-// recognized, so a profile that still declared it would silently register
-// zero tools. (mouse_move/mouse_click dispatch is now covered end-to-end by
-// TestAgentOperationResultSuccess/Failed above, which drive real tool_calls.)
-func TestAgentMouseSplitToolBinding(t *testing.T) {
-	sutHostURL := testtool.MustEndpoint("http", "public")
-	sutEnvName := testtool.MustEnv()
-
-	profileName := fmt.Sprintf("mouse-split-%s", uniqueSuffix())
-
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "Mouse split tool binding test agent.",
-			ToolNames:    mouseSplitToolNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
-	defer conn.Close()
-
-	// A text turn must produce a normal thinking + text response, proving
-	// the adapter compiled with the split tools and the connection is usable.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello mouse split")
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	// then (2): the connection stays usable — a second turn (greeting
+	// keyword) completes with the deterministic greeting response. drainWSFrame
+	// skips any leftover frames from the failed turn.
+	sendText(t, conn, sessionID, "hello after failed dispatch")
+	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return frameHasThinking(f)
 	})
+	if thinkingFrame == nil {
+		t.Fatal("post-failure turn: did not receive a thinking frame — the connection is unusable after the failed dispatch")
+	}
+	if !strings.Contains(frameThinking(thinkingFrame), expectedGreetingReasoning) {
+		t.Errorf("post-failure thinking = %q, want to contain %q",
+			frameThinking(thinkingFrame), expectedGreetingReasoning)
+	}
 	textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return frameHasText(f)
 	})
 	if textResp == nil {
-		t.Fatal("no text response — agent did not bind with split mouse tools")
+		t.Fatal("post-failure turn: did not receive a text frame")
 	}
-	t.Logf("agent bound with mouse_move+mouse_click, responded: %q",
-		frameText(textResp))
+	if !strings.Contains(frameText(textResp), expectedGreetingText) {
+		t.Errorf("post-failure text = %q, want to contain %q", frameText(textResp), expectedGreetingText)
+	}
 }

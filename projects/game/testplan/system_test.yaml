@@ -1,64 +1,59 @@
 name: game-system-test
 description: |
-  Game system integration test — 11 suites organized by tested object.
- 
-  Suite 1 (prompt): prompt service + gateway.
-    - Agent profile CRUD
-    - Skill CRUD
-  Suite 2 (session): session + proxy + agent(test) + prompt + gateway.
-    - Session CRUD + ListSessions pagination
-  Suite 3 (session-agent lifecycle): session + proxy + agent(test) + prompt + gateway.
-    - WebSocket connect without prior agent creation (on-demand adapter)
-    - Profile switching mid-connection
-    - Connection exclusivity (second connect kicks first)
-    - GetAgent for never-connected sessions
-    - Disconnect/reconnect history persistence
-    - WebSocket status/echo probes, unknown fields, invalid JSON
-  Suite 4 (agent dialog): session + proxy + agent(test) + prompt + gateway.
-    - Agent dialog with fake LLM: connect chat with profile,
+  Game system integration test — suites organized by tested object.
+
+  Suite 1 (session): session + proxy + agent(test) + prompt + gateway.
+    - Session CRUD + ListSessions pagination (template-scoped,
+      templates/saolei/sessions/...)
+  Suite 2 (agent dialog): session + proxy + agent(test) + prompt + gateway.
+    - Team player-agent dialog with fake LLM: connect chat,
       thinking + text response, FIFO queue behavior,
-      deterministic content, profile loose coupling
-  Suite 5 (agent queue): session + proxy + agent(test) + prompt + gateway.
+      deterministic content, TeamProfile loose coupling
+  Suite 3 (agent queue): session + proxy + agent(test) + prompt + gateway.
     - Queue-while-running (specs/030-queued-chat-input): input during a run,
       auto hand-off, multi-message combine, QueueSignal depth visibility.
-  Suite 6 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
+  Suite 4 (checkpoint-resume): session + proxy + agent(test) + prompt + gateway.
     - Send messages, leave, re-enter, verify ListMessages
     - Verify agent remains functional after re-enter
-    - Cross-profile history persistence
-  Suite 7 (per-profile-model): session + proxy + agent(test) + prompt + gateway.
-    - Two profiles with different models
-    - Verify each profile's model is configured correctly
-  Suite 8 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
+    - Tool-result status neutrality across re-entry (saolei MCP)
+  Suite 5 (concurrent-serialization): session + proxy + agent(test) + prompt + gateway.
     - Send two messages rapidly, verify FIFO processing order
-  Suite 9 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
+  Suite 6 (agent-multimodal): session + proxy + agent(test) + prompt + gateway.
     - Text-plus-image turn (message_parts of [TextPart, ImagePart] processed end-to-end)
     - Image-only turn accepted (empty text, random fallback acceptable)
     - Large-image (> 32 KiB) round-trip over the binary-protobuf WS leg
       (spec 025 FR-007/FR-008/FR-010 — would have torn the session under the
       old protojson-text + 32 KiB read-limit regime)
-  Suite 10 (agent-operation): session + proxy + agent(test) + prompt + gateway.
-    - Mouse-tool dispatch chain: agent receives a FlowResultPart on the control
-      channel and emits the correct display tool_result end-to-end (spec 025
-      FR-023..FR-026); real SUCCEEDED/FAILED status carried through (spec 023 D4);
-      operation FlowPart carries a bridge-minted id decoupled from the
-      conversation tool_call.id (spec 023 D10); FlowResultPart.screenshot
-      forwarded into the mouse tool's display tool_result.
-  Suite 11 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
+  Suite 7 (agent-operation): session + proxy + agent(test) + prompt + gateway.
+    - Saolei-tool dispatch loop: the player agent dispatches a FlowPart on the
+      control channel and the FlowResultPart reply resolves the pending
+      dispatch end-to-end (spec 025 FR-023..FR-026); the bridge-minted
+      operation-channel id is decoupled from the conversation tool_call.id
+      (spec 023 D10); a failed/no-screenshot dispatch recovers (FR-017) and
+      the connection stays usable.
+  Suite 8 (agent-saolei): session + proxy + agent(test) + prompt + gateway.
     - saolei MCP returns a TEXT board (no image block; spec 025 FR-012/FR-022)
       recognized by @dominion/game-saolei-board from the FlowResultPart.screenshot;
       illegal moves (e.g. click on a revealed cell) are rejected BEFORE dispatch
       with a stable reason code (spec 025 FR-014/FR-015); saolei tool_result
       status is neutral (UNSPECIFIED, never FAILED) per spec 023 D12.
+  Suite 9 (saolei-team): session + proxy + agent(test) + prompt + gateway.
+    - saolei template TEAM behaviour (spec 031-team-template-mode quickstart.md
+      §2.1): team lifecycle (CreateTeam/Connect/GetTeam, NOT_FOUND without
+      create, CreateTeam idempotency/ALREADY_EXISTS, connection exclusivity,
+      disconnect/reconnect history, status ping-pong, reconnect dispatch
+      reliability); TeamProfile CRUD (create/get/list/update via
+      update_mask/delete + template↔oneof consistency, FR-006/FR-027);
+      per-TeamProfile player/planner model resolution; player-exclusive
+      desktop control (FR-010); planner triggered exactly once per game end
+      (FR-011/D6); strategy persistence + per-session isolation
+      (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps
+      the strategy (FR-018/D8); per-agent message partitioning (FR-005).
+    - Merged from the removed prompt (AgentProfile/Skill CRUD),
+      session-agent lifecycle (profile switching/GetAgent), and
+      per-profile-model suites (tasks.md Phase 8 T029).
 
 suites:
-  - name: prompt
-    deploy: //projects/game/testplan/deploy_prompt.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:testplan_test
-
   - name: session
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
@@ -66,14 +61,6 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:session_test
-
-  - name: session-agent
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_lifecycle_test
 
   - name: agent-dialog
     description: "Agent dialog with fake-llm service: connect, chat, verify thinking + text response with FIFO ordering"
@@ -94,16 +81,7 @@ suites:
       - //projects/game/testplan:agent_dialog_test
 
   - name: checkpoint-resume
-    description: "Agent checkpoint-resume with fake-llm service: send messages, leave/re-enter, verify history and cross-profile persistence"
-    deploy: //projects/game/testplan/deploy_agent.yaml
-    endpoint:
-      http:
-        public: https://game.liukexin.com
-    cases:
-      - //projects/game/testplan:agent_checkpoint_test
-
-  - name: per-profile-model
-    description: "Per-profile model configuration with fake-llm service: verify each profile resolves the correct model"
+    description: "Agent checkpoint-resume with fake-llm service: send messages, leave/re-enter, verify history and tool-result status neutrality across re-entry"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -130,7 +108,7 @@ suites:
       - //projects/game/testplan:agent_multimodal_test
 
   - name: agent-operation
-    description: "Agent mouse-tool dispatch chain with fake-llm service: agent receives a FlowResultPart on the control channel (spec 025 FR-023/FR-024) and emits the correct display tool_result end-to-end; real SUCCEEDED/FAILED status carried through (spec 023 D4); operation FlowPart carries a bridge-minted id decoupled from the conversation tool_call.id (spec 023 D10); FlowResultPart.screenshot forwarded into the mouse tool's display tool_result (spec 025 FR-025/FR-026)"
+    description: "Agent saolei-tool dispatch loop with fake-llm service: the player agent dispatches a FlowPart on the control channel and the FlowResultPart reply resolves the pending dispatch end-to-end (spec 025 FR-023/FR-024); operation FlowPart carries a bridge-minted id decoupled from the conversation tool_call.id (spec 023 D10); a failed/no-screenshot dispatch invalidates the recognized state (FR-017) and the connection recovers"
     deploy: //projects/game/testplan/deploy_agent.yaml
     endpoint:
       http:
@@ -146,3 +124,12 @@ suites:
         public: https://game.liukexin.com
     cases:
       - //projects/game/testplan:agent_saolei_test
+
+  - name: saolei-team
+    description: "saolei template TEAM behaviour with fake-llm service (spec 031-team-template-mode quickstart.md §2.1): team lifecycle incl CreateTeam/GetTeam/connection exclusivity (FR-003/FR-004/FR-033); TeamProfile CRUD + update_mask + template/oneof consistency (FR-006/FR-027); per-TeamProfile player/planner model resolution; player-exclusive desktop control (FR-010); planner triggered exactly once per game end (FR-011/D6); strategy persistence + per-session isolation (FR-013/FR-014/FR-015); RefreshTeam clears short-term memory and keeps the strategy (FR-018/D8); per-agent message partitioning (FR-005)"
+    deploy: //projects/game/testplan/deploy_agent.yaml
+    endpoint:
+      http:
+        public: https://game.liukexin.com
+    cases:
+      - //projects/game/testplan:testplan_test

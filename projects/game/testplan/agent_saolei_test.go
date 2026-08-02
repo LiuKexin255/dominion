@@ -1,14 +1,22 @@
 // Package testplan contains the saolei MCP large-test suite.
 //
 // agent_saolei_test.go validates the deployed agent's saolei MCP path
-// (specs/025-desktop-image-state-refine) end-to-end: a saolei-enabled profile
-// drives the model→tool_call→loopback-MCP→OperationBridge→desktop-WS chain,
-// and the test "plays the desktop" — it reads the operation FlowParts the
-// agent dispatches (KeyboardPressPart{F2} for saolei_init,
+// (specs/025-desktop-image-state-refine) end-to-end on the saolei TEAM graph
+// (specs/031-team-template-mode): the team's player agent — the only holder
+// of the saolei MCP tools (FR-010/FR-028) — drives the
+// model→tool_call→loopback-MCP→OperationBridge→desktop-WS chain, and the
+// test "plays the desktop" — it reads the operation FlowParts the player
+// dispatches (KeyboardPressPart{F2} for saolei_init,
 // MouseMoveAndClickPart for saolei_click) and replies with a FlowResultPart
 // (control channel, spec 025 FR-023/FR-024) carrying a real Minesweeper
 // screenshot so the agent's @dominion/game-saolei-board recognition engine
 // decodes the board.
+//
+// The team turn (one user input = one graph invoke, D10) routes through the
+// per-session TurnLoop exactly like the pre-team single agent; each test
+// sets up the team stack via setupTeamSession (session → saolei TeamProfile
+// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no
+// lazy creation, FR-033).
 //
 // Coverage (spec 025 FR-012..FR-018, FR-022; spec 027 FR-012..FR-015,
 // FR-021..023; spec 028 FR-006/FR-012, SC-004):
@@ -42,136 +50,18 @@
 //     `game status: playing`, and `board size 16*16`.
 //
 // Organised by MODULE per style/large_test.md (not by scenario/spec-id); it
-// reuses the shared helpers in helpers_test.go.
+// reuses the shared helpers in helpers_test.go and the saolei fixtures in
+// saolei_fixtures_test.go.
 package testplan
 
 import (
-	_ "embed"
 	"fmt"
 	"strings"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/gameconst"
 )
-
-// saoleiBoardInitPNG is a real Minesweeper screenshot (16×16, all INITIAL)
-// reused from the @dominion/game-saolei-board golden testdata. The agent's
-// saolei MCP runs the REAL recognition engine in large tests (no DI seam in
-// a deployed agent), so the FlowResultPart.screenshot the test "plays the
-// desktop" returning MUST be a recognizable Minesweeper board, otherwise
-// `SaoleiBoard.init` throws and `saolei_init` returns "unable to recognize".
-// The bytes are authoritative under the saolei-board package (golden-tested
-// in projects/game/pkg/saolei-board/src/core/golden.test.ts); this is a
-// testdata fixture reuse, not a helper copy (style/large_test.md §反模式3
-// concerns code helpers, not binary fixtures).
-//
-//go:embed testdata/saolei_1.png
-var saoleiBoardInitPNG []byte
-
-// saoleiBoardRevealedPNG is a real Minesweeper screenshot (9×9, partially
-// revealed — cell (3,4) is the number "1") reused from the saolei-board
-// golden testdata. Used by TestAgentSaoleiIllegalMovePreDispatchReject:
-// `saolei_init` recognizes this board, then `saolei_click(3,4)` is rejected
-// pre-dispatch as `cell_already_revealed` (FR-015c) — the dispatch never
-// reaches the desktop.
-//
-//go:embed testdata/saolei_2.png
-var saoleiBoardRevealedPNG []byte
-
-// saoleiBoardWinPNG is a real Minesweeper screenshot (9×9 win board — every
-// cell is a revealed number "0".."8" or FLAG; no INITIAL/HIT_MINE/MINE/
-// UNKNOWN) reused from the saolei-board golden testdata. Used by
-// TestAgentSaoleiWonGameStatusAndTerminalReject (specs/027-chat-bubble-game-
-// state / research.md D12): `saolei_init` recognizes this board, the
-// @dominion/game-saolei-board `isWin(state)` predicate returns true
-// (specs/027-chat-bubble-game-state/data-model.md §1), so the init result
-// carries `game status: won` and any following cell op is rejected
-// pre-dispatch as `game_won` (FR-021..023).
-//
-//go:embed testdata/saolei_10.png
-var saoleiBoardWinPNG []byte
-
-// saoleiBoardLossPNG is a real Minesweeper screenshot (16×16 loss board —
-// contains HIT_MINE "X" and MINE "M" cells; see
-// projects/game/pkg/saolei-board/testdata/saolei_5.golden.txt) reused from
-// the saolei-board golden testdata. Used by
-// TestAgentSaoleiLostGameStatusAndTerminalReject (specs/027-chat-bubble-game-
-// state / research.md D12): `saolei_init` recognizes this board, the agent's
-// existing `isTerminalState(state)` loss signal fires, so the init result
-// carries `game status: lost` and any following cell op is rejected
-// pre-dispatch as `game_over` (existing terminal-loss,
-// specs/027-chat-bubble-game-state/contracts/saolei-mcp-status-contract.md §5)
-// whose body now also carries `game status: lost` (FR-012..015).
-//
-//go:embed testdata/saolei_5.png
-var saoleiBoardLossPNG []byte
-
-// saoleiBoardOverFlagPNG is a real Minesweeper screenshot (9×9, grid fully
-// revealed/flagged — every cell is a revealed number "0".."8" or FLAG; 11
-// flags total) reused from the saolei-board golden testdata, but whose
-// top-left mine counter reads `-01` (the player over-flagged: 11 flags on a
-// 10-mine board, so mines − flags = −1). Used by
-// TestAgentSaoleiOverFlagBoardStaysPlaying
-// (specs/028-saolei-win-counter-fix): under the PRE-028 grid-only `isWin`
-// rule this board was a false-positive win (grid all-revealed ⇒ isWin true ⇒
-// `game status: won` + `game_won` terminal). Under the 028 counter-informed
-// rule `isWin(state)` additionally requires `state.mineCounter === {decoded:
-// true, value: 0}` (specs/028-saolei-win-counter-fix/contracts/saolei-mcp-
-// win-contract.md), so this over-flag board ⇒ `game status: playing` and
-// cell operations are NOT rejected as `game_won`
-// (specs/028-saolei-win-counter-fix spec.md FR-006/FR-012, SC-004).
-//
-//go:embed testdata/saolei_9.png
-var saoleiBoardOverFlagPNG []byte
-
-// saoleiMcpNames is the profile MCP selection that triggers the agent's
-// saolei adapter path (llm.ts builds the loopback MultiServerMCPClient for a
-// saolei profile — spec 023 FR-016; the four saolei tools are registered
-// inside createSaoleiMcpServer, which per spec 025 FR-013 holds a per-session
-// recognized board state — no longer stateless).
-var saoleiMcpNames = []string{"saolei"}
-
-// saolei cell geometry constants. The fake-LLM fixture drives
-// saolei_click{3,4} then saolei_click{5,6}; their WM_* client-space cell
-// centres per the formula in projects/game/agent/src/mcp/saolei/geometry.ts
-// (centerX(x) = 24 + x*32 + 16, centerY(y) = 104 + y*32 + 16) are asserted on
-// the dispatched MouseMoveAndClickPart. centerY uses the client-space board
-// top BOARD_ORIGIN_Y_PX = BOARD_ORIGIN_Y_PX_SCREENSHOT(200) − CHROME_OFFSET_Y_PX(96)
-// = 104 — the screenshot→client chrome compensation applied in the agent
-// (specs/024-tool-render-coord-fix/research.md D1/D2) so the desktop's
-// WINDOW_MESSAGE path posts the coordinate verbatim (desktop-facing contract
-// unchanged — specs/018-saolei-mcp/contracts/proto-operation-contract.md §3;
-// specs/024-tool-render-coord-fix/contracts/coordinate-space-contract.md §4/§6;
-// specs/024-tool-render-coord-fix/data-model.md §3).
-const (
-	saoleiClick1X = 3
-	saoleiClick1Y = 4
-	saoleiClick2X = 5
-	saoleiClick2Y = 6
-
-	saoleiClick1CenterX = 136 // 24 + 3*32 + 16
-	saoleiClick1CenterY = 248 // 104 + 4*32 + 16
-	saoleiClick2CenterX = 200 // 24 + 5*32 + 16
-	saoleiClick2CenterY = 312 // 104 + 6*32 + 16
-)
-
-// expectedSaoleiFinalText is the terminal text fake-LLM returns once the
-// second saolei_click result reaches the model
-// (sample_saolei_tools.yaml saolei-click-5-6-final-text). The test asserts
-// it to prove the whole init→click→click chain completed.
-const expectedSaoleiFinalText = "Minesweeper sequence complete."
-
-// expectedSaoleiRemainFinalText is the terminal text fake-LLM returns once
-// the saolei_remain tool-result loop closes
-// (sample_saolei_tools.yaml saolei-remain-final-text). Used by
-// TestAgentSaoleiRemainToolNoDispatch to prove the remain turn ended
-// deterministically (saolei_remain dispatches nothing, so the fake-LLM
-// MUST return text — not a tool_call — after its result, otherwise the
-// no-match random fallback could dispatch an unrelated operation and
-// muddy the zero-dispatch assertion).
-const expectedSaoleiRemainFinalText = "Remaining mines computed."
 
 // TestAgentSaoleiTextBoardFlow drives a full saolei init→click→click
 // sequence through the deployed agent against a RECOGNIZABLE Minesweeper
@@ -214,18 +104,8 @@ func TestAgentSaoleiTextBoardFlow(t *testing.T) {
 	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
 	// saolei tools are surfaced via the loopback MCP client, each backed by
 	// the real @dominion/game-saolei-board recognition engine.
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A recognizable Minesweeper screenshot (16×16 all-INITIAL) used for
@@ -236,7 +116,7 @@ func TestAgentSaoleiTextBoardFlow(t *testing.T) {
 
 	// when: a user turn whose text matches the "saolei-start" keyword,
 	// making fake-LLM return the first saolei_init tool_call.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	// then (1): saolei_init dispatches an F2 KeyboardPressPart FlowPart. The
 	// test plays desktop: read the flow_parts frame, assert F2, reply with a
@@ -302,7 +182,7 @@ func TestAgentSaoleiTextBoardFlow(t *testing.T) {
 	// then (5): ListMessages returns the conversation history. Each saolei
 	// tool invocation surfaces as a tool_call MessagePart (name + args_json)
 	// plus its tool_result MessagePart (spec 023 FR-002/FR-006/FR-009).
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
+	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
 	if !messagesContainToolCall(lmr.GetMessages(), "saolei_init") {
 		t.Errorf("ListMessages did not surface a saolei_init tool_call MessagePart (spec 023 FR-006)")
 	}
@@ -396,18 +276,8 @@ func TestAgentSaoleiIllegalMovePreDispatchReject(t *testing.T) {
 
 	profileName := fmt.Sprintf("saolei-reject-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A recognizable Minesweeper board (9×9, partially revealed) whose cell
@@ -419,7 +289,7 @@ func TestAgentSaoleiIllegalMovePreDispatchReject(t *testing.T) {
 	// given: a user turn triggers saolei_init. The agent dispatches F2; the
 	// test replies with the recognizable screenshot so the agent seeds the
 	// recognized state from the 9×9 partially-revealed board.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	initFrame := readOperationFrame(t, conn)
 	if frameKeyboardPress(initFrame) == nil {
@@ -505,18 +375,8 @@ func TestAgentSaoleiWonGameStatusAndTerminalReject(t *testing.T) {
 	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
 	// saolei tools are surfaced via the loopback MCP client, each backed by
 	// the real @dominion/game-saolei-board recognition engine.
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A real 9×9 win Minesweeper screenshot (all cells revealed/flagged,
@@ -532,7 +392,7 @@ func TestAgentSaoleiWonGameStatusAndTerminalReject(t *testing.T) {
 	// keyword "start saolei"). The agent dispatches F2; the test replies
 	// with the win screenshot so the agent seeds the recognized state from
 	// the 9×9 win board.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	initFrame := readOperationFrame(t, conn)
 	if frameKeyboardPress(initFrame) == nil {
@@ -639,18 +499,8 @@ func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
 	// ModelProviderCache routes to the OpenAI platform (fake-llm). The four
 	// saolei tools are surfaced via the loopback MCP client, each backed by
 	// the real @dominion/game-saolei-board recognition engine.
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A real 16×16 loss Minesweeper screenshot (contains HIT_MINE "X" and
@@ -666,7 +516,7 @@ func TestAgentSaoleiLostGameStatusAndTerminalReject(t *testing.T) {
 	// keyword "start saolei"). The agent dispatches F2; the test replies
 	// with the loss screenshot so the agent seeds the recognized state
 	// from the 16×16 loss board.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	initFrame := readOperationFrame(t, conn)
 	if frameKeyboardPress(initFrame) == nil {
@@ -797,18 +647,8 @@ func TestAgentSaoleiOverFlagBoardStaysPlaying(t *testing.T) {
 	// saolei tools are surfaced via the loopback MCP client, each backed by
 	// the real @dominion/game-saolei-board recognition engine (which now
 	// also decodes the top-left mine counter — spec 028 US1).
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A real 9×9 over-flag Minesweeper screenshot (grid fully revealed/
@@ -825,7 +665,7 @@ func TestAgentSaoleiOverFlagBoardStaysPlaying(t *testing.T) {
 	// keyword "start saolei"). The agent dispatches F2; the test replies
 	// with the over-flag screenshot so the agent seeds the recognized state
 	// (grid + decoded counter) from the 9×9 over-flag board.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	initFrame := readOperationFrame(t, conn)
 	if frameKeyboardPress(initFrame) == nil {
@@ -960,18 +800,8 @@ func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
 	// ModelProviderCache routes to the OpenAI platform (fake-llm). The
 	// five saolei tools are surfaced via the loopback MCP client, each
 	// backed by the real @dominion/game-saolei-board recognition engine.
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You operate minesweeper via saolei tools.",
-			McpNames:     saoleiMcpNames,
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// A recognizable Minesweeper screenshot (16×16 all-INITIAL) used for
@@ -984,7 +814,7 @@ func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
 	// ── Turn 1: seed the recognized board state via saolei_init. ──────
 	// A user turn whose text matches the "saolei-start" keyword makes
 	// fake-LLM return the first saolei_init tool_call.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please start saolei game")
+	sendText(t, conn, sessionID, "please start saolei game")
 
 	// saolei_init dispatches an F2 KeyboardPressPart; reply with the
 	// recognizable screenshot so the agent seeds the recognized state from
@@ -1029,7 +859,7 @@ func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
 	// (sample_saolei_remain.yaml) makes fake-LLM return a saolei_remain
 	// tool_call. saolei_remain reads the seeded 16×16 state and returns
 	// the remain grid.
-	sendTextWithProfile(t, conn, sessionID, profileName, "please show remaining mines")
+	sendText(t, conn, sessionID, "please show remaining mines")
 
 	// Drain frames around the saolei_remain call, asserting NO operation
 	// FlowPart (keyboard/mouse carrying a tool_id) is dispatched —
@@ -1070,20 +900,4 @@ func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
 	if !strings.Contains(remainMessage, "board size 16*16") {
 		t.Errorf("remain message = %q, want to contain \"board size 16*16\" (the seeded board is saolei_1.png, 16×16)", remainMessage)
 	}
-}
-
-// assertMouseMoveAndClick verifies a MouseMoveAndClickPart carries the
-// expected centre coordinates, LEFT_CLICK action, and WINDOW_MESSAGE method
-// (the desktop-facing saolei contract — spec 023 FR-020 / spec 018 FR-004b).
-func assertMouseMoveAndClick(p *game.MouseMoveAndClickPart, wantX, wantY int32, wantClick game.MouseClickAction) error {
-	if p.GetXPx() != wantX || p.GetYPx() != wantY {
-		return fmt.Errorf("coords = (%d,%d), want (%d,%d)", p.GetXPx(), p.GetYPx(), wantX, wantY)
-	}
-	if p.GetClick() != wantClick {
-		return fmt.Errorf("click = %v, want %v", p.GetClick(), wantClick)
-	}
-	if p.GetMethod() != game.MouseInputMethod_MOUSE_INPUT_METHOD_WINDOW_MESSAGE {
-		return fmt.Errorf("method = %v, want WINDOW_MESSAGE", p.GetMethod())
-	}
-	return nil
 }

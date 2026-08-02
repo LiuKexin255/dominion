@@ -1,0 +1,18 @@
+# sample_update_strategy_tools.yaml — the follow-up tool-result response for
+# the planner agent's update_strategy tool (specs/031-team-template-mode
+# FR-012/D6).
+#
+# After the planner's LLM returns the update_strategy tool_call
+# (sample_planner_strategy.yaml), the tool executes and writes the strategy
+# to the session's StrategyStore (mongo). LangChain then sends the resulting
+# role:"tool" message back to fake-LLM; this config matches it by
+# tool_name=update_strategy and terminates the planner's agent loop with a
+# plain text response. tool_name=update_strategy is unique to this config, so
+# it is the only MatchToolResult candidate for an update_strategy result —
+# deterministic, no random fallback.
+tools:
+  - name: update-strategy-success-text
+    tool_name: update_strategy
+    match_result_contains: []
+    respond_with:
+      text: "策略已更新，下一局将按新策略执行。"

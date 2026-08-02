@@ -18,6 +18,7 @@ import (
 	"time"
 
 	game "dominion/projects/game"
+	"dominion/projects/game/pkg/gameconst"
 
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -31,6 +32,12 @@ const (
 	pathPrefix    = "/api/v1/"
 	wsReadTimeout = 30 * time.Second
 )
+
+// saoleiTemplateID is the saolei template path segment — the only known
+// template (gameconst.SaoleiTemplate, spec 031-team-template-mode FR-001).
+// Every resource in the new hierarchy hangs off "templates/saolei/..." per
+// contracts/api-contract.md §1.
+var saoleiTemplateID = gameconst.SaoleiTemplate.TemplateID
 
 // Expected fake-llm response content. These MUST be kept in sync with
 // projects/game/fake-llm/service/testdata/. The T1 unit test
@@ -47,6 +54,19 @@ const (
 	expectedChatText          = "Sure, let's chat!"
 )
 
+// expectedPlannerStrategyText is the strategy content the fake-LLM's
+// planner-update-strategy Message returns as the update_strategy tool_call
+// argument (sample_planner_strategy.yaml). The saolei_team suite asserts it
+// in the planner's tool_call args_json to prove the strategy was written
+// (spec 031-team-template-mode FR-012/FR-014).
+const expectedPlannerStrategyText = "优先翻开角落与边缘格子，命中数字 1 时先标记周围雷。"
+
+// expectedPlannerUpdateText is the terminal text fake-LLM returns once the
+// update_strategy tool-result loop closes (sample_update_strategy_tools.yaml
+// update-strategy-success-text). It proves the planner agent's turn ended
+// deterministically after writing the strategy.
+const expectedPlannerUpdateText = "策略已更新，下一局将按新策略执行。"
+
 // smallScreenshotData is a minimal 1×1 PNG used as screenshot payload in
 // multimodal-turn tests. The fake-LLM ignores image bytes (only text blocks
 // drive keyword matching), so the actual pixel content is irrelevant — tests
@@ -60,20 +80,6 @@ var smallScreenshotData = mustBase64PNG()
 // with `ErrMessageTooBig`. Built from a deterministic noise pattern so PNG
 // compression cannot shrink it below the threshold.
 var largeScreenshotData = mustLargePNG()
-
-// mouseSplitToolNames is the post-015 mouse tool surface shared by the
-// agent_operation and agent_checkpoint suites: mouse_move positions the
-// cursor, mouse_click fires at the current position. Declaring both on a
-// profile exercises the buildTools wiring that replaced the legacy single
-// "mouse" name.
-var mouseSplitToolNames = []string{"mouse_move", "mouse_click"}
-
-// expectedMouseMoveSuccessText is the terminal text fake-LLM returns once
-// the mouse_move tool-result loop closes (sample_tools.yaml
-// mouse-move-success-text). Shared by the agent_operation and
-// agent_checkpoint suites to prove the model continued after the dispatch
-// result.
-const expectedMouseMoveSuccessText = "I see the screen now."
 
 // mustBase64PNG decodes a minimal 1×1 transparent PNG. It panics on failure,
 // which would indicate a bug in the test itself rather than the SUT.
@@ -191,13 +197,16 @@ func buildWSURL(sutHostURL, path string) string {
 // ─── Session Helpers (JSON-based) ───────────────────────────────────────────
 
 // createSession sends a POST request with an empty CreateSessionRequest
-// body ({}) and returns the server-generated session ID together with the
-// raw response body. Calls t.Fatal on non-200 responses.
-func createSession(t *testing.T, sutHostURL, sutEnvName string) (string, []byte) {
+// body ({}) to /api/v1/templates/{template}/sessions (AIP-133 — the parent
+// template lives in the URI path, spec 031-team-template-mode
+// contracts/api-contract.md §2.1) and returns the server-generated session
+// ID together with the raw response body. Calls t.Fatal on non-200
+// responses.
+func createSession(t *testing.T, sutHostURL, sutEnvName, template string) (string, []byte) {
 	t.Helper()
 
 	reqBody := []byte("{}")
-	reqURL := fmt.Sprintf("%s%s%s", sutHostURL, pathPrefix, "sessions")
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions", sutHostURL, pathPrefix, template)
 
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, reqBody)
 
@@ -215,12 +224,13 @@ func createSession(t *testing.T, sutHostURL, sutEnvName string) (string, []byte)
 	return sess.SessionID, respBody
 }
 
-// listSessions sends a GET request to list sessions with the given page
-// size and returns the raw response body. Calls t.Fatal on non-200 responses.
-func listSessions(t *testing.T, sutHostURL, sutEnvName string, pageSize int) []byte {
+// listSessions sends a GET request to list sessions of a template with the
+// given page size and returns the raw response body. Calls t.Fatal on
+// non-200 responses.
+func listSessions(t *testing.T, sutHostURL, sutEnvName, template string, pageSize int) []byte {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions?page_size=%d", sutHostURL, pathPrefix, pageSize)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions?page_size=%d", sutHostURL, pathPrefix, template, pageSize)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
@@ -231,10 +241,10 @@ func listSessions(t *testing.T, sutHostURL, sutEnvName string, pageSize int) []b
 
 // getSession sends a GET request for a session and returns the response body.
 // Calls t.Fatal on non-200 responses.
-func getSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
+func getSession(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) []byte {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
@@ -245,10 +255,10 @@ func getSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) []byte {
 
 // getSessionWithStatus sends a GET request for a session and returns the HTTP
 // status code and response body. Does NOT fatal on non-200 responses.
-func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string) (int, []byte) {
+func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) (int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	return resp.StatusCode, respBody
@@ -256,172 +266,277 @@ func getSessionWithStatus(t *testing.T, sutHostURL, sutEnvName, sessionID string
 
 // deleteSession sends a DELETE request for a session. Does NOT fatal on
 // non-200 responses.
-func deleteSession(t *testing.T, sutHostURL, sutEnvName, sessionID string) *http.Response {
+func deleteSession(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) *http.Response {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s", sutHostURL, pathPrefix, template, sessionID)
 	resp, _ := doHTTP(t, http.MethodDelete, reqURL, sutEnvName, nil)
 
 	return resp
 }
 
-// ─── Profile/Skill Helpers (proto-based) ────────────────────────────────────
+// ─── TeamProfile Helpers (proto-based) ──────────────────────────────────────
 
-// createAgentProfile creates an agent profile via HTTP POST and returns the
-// parsed response. Per AIP-133 + grpc-gateway body binding ("body:
-// agent_profile"), the HTTP body is the AgentProfile JSON (extracted from the
-// request's agent_profile field) while parent comes from the URI path and
-// agent_profile_id comes from the query string. Calls t.Fatal on any error.
-func createAgentProfile(t *testing.T, sutHostURL, sutEnvName string, req *game.CreateAgentProfileRequest) *game.AgentProfile {
+// createTeamProfile creates a saolei TeamProfile via HTTP POST to
+// /api/v1/templates/{template}/profiles (AIP-133; game.proto
+// PromptService.CreateTeamProfile, spec 031-team-template-mode
+// contracts/api-contract.md §2.3). Per the grpc-gateway body binding
+// ("body: team_profile"), the HTTP body is the TeamProfile JSON while parent
+// comes from the URI path and team_profile_id from the query string. Calls
+// t.Fatal on any error.
+func createTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel string) *game.TeamProfile {
 	t.Helper()
 
-	body, err := protojson.Marshal(req.GetAgentProfile())
+	profile := &game.TeamProfile{
+		Template: game.TemplateName{TemplateID: template}.String(),
+		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+			PlayerModel:  playerModel,
+			PlannerModel: plannerModel,
+		}},
+	}
+	body, err := protojson.Marshal(profile)
 	if err != nil {
-		t.Fatalf("protojson.Marshal AgentProfile: %v", err)
+		t.Fatalf("protojson.Marshal TeamProfile: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%s%s?agent_profile_id=%s", sutHostURL, pathPrefix, "prompts/agentProfiles", req.GetAgentProfileId())
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles?team_profile_id=%s",
+		sutHostURL, pathPrefix, template, profileID)
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createAgentProfile status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("POST createTeamProfile status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
-	profile := new(game.AgentProfile)
+	created := new(game.TeamProfile)
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, profile); err != nil {
-		t.Fatalf("Unmarshal AgentProfile: %v (raw: %s)", err, string(respBody))
+	if err := opts.Unmarshal(respBody, created); err != nil {
+		t.Fatalf("Unmarshal TeamProfile: %v (raw: %s)", err, string(respBody))
 	}
-	return profile
+	return created
 }
 
-// getAgentProfile retrieves an agent profile by name via HTTP GET.
-// Calls t.Fatal on non-200 responses.
-func getAgentProfile(t *testing.T, sutHostURL, sutEnvName, profileName string) *game.AgentProfile {
+// getTeamProfile retrieves a TeamProfile by name via HTTP GET. Calls t.Fatal
+// on non-200 responses.
+func getTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileName string) *game.TeamProfile {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/%s", sutHostURL, pathPrefix, "prompts/agentProfiles", profileName)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles/%s", sutHostURL, pathPrefix, template, profileName)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET agentProfile status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("GET teamProfile status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
-	profile := new(game.AgentProfile)
+	profile := new(game.TeamProfile)
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
 	if err := opts.Unmarshal(respBody, profile); err != nil {
-		t.Fatalf("Unmarshal AgentProfile: %v (raw: %s)", err, string(respBody))
+		t.Fatalf("Unmarshal TeamProfile: %v (raw: %s)", err, string(respBody))
 	}
 	return profile
 }
 
-// deleteAgentProfile deletes an agent profile by name via HTTP DELETE.
-// Returns the HTTP status code.
-func deleteAgentProfile(t *testing.T, sutHostURL, sutEnvName, profileName string) int {
+// getTeamProfileWithStatus sends a GET request for a TeamProfile and returns
+// the HTTP status code and response body. Does NOT fatal on non-200 responses.
+func getTeamProfileWithStatus(t *testing.T, sutHostURL, sutEnvName, template, profileName string) (int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/%s", sutHostURL, pathPrefix, "prompts/agentProfiles", profileName)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles/%s", sutHostURL, pathPrefix, template, profileName)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+
+	return resp.StatusCode, respBody
+}
+
+// listTeamProfiles lists TeamProfiles of a template via HTTP GET. Calls
+// t.Fatal on non-200 responses.
+func listTeamProfiles(t *testing.T, sutHostURL, sutEnvName, template string, pageSize int) *game.ListTeamProfilesResponse {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles?page_size=%d", sutHostURL, pathPrefix, template, pageSize)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET listTeamProfiles status=%d, body=%s", resp.StatusCode, respBody)
+	}
+
+	ltp := new(game.ListTeamProfilesResponse)
+	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	if err := opts.Unmarshal(respBody, ltp); err != nil {
+		t.Fatalf("Unmarshal ListTeamProfilesResponse: %v (raw: %s)", err, string(respBody))
+	}
+	return ltp
+}
+
+// updateTeamProfile sends an HTTP PATCH to update a TeamProfile field via
+// UpdateTeamProfile (AIP-134). updateMask is a single writable path
+// ("saolei.player_model" / "saolei.planner_model", AIP-161 — game.proto
+// UpdateTeamProfileRequest). The body is the TeamProfile JSON whose
+// saolei variant carries only the field being patched; the resource name is
+// surfaced via {team_profile.name=...} in the URI path. Returns the HTTP
+// status code and response body.
+func updateTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileName, updateMask, playerModel, plannerModel string) (int, []byte) {
+	t.Helper()
+
+	patch := &game.TeamProfile{
+		Name: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
+		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+			PlayerModel:  playerModel,
+			PlannerModel: plannerModel,
+		}},
+	}
+	body, err := protojson.Marshal(patch)
+	if err != nil {
+		t.Fatalf("protojson.Marshal patch TeamProfile: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles/%s?update_mask=%s",
+		sutHostURL, pathPrefix, template, profileName, updateMask)
+	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
+}
+
+// deleteTeamProfile deletes a TeamProfile by name via HTTP DELETE.
+// Returns the HTTP status code.
+func deleteTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileName string) int {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/profiles/%s", sutHostURL, pathPrefix, template, profileName)
 	resp, _ := doHTTP(t, http.MethodDelete, reqURL, sutEnvName, nil)
 
 	return resp.StatusCode
 }
 
-// createSkill creates a skill via HTTP POST and returns the parsed response.
-// Per AIP-133 + grpc-gateway body binding ("body: skill"), the HTTP body is
-// the Skill JSON while parent comes from the URI path and skill_id comes from
-// the query string. Calls t.Fatal on any error.
-func createSkill(t *testing.T, sutHostURL, sutEnvName string, req *game.CreateSkillRequest) *game.Skill {
+// ─── Team Helpers (proto-based) ─────────────────────────────────────────────
+
+// createTeam creates the per-session singleton Team via HTTP POST to
+// /api/v1/templates/{template}/sessions/{sessionID}/team (AIP-133; game.proto
+// TeamService.CreateTeam, spec 031-team-template-mode contracts/api-contract.md
+// §2.2). The body carries the parent Session resource name and the TeamProfile
+// full resource name ("templates/{template}/profiles/{profile}"); the server
+// validates the profile's template segment against the parent. CreateTeam is
+// the ONLY Team creation point — GetTeam/Connect/ListMessages/RefreshTeam
+// require it first (no lazy creation, FR-033). Calls t.Fatal on non-200
+// responses.
+func createTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) *game.Team {
 	t.Helper()
 
-	body, err := protojson.Marshal(req.GetSkill())
+	reqBody := &game.CreateTeamRequest{
+		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
+	}
+	body, err := protojson.Marshal(reqBody)
 	if err != nil {
-		t.Fatalf("protojson.Marshal Skill: %v", err)
+		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
 	}
 
-	reqURL := fmt.Sprintf("%s%s%s?skill_id=%s", sutHostURL, pathPrefix, "prompts/skills", req.GetSkillId())
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST createSkill status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("POST createTeam status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
-	skill := new(game.Skill)
+	team := new(game.Team)
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, skill); err != nil {
-		t.Fatalf("Unmarshal Skill: %v (raw: %s)", err, string(respBody))
+	if err := opts.Unmarshal(respBody, team); err != nil {
+		t.Fatalf("Unmarshal Team: %v (raw: %s)", err, string(respBody))
 	}
-	return skill
+	return team
 }
 
-// getSkill retrieves a skill by name via HTTP GET. Calls t.Fatal on non-200
-// responses.
-func getSkill(t *testing.T, sutHostURL, sutEnvName, skillName string) *game.Skill {
+// createTeamWithStatus sends a CreateTeam request and returns the HTTP status
+// code and response body. Does NOT fatal on non-200 responses — used to
+// assert the FR-033 idempotency/ALREADY_EXISTS re-entry contract.
+func createTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, profileName string) (int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%s%s/%s", sutHostURL, pathPrefix, "prompts/skills", skillName)
+	reqBody := &game.CreateTeamRequest{
+		Parent:  game.SessionName{TemplateID: template, SessionID: sessionID}.String(),
+		Profile: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
+	}
+	body, err := protojson.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("protojson.Marshal CreateTeamRequest: %v", err)
+	}
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
+	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
+	return resp.StatusCode, respBody
+}
+
+// getTeam retrieves the Team of a session via HTTP GET. Calls t.Fatal on
+// non-200 responses.
+func getTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) *game.Team {
+	t.Helper()
+
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET skill status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("GET team status=%d, body=%s", resp.StatusCode, respBody)
 	}
 
-	skill := new(game.Skill)
+	team := new(game.Team)
 	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, skill); err != nil {
-		t.Fatalf("Unmarshal Skill: %v (raw: %s)", err, string(respBody))
+	if err := opts.Unmarshal(respBody, team); err != nil {
+		t.Fatalf("Unmarshal Team: %v (raw: %s)", err, string(respBody))
 	}
-	return skill
+	return team
 }
 
-// ─── Agent Helpers (proto-based) ────────────────────────────────────────────
-
-// getAgent sends a GET request to retrieve the agent for a session.
-// Calls t.Fatal on non-200 responses.
-func getAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.Agent {
+// getTeamWithStatus sends a GET request for the Team and returns the HTTP
+// status code and response body. Does NOT fatal on non-200 responses — used
+// to assert the not-created NOT_FOUND contract (FR-033).
+func getTeamWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) (int, []byte) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET agent status=%d, body=%s", resp.StatusCode, respBody)
-	}
-
-	agent := new(game.Agent)
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
-	if err := opts.Unmarshal(respBody, agent); err != nil {
-		t.Fatalf("Unmarshal Agent: %v (raw: %s)", err, string(respBody))
-	}
-	return agent
+	return resp.StatusCode, respBody
 }
 
-// refreshAgent triggers the agent's RefreshAgent RPC for a session via HTTP
-// POST to /api/v1/sessions/{sessionID}/agent:refresh (game.proto
-// RefreshAgent http rule). The body is "{}" — the `name` field is captured
-// from the URI path by grpc-gateway (mirroring
-// projects/game/desktop/internal/api/client.go RefreshAgent). Calls t.Fatal
-// on non-2xx responses. After refresh the session agent's adapter is
-// invalidated so the next turn rebuilds it for the supplied profile
-// (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §2).
-func refreshAgent(t *testing.T, sutHostURL, sutEnvName, sessionID string) {
+// refreshTeam triggers RefreshTeam for a session's team via HTTP POST to
+// /api/v1/templates/{template}/sessions/{sessionID}/team:refresh (AIP-136
+// custom method; game.proto TeamService.RefreshTeam, FR-018). The body is
+// "{}" — the `name` field is captured from the URI path by grpc-gateway.
+// After refresh the session's short-term message channels are cleared; the
+// long-term strategy is unaffected. Calls t.Fatal on non-2xx responses.
+func refreshTeam(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s/agent:refresh", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team:refresh", sutHostURL, pathPrefix, template, sessionID)
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, []byte("{}"))
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		t.Fatalf("POST refreshAgent status=%d, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("POST refreshTeam status=%d, body=%s", resp.StatusCode, respBody)
 	}
+}
+
+// setupTeamSession creates the full team stack for one test: Session →
+// saolei TeamProfile → CreateTeam. Returns the session ID. The caller then
+// connects the WebSocket via connectAgentWS (CreateTeam MUST precede
+// Connect — no lazy creation, FR-033).
+func setupTeamSession(t *testing.T, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel string) string {
+	t.Helper()
+
+	createTeamProfile(t, sutHostURL, sutEnvName, template, profileID, playerModel, plannerModel)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName, template)
+	createTeam(t, sutHostURL, sutEnvName, template, sessionID, profileID)
+	return sessionID
 }
 
 // ─── Message Helpers (proto-based) ────────────────────────────────────────
 
-// listMessages sends a GET request to list messages for a session and returns
-// the parsed ListMessagesResponse. Calls t.Fatal on non-200 responses.
-func listMessages(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.ListMessagesResponse {
+// listMessages sends a GET request to list messages of one team agent's
+// partition and returns the parsed ListMessagesResponse. The parent is
+// "templates/{template}/sessions/{session}/team/agents/{agent}" (AIP-132;
+// game.proto TeamService.ListMessages, FR-005 — messages are partitioned per
+// team agent). Calls t.Fatal on non-200 responses.
+func listMessages(t *testing.T, sutHostURL, sutEnvName, template, sessionID, agent string) *game.ListMessagesResponse {
 	t.Helper()
 
-	reqURL := fmt.Sprintf("%s%ssessions/%s/messages", sutHostURL, pathPrefix, sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team/agents/%s/messages",
+		sutHostURL, pathPrefix, template, sessionID, agent)
 	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
 
 	if resp.StatusCode != http.StatusOK {
@@ -436,14 +551,33 @@ func listMessages(t *testing.T, sutHostURL, sutEnvName, sessionID string) *game.
 	return lmr
 }
 
-// ─── WebSocket Helpers (proto-based) ────────────────────────────────────────
-
-// connectAgentWS connects to the session WebSocket endpoint and returns the
-// connection. Calls t.Fatal on any error.
-func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, sessionID string) *websocket.Conn {
+// listMessagesWithStatus sends a GET request for one agent's message
+// partition and returns the HTTP status code and response body. Does NOT
+// fatal on non-200 responses — used to assert the not-created NOT_FOUND
+// contract (FR-033).
+func listMessagesWithStatus(t *testing.T, sutHostURL, sutEnvName, template, sessionID, agent string) (int, []byte) {
 	t.Helper()
 
-	wsPath := fmt.Sprintf("/api/v1/sessions/%s/connect", sessionID)
+	reqURL := fmt.Sprintf("%s%stemplates/%s/sessions/%s/team/agents/%s/messages",
+		sutHostURL, pathPrefix, template, sessionID, agent)
+	resp, respBody := doHTTP(t, http.MethodGet, reqURL, sutEnvName, nil)
+
+	return resp.StatusCode, respBody
+}
+
+// ─── WebSocket Helpers (proto-based) ────────────────────────────────────────
+
+// connectAgentWS connects to the session WebSocket endpoint
+// /api/v1/templates/{template}/sessions/{session}/connect (spec
+// 031-team-template-mode FR-004 — the WS endpoint mirrors the Team resource
+// hierarchy) and returns the connection. The caller MUST have created the
+// team via CreateTeam first: Connect requires an existing team (no lazy
+// creation, FR-033); a frame sent on a not-created session closes the
+// connection. Calls t.Fatal on any error.
+func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, template, sessionID string) *websocket.Conn {
+	t.Helper()
+
+	wsPath := fmt.Sprintf("/api/v1/templates/%s/sessions/%s/connect", template, sessionID)
 	wsURL := buildWSURL(sutHostURL, wsPath)
 
 	header := http.Header{}
@@ -505,14 +639,34 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 	return frame
 }
 
+// readWSFrameNoFatal reads a single WebSocket message with a bounded
+// deadline and returns it unmarshalled as an AgentFrame, or an error when
+// the read times out or the peer closed the connection. Unlike readWSFrame
+// it does NOT call t.Fatal — used to assert negative WS outcomes (a session
+// whose team was not created closes the connection; a superseded connection
+// receives no turn output).
+func readWSFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*game.AgentFrame, error) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+	frame := new(game.AgentFrame)
+	if err := proto.Unmarshal(data, frame); err != nil {
+		return nil, err
+	}
+	return frame, nil
+}
+
 // buildTextFrame constructs an AgentFrame whose message_parts payload carries
 // a single TextPart (specs/023-saolei-mcp-refine/contracts/content-model-contract.md
-// §3/§4 — display channel). Sets the session ID, agent profile name, sender.
-func buildTextFrame(sessionID, agentProfileName, content string, sender game.FrameSender) *game.AgentFrame {
+// §3/§4 — display channel). Sets the session ID, the target/producing team
+// agent (AgentFrame.agent, spec 031-team-template-mode FR-023), and sender.
+func buildTextFrame(sessionID, agent, content string, sender game.FrameSender) *game.AgentFrame {
 	return &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: agentProfileName,
-		Sender:           sender,
+		SessionId: sessionID,
+		Agent:     agent,
+		Sender:    sender,
 		Payload: &game.AgentFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: content}}},
@@ -521,11 +675,12 @@ func buildTextFrame(sessionID, agentProfileName, content string, sender game.Fra
 	}
 }
 
-// sendTextWithProfile builds a user-text frame with the given profile and
-// sends it over the WebSocket connection. Calls t.Fatal on write errors.
-func sendTextWithProfile(t *testing.T, conn *websocket.Conn, sessionID, agentProfileName, text string) {
+// sendText builds a user-text frame targeting the player agent (the only
+// accepts-user-input agent, FR-031/FR-032) and sends it over the WebSocket
+// connection. Calls t.Fatal on write errors.
+func sendText(t *testing.T, conn *websocket.Conn, sessionID, text string) {
 	t.Helper()
-	frame := buildTextFrame(sessionID, agentProfileName, text, game.FrameSender_FRAME_SENDER_USER)
+	frame := buildTextFrame(sessionID, "player", text, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, frame)
 }
 
@@ -597,9 +752,10 @@ func buildSaoleiFlowResultScreenshot(pngData []byte) *game.ImagePart {
 }
 
 // buildUserTurnFrame constructs an AgentFrame whose message_parts payload
-// carries [TextPart, (optional) ImagePart]. Pass a nil image for a text-only
-// user turn (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
-func buildUserTurnFrame(sessionID, profileName, text string, image *game.ImagePart) *game.AgentFrame {
+// carries [TextPart, (optional) ImagePart], targeted at the player agent.
+// Pass a nil image for a text-only user turn
+// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
+func buildUserTurnFrame(sessionID, text string, image *game.ImagePart) *game.AgentFrame {
 	parts := []*game.MessagePart{
 		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
 	}
@@ -607,9 +763,9 @@ func buildUserTurnFrame(sessionID, profileName, text string, image *game.ImagePa
 		parts = append(parts, &game.MessagePart{Kind: &game.MessagePart_Image{Image: image}})
 	}
 	return &game.AgentFrame{
-		SessionId:        sessionID,
-		AgentProfileName: profileName,
-		Sender:           game.FrameSender_FRAME_SENDER_USER,
+		SessionId: sessionID,
+		Agent:     "player",
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
 		Payload: &game.AgentFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: parts},
 		},
@@ -618,9 +774,9 @@ func buildUserTurnFrame(sessionID, profileName, text string, image *game.ImagePa
 
 // sendUserTurn builds and writes a message_parts user-turn frame over the
 // WebSocket. Pass a nil image for a text-only turn.
-func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, profileName, text string, image *game.ImagePart) {
+func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, text string, image *game.ImagePart) {
 	t.Helper()
-	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, profileName, text, image))
+	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, text, image))
 }
 
 // buildOperationResultFrame constructs an AgentFrame whose flow_parts payload
@@ -1033,27 +1189,6 @@ func assertMessageContentDisplayOnly(t *testing.T, messages []*game.Message) {
 			}
 		}
 	}
-}
-
-// updateAgentProfileTools sends an HTTP PATCH to add the given tool names to
-// an existing agent profile via UpdateAgentProfile. Returns the HTTP status
-// code and response body.
-func updateAgentProfileTools(t *testing.T, sutHostURL, sutEnvName, profileName string, toolNames []string) (int, []byte) {
-	t.Helper()
-
-	patchProfile := &game.AgentProfile{
-		Name:      "prompts/agentProfiles/" + profileName,
-		ToolNames: toolNames,
-	}
-	body, err := protojson.Marshal(patchProfile)
-	if err != nil {
-		t.Fatalf("protojson.Marshal patch profile: %v", err)
-	}
-
-	reqURL := fmt.Sprintf("%s%sprompts/agentProfiles/%s?update_mask=tool_names",
-		sutHostURL, pathPrefix, profileName)
-	resp, respBody := doHTTP(t, http.MethodPatch, reqURL, sutEnvName, body)
-	return resp.StatusCode, respBody
 }
 
 // drainWSFrame reads and discards frames until a frame matches the predicate,

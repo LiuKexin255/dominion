@@ -57,3 +57,17 @@ tools:
     match_result_contains: []
     respond_with:
       text: "Remaining mines computed."
+  # saolei-click-terminal-text terminates ANY saolei_click result that does
+  # not match the coordinate-tagged configs above (saolei-mcp.ts
+  # rejectionText bodies — e.g. the pre-dispatch `game_won`/`game_over`
+  # rejections on a terminal board — carry NO "(x,y)" substring). It makes
+  # the post-rejection tool loop DETERMINISTIC under the team model: the
+  # saolei_team suite drives a game to won/lost (planner trigger) and MUST
+  # NOT depend on the no-match random fallback, whose pool includes mouse
+  # tool_calls that the team's player agent does not hold (FR-028 — the
+  # player's tools are template-fixed to the saolei MCP tools).
+  - name: saolei-click-terminal-text
+    tool_name: saolei_click
+    match_result_contains: []
+    respond_with:
+      text: "Minesweeper sequence complete."

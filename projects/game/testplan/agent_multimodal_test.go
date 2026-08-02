@@ -1,7 +1,10 @@
 // Package testplan contains agent multimodal-turn integration tests.
-// These tests validate the agent's processing of content PartBlock payloads
-// carrying text and/or an ImagePart through the WebSocket surface, using the
-// fake-llm test artifact for deterministic responses.
+// These tests validate the team's player-agent processing of message_parts
+// payloads carrying text and/or an ImagePart through the WebSocket surface,
+// using the fake-llm test artifact for deterministic responses. Each test
+// sets up the team stack via setupTeamSession (session → saolei TeamProfile
+// → CreateTeam) before connecting — CreateTeam MUST precede Connect (no lazy
+// creation, spec 031-team-template-mode FR-033).
 //
 // spec 025 coverage: TestAgentMultimodalLargeImageRoundTrip proves a frame
 // whose encoded size exceeds the pre-025 `coder/websocket` default ReadLimit
@@ -17,7 +20,6 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/gameconst"
 )
 
 // TestAgentMultimodalTextPlusImageTurn verifies that a content frame whose
@@ -31,20 +33,11 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 
 	profileName := fmt.Sprintf("mm-tpi-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a multimodal test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	frame := buildUserTurnFrame(sessionID, profileName, "hello multimodal", buildImageFrame(sessionID))
+	frame := buildUserTurnFrame(sessionID, "hello multimodal", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
 	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
@@ -81,20 +74,11 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 
 	profileName := fmt.Sprintf("mm-img-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a multimodal test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	frame := buildUserTurnFrame(sessionID, profileName, "", buildImageFrame(sessionID))
+	frame := buildUserTurnFrame(sessionID, "", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
 	respFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
@@ -136,24 +120,15 @@ func TestAgentMultimodalLargeImageRoundTrip(t *testing.T) {
 
 	profileName := fmt.Sprintf("mm-large-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a multimodal test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// when: a user turn carries text + the large image. The text carries the
 	// "hello" keyword so fake-LLM deterministically returns the greeting
 	// template, proving the large frame was processed end-to-end (not dropped
 	// or rejected by the WS layer).
-	frame := buildUserTurnFrame(sessionID, profileName, "hello large image", buildLargeImageFrame(sessionID))
+	frame := buildUserTurnFrame(sessionID, "hello large image", buildLargeImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
 	// then: the agent processes the large frame and returns the greeting

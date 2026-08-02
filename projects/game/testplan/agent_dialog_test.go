@@ -1,7 +1,10 @@
 // Package testplan contains agent dialog integration tests.
-// These tests validate the agent's text dialog capability through the
-// gateway HTTP + WebSocket surface, using the fake LLM test artifact
-// that returns deterministic responses.
+// These tests validate the team's player-agent text dialog capability
+// through the gateway HTTP + WebSocket surface, using the fake LLM test
+// artifact that returns deterministic responses. Each test sets up the team
+// stack via setupTeamSession (session → saolei TeamProfile → CreateTeam)
+// before connecting — CreateTeam MUST precede Connect (no lazy creation,
+// spec 031-team-template-mode FR-033).
 package testplan
 
 import (
@@ -12,40 +15,33 @@ import (
 
 	"dominion/common/gopkg/testtool"
 	game "dominion/projects/game"
-	"dominion/projects/game/pkg/gameconst"
 )
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 // TestAgentDialogCreateAndConnect verifies the setup flow:
-// create profile → create session → connect WebSocket.
+// create saolei TeamProfile → create session → CreateTeam → connect WebSocket.
 func TestAgentDialogCreateAndConnect(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profileName := fmt.Sprintf("ad-cc-%s", uniqueSuffix())
 
-	// Create profile, session
-	profile := createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	if profile.GetName() != "prompts/agentProfiles/"+profileName {
-		t.Errorf("profile name = %q, want %q", profile.GetName(), "prompts/agentProfiles/"+profileName)
+	// Create the TeamProfile, session, and Team (FR-033 — CreateTeam is the
+	// only Team creation point and MUST precede Connect).
+	profile := createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	if profile.GetName() != "templates/"+saoleiTemplateID+"/profiles/"+profileName {
+		t.Errorf("profile name = %q, want %q", profile.GetName(), "templates/"+saoleiTemplateID+"/profiles/"+profileName)
 	}
 
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	sessionID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	if sessionID == "" {
 		t.Fatal("sessionID is empty")
 	}
+	createTeam(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, profileName)
 
 	// Connect WebSocket
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	conn.Close()
 }
 
@@ -59,22 +55,13 @@ func TestAgentDialogTextToResponse(t *testing.T) {
 	profileName := fmt.Sprintf("ad-ttr-%s", uniqueSuffix())
 
 	// Setup
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Send a content frame carrying a TextPart with sender=USER.
 	sendText := "Hello, agent!"
-	textFrame := buildTextFrame(sessionID, profileName, sendText, game.FrameSender_FRAME_SENDER_USER)
+	textFrame := buildTextFrame(sessionID, "player", sendText, game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Receive thinking frame
@@ -119,21 +106,12 @@ func TestAgentDialogThinkingBeforeText(t *testing.T) {
 	profileName := fmt.Sprintf("ad-tbt-%s", uniqueSuffix())
 
 	// Setup
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Send text carrying the greeting keyword so the response is deterministic.
-	textFrame := buildTextFrame(sessionID, profileName, "Hello ordering test", game.FrameSender_FRAME_SENDER_USER)
+	textFrame := buildTextFrame(sessionID, "player", "Hello ordering test", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Read frames in order — first must be thinking, second must be text
@@ -166,21 +144,12 @@ func TestAgentDialogDeterministicContent(t *testing.T) {
 	profileName := fmt.Sprintf("ad-det-%s", uniqueSuffix())
 
 	// Setup
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// "Hello world" carries the greeting keyword "hello".
-	textFrame := buildTextFrame(sessionID, profileName, "Hello world", game.FrameSender_FRAME_SENDER_USER)
+	textFrame := buildTextFrame(sessionID, "player", "Hello world", game.FrameSender_FRAME_SENDER_USER)
 	writeWSFrame(t, conn, textFrame)
 
 	// Read and verify thinking content
@@ -221,31 +190,22 @@ func TestAgentDialogMessageContentDisplayOnly(t *testing.T) {
 
 	profileName := fmt.Sprintf("ad-DispOnly-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Run a text turn carrying the greeting keyword so the response is
 	// deterministic. The wait FlowPart the agent emits at turn end is a
 	// flow_parts frame on the live socket (control channel); it MUST NOT
 	// be reconstructed into any Message.content.
-	sendTextWithProfile(t, conn, sessionID, profileName, "Hello display-only test")
+	sendText(t, conn, sessionID, "Hello display-only test")
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	// Drain the terminal wait FlowPart so the turn settles before listing.
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
 
 	// then: ListMessages returns Messages whose content is display-only.
-	lmr := listMessages(t, sutHostURL, sutEnvName, sessionID)
+	lmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player")
 	assertMessageContentDisplayOnly(t, lmr.GetMessages())
 
 	// Sanity: the user text survived in history (a regression that
@@ -274,17 +234,8 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 	profileName := fmt.Sprintf("ad-fifo-%s", uniqueSuffix())
 
 	// Setup
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Each message triggers a different template via a distinct keyword so the
@@ -302,7 +253,7 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 	// instead be merged by the per-session TurnLoop into one aggregated turn
 	// (specs/030-queued-chat-input/spec.md FR-005).
 	for i, msg := range messages {
-		sendTextWithProfile(t, conn, sessionID, profileName, msg)
+		sendText(t, conn, sessionID, msg)
 		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 			return frameHasThinking(f)
 		})
@@ -323,52 +274,44 @@ func TestAgentDialogFIFOQueue(t *testing.T) {
 	}
 }
 
-// TestAgentDialogDeleteProfileStillResponds verifies the loose coupling
-// design: after the adapter is bound, deleting the agent profile does not
-// prevent subsequent messages from being processed, because profile data
-// was copied at adapter creation time.
-func TestAgentDialogDeleteProfileStillResponds(t *testing.T) {
+// TestAgentDialogDeleteTeamProfileStillResponds verifies the loose coupling
+// design: after the team is created, deleting the saolei TeamProfile does
+// not prevent subsequent messages from being processed, because the team's
+// player/planner models were resolved at CreateTeam time (server.ts
+// SessionTeamStore factory reads the profile once).
+func TestAgentDialogDeleteTeamProfileStillResponds(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	profileName := fmt.Sprintf("ad-delp-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
 
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Turn before deletion carries the greeting keyword.
-	sendTextWithProfile(t, conn, sessionID, profileName, "Hello before delete")
+	sendText(t, conn, sessionID, "Hello before delete")
 	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
 	firstResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
 	if firstResp == nil {
-		t.Fatal("no response before profile deletion")
+		t.Fatal("no response before TeamProfile deletion")
 	}
 
-	delStatus := deleteAgentProfile(t, sutHostURL, sutEnvName, profileName)
+	delStatus := deleteTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName)
 	if delStatus != http.StatusOK && delStatus != http.StatusNoContent {
-		t.Fatalf("DELETE profile status = %d, want 200 or 204", delStatus)
+		t.Fatalf("DELETE team profile status = %d, want 200 or 204", delStatus)
 	}
 
 	// Turn after deletion carries the farewell keyword so the content assertion
 	// is deterministic (no random fallback).
-	sendTextWithProfile(t, conn, sessionID, profileName, "Goodbye after delete")
+	sendText(t, conn, sessionID, "Goodbye after delete")
 
 	textRespFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
 		return frameHasText(f)
 	})
 	if textRespFrame == nil {
-		t.Fatal("did not receive text response after profile deletion")
+		t.Fatal("did not receive text response after TeamProfile deletion")
 	}
 	if textRespFrame.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
 		t.Errorf("response sender = %s, want AGENT", senderString(textRespFrame.GetSender()))
@@ -412,25 +355,16 @@ func TestAgentDialogQueueAutoHandoff(t *testing.T) {
 
 	profileName := fmt.Sprintf("ad-qah-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Send two messages in rapid succession. Both carry distinct keywords so
 	// the fake-llm responses are deterministic and distinguishable.
 	// msg-1: greeting keyword "hello" → greeting template.
 	// msg-2: farewell keyword "goodbye" → farewell template.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello world")
-	sendTextWithProfile(t, conn, sessionID, profileName, "goodbye world")
+	sendText(t, conn, sessionID, "hello world")
+	sendText(t, conn, sessionID, "goodbye world")
 
 	// Collect ALL frames until the terminal wait (loop idle).
 	frames := drainUntilWait(t, conn)
@@ -496,24 +430,15 @@ func TestAgentDialogQueueMultipleCombine(t *testing.T) {
 
 	profileName := fmt.Sprintf("ad-qmc-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// msg-1 starts turn 1 (greeting). msg-2 and msg-3 are queued while turn 1
 	// runs and combined into one aggregated turn on drain.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello world")
-	sendTextWithProfile(t, conn, sessionID, profileName, "goodbye world")
-	sendTextWithProfile(t, conn, sessionID, profileName, "hi friend")
+	sendText(t, conn, sessionID, "hello world")
+	sendText(t, conn, sessionID, "goodbye world")
+	sendText(t, conn, sessionID, "hi friend")
 
 	frames := drainUntilWait(t, conn)
 
@@ -583,24 +508,15 @@ func TestAgentDialogQueueInputDoesNotDisturb(t *testing.T) {
 
 	profileName := fmt.Sprintf("ad-qnd-%s", uniqueSuffix())
 
-	createAgentProfile(t, sutHostURL, sutEnvName, &game.CreateAgentProfileRequest{
-		Parent:         gameconst.PromptsParent,
-		AgentProfileId: profileName,
-		AgentProfile: &game.AgentProfile{
-			Model:        "gpt-4",
-			SystemPrompt: "You are a test agent.",
-			Enabled:      true,
-		},
-	})
-	sessionID, _ := createSession(t, sutHostURL, sutEnvName)
-	conn := connectAgentWS(t, sutHostURL, sutEnvName, sessionID)
+	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileName, "gpt-4", "gpt-4")
+	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
 	// Send msg-1 (greeting), then immediately msg-2 (farewell) while turn 1
 	// is still in the fake-llm round-trip. The queued msg-2 MUST NOT alter
 	// turn 1's output.
-	sendTextWithProfile(t, conn, sessionID, profileName, "hello world")
-	sendTextWithProfile(t, conn, sessionID, profileName, "goodbye world")
+	sendText(t, conn, sessionID, "hello world")
+	sendText(t, conn, sessionID, "goodbye world")
 
 	frames := drainUntilWait(t, conn)
 
