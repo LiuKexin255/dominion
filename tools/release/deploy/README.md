@@ -274,6 +274,16 @@ deploy del {env-name}
 deploy list
 ```
 
+**查看环境详情**：
+
+```bash
+deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] {env-name}
+```
+
+打印单个部署环境的详细状态：环境名、状态（中文描述）、失败说明（如有）、服务列表（应用服务与基础设施）、最近调和与最近成功时间。数据来自 deploy service 的环境状态，单次查询无轮询。环境不存在时输出 `环境 {env-name} 不存在` 提示并以非零退出码返回。
+
+输出字段顺序与格式见 `../../../specs/032-guitar-deploy-failure-state/contracts/deploy-describe.md`。
+
 **配置默认 scope**：
 
 ```bash

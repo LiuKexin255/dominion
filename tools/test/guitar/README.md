@@ -80,6 +80,27 @@ run={runID} env={envName} deploy={deployPath}
 - TTY 模式下自动启用颜色，非 TTY 或管道模式下自动禁用
 - 每个 suite 执行受其 `timeout` 或全局 `--timeout` 限制，超时则终止该 suite
 
+当 suite 的部署步骤不成功时，`  Deploy` 之后会附加「环境状态」诊断输出，格式如下：
+
+```
+  --- 环境状态 (env=game.lt3x8q2) ---
+环境 game.lt3x8q2
+状态: 失败
+说明: service "gateway" rollout failed: ImagePullBackOff
+服务:
+  - gateway (app=game) [artifact]
+  - mongo (app=game) [infra: mongodb]
+最近调和: 2026-08-02T10:30:00Z
+最近成功: -
+```
+
+- 第一行为醒目分隔头部（2 空格缩进，`--- ... ---` 包裹，不着色）
+- 紧随其后为 `deploy describe` 的顶格文本（环境名/状态/失败说明/服务列表/最近调和与成功时间），不做逐行缩进
+- 若 `deploy describe` 自身失败（如环境不存在、deploy service 不可达），向 stderr 输出 warning 降级，不影响原始部署错误上报与后续清理
+- 部署成功时不输出该诊断（与既有行为一致）
+
+诊断触发条件与降级语义见 `../../../specs/032-guitar-deploy-failure-state/contracts/guitar-integration.md`；describe 输出格式见 `../../../specs/032-guitar-deploy-failure-state/contracts/deploy-describe.md`。
+
 执行结束后输出一个 Summary，列出每个 suite 的结果与总计统计，方便用 `tail` 查看执行结果：
 
 ```
