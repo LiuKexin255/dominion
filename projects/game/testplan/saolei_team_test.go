@@ -21,13 +21,17 @@
 // MUST precede Connect (no lazy creation, FR-033).
 //
 // A "game" in these tests is one full team turn driven by the fake-LLM
-// "saolei-start" keyword against a terminal board screenshot: the player
-// agent's saolei_init recognizes a won/lost board (the sink records the
-// end event), the conditional edge routes to the planner exactly once, the
-// planner calls update_strategy (fake-LLM matches the fixed review prefix),
-// and the graph loops back through the player before the turn ends. The
-// helper playTeamGameUntilWait drives the desktop role (replying to every
-// dispatched operation) until the terminal wait frame.
+// "saolei-start" keyword: the player agent's saolei_init recognizes an
+// IN-PROGRESS board (contract saolei-sink-contract.md §3 — onGameStart only,
+// no game-end detection on init), then its first saolei_click reply carries
+// a TERMINAL won/lost board — the move's post-dispatch recognition fires
+// onMove + onGameEnd (the sink records the end event), the conditional edge
+// routes to the planner exactly once, the planner calls update_strategy
+// (fake-LLM matches the fixed review prefix), and the graph loops back
+// through the player, whose stateless fake-LLM re-matches saolei-start and
+// opens one more in-progress game (no end event) so the turn converges to
+// wait. The helper playTeamGameUntilWait drives the desktop role (replying
+// to every dispatched operation) until the terminal wait frame.
 package testplan
 
 import (
@@ -46,19 +50,41 @@ import (
 
 // playTeamGameUntilWait drives one full team turn ("please start saolei
 // game") while playing the desktop: every dispatched operation FlowPart is
-// answered with a FlowResultPart carrying the given recognizable board
-// screenshot (the reply message is derived from the operation kind so the
-// fake-LLM coordinate-tagged tool configs keep matching —
-// sample_saolei_tools.yaml), and the loop drains frames until the terminal
-// wait FlowPart (turn complete). Returns every frame read, in order, so
-// callers can assert on the planner's update_strategy tool_calls and the
-// per-agent frame stream.
-func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, screenshot *game.ImagePart) []*game.AgentFrame {
+// answered with a FlowResultPart carrying a recognizable board screenshot
+// (the reply message is derived from the operation kind so the fake-LLM
+// coordinate-tagged tool configs keep matching — sample_saolei_tools.yaml),
+// and the loop drains frames until the terminal wait FlowPart (turn
+// complete). Returns every frame read, in order, so callers can assert on
+// the planner's update_strategy tool_calls and the per-agent frame stream.
+//
+// Screenshot semantics follow specs/031-team-template-mode/contracts/
+// saolei-sink-contract.md §3 (onGameEnd fires only after a move whose
+// post-dispatch recognition is terminal — NOT after saolei_init):
+//
+//   - `initScreenshot` answers every saolei_init (keyboard F2) dispatch —
+//     an IN-PROGRESS board (saoleiBoardInitPNG), so the init recognize is
+//     non-terminal (onGameStart only) and the following cell ops pass
+//     pre-dispatch validation.
+//   - `clickTerminalScreenshot` answers the FIRST cell-op (saolei_click)
+//     dispatch — a TERMINAL board (saoleiBoardLossPNG), so the move's
+//     post-dispatch recognition fires onMove + onGameEnd once (the sink
+//     records the end event → planner). MUST share the init board's
+//     dimensions: SaoleiBoard.updateFromScreenshot rejects a dimension
+//     change (BoardDimensionMismatchError → "unable to recognize" → no sink
+//     events), which is why saoleiBoardWinPNG (9×9) cannot back a 16×16 init
+//     (saoleiBoardInitPNG) — both here are 16×16.
+//   - LATER cell-op dispatches are answered with `initScreenshot` again:
+//     after the planner the stateless fake-LLM re-matches the saolei-start
+//     keyword and the player opens another game; replying in-progress keeps
+//     that run end-event-free, so the turn converges to wait with the
+//     planner triggered exactly once (FR-011).
+func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, initScreenshot, clickTerminalScreenshot *game.ImagePart) []*game.AgentFrame {
 	t.Helper()
 
 	sendText(t, conn, sessionID, "please start saolei game")
 
 	var frames []*game.AgentFrame
+	clickReplies := 0
 	for i := 0; i < 60; i++ {
 		frame := readWSFrame(t, conn)
 		frames = append(frames, frame)
@@ -70,20 +96,24 @@ func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string,
 			if kp := frameKeyboardPress(frame); kp != nil {
 				respondToOperationWithScreenshot(t, conn, sessionID, frame,
 					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
-					"F2 pressed, new game started", screenshot)
+					"F2 pressed, new game started", initScreenshot)
 				continue
 			}
 			if mmc := frameMouseMoveAndClick(frame); mmc != nil {
 				// Invert the WM client-space centre formula
 				// (geometry.ts centerX(x) = 24 + x*32 + 16, centerY(y) =
 				// 104 + y*32 + 16) to recover the cell for the reply message.
-				// NOTE: with a terminal won/lost board (the saolei_team game
-				// fixtures) cell ops are rejected pre-dispatch, so this branch
-				// does not fire in those tests — it is retained as the
-				// defensive desktop role for any future non-terminal board
-				// fixture driven through this helper.
+				// First click reply = terminal board (triggers onGameEnd);
+				// later clicks (the post-planner player run's clicks — the
+				// stateless fake-LLM re-matches saolei-start) reply
+				// in-progress so the turn converges to wait.
 				x := (mmc.GetXPx() - 40) / 32
 				y := (mmc.GetYPx() - 120) / 32
+				screenshot := initScreenshot
+				if clickReplies == 0 {
+					screenshot = clickTerminalScreenshot
+				}
+				clickReplies++
 				respondToOperationWithScreenshot(t, conn, sessionID, frame,
 					game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
 					fmt.Sprintf("cell at (%d,%d) revealed", x, y), screenshot)
@@ -420,9 +450,12 @@ func TestTeamReconnectDispatchReliability(t *testing.T) {
 	sutEnvName := testtool.MustEnv()
 
 	sessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, "team-reconn-"+uniqueSuffix(), "gpt-4", "gpt-4")
-	screenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
+	initScreenshot := buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG)
 
-	// given: connect, run a turn whose operation dispatches, complete it.
+	// given: connect and run a turn whose saolei_init dispatch resolves —
+	// init operation + desktop reply + the init tool_result streaming in
+	// real time (the streamed tool-finished event resolves the dispatch;
+	// same streaming contract as agent_operation_test.go).
 	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	sendText(t, conn1, sessionID, "please start saolei game")
 	opFrame1 := readOperationFrame(t, conn1)
@@ -430,34 +463,34 @@ func TestTeamReconnectDispatchReliability(t *testing.T) {
 		t.Fatalf("saolei_init did not dispatch a KeyboardPressPart FlowPart")
 	}
 	respondToOperationWithScreenshot(t, conn1, sessionID, opFrame1,
-		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
-	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasText(f) })
+		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", initScreenshot)
+	// The init dispatch cycle is complete once its tool_result arrives. Do
+	// NOT drain text: the stateless fake-LLM chains saolei_click{3,4} after
+	// the init result, the player blocks on that dispatch (the test stops
+	// playing the desktop), and the turn only unwinds via the disconnect
+	// abort below.
+	initResultFrame := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasToolResult(f) })
+	if initResultFrame == nil {
+		t.Fatal("conn1: no init tool_result frame — the saolei_init dispatch did not resolve")
+	}
 
 	// when: disconnect then reconnect.
 	conn1.Close()
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn2.Close()
 
-	// then: a new turn on the reconnected stream dispatches its operation
-	// and completes — the fresh sink is live and the dispatch resolves
-	// (not "desktop disconnected").
-	sendText(t, conn2, sessionID, "please start saolei game")
-	opFrame2 := readOperationFrame(t, conn2)
-	t.Logf("reconnect dispatch: operation frame received on conn2 (tool_id=%s)",
-		frameOperationToolID(opFrame2))
-	if frameKeyboardPress(opFrame2) == nil {
-		t.Fatalf("reconnect: saolei_init did not dispatch a KeyboardPressPart FlowPart")
-	}
-	respondToOperationWithScreenshot(t, conn2, sessionID, opFrame2,
-		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
-
-	textFrame := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
-		return frameHasText(f)
-	})
-	if textFrame == nil {
-		t.Fatal("reconnect dispatch: no text frame — dispatch did not resolve on the fresh stream")
-	}
-	t.Logf("reconnect dispatch succeeded: %q", frameText(textFrame))
+	// then: a new turn on the reconnected stream completes — the fresh
+	// sink is live and every dispatch resolves (not "desktop
+	// disconnected"). Reconnect continues from the checkpoint (turn 1's
+	// init history is already in playerMessages), so the resumed player
+	// may dispatch a cell op rather than re-init; playTeamGameUntilWait
+	// replies to every dispatched operation until the turn completes
+	// (wait), proving reconnect dispatch reliability end-to-end. Both
+	// screenshots are 16×16 to match turn 1's init board
+	// (dimension-mismatched replies would make recognize fail and skip
+	// the sink events — saolei-sink-contract.md §3).
+	playTeamGameUntilWait(t, conn2, sessionID, initScreenshot,
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 }
 
 // ─── TeamProfile CRUD (FR-006/FR-027 — merged from the prompt suite) ─────
@@ -662,7 +695,7 @@ func TestTeamPerProfileModel(t *testing.T) {
 // ─── Team graph behaviour (FR-005/FR-010/FR-011/FR-013..015/FR-018) ───────
 
 // TestTeamMessagePartitionByAgent verifies FR-005: ListMessages partitions
-// the session history per team agent. After a game whose terminal board
+// the session history per team agent. After a game whose terminal move
 // triggered the planner, the player partition carries the user input and the
 // saolei tool calls/results (agent="player"), the planner partition carries
 // the update_strategy review (agent="planner"), and neither partition leaks
@@ -675,8 +708,10 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: one full game on a terminal-won board (planner triggers).
-	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	// when: one full game — init recognizes an in-progress board, the first
+	// click's reply is a terminal lost board (planner triggers).
+	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the player partition carries the user input + saolei tool calls,
 	// all stamped agent="player".
@@ -712,7 +747,7 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 	// the planner holds no desktop tools).
 	plannerLmr := listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "planner")
 	if len(plannerLmr.GetMessages()) == 0 {
-		t.Fatal("planner partition is empty — the planner did not trigger for the terminal-won game (FR-011)")
+		t.Fatal("planner partition is empty — the planner did not trigger for the terminal-move game (FR-011)")
 	}
 	plannerUpdateFound := false
 	for _, m := range plannerLmr.GetMessages() {
@@ -738,9 +773,9 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 // FlowPart on the WS corresponds to the player's saolei tool calls, and the
 // planner contributes no operations at all (its only tool, update_strategy,
 // writes the strategy store without dispatching). The frame stream of a full
-// terminal-won game is checked: every operation frame belongs to a player
-// tool (F2 init / cell clicks), while the planner's tool_call frames carry
-// only update_strategy.
+// game (init in-progress → terminal-move click) is checked: every operation
+// frame belongs to a player tool (F2 init / cell clicks), while the
+// planner's tool_call frames carry only update_strategy.
 func TestTeamPlayerExclusiveControl(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -749,9 +784,11 @@ func TestTeamPlayerExclusiveControl(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: one full game on a terminal-won board (planner triggers inside
-	// the turn — D6).
-	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	// when: one full game — init recognizes an in-progress board, the first
+	// click's reply is a terminal lost board (planner triggers inside the
+	// turn — D6).
+	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: every operation frame is a player dispatch (keyboard F2 or cell
 	// click) — the planner never dispatches.
@@ -799,8 +836,10 @@ func TestTeamPlannerTriggersOncePerGame(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: game 1 on a terminal-won board.
-	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	// when: game 1 — init recognizes an in-progress board, the first click's
+	// reply is a terminal lost board (the move fires onGameEnd → planner).
+	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the planner triggered exactly once (FR-011 — not per move; the
 	// in-game cell rejections on the terminal board never re-trigger it).
@@ -808,8 +847,9 @@ func TestTeamPlannerTriggersOncePerGame(t *testing.T) {
 		t.Errorf("game 1: update_strategy calls = %d, want exactly 1 (FR-011/D6)", got)
 	}
 
-	// when: game 2 on the same session (a second turn, same terminal board).
-	frames2 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	// when: game 2 on the same session (a second turn, same fixture boards).
+	frames2 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: exactly one more planner trigger — one per game, accumulated.
 	if got := countUpdateStrategyCalls(frames2); got != 1 {
@@ -856,8 +896,10 @@ func TestTeamStrategyPersistsAcrossGames(t *testing.T) {
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	defer conn.Close()
 
-	// when: game 1 on a terminal-won board (planner writes the strategy).
-	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	// when: game 1 — init recognizes an in-progress board, the first click's
+	// reply is a terminal lost board (planner writes the strategy).
+	frames1 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the update_strategy tool_call carried the fixture content
 	// verbatim (the write argument — FR-012).
@@ -897,7 +939,8 @@ func TestTeamStrategyPersistsAcrossGames(t *testing.T) {
 	// when: game 2 on the same session — the strategy written in game 1
 	// stays readable (the planner's system context re-reads it per entry,
 	// FR-014) and the flow completes normally.
-	frames2 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	frames2 := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 	if got := countUpdateStrategyCalls(frames2); got != 1 {
 		t.Errorf("game 2: update_strategy calls = %d, want exactly 1 (strategy layer healthy after game 1)", got)
 	}
@@ -906,7 +949,8 @@ func TestTeamStrategyPersistsAcrossGames(t *testing.T) {
 	otherSessionID := setupTeamSession(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID+"-b", "gpt-4", "gpt-4")
 	connB := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, otherSessionID)
 	defer connB.Close()
-	framesB := playTeamGameUntilWait(t, connB, otherSessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	framesB := playTeamGameUntilWait(t, connB, otherSessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 
 	// then: the second session's game is independent (its planner triggers
 	// normally — the per-session strategy namespace is isolated, FR-013).
@@ -929,7 +973,8 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 	defer conn.Close()
 
 	// given: one full game so both channels hold messages (player + planner).
-	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 	if got := len(listMessages(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID, "player").GetMessages()); got == 0 {
 		t.Fatal("precondition: player partition is empty before RefreshTeam")
 	}
@@ -951,7 +996,8 @@ func TestTeamRefreshClearsShortTermKeepsStrategy(t *testing.T) {
 	// then: the strategy is unaffected — the next game still triggers the
 	// planner (which reads the persisted strategy as its system context,
 	// FR-014) and the whole flow completes.
-	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardWinPNG))
+	frames := playTeamGameUntilWait(t, conn, sessionID, buildSaoleiFlowResultScreenshot(saoleiBoardInitPNG),
+		buildSaoleiFlowResultScreenshot(saoleiBoardLossPNG))
 	if got := countUpdateStrategyCalls(frames); got != 1 {
 		t.Errorf("post-refresh game: update_strategy calls = %d, want exactly 1 (strategy survived RefreshTeam — FR-018)", got)
 	}

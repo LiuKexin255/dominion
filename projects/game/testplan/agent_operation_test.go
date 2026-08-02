@@ -107,11 +107,29 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 	respondToOperationWithScreenshot(t, conn, sessionID, initOpFrame,
 		game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED, "F2 pressed, new game started", screenshot)
 
+	// then (3): the display tool_result frame groups by the conversation
+	// tool_call.id of the FIRST saolei_init call (bubble grouping by
+	// LangChain tool_call.id). Under the streaming contract (spec
+	// 031-team-template-mode FR-034; team-graph-contract.md §2.1) the init
+	// tool_result is emitted in real time as soon as the desktop
+	// FlowResultPart resolves the dispatch, so it MUST be drained
+	// immediately after the init reply — draining later (after the click
+	// loop below) would only find a stale saolei_click tool_result whose
+	// tool_id differs from the init tool_call.id. Same pattern as
+	// agent_checkpoint_test.go TestAgentCheckpointToolResultStatusPersists.
+	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
+	if toolResultFrame == nil {
+		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
+	}
+
 	// The fake-LLM fixture chains saolei_init → saolei_click{3,4} →
 	// saolei_click{5,6} → final text (sample_saolei_tools.yaml). Play the
 	// desktop through both cell dispatches, asserting each dispatch carries
 	// the centre of the cell the model targeted (saolei_fixtures_test.go —
-	// WM client-space centres: (3,4)→(136,248), (5,6)→(200,312)).
+	// WM client-space centres: (3,4)→(136,248), (5,6)→(200,312)). The click
+	// tool_results stream in real time alongside the loop's
+	// readOperationFrame reads and are discarded there — this test asserts
+	// the init tool_result only.
 	clickSteps := []struct {
 		cellX, cellY     int32
 		centerX, centerY int32
@@ -135,13 +153,9 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 			fmt.Sprintf("cell at (%d,%d) revealed", step.cellX, step.cellY), screenshot)
 	}
 
-	// then (3): the display tool_result frame groups by the conversation
-	// tool_call.id of the FIRST saolei_init call (the init result follows
-	// the init dispatch; bubble grouping by LangChain tool_call.id).
-	toolResultFrame := drainWSFrame(t, conn, frameHasToolResult)
-	if toolResultFrame == nil {
-		t.Fatal("did not receive a tool_result MessagePart frame after the desktop reply (FR-006)")
-	}
+	// then (3) continued: the init tool_result drained right after the init
+	// reply groups by the conversation tool_call.id of the FIRST saolei_init
+	// call.
 	toolResult := frameToolResult(toolResultFrame)
 	if toolResult.GetToolId() != toolCall.GetToolId() {
 		t.Errorf("tool_result.tool_id = %q, want %q (conversation-channel grouping by LangChain tool_call.id)",
