@@ -47,7 +47,13 @@ import { TurnLoop } from "./turn-loop";
 import type { TurnLoopEmit } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
 import type { ContentBlock, TurnContent } from "./llm";
-import { buildContentBlocks, extractToolCalls, readToolResultStatus, RECURSION_LIMIT } from "./llm";
+import {
+	buildContentBlocks,
+	extractToolCalls,
+	readToolResultStatus,
+	RECURSION_LIMIT,
+	STATUS_UNSPECIFIED,
+} from "./llm";
 import { parseToolResultFields } from "./tools/shared/result-blocks";
 import { refreshTeamChannels } from "./context-middleware";
 import type { TeamGraphHandle } from "./team/graph";
@@ -89,8 +95,6 @@ export class SessionTeam {
 
 	private turnLoop: TurnLoop | null = null;
 	private turnLoopEmit: TurnLoopEmit | null = null;
-	/** Per-agent message counts already streamed — for node-output dedup. */
-	private readonly emittedCounts = new Map<string, number>();
 
 	/**
 	 * @param graphHandle The compiled team graph + outer MemorySaver (built
@@ -203,16 +207,40 @@ export class SessionTeam {
 	 * a new `playerMessages` entry. Streams the produced messages back as
 	 * {@link TurnBlock}s tagged with the producing agent.
 	 *
-	 * The outer graph's `streamEvents` yields `updates` events per NODE
-	 * completion (`{node: "player"|"planner", values: {playerMessages|
-	 * plannerMessages: [...]}}` — the node's channel write-back, empirically
-	 * verified against `@langchain/langgraph` ^1.4.8). Each node's channel
-	 * array is the FULL history for that channel, so only the messages past
-	 * the per-agent {@link emittedCounts} watermark are converted (node
-	 * output dedup across repeated player runs in one turn / across turns).
+	 * The outer graph's v3 `streamEvents` yields granular protocol events
+	 * from INSIDE the createAgent nodes (verified empirically against
+	 * `@langchain/langgraph` 1.4.8 — see the event shapes below; the prebuilt
+	 * agent is a subgraph of the outer team graph, so its events bubble up
+	 * with `params.namespace[0]` = `<outerNode>:<taskId>`, e.g.
+	 * `"player:…"`/`"planner:…"`):
 	 *
-	 * `gameEnded` is handled INSIDE the turn by the conditional edge (D6) —
-	 * the turn always completes on its own, preserving TurnLoop single-flight.
+	 * - **`messages`** (chat-model protocol events,
+	 *   `node_modules/@langchain/langgraph/dist/pregel/messages-v2.js`
+	 *   `StreamProtocolMessagesHandler`): `content-block-finish` carries the
+	 *   COMPLETE text/reasoning block of the model's answer. Tool calls are
+	 *   NOT part of this stream (the handler only replays `message.content`,
+	 *   and `AIMessage.tool_calls` live outside it) — so tool calls are
+	 *   sourced from the `tools` stream instead.
+	 * - **`tools`** (`node_modules/@langchain/langgraph/dist/pregel/stream.js`
+	 *   `StreamToolsHandler`):
+	 *   `tool-started` fires BEFORE the tool function runs (so it is emitted
+	 *   while a saolei `bridge.dispatch` may still be awaiting the desktop),
+	 *   carrying `tool_call_id`/`tool_name`/`input` (args, JSON-encoded);
+	 *   `tool-finished` carries `output` = the ToolMessage the agent loop
+	 *   appends (the same message the node channel write-back would carry, so
+	 *   the live and history `tool_result` blocks are identical).
+	 *
+	 * This replaces the former per-NODE `updates` replay (which only fired
+	 * after the player's whole createAgent loop completed — T030 deadlock:
+	 * the desktop waits for the tool_call frame before replying to the
+	 * operation, so a node-level stream never unblocks it). Dedup: since the
+	 * node `updates` events are NOT subscribed anymore, every message is
+	 * emitted exactly once by its granular event (no replay, no
+	 * double-output); the emitted set is exactly what the channel replay
+	 * would have produced (AIMessage text/reasoning + tool_calls + one
+	 * ToolMessage per finished tool, minus human/system input and the
+	 * strategy injection which never produce model/tool events). The former
+	 * {@link emittedCounts} watermark is gone with the `updates` path.
 	 */
 	private async *runTeamTurn(
 		content: TurnContent,
@@ -233,37 +261,92 @@ export class SessionTeam {
 			},
 		)) as unknown as {
 			output: Promise<unknown>;
-			[Symbol.asyncIterator](): AsyncIterator<{
-				method?: string;
-				params?: { node?: string; data?: { values?: Record<string, BaseMessage[]> } };
-			}>;
+			[Symbol.asyncIterator](): AsyncIterator<TeamStreamEvent>;
 		};
 
-		// Node-completion updates: `updates` events at the root namespace
-		// carry `params.node` = the outer node name (player/planner) and
-		// `params.data.values` = the node's channel write-back.
 		for await (const event of stream) {
-			if (event.method !== "updates") continue;
-			const node = event.params?.node ?? "";
-			const values = event.params?.data?.values;
-			if (!node || !values) continue;
+			const agent = agentFromNamespace(event.params?.namespace);
+			if (!agent) continue;
 
-			const channel =
-				node === "player"
-					? values.playerMessages
-					: node === "planner"
-						? values.plannerMessages
-						: undefined;
-			if (!channel) continue;
-
-			const emitted = this.emittedCounts.get(node) ?? 0;
-			const fresh = channel.slice(emitted);
-			if (fresh.length > 0) {
-				this.emittedCounts.set(node, emitted + fresh.length);
-			}
-			for (const msg of fresh) {
-				for (const block of messageToContentBlocks(msg)) {
-					yield { agent: node, block };
+			if (event.method === "messages") {
+				// Only the FINISH carries the complete block; the deltas are
+				// incremental and would double-emit if consumed too.
+				const data = event.params?.data as
+					| { event?: string; content?: unknown }
+					| undefined;
+				if (data?.event !== "content-block-finish") continue;
+				const block = data.content as
+					| { type?: string; text?: string; reasoning?: string }
+					| undefined;
+				if (!block) continue;
+				// Same empty-content filtering as messageToContentBlocks
+				// (a model answer with only tool calls yields an empty text
+				// block that must not be displayed).
+				if (block.type === "text" && !block.text) continue;
+				if (block.type === "reasoning" && !block.reasoning) continue;
+				if (block.type !== "text" && block.type !== "reasoning") continue;
+				yield { agent, block: block as ContentBlock };
+			} else if (event.method === "tools") {
+				const data = event.params?.data as
+					| {
+							event?: string;
+							tool_call_id?: string;
+							tool_name?: string;
+							input?: unknown;
+							output?: unknown;
+							message?: string;
+					  }
+					| undefined;
+				if (data?.event === "tool-started") {
+					// Real-time: emitted before the tool function runs, so a
+					// tool awaiting the desktop still streams its tool_call.
+					yield {
+						agent,
+						block: {
+							type: "tool_call",
+							name: data.tool_name ?? "",
+							args: parseToolArgs(data.input),
+							toolCallId: data.tool_call_id ?? "",
+						},
+					};
+				} else if (data?.event === "tool-finished") {
+					// `output` is the ToolMessage the agent loop appended
+					// (empirically verified — the `tools` stream carries the
+					// same message the channel write-back would).
+					const blocks = messageToContentBlocks(
+						data.output as unknown as BaseMessage,
+					);
+					if (blocks.length > 0) {
+						for (const block of blocks) yield { agent, block };
+					} else {
+						// Defensive fallback for a non-message-shaped output.
+						yield {
+							agent,
+							block: {
+								type: "tool_result",
+								toolCallId: data.tool_call_id ?? "",
+								status: STATUS_UNSPECIFIED,
+								message:
+									typeof data.output === "string"
+										? data.output
+										: "",
+							},
+						};
+					}
+				} else if (data?.event === "tool-error") {
+					// A throwing tool produces no ToolMessage in the stream;
+					// surface the error text so the desktop still sees a
+					// tool_result (status stays neutral — the ToolNode's
+					// error ToolMessage carries no toolResultStatus either).
+					yield {
+						agent,
+						block: {
+							type: "tool_result",
+							toolCallId: data.tool_call_id ?? "",
+							status: STATUS_UNSPECIFIED,
+							message: data.message ?? "",
+						},
+					};
 				}
 			}
 		}
@@ -376,6 +459,55 @@ export class SessionTeamStore {
 // ---------------------------------------------------------------------------
 // Message → ContentBlock conversion
 // ---------------------------------------------------------------------------
+
+/**
+ * One v3 `streamEvents` protocol event (the shape actually consumed by
+ * {@link SessionTeam.runTeamTurn}). Only `method`/`params.namespace`/
+ * `params.data` are read; the structure is defined by
+ * `@langchain/langgraph`'s `stream/convert.ts` (`convertToProtocolEvent`).
+ */
+interface TeamStreamEvent {
+	method?: string;
+	params?: {
+		namespace?: string[];
+		data?: unknown;
+	};
+}
+
+/**
+ * Attribute a bubbling subgraph event to its outer team node
+ * (`player`/`planner`). createAgent is a subgraph of the outer team graph,
+ * so its internal events carry `params.namespace[0]` = `<outerNode>:<taskId>`
+ * (e.g. `"player:c68039a1-…"` — the checkpoint namespace prefix, verified
+ * empirically against `@langchain/langgraph` 1.4.8, `dist/stream/convert.js`
+ * `unwrapMessagesPayload`/`dist/pregel/messages-v2.js`). Root-namespace
+ * events (the outer graph's own `updates`/`values`/`tasks`/…) yield
+ * `undefined` and are skipped by the turn runner.
+ */
+function agentFromNamespace(namespace: string[] | undefined): string | undefined {
+	const segment = namespace?.[0];
+	if (typeof segment !== "string") return undefined;
+	const sep = segment.indexOf(":");
+	return sep > 0 ? segment.slice(0, sep) : undefined;
+}
+
+/**
+ * Decode the `tool-started` event's `input` into the tool_call args object.
+ * The `tools` stream carries the args JSON-encoded (empirically verified —
+ * `node_modules/@langchain/langgraph/dist/pregel/stream.js`
+ * `StreamToolsHandler`), while the display contract expects the parsed object
+ * (`turn-loop.ts` `displayFrame` JSON-stringifies `block.args`).
+ */
+function parseToolArgs(input: unknown): unknown {
+	if (typeof input === "string") {
+		try {
+			return JSON.parse(input);
+		} catch {
+			return input;
+		}
+	}
+	return input ?? {};
+}
 
 /**
  * Convert a checkpointed `BaseMessage` into display `ContentBlock`s (the
