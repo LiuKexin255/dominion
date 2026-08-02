@@ -66,7 +66,7 @@ func (h *TeamHandler) CreateTeam(ctx context.Context, req *game.CreateTeamReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	owner, err := h.assignOwner(ctx, name.SessionID)
+	owner, err := h.assignOwner(ctx, name.TemplateID, name.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (h *TeamHandler) GetTeam(ctx context.Context, req *game.GetTeamRequest) (*g
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	owner, err := h.lookupOwner(ctx, name.SessionID)
+	owner, err := h.lookupOwner(ctx, name.TemplateID, name.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -121,12 +121,12 @@ func (h *TeamHandler) GetTeam(ctx context.Context, req *game.GetTeamRequest) (*g
 // (parent templates/{template}/sessions/{session}/team/agents/{agent}).
 // The owner must already exist.
 func (h *TeamHandler) ListMessages(ctx context.Context, req *game.ListMessagesRequest) (*game.ListMessagesResponse, error) {
-	_, sessionID, _, err := parseMessagesParent(req.GetParent())
+	template, sessionID, _, err := parseMessagesParent(req.GetParent())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	owner, err := h.lookupOwner(ctx, sessionID)
+	owner, err := h.lookupOwner(ctx, template, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 	}
 	name := game.SessionName{TemplateID: frame.GetTemplateId(), SessionID: frame.GetSessionId()}
 
-	owner, err := h.lookupOwner(ctx, name.SessionID)
+	owner, err := h.lookupOwner(ctx, name.TemplateID, name.SessionID)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func (h *TeamHandler) RefreshTeam(ctx context.Context, req *game.RefreshTeamRequ
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	owner, err := h.lookupOwner(ctx, name.SessionID)
+	owner, err := h.lookupOwner(ctx, name.TemplateID, name.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -247,12 +247,14 @@ func parseMessagesParent(parent string) (template, sessionID, agent string, err 
 	return segments[1], segments[3], segments[6], nil
 }
 
-// lookupOwner returns the existing owner for a session or a mapped status error.
-// It does NOT create an owner; only CreateTeam allocates one.
-func (h *TeamHandler) lookupOwner(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
-	owner, err := h.ownerStore.Get(ctx, sessionID)
+// lookupOwner returns the existing owner for a (templateID, sessionID) pair
+// or a mapped status error. It does NOT create an owner; only CreateTeam
+// allocates one.
+func (h *TeamHandler) lookupOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
+	owner, err := h.ownerStore.Get(ctx, templateID, sessionID)
 	if err != nil {
 		logs.Error(ctx, "owner lookup failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -261,18 +263,20 @@ func (h *TeamHandler) lookupOwner(ctx context.Context, sessionID string) (*domai
 	return owner, nil
 }
 
-// assignOwner returns the existing owner for a session, or picks and persists a
-// new one when no owner exists yet. Used only by CreateTeam (idempotent: a
-// repeated CreateTeam for an already-created session reuses its owner). Under
-// a concurrent-create race the persisted owner wins: ErrOwnerAlreadyExists
-// from Create re-reads the existing owner instead of erroring (S1).
-func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
-	owner, err := h.ownerStore.Get(ctx, sessionID)
+// assignOwner returns the existing owner for a (templateID, sessionID) pair,
+// or picks and persists a new one when no owner exists yet. Used only by
+// CreateTeam (idempotent: a repeated CreateTeam for an already-created session
+// reuses its owner). Under a concurrent-create race the persisted owner wins:
+// ErrOwnerAlreadyExists from Create re-reads the existing owner instead of
+// erroring (S1).
+func (h *TeamHandler) assignOwner(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
+	owner, err := h.ownerStore.Get(ctx, templateID, sessionID)
 	if err == nil {
 		return owner, nil
 	}
 	if !errors.Is(err, domain.ErrOwnerNotFound) {
 		logs.Error(ctx, "assign owner: store lookup failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -282,6 +286,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 	conns, err := h.manager.List(ctx)
 	if err != nil {
 		logs.Error(ctx, "assign owner: list connections failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -295,6 +300,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 
 	now := time.Now()
 	owner = &domain.AgentOwner{
+		TemplateID: templateID,
 		SessionID:  sessionID,
 		OwnerIndex: pickedRef.OwnerIndex,
 		Owner:      pickedRef.Owner,
@@ -306,21 +312,24 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 		// idempotent — re-read the winner's owner instead of surfacing
 		// AlreadyExists (S1; the agent-side profile check is independent).
 		if errors.Is(err, domain.ErrOwnerAlreadyExists) {
-			existing, getErr := h.ownerStore.Get(ctx, sessionID)
+			existing, getErr := h.ownerStore.Get(ctx, templateID, sessionID)
 			if getErr != nil {
 				logs.Error(ctx, "assign owner: re-read after race failed",
+					event.String("template_id", templateID),
 					event.String("session_id", sessionID),
 					event.Err(getErr),
 				)
 				return nil, mapDomainError(getErr)
 			}
 			logs.Info(ctx, "owner already allocated by concurrent create team; reusing it",
+				event.String("template_id", templateID),
 				event.String("session_id", sessionID),
 				event.Int("agent_index", existing.OwnerIndex),
 			)
 			return existing, nil
 		}
 		logs.Error(ctx, "assign owner: create record failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -328,6 +337,7 @@ func (h *TeamHandler) assignOwner(ctx context.Context, sessionID string) (*domai
 	}
 
 	logs.Info(ctx, "owner created on create team",
+		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.String("owner", pickedRef.Owner),
 		event.Int("agent_index", pickedRef.OwnerIndex),

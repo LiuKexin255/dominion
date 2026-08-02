@@ -31,10 +31,18 @@ func (r *fakeSingleResult) Decode(v interface{}) error {
 	return bson.Unmarshal(data, v)
 }
 
+// ownerRecordKey returns the composite storage key (template_id, session_id)
+// of an owner document: a session is identified by the resource pattern
+// templates/{template}/sessions/{session}, so the same session ID under
+// different templates is a distinct record.
+func ownerRecordKey(templateID, sessionID string) string {
+	return templateID + "\x00" + sessionID
+}
+
 // fakeCollection implements collectionOps with in-memory storage.
 type fakeCollection struct {
 	mu      sync.Mutex
-	records map[string]bson.M // keyed by session_id
+	records map[string]bson.M // keyed by (template_id, session_id)
 }
 
 func newFakeCollection() *fakeCollection {
@@ -60,14 +68,16 @@ func (c *fakeCollection) InsertOne(_ context.Context, document interface{}, _ ..
 		}
 	}
 
+	templateID, _ := doc["template_id"].(string)
 	sessionID, _ := doc["session_id"].(string)
-	if _, exists := c.records[sessionID]; exists {
+	key := ownerRecordKey(templateID, sessionID)
+	if _, exists := c.records[key]; exists {
 		return nil, mongodriver.WriteException{
 			WriteErrors: []mongodriver.WriteError{{Code: 11000, Message: "duplicate key"}},
 		}
 	}
 
-	c.records[sessionID] = doc
+	c.records[key] = doc
 	return new(mongodriver.InsertOneResult), nil
 }
 
@@ -88,8 +98,9 @@ func (c *fakeCollection) FindOne(_ context.Context, filter interface{}, _ ...*op
 		}
 	}
 
+	templateID, _ := f["template_id"].(string)
 	sessionID, _ := f["session_id"].(string)
-	doc, exists := c.records[sessionID]
+	doc, exists := c.records[ownerRecordKey(templateID, sessionID)]
 	if !exists {
 		return &fakeSingleResult{err: mongodriver.ErrNoDocuments}
 	}
@@ -114,12 +125,14 @@ func (c *fakeCollection) DeleteOne(_ context.Context, filter interface{}, _ ...*
 		}
 	}
 
+	templateID, _ := f["template_id"].(string)
 	sessionID, _ := f["session_id"].(string)
-	if _, exists := c.records[sessionID]; !exists {
+	key := ownerRecordKey(templateID, sessionID)
+	if _, exists := c.records[key]; !exists {
 		return &mongodriver.DeleteResult{DeletedCount: 0}, nil
 	}
 
-	delete(c.records, sessionID)
+	delete(c.records, key)
 	return &mongodriver.DeleteResult{DeletedCount: 1}, nil
 }
 
@@ -135,6 +148,7 @@ func TestMongoOwnerStore_CreateAndGet(t *testing.T) {
 	store := newStoreWithFakeCollection()
 
 	owner := &domain.AgentOwner{
+		TemplateID: "saolei",
 		SessionID:  "session-001",
 		OwnerIndex: 2,
 		Owner:      "agent-2",
@@ -147,12 +161,15 @@ func TestMongoOwnerStore_CreateAndGet(t *testing.T) {
 	}
 
 	// when: get owner
-	got, err := store.Get(ctx, "session-001")
+	got, err := store.Get(ctx, "saolei", "session-001")
 	if err != nil {
 		t.Fatalf("Get() unexpected error: %v", err)
 	}
 
 	// then: fields match
+	if got.TemplateID != owner.TemplateID {
+		t.Fatalf("Get().TemplateID = %q, want %q", got.TemplateID, owner.TemplateID)
+	}
 	if got.SessionID != owner.SessionID {
 		t.Fatalf("Get().SessionID = %q, want %q", got.SessionID, owner.SessionID)
 	}
@@ -169,6 +186,7 @@ func TestMongoOwnerStore_CreateDuplicate(t *testing.T) {
 	store := newStoreWithFakeCollection()
 
 	owner := &domain.AgentOwner{
+		TemplateID: "saolei",
 		SessionID:  "session-dup",
 		OwnerIndex: 0,
 		Owner:      "agent-0",
@@ -195,7 +213,7 @@ func TestMongoOwnerStore_GetNotFound(t *testing.T) {
 	store := newStoreWithFakeCollection()
 
 	// when
-	_, err := store.Get(ctx, "nonexistent-session")
+	_, err := store.Get(ctx, "saolei", "nonexistent-session")
 
 	// then
 	if err == nil {
@@ -211,6 +229,7 @@ func TestMongoOwnerStore_Delete(t *testing.T) {
 	store := newStoreWithFakeCollection()
 
 	owner := &domain.AgentOwner{
+		TemplateID: "saolei",
 		SessionID:  "session-del",
 		OwnerIndex: 1,
 		Owner:      "agent-1",
@@ -221,7 +240,7 @@ func TestMongoOwnerStore_Delete(t *testing.T) {
 	}
 
 	// when
-	err := store.Delete(ctx, "session-del")
+	err := store.Delete(ctx, "saolei", "session-del")
 
 	// then
 	if err != nil {
@@ -229,7 +248,7 @@ func TestMongoOwnerStore_Delete(t *testing.T) {
 	}
 
 	// then: get after delete returns not found
-	_, err = store.Get(ctx, "session-del")
+	_, err = store.Get(ctx, "saolei", "session-del")
 	if !errors.Is(err, domain.ErrOwnerNotFound) {
 		t.Fatalf("Get() after Delete() error = %v, want ErrOwnerNotFound", err)
 	}
@@ -240,7 +259,7 @@ func TestMongoOwnerStore_DeleteNotFound(t *testing.T) {
 	store := newStoreWithFakeCollection()
 
 	// when
-	err := store.Delete(ctx, "nonexistent-session")
+	err := store.Delete(ctx, "saolei", "nonexistent-session")
 
 	// then
 	if err == nil {
@@ -251,8 +270,74 @@ func TestMongoOwnerStore_DeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestMongoOwnerStore_CompositeKeyIsolation(t *testing.T) {
+	ctx := context.Background()
+	store := newStoreWithFakeCollection()
+
+	// given: same session id under two different templates
+	saoleiOwner := &domain.AgentOwner{
+		TemplateID: "saolei",
+		SessionID:  "session-x",
+		OwnerIndex: 1,
+		Owner:      "agent-1",
+		CreateTime: time.Now(),
+	}
+	otherOwner := &domain.AgentOwner{
+		TemplateID: "other",
+		SessionID:  "session-x",
+		OwnerIndex: 2,
+		Owner:      "agent-2",
+		CreateTime: time.Now(),
+	}
+
+	// when: create both
+	if err := store.Create(ctx, saoleiOwner); err != nil {
+		t.Fatalf("Create() saolei owner unexpected error: %v", err)
+	}
+	if err := store.Create(ctx, otherOwner); err != nil {
+		t.Fatalf("Create() other-template owner unexpected error: %v", err)
+	}
+
+	// then: each is found under its own composite key
+	got, err := store.Get(ctx, "saolei", "session-x")
+	if err != nil {
+		t.Fatalf("Get(saolei) unexpected error: %v", err)
+	}
+	if got.Owner != "agent-1" {
+		t.Fatalf("Get(saolei).Owner = %q, want %q", got.Owner, "agent-1")
+	}
+
+	got, err = store.Get(ctx, "other", "session-x")
+	if err != nil {
+		t.Fatalf("Get(other) unexpected error: %v", err)
+	}
+	if got.Owner != "agent-2" {
+		t.Fatalf("Get(other).Owner = %q, want %q", got.Owner, "agent-2")
+	}
+
+	// then: duplicate check is per composite key, not per session id
+	err = store.Create(ctx, saoleiOwner)
+	if !errors.Is(err, domain.ErrOwnerAlreadyExists) {
+		t.Fatalf("Create() same composite key error = %v, want ErrOwnerAlreadyExists", err)
+	}
+
+	// when: delete only the saolei record
+	if err := store.Delete(ctx, "saolei", "session-x"); err != nil {
+		t.Fatalf("Delete(saolei) unexpected error: %v", err)
+	}
+
+	// then: the other template's record is untouched
+	if _, err = store.Get(ctx, "other", "session-x"); err != nil {
+		t.Fatalf("Get(other) after Delete(saolei) unexpected error: %v", err)
+	}
+	if _, err = store.Get(ctx, "saolei", "session-x"); !errors.Is(err, domain.ErrOwnerNotFound) {
+		t.Fatalf("Get(saolei) after Delete() error = %v, want ErrOwnerNotFound", err)
+	}
+}
+
 func Test_agentOwnerDocument_RoundTrip(t *testing.T) {
 	original := &domain.AgentOwner{
+		TemplateID: "saolei",
 		SessionID:  "session-roundtrip",
 		OwnerIndex: 3,
 		Owner:      "agent-3",
@@ -264,6 +349,9 @@ func Test_agentOwnerDocument_RoundTrip(t *testing.T) {
 	got := doc.toDomain()
 
 	// then: fields match
+	if got.TemplateID != original.TemplateID {
+		t.Fatalf("toDomain().TemplateID = %q, want %q", got.TemplateID, original.TemplateID)
+	}
 	if got.SessionID != original.SessionID {
 		t.Fatalf("toDomain().SessionID = %q, want %q", got.SessionID, original.SessionID)
 	}

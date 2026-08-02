@@ -10,8 +10,9 @@ import (
 
 // agentOwnerDocument stores AgentOwner documents in MongoDB.
 type agentOwnerDocument struct {
-	SessionID        string    `bson:"session_id"`
-	OwnerIndex       int       `bson:"owner_index"`
+	TemplateID string    `bson:"template_id"`
+	SessionID  string    `bson:"session_id"`
+	OwnerIndex int       `bson:"owner_index"`
 	Owner      string    `bson:"owner"`
 	CreateTime time.Time `bson:"create_time"`
 }
@@ -23,6 +24,7 @@ func (d *agentOwnerDocument) toDomain() *domain.AgentOwner {
 	}
 
 	return &domain.AgentOwner{
+		TemplateID: d.TemplateID,
 		SessionID:  d.SessionID,
 		OwnerIndex: d.OwnerIndex,
 		Owner:      d.Owner,
@@ -37,6 +39,7 @@ func agentOwnerDocumentFromDomain(a *domain.AgentOwner) *agentOwnerDocument {
 	}
 
 	return &agentOwnerDocument{
+		TemplateID: a.TemplateID,
 		SessionID:  a.SessionID,
 		OwnerIndex: a.OwnerIndex,
 		Owner:      a.Owner,

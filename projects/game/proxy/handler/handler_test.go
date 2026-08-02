@@ -18,6 +18,14 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+// ownerKey returns the composite storage key (templateID, sessionID) of an
+// owner record: a session is identified by the resource pattern
+// templates/{template}/sessions/{session}, so the same session ID under
+// different templates is a distinct record.
+func ownerKey(templateID, sessionID string) string {
+	return templateID + "\x00" + sessionID
+}
+
 // mockOwnerStore implements domain.OwnerStore for testing.
 type mockOwnerStore struct {
 	records map[string]*domain.AgentOwner
@@ -29,29 +37,31 @@ func newMockOwnerStore() *mockOwnerStore {
 }
 
 func (s *mockOwnerStore) Create(_ context.Context, owner *domain.AgentOwner) error {
-	if _, exists := s.records[owner.SessionID]; exists {
+	key := ownerKey(owner.TemplateID, owner.SessionID)
+	if _, exists := s.records[key]; exists {
 		return domain.ErrOwnerAlreadyExists
 	}
-	s.records[owner.SessionID] = owner
+	s.records[key] = owner
 	return nil
 }
 
-func (s *mockOwnerStore) Get(_ context.Context, sessionID string) (*domain.AgentOwner, error) {
+func (s *mockOwnerStore) Get(_ context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
-	owner, exists := s.records[sessionID]
+	owner, exists := s.records[ownerKey(templateID, sessionID)]
 	if !exists {
 		return nil, domain.ErrOwnerNotFound
 	}
 	return owner, nil
 }
 
-func (s *mockOwnerStore) Delete(_ context.Context, sessionID string) error {
-	if _, exists := s.records[sessionID]; !exists {
+func (s *mockOwnerStore) Delete(_ context.Context, templateID, sessionID string) error {
+	key := ownerKey(templateID, sessionID)
+	if _, exists := s.records[key]; !exists {
 		return domain.ErrOwnerNotFound
 	}
-	delete(s.records, sessionID)
+	delete(s.records, key)
 	return nil
 }
 
@@ -111,7 +121,7 @@ func (s *raceOwnerStore) Create(_ context.Context, _ *domain.AgentOwner) error {
 	return domain.ErrOwnerAlreadyExists
 }
 
-func (s *raceOwnerStore) Get(_ context.Context, _ string) (*domain.AgentOwner, error) {
+func (s *raceOwnerStore) Get(_ context.Context, _, _ string) (*domain.AgentOwner, error) {
 	s.gets++
 	if s.gets == 1 {
 		return nil, domain.ErrOwnerNotFound
@@ -119,7 +129,7 @@ func (s *raceOwnerStore) Get(_ context.Context, _ string) (*domain.AgentOwner, e
 	return s.winner, nil
 }
 
-func (s *raceOwnerStore) Delete(_ context.Context, _ string) error {
+func (s *raceOwnerStore) Delete(_ context.Context, _, _ string) error {
 	return domain.ErrOwnerNotFound
 }
 
@@ -307,8 +317,13 @@ func TestCreateTeam(t *testing.T) {
 			t.Fatalf("CreateTeam() name = %q, want %q", team.GetName(), "templates/saolei/sessions/sid/team")
 		}
 		// The owner was allocated (CreateTeam is the only allocation point).
-		if _, ok := store.records["sid"]; !ok {
+		if _, ok := store.records[ownerKey("saolei", "sid")]; !ok {
 			t.Fatal("CreateTeam() did not allocate an owner")
+		}
+		// The owner record carries the template of the session's resource
+		// name (composite key routing).
+		if store.records[ownerKey("saolei", "sid")].TemplateID != "saolei" {
+			t.Fatal("CreateTeam() allocated owner without the template ID")
 		}
 		// The downstream agent received the caller's request unchanged.
 		if agentMock.lastCreateTeamReq != createReq {
@@ -318,7 +333,7 @@ func TestCreateTeam(t *testing.T) {
 
 	t.Run("reuses the existing owner on repeat create (idempotent)", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		// No connRefs: a pick would fail — proving the existing owner is reused.
 		mgr := &mockManager{}
 		agentMock := &mockAgentClient{}
@@ -345,7 +360,7 @@ func TestCreateTeam(t *testing.T) {
 		// Get misses, its Create loses to the other request
 		// (ErrOwnerAlreadyExists), and the follow-up Get returns the
 		// winner's record — the proxy-layer owner allocation is idempotent.
-		winner := &domain.AgentOwner{SessionID: "sid", OwnerIndex: 2, Owner: "agent-2"}
+		winner := &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 2, Owner: "agent-2"}
 		store := &raceOwnerStore{winner: winner}
 		mgr := &mockManager{}
 		agentMock := &mockAgentClient{}
@@ -424,7 +439,7 @@ func TestGetTeam(t *testing.T) {
 
 	t.Run("success with existing owner", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		agentMock := &mockAgentClient{}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -465,7 +480,7 @@ func TestGetTeam(t *testing.T) {
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("GetTeam() status = %v, want NotFound", status.Code(err))
 		}
-		if _, ok := store.records["never-connected"]; ok {
+		if _, ok := store.records[ownerKey("saolei", "never-connected")]; ok {
 			t.Fatal("GetTeam() unexpectedly created an owner")
 		}
 	})
@@ -485,7 +500,7 @@ func TestGetTeam(t *testing.T) {
 
 	t.Run("agent error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		agentMock := &mockAgentClient{getTeamErr: status.Error(codes.NotFound, "team not found")}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -493,6 +508,24 @@ func TestGetTeam(t *testing.T) {
 		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
 
 		_, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: testTeamName})
+
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("GetTeam() status = %v, want NotFound", status.Code(err))
+		}
+	})
+
+	t.Run("same session id under another template does not reuse the owner", func(t *testing.T) {
+		// The owner exists only for template "saolei"; the same session id
+		// under another template is a distinct session and must not reuse it.
+		store := newMockOwnerStore()
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
+		agentMock := &mockAgentClient{}
+		restore := setMockNewAgentClient(agentMock)
+		defer restore()
+
+		h := NewTeamHandler(store, picker, &mockManager{}, &mockBinder{})
+
+		_, err := h.GetTeam(ctx, &game.GetTeamRequest{Name: "templates/other/sessions/sid/team"})
 
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("GetTeam() status = %v, want NotFound", status.Code(err))
@@ -506,7 +539,7 @@ func TestListMessages(t *testing.T) {
 
 	t.Run("success with existing owner", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		agentMock := &mockAgentClient{}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -559,7 +592,7 @@ func TestConnect(t *testing.T) {
 
 	t.Run("happy path with existing owner", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 
 		agentStream := &mockAgentStream{recvCh: make(<-chan *game.AgentFrame), sendCh: make(chan<- *game.AgentFrame)}
 		agentMock := &mockAgentClient{agentStream: agentStream}
@@ -593,7 +626,7 @@ func TestConnect(t *testing.T) {
 		if status.Code(err) != codes.NotFound {
 			t.Fatalf("Connect() status = %v, want NotFound", status.Code(err))
 		}
-		if _, ok := store.records["new-session"]; ok {
+		if _, ok := store.records[ownerKey("saolei", "new-session")]; ok {
 			t.Fatal("Connect() unexpectedly created an owner")
 		}
 	})
@@ -634,7 +667,7 @@ func TestConnect(t *testing.T) {
 
 	t.Run("manager get returns error maps to Internal", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		mgr := &mockManager{getErr: errors.New("no connection")}
 
 		h := NewTeamHandler(store, picker, mgr, &mockBinder{})
@@ -648,7 +681,7 @@ func TestConnect(t *testing.T) {
 
 	t.Run("binder error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 
 		agentStream := &mockAgentStream{recvCh: make(<-chan *game.AgentFrame), sendCh: make(chan<- *game.AgentFrame)}
 		agentMock := &mockAgentClient{agentStream: agentStream}
@@ -671,7 +704,7 @@ func TestRefreshTeam(t *testing.T) {
 
 	t.Run("forwards to owner node", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		agentMock := &mockAgentClient{}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -711,7 +744,7 @@ func TestRefreshTeam(t *testing.T) {
 		if agentMock.lastRefreshReq != nil {
 			t.Fatal("RefreshTeam() unexpectedly called downstream agent for missing session")
 		}
-		if _, ok := store.records["no-owner"]; ok {
+		if _, ok := store.records[ownerKey("saolei", "no-owner")]; ok {
 			t.Fatal("RefreshTeam() unexpectedly created owner")
 		}
 	})
@@ -728,7 +761,7 @@ func TestRefreshTeam(t *testing.T) {
 
 	t.Run("manager get returns error maps to Internal", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		mgr := &mockManager{getErr: errors.New("no connection")}
 		restore := setMockNewAgentClient(&mockAgentClient{})
 		defer restore()
@@ -744,7 +777,7 @@ func TestRefreshTeam(t *testing.T) {
 
 	t.Run("downstream error propagates", func(t *testing.T) {
 		store := newMockOwnerStore()
-		store.records["sid"] = &domain.AgentOwner{SessionID: "sid", OwnerIndex: 1}
+		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 		agentMock := &mockAgentClient{refreshTeamErr: status.Error(codes.FailedPrecondition, "turn in flight")}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()

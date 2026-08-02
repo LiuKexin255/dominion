@@ -12,9 +12,14 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// ownerFilter is a concrete BSON filter struct for querying by session_id.
+// ownerFilter is a concrete BSON filter struct for querying by the
+// (template_id, session_id) composite key: a session is identified by the
+// resource pattern templates/{template}/sessions/{session}
+// (projects/game/game.proto), so the same session ID under different
+// templates is a distinct session.
 type ownerFilter struct {
-	SessionID string `bson:"session_id"`
+	TemplateID string `bson:"template_id"`
+	SessionID  string `bson:"session_id"`
 }
 
 const (
@@ -74,7 +79,7 @@ func NewMongoOwnerStore(client *mongodriver.Client) domain.OwnerStore {
 func (s *mongoOwnerStore) Create(ctx context.Context, owner *domain.AgentOwner) error {
 	// Check for existing record before inserting.
 	existing := new(agentOwnerDocument)
-	if err := s.collection.FindOne(ctx, ownerFilter{SessionID: owner.SessionID}).Decode(existing); err == nil {
+	if err := s.collection.FindOne(ctx, ownerFilter{TemplateID: owner.TemplateID, SessionID: owner.SessionID}).Decode(existing); err == nil {
 		return domain.ErrOwnerAlreadyExists
 	} else if !errors.Is(err, mongodriver.ErrNoDocuments) {
 		return err
@@ -96,10 +101,10 @@ func (s *mongoOwnerStore) Create(ctx context.Context, owner *domain.AgentOwner) 
 	return nil
 }
 
-// Get retrieves an agent owner by session ID.
-func (s *mongoOwnerStore) Get(ctx context.Context, sessionID string) (*domain.AgentOwner, error) {
+// Get retrieves an agent owner by its (templateID, sessionID) composite key.
+func (s *mongoOwnerStore) Get(ctx context.Context, templateID, sessionID string) (*domain.AgentOwner, error) {
 	result := new(agentOwnerDocument)
-	if err := s.collection.FindOne(ctx, ownerFilter{SessionID: sessionID}).Decode(result); err != nil {
+	if err := s.collection.FindOne(ctx, ownerFilter{TemplateID: templateID, SessionID: sessionID}).Decode(result); err != nil {
 		if errors.Is(err, mongodriver.ErrNoDocuments) {
 			return nil, domain.ErrOwnerNotFound
 		}
@@ -109,9 +114,9 @@ func (s *mongoOwnerStore) Get(ctx context.Context, sessionID string) (*domain.Ag
 	return result.toDomain(), nil
 }
 
-// Delete removes an agent owner by session ID.
-func (s *mongoOwnerStore) Delete(ctx context.Context, sessionID string) error {
-	result, err := s.collection.DeleteOne(ctx, ownerFilter{SessionID: sessionID})
+// Delete removes an agent owner by its (templateID, sessionID) composite key.
+func (s *mongoOwnerStore) Delete(ctx context.Context, templateID, sessionID string) error {
+	result, err := s.collection.DeleteOne(ctx, ownerFilter{TemplateID: templateID, SessionID: sessionID})
 	if err != nil {
 		return err
 	}
