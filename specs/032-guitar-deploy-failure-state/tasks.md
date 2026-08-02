@@ -80,8 +80,8 @@ description: "Task list for 032-guitar-deploy-failure-state"
 
 ### Tasks
 
-- [ ] T006 [P] 更新 `tools/release/deploy/README.md`：在「命令」小节（apply/del/list/scope 旁）增补 `deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>` 用法与说明。
-- [ ] T007 [P] 更新 `tools/test/guitar/README.md`：在「输出格式」小节说明部署不成功时附加的「环境状态」诊断输出（醒目头部 + `deploy describe` 顶格文本），并备注 describe 失败降级。
+- [X] T006 [P] 更新 `tools/release/deploy/README.md`：在「命令」小节（apply/del/list/scope 旁）增补 `deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>` 用法与说明。
+- [X] T007 [P] 更新 `tools/test/guitar/README.md`：在「输出格式」小节说明部署不成功时附加的「环境状态」诊断输出（醒目头部 + `deploy describe` 顶格文本），并备注 describe 失败降级。
 - [ ] T008 全量验证门禁：运行 `bazel build //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿；随后按 [quickstart.md](./quickstart.md) 执行端到端验证 1（`deploy describe <env>` 单命令，需可访问 deploy service）、验证 2（失败路径核心场景，**必做**——优先采用构造成本最低的场景 A：suite `timeout` 或全局 `--timeout` 设极短（如 `--timeout=20s`）触发超时；仅当环境确无法构造失败场景时方可豁免，且须在任务完成记录中说明原因）、验证 3（成功路径回归），并执行「边界验证」三例（非 TTY 无 ANSI 码、环境创建前失败、describe 自身失败降级），确认失败路径诊断输出符合预期。
 
 ---
