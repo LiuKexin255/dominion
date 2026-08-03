@@ -280,7 +280,19 @@ deploy list
 deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] {env-name}
 ```
 
-打印单个部署环境的详细状态：环境名、状态（中文描述）、失败说明（如有）、服务列表（应用服务与基础设施）、最近调和与最近成功时间。数据来自 deploy service 的环境状态，单次查询无轮询。环境不存在时输出 `环境 {env-name} 不存在` 提示并以非零退出码返回。
+打印单个部署环境的详细状态：环境名、状态（中文描述）、服务列表（应用服务与基础设施）、最近调和与最近成功时间。服务列表每项内联 **per-service rollout 状态**（来自 deploy service 的 `Environment.status.services`）：`就绪`（READY）、`等待发布: {原因}`（WAITING）、`失败: {原因}`（FAILED）、`已提交，等待观测`（PENDING，资源已提交、首次 rollout 观测尚未完成）；`status.services` 无该服务匹配项时不追加状态文本（兼容旧版服务端，回退纯服务列表）。`说明:` 行仅在无 per-service 数据（`status.services` 为空）且环境级 message 非空时输出，用于表达 apply 失败、retry-exhausted 等非 rollout 原因。数据来自 deploy service 的环境状态，单次查询无轮询。环境不存在时输出 `环境 {env-name} 不存在` 提示并以非零退出码返回。
+
+输出示例（滚动发布进行中，per-service 状态主线，`说明:` 不输出）：
+
+```
+环境 game.lt3x8q2
+状态: 等待滚动发布
+服务:
+  - service (app=game) [artifact] 就绪
+  - gateway (app=game) [artifact] 等待发布: 可用副本不足（available: 0/1）
+最近调和: 2026-08-03T10:30:05Z
+最近成功: -
+```
 
 输出字段顺序与格式见 `../../../specs/032-guitar-deploy-failure-state/contracts/deploy-describe.md`。
 

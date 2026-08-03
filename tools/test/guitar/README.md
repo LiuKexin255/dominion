@@ -85,17 +85,19 @@ run={runID} env={envName} deploy={deployPath}
 ```
   --- 环境状态 (env=game.lt3x8q2) ---
 环境 game.lt3x8q2
-状态: 失败
-说明: service "gateway" rollout failed: ImagePullBackOff
+状态: 等待滚动发布
 服务:
-  - gateway (app=game) [artifact]
-  - mongo (app=game) [infra: mongodb]
-最近调和: 2026-08-02T10:30:00Z
+  - service (app=game) [artifact] 就绪
+  - gateway (app=game) [artifact] 等待发布: 可用副本不足（available: 0/1）
+  - mongo (app=game) [infra: mongodb] 已提交，等待观测
+最近调和: 2026-08-03T10:30:05Z
 最近成功: -
 ```
 
 - 第一行为醒目分隔头部（2 空格缩进，`--- ... ---` 包裹，不着色）
-- 紧随其后为 `deploy describe` 的顶格文本（环境名/状态/失败说明/服务列表/最近调和与成功时间），不做逐行缩进
+- 紧随其后为 `deploy describe` 的顶格文本（环境名/状态/服务列表/最近调和与成功时间），不做逐行缩进
+- describe 输出以 **per-service 状态**为主线：服务列表每项内联其 rollout 状态——`就绪`、`等待发布: {原因}`、`失败: {原因}`、`已提交，等待观测`——直接显示哪个服务等待或失败及其原因；有 per-service 数据时不输出 `说明:` 行（仅当无 per-service 数据且环境级 message 非空时输出）
+- deploy service 在 `applyAndWait`（资源提交、进入 `WAITING_ROLLOUT`）即写入每个服务的初始 PENDING 状态（决策 R4），故短超时场景（如 `--timeout=5s`）describe 亦能列出服务及「已提交，等待观测」状态，消除了初版的时序空窗——见 `../../../specs/032-guitar-deploy-failure-state/research.md` 决策 R4 与 `../../../specs/032-guitar-deploy-failure-state/contracts/environment-status.md`
 - 若 `deploy describe` 自身失败（如环境不存在、deploy service 不可达），向 stderr 输出 warning 降级，不影响原始部署错误上报与后续清理
 - 部署成功时不输出该诊断（与既有行为一致）
 
