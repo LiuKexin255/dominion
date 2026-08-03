@@ -84,9 +84,3 @@ Python 依赖更新步骤：
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
 * 对同一文件编辑建议**串行**进行，避免并发编辑导致更新丢失。
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-at `specs/018-saolei-mcp/plan.md`
-<!-- SPECKIT END -->
