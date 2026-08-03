@@ -15,9 +15,8 @@ const (
 )
 
 var (
-	serviceEndpointsNameRegexp        = regexp.MustCompile(serviceEndpointsNamePattern)
-	appNameRegexp                     = regexp.MustCompile(appNamePattern)
-	serviceEndpointsResourceNameRegex = regexp.MustCompile(`^deploy/scopes/([a-z][a-z0-9]{0,7})/environments/([a-z][a-z0-9]{0,7})/apps/([a-z][a-z0-9-]{0,19})/services/([a-z][a-z0-9-]{0,19})/endpoints$`)
+	serviceEndpointsNameRegexp = regexp.MustCompile(serviceEndpointsNamePattern)
+	appNameRegexp              = regexp.MustCompile(appNamePattern)
 
 	// ErrServiceNotFound indicates that the requested service does not exist.
 	ErrServiceNotFound = errors.New("service does not exist")
@@ -47,16 +46,6 @@ type ServiceEndpointsName struct {
 	envName string
 	app     string
 	service string
-}
-
-// ParseServiceEndpointsName parses deploy/scopes/{scope}/environments/{env_name}/apps/{app}/services/{service}/endpoints into a ServiceEndpointsName.
-func ParseServiceEndpointsName(name string) (ServiceEndpointsName, error) {
-	matches := serviceEndpointsResourceNameRegex.FindStringSubmatch(name)
-	if len(matches) != 5 {
-		return ServiceEndpointsName{}, ErrInvalidName
-	}
-
-	return NewServiceEndpointsName(matches[1], matches[2], matches[3], matches[4])
 }
 
 // NewServiceEndpointsName validates scope, envName, app, and service and constructs a ServiceEndpointsName.

@@ -117,3 +117,28 @@ list 命令的 `--scope` 值在 `validateListOptions` 中使用 `envPartRegexp` 
 
 - `import "dominion/tools/release/deploy/pkg/workspace"` 从 del.go 和 describe.go 中移除（list.go 中也会移除）。
 - BUILD.bazel 中 `scope.go` 从 `srcs` 移除，`scope_test.go` 从测试 `srcs` 移除。通过 `bazel run //:gazelle` 自动更新。
+
+## R7: handler.go 全面迁移到 codegen name 解析
+
+### Decision
+
+handler.go 中**所有** name 解析统一使用 codegen 生成的方法（`req.ParseName()`、`ParseScopeName`），不保留任何 domain 手写解析（`domain.ParseResourceName`、`domain.ParseServiceEndpointsName`）。`parseParent` 辅助函数消除，逻辑内联到 ListEnvironments / CreateEnvironment 调用点。死代码 `fromProtoEnvironment` 移除。domain 值对象保留。
+
+### Rationale
+
+- 用户 review 反馈：`domain.ParseResourceName` 仍被大范围使用（handler.go 5 处），`parseParent` 用 `domain.NewEnvironmentName(scope, "env")` 的 dummy 值触发 scope regex 校验是副作用利用，不符合宪法原则 II 的重构式变更要求。
+- codegen 已生成完整 API（确认于 `deploy_aip.pb.resource.go`）：请求级 `ParseName()`（GetEnvironmentRequest、GetServiceEndpointsRequest、DeleteEnvironmentRequest）、消息级 `Environment.ParseName()`、`ParseScopeName` / `ParseEnvironmentName` / `ParseServiceEndpointsName`。
+- **业务校验非副作用**：codegen 结构校验后，`domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)` 构造真实 domain 类型——regex 校验是构造的一部分，不是副作用（与 parseParent 用 dummy "env" 值有本质区别）。
+- **scope 独立校验**：新增 `domain.ValidateScope(s string) error` 函数，替代 parseParent 中 `NewEnvironmentName(scope, "env")` 的副作用校验。
+- **parseParent 消除**：参照 game handler（无 parseParent helper，每个方法内联 codegen 解析）。parseParent 仅被 ListEnvironments 和 CreateEnvironment 共用，消除后两处各自内联，行为等价（见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D4 验证表）。
+- **CreateEnvironment 通配符**：旧行为 `deploy/scopes/-` → parseParent 返回 "-" → 下游 `NewEnvironmentName("-", env)` 失败。新行为入口 `ContainsWildcard()` 显式拒绝。两者均返回 InvalidArgument，新行为更明确。
+- **domain 值对象保留**：`domain.EnvironmentName` 在 repository 接口、storage、service、runtime、queue map key（47 处引用）中深度使用。彻底移除需改动 20+ 文件接口签名，远超 feature 033 范围。handler 边界用 codegen，内部保留 domain 类型——类型转换通过 `domain.NewXxxName` 构造函数完成。
+- **game 范式参照**：game handler 在边界用 `game.ParseTemplateName` + `gameconst.ValidateTemplateName`，传裸 string 给下游（`tplName.TemplateID`）。deploy 采用类似模式——边界用 codegen `req.ParseName()` + `domain.NewXxxName` 构造，传 domain 类型给下游（保留类型安全）。
+
+### Alternatives considered
+
+1. **仅迁移 parseParent**（之前的 plan-supplement-codegen.md）：保留大量 domain 手写解析，不符合宪法原则 II 重构式变更。
+2. **彻底移除 domain 值对象（完整 game 范式）**：所有层改用裸 string。影响 20+ 文件、大量接口签名变更，回归风险高，远超 feature 033 的 scope removal 目标。domain 值对象提供 queue map key 的可比较性、aggregate 封装、`.Label()` / `.String()` 格式化等价值。
+3. **保留 parseParent 但正确实现**：用户明确选择消除 parseParent、内联到调用点。parseParent 被消除后，ListEnvironments 允许通配符、CreateEnvironment 显式拒绝通配符——两处行为差异使内联比共用 helper 更清晰。
+
+详见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md)。

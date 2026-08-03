@@ -150,10 +150,13 @@ func (r *fakeRepository) ListByScope(_ context.Context, scope string, pageSize i
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	// "-" is the AIP-159 cross-collection wildcard: skip the scope prefix
+	// filter and return all environments. References: https://google.aip.dev/159,
+	// specs/033-deploy-scope-cleanup/research.md R1.
 	prefix := scopePrefix(scope)
 	filtered := make([]*domain.Environment, 0, len(r.envs))
 	for _, env := range r.envs {
-		if strings.HasPrefix(env.Name().String(), prefix) {
+		if scope == "-" || strings.HasPrefix(env.Name().String(), prefix) {
 			filtered = append(filtered, env)
 		}
 	}

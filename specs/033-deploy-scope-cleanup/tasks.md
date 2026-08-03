@@ -28,10 +28,60 @@
 
 **文档清单**：
 - **代码规范文档**：`style/golang.md`、`style/api.md`
-- **官方文档**：[AIP-159: Reading across collections](https://google.aip.dev/159)、[grpc-gateway path templates](https://grpc-ecosystem.github.io/grpc-gateway/docs/mapping/grpc_apidocs_path_templates/)
+- **官方文档**：[AIP-159: Reading across collections](https://google.aip.dev/159)（通配符模式）、[AIP-123: Resource types](https://google.aip.dev/123)（Scope 资源声明）、[AIP-122: Resource names](https://google.aip.dev/122)（资源名校验）、[grpc-gateway path templates](https://grpc-ecosystem.github.io/grpc-gateway/docs/mapping/grpc_apidocs_path_templates/)（通配符路由）
+- **补充方案**：[plan-v2-codegen-migration.md](plan-v2-codegen-migration.md)（handler.go 全面 codegen 迁移的决策与验证）
 - **技术文章**：无
 
-- [ ] T001 [P] 扩展 `parseParent` 函数支持 `-` scope 通配符在 `projects/infra/deploy/handler.go`。当 parent 为 `deploy/scopes/-` 时，跳过 `domain.NewEnvironmentName` 校验（`-` 不匹配 `^[a-z][a-z0-9]{0,7}$` regex），直接返回字符串 `"-"`。现有逻辑（`handler.go:777-789`）通过 `strings.CutPrefix` 提取 scope 后调用 `domain.NewEnvironmentName(scope, "env")` 校验——在 scope 提取后、校验前增加 `if scope == "-" { return "-", nil }` 分支。**注意**：`parseParent` 同时被 `CreateEnvironment`（`handler.go:227`）使用，`-` 分支同样影响该路径——`CreateEnvironment` 收到 parent `deploy/scopes/-` 时返回 `-`，随后 `handler.go:232` 的 `domain.NewEnvironmentName("-", envName)` 校验失败报错（仍为 InvalidArgument，与变更前一致）；无需改动 Create 逻辑，但须在 T005 中补充该路径的测试用例。参考研究决策 [research.md R1](./research.md) 和 [AIP-159](https://google.aip.dev/159)。
+- [ ] T000 在 `projects/infra/deploy/deploy.proto` 的 `message Environment`（:89）之前新增 `Scope` 消息声明。该资源无标准方法（no CRUD RPCs），仅用于 codegen 生成 `ParseScopeName()` 和 `EnvironmentName.Parent()`，参照 `projects/game/game.proto:176-185` 的 Template 资源模式。具体 proto 语法：
+  ```proto
+  // Scope is the collection-level resource that groups environments. It has no
+  // standard methods (no CRUD RPCs): it exists for resource-hierarchy typing
+  // (google.api.resource_reference) and to drive codegen of ParseScopeName, so
+  // parent parsing is fully codegen-driven — no hand-written string prefix
+  // stripping. Mirrors the Template resource pattern in projects/game.
+  message Scope {
+    option (google.api.resource) = {
+      type: "deploy.infra.liukexin.com/Scope"
+      pattern: "deploy/scopes/{scope}"
+      singular: "scope"
+      plural: "scopes"
+    };
+  
+    string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  }
+  ```
+  声明后执行 `bazel build //projects/infra/deploy:go_default_library` 确认 codegen 生成 `ParseScopeName` / `ScopeName` / `EnvironmentName.Parent()` 等方法。不修改任何 `google.api.http` 注解（FR-015 约束不受影响，`google.api.resource` 是消息级注解，不是 HTTP 注解）。参考 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D1、[AIP-123](https://google.aip.dev/123) 和 `projects/game/game.proto:176-185`。
+
+- [ ] T001 [P] handler.go 全面迁移到 codegen name 解析（替代之前的 parseParent-only 迁移）。参照 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D1-D6 和 game handler 模式（`projects/game/session/handler/handler.go:47-53`）。具体变更：
+
+  **(A) 新增 `domain.ValidateScope`**：在 `projects/infra/deploy/domain/environment_name.go` 新增导出函数 `ValidateScope(s string) error`，使用现有 `environmentNameRegexp`（`:16`）校验 scope 格式（`^[a-z][a-z0-9]{0,7}$`），失败返回 `ErrInvalidName`。该函数供 handler 中 scope 独立校验使用（parseParent 消除后 ListEnvironments / CreateEnvironment 需要）。
+
+  **(B) 迁移 4 个 handler EnvironmentName / ServiceEndpointsName 解析到 codegen**：
+  - `GetEnvironment`（`handler.go:55`）: `domain.ParseResourceName(req.GetName())` → `req.ParseName()`（codegen `GetEnvironmentRequest.ParseName()`，见 `deploy_aip.pb.resource.go:370`）→ `domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)`。codegen parse 错误用 `status.Error(codes.InvalidArgument, err.Error())`（参照 game handler:49），不走 toStatusError。domain 构造错误走 toStatusError。
+  - `GetServiceEndpoints`（`handler.go:70`）: `domain.ParseServiceEndpointsName(req.GetName())` → `req.ParseName()`（codegen `GetServiceEndpointsRequest.ParseName()`，见 `:375`）→ `domain.NewServiceEndpointsName(cgName.ScopeID, cgName.EnvNameID, cgName.AppID, cgName.ServiceID)`。变量 `name` 仍是 `domain.ServiceEndpointsName`，下游 `.App()`、`.Service()`、`.EnvLabel()`、`.EnvironmentName()` 调用不变。
+  - `UpdateEnvironment`（`handler.go:265`）: `domain.ParseResourceName(req.GetEnvironment().GetName())` → `req.GetEnvironment().ParseName()`（codegen `Environment.ParseName()`，见 `:350`）→ `domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)`。
+  - `DeleteEnvironment`（`handler.go:291`）: `domain.ParseResourceName(req.GetName())` → `req.ParseName()`（codegen `DeleteEnvironmentRequest.ParseName()`，见 `:380`）→ `domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)`。
+
+  **(C) 消除 `parseParent`，内联到 2 个调用点**（参照 game 无 parseParent helper 模式）：
+  - `ListEnvironments`（`handler.go:197`）: 替换 `parseParent(req.GetParent())` 调用为内联——`scopeName, err := ParseScopeName(req.GetParent())` → codegen 错误用 `status.Error(codes.InvalidArgument, err.Error())` → `scope := scopeName.ScopeID` → 若 `!scopeName.ContainsWildcard()` 则 `domain.ValidateScope(scope)`（错误走 toStatusError）→ `h.repo.ListByScope(ctx, scope, ...)`。
+  - `CreateEnvironment`（`handler.go:225`）: 替换 `parseParent(req.GetParent())` 调用为内联——`ParseScopeName(req.GetParent())` → 若 `scopeName.ContainsWildcard()` 则显式拒绝 `status.Error(codes.InvalidArgument, "scope wildcard '-' is not allowed for create")` → `domain.ValidateScope(scopeName.ScopeID)` → `domain.NewEnvironmentName(scopeName.ScopeID, req.GetEnvName())`。行为等价性：旧行为依赖下游 `NewEnvironmentName("-", env)` 失败，新行为入口显式拒绝，两者均返回 InvalidArgument（见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D4 验证表）。
+
+  **(D) 移除死代码**：
+  - 删除 `fromProtoEnvironment` 函数（`handler.go:324-340`，全仓库无调用者，grep 确认）。
+  - 删除 `parseParent` 函数（`handler.go:775-797`，已内联到 ListEnvironments / CreateEnvironment）。
+
+  **(E) 移除 domain 手写解析函数**：
+  - 删除 `domain.ParseResourceName`（`environment_name.go:27-34`）。
+  - 删除 `domain.ParseServiceEndpointsName`（`service_endpoints_name.go:53-60`）。
+  - 保留 `domain.NewEnvironmentName` / `domain.NewServiceEndpointsName`（构造函数仍被 handler、storage toDomain、测试使用）。
+
+  **(F) 更新测试**：
+  - `handler_test.go:456`: `domain.ParseResourceName("deploy/scopes/dev/environments/alpha")` → `domain.NewEnvironmentName("dev", "alpha")`。
+  - 删除 `domain/environment_name_test.go` 中的 `TestParseResourceName`。
+  - 删除 `domain/service_endpoints_name_test.go` 中的 `TestParseServiceEndpointsName`。
+  - T005 中 CreateEnvironment parent `deploy/scopes/-` 测试：断言 `wantCode` 仍为 `codes.InvalidArgument`（行为等价）。
+
+  **依赖 T000**（Scope 资源声明已完成，codegen 已生成全部所需方法）。参考 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D1-D6、[AIP-159](https://google.aip.dev/159)、[AIP-122](https://google.aip.dev/122)。
 
 - [ ] T002 [P] 扩展 `ListByScope` 支持 `-` scope 时空过滤在 `projects/infra/deploy/storage/mongo.go`。当 scope 参数为 `"-"` 时，使用空 filter（`bson.M{}`）替代 `{mongoFieldScope: scope}` 精确匹配，匹配所有文档。现有逻辑在 `mongo.go:361`（`filter := bson.M{mongoFieldScope: scope}`）——改为条件构建 filter：`var filter bson.M; if scope == "-" { filter = bson.M{} } else { filter = bson.M{mongoFieldScope: scope} }`。参考研究决策 [research.md R1](./research.md)。
 
@@ -39,7 +89,7 @@
 
 - [ ] T004 更新 `ListByScope` 接口注释说明 `-` 通配语义在 `projects/infra/deploy/domain/repository.go:22-24`。当前注释为 `// ListByScope lists environments under a scope with pagination.`——追加说明 scope 为 `"-"` 时匹配所有 scope（AIP-159 跨集合读取模式）。同时检查并更新另外 3 个 fake repository 的 `ListByScope` 方法签名注释（`service/command_test.go:108`、`service/reconcile_test.go:176`、`handler_test.go:1949`）——这些 fake 的实现为空或无过滤逻辑，无需修改实现，仅注释一致性检查。
 
-- [ ] T005 [P] 新增 handler 层 `-` 通配符测试用例在 `projects/infra/deploy/handler_test.go` 的 `TestHandler_ListEnvironments` 函数。新增测试用例：seed 包含多个 scope 的环境（如 dev/alpha、prod/beta），request parent 为 `deploy/scopes/-`，验证返回所有 scope 的环境且 name 使用 canonical resource name（如 `deploy/scopes/dev/environments/alpha`、`deploy/scopes/prod/environments/beta`）。**依赖 T003**（fakeRepository.ListByScope 的 `-` 支持，先完成 T003 再执行本用例）。另新增一个用例：`CreateEnvironment` 的 parent 为 `deploy/scopes/-` 时返回 InvalidArgument（验证 T001 的 `-` 分支不影响 Create 路径安全性）。参考现有测试用例结构（`:208-284`）和 [quickstart.md 步骤 7](./quickstart.md)。
+- [ ] T005 [P] 新增 handler 层 `-` 通配符测试用例在 `projects/infra/deploy/handler_test.go` 的 `TestHandler_ListEnvironments` 函数。新增测试用例：seed 包含多个 scope 的环境（如 dev/alpha、prod/beta），request parent 为 `deploy/scopes/-`，验证返回所有 scope 的环境且 name 使用 canonical resource name（如 `deploy/scopes/dev/environments/alpha`、`deploy/scopes/prod/environments/beta`）。**依赖 T003**（fakeRepository.ListByScope 的 `-` 支持，先完成 T003 再执行本用例）。另新增一个用例：`CreateEnvironment` 的 parent 为 `deploy/scopes/-` 时返回 InvalidArgument（验证 T001 中 CreateEnvironment 对通配符的显式拒绝——旧行为依赖下游 `NewEnvironmentName("-", env)` 失败，新行为在入口 `ContainsWildcard()` 检查时拒绝，两者均返回 InvalidArgument，见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D4 验证表）。参考现有测试用例结构（`:208-284`）和 [quickstart.md 步骤 7](./quickstart.md)。
 
 - [ ] T006 [P] 新增存储层 `-` 通配符测试用例在 `projects/infra/deploy/storage/mongo_test.go` 的 `TestMongoRepository_ListByScope` 函数（或新测试函数）。新增测试：seed 包含 dev 和 prod 两个 scope 的环境，调用 `ListByScope(ctx, "-", pageSize, "")`，验证返回所有环境。**依赖 T002**（mongo ListByScope 的 `-` 空过滤，先完成 T002 再执行本用例）。参考现有测试结构（`:844-984`）。
 
@@ -181,7 +231,7 @@ bazel test //projects/infra/deploy:go_default_test
 
 ### Parallel Opportunities
 
-- **Phase 1 内部**：T001/T002/T003 可并行（不同文件）。T005/T006 可并行（不同测试文件）。
+- **Phase 1 内部**：T000 是 T001 的前置依赖（Scope 资源声明 → codegen 生成 → parseParent 迁移）。T000 完成后，T001/T002/T003 可并行（不同文件）。T005/T006 可并行（不同测试文件）。
 - **Phase 1 与 Phase 2 可并行**：Phase 1 改后端（`projects/infra/deploy/`），Phase 2 改 CLI（`tools/release/deploy/v3/`），无文件冲突。
 - **Phase 2 内部**：T009（identity.go）可与其他文件并行，但 T010-T014 有顺序依赖（main.go 变更影响其他文件的编译）。
 - **Phase 4 内部**：T023/T024 可并行（同一文件不同小节，但需注意不冲突——建议顺序执行或合并）。
@@ -192,8 +242,9 @@ bazel test //projects/infra/deploy:go_default_test
 
 ```bash
 # 后端变更（Phase 1）和 CLI 变更（Phase 2）可由不同开发者并行：
-# Developer A: Phase 1 — 后端 AIP-159 通配符
-Task: "T001 扩展 parseParent 支持 - scope 在 handler.go"
+# Developer A: Phase 1 — 后端 AIP-159 通配符 + codegen 全面迁移
+Task: "T000 在 deploy.proto 声明 Scope 资源"
+Task: "T001 handler.go 全面迁移到 codegen name 解析（依赖 T000）"
 Task: "T002 扩展 ListByScope 时空过滤在 mongo.go"
 
 # Developer B: Phase 2 — CLI scope 移除

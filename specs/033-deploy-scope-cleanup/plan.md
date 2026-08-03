@@ -24,9 +24,9 @@
 
 **Performance Goals**: 无新增性能目标。list 跨 scope 查询复用现有 MongoDB 索引（按 `name` 字段排序）。
 
-**Constraints**: proto HTTP 注解不得修改（FR-015）；deploy.yaml schema 不得修改（已强制 `{scope}.{env_name}` 格式）；`{{run}}` 占位符机制不变。
+**Constraints**: proto HTTP 注解（`google.api.http`）不得修改（FR-015）；新增资源声明（`google.api.resource`）不属于此约束范围——在 `deploy.proto` 新增 `Scope` 消息声明以驱动 codegen 生成 `ParseScopeName`（参照 `projects/game/game.proto` 的 `Template` 资源模式，见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md) D1）。deploy.yaml schema 不得修改（已强制 `{scope}.{env_name}` 格式）；`{{run}}` 占位符机制不变。
 
-**Scale/Scope**: CLI 工具 13 个文件（v3 目录，含 2 个删除）；后端涉及 handler.go、storage/mongo.go、repository_fake_test.go 及另外 3 个 fake repository（仅注释一致性检查，见 T004）；domain 层逻辑无需修改（仅 `domain/repository.go` 接口注释更新）。共约 22 个文件变更（含测试；其中 2 个删除、2 个仅注释检查）。
+**Scale/Scope**: CLI 工具 13 个文件（v3 目录，含 2 个删除）；后端涉及 deploy.proto（新增 `Scope` 资源声明驱动 codegen）、handler.go（全面迁移到 codegen name 解析——6 处解析点迁移、消除 parseParent、移除 fromProtoEnvironment 死代码）、domain/environment_name.go（新增 ValidateScope、移除 ParseResourceName）、domain/service_endpoints_name.go（移除 ParseServiceEndpointsName）、handler_test.go（更新测试）、domain 测试文件（移除已删函数测试）、storage/mongo.go、repository_fake_test.go 及另外 3 个 fake repository（仅注释一致性检查，见 T004）。共约 25 个文件变更（含测试；其中 2 个删除、2 个仅注释检查）。
 
 ## Constitution Check
 
@@ -72,15 +72,17 @@ tools/release/deploy/v3/
 └── *_test.go        # 对应测试文件
 
 projects/infra/deploy/
-├── handler.go               # parseParent 函数（特殊处理 "-" scope）
-├── handler_test.go          # 新增 "-" 通配符测试用例；errorRepository.ListByScope 注释一致性检查（T004）
+├── deploy.proto               # 新增 Scope 资源声明（google.api.resource，pattern deploy/scopes/{scope}），驱动 codegen 生成 ParseScopeName
+├── handler.go               # 全面迁移到 codegen name 解析（6 处迁移 + 消除 parseParent + 移除 fromProtoEnvironment 死代码）
+├── handler_test.go          # 新增 "-" 通配符测试用例；更新 ParseResourceName 引用为 NewEnvironmentName
 ├── storage/mongo.go         # ListByScope（支持 "-" 时空过滤）
 ├── storage/mongo_test.go    # 新增 "-" 通配符测试用例
 ├── repository_fake_test.go  # fakeRepository.ListByScope（支持 "-" 时返回所有）
 ├── service/command_test.go  # fakeCommandRepository.ListByScope 注释一致性检查（T004）
 ├── service/reconcile_test.go# fakeReconcileRepository.ListByScope 注释一致性检查（T004）
 ├── domain/repository.go     # ListByScope 注释更新（记载 `-` 通配语义）
-└── domain/environment_name.go  # 无需修改（仅 ListEnvironments 路径绕过校验）
+├── domain/environment_name.go  # 新增 ValidateScope；移除 ParseResourceName（死代码）
+└── domain/service_endpoints_name.go # 移除 ParseServiceEndpointsName（死代码）
 
 tools/release/deploy/README.md  # 文档更新
 ```

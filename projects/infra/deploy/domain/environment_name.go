@@ -13,8 +13,7 @@ const (
 )
 
 var (
-	environmentNameRegexp        = regexp.MustCompile(environmentNamePattern)
-	environmentResourceNameRegex = regexp.MustCompile(`^deploy/scopes/([a-z][a-z0-9]{0,7})/environments/([a-z][a-z0-9]{0,7})$`)
+	environmentNameRegexp = regexp.MustCompile(environmentNamePattern)
 )
 
 // EnvironmentName represents the canonical resource name for an environment.
@@ -23,14 +22,15 @@ type EnvironmentName struct {
 	envName string
 }
 
-// ParseResourceName parses deploy/scopes/{scope}/environments/{env_name} into an EnvironmentName.
-func ParseResourceName(name string) (EnvironmentName, error) {
-	matches := environmentResourceNameRegex.FindStringSubmatch(name)
-	if len(matches) != 3 {
-		return EnvironmentName{}, ErrInvalidName
+// ValidateScope reports whether s conforms to the scope format rule
+// (^[a-z][a-z0-9]{0,7}$). Used by handler-layer scope validation after
+// codegen ParseScopeName (structural validation) and before cross-scope
+// query dispatch.
+func ValidateScope(s string) error {
+	if !environmentNameRegexp.MatchString(s) {
+		return ErrInvalidName
 	}
-
-	return NewEnvironmentName(matches[1], matches[2])
+	return nil
 }
 
 // NewEnvironmentName validates scope and envName and constructs an EnvironmentName.

@@ -148,7 +148,17 @@ GET /v1/deploy/scopes/-/environments
 
 ### handler 层变更
 
-`parseParent`（`projects/infra/deploy/handler.go:777-789`）：当 scope 为 `-` 时跳过 `domain.NewEnvironmentName` 校验，直接返回 `-`。
+handler.go 中**所有** name 解析迁移到 codegen，参照 `projects/game/session/handler/handler.go` 的内联解析模式：
+
+- `ListEnvironments`（`handler.go:197`）：内联 `ParseScopeName(req.GetParent())` + `ContainsWildcard()` 通配符识别（`-` 跳过校验）+ `domain.ValidateScope` 正则校验。不保留 `parseParent` 辅助函数。
+- `CreateEnvironment`（`handler.go:225`）：内联 `ParseScopeName(req.GetParent())` + 显式拒绝通配符（`ContainsWildcard()` 时返回 InvalidArgument）+ `domain.ValidateScope`。
+- `GetEnvironment`（`:55`）、`DeleteEnvironment`（`:291`）：`req.ParseName()`（codegen）→ `domain.NewEnvironmentName`。
+- `GetServiceEndpoints`（`:70`）：`req.ParseName()`（codegen）→ `domain.NewServiceEndpointsName`。
+- `UpdateEnvironment`（`:265`）：`req.GetEnvironment().ParseName()`（codegen）→ `domain.NewEnvironmentName`。
+- 移除死代码 `fromProtoEnvironment`（无调用者）。
+- 移除 domain 手写解析函数 `ParseResourceName`、`ParseServiceEndpointsName`（迁移后无调用者）。
+
+详见 [plan-v2-codegen-migration.md](../plan-v2-codegen-migration.md)。
 
 ### 存储层变更
 

@@ -131,7 +131,7 @@ del 和 describe 命令要求完整的 `{scope}.{env_name}` 格式。短名（�
 - **FR-013**: 后端 `ListEnvironments` API 须支持 `-` 作为 parent scope 的通配符值（parent = `deploy/scopes/-`），遵循 [AIP-159](https://google.aip.dev/159) 的跨集合读取模式。
 - **FR-014**: 当 scope 为 `-` 时，后端须返回所有 scope 下的所有环境，响应中每个环境的 `name` 字段须使用实际的 canonical 资源名（`deploy/scopes/{actual_scope}/environments/{env_name}`），而非 `-`。
 - **FR-015**: proto 文件 `projects/infra/deploy/deploy.proto` 的 `ListEnvironments` HTTP 注解**不得修改**——现有 `{parent=deploy/scopes/*}/environments` 模式已满足 AIP-159 要求（通配符 `*` 允许 `-` 值，AIP-159 规定 URI pattern 必须用 `*` 而非硬编码 `-`）。
-- **FR-016**: handler 层 `parseParent` 函数须特殊处理 `-` scope 值：跳过 `domain.NewEnvironmentName` 校验（`-` 不匹配 scope regex），直接传递 `-` 给查询层。
+- **FR-016**: handler 层 name 解析须全部使用 codegen 生成的方法（`req.ParseName()`、`ParseScopeName`），不保留任何 domain 手写解析（`domain.ParseResourceName`、`domain.ParseServiceEndpointsName`）。`ListEnvironments` 须内联 `ParseScopeName` + `ContainsWildcard()` 通配符识别 + `domain.ValidateScope` 正则校验（scope 为 `-` 时跳过校验直接传递）；`CreateEnvironment` 须内联 `ParseScopeName` + 显式拒绝通配符 + `domain.ValidateScope`。其他 RPC（GetEnvironment、GetServiceEndpoints、UpdateEnvironment、DeleteEnvironment）使用请求级 `ParseName()` + `domain.NewXxxName` 构造。handler 中不保留 `parseParent` 辅助函数——参照 `projects/game/session/handler/handler.go` 的内联解析模式。
 - **FR-017**: 存储层须支持跨 scope 查询：当 scope 为 `-` 时，使用空过滤条件（匹配所有文档）而非 scope 精确匹配。
 
 ### Key Entities *(include if feature involves data)*

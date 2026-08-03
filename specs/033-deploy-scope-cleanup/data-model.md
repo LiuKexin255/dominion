@@ -42,6 +42,19 @@ API 级资源路径 `deploy/scopes/{scope}/environments/{env_name}`，通过 `en
 
 对于 list 跨 scope 场景，parent 使用 `deploy/scopes/-`（AIP-159 通配符）。
 
+### Scope 资源声明（新增 proto 声明，无运行时行为变更）
+
+在 `deploy.proto` 新增 `Scope` 消息，声明 `google.api.resource`（pattern `deploy/scopes/{scope}`），用于驱动 codegen 生成 `ParseScopeName()` 和请求级 `ParseName()`。该资源无标准方法（no CRUD RPCs），仅作 codegen 声明存在——参照 `projects/game/game.proto:176-185` 的 `Template` 资源模式。
+
+codegen 生成的方法（确认于 `deploy_aip.pb.resource.go`）：
+- `ScopeName{ScopeID}`、`ParseScopeName()`、`ScopeName.ContainsWildcard()`（AIP-159 通配符）
+- `EnvironmentName{ScopeID, EnvNameID}`、`ParseEnvironmentName()`、`EnvironmentName.Parent() ScopeName`
+- `ServiceEndpointsName{ScopeID, EnvNameID, AppID, ServiceID}`、`ParseServiceEndpointsName()`
+- 请求级 `ParseName()`：`GetEnvironmentRequest`、`GetServiceEndpointsRequest`、`DeleteEnvironmentRequest`
+- 消息级 `ParseName()`：`Environment.ParseName()`、`ServiceEndpoints.ParseName()`
+
+详见 [plan-v2-codegen-migration.md](plan-v2-codegen-migration.md)。
+
 ### Scope Wildcard `-`（新增概念）
 
 AIP-159 定义的跨集合通配符，仅用于 `ListEnvironments` 的 parent 参数。
