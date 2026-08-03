@@ -97,6 +97,114 @@ func TestHandler_GetEnvironment(t *testing.T) {
 	}
 }
 
+func TestHandler_GetEnvironment_ReturnsServices(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("maps domain services with enum translation and passthrough", func(t *testing.T) {
+		// given
+		env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+		env.Status().State = domain.StateWaitingRollout
+		env.Status().Services = []*domain.ServiceStatus{
+			{Name: "api", App: "game", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateReady},
+			{Name: "gateway", App: "game", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateWaiting, Message: "可用副本不足（available: 0/1）"},
+			{Name: "mongo", App: "game", Kind: domain.ServiceKindInfra, State: domain.ServiceRolloutStateFailed, Message: "CrashLoopBackOff"},
+		}
+		repo := newFakeRepository(env)
+		handler := newTestHandler(repo, nil)
+
+		// when
+		got, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
+
+		// then
+		assertStatusCode(t, err, codes.OK)
+		services := got.GetStatus().GetServices()
+		if len(services) != 3 {
+			t.Fatalf("status.services len = %d, want 3", len(services))
+		}
+		want := []*ServiceStatus{
+			{Name: "api", App: "game", Kind: ServiceKind_SERVICE_KIND_ARTIFACT, State: ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY},
+			{Name: "gateway", App: "game", Kind: ServiceKind_SERVICE_KIND_ARTIFACT, State: ServiceRolloutState_SERVICE_ROLLOUT_STATE_WAITING, Message: "可用副本不足（available: 0/1）"},
+			{Name: "mongo", App: "game", Kind: ServiceKind_SERVICE_KIND_INFRA, State: ServiceRolloutState_SERVICE_ROLLOUT_STATE_FAILED, Message: "CrashLoopBackOff"},
+		}
+		for i, wantSvc := range want {
+			gotSvc := services[i]
+			if gotSvc.GetName() != wantSvc.GetName() || gotSvc.GetApp() != wantSvc.GetApp() ||
+				gotSvc.GetKind() != wantSvc.GetKind() || gotSvc.GetState() != wantSvc.GetState() ||
+				gotSvc.GetMessage() != wantSvc.GetMessage() {
+				t.Fatalf("status.services[%d] = %v, want %v", i, gotSvc, wantSvc)
+			}
+		}
+	})
+
+	t.Run("nil domain services maps to empty", func(t *testing.T) {
+		// given
+		env := mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState())
+		repo := newFakeRepository(env)
+		handler := newTestHandler(repo, nil)
+
+		// when
+		got, err := handler.GetEnvironment(ctx, &GetEnvironmentRequest{Name: "deploy/scopes/dev/environments/alpha"})
+
+		// then
+		assertStatusCode(t, err, codes.OK)
+		if len(got.GetStatus().GetServices()) != 0 {
+			t.Fatalf("status.services len = %d, want 0", len(got.GetStatus().GetServices()))
+		}
+	})
+}
+
+func Test_serviceKindToProto(t *testing.T) {
+	tests := []struct {
+		name string
+		got  domain.ServiceKind
+		want ServiceKind
+	}{
+		{name: "artifact", got: domain.ServiceKindArtifact, want: ServiceKind_SERVICE_KIND_ARTIFACT},
+		{name: "infra", got: domain.ServiceKindInfra, want: ServiceKind_SERVICE_KIND_INFRA},
+		{name: "unspecified", got: domain.ServiceKindUnspecified, want: ServiceKind_SERVICE_KIND_UNSPECIFIED},
+		{name: "unknown value", got: domain.ServiceKind(99), want: ServiceKind_SERVICE_KIND_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := serviceKindToProto(tt.got)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("serviceKindToProto(%v) = %v, want %v", tt.got, got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_serviceRolloutStateToProto(t *testing.T) {
+	tests := []struct {
+		name string
+		got  domain.ServiceRolloutState
+		want ServiceRolloutState
+	}{
+		{name: "pending", got: domain.ServiceRolloutStatePending, want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_PENDING},
+		{name: "ready", got: domain.ServiceRolloutStateReady, want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY},
+		{name: "waiting", got: domain.ServiceRolloutStateWaiting, want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_WAITING},
+		{name: "failed", got: domain.ServiceRolloutStateFailed, want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_FAILED},
+		{name: "unspecified", got: domain.ServiceRolloutStateUnspecified, want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_UNSPECIFIED},
+		{name: "unknown value", got: domain.ServiceRolloutState(99), want: ServiceRolloutState_SERVICE_ROLLOUT_STATE_UNSPECIFIED},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := serviceRolloutStateToProto(tt.got)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("serviceRolloutStateToProto(%v) = %v, want %v", tt.got, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandler_ListEnvironments(t *testing.T) {
 	ctx := context.Background()
 

@@ -24,6 +24,7 @@ func cloneDeployEnv(env *domain.Environment) *domain.Environment {
 			Message:            env.Status().Message,
 			LastReconcileTime:  env.Status().LastReconcileTime,
 			LastSuccessTime:    env.Status().LastSuccessTime,
+			Services:           env.Status().Services,
 		},
 		Generation: env.Generation(),
 		CreateTime: env.CreateTime(),
@@ -281,6 +282,7 @@ func (r *fakeRepository) TransitionStatus(_ context.Context, name domain.Environ
 		Message:            toStatus.Message,
 		LastReconcileTime:  toStatus.LastReconcileTime,
 		LastSuccessTime:    toStatus.LastSuccessTime,
+		Services:           toStatus.Services,
 	}
 
 	updated, err := domain.RehydrateEnvironment(domain.EnvironmentSnapshot{

@@ -62,6 +62,58 @@ func TestEnvironmentState_String(t *testing.T) {
 	}
 }
 
+func TestServiceKind_String(t *testing.T) {
+	tests := []struct {
+		name string
+		got  ServiceKind
+		want string
+	}{
+		{name: "unspecified", got: ServiceKindUnspecified, want: "ServiceKind(0)"},
+		{name: "artifact", got: ServiceKindArtifact, want: "ServiceKindArtifact"},
+		{name: "infra", got: ServiceKindInfra, want: "ServiceKindInfra"},
+		{name: "unknown value", got: ServiceKind(99), want: "ServiceKind(99)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := tt.got.String()
+
+			// then
+			if got != tt.want {
+				t.Fatalf("%v.String() = %q, want %q", tt.got, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServiceRolloutState_String(t *testing.T) {
+	tests := []struct {
+		name string
+		got  ServiceRolloutState
+		want string
+	}{
+		{name: "unspecified", got: ServiceRolloutStateUnspecified, want: "ServiceRolloutState(0)"},
+		{name: "pending", got: ServiceRolloutStatePending, want: "ServiceRolloutStatePending"},
+		{name: "ready", got: ServiceRolloutStateReady, want: "ServiceRolloutStateReady"},
+		{name: "waiting", got: ServiceRolloutStateWaiting, want: "ServiceRolloutStateWaiting"},
+		{name: "failed", got: ServiceRolloutStateFailed, want: "ServiceRolloutStateFailed"},
+		{name: "unknown value", got: ServiceRolloutState(99), want: "ServiceRolloutState(99)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := tt.got.String()
+
+			// then
+			if got != tt.want {
+				t.Fatalf("%v.String() = %q, want %q", tt.got, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCanTransition(t *testing.T) {
 	tests := []struct {
 		name string

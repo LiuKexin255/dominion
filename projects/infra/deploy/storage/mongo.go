@@ -39,6 +39,7 @@ const (
 	mongoFieldStatusMessage       = "status.message"
 	mongoFieldStatusLastReconcile = "status.last_reconcile_time"
 	mongoFieldStatusLastSuccess   = "status.last_success_time"
+	mongoFieldStatusServices      = "status.services"
 
 	EnvironmentTypeProd        = "prod"
 	EnvironmentTypeDev         = "dev"
@@ -127,8 +128,8 @@ type mongoEnvironment struct {
 
 // mongoDesiredState is the BSON representation of domain.DesiredState.
 type mongoDesiredState struct {
-	Artifacts []mongoArtifactSpec `bson:"artifacts"`
-	Infras    []mongoInfraSpec    `bson:"infras"`
+	Artifacts []*mongoArtifactSpec `bson:"artifacts"`
+	Infras    []*mongoInfraSpec    `bson:"infras"`
 }
 
 // mongoArtifactPortSpec is the BSON representation of domain.ArtifactPortSpec.
@@ -146,17 +147,17 @@ type mongoSecretBinding struct {
 
 // mongoArtifactSpec is the BSON representation of domain.ArtifactSpec.
 type mongoArtifactSpec struct {
-	Name           string                  `bson:"name"`
-	App            string                  `bson:"app"`
-	Image          string                  `bson:"image"`
-	Ports          []mongoArtifactPortSpec `bson:"ports"`
-	Replicas       int32                   `bson:"replicas"`
-	TLSEnabled     bool                    `bson:"tls_enabled"`
-	OSSEnabled     bool                    `bson:"oss_enabled"`
-	WorkloadKind   int                     `bson:"workload_kind"`
-	HTTP           *mongoArtifactHTTPSpec  `bson:"http,omitempty"`
-	Env            map[string]string       `bson:"env,omitempty"`
-	SecretBindings []mongoSecretBinding    `bson:"secret_bindings,omitempty"`
+	Name           string                   `bson:"name"`
+	App            string                   `bson:"app"`
+	Image          string                   `bson:"image"`
+	Ports          []*mongoArtifactPortSpec `bson:"ports"`
+	Replicas       int32                    `bson:"replicas"`
+	TLSEnabled     bool                     `bson:"tls_enabled"`
+	OSSEnabled     bool                     `bson:"oss_enabled"`
+	WorkloadKind   int                      `bson:"workload_kind"`
+	HTTP           *mongoArtifactHTTPSpec   `bson:"http,omitempty"`
+	Env            map[string]string        `bson:"env,omitempty"`
+	SecretBindings []*mongoSecretBinding    `bson:"secret_bindings,omitempty"`
 }
 
 // mongoInfraSpec is the BSON representation of domain.InfraSpec.
@@ -188,18 +189,30 @@ type mongoHTTPRouteRule struct {
 
 // mongoArtifactHTTPSpec is the BSON representation of domain.ArtifactHTTPSpec.
 type mongoArtifactHTTPSpec struct {
-	Hostnames []string             `bson:"hostnames"`
-	Matches   []mongoHTTPRouteRule `bson:"matches"`
+	Hostnames []string              `bson:"hostnames"`
+	Matches   []*mongoHTTPRouteRule `bson:"matches"`
+}
+
+// mongoServiceStatus is the BSON representation of domain.ServiceStatus.
+type mongoServiceStatus struct {
+	Name    string `bson:"name"`
+	App     string `bson:"app"`
+	Kind    int    `bson:"kind"`
+	State   int    `bson:"state"`
+	Message string `bson:"message"`
 }
 
 // mongoStatus is the BSON representation of domain.EnvironmentStatus.
+// Services 无 omitempty：nil 序列化为空值以支持 TransitionStatus 的清空语义
+// （specs/032-guitar-deploy-failure-state/research.md 决策 R6）。
 type mongoStatus struct {
-	Desired            int       `bson:"desired"`
-	State              int       `bson:"state"`
-	ObservedGeneration int64     `bson:"observed_generation"`
-	Message            string    `bson:"message"`
-	LastReconcileTime  time.Time `bson:"last_reconcile_time"`
-	LastSuccessTime    time.Time `bson:"last_success_time"`
+	Desired            int                   `bson:"desired"`
+	State              int                   `bson:"state"`
+	ObservedGeneration int64                 `bson:"observed_generation"`
+	Message            string                `bson:"message"`
+	LastReconcileTime  time.Time             `bson:"last_reconcile_time"`
+	LastSuccessTime    time.Time             `bson:"last_success_time"`
+	Services           []*mongoServiceStatus `bson:"services"`
 }
 
 // MongoRepository stores deploy environments in MongoDB.
@@ -446,6 +459,9 @@ func (r *MongoRepository) TransitionStatus(ctx context.Context, name domain.Envi
 	if !toStatus.LastSuccessTime.IsZero() {
 		setFields[mongoFieldStatusLastSuccess] = toStatus.LastSuccessTime
 	}
+	// Services 无条件写入（nil → 清空 stale per-service 状态），区别于既有
+	// "非零才写"语义（specs/032-guitar-deploy-failure-state/research.md 决策 R6）。
+	setFields[mongoFieldStatusServices] = servicesToMongo(toStatus.Services)
 
 	update := bson.M{"$set": setFields}
 
@@ -537,13 +553,13 @@ func desiredStateToMongo(ds *domain.DesiredState) *mongoDesiredState {
 	}
 }
 
-func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
+func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []*mongoArtifactSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]mongoArtifactSpec, len(specs))
+	result := make([]*mongoArtifactSpec, len(specs))
 	for i, s := range specs {
-		result[i] = mongoArtifactSpec{
+		result[i] = &mongoArtifactSpec{
 			Name:           s.Name,
 			App:            s.App,
 			Image:          s.Image,
@@ -560,24 +576,24 @@ func artifactSpecsToMongo(specs []*domain.ArtifactSpec) []mongoArtifactSpec {
 	return result
 }
 
-func artifactPortSpecsToMongo(specs []domain.ArtifactPortSpec) []mongoArtifactPortSpec {
+func artifactPortSpecsToMongo(specs []domain.ArtifactPortSpec) []*mongoArtifactPortSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]mongoArtifactPortSpec, len(specs))
+	result := make([]*mongoArtifactPortSpec, len(specs))
 	for i, p := range specs {
-		result[i] = mongoArtifactPortSpec{Name: p.Name, Port: p.Port}
+		result[i] = &mongoArtifactPortSpec{Name: p.Name, Port: p.Port}
 	}
 	return result
 }
 
-func secretBindingsToMongo(bindings []*domain.SecretBinding) []mongoSecretBinding {
+func secretBindingsToMongo(bindings []*domain.SecretBinding) []*mongoSecretBinding {
 	if len(bindings) == 0 {
 		return nil
 	}
-	result := make([]mongoSecretBinding, len(bindings))
+	result := make([]*mongoSecretBinding, len(bindings))
 	for i, b := range bindings {
-		result[i] = mongoSecretBinding{
+		result[i] = &mongoSecretBinding{
 			LogicalName: b.LogicalName,
 			SecretName:  b.SecretName,
 			Key:         b.Key,
@@ -586,13 +602,13 @@ func secretBindingsToMongo(bindings []*domain.SecretBinding) []mongoSecretBindin
 	return result
 }
 
-func infraSpecsToMongo(specs []*domain.InfraSpec) []mongoInfraSpec {
+func infraSpecsToMongo(specs []*domain.InfraSpec) []*mongoInfraSpec {
 	if len(specs) == 0 {
 		return nil
 	}
-	result := make([]mongoInfraSpec, len(specs))
+	result := make([]*mongoInfraSpec, len(specs))
 	for i, s := range specs {
-		result[i] = mongoInfraSpec{
+		result[i] = &mongoInfraSpec{
 			Resource:    s.Resource,
 			Profile:     s.Profile,
 			Name:        s.Name,
@@ -613,13 +629,13 @@ func artifactHTTPSpecToMongo(s *domain.ArtifactHTTPSpec) *mongoArtifactHTTPSpec 
 	}
 }
 
-func httpRouteRulesToMongo(rules []domain.HTTPRouteRule) []mongoHTTPRouteRule {
+func httpRouteRulesToMongo(rules []domain.HTTPRouteRule) []*mongoHTTPRouteRule {
 	if len(rules) == 0 {
 		return nil
 	}
-	result := make([]mongoHTTPRouteRule, len(rules))
+	result := make([]*mongoHTTPRouteRule, len(rules))
 	for i, r := range rules {
-		result[i] = mongoHTTPRouteRule{
+		result[i] = &mongoHTTPRouteRule{
 			Backend: r.Backend,
 			Path: mongoHTTPPathRule{
 				Type:  int(r.Path.Type),
@@ -641,7 +657,25 @@ func statusToMongo(s *domain.EnvironmentStatus) *mongoStatus {
 		Message:            s.Message,
 		LastReconcileTime:  s.LastReconcileTime,
 		LastSuccessTime:    s.LastSuccessTime,
+		Services:           servicesToMongo(s.Services),
 	}
+}
+
+func servicesToMongo(services []*domain.ServiceStatus) []*mongoServiceStatus {
+	if len(services) == 0 {
+		return nil
+	}
+	result := make([]*mongoServiceStatus, len(services))
+	for i, s := range services {
+		result[i] = &mongoServiceStatus{
+			Name:    s.Name,
+			App:     s.App,
+			Kind:    int(s.Kind),
+			State:   int(s.State),
+			Message: s.Message,
+		}
+	}
+	return result
 }
 
 func (m *mongoEnvironment) updateDocument() bson.M {
@@ -694,7 +728,7 @@ func desiredStateFromMongo(mds *mongoDesiredState) *domain.DesiredState {
 	}
 }
 
-func artifactSpecsFromMongo(specs []mongoArtifactSpec) []*domain.ArtifactSpec {
+func artifactSpecsFromMongo(specs []*mongoArtifactSpec) []*domain.ArtifactSpec {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -724,7 +758,7 @@ func normalizeEnv(env map[string]string) map[string]string {
 	return env
 }
 
-func artifactPortSpecsFromMongo(specs []mongoArtifactPortSpec) []domain.ArtifactPortSpec {
+func artifactPortSpecsFromMongo(specs []*mongoArtifactPortSpec) []domain.ArtifactPortSpec {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -735,7 +769,7 @@ func artifactPortSpecsFromMongo(specs []mongoArtifactPortSpec) []domain.Artifact
 	return result
 }
 
-func secretBindingsFromMongo(bindings []mongoSecretBinding) []*domain.SecretBinding {
+func secretBindingsFromMongo(bindings []*mongoSecretBinding) []*domain.SecretBinding {
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -750,7 +784,7 @@ func secretBindingsFromMongo(bindings []mongoSecretBinding) []*domain.SecretBind
 	return result
 }
 
-func infraSpecsFromMongo(specs []mongoInfraSpec) []*domain.InfraSpec {
+func infraSpecsFromMongo(specs []*mongoInfraSpec) []*domain.InfraSpec {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -777,7 +811,7 @@ func artifactHTTPSpecFromMongo(m *mongoArtifactHTTPSpec) *domain.ArtifactHTTPSpe
 	}
 }
 
-func httpRouteRulesFromMongo(rules []mongoHTTPRouteRule) []domain.HTTPRouteRule {
+func httpRouteRulesFromMongo(rules []*mongoHTTPRouteRule) []domain.HTTPRouteRule {
 	if len(rules) == 0 {
 		return nil
 	}
@@ -805,5 +839,23 @@ func statusFromMongo(ms *mongoStatus) *domain.EnvironmentStatus {
 		Message:            ms.Message,
 		LastReconcileTime:  ms.LastReconcileTime,
 		LastSuccessTime:    ms.LastSuccessTime,
+		Services:           servicesFromMongo(ms.Services),
 	}
+}
+
+func servicesFromMongo(services []*mongoServiceStatus) []*domain.ServiceStatus {
+	if len(services) == 0 {
+		return nil
+	}
+	result := make([]*domain.ServiceStatus, len(services))
+	for i, s := range services {
+		result[i] = &domain.ServiceStatus{
+			Name:    s.Name,
+			App:     s.App,
+			Kind:    domain.ServiceKind(s.Kind),
+			State:   domain.ServiceRolloutState(s.State),
+			Message: s.Message,
+		}
+	}
+	return result
 }

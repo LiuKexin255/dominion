@@ -88,12 +88,12 @@ message EnvironmentStatus {
 
 新增 `Services []*ServiceStatus` 字段，供 `CheckRollout` 回传 per-service。`EnvironmentRuntime.CheckRollout`（`worker.go:31`）签名不变。
 
-### 新增 helper：`buildInitialServiceStatuses`
+### 新增 helper：`BuildInitialServiceStatuses`
 
-domain 层纯函数（建议放 `reconcile_types.go` 或 `environment.go`）：
+domain 层纯函数（建议放 `reconcile_types.go` 或 `environment.go`；跨包被 `service/reconcile.go` 调用，故导出）：
 ```go
-// buildInitialServiceStatuses 据 desired_state 为每个服务构造 PENDING 初始状态。
-func buildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus
+// BuildInitialServiceStatuses 据 desired_state 为每个服务构造 PENDING 初始状态。
+func BuildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus
 ```
 - artifacts → `{Name, App, Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"}`
 - infras → `{Name, App, Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"}`
@@ -107,14 +107,14 @@ func buildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus
 | 调用点 | Services | 说明 |
 |--------|----------|------|
 | `transitionToReconciling` | nil | 清空，新一轮 reconcile 作废旧 per-service |
-| `applyAndWait` | `buildInitialServiceStatuses(env.DesiredState())` | 进入 WAITING_ROLLOUT 即写初始 PENDING |
+| `applyAndWait` | `domain.BuildInitialServiceStatuses(env.DesiredState())` | 进入 WAITING_ROLLOUT 即写初始 PENDING |
 | `retainWaitingRollout` | `status.Services`（来自 CheckRollout） | 更新各服务真实状态 |
 | `markReadyFromRollout` | `status.Services`（CheckRollout 全 ready） | — |
 | `markFailedFromRollout` | `status.Services`（CheckRollout 含失败） | — |
 | `transitionToDeleting` | nil | 清空 |
 | `MarkRetryExhausted` | nil | apply 阶段失败，无 rollout 数据 |
 
-> **注意（决策 R11）**：`retainWaitingRollout` 既有"env-level message 相等即早退（不写库）"优化（`reconcile.go:196`）会跳过 `TransitionStatus`，导致 per-service 更新不落库。修订后：三个 rollout 转移函数（`markReadyFromRollout`/`markFailedFromRollout`/`retainWaitingRollout`）签名从 `message string` 改为整体 `status *domain.RolloutStatus`；`retainWaitingRollout` 早退条件改为 `message 相等 && servicesEqual(env.Status().Services, status.Services)`（新增 domain helper `servicesEqual`），二者均未变化才跳过写入。
+> **注意（决策 R11）**：`retainWaitingRollout` 既有"env-level message 相等即早退（不写库）"优化（`reconcile.go:196`）会跳过 `TransitionStatus`，导致 per-service 更新不落库。修订后：三个 rollout 转移函数（`markReadyFromRollout`/`markFailedFromRollout`/`retainWaitingRollout`）签名从 `message string` 改为整体 `status *domain.RolloutStatus`；`retainWaitingRollout` 早退条件改为 `message 相等 && domain.ServicesEqual(env.Status().Services, status.Services)`（新增 domain helper `ServicesEqual`，跨包被 `service/reconcile.go` 调用，故导出），二者均未变化才跳过写入。
 
 ### runtime `CheckRollout` 产出契约（`runtime/k8s/rollout.go:263`，重构）
 
@@ -130,7 +130,7 @@ func buildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus
 - env-level `Message`：拼接非 READY 服务的 message（`"; "` 连接），空则 ""。
 - 返回 `RolloutStatus{State, Message, Services: <全部服务列表>}`。
 
-> **注意**：`PENDING` 由 `buildInitialServiceStatuses`（applyAndWait）写入，`CheckRollout` 不会产出 PENDING（它只观测已 apply 的 workload，产出 READY/WAITING/FAILED）。
+> **注意**：`PENDING` 由 `BuildInitialServiceStatuses`（applyAndWait）写入，`CheckRollout` 不会产出 PENDING（它只观测已 apply 的 workload，产出 READY/WAITING/FAILED）。
 
 ## 持久化语义（storage）
 

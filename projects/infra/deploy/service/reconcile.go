@@ -76,6 +76,9 @@ func (s *ReconcileService) MarkRetryExhausted(ctx context.Context, envName domai
 		State:              domain.StateFailed,
 		ObservedGeneration: env.Generation(),
 		Message:            "retry count exhausted",
+		// apply 阶段失败，无 rollout 数据，显式清空 per-service 状态
+		// （specs/032-guitar-deploy-failure-state/research.md 决策 R6）。
+		Services: nil,
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
@@ -111,7 +114,7 @@ func (s *ReconcileService) processPresent(ctx context.Context, env *domain.Envir
 // transitionToReconciling advances the environment from Pending/Ready/Failed to
 // Reconciling.
 func (s *ReconcileService) transitionToReconciling(ctx context.Context, env *domain.Environment) (*domain.ProcessResult, error) {
-	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), env.Status().State, &domain.EnvironmentStatus{State: domain.StateReconciling, Desired: env.Status().Desired}); err != nil {
+	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), env.Status().State, &domain.EnvironmentStatus{State: domain.StateReconciling, Desired: env.Status().Desired, Services: nil}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
 		}
@@ -134,6 +137,9 @@ func (s *ReconcileService) applyAndWait(ctx context.Context, env *domain.Environ
 	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), domain.StateReconciling, &domain.EnvironmentStatus{
 		State: domain.StateWaitingRollout, Desired: domain.DesiredPresent,
 		ObservedGeneration: env.Generation(),
+		// 进入 WAITING_ROLLOUT 即写入初始 PENDING per-service 状态，消除首次
+		// checkRollout 轮询前的时序空窗（specs/032-guitar-deploy-failure-state/research.md 决策 R4）。
+		Services: domain.BuildInitialServiceStatuses(env.DesiredState()),
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
@@ -152,21 +158,21 @@ func (s *ReconcileService) checkRollout(ctx context.Context, env *domain.Environ
 
 	switch status.State {
 	case domain.RolloutReady:
-		return s.markReadyFromRollout(ctx, env)
+		return s.markReadyFromRollout(ctx, env, status)
 	case domain.RolloutFailed:
-		return s.markFailedFromRollout(ctx, env, status.Message)
+		return s.markFailedFromRollout(ctx, env, status)
 	default:
-		return s.retainWaitingRollout(ctx, env, status.Message)
+		return s.retainWaitingRollout(ctx, env, status)
 	}
 }
 
 // markReadyFromRollout transitions WaitingRollout to Ready.
-func (s *ReconcileService) markReadyFromRollout(ctx context.Context, env *domain.Environment) (*domain.ProcessResult, error) {
+func (s *ReconcileService) markReadyFromRollout(ctx context.Context, env *domain.Environment, status *domain.RolloutStatus) (*domain.ProcessResult, error) {
 	now := time.Now().UTC()
 	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), domain.StateWaitingRollout, &domain.EnvironmentStatus{
 		State: domain.StateReady, Desired: domain.DesiredPresent,
 		ObservedGeneration: env.Generation(), LastSuccessTime: now,
-		Message: "ready",
+		Message: "ready", Services: status.Services,
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
@@ -177,10 +183,10 @@ func (s *ReconcileService) markReadyFromRollout(ctx context.Context, env *domain
 }
 
 // markFailedFromRollout transitions WaitingRollout to Failed.
-func (s *ReconcileService) markFailedFromRollout(ctx context.Context, env *domain.Environment, message string) (*domain.ProcessResult, error) {
+func (s *ReconcileService) markFailedFromRollout(ctx context.Context, env *domain.Environment, status *domain.RolloutStatus) (*domain.ProcessResult, error) {
 	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), domain.StateWaitingRollout, &domain.EnvironmentStatus{
 		State: domain.StateFailed, Desired: domain.DesiredPresent,
-		ObservedGeneration: env.Generation(), Message: message,
+		ObservedGeneration: env.Generation(), Message: status.Message, Services: status.Services,
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
@@ -191,14 +197,17 @@ func (s *ReconcileService) markFailedFromRollout(ctx context.Context, env *domai
 }
 
 // retainWaitingRollout keeps the environment in WaitingRollout, updating the
-// message only when it differs from the current value.
-func (s *ReconcileService) retainWaitingRollout(ctx context.Context, env *domain.Environment, message string) (*domain.ProcessResult, error) {
-	if env.Status().Message == message {
+// message and per-service states only when either differs from the current
+// value. 早退条件同时比较 Message 与 Services，保证 per-service 状态在 message
+// 文本不变但服务状态变化时仍持久化（specs/032-guitar-deploy-failure-state/research.md 决策 R11）。
+func (s *ReconcileService) retainWaitingRollout(ctx context.Context, env *domain.Environment, status *domain.RolloutStatus) (*domain.ProcessResult, error) {
+	if env.Status().Message == status.Message && domain.ServicesEqual(env.Status().Services, status.Services) {
 		return &domain.ProcessResult{RequeueAfter: rolloutPollInterval, Source: domain.WorkItemSourcePoll}, nil
 	}
 
 	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), domain.StateWaitingRollout, &domain.EnvironmentStatus{
-		State: domain.StateWaitingRollout, Desired: domain.DesiredPresent, Message: message,
+		State: domain.StateWaitingRollout, Desired: domain.DesiredPresent,
+		Message: status.Message, Services: status.Services,
 	}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
@@ -218,7 +227,7 @@ func (s *ReconcileService) processAbsent(ctx context.Context, env *domain.Enviro
 
 // transitionToDeleting advances the environment to Deleting.
 func (s *ReconcileService) transitionToDeleting(ctx context.Context, env *domain.Environment) (*domain.ProcessResult, error) {
-	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), env.Status().State, &domain.EnvironmentStatus{State: domain.StateDeleting, Desired: domain.DesiredAbsent}); err != nil {
+	if err := s.repo.TransitionStatus(ctx, env.Name(), env.Generation(), env.Status().State, &domain.EnvironmentStatus{State: domain.StateDeleting, Desired: domain.DesiredAbsent, Services: nil}); err != nil {
 		if errors.Is(err, domain.ErrStaleState) || errors.Is(err, domain.ErrStaleGeneration) {
 			return &domain.ProcessResult{RequeueAfter: 1}, nil
 		}

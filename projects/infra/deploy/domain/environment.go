@@ -50,6 +50,9 @@ type EnvironmentStatus struct {
 	Message            string
 	LastReconcileTime  time.Time
 	LastSuccessTime    time.Time
+	// Services carries the observed rollout state of each service in the
+	// environment (one entry per artifact and infra).
+	Services []*ServiceStatus
 }
 
 // NewEnvironment validates and constructs an environment in the pending state.
@@ -372,7 +375,55 @@ func cloneStatus(status *EnvironmentStatus) *EnvironmentStatus {
 	}
 
 	cloned := *status
+	if len(status.Services) > 0 {
+		cloned.Services = make([]*ServiceStatus, len(status.Services))
+		for i, s := range status.Services {
+			cp := *s
+			cloned.Services[i] = &cp
+		}
+	}
 	return &cloned
+}
+
+// BuildInitialServiceStatuses 据 desired_state 为每个服务构造 PENDING 初始状态，
+// 先 artifacts 后 infras（与 desired_state 一致）。ds 为 nil 或无服务时返回 nil。
+// 由 applyAndWait 在进入 WAITING_ROLLOUT 时写入，消除首次 rollout 轮询前的时序空窗
+// （specs/032-guitar-deploy-failure-state/research.md 决策 R4）。
+func BuildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus {
+	if ds == nil || (len(ds.Artifacts) == 0 && len(ds.Infras) == 0) {
+		return nil
+	}
+
+	services := make([]*ServiceStatus, 0, len(ds.Artifacts)+len(ds.Infras))
+	for _, artifact := range ds.Artifacts {
+		if artifact == nil {
+			continue
+		}
+		services = append(services, &ServiceStatus{
+			Name:    artifact.Name,
+			App:     artifact.App,
+			Kind:    ServiceKindArtifact,
+			State:   ServiceRolloutStatePending,
+			Message: "资源已提交，等待观测",
+		})
+	}
+	for _, infra := range ds.Infras {
+		if infra == nil {
+			continue
+		}
+		services = append(services, &ServiceStatus{
+			Name:    infra.Name,
+			App:     infra.App,
+			Kind:    ServiceKindInfra,
+			State:   ServiceRolloutStatePending,
+			Message: "资源已提交，等待观测",
+		})
+	}
+
+	if len(services) == 0 {
+		return nil
+	}
+	return services
 }
 
 func cloneArtifacts(artifacts []*ArtifactSpec) []*ArtifactSpec {

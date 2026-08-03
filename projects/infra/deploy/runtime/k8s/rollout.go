@@ -260,78 +260,109 @@ func deploymentFailureMessage(condition appsv1.DeploymentCondition, fallback str
 // It returns a tri-state result: Ready (all workloads rolled out), Waiting (still in progress),
 // or Failed (a deployment has an explicit failure condition). StatefulSets can only be Ready or
 // Waiting because they lack reliable failure signals.
+//
+// 每个 workload 的状态被收集为 per-service ServiceStatus（不再 early-return on first failed），
+// env-level State/Message 由 per-service 列表派生
+// （specs/032-guitar-deploy-failure-state/contracts/environment-status.md runtime 契约、research.md 决策 R3）。
 func (r *K8sRuntime) CheckRollout(ctx context.Context, env *domain.Environment) (*domain.RolloutStatus, error) {
 	objects, err := ConvertToWorkloads(env, r.client.K8sConfig)
 	if err != nil {
 		return nil, fmt.Errorf("转换 environment 为 workloads 失败: %w", err)
 	}
 
-	var deploymentNames []string
+	namespace := r.client.K8sConfig.Namespace
+
+	var services []*domain.ServiceStatus
 	for _, workload := range objects.Deployments {
 		if workload == nil {
 			continue
 		}
-		deploymentNames = append(deploymentNames, workload.WorkloadName())
+		status, err := r.deploymentServiceStatus(ctx, namespace, workload.WorkloadName(), workload.ServiceName, workload.App, domain.ServiceKindArtifact)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, status)
 	}
 	for _, workload := range objects.MongoDBWorkloads {
 		if workload == nil {
 			continue
 		}
-		deploymentNames = append(deploymentNames, workload.ResourceName())
+		status, err := r.deploymentServiceStatus(ctx, namespace, workload.ResourceName(), workload.ServiceName, workload.App, domain.ServiceKindInfra)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, status)
 	}
-
-	var statefulSetNames []string
 	for _, workload := range objects.StatefulWorkloads {
 		if workload == nil {
 			continue
 		}
-		statefulSetNames = append(statefulSetNames, workload.WorkloadName())
+		status, err := r.statefulSetServiceStatus(ctx, namespace, workload)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, status)
 	}
 
-	if len(deploymentNames) == 0 && len(statefulSetNames) == 0 {
-		return &domain.RolloutStatus{State: domain.RolloutReady}, nil
-	}
-
-	namespace := r.client.K8sConfig.Namespace
-
+	state := domain.RolloutReady
 	var waitingMessages []string
-
-	for _, name := range deploymentNames {
-		dep, err := r.client.TypedClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("获取 Deployment %s/%s 失败: %w", namespace, name, err)
+	for _, service := range services {
+		switch service.State {
+		case domain.ServiceRolloutStateFailed:
+			state = domain.RolloutFailed
+			waitingMessages = append(waitingMessages, service.Message)
+		case domain.ServiceRolloutStateWaiting:
+			if state != domain.RolloutFailed {
+				state = domain.RolloutWaiting
+			}
+			waitingMessages = append(waitingMessages, service.Message)
 		}
-
-		if failed, reason := isDeploymentFailed(dep); failed {
-			return &domain.RolloutStatus{State: domain.RolloutFailed, Message: reason}, nil
-		}
-
-		if isDeploymentReady(dep) {
-			continue
-		}
-
-		waitingMessages = append(waitingMessages, deploymentNotReadyMessage(dep))
-	}
-
-	for _, name := range statefulSetNames {
-		sts, err := r.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("获取 StatefulSet %s/%s 失败: %w", namespace, name, err)
-		}
-
-		if isStatefulSetReady(sts) {
-			continue
-		}
-
-		waitingMessages = append(waitingMessages, statefulSetNotReadyMessage(sts))
-	}
-
-	if len(waitingMessages) == 0 {
-		return &domain.RolloutStatus{State: domain.RolloutReady}, nil
 	}
 
 	return &domain.RolloutStatus{
-		State:   domain.RolloutWaiting,
-		Message: strings.Join(waitingMessages, "; "),
+		State:    state,
+		Message:  strings.Join(waitingMessages, "; "),
+		Services: services,
 	}, nil
+}
+
+// deploymentServiceStatus 查询单个 Deployment 的 rollout 状态并构造 ServiceStatus。
+// k8sName 为集群中的 Deployment 名（artifact 用 WorkloadName()，infra MongoDB 用 ResourceName()），
+// kind 区分服务来源（artifact 或 infra）。
+func (r *K8sRuntime) deploymentServiceStatus(ctx context.Context, namespace, k8sName, serviceName, app string, kind domain.ServiceKind) (*domain.ServiceStatus, error) {
+	dep, err := r.client.TypedClient.AppsV1().Deployments(namespace).Get(ctx, k8sName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("获取 Deployment %s/%s 失败: %w", namespace, k8sName, err)
+	}
+
+	status := &domain.ServiceStatus{Name: serviceName, App: app, Kind: kind}
+	if failed, reason := isDeploymentFailed(dep); failed {
+		status.State = domain.ServiceRolloutStateFailed
+		status.Message = reason
+		return status, nil
+	}
+	if isDeploymentReady(dep) {
+		status.State = domain.ServiceRolloutStateReady
+		return status, nil
+	}
+	status.State = domain.ServiceRolloutStateWaiting
+	status.Message = deploymentNotReadyMessage(dep)
+	return status, nil
+}
+
+// statefulSetServiceStatus 查询单个 StatefulSet 的 rollout 状态并构造 ServiceStatus。
+func (r *K8sRuntime) statefulSetServiceStatus(ctx context.Context, namespace string, workload *StatefulWorkload) (*domain.ServiceStatus, error) {
+	sts, err := r.client.TypedClient.AppsV1().StatefulSets(namespace).Get(ctx, workload.WorkloadName(), metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("获取 StatefulSet %s/%s 失败: %w", namespace, workload.WorkloadName(), err)
+	}
+
+	status := &domain.ServiceStatus{Name: workload.ServiceName, App: workload.App, Kind: domain.ServiceKindArtifact}
+	if isStatefulSetReady(sts) {
+		status.State = domain.ServiceRolloutStateReady
+		return status, nil
+	}
+	status.State = domain.ServiceRolloutStateWaiting
+	status.Message = statefulSetNotReadyMessage(sts)
+	return status, nil
 }
