@@ -247,8 +247,9 @@ bazel run //:deploy_install
 
 ### 全局参数
 
-- `--endpoint`：deploy service 地址，默认 `http://infra.liukexin.com:8081`。
+- `--endpoint`：deploy service 地址，默认 `http://infra.liukexin.com`。
 - `--timeout`：操作超时，默认 `5m`。
+- `-v, --verbose`：打印 trace ID 等隐藏信息。
 
 ### 命令
 
@@ -266,18 +267,20 @@ deploy apply [--run <id>] {path-of-deploy.yaml}
 deploy del {env-name}
 ```
 
-支持完整环境名（`alice.dev`）和简版名（`dev`，需配置默认 scope）。
+`env-name` 须为完整环境名（`{scope}.{env_name}` 格式，如 `alice.dev`），不支持简版名。
 
 **列出环境**：
 
 ```bash
-deploy list
+deploy list [--scope=name]
 ```
+
+`--scope` 可选：指定时只列出该 scope 下的环境；不指定时列出所有 scope 的环境。
 
 **查看环境详情**：
 
 ```bash
-deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] {env-name}
+deploy describe {env-name}
 ```
 
 打印单个部署环境的详细状态：环境名、状态（中文描述）、服务列表（应用服务与基础设施）、最近调和与最近成功时间。服务列表每项内联 **per-service rollout 状态**（来自 deploy service 的 `Environment.status.services`）：`就绪`（READY）、`等待发布: {原因}`（WAITING）、`失败: {原因}`（FAILED）、`已提交，等待观测`（PENDING，资源已提交、首次 rollout 观测尚未完成）；`status.services` 无该服务匹配项时不追加状态文本（兼容旧版服务端，回退纯服务列表）。`说明:` 行仅在无 per-service 数据（`status.services` 为空）且环境级 message 非空时输出，用于表达 apply 失败、retry-exhausted 等非 rollout 原因。数据来自 deploy service 的环境状态，单次查询无轮询。环境不存在时输出 `环境 {env-name} 不存在` 提示并以非零退出码返回。
@@ -296,15 +299,6 @@ deploy describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] {env-name}
 
 输出字段顺序与格式见 `../../../specs/032-guitar-deploy-failure-state/contracts/deploy-describe.md`。
 
-**配置默认 scope**：
-
-```bash
-deploy scope                # 查看
-deploy scope {scope-name}   # 设置
-```
-
-默认 scope 用于简版环境名补全，为本地仓库级配置。
-
 **路径规则**：
 
 - `//` 开头：按 Bazel 工作区根目录解析。
@@ -316,7 +310,7 @@ deploy scope {scope-name}   # 设置
 环境唯一标识：`{scope}.{env_name}`（如 `alice.dev`）。
 
 - `scope` 和 `env_name` 须匹配 `^[a-z][a-z0-9]{0,7}$`。
-- 输入含 `.` 视为完整环境名，否则视为简版名（需默认 scope）。
+- 环境名始终使用完整 `{scope}.{env_name}` 格式（如 `alice.dev`），不支持简版名。
 - `test` 类型支持 `{{run}}` 占位符，最终名为 `{scope}.{run}`。
 
 ## TLS 配置
