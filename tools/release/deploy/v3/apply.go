@@ -63,10 +63,7 @@ func applyCommand(ctx context.Context, opts *options) error {
 		return err
 	}
 
-	fullEnvName, err := NewFullEnvName(opts.scope, strings.TrimSpace(envName))
-	if err != nil {
-		return err
-	}
+	fullEnvName := strings.TrimSpace(envName)
 	scope, envName, err := ParseFullEnvName(fullEnvName)
 	if err != nil {
 		return err

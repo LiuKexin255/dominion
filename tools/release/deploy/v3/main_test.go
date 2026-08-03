@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,25 +16,23 @@ func Test_parseOptions(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "apply with endpoint timeout and scope",
-			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--scope=team", "deploy.yaml"},
+			name: "apply with endpoint timeout",
+			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "deploy.yaml"},
 			want: &options{
 				command:  commandApply,
 				target:   "deploy.yaml",
 				endpoint: "http://localhost:8081",
 				timeout:  30 * time.Second,
-				scope:    "team",
 			},
 		},
 		{
 			name: "apply with run flag",
-			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--scope=team", "--run=abc123", "deploy.yaml"},
+			args: []string{"apply", "--endpoint=http://localhost:8081", "--timeout=30s", "--run=abc123", "deploy.yaml"},
 			want: &options{
 				command:  commandApply,
 				target:   "deploy.yaml",
 				endpoint: "http://localhost:8081",
 				timeout:  30 * time.Second,
-				scope:    "team",
 				run:      "abc123",
 			},
 		},
@@ -42,6 +41,9 @@ func Test_parseOptions(t *testing.T) {
 			args:    []string{"del", "--run=abc123", "team.dev"},
 			wantErr: true,
 		},
+		// US2 验收场景 1（specs/033-deploy-scope-cleanup/spec.md:61）：
+		// del 传 --scope 须返回 flag 解析错误。
+		{name: "del rejects --scope", args: []string{"del", "--scope=team", "alice.dev"}, wantErr: true},
 		{
 			name: "delete target",
 			args: []string{"del", "team.dev"},
@@ -62,21 +64,13 @@ func Test_parseOptions(t *testing.T) {
 				scope:    "team",
 			},
 		},
-		{
-			name: "scope target",
-			args: []string{"scope", "team"},
-			want: &options{
-				command:  commandScope,
-				target:   "team",
-				endpoint: defaultEndpoint,
-				timeout:  defaultTimeout,
-			},
-		},
 		{name: "unknown command", args: []string{"use", "team.dev"}, wantErr: true},
+		// US1 验收场景 1（specs/033-deploy-scope-cleanup/spec.md:46）：
+		// scope 命令已移除，返回 unknown command 错误。
+		{name: "scope command removed", args: []string{"scope"}, wantErr: true},
 		{name: "apply missing target", args: []string{"apply"}, wantErr: true},
 		{name: "delete missing target", args: []string{"del"}, wantErr: true},
 		{name: "list positional arg rejected", args: []string{"list", "team"}, wantErr: true},
-		{name: "scope invalid target", args: []string{"scope", "TEAM"}, wantErr: true},
 		{
 			name: "apply with verbose flag",
 			args: []string{"apply", "-v", "--endpoint=http://localhost:8081", "--timeout=30s", "deploy.yaml"},
@@ -135,4 +129,25 @@ func TestRun_Help(t *testing.T) {
 	if !strings.Contains(got, "--verbose") {
 		t.Fatalf("run(--help) output = %q, want verbose flag", got)
 	}
+	if strings.Contains(got, "  scope ") {
+		t.Fatalf("run(--help) output = %q, want no scope command", got)
+	}
+}
+
+// withWorkingDir 切换当前工作目录并在测试结束后恢复。
+func withWorkingDir(t *testing.T, dir string) {
+	t.Helper()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", dir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore working dir failed: %v", err)
+		}
+	})
 }

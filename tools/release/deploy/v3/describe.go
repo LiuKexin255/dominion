@@ -8,28 +8,16 @@ import (
 	"time"
 
 	"dominion/projects/infra/deploy"
-	"dominion/tools/release/deploy/pkg/workspace"
 	"dominion/tools/release/deploy/v2/client"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func describeCommand(ctx context.Context, opts *options) error {
-	root := workspace.MustRoot()
-	cfg, err := loadConfig(root)
-	if err != nil {
-		return err
-	}
-
-	scope := strings.TrimSpace(opts.scope)
-	if scope == "" {
-		scope = strings.TrimSpace(cfg.DefaultScope)
-	}
-
-	fullEnvName, err := NewFullEnvName(scope, strings.TrimSpace(opts.target))
-	if err != nil {
-		return err
-	}
+	fullEnvName := strings.TrimSpace(opts.target)
+	// ParseFullEnvName 内部已调用 ValidateFullEnvName 校验完整格式（短名报错
+	// errInvalidFullEnvName），无需重复校验，与 applyCommand 保持一致
+	// （specs/033-deploy-scope-cleanup/spec.md FR-010）。
 	scope, envName, err := ParseFullEnvName(fullEnvName)
 	if err != nil {
 		return err

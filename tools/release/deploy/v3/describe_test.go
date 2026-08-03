@@ -20,18 +20,15 @@ func TestDescribeCommand(t *testing.T) {
 	lastSuccess := time.Date(2026, 8, 2, 10, 20, 0, 0, time.UTC)
 
 	tests := []struct {
-		name         string
-		target       string
-		scope        string
-		defaultScope string
-		handler      http.HandlerFunc
-		wantOutput   string
-		wantErrIs    error
+		name       string
+		target     string
+		handler    http.HandlerFunc
+		wantOutput string
+		wantErrIs  error
 	}{
 		{
 			name:   "failed with message, no per-service data",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -55,8 +52,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "ready per-service statuses",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -83,8 +79,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "waiting per-service status",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -107,8 +102,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "failed per-service status",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -131,8 +125,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "pending per-service status",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -155,8 +148,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "no per-service data with message",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -177,8 +169,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "no per-service data without message",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -197,8 +188,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "unspecified service rollout state no append",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -220,8 +210,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "service matched by kind triple only",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -245,8 +234,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "ready minimal",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -261,8 +249,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "pending with timestamps",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -279,8 +266,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "waiting rollout",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -295,8 +281,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "deleting",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -311,8 +296,7 @@ func TestDescribeCommand(t *testing.T) {
 		},
 		{
 			name:   "unspecified state",
-			target: "api",
-			scope:  "dev",
+			target: "dev.api",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
 				Name: "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{
@@ -326,27 +310,22 @@ func TestDescribeCommand(t *testing.T) {
 最近成功: -`,
 		},
 		{
-			name:         "default scope from config",
-			target:       "api",
-			defaultScope: "dev",
-			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
-				Name: "deploy/scopes/dev/environments/api",
-				Status: &deploy.EnvironmentStatus{
-					State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY,
-				},
-			}),
-			wantOutput: `环境 dev.api
-状态: 就绪
-服务: （无）
-最近调和: -
-最近成功: -`,
-		},
-		{
 			name:       "environment not found",
 			target:     "dev.api",
 			handler:    describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusNotFound, map[string]any{"code": 5, "message": "not found"}),
 			wantOutput: `环境 dev.api 不存在`,
 			wantErrIs:  clientpkg.ErrNotFound,
+		},
+		{
+			// US3 验收场景 1（specs/033-deploy-scope-cleanup/spec.md:76）：
+			// 短名（无点号）须被拒绝并说明需要完整 {scope}.{env_name} 格式，
+			// 且不得发起任何 HTTP 调用。
+			name:   "short name rejected",
+			target: "dev",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("short name should be rejected before any HTTP call")
+			},
+			wantErrIs: errInvalidFullEnvName,
 		},
 	}
 
@@ -355,16 +334,11 @@ func TestDescribeCommand(t *testing.T) {
 			server := httptest.NewServer(tt.handler)
 			t.Cleanup(server.Close)
 
-			root, cwd := newDelListWorkspace(t)
+			_, cwd := newDelListWorkspace(t)
 			withWorkingDir(t, cwd)
-			if tt.defaultScope != "" {
-				if err := saveConfig(root, &cliConfig{DefaultScope: tt.defaultScope}); err != nil {
-					t.Fatalf("saveConfig() failed: %v", err)
-				}
-			}
 
 			gotOutput, err := captureDelListOutput(t, func() error {
-				return describeCommand(context.Background(), &options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
+				return describeCommand(context.Background(), &options{target: tt.target, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
 			})
 
 			if tt.wantErrIs != nil {

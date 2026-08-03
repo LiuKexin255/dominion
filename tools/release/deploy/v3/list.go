@@ -4,26 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"dominion/tools/release/deploy/pkg/workspace"
 )
 
 func listCommand(ctx context.Context, opts *options) error {
-	root := workspace.MustRoot()
-	cfg, err := loadConfig(root)
-	if err != nil {
-		return err
-	}
-
 	scope := strings.TrimSpace(opts.scope)
 	if scope == "" {
-		scope = strings.TrimSpace(cfg.DefaultScope)
-	}
-	if scope == "" {
-		return errNoDefaultScope
-	}
-	if err := ValidateScope(scope); err != nil {
-		return err
+		return fmt.Errorf("%s 需要 --scope 参数", commandList)
 	}
 
 	environments, err := opts.apiClient.ListEnvironments(ctx, scopeResourceName(scope))

@@ -23,7 +23,6 @@ func TestDelCommand(t *testing.T) {
 	tests := []struct {
 		name          string
 		target        string
-		scope         string
 		timeout       time.Duration
 		handler       http.HandlerFunc
 		wantOutput    string
@@ -32,8 +31,7 @@ func TestDelCommand(t *testing.T) {
 	}{
 		{
 			name:    "success",
-			target:  "api",
-			scope:   "dev",
+			target:  "dev.api",
 			timeout: 50 * time.Millisecond,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method {
@@ -54,6 +52,18 @@ func TestDelCommand(t *testing.T) {
 			wantOutput: "环境 dev.api 已删除",
 		},
 		{
+			// US3 验收场景 1（specs/033-deploy-scope-cleanup/spec.md:76）：
+			// 短名（无点号）须被拒绝并说明需要完整 {scope}.{env_name} 格式，
+			// 且不得发起任何 HTTP 调用。
+			name:    "short name rejected",
+			target:  "dev",
+			timeout: 50 * time.Millisecond,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("short name should be rejected before any HTTP call")
+			},
+			wantErrSubstr: "非法完整环境名",
+		},
+		{
 			name:    "environment not found",
 			target:  "dev.api",
 			timeout: 50 * time.Millisecond,
@@ -67,8 +77,7 @@ func TestDelCommand(t *testing.T) {
 		},
 		{
 			name:    "timeout",
-			target:  "api",
-			scope:   "dev",
+			target:  "dev.api",
 			timeout: 20 * time.Millisecond,
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				switch r.Method {
@@ -89,16 +98,11 @@ func TestDelCommand(t *testing.T) {
 			server := httptest.NewServer(tt.handler)
 			t.Cleanup(server.Close)
 
-			root, cwd := newDelListWorkspace(t)
+			_, cwd := newDelListWorkspace(t)
 			withWorkingDir(t, cwd)
-			if tt.scope != "" {
-				if err := saveConfig(root, &cliConfig{DefaultScope: tt.scope}); err != nil {
-					t.Fatalf("saveConfig() failed: %v", err)
-				}
-			}
 
 			gotOutput, err := captureDelListOutput(t, func() error {
-				return delCommand(context.Background(), &options{target: tt.target, scope: tt.scope, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
+				return delCommand(context.Background(), &options{target: tt.target, endpoint: server.URL, timeout: tt.timeout, apiClient: clientpkg.NewClient(server.URL)})
 			})
 
 			if tt.wantErrIs != nil || tt.wantErrSubstr != "" {
@@ -123,13 +127,11 @@ func TestDelCommand(t *testing.T) {
 
 func TestListCommand(t *testing.T) {
 	tests := []struct {
-		name          string
-		scope         string
-		seed          *cliConfig
-		response      any
-		status        int
-		wantOutput    string
-		wantErrSubstr string
+		name       string
+		scope      string
+		response   any
+		status     int
+		wantOutput string
 	}{
 		{
 			name:       "success with environments",
@@ -155,56 +157,172 @@ func TestListCommand(t *testing.T) {
 			}}},
 			wantOutput: "dev.api\t等待滚动发布",
 		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				if r.URL.Path != "/v1/deploy/scopes/dev/environments" {
+					t.Fatalf("path = %s", r.URL.Path)
+				}
+				writeDelListJSONResponse(t, w, tt.status, tt.response)
+			}))
+			t.Cleanup(server.Close)
+
+			_, cwd := newDelListWorkspace(t)
+			withWorkingDir(t, cwd)
+
+			gotOutput := captureListStdout(t, func() error {
+				return listCommand(context.Background(), &options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
+			})
+			if strings.TrimSpace(gotOutput) != tt.wantOutput {
+				t.Fatalf("listCommand() output = %q, want %q", strings.TrimSpace(gotOutput), tt.wantOutput)
+			}
+		})
+	}
+}
+
+// TestNoConfigFileAccess 验证 US1 验收场景 2（specs/033-deploy-scope-cleanup/spec.md）：
+// 任意命令（del/describe/list）都不读取或写入 .env/cli.json，预置的 default_scope 配置被忽略。
+func TestNoConfigFileAccess(t *testing.T) {
+	readyEnv := &deploy.Environment{
+		Name: "deploy/scopes/prod/environments/api",
+		Status: &deploy.EnvironmentStatus{
+			State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY,
+		},
+	}
+
+	const seededConfig = `{"default_scope":"dev"}`
+
+	tests := []struct {
+		name    string
+		seed    bool
+		run     func(ctx context.Context, opts *options) error
+		opts    *options
+		handler http.HandlerFunc
+	}{
 		{
-			name:          "no scope error",
-			status:        http.StatusOK,
-			response:      &deploy.ListEnvironmentsResponse{},
-			wantErrSubstr: "没有默认 scope",
+			name: "del does not create config",
+			run:  delCommand,
+			opts: &options{target: "prod.api", timeout: 50 * time.Millisecond},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodDelete:
+					if r.URL.Path != "/v1/deploy/scopes/prod/environments/api" {
+						t.Fatalf("delete path = %s", r.URL.Path)
+					}
+					w.WriteHeader(http.StatusOK)
+				case http.MethodGet:
+					if r.URL.Path != "/v1/deploy/scopes/prod/environments/api" {
+						t.Fatalf("poll path = %s", r.URL.Path)
+					}
+					writeDelListJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
+				default:
+					t.Fatalf("method = %s", r.Method)
+				}
+			},
+		},
+		{
+			name: "del ignores default_scope config",
+			seed: true,
+			run:  delCommand,
+			opts: &options{target: "prod.api", timeout: 50 * time.Millisecond},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodDelete:
+					if r.URL.Path != "/v1/deploy/scopes/prod/environments/api" {
+						t.Fatalf("delete path = %s", r.URL.Path)
+					}
+					w.WriteHeader(http.StatusOK)
+				case http.MethodGet:
+					if r.URL.Path != "/v1/deploy/scopes/prod/environments/api" {
+						t.Fatalf("poll path = %s", r.URL.Path)
+					}
+					writeDelListJSONResponse(t, w, http.StatusNotFound, map[string]any{"code": 5, "message": "not found"})
+				default:
+					t.Fatalf("method = %s", r.Method)
+				}
+			},
+		},
+		{
+			name:    "describe does not create config",
+			run:     describeCommand,
+			opts:    &options{target: "prod.api", timeout: 50 * time.Millisecond},
+			handler: describeHandler(t, "/v1/deploy/scopes/prod/environments/api", http.StatusOK, readyEnv),
+		},
+		{
+			name:    "describe ignores default_scope config",
+			seed:    true,
+			run:     describeCommand,
+			opts:    &options{target: "prod.api", timeout: 50 * time.Millisecond},
+			handler: describeHandler(t, "/v1/deploy/scopes/prod/environments/api", http.StatusOK, readyEnv),
+		},
+		{
+			name: "list does not create config",
+			run:  listCommand,
+			opts: &options{scope: "prod", timeout: 50 * time.Millisecond},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				if r.URL.Path != "/v1/deploy/scopes/prod/environments" {
+					t.Fatalf("path = %s", r.URL.Path)
+				}
+				writeDelListJSONResponse(t, w, http.StatusOK, &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{readyEnv}})
+			},
+		},
+		{
+			name: "list ignores default_scope config",
+			seed: true,
+			run:  listCommand,
+			opts: &options{scope: "prod", timeout: 50 * time.Millisecond},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("method = %s, want GET", r.Method)
+				}
+				if r.URL.Path != "/v1/deploy/scopes/prod/environments" {
+					t.Fatalf("path = %s", r.URL.Path)
+				}
+				writeDelListJSONResponse(t, w, http.StatusOK, &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{readyEnv}})
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.wantErrSubstr == "" {
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.Method != http.MethodGet {
-						t.Fatalf("method = %s, want GET", r.Method)
-					}
-					if r.URL.Path != "/v1/deploy/scopes/dev/environments" {
-						t.Fatalf("path = %s", r.URL.Path)
-					}
-					writeDelListJSONResponse(t, w, tt.status, tt.response)
-				}))
-				t.Cleanup(server.Close)
-
-				root, cwd := newDelListWorkspace(t)
-				withWorkingDir(t, cwd)
-				if tt.seed != nil {
-					if err := saveConfig(root, tt.seed); err != nil {
-						t.Fatalf("saveConfig() failed: %v", err)
-					}
-				}
-
-				gotOutput := captureListStdout(t, func() error {
-					return listCommand(context.Background(), &options{scope: tt.scope, endpoint: server.URL, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient(server.URL)})
-				})
-				if strings.TrimSpace(gotOutput) != tt.wantOutput {
-					t.Fatalf("listCommand() output = %q, want %q", strings.TrimSpace(gotOutput), tt.wantOutput)
-				}
-				return
-			}
+			server := httptest.NewServer(tt.handler)
+			t.Cleanup(server.Close)
 
 			root, cwd := newDelListWorkspace(t)
 			withWorkingDir(t, cwd)
-			if tt.seed != nil {
-				if err := saveConfig(root, tt.seed); err != nil {
-					t.Fatalf("saveConfig() failed: %v", err)
-				}
+			if tt.seed {
+				writeFile(t, filepath.Join(root, ".env", "cli.json"), seededConfig)
 			}
 
-			err := listCommand(context.Background(), &options{endpoint: "http://127.0.0.1:1", timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://127.0.0.1:1")})
-			if err == nil || !strings.Contains(err.Error(), tt.wantErrSubstr) {
-				t.Fatalf("listCommand() error = %v, want substring %q", err, tt.wantErrSubstr)
+			tt.opts.endpoint = server.URL
+			tt.opts.apiClient = clientpkg.NewClient(server.URL)
+
+			if _, err := captureDelListOutput(t, func() error {
+				return tt.run(context.Background(), tt.opts)
+			}); err != nil {
+				t.Fatalf("%s() unexpected error: %v", tt.name, err)
+			}
+
+			raw, err := os.ReadFile(filepath.Join(root, ".env", "cli.json"))
+			if tt.seed {
+				if err != nil {
+					t.Fatalf("seeded config missing: %v", err)
+				}
+				if string(raw) != seededConfig {
+					t.Fatalf("seeded config modified: %q", raw)
+				}
+				return
+			}
+			if !os.IsNotExist(err) {
+				t.Fatalf("config created unexpectedly: %v", err)
 			}
 		})
 	}

@@ -19,7 +19,6 @@ const (
 	commandDel      = "del"
 	commandDescribe = "describe"
 	commandList     = "list"
-	commandScope    = "scope"
 
 	flagEndpoint = "endpoint"
 	flagTimeout  = "timeout"
@@ -57,7 +56,6 @@ var commandExecTable = map[string]commandExecFunc{
 	commandDel:      delCommand,
 	commandDescribe: describeCommand,
 	commandList:     listCommand,
-	commandScope:    scopeCommand,
 }
 
 var commandValidatorTable = map[string]commandValidatorFunc{
@@ -65,7 +63,6 @@ var commandValidatorTable = map[string]commandValidatorFunc{
 	commandDel:      validateDelOptions,
 	commandDescribe: validateDescribeOptions,
 	commandList:     validateListOptions,
-	commandScope:    validateScopeOptions,
 }
 
 var flagSpecs = map[string]flagSpec{
@@ -88,7 +85,7 @@ var flagSpecs = map[string]flagSpec{
 	flagScope: {
 		name:         flagScope,
 		defaultValue: "",
-		usage:        "environment scope",
+		usage:        "scope filter for list command",
 		bind: func(fs *pflag.FlagSet, opts *options, spec flagSpec) {
 			fs.StringVar(&opts.scope, spec.name, spec.defaultValue.(string), spec.usage)
 		},
@@ -112,11 +109,10 @@ var flagSpecs = map[string]flagSpec{
 }
 
 var commandFlagTable = map[string][]string{
-	commandApply:    {flagEndpoint, flagTimeout, flagScope, flagRun, flagVerbose},
-	commandDel:      {flagEndpoint, flagTimeout, flagScope, flagVerbose},
-	commandDescribe: {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandApply:    {flagEndpoint, flagTimeout, flagRun, flagVerbose},
+	commandDel:      {flagEndpoint, flagTimeout, flagVerbose},
+	commandDescribe: {flagEndpoint, flagTimeout, flagVerbose},
 	commandList:     {flagEndpoint, flagTimeout, flagScope, flagVerbose},
-	commandScope:    {flagEndpoint, flagTimeout, flagScope, flagVerbose},
 }
 
 var stdout io.Writer = os.Stdout
@@ -155,7 +151,7 @@ func run(args []string) error {
 
 func parseOptions(args []string) (*options, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("must provide command: %s, %s, %s, %s or %s", commandApply, commandDel, commandDescribe, commandList, commandScope)
+		return nil, fmt.Errorf("must provide command: %s, %s, %s or %s", commandApply, commandDel, commandDescribe, commandList)
 	}
 
 	fs, opts, err := newCommandFlagSet(args[0])
@@ -177,7 +173,6 @@ func parseOptions(args []string) (*options, error) {
 	}
 
 	opts.endpoint = strings.TrimSpace(opts.endpoint)
-	opts.scope = strings.TrimSpace(opts.scope)
 	opts.run = strings.TrimSpace(opts.run)
 
 	if err := validateOptions(opts); err != nil {
@@ -212,11 +207,6 @@ func validateOptions(opts *options) error {
 	}
 	if opts.timeout <= 0 {
 		return fmt.Errorf("%s must be positive", flagTimeout)
-	}
-	if opts.scope != "" {
-		if err := ValidateScope(opts.scope); err != nil {
-			return err
-		}
 	}
 
 	validator, ok := commandValidatorTable[opts.command]
@@ -254,13 +244,6 @@ func validateListOptions(opts *options) error {
 	return nil
 }
 
-func validateScopeOptions(opts *options) error {
-	if opts.target == "" {
-		return nil
-	}
-	return ValidateScope(opts.target)
-}
-
 func isHelpArgs(args []string) bool {
 	if len(args) == 0 {
 		return false
@@ -279,11 +262,10 @@ func usageText() string {
 		"Usage: deploy_v3 <command> [args]",
 		"",
 		"Commands:",
-		"  apply [-v] [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",
-		"  del [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
-		"  describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
+		"  apply [-v] [--endpoint=url] [--timeout=5m] [--run=id] <deploy.yaml>",
+		"  del [-v] [--endpoint=url] [--timeout=5m] <env>",
+		"  describe [-v] [--endpoint=url] [--timeout=5m] <env>",
 		"  list [-v] [--endpoint=url] [--timeout=5m] [--scope=name]",
-		"  scope [-v] [--scope=name] [scope-name]",
 		"",
 		"Flags:",
 		"  -v, --verbose   show hidden information such as trace ID",
