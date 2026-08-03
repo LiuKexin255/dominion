@@ -39,8 +39,8 @@
     }
   },
   "permission": {
-    "read": {
-      "~/.cache/bazel/_bazel_liukexin/**/*": "allow"
+    "external_directory": {
+      "~/.cache/bazel/_bazel_liukexin/*": "allow"
     }
   }
 }
