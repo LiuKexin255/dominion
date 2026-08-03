@@ -54,7 +54,7 @@ import { randomUUID } from "node:crypto";
 
 import { warn } from "@dominion/common-js-logs";
 
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type {
@@ -65,20 +65,7 @@ import type {
 import { toParts } from "./llm";
 
 /**
- * FrameSender enum string literals (proto). Defined locally (mirroring
- * `handler.ts`) so this module has no runtime dependency on the generated
- * game_types modules, which are not resolvable from the test runfiles tree;
- * all game_types references here are type-only.
- */
-const FrameSender = {
-  FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
-  FRAME_SENDER_USER: "FRAME_SENDER_USER",
-  FRAME_SENDER_AGENT: "FRAME_SENDER_AGENT",
-  FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
-} as const;
-
-/**
- * Oneof case names for `AgentFrame.payload` (`projects/game/game.proto`).
+ * Oneof case names for `TeamFrame.payload` (`projects/game/game.proto`).
  * proto-loader only populates the `payload` discriminator during
  * (de)serialization; outbound raw frame objects built here must carry it
  * explicitly so the frame is self-describing (same convention as `handler.ts`).
@@ -87,13 +74,13 @@ const PAYLOAD_ONEOF_KEYS = ["messageParts", "flowParts"] as const;
 
 /**
  * Sink the handler registered on the active bidi stream. The loop pushes
- * fully-formed `AgentFrame`s (display blocks, `wait`, `warn`, and — from
+ * fully-formed `TeamFrame`s (display blocks, `wait`, `warn`, and — from
  * Phase 5 / T010 — `QueueSignal`) through it. It is injected (not module-
  * intercepted) so tests pass a plain recording array
  * (`style/javascript.md` §Mock — dependency injection over `vi.mock`;
  * [vitest — Mocking Modules Pitfalls](https://vitest.dev/guide/mocking/modules#mocking-modules-pitfalls)).
  */
-export type TurnLoopEmit = (frame: AgentFrame) => void;
+export type TurnLoopEmit = (frame: TeamFrame) => void;
 
 /**
  * One streamed team-turn output: a `ContentBlock` plus the team agent that
@@ -118,26 +105,36 @@ export type TurnRunner = (
 ) => AsyncIterable<TurnBlock>;
 
 /**
- * Build an outbound `AgentFrame` envelope, tagging the `payload` oneof case
- * from whichever payload key is present (same convention as `handler.ts`).
- * `templateId` is the session's template path segment (bare, REQUIRED by the
- * proto contract — specs/031-team-template-mode/contracts/api-contract.md §3.6);
- * it is carried alongside `sessionId` so every outbound frame is
- * self-describing.
+ * Build an outbound `TeamFrame` envelope, tagging the `payload` oneof case
+ * from whichever payload key is present and deriving `role` from it: a
+ * messageParts payload is real-time agent display content → AGENT; a flowParts
+ * payload is a control signal/operation → UNSPECIFIED (FR-020,
+ * specs/035-proto-contract-refine/contracts/frame-split.md §3.2). The envelope
+ * always sets session_id/template_id/frame_id/create_time (FR-013,
+ * specs/035-proto-contract-refine/contracts/frame-split.md §3.3). `templateId`
+ * is the session's template path segment (bare, REQUIRED by the proto contract
+ * — specs/031-team-template-mode/contracts/api-contract.md §3.6).
+ *
+ * Exported as the canonical TeamFrame builder: `handler.ts` and
+ * `operation-bridge.ts` reuse it so every outbound frame carries the full
+ * envelope (the former operation-bridge dispatch set only the payload — the
+ * FR-013 defect this fixes).
  */
-function buildFrame(
+export function buildTeamFrame(
   sessionId: string,
   templateId: string,
-  sender: (typeof FrameSender)[keyof typeof FrameSender],
-  payload: Partial<AgentFrame>,
-): AgentFrame {
+  payload: Partial<TeamFrame>,
+): TeamFrame {
   const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
   return {
     sessionId,
     templateId,
     frameId: randomUUID(),
-    sender,
     createTime: timestampNow(),
+    role:
+      payloadKind === "messageParts"
+        ? "MESSAGE_ROLE_AGENT"
+        : "MESSAGE_ROLE_UNSPECIFIED",
     ...(payloadKind ? { payload: payloadKind } : {}),
     ...payload,
   };
@@ -402,18 +399,19 @@ export class TurnLoop {
 
   // -----------------------------------------------------------------------
   // Frame builders (unchanged framing — ported from handler.ts so the loop
-  // owns all outbound AgentFrame emission; the handler's emit sink just writes)
+  // owns all outbound TeamFrame emission; the handler's emit sink just writes)
   // -----------------------------------------------------------------------
 
   /**
-   * Map a streamed `ContentBlock` to a display `AgentFrame` (messageParts).
+   * Map a streamed `ContentBlock` to a display `TeamFrame` (messageParts).
    * The block→MessagePart framing matches `handler.ts` exactly so live and
    * loop-emitted output are identical. The frame's `agent` field carries the
-   * producing team agent's name (specs/031-team-template-mode D12).
+   * producing team agent's name (specs/031-team-template-mode D12); `role` is
+   * AGENT (messageParts payload).
    */
-  private displayFrame(block: ContentBlock, agent: string): AgentFrame {
+  private displayFrame(block: ContentBlock, agent: string): TeamFrame {
     if (block.type === "reasoning") {
-      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildTeamFrame(this.sessionId, this.templateId, {
         agent,
         messageParts: {
           parts: [{ thinking: { content: block.reasoning } }],
@@ -421,7 +419,7 @@ export class TurnLoop {
       });
     }
     if (block.type === "text") {
-      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildTeamFrame(this.sessionId, this.templateId, {
         agent,
         messageParts: {
           parts: [{ text: { content: block.text } }],
@@ -429,7 +427,7 @@ export class TurnLoop {
       });
     }
     if (block.type === "tool_call") {
-      return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
+      return buildTeamFrame(this.sessionId, this.templateId, {
         agent,
         messageParts: {
           parts: [
@@ -459,15 +457,15 @@ export class TurnLoop {
       };
       toolResultPart.screenshot = screenshot;
     }
-    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_AGENT, {
+    return buildTeamFrame(this.sessionId, this.templateId, {
       agent,
       messageParts: { parts: [{ toolResult: toolResultPart }] },
     });
   }
 
-  /** `wait` FlowPart frame (sender SYSTEM, carries the session agent). */
-  private waitFrame(): AgentFrame {
-    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
+  /** `wait` FlowPart frame (control signal, carries the session agent). */
+  private waitFrame(): TeamFrame {
+    return buildTeamFrame(this.sessionId, this.templateId, {
       agent: this.agentName,
       flowParts: { parts: [{ wait: {} }] },
     });
@@ -479,18 +477,18 @@ export class TurnLoop {
    * proto field `queued_count` (lower_snake_case per
    * [AIP-140 Field names](https://google.aip.dev/140)) is emitted on the JS
    * wire as `queuedCount` (proto-loader camelCase mapping — see the generated
-   * `FlowPart.queue`/`QueueSignal.queuedCount` in game_types). Sender SYSTEM
-   * matches `wait`/`warn` (control-only signals).
+   * `FlowPart.queue`/`QueueSignal.queuedCount` in game_types). Control-only
+   * signals match `wait`/`warn`.
    */
-  private queueSignalFrame(depth: number): AgentFrame {
-    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
+  private queueSignalFrame(depth: number): TeamFrame {
+    return buildTeamFrame(this.sessionId, this.templateId, {
       flowParts: { parts: [{ queue: { queuedCount: depth } }] },
     });
   }
 
-  /** `warn` FlowPart frame (sender SYSTEM). */
-  private warnFrame(message: string): AgentFrame {
-    return buildFrame(this.sessionId, this.templateId, FrameSender.FRAME_SENDER_SYSTEM, {
+  /** `warn` FlowPart frame (control signal). */
+  private warnFrame(message: string): TeamFrame {
+    return buildTeamFrame(this.sessionId, this.templateId, {
       flowParts: {
         parts: [{ warn: { message: `Processing error: ${message}` } }],
       },

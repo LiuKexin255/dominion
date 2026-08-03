@@ -4,13 +4,13 @@
 // handlers. Replaces the framework host→webview `game:frame` event channel so
 // delivery survives desktop-window focus changes (spec 016).
 
-import type { AgentFrame } from './api'
+import type { TeamFrame } from './api'
 
-// AgentFrameJson is the JSON wire form of AgentFrame (camelCase, flattened
+// TeamFrameJson is the JSON wire form of TeamFrame (camelCase, flattened
 // oneof, base64 bytes) — the exact shape `frameToMap`/`protoToJSONMap` already
 // produce. Kept as a distinct alias so the SSE/reassembly layer stays decoupled
-// from value imports; it is structurally identical to AgentFrame.
-export type AgentFrameJson = AgentFrame
+// from value imports; it is structurally identical to TeamFrame.
+export type TeamFrameJson = TeamFrame
 
 // One piece of a chunked large event (spec 016 §4.2). The whole group shares a
 // single logical event id; the SSE `id:` line is emitted ONLY on the final
@@ -47,7 +47,7 @@ export interface Deduper {
 }
 
 export interface ChatEventHandlers {
-  onFrame: (frame: AgentFrameJson) => void
+  onFrame: (frame: TeamFrameJson) => void
   onOpen?: () => void
   onError?: (err: Event) => void
 }
@@ -61,7 +61,7 @@ export interface ChatEventHandlers {
 export function reassembleChunk(
   state: Map<string, ChunkState>,
   chunk: ChunkEnvelope,
-): { complete?: AgentFrameJson } | undefined {
+): { complete?: TeamFrameJson } | undefined {
   if (chunk.total < 1 || chunk.index < 0 || chunk.index >= chunk.total) return undefined
   let entry = state.get(chunk.groupId)
   if (!entry) {
@@ -82,7 +82,7 @@ export function reassembleChunk(
   state.delete(chunk.groupId)
   const full = entry.fragments.join('')
   try {
-    return { complete: JSON.parse(full) as AgentFrameJson }
+    return { complete: JSON.parse(full) as TeamFrameJson }
   } catch {
     // Corrupt group — already evicted; nothing to deliver.
     return undefined
@@ -141,9 +141,9 @@ export function openChatEventSource(
   es.addEventListener('chat', (event: MessageEvent) => {
     // C11: discard already-applied event ids; otherwise mark and deliver.
     if (!deduper.checkChat(event.lastEventId)) return
-    let frame: AgentFrameJson
+    let frame: TeamFrameJson
     try {
-      frame = JSON.parse(event.data) as AgentFrameJson
+      frame = JSON.parse(event.data) as TeamFrameJson
     } catch {
       return
     }

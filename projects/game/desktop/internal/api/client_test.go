@@ -584,7 +584,7 @@ func TestClient_ListMessages(t *testing.T) {
 			sessionID:  "test-session",
 			agent:      "player",
 			statusCode: http.StatusOK,
-			respBody:   `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","agent":"player","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
+			respBody:   `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","role":"MESSAGE_ROLE_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","role":"MESSAGE_ROLE_AGENT","agent":"player","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
@@ -658,8 +658,8 @@ func TestClient_ListMessages(t *testing.T) {
 				if got := firstTextPartContent(first); got != "hello" {
 					t.Errorf("expected text part content %q, got %q", "hello", got)
 				}
-				if first.GetSender() != game.FrameSender_FRAME_SENDER_USER {
-					t.Errorf("expected sender FRAME_SENDER_USER, got %v", first.GetSender())
+				if first.GetRole() != game.MessageRole_MESSAGE_ROLE_USER {
+					t.Errorf("expected role MESSAGE_ROLE_USER, got %v", first.GetRole())
 				}
 			}
 		})

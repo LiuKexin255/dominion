@@ -85,12 +85,15 @@ service TeamService {
   }
 
   // Connect establishes a bidirectional streaming channel for team
-  // communication. Each frame carries exactly one payload: a MessageParts of
-  // content or a single FlowParts control batch. User-input frames are
-  // routed to the team agent that accepts user input (FR-032). No REST
-  // binding: bidirectional streaming RPCs are not natively supported over
-  // HTTP/1.1 (AIP-127 https://google.aip.dev/127).
-  rpc Connect(stream AgentFrame) returns (stream AgentFrame);
+  // communication. The client sends UserFrame (user input, operation results,
+  // connectivity probes); the server sends TeamFrame (agent display content,
+  // control signals, operation requests). Each frame carries exactly one
+  // payload: a MessageParts batch of content or a FlowParts control batch.
+  // User-input frames are routed to the team agent that accepts user input
+  // (FR-032). No REST binding: bidirectional streaming RPCs are not natively
+  // supported over HTTP/1.1 (AIP-127 https://google.aip.dev/127;
+  // specs/035-proto-contract-refine/contracts/frame-split.md §1).
+  rpc Connect(stream UserFrame) returns (stream TeamFrame);
 
   // ListMessages lists Messages of one team agent's partition.
   // AIP-132: https://google.aip.dev/132
@@ -283,12 +286,17 @@ message SaoleiProfile {
   string planner_prompt = 4;
 }
 
-// FrameSender identifies the originator of an AgentFrame.
-enum FrameSender {
-  FRAME_SENDER_UNSPECIFIED = 0;
-  FRAME_SENDER_USER = 1;
-  FRAME_SENDER_AGENT = 2;
-  FRAME_SENDER_SYSTEM = 3;
+// MessageRole identifies the sender role of a persisted conversation Message
+// (history). Frames are direction-split (UserFrame inbound / TeamFrame
+// outbound), so the transport no longer needs a sender enum; Message keeps a
+// role for bubble alignment and history replay (FR-020,
+// specs/035-proto-contract-refine/contracts/frame-split.md §4). tool messages
+// are unified as AGENT, aligned with the live stream's tool_result frames
+// (the former FRAME_SENDER_SYSTEM had no counterpart in the live direction).
+enum MessageRole {
+  MESSAGE_ROLE_UNSPECIFIED = 0;
+  MESSAGE_ROLE_USER = 1;
+  MESSAGE_ROLE_AGENT = 2;
 }
 
 // ImageEncoding specifies the encoding format for image data.
@@ -349,7 +357,7 @@ enum KeyboardKey {
 // spec 023 C3 / FR-001..FR-004):
 //
 //   - MessagePart (display only) — rendered in the conversation and carried by
-//     Message (history) and AgentFrame.message_parts (live): text, thinking,
+//     Message (history) and TeamFrame.message_parts (live): text, thinking,
 //     image, tool_call (the model's semantic tool invocation), tool_result.
 //   - FlowPart (control only — NEVER rendered in the conversation) — drives
 //     desktop execution (mouse/keyboard operations) and turn control
@@ -376,7 +384,7 @@ message ToolCallPart {
 
 // MessagePart is one display-only content block. The conversation renders only
 // MessageParts; they are the sole content of Message (history) and the
-// message_parts payload of AgentFrame (live). A tool call and its result are
+// message_parts payload of TeamFrame (live). A tool call and its result are
 // both MessageParts (tool_call, tool_result) linked by tool_id.
 message MessagePart {
   oneof kind {
@@ -420,14 +428,14 @@ message FlowPart {
 }
 
 // MessageParts is the display payload: an ordered list of MessagePart. Carried
-// by AgentFrame.message_parts (live) and Message.content (history) — identical
+// by TeamFrame.message_parts (live) and Message.content (history) — identical
 // shape, so live and history render identically (spec 023 FR-009).
 message MessageParts {
   repeated MessagePart parts = 1;
 }
 
 // FlowParts is the control payload: an ordered list of FlowPart. Carried by
-// AgentFrame.flow_parts. Never appears in Message.content.
+// TeamFrame.flow_parts. Never appears in Message.content.
 message FlowParts {
   repeated FlowPart parts = 1;
 }
@@ -532,7 +540,7 @@ message FlowResultPart {
 //
 // WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds — carried
-// by AgentFrame.flow_parts and never rendered as conversation entries. Their
+// by TeamFrame.flow_parts and never rendered as conversation entries. Their
 // message shapes are unchanged from spec 018.
 //
 // QueueSignal (spec 030 FR-008) is an additive FlowPart signal that carries
@@ -581,49 +589,66 @@ message QueueSignal {
 
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
-// AgentFrame is the transport unit exchanged over WebSocket and gRPC streams.
-// A frame carries exactly one payload: a batch of display blocks
-// (MessageParts) OR a batch of control blocks (FlowParts). The prior
-// content/wait/warn/status cases are removed (clean break, spec 023 C2):
-// wait/warn/status became FlowPart kinds (spec 023 FR-003).
-message AgentFrame {
+// UserFrame is the inbound transport unit (desktop client → server) exchanged
+// over WebSocket and gRPC streams. A frame carries exactly one payload: a
+// batch of display blocks (MessageParts — user message content) OR a batch of
+// control blocks (FlowParts — operation results, connectivity probes). It
+// excludes the outbound-only envelope fields (frame_id/create_time/sender):
+// the server does not consume them on the inbound direction
+// (specs/035-proto-contract-refine/contracts/frame-split.md §2).
+message UserFrame {
   string session_id = 1 [(google.api.field_behavior) = REQUIRED];
-  string frame_id = 2;
-  google.protobuf.Timestamp create_time = 3;
-
-  // Removed dead metadata (no consumer ever read these):
-  reserved 4, 5;
-  reserved "invoke_id", "sequence";
-
-  FrameSender sender = 6;
-  // The team agent that produced the frame (e.g. player/planner); replaces
-  // the former agent_profile_name (clean break, spec 031-team-template-mode
-  // D12 / FR-023). Field 7 keeps its number; only the name changes.
-  string agent = 7;
-
-  // The template id routing key (bare segment, e.g. "saolei"); the companion
-  // of session_id. The gateway injects both from the connect URL path
-  // (templates/{template}/sessions/{session}/connect); the proxy reconstructs
-  // the session resource name from the pair without parsing
-  // (specs/031-team-template-mode/contracts/api-contract.md §2.2, FR-004).
-  string template_id = 8 [(google.api.field_behavior) = REQUIRED];
+  string template_id = 2 [(google.api.field_behavior) = REQUIRED];
+  // The team agent the user input targets (e.g. player/planner); empty falls
+  // back to the accepts-user-input agent. Only message_parts (user message)
+  // frames need it; flow_parts (operation result/probe) may omit it.
+  string agent = 3;
 
   // Exactly one payload per frame: a batch of display blocks OR a batch of
   // control blocks (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4).
   oneof payload {
-    MessageParts message_parts = 11;
-    FlowParts    flow_parts    = 12;
+    MessageParts message_parts = 10;
+    FlowParts    flow_parts    = 11;
   }
-  // Prior payload cases (clean break, spec 023 C2): 10 was PartBlock content;
-  // 20/21/22 were wait/warn/status (now FlowPart kinds). Reserved for hygiene.
-  reserved 10, 20, 21, 22;
-  reserved "content", "wait", "warn", "status";
+}
+
+// TeamFrame is the outbound transport unit (server → desktop client)
+// exchanged over WebSocket and gRPC streams. A frame carries exactly one
+// payload: a batch of display blocks (MessageParts — agent display content)
+// OR a batch of control blocks (FlowParts — wait/warn/status/queue signals +
+// mouse/keyboard operation requests). Every send point MUST set the envelope
+// fields session_id/template_id/frame_id/create_time (FR-013,
+// specs/035-proto-contract-refine/contracts/frame-split.md §3.3).
+message TeamFrame {
+  string session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  string template_id = 2 [(google.api.field_behavior) = REQUIRED];
+  // Frame unique id (UUID) — the frontend dedupes frames by it.
+  string frame_id = 3;
+  // Frame timestamp — the frontend shows it on bubbles.
+  google.protobuf.Timestamp create_time = 4;
+  // The team agent that produced the frame (e.g. player/planner); replaces
+  // the former agent_profile_name (clean break, spec 031-team-template-mode
+  // D12 / FR-023). Field 5 keeps its semantics; the number is new because the
+  // frame was split (clean break, specs/035-proto-contract-refine/research.md
+  // R2).
+  string agent = 5;
+  // Message role for bubble alignment: live message_parts frames are always
+  // AGENT; SeedFromHistory replay frames carry the Message.role copy; flowParts
+  // frames are UNSPECIFIED (specs/035-proto-contract-refine/research.md R3).
+  MessageRole role = 6;
+
+  // Exactly one payload per frame: a batch of display blocks OR a batch of
+  // control blocks (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4).
+  oneof payload {
+    MessageParts message_parts = 10;
+    FlowParts    flow_parts    = 11;
+  }
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
 // state (history), partitioned per team agent (FR-005). Its content is a
 // MessageParts (display blocks only) — the identical shape a live
-// AgentFrame's message_parts payload carries, so history and live view render
+// TeamFrame's message_parts payload carries, so history and live view render
 // identically. Control blocks (FlowParts) never appear here (spec 023 FR-004).
 message Message {
   option (google.api.resource) = {
@@ -635,12 +660,15 @@ message Message {
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
   string message_id = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
-  FrameSender sender = 3;
+  // MessageRole role = 3 — replaced the former FrameSender sender field
+  // (field number kept; FR-020,
+  // specs/035-proto-contract-refine/contracts/frame-split.md §5).
+  MessageRole role = 3;
   // The team agent this message belongs to; matches the {agent} path segment.
   string agent = 4;
   google.protobuf.Timestamp create_time = 5;
 
-  // Content blocks (display only) — identical shape to AgentFrame's
+  // Content blocks (display only) — identical shape to TeamFrame's
   // message_parts payload (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §5).
   MessageParts content = 6;
 }

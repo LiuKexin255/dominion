@@ -175,15 +175,15 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		}
 
 		// verify received frame is valid binary protobuf
-		frame := new(game.AgentFrame)
+		frame := new(game.UserFrame)
 		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 
 		// respond with a status signal instead. Status rides as a FlowPart kind.
-		respFrame := &game.AgentFrame{
+		respFrame := &game.TeamFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_FlowParts{
+			Payload: &game.TeamFrame_FlowParts{
 				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 				}},
@@ -202,9 +202,9 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	}
 	defer ws.Close()
 
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -244,7 +244,7 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 			return
 		}
 
-		frame := new(game.AgentFrame)
+		frame := new(game.UserFrame)
 		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
@@ -254,9 +254,9 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 			return
 		}
 
-		respFrame := &game.AgentFrame{
+		respFrame := &game.TeamFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_FlowParts{
+			Payload: &game.TeamFrame_FlowParts{
 				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 				}},
@@ -276,11 +276,9 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 	defer ws.Close()
 
 	imageData := []byte("fake-png-data")
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "test-session",
-		FrameId:   "frame-001",
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
 				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
@@ -381,9 +379,9 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	ws := &WSClient{}
 
 	// when: sending a frame
-	err := ws.SendFrame(context.Background(), &game.AgentFrame{
+	err := ws.SendFrame(context.Background(), &game.UserFrame{
 		SessionId: "x",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -482,9 +480,9 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	defer ws.Close()
 
 	// Send a frame first so the server consumes it and enters the blocking select.
-	err = ws.SendFrame(context.Background(), &game.AgentFrame{
+	err = ws.SendFrame(context.Background(), &game.UserFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -538,10 +536,9 @@ func TestWSClient_SendRecvFrame_LargeFrame(t *testing.T) {
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
 	}
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "large-frame",
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
@@ -583,11 +580,11 @@ func TestWSClient_RecvFrame_OversizedError(t *testing.T) {
 	// server's own read limit is irrelevant here — it only writes.
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		// Build an AgentFrame whose marshalled binary exceeds 10 MiB.
+		// Build a TeamFrame whose marshalled binary exceeds 10 MiB.
 		oversizedData := make([]byte, 11*1024*1024)
-		frame := &game.AgentFrame{
+		frame := &game.TeamFrame{
 			SessionId: "oversized",
-			Payload: &game.AgentFrame_MessageParts{
+			Payload: &game.TeamFrame_MessageParts{
 				MessageParts: &game.MessageParts{
 					Parts: []*game.MessagePart{
 						{Kind: &game.MessagePart_Image{Image: &game.ImagePart{

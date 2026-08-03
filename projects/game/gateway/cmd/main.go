@@ -144,9 +144,9 @@ func extractConnectIdentity(path string) (template, session string) {
 	return parts[3], parts[5]
 }
 
-// wsStream adapts a WebSocket connection to bind.AgentFrameStream.
+// wsStream adapts a WebSocket connection to bind.UserFrameStream.
 // It handles binary-protobuf serialization/deserialization and injects the
-// templateID/sessionID from the URL path into every received frame,
+// templateID/sessionID from the URL path into every received UserFrame,
 // overwriting any client-supplied value. The proxy reconstructs the session
 // resource name from this pair without parsing (spec
 // 031-team-template-mode contracts/api-contract.md §2.2).
@@ -160,18 +160,18 @@ type wsStream struct {
 	sessionID  string
 }
 
-// Recv reads a binary frame from the WebSocket, unmarshals it as an
-// AgentFrame (protobuf wire format), and injects the templateID/sessionID
-// from the URL path. proto.Unmarshal preserves unknown fields per the proto
-// spec, maintaining the forward-compatibility that protojson's DiscardUnknown
+// Recv reads a binary frame from the WebSocket, unmarshals it as a UserFrame
+// (protobuf wire format), and injects the templateID/sessionID from the URL
+// path. proto.Unmarshal preserves unknown fields per the proto spec,
+// maintaining the forward-compatibility that protojson's DiscardUnknown
 // previously provided
 // (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
-func (s *wsStream) Recv() (*game.AgentFrame, error) {
+func (s *wsStream) Recv() (*game.UserFrame, error) {
 	_, data, err := s.conn.Read(s.ctx)
 	if err != nil {
 		return nil, err
 	}
-	var frame game.AgentFrame
+	var frame game.UserFrame
 	if err := proto.Unmarshal(data, &frame); err != nil {
 		return nil, errors.Join(errProtocol, err)
 	}
@@ -182,9 +182,9 @@ func (s *wsStream) Recv() (*game.AgentFrame, error) {
 	return &frame, nil
 }
 
-// Send marshals the AgentFrame as binary protobuf and writes it as a binary
+// Send marshals the TeamFrame as binary protobuf and writes it as a binary
 // frame to the WebSocket connection.
-func (s *wsStream) Send(frame *game.AgentFrame) error {
+func (s *wsStream) Send(frame *game.TeamFrame) error {
 	data, err := proto.Marshal(frame)
 	if err != nil {
 		return err
@@ -193,12 +193,12 @@ func (s *wsStream) Send(frame *game.AgentFrame) error {
 }
 
 // errProtocol is a sentinel error for protocol-level errors (e.g. invalid
-// AgentFrame protobuf) that should result in a WebSocket
+// frame protobuf) that should result in a WebSocket
 // InvalidFramePayloadData close code.
 var errProtocol = errors.New("protocol error")
 
 // isProtocolError reports whether err is a protocol-level error (invalid
-// AgentFrame protobuf) from the WebSocket adapter.
+// frame protobuf) from the WebSocket adapter.
 func isProtocolError(err error) bool {
 	return errors.Is(err, errProtocol)
 }
@@ -207,9 +207,10 @@ func isProtocolError(err error) bool {
 // establishes a bidirectional forwarding bridge between the WebSocket
 // and the underlying TeamService.Connect gRPC stream.
 //
-// Messages are serialized as AgentFrame binary protobuf over WebSocket
-// binary frames in both directions. proto.Unmarshal preserves unknown
-// fields for forward compatibility.
+// Messages are serialized as binary protobuf over WebSocket binary frames in
+// both directions: UserFrame inbound (desktop → server), TeamFrame outbound
+// (server → desktop). proto.Unmarshal preserves unknown fields for forward
+// compatibility.
 func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
 	templateID, sessionID := extractConnectIdentity(r.URL.Path)
 	if templateID == "" || sessionID == "" {
@@ -274,7 +275,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *gr
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
-		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame protobuf")
+		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid frame protobuf")
 		return
 	}
 	logs.Error(r.Context(), "agent connect: internal error",

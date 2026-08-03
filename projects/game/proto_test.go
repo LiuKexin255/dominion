@@ -15,27 +15,32 @@ import (
 // the 023-saolei-mcp-refine refactor: the single Part oneof is split into a
 // display channel (MessagePart — text/thinking/image/tool_call/tool_result)
 // and a control channel (FlowPart — mouse/keyboard operations + wait/warn/
-// status signals). AgentFrame.payload is now message_parts OR flow_parts;
+// status signals). Connect frames are direction-split (spec
+// 035-proto-contract-refine): UserFrame is the inbound transport unit,
+// TeamFrame the outbound one; each payload is message_parts OR flow_parts;
 // Message.content is MessageParts (display only). See
-// specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6.
+// specs/023-saolei-mcp-refine/contracts/content-model-contract.md §1..§6 and
+// specs/035-proto-contract-refine/contracts/frame-split.md §1..§5.
 //
-// The old frame types (AgentAckFrame, AgentEchoFrame/AgentTextFrame, ...)
-// and the AgentFrame.invoke_id / AgentFrame.sequence and Message.type
-// metadata are all REMOVED: the fields are `reserved` in game.proto, so the
+// The old frame types (AgentAckFrame, AgentEchoFrame/AgentTextFrame, ...),
+// the AgentFrame envelope, and the FrameSender enum are all REMOVED: the
 // generated Go types have no accessors for them. The fact that this file
 // compiles is itself the proof those symbols no longer exist.
 
-func TestAgentFrameMessagePartsTextRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose payload is a MessageParts of one TextPart
-	// (display channel — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §4)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-text",
-		FrameId:   "frame-text-001",
-		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
+func TestTeamFrameMessagePartsTextRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose payload is a MessageParts of one
+	// TextPart (display channel — agent display content, role AGENT per
+	// specs/035-proto-contract-refine/research.md R3)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-text",
+		TemplateId: "saolei",
+		FrameId:    "frame-text-001",
 		CreateTime: &timestamppb.Timestamp{
 			Seconds: time.Now().Unix(),
 		},
-		Payload: &game.AgentFrame_MessageParts{
+		Agent: "player",
+		Role:  game.MessageRole_MESSAGE_ROLE_AGENT,
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from agent"}}},
@@ -60,7 +65,7 @@ func TestAgentFrameMessagePartsTextRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -69,11 +74,17 @@ func TestAgentFrameMessagePartsTextRoundtrip(t *testing.T) {
 	if got.GetSessionId() != "sessions/test-text" {
 		t.Errorf("sessionId: got %q, want %q", got.GetSessionId(), "sessions/test-text")
 	}
+	if got.GetTemplateId() != "saolei" {
+		t.Errorf("templateId: got %q, want %q", got.GetTemplateId(), "saolei")
+	}
 	if got.GetFrameId() != "frame-text-001" {
 		t.Errorf("frameId: got %q, want %q", got.GetFrameId(), "frame-text-001")
 	}
-	if got.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
-		t.Errorf("sender: got %v, want %v", got.GetSender(), game.FrameSender_FRAME_SENDER_AGENT)
+	if got.GetAgent() != "player" {
+		t.Errorf("agent: got %q, want %q", got.GetAgent(), "player")
+	}
+	if got.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
+		t.Errorf("role: got %v, want %v", got.GetRole(), game.MessageRole_MESSAGE_ROLE_AGENT)
 	}
 
 	// then: verify the MessageParts payload holds the TextPart
@@ -90,6 +101,79 @@ func TestAgentFrameMessagePartsTextRoundtrip(t *testing.T) {
 	}
 	if text.GetContent() != "Hello from agent" {
 		t.Errorf("text.content: got %q, want %q", text.GetContent(), "Hello from agent")
+	}
+}
+
+func TestUserFrameMessagePartsTextRoundtrip(t *testing.T) {
+	// given: an inbound UserFrame whose payload is a MessageParts of one
+	// TextPart (user message content; no outbound-only envelope fields —
+	// specs/035-proto-contract-refine/contracts/frame-split.md §2)
+	given := &game.UserFrame{
+		SessionId:  "sessions/test-user",
+		TemplateId: "saolei",
+		Agent:      "player",
+		Payload: &game.UserFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from user"}}},
+				},
+			},
+		},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// then: verify camelCase JSON naming for the messageParts payload
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"messageParts"`) {
+		t.Errorf("JSON output missing messageParts oneof field, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"text"`) {
+		t.Errorf("JSON output missing text part discriminator, got: %s", jsonStr)
+	}
+	// UserFrame carries no frame_id/create_time/sender — the server does not
+	// consume them on the inbound direction.
+	for _, absent := range []string{`"frameId"`, `"createTime"`, `"sender"`} {
+		if strings.Contains(jsonStr, absent) {
+			t.Errorf("JSON output unexpectedly contains %s (UserFrame excludes outbound-only envelope fields), got: %s", absent, jsonStr)
+		}
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.UserFrame)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: verify top-level fields
+	if got.GetSessionId() != "sessions/test-user" {
+		t.Errorf("sessionId: got %q, want %q", got.GetSessionId(), "sessions/test-user")
+	}
+	if got.GetTemplateId() != "saolei" {
+		t.Errorf("templateId: got %q, want %q", got.GetTemplateId(), "saolei")
+	}
+	if got.GetAgent() != "player" {
+		t.Errorf("agent: got %q, want %q", got.GetAgent(), "player")
+	}
+
+	// then: verify the MessageParts payload holds the TextPart
+	mp := got.GetMessageParts()
+	if mp == nil {
+		t.Fatal("GetMessageParts() returned nil")
+	}
+	if len(mp.GetParts()) != 1 {
+		t.Fatalf("parts length: got %d, want 1", len(mp.GetParts()))
+	}
+	text := mp.GetParts()[0].GetText()
+	if text == nil {
+		t.Fatal("part[0].GetText() returned nil")
+	}
+	if text.GetContent() != "Hello from user" {
+		t.Errorf("text.content: got %q, want %q", text.GetContent(), "Hello from user")
 	}
 }
 
@@ -145,13 +229,15 @@ func TestMessagePartsMultiPartRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameFlowPartsMouseMoveRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose flow_parts payload holds a MouseMovePart
-	// (control channel — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-move",
-		FrameId:   "frame-move-001",
-		Payload: &game.AgentFrame_FlowParts{
+func TestTeamFrameFlowPartsMouseMoveRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose flow_parts payload holds a
+	// MouseMovePart (control channel — operation request dispatched by the
+	// agent's OperationBridge)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-move",
+		TemplateId: "saolei",
+		FrameId:    "frame-move-001",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_MouseMove{MouseMove: &game.MouseMovePart{
@@ -177,7 +263,7 @@ func TestAgentFrameFlowPartsMouseMoveRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -198,13 +284,14 @@ func TestAgentFrameFlowPartsMouseMoveRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameFlowPartsMouseClickRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose flow_parts payload holds a MouseClickPart
-	// (control channel)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-click",
-		FrameId:   "frame-click-001",
-		Payload: &game.AgentFrame_FlowParts{
+func TestTeamFrameFlowPartsMouseClickRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose flow_parts payload holds a
+	// MouseClickPart (control channel)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-click",
+		TemplateId: "saolei",
+		FrameId:    "frame-click-001",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
@@ -233,7 +320,7 @@ func TestAgentFrameFlowPartsMouseClickRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -251,14 +338,16 @@ func TestAgentFrameFlowPartsMouseClickRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameMessagePartsToolResultRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose message_parts payload holds a ToolResultPart
-	// with a nested ImagePart screenshot (display channel — the desktop-
-	// reported outcome rendered as a conversation entry)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-result",
-		FrameId:   "frame-result-001",
-		Payload: &game.AgentFrame_MessageParts{
+func TestTeamFrameMessagePartsToolResultRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose message_parts payload holds a
+	// ToolResultPart with a nested ImagePart screenshot (display channel — the
+	// desktop-reported outcome rendered as a conversation entry)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-result",
+		TemplateId: "saolei",
+		FrameId:    "frame-result-001",
+		Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_ToolResult{ToolResult: &game.ToolResultPart{
@@ -293,7 +382,7 @@ func TestAgentFrameMessagePartsToolResultRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -321,13 +410,67 @@ func TestAgentFrameMessagePartsToolResultRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameWaitRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose flow_parts payload carries a WaitSignal
-	// (control channel — wait is a FlowPart kind per spec 023 C3 / FR-003)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-wait",
-		FrameId:   "frame-wait-001",
-		Payload: &game.AgentFrame_FlowParts{
+func TestUserFrameFlowPartsFlowResultRoundtrip(t *testing.T) {
+	// given: an inbound UserFrame whose flow_parts payload carries a
+	// FlowResultPart (the desktop's operation-execution outcome reported on
+	// the control channel — specs/025-desktop-image-state-refine/contracts/
+	// flow-result-contract.md)
+	given := &game.UserFrame{
+		SessionId:  "sessions/test-result",
+		TemplateId: "saolei",
+		Payload: &game.UserFrame_FlowParts{
+			FlowParts: &game.FlowParts{
+				Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_FlowResult{FlowResult: &game.FlowResultPart{
+						ToolId:  "tool-move-001",
+						Status:  game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
+						Message: "ok",
+					}}},
+				},
+			},
+		},
+	}
+
+	// when: marshal to protojson
+	jsonBytes, err := protojson.Marshal(given)
+	if err != nil {
+		t.Fatalf("protojson.Marshal() error: %v", err)
+	}
+
+	// then: verify the flowResult discriminator flattened by protojson
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"flowResult"`) {
+		t.Errorf("JSON output missing flowResult part discriminator, got: %s", jsonStr)
+	}
+
+	// when: unmarshal from protojson
+	got := new(game.UserFrame)
+	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
+		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: verify the FlowResultPart fields
+	result := got.GetFlowParts().GetParts()[0].GetFlowResult()
+	if result == nil {
+		t.Fatal("part[0].GetFlowResult() returned nil")
+	}
+	if result.GetToolId() != "tool-move-001" {
+		t.Errorf("toolId: got %q, want %q", result.GetToolId(), "tool-move-001")
+	}
+	if result.GetStatus() != game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED {
+		t.Errorf("status: got %v, want %v", result.GetStatus(), game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED)
+	}
+}
+
+func TestTeamFrameWaitRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose flow_parts payload carries a
+	// WaitSignal (control channel — wait is a FlowPart kind per spec 023 C3 /
+	// FR-003)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-wait",
+		TemplateId: "saolei",
+		FrameId:    "frame-wait-001",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{Reason: "turn complete"}}},
@@ -343,7 +486,7 @@ func TestAgentFrameWaitRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -358,12 +501,14 @@ func TestAgentFrameWaitRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameWarnRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose flow_parts payload carries a WarnSignal
-	// (control channel — warn is a FlowPart kind per spec 023 C3 / FR-003)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-warn",
-		Payload: &game.AgentFrame_FlowParts{
+func TestTeamFrameWarnRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose flow_parts payload carries a
+	// WarnSignal (control channel — warn is a FlowPart kind per spec 023 C3 /
+	// FR-003)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-warn",
+		TemplateId: "saolei",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Warn{Warn: &game.WarnSignal{Message: "Stale sequence ignored", Code: "STALE_SEQUENCE"}}},
@@ -379,7 +524,7 @@ func TestAgentFrameWarnRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -397,12 +542,14 @@ func TestAgentFrameWarnRoundtrip(t *testing.T) {
 	}
 }
 
-func TestAgentFrameStatusRoundtrip(t *testing.T) {
-	// given: an AgentFrame whose flow_parts payload carries a StatusSignal
-	// (control channel — status is a FlowPart kind per spec 023 C3 / FR-003)
-	given := &game.AgentFrame{
-		SessionId: "sessions/test-status",
-		Payload: &game.AgentFrame_FlowParts{
+func TestTeamFrameStatusRoundtrip(t *testing.T) {
+	// given: an outbound TeamFrame whose flow_parts payload carries a
+	// StatusSignal (control channel — status is a FlowPart kind per spec 023
+	// C3 / FR-003)
+	given := &game.TeamFrame{
+		SessionId:  "sessions/test-status",
+		TemplateId: "saolei",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
@@ -424,7 +571,7 @@ func TestAgentFrameStatusRoundtrip(t *testing.T) {
 	}
 
 	// when: unmarshal from protojson
-	got := new(game.AgentFrame)
+	got := new(game.TeamFrame)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
 	}
@@ -516,7 +663,7 @@ func TestFlowPartKindDiscriminatorFlattening(t *testing.T) {
 	// expected discriminator for the control FlowPart.kind operation
 	// variants (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
 	// The mouse operations moved here from the removed Part oneof; signal
-	// kinds (wait/warn/status) are covered by the AgentFrame signal
+	// kinds (wait/warn/status) are covered by the TeamFrame signal
 	// roundtrips above.
 	tests := []struct {
 		name        string
@@ -571,13 +718,15 @@ func TestFlowPartKindDiscriminatorFlattening(t *testing.T) {
 }
 
 func TestMessageContentRoundtrip(t *testing.T) {
-	// given: a Message whose content is a MessageParts (display blocks only).
-	// Message.type is reserved, so the serialized JSON must contain NO `type`
-	// field. Control FlowParts can never appear here (spec 023 FR-004).
+	// given: a Message whose content is a MessageParts (display blocks only)
+	// and whose role is the MessageRole enum (replaced the FrameSender sender
+	// field — FR-020). Message.type is reserved, so the serialized JSON must
+	// contain NO `type` field. Control FlowParts can never appear here
+	// (spec 023 FR-004).
 	given := &game.Message{
 		Name:      "sessions/test/agent/messages/msg-001",
 		MessageId: "msg-001",
-		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
+		Role:      game.MessageRole_MESSAGE_ROLE_AGENT,
 		Content: &game.MessageParts{
 			Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Analyzing screenshot..."}}},
@@ -608,6 +757,11 @@ func TestMessageContentRoundtrip(t *testing.T) {
 	got := new(game.Message)
 	if err := protojson.Unmarshal(jsonBytes, got); err != nil {
 		t.Fatalf("protojson.Unmarshal() error: %v", err)
+	}
+
+	// then: verify the MessageRole round-trips
+	if got.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
+		t.Errorf("role: got %v, want %v", got.GetRole(), game.MessageRole_MESSAGE_ROLE_AGENT)
 	}
 
 	// then: verify the MessageParts content survived with both parts in order

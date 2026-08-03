@@ -8,29 +8,29 @@ import (
 	"dominion/projects/game/pkg/bind"
 )
 
-// testStream wraps a mockStream with a bidirectional input channel for tests
-// that need to push frames into the stream.
-type testStream struct {
-	*mockStream
-	in chan *game.AgentFrame
+// testUserStream wraps a mockUserStream with a bidirectional input channel
+// for tests that need to push frames into the stream.
+type testUserStream struct {
+	*mockUserStream
+	in chan *game.UserFrame
 }
 
-func newTestStream() *testStream {
-	ch := make(chan *game.AgentFrame, 8)
-	return &testStream{
-		mockStream: &mockStream{recvCh: ch},
-		in:         ch,
+func newTestUserStream() *testUserStream {
+	ch := make(chan *game.UserFrame, 8)
+	return &testUserStream{
+		mockUserStream: &mockUserStream{recvCh: ch},
+		in:             ch,
 	}
 }
 
 func TestWithFirstFrame_FirstRecvReturnsFirst(t *testing.T) {
-	first := &game.AgentFrame{
+	first := &game.UserFrame{
 		SessionId: "first",
-		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 		}}},
 	}
-	inner := newTestStream()
+	inner := newTestUserStream()
 	wrapped := bind.WithFirstFrame(inner, first)
 
 	frame, err := wrapped.Recv()
@@ -43,15 +43,15 @@ func TestWithFirstFrame_FirstRecvReturnsFirst(t *testing.T) {
 }
 
 func TestWithFirstFrame_SecondRecvDelegates(t *testing.T) {
-	first := &game.AgentFrame{SessionId: "first"}
-	inner := newTestStream()
+	first := &game.UserFrame{SessionId: "first"}
+	inner := newTestUserStream()
 	wrapped := bind.WithFirstFrame(inner, first)
 
 	// First recv returns first
 	wrapped.Recv()
 
 	// Second recv should come from inner
-	inner.in <- &game.AgentFrame{SessionId: "second"}
+	inner.in <- &game.UserFrame{SessionId: "second"}
 	frame, err := wrapped.Recv()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -62,11 +62,11 @@ func TestWithFirstFrame_SecondRecvDelegates(t *testing.T) {
 }
 
 func TestWithFirstFrame_SendDelegates(t *testing.T) {
-	first := &game.AgentFrame{SessionId: "first"}
-	inner := newTestStream()
+	first := &game.UserFrame{SessionId: "first"}
+	inner := newTestUserStream()
 	wrapped := bind.WithFirstFrame(inner, first)
 
-	frame := &game.AgentFrame{SessionId: "sent"}
+	frame := &game.TeamFrame{SessionId: "sent"}
 	err := wrapped.Send(frame)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -82,13 +82,13 @@ func TestWithFirstFrame_NilFirstPanics(t *testing.T) {
 			t.Fatal("expected panic for nil first frame")
 		}
 	}()
-	inner := newTestStream()
+	inner := newTestUserStream()
 	bind.WithFirstFrame(inner, nil)
 }
 
 func TestWithFirstFrame_EOFAfterFirst(t *testing.T) {
-	first := &game.AgentFrame{SessionId: "first"}
-	inner := newTestStream()
+	first := &game.UserFrame{SessionId: "first"}
+	inner := newTestUserStream()
 	wrapped := bind.WithFirstFrame(inner, first)
 
 	// First recv returns first

@@ -42,7 +42,7 @@ type TeamAgentView struct {
 }
 
 // MessageViewModel is the Wails view model for game.Message. The message
-// content is projected as the same MessageParts shape a live AgentFrame's
+// content is projected as the same MessageParts shape a live TeamFrame's
 // message_parts payload carries, so history and live view render identically:
 // Content holds the protojson-serialized MessageParts ({"parts":[...]} with
 // camelCase field names, flattened oneofs, and base64 image bytes), matching
@@ -51,7 +51,7 @@ type TeamAgentView struct {
 type MessageViewModel struct {
 	Name       string         `json:"name"`
 	MessageID  string         `json:"messageId"`
-	Sender     string         `json:"sender"`
+	Role       string         `json:"role"`
 	Agent      string         `json:"agent"`
 	CreateTime string         `json:"createTime,omitempty"`
 	Content    map[string]any `json:"content,omitempty"`
@@ -191,7 +191,7 @@ func teamAgentViewFromProto(a *game.TeamAgent) *TeamAgentView {
 // ToMessageViewModels converts a slice of proto Message to view models. Each
 // message's Content MessageParts is serialized via protojson (camelCase field
 // names, flattened oneofs, base64 image bytes) so it matches the live
-// AgentFrame messageParts emitted by app.go's chatstream — history and live
+// TeamFrame messageParts emitted by app.go's chatstream — history and live
 // view render identically. The MessagePart oneof flattens so each part's
 // active variant (text/thinking/image/toolCall/toolResult) appears camelCase.
 func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
@@ -203,7 +203,7 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 		views[i] = &MessageViewModel{
 			Name:       m.GetName(),
 			MessageID:  m.GetMessageId(),
-			Sender:     m.GetSender().String(),
+			Role:       m.GetRole().String(),
 			Agent:      m.GetAgent(),
 			CreateTime: timestampString(m.GetCreateTime()),
 			Content:    protoToJSONMap(m.GetContent()),

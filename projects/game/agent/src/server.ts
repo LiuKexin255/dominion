@@ -262,7 +262,9 @@ export async function startServer(
       const playerBasePrompt = profile.playerPrompt ?? "";
       const plannerBasePrompt = profile.plannerPrompt ?? "";
       const buffer = createEphemeralGameBuffer();
-      const bridge = new OperationBridge();
+      // sessionId/templateId are stamped on dispatched operation TeamFrames
+      // (FR-013 envelope completeness — operation-bridge.ts dispatch).
+      const bridge = new OperationBridge(sessionId, template);
       const sink = createTeamSink(buffer);
       sessionBridges.set(sessionId, { bridge, sink });
       try {

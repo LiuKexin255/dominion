@@ -32,7 +32,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ContentBlock, TurnContent } from "./llm";
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import { TurnLoop } from "./turn-loop";
 import type { TurnBlock, TurnRunner } from "./turn-loop";
 
@@ -115,20 +115,20 @@ function makeEchoRunner(
   };
 }
 
-/** Recording emit sink: collects every emitted AgentFrame. */
+/** Recording emit sink: collects every emitted TeamFrame. */
 function makeRecordingEmit(): {
-  emit: (f: AgentFrame) => void;
-  frames: AgentFrame[];
+  emit: (f: TeamFrame) => void;
+  frames: TeamFrame[];
 } {
-  const frames: AgentFrame[] = [];
-  const emit = (f: AgentFrame): void => {
+  const frames: TeamFrame[] = [];
+  const emit = (f: TeamFrame): void => {
     frames.push(f);
   };
   return { emit, frames };
 }
 
 /** Extract terminal `wait` frames from the recorded emission. */
-function waitFrames(frames: AgentFrame[]): AgentFrame[] {
+function waitFrames(frames: TeamFrame[]): TeamFrame[] {
   return frames.filter((f) => {
     const fr = f as Record<string, unknown>;
     return (
@@ -141,7 +141,7 @@ function waitFrames(frames: AgentFrame[]): AgentFrame[] {
 }
 
 /** Extract `warn` frames from the recorded emission. */
-function warnFrames(frames: AgentFrame[]): AgentFrame[] {
+function warnFrames(frames: TeamFrame[]): TeamFrame[] {
   return frames.filter((f) => {
     const fr = f as Record<string, unknown>;
     return (
@@ -159,7 +159,7 @@ function warnFrames(frames: AgentFrame[]): AgentFrame[] {
  * §2). Used to assert the depth-change emission rules: submit⇒+1/new depth,
  * drain-to-next-turn⇒0, abort⇒0.
  */
-function queueSignalDepths(frames: AgentFrame[]): number[] {
+function queueSignalDepths(frames: TeamFrame[]): number[] {
   const depths: number[] = [];
   for (const f of frames) {
     const fr = f as Record<string, unknown>;
@@ -177,7 +177,7 @@ function queueSignalDepths(frames: AgentFrame[]): number[] {
 }
 
 /** Extract the agent-emitted text block contents, in order. */
-function textContents(frames: AgentFrame[]): string[] {
+function textContents(frames: TeamFrame[]): string[] {
   const out: string[] = [];
   for (const f of frames) {
     const fr = f as Record<string, unknown>;

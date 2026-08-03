@@ -1,6 +1,6 @@
 // Package chatstream implements the per-session SSE event log and fan-out
 // for the desktop chat push channel. A ChatStream is an append-only log of
-// AgentFrames with stable monotonic IDs; a Registry maps session IDs to
+// TeamFrames with stable monotonic IDs; a Registry maps session IDs to
 // ChatStreams and provides single-flight open semantics.
 package chatstream
 
@@ -21,10 +21,10 @@ const subscriberBuffer = 64
 
 // ChatEvent is one entry in the per-session event log. ID is the stable
 // monotonic 1-based sequence number assigned at append time; Frame is the
-// agent frame payload.
+// outbound TeamFrame payload.
 type ChatEvent struct {
 	ID    int64
-	Frame *game.AgentFrame
+	Frame *game.TeamFrame
 }
 
 // subscriber represents a connected SSE client. events delivers live
@@ -91,7 +91,7 @@ func NewRegistry(logger *applog.Logger) *Registry {
 // every subscriber. Slow subscribers whose event channel is full are
 // evicted in place (F3 backpressure). Append to a closed stream is a
 // logged no-op (F5 close-safety): it never panics and never enqueues.
-func (s *ChatStream) Append(frame *game.AgentFrame) {
+func (s *ChatStream) Append(frame *game.TeamFrame) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -190,18 +190,20 @@ func (s *ChatStream) snapshotLocked(lastEventID int64) []*ChatEvent {
 }
 
 // SeedFromHistory normalizes persisted history Messages into messageParts
-// AgentFrames and appends them to the log. Each Message becomes one event
-// preserving its original messageId, sender, createTime, and content
+// TeamFrames and appends them to the log. Each Message becomes one event
+// preserving its original messageId, role, createTime, and content
 // MessageParts; the sessionID is rewritten to this stream's session so frames
-// are consistent across history/live boundaries (spec 023 FR-009).
+// are consistent across history/live boundaries (spec 023 FR-009). The role is
+// copied from Message.role so the frontend can align bubbles for replayed
+// user/agent messages (specs/035-proto-contract-refine/research.md R3).
 func (s *ChatStream) SeedFromHistory(msgs []*game.Message) {
 	for _, msg := range msgs {
-		frame := &game.AgentFrame{
+		frame := &game.TeamFrame{
 			SessionId:  s.sessionID,
 			FrameId:    msg.GetMessageId(),
-			Sender:     msg.GetSender(),
+			Role:       msg.GetRole(),
 			CreateTime: msg.GetCreateTime(),
-			Payload:    &game.AgentFrame_MessageParts{MessageParts: msg.GetContent()},
+			Payload:    &game.TeamFrame_MessageParts{MessageParts: msg.GetContent()},
 		}
 		s.Append(frame)
 	}
@@ -341,7 +343,7 @@ func (r *Registry) Open(sessionID string, seedFn func() ([]*game.Message, error)
 // Returns false if the session has no stream; the underlying
 // ChatStream.Append logs and discards the frame if the stream itself is
 // closed (F5).
-func (r *Registry) Append(sessionID string, frame *game.AgentFrame) bool {
+func (r *Registry) Append(sessionID string, frame *game.TeamFrame) bool {
 	r.mu.Lock()
 	stream, ok := r.streams[sessionID]
 	r.mu.Unlock()

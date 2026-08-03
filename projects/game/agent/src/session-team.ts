@@ -90,7 +90,7 @@ export class SessionTeam {
 	private readonly sink: SaoleiEventSink;
 	private readonly sessionId: string;
 	/** The session's template path segment (e.g. "saolei") — the templateId
-	 * stamped on every outbound AgentFrame (REQUIRED, api-contract.md §3.6). */
+	 * stamped on every outbound TeamFrame (REQUIRED, api-contract.md §3.6). */
 	private readonly template: string;
 
 	private turnLoop: TurnLoop | null = null;

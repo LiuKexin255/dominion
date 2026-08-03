@@ -451,7 +451,7 @@ func TestToMessageViewModels(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/msg-1",
 			MessageId:  "msg-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from user"}}},
@@ -460,7 +460,7 @@ func TestToMessageViewModels(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/planner/messages/msg-2",
 			MessageId:  "msg-2",
-			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
@@ -483,8 +483,8 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[0].MessageID != "msg-1" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-1", views[0].MessageID)
 	}
-	if views[0].Sender != "FRAME_SENDER_USER" {
-		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
+	if views[0].Role != "MESSAGE_ROLE_USER" {
+		t.Fatalf("expected Role %q, got %q", "MESSAGE_ROLE_USER", views[0].Role)
 	}
 	if views[0].CreateTime != "2024-07-01T12:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-07-01T12:00:00Z", views[0].CreateTime)
@@ -500,8 +500,8 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[1].MessageID != "msg-2" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-2", views[1].MessageID)
 	}
-	if views[1].Sender != "FRAME_SENDER_AGENT" {
-		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_AGENT", views[1].Sender)
+	if views[1].Role != "MESSAGE_ROLE_AGENT" {
+		t.Fatalf("expected Role %q, got %q", "MESSAGE_ROLE_AGENT", views[1].Role)
 	}
 	if got := messagePartThinking(views[1].Content); got != "Agent is thinking" {
 		t.Fatalf("expected second thinking part content %q, got %q", "Agent is thinking", got)
@@ -532,7 +532,7 @@ func TestToMessageViewModels_Image(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/img-1",
 			MessageId:  "img-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
@@ -636,14 +636,14 @@ func TestToMessageViewModels_AgentPartition(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/s1/team/agents/player/messages/msg-1",
 			MessageId:  "msg-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			Agent:      "player",
 			CreateTime: timestamppb.New(createTime),
 		},
 		{
 			Name:       "templates/saolei/sessions/s1/team/agents/planner/messages/msg-2",
 			MessageId:  "msg-2",
-			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
 			Agent:      "planner",
 			CreateTime: timestamppb.New(createTime),
 		},

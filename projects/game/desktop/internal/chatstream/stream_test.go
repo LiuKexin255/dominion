@@ -27,15 +27,16 @@ func newTestStream(sessionID string) *ChatStream {
 	}
 }
 
-// testFrame constructs a minimal content AgentFrame carrying one TextPart
+// testFrame constructs a minimal content TeamFrame carrying one TextPart
 // so Append / SeedFromHistory have a concrete payload without forcing each
 // test to repeat the proto oneof boilerplate.
-func testFrame(id int64) *game.AgentFrame {
-	return &game.AgentFrame{
-		SessionId: "test-session",
-		FrameId:   fmt.Sprintf("frame-%d", id),
-		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
-		Payload: &game.AgentFrame_MessageParts{
+func testFrame(id int64) *game.TeamFrame {
+	return &game.TeamFrame{
+		SessionId:  "test-session",
+		TemplateId: "saolei",
+		FrameId:    fmt.Sprintf("frame-%d", id),
+		Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: fmt.Sprintf("msg-%d", id)}}},
@@ -53,7 +54,7 @@ func testMessages(count int) []*game.Message {
 	for i := 0; i < count; i++ {
 		msgs[i] = &game.Message{
 			MessageId: fmt.Sprintf("msg-%d", i+1),
-			Sender:    game.FrameSender_FRAME_SENDER_USER,
+			Role:      game.MessageRole_MESSAGE_ROLE_USER,
 			Content: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: fmt.Sprintf("history-%d", i+1)}}},
@@ -780,8 +781,8 @@ func TestRegistry_Close(t *testing.T) {
 }
 
 // TestSeedFromHistory verifies that SeedFromHistory normalizes persisted
-// Messages into content AgentFrames: one event per message, preserving
-// messageId (→ FrameId), sender, createTime, and content, with the
+// Messages into content TeamFrames: one event per message, preserving
+// messageId (→ FrameId), role, createTime, and content, with the
 // sessionID rewritten to the stream's session.
 func TestSeedFromHistory(t *testing.T) {
 	// given: two history messages with a concrete CreateTime so the
@@ -790,7 +791,7 @@ func TestSeedFromHistory(t *testing.T) {
 	msgs := []*game.Message{
 		{
 			MessageId:  "msg-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			CreateTime: &timestamppb.Timestamp{Seconds: 1000, Nanos: 1},
 			Content: &game.MessageParts{
 				Parts: []*game.MessagePart{
@@ -800,7 +801,7 @@ func TestSeedFromHistory(t *testing.T) {
 		},
 		{
 			MessageId:  "msg-2",
-			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
 			CreateTime: &timestamppb.Timestamp{Seconds: 2000, Nanos: 2},
 			Content: &game.MessageParts{
 				Parts: []*game.MessagePart{
@@ -831,8 +832,8 @@ func TestSeedFromHistory(t *testing.T) {
 		if frame.GetFrameId() != msgs[i].GetMessageId() {
 			t.Errorf("snap[%d].FrameId = %q, want %q", i, frame.GetFrameId(), msgs[i].GetMessageId())
 		}
-		if frame.GetSender() != msgs[i].GetSender() {
-			t.Errorf("snap[%d].Sender = %v, want %v", i, frame.GetSender(), msgs[i].GetSender())
+		if frame.GetRole() != msgs[i].GetRole() {
+			t.Errorf("snap[%d].Role = %v, want %v", i, frame.GetRole(), msgs[i].GetRole())
 		}
 		if frame.GetCreateTime().String() != msgs[i].GetCreateTime().String() {
 			t.Errorf("snap[%d].CreateTime = %v, want %v", i, frame.GetCreateTime(), msgs[i].GetCreateTime())
