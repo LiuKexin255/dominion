@@ -78,12 +78,12 @@ import (
 //     keyword and the player opens another game; replying in-progress keeps
 //     that run end-event-free, so the turn converges to wait with the
 //     planner triggered exactly once (FR-011).
-func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, initScreenshot, clickTerminalScreenshot *game.ImagePart) []*game.AgentFrame {
+func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string, initScreenshot, clickTerminalScreenshot *game.ImagePart) []*game.TeamFrame {
 	t.Helper()
 
 	sendText(t, conn, sessionID, "please start saolei game")
 
-	var frames []*game.AgentFrame
+	var frames []*game.TeamFrame
 	clickReplies := 0
 	for i := 0; i < 60; i++ {
 		frame := readWSFrame(t, conn)
@@ -133,10 +133,10 @@ func playTeamGameUntilWait(t *testing.T, conn *websocket.Conn, sessionID string,
 // countUpdateStrategyCalls returns the number of update_strategy tool_call
 // MessageParts across the given frames (the planner fires exactly once per
 // game end — FR-011 — so this counts games reviewed by the planner).
-func countUpdateStrategyCalls(frames []*game.AgentFrame) int {
+func countUpdateStrategyCalls(frames []*game.TeamFrame) int {
 	count := 0
 	for _, f := range frames {
-		if f.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
+		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
 			continue
 		}
 		for _, p := range frameMessageParts(f).GetParts() {
@@ -227,7 +227,7 @@ func TestTeamConnectLifecycle(t *testing.T) {
 	defer conn.Close()
 
 	sendText(t, conn, sessionID, "hello team lifecycle")
-	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	thinkingFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
 	if thinkingFrame == nil {
 		t.Fatal("did not receive a thinking frame after CreateTeam+Connect")
 	}
@@ -257,7 +257,7 @@ func TestTeamConnectWithoutCreateRejected(t *testing.T) {
 	// (readWSFrameNoFatal returns an error — timeout or close).
 	frame, err := readWSFrameNoFatal(conn, 10*time.Second)
 	if err == nil {
-		t.Fatalf("expected the connection to close for a session without a team, got a frame: sender=%s", senderString(frame.GetSender()))
+		t.Fatalf("expected the connection to close for a session without a team, got a frame: role=%s", roleString(frame.GetRole()))
 	}
 	t.Logf("connect without create correctly closed: %v", err)
 }
@@ -285,7 +285,7 @@ func TestTeamConnectExclusiveEmit(t *testing.T) {
 	sendText(t, conn2, sessionID, "hello exclusive")
 
 	// then: conn2 receives the response (thinking + text)…
-	thinkingFrame := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
+	thinkingFrame := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
 	if thinkingFrame == nil {
 		t.Fatal("conn2: did not receive a thinking frame for the submitted turn")
 	}
@@ -293,14 +293,14 @@ func TestTeamConnectExclusiveEmit(t *testing.T) {
 	// …and conn1 receives nothing (the per-session emit sink is bound to the
 	// submitting connection, not broadcast).
 	if frame, err := readWSFrameNoFatal(conn1, 3*time.Second); err == nil {
-		t.Errorf("conn1 received a frame (sender=%s) — turn output must be exclusive to the submitting connection", senderString(frame.GetSender()))
+		t.Errorf("conn1 received a frame (role=%s) — turn output must be exclusive to the submitting connection", roleString(frame.GetRole()))
 	} else {
 		t.Logf("conn1 correctly silent: %v", err)
 	}
 
 	// Drain conn2's remaining turn output so the connection settles.
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasText(f) })
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
+	_ = drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameWait(f) != nil })
 }
 
 // TestTeamDisconnectReconnectHistory verifies that conversation history
@@ -319,8 +319,8 @@ func TestTeamDisconnectReconnectHistory(t *testing.T) {
 	messages := []string{"First exchange", "Second exchange"}
 	for _, msg := range messages {
 		sendText(t, conn, sessionID, msg)
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
-		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
+		_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
+		textResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasText(f) })
 		if textResp == nil {
 			t.Fatalf("message %q: no text response", msg)
 		}
@@ -345,7 +345,7 @@ func TestTeamDisconnectReconnectHistory(t *testing.T) {
 	foundFirst := false
 	foundSecond := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER {
+		if msg.GetRole() == game.MessageRole_MESSAGE_ROLE_USER {
 			if messageText(msg) == messages[0] {
 				foundFirst = true
 			}
@@ -378,13 +378,13 @@ func TestTeamStatusPingPong(t *testing.T) {
 
 	// given: run a text turn to completion so no turn is in-flight.
 	sendText(t, conn, sessionID, "hello")
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameWait(f) != nil })
 
 	// when: probe the status while idle. then: the response is IDLE.
 	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
-	idleResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	idleResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameStatus(f) != nil
 	})
 	if idleResp == nil {
@@ -403,7 +403,7 @@ func TestTeamStatusPingPong(t *testing.T) {
 
 	// then: a status probe while the turn is in-flight returns ACTIVE.
 	sendStatusFrame(t, conn, sessionID, game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE)
-	activeResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	activeResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameStatus(f) != nil
 	})
 	if activeResp == nil {
@@ -428,7 +428,7 @@ func TestTeamStatusPingPong(t *testing.T) {
 			game.ToolResultStatus_TOOL_RESULT_STATUS_SUCCEEDED,
 			fmt.Sprintf("cell at (%d,%d) revealed", saoleiClick1X, saoleiClick1Y), screenshot)
 	}
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {
@@ -469,7 +469,7 @@ func TestTeamReconnectDispatchReliability(t *testing.T) {
 	// the init result, the player blocks on that dispatch (the test stops
 	// playing the desktop), and the turn only unwinds via the disconnect
 	// abort below.
-	initResultFrame := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasToolResult(f) })
+	initResultFrame := drainWSFrame(t, conn1, func(f *game.TeamFrame) bool { return frameHasToolResult(f) })
 	if initResultFrame == nil {
 		t.Fatal("conn1: no init tool_result frame — the saolei_init dispatch did not resolve")
 	}
@@ -511,13 +511,12 @@ func TestTeamProfileCrud(t *testing.T) {
 	// given: create the saolei TeamProfile.
 	created := createTeamProfile(t, sutHostURL, sutEnvName, saoleiTemplateID, profileID, "gpt-4", "gpt-4-turbo")
 
-	// then: the resource carries the template-scoped name, the template
-	// resource reference, and the typed saolei spec (FR-027 — only models).
+	// then: the resource carries the template-scoped name and the typed
+	// saolei spec (FR-027 — only models). The template is carried by the name
+	// path segment (TeamProfile.template was removed,
+	// specs/035-proto-contract-refine/data-model.md §1.2).
 	if created.GetName() != wantName {
 		t.Errorf("created Name = %q, want %q", created.GetName(), wantName)
-	}
-	if created.GetTemplate() != "templates/"+saoleiTemplateID {
-		t.Errorf("created Template = %q, want %q", created.GetTemplate(), "templates/"+saoleiTemplateID)
 	}
 	if created.GetSaolei() == nil {
 		t.Fatal("created spec.saolei is nil — the saolei oneof variant must be set")
@@ -585,18 +584,20 @@ func TestTeamProfileCrud(t *testing.T) {
 }
 
 // TestTeamProfileTemplateConsistency verifies the handler's no-implicit-rules
-// validation (contracts/api-contract.md §2.3 — FR 禁潜规则): the resource
-// body's template MUST agree with the parent template and the oneof variant.
+// validation (contracts/api-contract.md §2.3 — FR 禁潜规则): the oneof spec
+// variant MUST be consistent with the template derived from the parent path
+// segment — a saolei parent requires the saolei variant. The former
+// resource-body template double-check is removed: the template is carried by
+// the parent path segment only (specs/035-proto-contract-refine/contracts/
+// resource-fields.md §2.3).
 func TestTeamProfileTemplateConsistency(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
-	// given: a create request whose team_profile.template mismatches the
-	// parent (templates/saolei in the path).
-	body, err := json.Marshal(map[string]any{
-		"template": "templates/other",
-		"saolei":   map[string]any{"playerModel": "gpt-4", "plannerModel": "gpt-4"},
-	})
+	// given: a create request for the saolei template whose body carries NO
+	// oneof spec variant (the parent path segment says saolei, but the spec
+	// is absent — the oneof inconsistency the handler must reject).
+	body, err := json.Marshal(map[string]any{})
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
@@ -604,20 +605,23 @@ func TestTeamProfileTemplateConsistency(t *testing.T) {
 		sutHostURL, pathPrefix, saoleiTemplateID, uniqueSuffix())
 	resp, respBody := doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("CreateTeamProfile with mismatched template: status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+		t.Fatalf("CreateTeamProfile without the saolei spec variant: status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
 	}
 
-	// given: a create request with NO saolei oneof variant for the saolei
-	// template (template says saolei, spec absent).
+	// given: a create request whose body carries the matching saolei oneof
+	// variant — the consistency check passes and the profile is created
+	// (the rejection above is variant-based, not vacuous).
 	body, err = json.Marshal(map[string]any{
-		"template": "templates/" + saoleiTemplateID,
+		"saolei": map[string]any{"playerModel": "gpt-4", "plannerModel": "gpt-4"},
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	resp, respBody = doHTTP(t, http.MethodPost, reqURL, sutEnvName, body)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("CreateTeamProfile without the saolei spec variant: status=%d, want 400 INVALID_ARGUMENT, body=%s", resp.StatusCode, respBody)
+	consistentURL := fmt.Sprintf("%s%stemplates/%s/profiles?team_profile_id=consistent-%s",
+		sutHostURL, pathPrefix, saoleiTemplateID, uniqueSuffix())
+	resp, respBody = doHTTP(t, http.MethodPost, consistentURL, sutEnvName, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CreateTeamProfile with the matching saolei spec variant: status=%d, want 200, body=%s", resp.StatusCode, respBody)
 	}
 }
 
@@ -663,8 +667,8 @@ func TestTeamPerProfileModel(t *testing.T) {
 	conn1 := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID1)
 	defer conn1.Close()
 	sendText(t, conn1, sessionID1, "Hello from session one")
-	_ = drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
-	resp1 := drainWSFrame(t, conn1, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn1, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
+	resp1 := drainWSFrame(t, conn1, func(f *game.TeamFrame) bool { return frameHasText(f) })
 	if resp1 == nil {
 		t.Fatal("session1 (gpt-4 player profile): no text response")
 	}
@@ -676,8 +680,8 @@ func TestTeamPerProfileModel(t *testing.T) {
 	conn2 := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID2)
 	defer conn2.Close()
 	sendText(t, conn2, sessionID2, "Hello from session two")
-	_ = drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasThinking(f) })
-	resp2 := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameHasThinking(f) })
+	resp2 := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool { return frameHasText(f) })
 	if resp2 == nil {
 		t.Fatal("session2 (gpt-4-turbo player profile): no text response")
 	}
@@ -725,7 +729,7 @@ func TestTeamMessagePartitionByAgent(t *testing.T) {
 		if m.GetAgent() != "player" {
 			t.Errorf("player-partition message has agent=%q, want player (FR-005)", m.GetAgent())
 		}
-		if m.GetSender() == game.FrameSender_FRAME_SENDER_USER {
+		if m.GetRole() == game.MessageRole_MESSAGE_ROLE_USER {
 			playerUserFound = true
 		}
 		if messageHasToolCall(m, "saolei_init") || messageHasToolCall(m, "saolei_click") {

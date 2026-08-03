@@ -40,7 +40,7 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 	frame := buildUserTurnFrame(sessionID, "hello multimodal", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
-	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	thinkingFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
@@ -51,7 +51,7 @@ func TestAgentMultimodalTextPlusImageTurn(t *testing.T) {
 			frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
 
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {
@@ -81,7 +81,7 @@ func TestAgentMultimodalImageOnlyTurn(t *testing.T) {
 	frame := buildUserTurnFrame(sessionID, "", buildImageFrame(sessionID))
 	writeWSFrame(t, conn, frame)
 
-	respFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	respFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f) || frameHasText(f) || frameWarn(f) != nil
 	})
 	if respFrame == nil {
@@ -135,7 +135,7 @@ func TestAgentMultimodalLargeImageRoundTrip(t *testing.T) {
 	// thinking + text — the connection survived a > 32 KiB binary-proto frame
 	// (spec 025 FR-007/FR-010). Under the old regime readWSFrame would have
 	// failed with a WS close error before any response arrived.
-	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	thinkingFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
@@ -146,7 +146,7 @@ func TestAgentMultimodalLargeImageRoundTrip(t *testing.T) {
 			frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
 
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {

@@ -173,9 +173,11 @@ service PromptService {
 // Template is the top-level resource-hierarchy path segment. It is a resource
 // with NO standard methods (FR-001): its concrete values are a fixed set,
 // declared as constants in gameconst (not a proto enum). This message exists
-// (1) as the typed reference target for Session.template / TeamProfile.template,
-// and (2) to drive protoc-gen-go-aip codegen of ParseTemplateName, so resource
-// name parsing is fully codegen-driven (no hand-written parent parser).
+// to drive protoc-gen-go-aip codegen of ParseTemplateName, so resource
+// name parsing is fully codegen-driven (no hand-written parent parser). The
+// former Session.template / TeamProfile.template resource-body fields were
+// removed — the template is carried by the name pattern path segments only
+// (AIP-124; specs/035-proto-contract-refine/data-model.md §1.1/§1.2).
 message Template {
   option (google.api.resource) = {
     type: "game.liukexin.com/Template"
@@ -238,10 +240,12 @@ message Team {
 }
 
 // TeamProfile is the per-template team configuration resource, replacing the
-// former AgentProfile/Skill resources (clean break, FR-006/FR-007). The
-// template field MUST agree with the active oneof variant — the handler
-// validates the consistency (no implicit rules). The spec is a typed oneof,
-// never a blob (directive: typed oneof/enum, no unformatted generic).
+// former AgentProfile/Skill resources (clean break, FR-006/FR-007). The oneof
+// spec variant MUST be consistent with the template derived from the name
+// path segment — the handler validates the consistency (no implicit rules).
+// The former resource-body template field is removed
+// (specs/035-proto-contract-refine/data-model.md §1.2). The spec is a typed
+// oneof, never a blob (directive: typed oneof/enum, no unformatted generic).
 message TeamProfile {
   option (google.api.resource) = {
     type: "game.liukexin.com/TeamProfile"
@@ -263,7 +267,7 @@ message TeamProfile {
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   // Template-specialized configuration (typed oneof). Exactly one variant
-  // must be set, matching the `template` field.
+  // must be set, matching the template path segment of the resource name.
   oneof spec {
     SaoleiProfile saolei = 10;
   }

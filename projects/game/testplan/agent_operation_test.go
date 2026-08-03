@@ -170,7 +170,7 @@ func TestAgentOperationDispatchLoopSuccess(t *testing.T) {
 
 	// then (4): the model continues with the terminal text frame — the
 	// connection survived the real dispatch→result cycles.
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {
@@ -250,7 +250,7 @@ func TestAgentOperationDispatchFailureRecovers(t *testing.T) {
 	// keyword) completes with the deterministic greeting response. drainWSFrame
 	// skips any leftover frames from the failed turn.
 	sendText(t, conn, sessionID, "hello after failed dispatch")
-	thinkingFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	thinkingFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if thinkingFrame == nil {
@@ -260,7 +260,7 @@ func TestAgentOperationDispatchFailureRecovers(t *testing.T) {
 		t.Errorf("post-failure thinking = %q, want to contain %q",
 			frameThinking(thinkingFrame), expectedGreetingReasoning)
 	}
-	textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textResp == nil {

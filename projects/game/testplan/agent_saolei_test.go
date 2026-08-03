@@ -169,7 +169,7 @@ func TestAgentSaoleiTextBoardFlow(t *testing.T) {
 
 	// then (4): the model emits the final text response, proving the whole
 	// init→click→click chain completed and the connection remains usable.
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textFrame == nil {
@@ -847,7 +847,7 @@ func TestAgentSaoleiRemainToolNoDispatch(t *testing.T) {
 
 	// Drain until turn 1's final text frame arrives — turn 1 is then
 	// complete and turn 2 may be sent on the same session/connection.
-	textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasText(f) && strings.Contains(frameText(f), expectedSaoleiFinalText)
 	})
 	if textFrame == nil {
