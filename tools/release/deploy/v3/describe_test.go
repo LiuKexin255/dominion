@@ -29,7 +29,7 @@ func TestDescribeCommand(t *testing.T) {
 		wantErrIs    error
 	}{
 		{
-			name:   "failed with message and services",
+			name:   "failed with message, no per-service data",
 			target: "api",
 			scope:  "dev",
 			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
@@ -51,6 +51,196 @@ func TestDescribeCommand(t *testing.T) {
   - gateway (app=game) [artifact]
   - mongo (app=game) [infra: mongodb]
 最近调和: 2026-08-02T10:30:00Z
+最近成功: -`,
+		},
+		{
+			name:   "ready per-service statuses",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State:             deploy.EnvironmentState_ENVIRONMENT_STATE_READY,
+					Message:           "ready",
+					LastReconcileTime: timestamppb.New(lastReconciled),
+					Services: []*deploy.ServiceStatus{
+						{Name: "gateway", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_ARTIFACT, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY},
+						{Name: "mongo", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_INFRA, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+					Infras:    []*deploy.InfraSpec{{Name: "mongo", App: "game", Resource: "mongodb"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 就绪
+服务:
+  - gateway (app=game) [artifact] 就绪
+  - mongo (app=game) [infra: mongodb] 就绪
+最近调和: 2026-08-02T10:30:00Z
+最近成功: -`,
+		},
+		{
+			name:   "waiting per-service status",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State:   deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT,
+					Message: `service "gateway" rollout waiting`,
+					Services: []*deploy.ServiceStatus{
+						{Name: "gateway", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_ARTIFACT, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_WAITING, Message: "可用副本不足（available: 0/1）"},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 等待滚动发布
+服务:
+  - gateway (app=game) [artifact] 等待发布: 可用副本不足（available: 0/1）
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "failed per-service status",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State:   deploy.EnvironmentState_ENVIRONMENT_STATE_FAILED,
+					Message: `service "gateway" rollout failed`,
+					Services: []*deploy.ServiceStatus{
+						{Name: "gateway", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_ARTIFACT, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_FAILED, Message: "ImagePullBackOff"},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 失败
+服务:
+  - gateway (app=game) [artifact] 失败: ImagePullBackOff
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "pending per-service status",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State:   deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT,
+					Message: "service rollout pending",
+					Services: []*deploy.ServiceStatus{
+						{Name: "mongo", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_INFRA, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_PENDING},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Infras: []*deploy.InfraSpec{{Name: "mongo", App: "game", Resource: "mongodb"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 等待滚动发布
+服务:
+  - mongo (app=game) [infra: mongodb] 已提交，等待观测
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "no per-service data with message",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State:   deploy.EnvironmentState_ENVIRONMENT_STATE_FAILED,
+					Message: "retry count exhausted",
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 失败
+说明: retry count exhausted
+服务:
+  - gateway (app=game) [artifact]
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "no per-service data without message",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State: deploy.EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 部署中
+服务:
+  - gateway (app=game) [artifact]
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "unspecified service rollout state no append",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State: deploy.EnvironmentState_ENVIRONMENT_STATE_RECONCILING,
+					Services: []*deploy.ServiceStatus{
+						{Name: "gateway", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_ARTIFACT, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_UNSPECIFIED},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 部署中
+服务:
+  - gateway (app=game) [artifact]
+最近调和: -
+最近成功: -`,
+		},
+		{
+			name:   "service matched by kind triple only",
+			target: "api",
+			scope:  "dev",
+			handler: describeHandler(t, "/v1/deploy/scopes/dev/environments/api", http.StatusOK, &deploy.Environment{
+				Name: "deploy/scopes/dev/environments/api",
+				Status: &deploy.EnvironmentStatus{
+					State: deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT,
+					Services: []*deploy.ServiceStatus{
+						{Name: "gateway", App: "game", Kind: deploy.ServiceKind_SERVICE_KIND_INFRA, State: deploy.ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY},
+					},
+				},
+				DesiredState: &deploy.EnvironmentDesiredState{
+					Artifacts: []*deploy.ArtifactSpec{{Name: "gateway", App: "game"}},
+					Infras:    []*deploy.InfraSpec{{Name: "gateway", App: "game", Resource: "mongodb"}},
+				},
+			}),
+			wantOutput: `环境 dev.api
+状态: 等待滚动发布
+服务:
+  - gateway (app=game) [artifact]
+  - gateway (app=game) [infra: mongodb] 就绪
+最近调和: -
 最近成功: -`,
 		},
 		{
