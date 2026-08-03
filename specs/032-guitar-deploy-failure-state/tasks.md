@@ -228,9 +228,9 @@ Task: "T007 更新 tools/test/guitar/README.md 输出格式小节"
 
 ### Tasks
 
-- [ ] T016 [P] 更新 `tools/release/deploy/README.md`：将初版 `describe` 小节输出示例改为 per-service 主线（服务项内联 就绪/等待发布/失败/已提交），说明 per-service 状态来自 `Environment.status.services`、`说明:` 仅在无 per-service 数据时输出。
-- [ ] T017 [P] 更新 `tools/test/guitar/README.md`：在初版「部署失败环境状态诊断」小节补充诊断输出含 per-service 状态（哪个服务等待/失败 + 原因），备注 `applyAndWait` 即写初始 PENDING、短超时亦能列出服务（消除初版时序空窗）。
-- [ ] T018 全量验证门禁：① `bazel build //projects/infra/deploy/... //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //projects/infra/deploy/domain:domain_test //projects/infra/deploy/service:service_test //projects/infra/deploy/storage:storage_test //projects/infra/deploy/runtime/k8s:k8s_test //projects/infra/deploy:deploy_test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿（deploy service 不进行大型测试，见 `projects/infra/deploy/README.md:28`，单测为权威验收）。② 按 [quickstart.md](./quickstart.md) 第二部分端到端冒烟（**可选/非阻塞**——依赖 deploy service 新版经独立 k8s 流程上线 infra.liukexin.com）：场景 A（`--timeout=5s` 确认 per-service 可见）、B（成功路径无诊断）、C（standalone describe READY 各 ` 就绪`）、D（环境不存在降级）；远端旧版则跳过并记录，单测（①）仍为通过门禁。
+- [X] T016 [P] 更新 `tools/release/deploy/README.md`：将初版 `describe` 小节输出示例改为 per-service 主线（服务项内联 就绪/等待发布/失败/已提交），说明 per-service 状态来自 `Environment.status.services`、`说明:` 仅在无 per-service 数据时输出。
+- [X] T017 [P] 更新 `tools/test/guitar/README.md`：在初版「部署失败环境状态诊断」小节补充诊断输出含 per-service 状态（哪个服务等待/失败 + 原因），备注 `applyAndWait` 即写初始 PENDING、短超时亦能列出服务（消除初版时序空窗）。
+- [X] T018 全量验证门禁：① `bazel build //projects/infra/deploy/... //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //projects/infra/deploy/domain:domain_test //projects/infra/deploy/service:service_test //projects/infra/deploy/storage:storage_test //projects/infra/deploy/runtime/k8s:k8s_test //projects/infra/deploy:deploy_test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿（deploy service 不进行大型测试，见 `projects/infra/deploy/README.md:28`，单测为权威验收）。② 按 [quickstart.md](./quickstart.md) 第二部分端到端冒烟（**可选/非阻塞**——依赖 deploy service 新版经独立 k8s 流程上线 infra.liukexin.com）：场景 A（`--timeout=5s` 确认 per-service 可见）、B（成功路径无诊断）、C（standalone describe READY 各 ` 就绪`）、D（环境不存在降级）；远端旧版则跳过并记录，单测（①）仍为通过门禁。
 
 **Checkpoint**: 文档同步、全量单测全绿；端到端冒烟视部署前置决定执行或记录跳过。
 
@@ -290,3 +290,11 @@ deploy service 因无法自举（`projects/infra/deploy/README.md:24`）禁止�
 - v2 HTTP client（`tools/release/deploy/v2/client/client.go:94`）直接返回 proto `*deploy.Environment`，新字段自动流经、无需改 client
 - guitar **无代码改动**（初版 shell-out 链路不变，describe 输出增强自动生效）
 - 容器元素用指针 slice `[]*ServiceStatus`（`style/golang.md:49-55`，与既有 `[]*ArtifactSpec`/`[]*InfraSpec` 一致）
+
+## T018 端到端验证执行记录（2026-08-03，修订范围）
+
+- **编译 + 单测门禁（①，权威验收）**：
+  - `bazel build //projects/infra/deploy/... //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 通过；另 `bazel build //...` 全仓库构建通过（745 targets）。
+  - `bazel test //projects/infra/deploy/domain:domain_test //projects/infra/deploy/service:service_test //projects/infra/deploy/storage:storage_test //projects/infra/deploy/runtime/k8s:k8s_test //projects/infra/deploy:deploy_test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test --nocache_test_results` 全绿（7/7 PASSED）。
+  - 覆盖：proto↔domain↔handler 映射、`cloneStatus` 深拷贝、`BuildInitialServiceStatuses`、`ServicesEqual`、`CheckRollout` per-service 产出（含 MongoDB infra 路径）、reconcile 各转移路径 Services 持久化（含 R11 双比较早退）、storage 往返/清空/旧文档兼容、describe per-service 主线输出（READY/WAITING/FAILED/PENDING/无per-service+/-message/三元组归并）、guitar 诊断 hook 回归。
+- **端到端冒烟（②，可选/非阻塞）**：**跳过并记录**。deploy service 新版本（含 `EnvironmentStatus.services`）尚未经其独立 k8s 部署流程上线 infra.liukexin.com——本特性仅提交了源码变更，deploy service 因无法自举（`projects/infra/deploy/README.md:24`）禁止用 `deploy`/guitar/testplan 部署自身，新版上线属后续独立步骤、超出本特性 scope。远端当前为旧版（无 `services` 字段），describe 会回退初版纯服务列表行为（向后兼容，已由 describe 单测"无 per-service 数据"用例覆盖），per-service 状态在远端新版上线后方可经 quickstart.md 场景 A~D 人工冒烟验证。按 T018 约定，远端旧版时单测（①）为通过门禁，**本特性验收以单测全绿为准**。
