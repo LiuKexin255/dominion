@@ -16,7 +16,7 @@
     },
     "plan": {
       "model": "zhipuai-coding-plan/glm-5.2",
-      "reasoningEffort": "high",
+      "reasoningEffort": "max",
     },
     "general": {
       "model": "zhipuai-coding-plan/glm-5.2",
