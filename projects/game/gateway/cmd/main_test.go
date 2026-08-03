@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -32,14 +31,17 @@ func TestIsWebSocketConnectPath(t *testing.T) {
 		path string
 		want bool
 	}{
-		{path: "/api/v1/sessions/abc/connect", want: true},
-		{path: "api/v1/sessions/abc/connect", want: true},
-		{path: "/api/v1/sessions/abc/connect/", want: true},
-		{path: "/api/v1/sessions//connect", want: false},
-		{path: "/api/v1/sessions/abc", want: false},
-		{path: "/api/v1/sessions/connect", want: false},
-		{path: "/api/v1/sessions/abc/foo/bar", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc/connect", want: true},
+		{path: "api/v1/templates/saolei/sessions/abc/connect", want: true},
+		{path: "/api/v1/templates/saolei/sessions/abc/connect/", want: true},
+		{path: "/api/v1/templates//sessions/abc/connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions//connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc", want: false},
+		{path: "/api/v1/templates/saolei/sessions/connect", want: false},
+		{path: "/api/v1/templates/saolei/sessions/abc/foo/bar", want: false},
 		{path: "/api/v1/agents", want: false},
+		// Top-level sessions paths no longer exist (FR-002 clean break).
+		{path: "/api/v1/sessions/abc/connect", want: false},
 	}
 
 	for _, tt := range tests {
@@ -52,22 +54,27 @@ func TestIsWebSocketConnectPath(t *testing.T) {
 	}
 }
 
-func TestExtractSessionID(t *testing.T) {
+func TestExtractConnectIdentity(t *testing.T) {
 	tests := []struct {
-		path string
-		want string
+		path         string
+		wantTemplate string
+		wantSession  string
 	}{
-		{path: "/api/v1/sessions/abc123/connect", want: "abc123"},
-		{path: "/api/v1/sessions/x-y-z/connect", want: "x-y-z"},
-		{path: "/api/v1/sessions//connect", want: ""},
-		{path: "/api/v1/agents", want: ""},
+		{path: "/api/v1/templates/saolei/sessions/abc123/connect", wantTemplate: "saolei", wantSession: "abc123"},
+		{path: "/api/v1/templates/saolei/sessions/x-y-z/connect", wantTemplate: "saolei", wantSession: "x-y-z"},
+		{path: "/api/v1/templates/saolei/sessions//connect", wantTemplate: "", wantSession: ""},
+		{path: "/api/v1/agents", wantTemplate: "", wantSession: ""},
+		{path: "/api/v1/sessions/abc/connect", wantTemplate: "", wantSession: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := extractSessionID(tt.path)
-			if got != tt.want {
-				t.Fatalf("extractSessionID(%q) = %q, want %q", tt.path, got, tt.want)
+			gotTemplate, gotSession := extractConnectIdentity(tt.path)
+			if gotTemplate != tt.wantTemplate {
+				t.Fatalf("extractConnectIdentity(%q) template = %q, want %q", tt.path, gotTemplate, tt.wantTemplate)
+			}
+			if gotSession != tt.wantSession {
+				t.Fatalf("extractConnectIdentity(%q) session = %q, want %q", tt.path, gotSession, tt.wantSession)
 			}
 		})
 	}
@@ -106,17 +113,17 @@ func TestIsCleanClose(t *testing.T) {
 // Integration tests: handleWebSocketConnect with real WebSocket + gRPC
 // ---------------------------------------------------------------------------
 
-// mockProxyServer implements game.ProxyServiceServer for testing.
-type mockProxyServer struct {
-	game.UnimplementedProxyServiceServer
+// mockTeamServer implements game.TeamServiceServer for testing.
+type mockTeamServer struct {
+	game.UnimplementedTeamServiceServer
 
-	// onConnect is called when ConnectAgent is invoked. It receives the
+	// onConnect is called when Connect is invoked. It receives the
 	// gRPC stream and can read/write AgentFrames. It should return when
 	// done or on error.
-	onConnect func(stream game.ProxyService_ConnectAgentServer) error
+	onConnect func(stream game.TeamService_ConnectServer) error
 }
 
-func (m *mockProxyServer) ConnectAgent(stream game.ProxyService_ConnectAgentServer) error {
+func (m *mockTeamServer) Connect(stream game.TeamService_ConnectServer) error {
 	if m.onConnect != nil {
 		return m.onConnect(stream)
 	}
@@ -134,11 +141,11 @@ func (m *mockProxyServer) ConnectAgent(stream game.ProxyService_ConnectAgentServ
 
 // setupTestGRPC starts a gRPC server with the given mock and returns the
 // client connection. Caller must call conn.Close() and cancel() when done.
-func setupTestGRPC(t *testing.T, mock game.ProxyServiceServer) (*grpc.ClientConn, context.CancelFunc) {
+func setupTestGRPC(t *testing.T, mock game.TeamServiceServer) (*grpc.ClientConn, context.CancelFunc) {
 	t.Helper()
 
 	srv := grpc.NewServer()
-	game.RegisterProxyServiceServer(srv, mock)
+	game.RegisterTeamServiceServer(srv, mock)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -176,38 +183,38 @@ func wsURL(httpURL string) string {
 }
 
 // ---------------------------------------------------------------------------
-// Test: invalid JSON causes close, no echo
+// Test: invalid protobuf causes close, no echo
 // ---------------------------------------------------------------------------
 
-func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			// The server should not receive any frames since the client
-			// sends invalid JSON.
+			// sends invalid protobuf.
 			_, err := stream.Recv()
 			return err
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	// Create a test HTTP server that routes to handleWebSocketConnect.
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send invalid JSON.
-	err = conn.Write(ctx, websocket.MessageText, []byte("not valid json at all"))
+	// Send invalid protobuf (0xFF bytes are an invalid wire format).
+	err = conn.Write(ctx, websocket.MessageBinary, []byte{0xFF, 0xFF, 0xFF, 0xFF})
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -215,7 +222,7 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 	// Read response — should get a close frame (error).
 	_, _, readErr := conn.Read(ctx)
 	if readErr == nil {
-		t.Fatal("expected error reading after sending invalid JSON, got nil")
+		t.Fatal("expected error reading after sending invalid protobuf, got nil")
 	}
 
 	closeCode := websocket.CloseStatus(readErr)
@@ -225,14 +232,14 @@ func TestHandleWebSocketConnect_InvalidJSONClosesConnection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: valid JSON with unknown fields is accepted (DiscardUnknown)
+// Test: valid protobuf with unknown fields is accepted (forward compat)
 // ---------------------------------------------------------------------------
 
-func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
+func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -242,25 +249,44 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/test-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/test-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send valid AgentFrame JSON with an extra unknown field.
-	frameJSON := `{"sessionId":"","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"unknown_field":"should be discarded"}`
-	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
+	// Build a valid AgentFrame (status is a FlowPart kind), marshal as binary
+	// protobuf, then append an unknown field (field 999, length-delimited)
+	// to verify proto.Unmarshal tolerates unknown fields — the forward-
+	// compatibility mechanism that replaced protojson's DiscardUnknown
+	// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
+	sendFrame := &game.AgentFrame{
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
+	data, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Tag for field 999, wire type 2: varint((999<<3)|2) = varint(7994) = {0xBA, 0x3E}
+	// Length 6, then payload "future".
+	data = append(data, 0xBA, 0x3E, 0x06)
+	data = append(data, []byte("future")...)
+
+	err = conn.Write(ctx, websocket.MessageBinary, data)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -268,12 +294,22 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 	// Wait for the gRPC server to receive the frame.
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "test-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "test-session")
 		}
-		sf := f.GetStatus()
+		fp := f.GetFlowParts()
+		if fp == nil {
+			t.Fatal("payload oneof = nil, want flowParts")
+		}
+		if len(fp.GetParts()) != 1 {
+			t.Fatalf("flowParts parts = %d, want 1", len(fp.GetParts()))
+		}
+		sf := fp.GetParts()[0].GetStatus()
 		if sf == nil {
-			t.Fatal("payload oneof = nil, want status")
+			t.Fatal("flowParts[0] kind = nil, want status")
 		}
 		if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 			t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
@@ -288,8 +324,8 @@ func TestHandleWebSocketConnect_DiscardUnknownFields(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			// Echo each received frame back.
 			for {
 				frame, err := stream.Recv()
@@ -303,40 +339,41 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/echo-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/echo-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send a content frame (PartBlock with a single TextPart) — the new
-	// first-class payload unit. The server echoes it back unmodified.
+	// Send a message_parts frame (MessageParts with a single TextPart) —
+	// the display payload unit. The server echoes it back unmodified
+	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3/§4).
 	sendFrame := &game.AgentFrame{
 		SessionId: "echo-session",
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
 				},
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -348,21 +385,24 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	}
 
 	recvFrame := new(game.AgentFrame)
-	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
+	if recvFrame.GetTemplateId() != "saolei" {
+		t.Fatalf("template_id = %q, want %q", recvFrame.GetTemplateId(), "saolei")
+	}
 	if recvFrame.GetSessionId() != "echo-session" {
 		t.Fatalf("session_id = %q, want %q", recvFrame.GetSessionId(), "echo-session")
 	}
-	content := recvFrame.GetContent()
-	if content == nil {
-		t.Fatal("payload oneof = nil, want content")
+	mp := recvFrame.GetMessageParts()
+	if mp == nil {
+		t.Fatal("payload oneof = nil, want messageParts")
 	}
-	if len(content.GetParts()) != 1 {
-		t.Fatalf("parts = %d, want 1", len(content.GetParts()))
+	if len(mp.GetParts()) != 1 {
+		t.Fatalf("parts = %d, want 1", len(mp.GetParts()))
 	}
-	textPart := content.GetParts()[0].GetText()
+	textPart := mp.GetParts()[0].GetText()
 	if textPart == nil {
 		t.Fatal("part[0].kind = nil, want text")
 	}
@@ -376,15 +416,15 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_MissingSessionID(t *testing.T) {
-	proxyConn, _ := setupTestGRPC(t, &mockProxyServer{})
+	teamConn, _ := setupTestGRPC(t, &mockTeamServer{})
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	// Use path without a valid session ID.
-	resp, err := http.Get(httpSrv.URL + "/api/v1/sessions//connect")
+	resp, err := http.Get(httpSrv.URL + "/api/v1/templates/saolei/sessions//connect")
 	if err != nil {
 		t.Fatalf("http get: %v", err)
 	}
@@ -400,42 +440,44 @@ func TestHandleWebSocketConnect_MissingSessionID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			return status.Error(codes.Internal, "test internal error")
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/err-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/err-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	// Send a valid frame — the gRPC server will error on Recv or the
-	// stream will error immediately.
+	// stream will error immediately. status is a FlowPart kind (spec 023).
 	sendFrame := &game.AgentFrame{
 		SessionId: "err-session",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		// Connection may already be closed by the server.
 		return
@@ -455,8 +497,8 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -466,10 +508,10 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
@@ -477,24 +519,38 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 	defer cancel()
 
 	// Connect with session "from-url" in the URL path.
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/from-url/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/from-url/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Send a frame with a DIFFERENT session_id in JSON — gateway should
-	// overwrite it with the URL session_id.
-	frameJSON := `{"sessionId":"from-json","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"}}`
-	err = conn.Write(ctx, websocket.MessageText, []byte(frameJSON))
+	// Send a frame with a DIFFERENT session_id in the protobuf — gateway
+	// should overwrite it with the URL session_id. status is a FlowPart kind.
+	sendFrame := &game.AgentFrame{
+		SessionId: "from-proto",
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
+	msg, err := proto.Marshal(sendFrame)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q (should be from URL, not protobuf)", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "from-url" {
-			t.Fatalf("session_id = %q, want %q (should be from URL, not JSON)", f.GetSessionId(), "from-url")
+			t.Fatalf("session_id = %q, want %q (should be from URL, not protobuf)", f.GetSessionId(), "from-url")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for frame on gRPC server")
@@ -502,41 +558,61 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: protojson DiscardUnknown directly
+// Test: proto.Unmarshal forward-compat with unknown fields directly
 // ---------------------------------------------------------------------------
 
-func TestProtojsonDiscardUnknown(t *testing.T) {
-	// Verify that protojson.UnmarshalOptions{DiscardUnknown: true} actually
-	// discards unknown fields without error.
-	input := []byte(`{"sessionId":"s1","status":{"status":"STATUS_SIGNAL_STATUS_IDLE"},"future_field":"ignored"}`)
+func TestProtoUnmarshalForwardCompat(t *testing.T) {
+	// Verify that proto.Unmarshal tolerates unknown fields without error —
+	// the forward-compatibility mechanism that replaced protojson's
+	// DiscardUnknown (specs/025-desktop-image-state-refine/contracts/
+	// image-transport-contract.md §2). Unknown fields are preserved per
+	// the proto spec, not discarded.
+	want := &game.AgentFrame{
+		SessionId: "s1",
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
+		},
+	}
 
-	opts := protojson.UnmarshalOptions{DiscardUnknown: true}
+	data, err := proto.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Append an unknown field (field 999, length-delimited wire type 2).
+	// Tag varint for (999<<3)|2 = 7994: {0xBA, 0x3E}; length 6; payload "future".
+	data = append(data, 0xBA, 0x3E, 0x06)
+	data = append(data, []byte("future")...)
+
 	frame := new(game.AgentFrame)
-	if err := opts.Unmarshal(input, frame); err != nil {
-		t.Fatalf("Unmarshal with DiscardUnknown: %v", err)
+	if err := proto.Unmarshal(data, frame); err != nil {
+		t.Fatalf("Unmarshal with unknown field: %v", err)
 	}
 
 	if frame.GetSessionId() != "s1" {
 		t.Fatalf("session_id = %q, want %q", frame.GetSessionId(), "s1")
 	}
-	sf := frame.GetStatus()
+	fp := frame.GetFlowParts()
+	if fp == nil {
+		t.Fatal("payload oneof = nil, want flowParts")
+	}
+	if len(fp.GetParts()) != 1 {
+		t.Fatalf("flowParts parts = %d, want 1", len(fp.GetParts()))
+	}
+	sf := fp.GetParts()[0].GetStatus()
 	if sf == nil {
-		t.Fatal("payload oneof = nil, want status")
+		t.Fatal("flowParts[0] kind = nil, want status")
 	}
 	if sf.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Fatalf("status = %q, want %q", sf.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 
-	// Verify the proto is valid.
-	want := &game.AgentFrame{
-		SessionId: "s1",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
-		},
-	}
-	if !proto.Equal(frame, want) {
-		t.Fatalf("frame = %v, want %v", frame, want)
-	}
+	// Note: we do NOT use proto.Equal here because proto.Unmarshal preserves
+	// unknown fields (the appended 999:"future"), so the frame would differ
+	// from a clean marshal. This is the correct forward-compat behavior —
+	// the individual field assertions above confirm the known fields parse
+	// correctly despite the unknown field.
 }
 
 // ---------------------------------------------------------------------------
@@ -548,8 +624,8 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	serverRecv := make(chan struct{})
 	serverDone := make(chan struct{})
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			defer close(serverDone)
 			// Block until the test signals or the stream errors.
 			_, err := stream.Recv()
@@ -558,14 +634,14 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	// Use a WaitGroup to detect when handleWebSocketConnect returns.
 	var handlerDone sync.WaitGroup
 	handlerDone.Add(1)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 		handlerDone.Done()
 	}))
 	defer httpSrv.Close()
@@ -573,7 +649,7 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/leak-test/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/leak-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -612,20 +688,22 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	received := make(chan *game.AgentFrame, 1)
 	statusSent := make(chan struct{})
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
 			}
 			received <- frame
-			// Reply with a StatusSignal — the new control-signal payload
-			// used for connectivity / lifecycle confirmation. (Replaces the
-			// removed AgentAckFrame.)
+			// Reply with a StatusSignal FlowPart — the control-signal
+			// payload used for connectivity / lifecycle confirmation.
+			// status is a FlowPart kind (spec 023 C3 / FR-003).
 			if err := stream.Send(&game.AgentFrame{
 				SessionId: frame.GetSessionId(),
-				Payload: &game.AgentFrame_Status{
-					Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+				Payload: &game.AgentFrame_FlowParts{
+					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+						{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+					}},
 				},
 			}); err != nil {
 				return err
@@ -636,17 +714,17 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/shot-session/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/shot-session/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -657,17 +735,18 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		pngData[i] = byte(i)
 	}
 
-	// Send a content frame carrying [TextPart, ImagePart] — the new shape
-	// for a multimodal user turn.
+	// Send a message_parts frame carrying [TextPart, ImagePart] — the
+	// display payload for a multimodal user turn
+	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
 	sendFrame := &game.AgentFrame{
 		SessionId: "shot-session",
 		FrameId:   "frame-1",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
-					{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 						Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 						Data:        pngData,
 						WidthPx:     800,
@@ -679,26 +758,29 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	select {
 	case f := <-received:
+		if f.GetTemplateId() != "saolei" {
+			t.Fatalf("template_id = %q, want %q", f.GetTemplateId(), "saolei")
+		}
 		if f.GetSessionId() != "shot-session" {
 			t.Fatalf("session_id = %q, want %q", f.GetSessionId(), "shot-session")
 		}
-		content := f.GetContent()
-		if content == nil {
-			t.Fatal("payload oneof = nil, want content")
+		mp := f.GetMessageParts()
+		if mp == nil {
+			t.Fatal("payload oneof = nil, want messageParts")
 		}
-		parts := content.GetParts()
+		parts := mp.GetParts()
 		if len(parts) != 2 {
 			t.Fatalf("parts = %d, want 2", len(parts))
 		}
@@ -719,7 +801,7 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 			t.Fatalf("dimensions = %dx%d, want 800x600", img.GetWidthPx(), img.GetHeightPx())
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for content frame on gRPC server")
+		t.Fatal("timeout waiting for message_parts frame on gRPC server")
 	}
 
 	_, resp, err := conn.Read(ctx)
@@ -728,13 +810,14 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 	}
 
 	recvFrame := new(game.AgentFrame)
-	if err := protojson.Unmarshal(resp, recvFrame); err != nil {
+	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
 
-	status := recvFrame.GetStatus()
+	// status is a FlowPart kind carried inside flow_parts (spec 023).
+	status := recvFrame.GetFlowParts().GetParts()[0].GetStatus()
 	if status == nil {
-		t.Fatal("response payload oneof = nil, want status")
+		t.Fatal("response flowParts[0] kind = nil, want status")
 	}
 	if status.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Fatalf("status = %q, want %q", status.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
@@ -750,8 +833,8 @@ func TestReadLimitSet(t *testing.T) {
 	// has been raised. The default ReadLimit is 32768 bytes; we send 64KB.
 	// If ReadLimit were not set, the read would be rejected.
 
-	mock := &mockProxyServer{
-		onConnect: func(stream game.ProxyService_ConnectAgentServer) error {
+	mock := &mockTeamServer{
+		onConnect: func(stream game.TeamService_ConnectServer) error {
 			frame, err := stream.Recv()
 			if err != nil {
 				return err
@@ -765,17 +848,17 @@ func TestReadLimitSet(t *testing.T) {
 		},
 	}
 
-	proxyConn, _ := setupTestGRPC(t, mock)
+	teamConn, _ := setupTestGRPC(t, mock)
 
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleWebSocketConnect(w, r, proxyConn)
+		handleWebSocketConnect(w, r, teamConn)
 	}))
 	defer httpSrv.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/sessions/limit-test/connect", nil)
+	conn, _, err := websocket.Dial(ctx, wsURL(httpSrv.URL)+"/api/v1/templates/saolei/sessions/limit-test/connect", nil)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -784,7 +867,8 @@ func TestReadLimitSet(t *testing.T) {
 	// Raise client-side ReadLimit too so we can read the large echoed response.
 	conn.SetReadLimit(10 << 20)
 
-	// Build a content frame with a 64KB ImagePart — exceeds default 32KB limit.
+	// Build a message_parts frame with a 64KB ImagePart — exceeds default
+	// 32KB limit.
 	largeData := make([]byte, 64*1024)
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
@@ -793,10 +877,10 @@ func TestReadLimitSet(t *testing.T) {
 	sendFrame := &game.AgentFrame{
 		SessionId: "limit-test",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 						Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
 						Data:     largeData,
 						WidthPx:  100,
@@ -806,12 +890,12 @@ func TestReadLimitSet(t *testing.T) {
 			},
 		},
 	}
-	msg, err := protojson.Marshal(sendFrame)
+	msg, err := proto.Marshal(sendFrame)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	err = conn.Write(ctx, websocket.MessageText, msg)
+	err = conn.Write(ctx, websocket.MessageBinary, msg)
 	if err != nil {
 		t.Fatalf("write: %v", err)
 	}

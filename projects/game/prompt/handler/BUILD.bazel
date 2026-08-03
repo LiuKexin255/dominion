@@ -24,7 +24,6 @@ go_unittest(
     embed = [":handler"],
     deps = [
         "//projects/game",
-        "//projects/game/pkg/gameconst",
         "//projects/game/prompt/domain",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",

@@ -19,8 +19,9 @@ func TestSessionViewFromProto(t *testing.T) {
 	// given: a proto Session with all fields
 	createTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	proto := &game.Session{
-		Name:       "sessions/test-session-1",
+		Name:       "templates/saolei/sessions/test-session-1",
 		SessionId:  "test-session-1",
+		Template:   "templates/saolei",
 		CreateTime: timestamppb.New(createTime),
 	}
 
@@ -28,11 +29,14 @@ func TestSessionViewFromProto(t *testing.T) {
 	view := sessionViewFromProto(proto)
 
 	// then: verify fields match
-	if view.Name != "sessions/test-session-1" {
-		t.Fatalf("expected Name %q, got %q", "sessions/test-session-1", view.Name)
+	if view.Name != "templates/saolei/sessions/test-session-1" {
+		t.Fatalf("expected Name %q, got %q", "templates/saolei/sessions/test-session-1", view.Name)
 	}
 	if view.SessionID != "test-session-1" {
 		t.Fatalf("expected SessionID %q, got %q", "test-session-1", view.SessionID)
+	}
+	if view.Template != "templates/saolei" {
+		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.CreateTime != "2024-01-01T00:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-01-01T00:00:00Z", view.CreateTime)
@@ -163,28 +167,42 @@ func TestListSessionsViewFromProto_NilSessions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestAgentViewFromProto
+// TestTeamViewFromProto
 // ---------------------------------------------------------------------------
 
-func TestAgentViewFromProto(t *testing.T) {
-	// given: a proto Agent with all fields
+func TestTeamViewFromProto(t *testing.T) {
+	// given: a proto Team with agents and create time
 	createTime := time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC)
-	proto := &game.Agent{
-		Name:             "sessions/sess-agent-1/agent",
-		SessionId:        "sess-agent-1",
-		CreateTime:       timestamppb.New(createTime),
-		AgentProfileName: "test-profile",
+	proto := &game.Team{
+		Name:       "templates/saolei/sessions/sess-team-1/team",
+		CreateTime: timestamppb.New(createTime),
+		Agents: []*game.TeamAgent{
+			{Name: "player", AcceptsUserInput: true},
+			{Name: "planner", AcceptsUserInput: false},
+		},
 	}
 
 	// when: convert to view model
-	view := agentViewFromProto(proto)
+	view := teamViewFromProto(proto)
 
 	// then: verify fields match
-	if view.SessionID != "sess-agent-1" {
-		t.Fatalf("expected SessionID %q, got %q", "sess-agent-1", view.SessionID)
+	if view.Name != "templates/saolei/sessions/sess-team-1/team" {
+		t.Fatalf("expected Name %q, got %q", "templates/saolei/sessions/sess-team-1/team", view.Name)
 	}
-	if view.AgentProfileName != "test-profile" {
-		t.Fatalf("expected AgentProfileName %q, got %q", "test-profile", view.AgentProfileName)
+	if view.SessionID != "sess-team-1" {
+		t.Fatalf("expected SessionID %q, got %q", "sess-team-1", view.SessionID)
+	}
+	if view.CreateTime != "2024-06-15T10:30:00Z" {
+		t.Fatalf("expected CreateTime %q, got %q", "2024-06-15T10:30:00Z", view.CreateTime)
+	}
+	if len(view.Agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(view.Agents))
+	}
+	if view.Agents[0].Name != "player" || !view.Agents[0].AcceptsUserInput {
+		t.Fatalf("expected first agent player/acceptsUserInput=true, got %+v", view.Agents[0])
+	}
+	if view.Agents[1].Name != "planner" || view.Agents[1].AcceptsUserInput {
+		t.Fatalf("expected second agent planner/acceptsUserInput=false, got %+v", view.Agents[1])
 	}
 
 	// and: JSON marshalling uses camelCase
@@ -196,26 +214,239 @@ func TestAgentViewFromProto(t *testing.T) {
 	if !strings.Contains(jsonStr, `"sessionId"`) {
 		t.Fatalf("expected JSON to contain 'sessionId', got: %s", jsonStr)
 	}
+	if !strings.Contains(jsonStr, `"acceptsUserInput"`) {
+		t.Fatalf("expected JSON to contain 'acceptsUserInput', got: %s", jsonStr)
+	}
 	if strings.Contains(jsonStr, `"session_id"`) {
 		t.Fatalf("expected JSON to NOT contain 'session_id', got: %s", jsonStr)
-	}
-	if !strings.Contains(jsonStr, `"agentProfileName"`) {
-		t.Fatalf("expected JSON to contain 'agentProfileName', got: %s", jsonStr)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TestAgentViewFromProto_Nil
+// TestTeamViewFromProto_Nil
 // ---------------------------------------------------------------------------
 
-func TestAgentViewFromProto_Nil(t *testing.T) {
-	// given: nil proto Agent
+func TestTeamViewFromProto_Nil(t *testing.T) {
+	// given: nil proto Team
 	// when: convert to view model
-	view := agentViewFromProto(nil)
+	view := teamViewFromProto(nil)
 
 	// then: returns nil
 	if view != nil {
 		t.Fatal("expected nil, got non-nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTeamViewFromProto_NoAgents
+// ---------------------------------------------------------------------------
+
+func TestTeamViewFromProto_NoAgents(t *testing.T) {
+	// given: a proto Team without agents
+	proto := &game.Team{Name: "templates/saolei/sessions/s1/team"}
+
+	// when: convert to view model
+	view := teamViewFromProto(proto)
+
+	// then: non-nil view with empty Agents slice and derived session id
+	if view == nil {
+		t.Fatal("expected non-nil view, got nil")
+	}
+	if view.Agents == nil {
+		t.Fatal("expected non-nil Agents slice, got nil")
+	}
+	if len(view.Agents) != 0 {
+		t.Fatalf("expected empty Agents, got %d", len(view.Agents))
+	}
+	if view.SessionID != "s1" {
+		t.Fatalf("expected SessionID %q, got %q", "s1", view.SessionID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTeamProfileViewFromProto
+// ---------------------------------------------------------------------------
+
+func TestTeamProfileViewFromProto(t *testing.T) {
+	// given: a proto TeamProfile with the saolei spec variant
+	proto := &game.TeamProfile{
+		Name:     "templates/saolei/profiles/my-profile",
+		Template: "templates/saolei",
+		Spec: &game.TeamProfile_Saolei{
+			Saolei: &game.SaoleiProfile{
+				PlayerModel:   "openai/gpt-4o",
+				PlannerModel:  "anthropic/claude-3-5-sonnet",
+				PlayerPrompt:  "player base prompt",
+				PlannerPrompt: "planner base prompt",
+			},
+		},
+	}
+
+	// when: convert to view model
+	view := teamProfileViewFromProto(proto)
+
+	// then: verify fields match (spec oneof flattened)
+	if view.Name != "templates/saolei/profiles/my-profile" {
+		t.Fatalf("expected Name %q, got %q", "templates/saolei/profiles/my-profile", view.Name)
+	}
+	if view.ProfileName != "my-profile" {
+		t.Fatalf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
+	}
+	if view.Template != "templates/saolei" {
+		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
+	}
+	if view.PlayerModel != "openai/gpt-4o" {
+		t.Fatalf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
+	}
+	if view.PlannerModel != "anthropic/claude-3-5-sonnet" {
+		t.Fatalf("expected PlannerModel %q, got %q", "anthropic/claude-3-5-sonnet", view.PlannerModel)
+	}
+	if view.PlayerPrompt != "player base prompt" {
+		t.Fatalf("expected PlayerPrompt %q, got %q", "player base prompt", view.PlayerPrompt)
+	}
+	if view.PlannerPrompt != "planner base prompt" {
+		t.Fatalf("expected PlannerPrompt %q, got %q", "planner base prompt", view.PlannerPrompt)
+	}
+
+	// and: JSON marshalling uses camelCase
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(data)
+	if !strings.Contains(jsonStr, `"profileName"`) {
+		t.Fatalf("expected JSON to contain 'profileName', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"playerModel"`) {
+		t.Fatalf("expected JSON to contain 'playerModel', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"plannerModel"`) {
+		t.Fatalf("expected JSON to contain 'plannerModel', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"playerPrompt"`) {
+		t.Fatalf("expected JSON to contain 'playerPrompt', got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"plannerPrompt"`) {
+		t.Fatalf("expected JSON to contain 'plannerPrompt', got: %s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"player_model"`) {
+		t.Fatalf("expected JSON to NOT contain 'player_model', got: %s", jsonStr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTeamProfileViewFromProto_Nil
+// ---------------------------------------------------------------------------
+
+func TestTeamProfileViewFromProto_Nil(t *testing.T) {
+	// given: nil proto TeamProfile
+	// when: convert to view model
+	view := teamProfileViewFromProto(nil)
+
+	// then: returns nil
+	if view != nil {
+		t.Fatal("expected nil, got non-nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestListTeamProfilesViewFromProto
+// ---------------------------------------------------------------------------
+
+func TestListTeamProfilesViewFromProto(t *testing.T) {
+	// given: a proto ListTeamProfilesResponse with two profiles and a token
+	proto := &game.ListTeamProfilesResponse{
+		TeamProfiles: []*game.TeamProfile{
+			{
+				Name:     "templates/saolei/profiles/p1",
+				Template: "templates/saolei",
+				Spec: &game.TeamProfile_Saolei{
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "a/b",
+						PlannerModel:  "c/d",
+						PlayerPrompt:  "p1 player prompt",
+						PlannerPrompt: "p1 planner prompt",
+					},
+				},
+			},
+			{
+				Name:     "templates/saolei/profiles/p2",
+				Template: "templates/saolei",
+			},
+		},
+		NextPageToken: "next-token-7",
+	}
+
+	// when: convert to view model
+	view := listTeamProfilesViewFromProto(proto)
+
+	// then: verify counts, fields, and next page token
+	if len(view.TeamProfiles) != 2 {
+		t.Fatalf("expected 2 team profiles, got %d", len(view.TeamProfiles))
+	}
+	if view.TeamProfiles[0].ProfileName != "p1" {
+		t.Fatalf("expected first ProfileName %q, got %q", "p1", view.TeamProfiles[0].ProfileName)
+	}
+	if view.TeamProfiles[0].PlayerModel != "a/b" {
+		t.Fatalf("expected first PlayerModel %q, got %q", "a/b", view.TeamProfiles[0].PlayerModel)
+	}
+	if view.TeamProfiles[0].PlayerPrompt != "p1 player prompt" {
+		t.Fatalf("expected first PlayerPrompt %q, got %q", "p1 player prompt", view.TeamProfiles[0].PlayerPrompt)
+	}
+	if view.TeamProfiles[0].PlannerPrompt != "p1 planner prompt" {
+		t.Fatalf("expected first PlannerPrompt %q, got %q", "p1 planner prompt", view.TeamProfiles[0].PlannerPrompt)
+	}
+	if view.TeamProfiles[1].ProfileName != "p2" {
+		t.Fatalf("expected second ProfileName %q, got %q", "p2", view.TeamProfiles[1].ProfileName)
+	}
+	if view.NextPageToken != "next-token-7" {
+		t.Fatalf("expected NextPageToken %q, got %q", "next-token-7", view.NextPageToken)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestListTeamProfilesViewFromProto_Nil
+// ---------------------------------------------------------------------------
+
+func TestListTeamProfilesViewFromProto_Nil(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *game.ListTeamProfilesResponse
+	}{
+		{
+			name:  "nil response",
+			input: nil,
+		},
+		{
+			name:  "nil profiles slice",
+			input: &game.ListTeamProfilesResponse{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when: convert to view model
+			view := listTeamProfilesViewFromProto(tt.input)
+
+			if tt.input == nil {
+				// then: returns nil
+				if view != nil {
+					t.Fatal("expected nil, got non-nil")
+				}
+				return
+			}
+
+			// then: non-nil view with empty TeamProfiles slice
+			if view == nil {
+				t.Fatal("expected non-nil view, got nil")
+			}
+			if view.TeamProfiles == nil {
+				t.Fatal("expected non-nil TeamProfiles slice, got nil")
+			}
+			if len(view.TeamProfiles) != 0 {
+				t.Fatalf("expected empty TeamProfiles, got %d", len(view.TeamProfiles))
+			}
+		})
 	}
 }
 
@@ -229,21 +460,21 @@ func TestToMessageViewModels(t *testing.T) {
 	createTime := time.Date(2024, 7, 1, 12, 0, 0, 0, time.UTC)
 	messages := []*game.Message{
 		{
-			Name:       "sessions/sess-1/agent/messages/msg-1",
+			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/msg-1",
 			MessageId:  "msg-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "Hello from user"}}},
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from user"}}},
 			}},
 		},
 		{
-			Name:       "sessions/sess-1/agent/messages/msg-2",
+			Name:       "templates/saolei/sessions/sess-1/team/agents/planner/messages/msg-2",
 			MessageId:  "msg-2",
 			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
 			}},
 		},
 	}
@@ -257,8 +488,8 @@ func TestToMessageViewModels(t *testing.T) {
 	}
 
 	// and: verify first message fields
-	if views[0].Name != "sessions/sess-1/agent/messages/msg-1" {
-		t.Fatalf("expected Name %q, got %q", "sessions/sess-1/agent/messages/msg-1", views[0].Name)
+	if views[0].Name != "templates/saolei/sessions/sess-1/team/agents/player/messages/msg-1" {
+		t.Fatalf("expected Name %q, got %q", "templates/saolei/sessions/sess-1/team/agents/player/messages/msg-1", views[0].Name)
 	}
 	if views[0].MessageID != "msg-1" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-1", views[0].MessageID)
@@ -274,8 +505,8 @@ func TestToMessageViewModels(t *testing.T) {
 	}
 
 	// and: verify second message fields
-	if views[1].Name != "sessions/sess-1/agent/messages/msg-2" {
-		t.Fatalf("expected Name %q, got %q", "sessions/sess-1/agent/messages/msg-2", views[1].Name)
+	if views[1].Name != "templates/saolei/sessions/sess-1/team/agents/planner/messages/msg-2" {
+		t.Fatalf("expected Name %q, got %q", "templates/saolei/sessions/sess-1/team/agents/planner/messages/msg-2", views[1].Name)
 	}
 	if views[1].MessageID != "msg-2" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-2", views[1].MessageID)
@@ -310,12 +541,12 @@ func TestToMessageViewModels_Image(t *testing.T) {
 	rawImage := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
 	messages := []*game.Message{
 		{
-			Name:       "sessions/sess-1/agent/messages/img-1",
+			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/img-1",
 			MessageId:  "img-1",
 			Sender:     game.FrameSender_FRAME_SENDER_USER,
 			CreateTime: timestamppb.New(createTime),
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Image{Image: &game.ImagePart{
+			Content: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 					Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:     rawImage,
 				}}},
@@ -405,44 +636,51 @@ func TestTimestampString_Nil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestAgentProfileViewFromProto_ToolNames
+// TestToMessageViewModels_AgentPartition
 // ---------------------------------------------------------------------------
 
-func TestAgentProfileViewFromProto_ToolNames(t *testing.T) {
-	// given: a proto AgentProfile with ToolNames set
-	proto := &game.AgentProfile{
-		Name:      "agentProfiles/tool-test",
-		Model:     "gpt-4",
-		ToolNames: []string{"mouse", "keyboard"},
+func TestToMessageViewModels_AgentPartition(t *testing.T) {
+	// given: messages partitioned per team agent (FR-005) carrying the agent
+	// field (D12)
+	createTime := time.Date(2024, 7, 1, 12, 0, 0, 0, time.UTC)
+	messages := []*game.Message{
+		{
+			Name:       "templates/saolei/sessions/s1/team/agents/player/messages/msg-1",
+			MessageId:  "msg-1",
+			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Agent:      "player",
+			CreateTime: timestamppb.New(createTime),
+		},
+		{
+			Name:       "templates/saolei/sessions/s1/team/agents/planner/messages/msg-2",
+			MessageId:  "msg-2",
+			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Agent:      "planner",
+			CreateTime: timestamppb.New(createTime),
+		},
 	}
 
-	// when: convert to view model
-	view := agentProfileViewFromProto(proto)
+	// when: convert to view models
+	views := ToMessageViewModels(messages)
 
-	// then: ToolNames round-trips with matching length and values
-	if view == nil {
-		t.Fatal("expected non-nil view, got nil")
+	// then: the agent partition survives into each view model
+	if len(views) != 2 {
+		t.Fatalf("expected 2 view models, got %d", len(views))
 	}
-	if len(view.ToolNames) != 2 {
-		t.Fatalf("expected ToolNames length 2, got %d", len(view.ToolNames))
+	if views[0].Agent != "player" {
+		t.Fatalf("expected first Agent %q, got %q", "player", views[0].Agent)
 	}
-	if view.ToolNames[0] != "mouse" {
-		t.Errorf("expected ToolNames[0] %q, got %q", "mouse", view.ToolNames[0])
-	}
-	if view.ToolNames[1] != "keyboard" {
-		t.Errorf("expected ToolNames[1] %q, got %q", "keyboard", view.ToolNames[1])
+	if views[1].Agent != "planner" {
+		t.Fatalf("expected second Agent %q, got %q", "planner", views[1].Agent)
 	}
 
 	// and: JSON marshalling uses camelCase
-	data, err := json.Marshal(view)
+	data, err := json.Marshal(views[0])
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
 	jsonStr := string(data)
-	if !strings.Contains(jsonStr, `"toolNames"`) {
-		t.Fatalf("expected JSON to contain 'toolNames', got: %s", jsonStr)
-	}
-	if strings.Contains(jsonStr, `"tool_names"`) {
-		t.Fatalf("expected JSON to NOT contain 'tool_names', got: %s", jsonStr)
+	if !strings.Contains(jsonStr, `"agent"`) {
+		t.Fatalf("expected JSON to contain 'agent', got: %s", jsonStr)
 	}
 }

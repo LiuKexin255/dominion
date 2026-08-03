@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package experimental.golang.aip_codegen;
+
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+
+option go_package = "dominion/experimental/golang/aip_codegen";
+
+// Demo proto for the protoc-gen-go-aip codegen (see FINDINGS.md). The aip
+// compiler is applied repo-wide via the go_proto_compilers directive in the
+// root BUILD.bazel; this proto exists only to exercise and demonstrate the
+// generated type-safe resource-name API.
+
+// Session: a two-variable, single-pattern resource under a template path
+// segment. The generated SessionName{TemplateID, SessionID} +
+// ParseSessionName(s) (SessionName, error) is the API intended to replace the
+// hand-written projects/game/pkg/gameconst parsers.
+message Session {
+  option (google.api.resource) = {
+    type: "spike.liukexin.com/Session"
+    pattern: "templates/{template}/sessions/{session}"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+  string template = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// Team: two variables plus a trailing literal segment ("team") — the
+// singleton-suffix shape used by game.proto's Team resource.
+message Team {
+  option (google.api.resource) = {
+    type: "spike.liukexin.com/Team"
+    pattern: "templates/{template}/sessions/{session}/team"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+}

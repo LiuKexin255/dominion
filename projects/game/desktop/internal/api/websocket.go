@@ -12,20 +12,24 @@ import (
 
 	"dominion/projects/game/desktop/internal/trace"
 	"github.com/coder/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-// WSClient is a WebSocket client for the game gateway session connect endpoint.
+// WSClient is a WebSocket client for the game gateway team connect endpoint.
 type WSClient struct {
 	mu        sync.Mutex
 	conn      *websocket.Conn
+	template  string
 	sessionID string
 }
 
-// Connect establishes a WebSocket connection to the gateway's agent connect endpoint.
-// gatewayURL is the HTTP URL (e.g., "https://game.liukexin.com").
+// Connect establishes a WebSocket connection to the gateway's team connect
+// endpoint. gatewayURL is the HTTP URL (e.g., "https://game.liukexin.com").
 // The URL is converted from https:// to wss:// (or http:// to ws://).
-func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env string) error {
+// The connect path follows the gateway convention
+// /api/v1/templates/{template}/sessions/{sessionID}/connect (spec
+// 031-team-template-mode contracts/api-contract.md §2.2, FR-004).
+func (w *WSClient) Connect(ctx context.Context, gatewayURL, template, sessionID, env string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -35,8 +39,9 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env strin
 		return fmt.Errorf("connect: %w", err)
 	}
 
-	// Build full connect URL: wss://host/api/v1/sessions/{id}/connect
-	fullURL := fmt.Sprintf("%s/api/v1/sessions/%s/connect", strings.TrimSuffix(wsURL, "/"), sessionID)
+	// Build full connect URL: wss://host/api/v1/templates/{template}/sessions/{id}/connect
+	fullURL := fmt.Sprintf("%s/api/v1/templates/%s/sessions/%s/connect",
+		strings.TrimSuffix(wsURL, "/"), url.PathEscape(template), url.PathEscape(sessionID))
 
 	// Set up headers
 	header := http.Header{}
@@ -53,12 +58,20 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, sessionID, env strin
 		return fmt.Errorf("connect: %w", err)
 	}
 
+	// Raise the read limit from the coder/websocket default (32 KiB) to 10 MiB
+	// so image-bearing frames (screenshots) do not trigger ErrMessageTooBig and
+	// tear down the session. Matches the gateway's 10 MiB limit
+	// (projects/game/gateway/cmd/main.go:216). See
+	// specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §3.
+	conn.SetReadLimit(10 << 20)
+
 	w.conn = conn
+	w.template = template
 	w.sessionID = sessionID
 	return nil
 }
 
-// SendFrame sends a protojson-encoded AgentFrame over the WebSocket.
+// SendFrame sends a binary-protobuf-encoded AgentFrame over the WebSocket.
 func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -67,19 +80,21 @@ func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error 
 		return fmt.Errorf("send frame: not connected")
 	}
 
-	data, err := protojson.Marshal(frame)
+	data, err := proto.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("send frame: %w", err)
 	}
 
-	if err := w.conn.Write(ctx, websocket.MessageText, data); err != nil {
+	if err := w.conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 		return fmt.Errorf("send frame: %w", err)
 	}
 	return nil
 }
 
-// RecvFrame receives a protojson-encoded AgentFrame from the WebSocket.
-// Unknown fields are discarded for forward compatibility.
+// RecvFrame receives a binary-protobuf-encoded AgentFrame from the WebSocket.
+// proto.Unmarshal preserves unknown fields per the proto spec, maintaining the
+// forward-compatibility that protojson's DiscardUnknown previously provided
+// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
 //
 // The connection is snapshotted under w.mu and Read is called WITHOUT the
 // lock held: conn.Read blocks for the lifetime of the turn, so holding w.mu
@@ -99,7 +114,7 @@ func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
 	}
 
 	frame := new(game.AgentFrame)
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+	if err := proto.Unmarshal(data, frame); err != nil {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}
 	return frame, nil

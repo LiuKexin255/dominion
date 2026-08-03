@@ -88,7 +88,7 @@ service DeployService {
 
 message Environment {
   option (google.api.resource) = {
-    type: "infra.liukexin.com/deploy/Environment"
+    type: "deploy.infra.liukexin.com/Environment"
     pattern: "deploy/scopes/{scope}/environments/{env_name}"
     plural: "environments"
     singular: "environment"
@@ -116,7 +116,7 @@ message Environment {
 // from the perspective of an environment.
 message ServiceEndpoints {
   option (google.api.resource) = {
-    type: "infra.liukexin.com/deploy/ServiceEndpoints"
+    type: "deploy.infra.liukexin.com/ServiceEndpoints"
     pattern: "deploy/scopes/{scope}/environments/{env_name}/apps/{app}/services/{service}/endpoints"
     plural: "serviceEndpoints"
     singular: "serviceEndpoints"
@@ -163,6 +163,42 @@ message EnvironmentStatus {
   google.protobuf.Timestamp last_reconcile_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   google.protobuf.Timestamp last_success_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // services 是环境内每个服务的观测 rollout 状态列表（OUTPUT_ONLY，由服务端写入）。
+  repeated ServiceStatus services = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// ServiceStatus 描述环境内单个服务（artifact 或 infra）的观测 rollout 状态。
+message ServiceStatus {
+  // name 是服务名，对应 ArtifactSpec.name 或 InfraSpec.name。
+  string name = 1;
+
+  // app 是该服务所属应用。
+  string app = 2;
+
+  // kind 标识服务来源（artifact 或 infra）。
+  ServiceKind kind = 3;
+
+  // state 是观测到的 rollout 状态。
+  ServiceRolloutState state = 4;
+
+  // message 提供该状态的补充详情（如 "可用副本不足（available: 0/1）"）。
+  string message = 5;
+}
+
+enum ServiceKind {
+  SERVICE_KIND_UNSPECIFIED = 0;
+  SERVICE_KIND_ARTIFACT = 1;
+  SERVICE_KIND_INFRA = 2;
+}
+
+enum ServiceRolloutState {
+  SERVICE_ROLLOUT_STATE_UNSPECIFIED = 0;
+  // PENDING：资源已提交到运行时，尚未进行首次 rollout 观测。
+  SERVICE_ROLLOUT_STATE_PENDING = 1;
+  SERVICE_ROLLOUT_STATE_READY = 2;
+  SERVICE_ROLLOUT_STATE_WAITING = 3;
+  SERVICE_ROLLOUT_STATE_FAILED = 4;
 }
 
 enum EnvironmentState {
@@ -291,7 +327,7 @@ message GetEnvironmentRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/Environment"
+      type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 }
@@ -300,7 +336,7 @@ message GetServiceEndpointsRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/ServiceEndpoints"
+      type: "deploy.infra.liukexin.com/ServiceEndpoints"
     }
   ];
 
@@ -311,7 +347,7 @@ message ListEnvironmentsRequest {
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "infra.liukexin.com/deploy/Environment"
+      child_type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 
@@ -332,7 +368,7 @@ message CreateEnvironmentRequest {
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      child_type: "infra.liukexin.com/deploy/Environment"
+      child_type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 
@@ -351,7 +387,7 @@ message DeleteEnvironmentRequest {
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {
-      type: "infra.liukexin.com/deploy/Environment"
+      type: "deploy.infra.liukexin.com/Environment"
     }
   ];
 }

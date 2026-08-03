@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -13,7 +14,7 @@ import (
 	game "dominion/projects/game"
 
 	"github.com/coder/websocket"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // wsTestServer creates an httptest.Server that upgrades to WebSocket and calls handler.
@@ -92,7 +93,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 
 	// when: client connects
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "sess-123", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	// We check by reconstructing the expected URL the client would build.
 	// The httptest server URL is http://127.0.0.1:PORT, so convertToWS gives ws://127.0.0.1:PORT
 	wsURL, _ := convertToWS(srv.URL)
-	expectedPath := "/api/v1/sessions/sess-123/connect"
+	expectedPath := "/api/v1/templates/saolei/sessions/sess-123/connect"
 
 	// Make a direct request to verify path — use a second server for path capture
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +119,7 @@ func TestWSClient_Connect_URL(t *testing.T) {
 	defer srv2.Close()
 
 	ws2 := &WSClient{}
-	err = ws2.Connect(context.Background(), srv2.URL, "sess-123", "test-env")
+	err = ws2.Connect(context.Background(), srv2.URL, "saolei", "sess-123", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 
 	// when: client connects with env header
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "session-1", "production")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "session-1", "production")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestWSClient_Connect_EnvHeader(t *testing.T) {
 	}
 }
 
-// TestWSClient_SendRecvFrame verifies protojson round-trip for SendFrame/RecvFrame.
+// TestWSClient_SendRecvFrame verifies binary-protobuf round-trip for SendFrame/RecvFrame.
 func TestWSClient_SendRecvFrame(t *testing.T) {
 	// given: mock server that reads a frame and responds with a status signal
 	srv := wsTestServer(t, func(conn *websocket.Conn) {
@@ -173,27 +174,29 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 			return
 		}
 
-		// verify received frame is valid protojson
+		// verify received frame is valid binary protobuf
 		frame := new(game.AgentFrame)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 
-		// respond with a status signal instead
+		// respond with a status signal instead. Status rides as a FlowPart kind.
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+			Payload: &game.AgentFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
 			},
 		}
-		resp, _ := protojson.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageText, resp)
+		resp, _ := proto.Marshal(respFrame)
+		conn.Write(ctx, websocket.MessageBinary, resp)
 	})
 	defer srv.Close()
 
 	// when: client connects and sends a status signal
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -201,10 +204,10 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 
 	sendFrame := &game.AgentFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_Status{
-			Status: &game.StatusSignal{
-				Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE,
-			},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	}
 	err = ws.SendFrame(context.Background(), sendFrame)
@@ -212,7 +215,7 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received frame carries the status signal
+	// then: received frame carries the status signal (as a FlowPart kind).
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
@@ -220,16 +223,17 @@ func TestWSClient_SendRecvFrame(t *testing.T) {
 	if resp.GetSessionId() != "test-session" {
 		t.Errorf("SessionId = %q, want %q", resp.GetSessionId(), "test-session")
 	}
-	statusPayload := resp.GetStatus()
-	if statusPayload == nil {
-		t.Fatal("Status payload is nil, want non-nil")
+	respFlow := resp.GetFlowParts()
+	if respFlow == nil || len(respFlow.GetParts()) == 0 || respFlow.GetParts()[0].GetStatus() == nil {
+		t.Fatal("expected FlowParts status payload, got nil")
 	}
+	statusPayload := respFlow.GetParts()[0].GetStatus()
 	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
 }
 
-// TestWSClient_SendRecvFrame_Content verifies protojson round-trip for a
+// TestWSClient_SendRecvFrame_Content verifies binary-protobuf round-trip for a
 // content PartBlock carrying text and an image.
 func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 	// given: mock server that reads a content frame and responds with a status signal
@@ -241,29 +245,31 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		}
 
 		frame := new(game.AgentFrame)
-		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, frame); err != nil {
+		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 
-		content := frame.GetContent()
+		content := frame.GetMessageParts()
 		if content == nil {
 			return
 		}
 
 		respFrame := &game.AgentFrame{
 			SessionId: frame.GetSessionId(),
-			Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+			Payload: &game.AgentFrame_FlowParts{
+				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+				}},
 			},
 		}
-		resp, _ := protojson.Marshal(respFrame)
-		conn.Write(ctx, websocket.MessageText, resp)
+		resp, _ := proto.Marshal(respFrame)
+		conn.Write(ctx, websocket.MessageBinary, resp)
 	})
 	defer srv.Close()
 
-	// when: client connects and sends a content frame with text+image parts
+	// when: client connects and sends a messageParts frame with text+image parts
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -274,10 +280,10 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		SessionId: "test-session",
 		FrameId:   "frame-001",
 		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{Parts: []*game.Part{
-				{Kind: &game.Part_Text{Text: &game.TextPart{Content: "look"}}},
-				{Kind: &game.Part_Image{Image: &game.ImagePart{
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
+				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
+				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
 					Encoding:    game.ImageEncoding_IMAGE_ENCODING_PNG,
 					Data:        imageData,
 					WidthPx:     1920,
@@ -293,15 +299,16 @@ func TestWSClient_SendRecvFrame_ContentImage(t *testing.T) {
 		t.Fatalf("SendFrame() unexpected error: %v", err)
 	}
 
-	// then: received status signal confirms the content round-trip
+	// then: received status signal (FlowPart kind) confirms the round-trip.
 	resp, err := ws.RecvFrame(context.Background())
 	if err != nil {
 		t.Fatalf("RecvFrame() unexpected error: %v", err)
 	}
-	statusPayload := resp.GetStatus()
-	if statusPayload == nil {
-		t.Fatal("Status payload is nil, want non-nil")
+	respFlow := resp.GetFlowParts()
+	if respFlow == nil || len(respFlow.GetParts()) == 0 || respFlow.GetParts()[0].GetStatus() == nil {
+		t.Fatal("expected FlowParts status payload, got nil")
 	}
+	statusPayload := respFlow.GetParts()[0].GetStatus()
 	if statusPayload.GetStatus() != game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE {
 		t.Errorf("Status.Status = %q, want %q", statusPayload.GetStatus(), game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE)
 	}
@@ -342,7 +349,7 @@ func TestWSConnect_Traceparent(t *testing.T) {
 
 	// when: connect with the trace context
 	ws := &WSClient{}
-	err := ws.Connect(ctx, srv.URL, "sess-trace", "test-env")
+	err := ws.Connect(ctx, srv.URL, "saolei", "sess-trace", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -376,8 +383,10 @@ func TestWSClient_SendFrame_NotConnected(t *testing.T) {
 	// when: sending a frame
 	err := ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "x",
-		Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	})
 
@@ -409,7 +418,7 @@ func TestWSClient_CloseDuringRecvFrame_NoDeadlock(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	if err := ws.Connect(context.Background(), srv.URL, "deadlock-test", "test-env"); err != nil {
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "deadlock-test", "test-env"); err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
 
@@ -466,7 +475,7 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	ws := &WSClient{}
-	err := ws.Connect(context.Background(), srv.URL, "test-session", "test-env")
+	err := ws.Connect(context.Background(), srv.URL, "saolei", "test-session", "test-env")
 	if err != nil {
 		t.Fatalf("Connect() unexpected error: %v", err)
 	}
@@ -475,8 +484,10 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	// Send a frame first so the server consumes it and enters the blocking select.
 	err = ws.SendFrame(context.Background(), &game.AgentFrame{
 		SessionId: "test-session",
-		Payload: &game.AgentFrame_Status{
-				Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE},
+		Payload: &game.AgentFrame_FlowParts{
+			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
+			}},
 		},
 	})
 	if err != nil {
@@ -491,5 +502,133 @@ func TestWSClient_RecvFrame_ContextCancel(t *testing.T) {
 	_, err = ws.RecvFrame(ctx)
 	if err == nil {
 		t.Fatal("RecvFrame() expected error with expiring context, got nil")
+	}
+}
+
+// TestWSClient_SendRecvFrame_LargeFrame verifies that a frame exceeding the
+// coder/websocket default read limit (32 KiB) round-trips successfully after
+// Connect calls SetReadLimit(10 MiB). Under the old code (no SetReadLimit)
+// this would fail with ErrMessageTooBig and tear down the session
+// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §3).
+func TestWSClient_SendRecvFrame_LargeFrame(t *testing.T) {
+	// given: mock server that echoes frames back. The server must also raise
+	// its read limit to read the large inbound frame.
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		conn.SetReadLimit(10 << 20)
+		ctx := context.Background()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		// echo the frame back verbatim (binary bytes)
+		conn.Write(ctx, websocket.MessageBinary, data)
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "large-frame", "test-env"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// Build a message_parts frame carrying a 64 KiB ImagePart — double the
+	// 32 KiB default read limit. The marshalled binary proto will be slightly
+	// larger than 64 KiB due to field overhead.
+	largeData := make([]byte, 64*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+	sendFrame := &game.AgentFrame{
+		SessionId: "large-frame",
+		Sender:    game.FrameSender_FRAME_SENDER_USER,
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
+						Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+						Data:     largeData,
+						WidthPx:  100,
+						HeightPx: 100,
+					}}},
+				},
+			},
+		},
+	}
+
+	// when: send the large frame
+	if err := ws.SendFrame(context.Background(), sendFrame); err != nil {
+		t.Fatalf("SendFrame() unexpected error: %v", err)
+	}
+
+	// then: the echoed frame is received without ErrMessageTooBig. Under the
+	// old default (32 KiB) this Read would fail and close the connection.
+	recv, err := ws.RecvFrame(context.Background())
+	if err != nil {
+		t.Fatalf("RecvFrame() unexpected error for 64 KiB frame: %v — SetReadLimit may not be applied", err)
+	}
+	img := recv.GetMessageParts().GetParts()[0].GetImage()
+	if img == nil {
+		t.Fatal("expected image part in echoed frame, got nil")
+	}
+	if len(img.GetData()) != len(largeData) {
+		t.Fatalf("echoed image data = %d bytes, want %d bytes", len(img.GetData()), len(largeData))
+	}
+}
+
+// TestWSClient_RecvFrame_OversizedError verifies that a frame exceeding the
+// 10 MiB read limit surfaces as a clear, attributable error (FR-010) — not a
+// hang, not a silent truncation.
+func TestWSClient_RecvFrame_OversizedError(t *testing.T) {
+	// given: mock server that sends a frame above the 10 MiB limit. The
+	// server's own read limit is irrelevant here — it only writes.
+	srv := wsTestServer(t, func(conn *websocket.Conn) {
+		ctx := context.Background()
+		// Build an AgentFrame whose marshalled binary exceeds 10 MiB.
+		oversizedData := make([]byte, 11*1024*1024)
+		frame := &game.AgentFrame{
+			SessionId: "oversized",
+			Payload: &game.AgentFrame_MessageParts{
+				MessageParts: &game.MessageParts{
+					Parts: []*game.MessagePart{
+						{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
+							Encoding: game.ImageEncoding_IMAGE_ENCODING_PNG,
+							Data:     oversizedData,
+							WidthPx:  1000,
+							HeightPx: 1000,
+						}}},
+					},
+				},
+			},
+		}
+		data, err := proto.Marshal(frame)
+		if err != nil {
+			return
+		}
+		conn.Write(ctx, websocket.MessageBinary, data)
+	})
+	defer srv.Close()
+
+	ws := &WSClient{}
+	if err := ws.Connect(context.Background(), srv.URL, "saolei", "oversized", "test-env"); err != nil {
+		t.Fatalf("Connect() unexpected error: %v", err)
+	}
+	defer ws.Close()
+
+	// when: RecvFrame with a timeout so the test cannot hang if the limit
+	// guard fails to fire (FR-010: must not hang).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := ws.RecvFrame(ctx)
+
+	// then: an error is returned (not nil, not a hang). The error must be
+	// attributable — either wrapping ErrMessageTooBig or carrying a
+	// StatusMessageTooBig close code.
+	if err == nil {
+		t.Fatal("RecvFrame() expected error for >10 MiB frame, got nil")
+	}
+	if !errors.Is(err, websocket.ErrMessageTooBig) &&
+		websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
+		t.Fatalf("RecvFrame() error is not attributable as oversized: %v", err)
 	}
 }

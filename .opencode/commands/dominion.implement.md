@@ -150,7 +150,9 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ### Step 4 — 修复回路
 
-对于 Step 2 或 Step 3 出现的任何问题，resume developer 子代理并反馈问题让其修改。修改后再次执行 Step 2 校验与 Step 3 review，重复该环节直到全部通过。
+对于 Step 2 或 Step 3 出现的任何问题，resume developer 子代理并反馈问题让其修改。代码修改后**必须**再次执行 Step 2 校验与 Step 3 review。**重复 Step 2 到 Step 4 直到所有问题被解决且无新增问题**，才允许准入到提交环节。
+
+> 准出门控：[ ] **当前**代码子代理 `reviewer` 评审 PASS。**禁止**修改后未经评审准出。
 
 ### Step 5 — 提交
 

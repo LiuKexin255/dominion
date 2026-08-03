@@ -1687,3 +1687,238 @@ func mustNewEnvironment(t *testing.T) *Environment {
 
 	return env
 }
+
+func TestBuildInitialServiceStatuses(t *testing.T) {
+	tests := []struct {
+		name string
+		ds   *DesiredState
+		want []*ServiceStatus
+	}{
+		{
+			name: "artifacts and infras in order",
+			ds: &DesiredState{
+				Artifacts: []*ArtifactSpec{
+					{Name: "api", App: "game", Image: "repo/api:v1"},
+					{Name: "gateway", App: "game", Image: "repo/gateway:v1"},
+				},
+				Infras: []*InfraSpec{
+					{Resource: "mongodb", Name: "mongo", App: "game"},
+				},
+			},
+			want: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "gateway", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+		},
+		{
+			name: "artifacts only",
+			ds: &DesiredState{
+				Artifacts: []*ArtifactSpec{{Name: "api", App: "game", Image: "repo/api:v1"}},
+			},
+			want: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+		},
+		{
+			name: "infras only",
+			ds: &DesiredState{
+				Infras: []*InfraSpec{{Resource: "mongodb", Name: "mongo", App: "game"}},
+			},
+			want: []*ServiceStatus{
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+		},
+		{
+			name: "nil desired state returns nil",
+			ds:   nil,
+			want: nil,
+		},
+		{
+			name: "empty desired state returns nil",
+			ds:   &DesiredState{},
+			want: nil,
+		},
+		{
+			name: "nil elements skipped",
+			ds: &DesiredState{
+				Artifacts: []*ArtifactSpec{nil, {Name: "api", App: "game", Image: "repo/api:v1"}},
+				Infras:    []*InfraSpec{nil},
+			},
+			want: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := BuildInitialServiceStatuses(tt.ds)
+
+			// then
+			if len(got) != len(tt.want) {
+				t.Fatalf("BuildInitialServiceStatuses() len = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range tt.want {
+				if got[i] == nil || *got[i] != *tt.want[i] {
+					t.Fatalf("BuildInitialServiceStatuses()[%d] = %#v, want %#v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func Test_cloneStatus_services_deep_copy(t *testing.T) {
+	// given
+	status := &EnvironmentStatus{
+		Desired: DesiredPresent,
+		State:   StateWaitingRollout,
+		Services: []*ServiceStatus{
+			{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStateWaiting, Message: "可用副本不足（available: 0/1）"},
+			{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+		},
+	}
+
+	// when
+	cloned := cloneStatus(status)
+
+	// then - modifying the clone must not affect the original
+	cloned.Services[0].Name = "hacked"
+	cloned.Services[0].State = ServiceRolloutStateFailed
+	cloned.Services[1].Message = "changed"
+
+	if status.Services[0].Name != "api" {
+		t.Fatalf("original Services[0].Name = %q, want %q (deep copy failed)", status.Services[0].Name, "api")
+	}
+	if status.Services[0].State != ServiceRolloutStateWaiting {
+		t.Fatalf("original Services[0].State = %v, want %v (deep copy failed)", status.Services[0].State, ServiceRolloutStateWaiting)
+	}
+	if status.Services[1].Message != "资源已提交，等待观测" {
+		t.Fatalf("original Services[1].Message = %q, want %q (deep copy failed)", status.Services[1].Message, "资源已提交，等待观测")
+	}
+
+	// and modifying the original must not affect the clone
+	status.Services[0].Message = "original changed"
+	if cloned.Services[0].Message != "可用副本不足（available: 0/1）" {
+		t.Fatalf("cloned Services[0].Message = %q, want original value (deep copy failed)", cloned.Services[0].Message)
+	}
+}
+
+func Test_cloneStatus_nil_services(t *testing.T) {
+	// given
+	status := &EnvironmentStatus{Desired: DesiredPresent, State: StateReady}
+
+	// when
+	cloned := cloneStatus(status)
+
+	// then
+	if cloned.Services != nil {
+		t.Fatalf("cloned.Services = %v, want nil", cloned.Services)
+	}
+}
+
+func TestServicesEqual(t *testing.T) {
+	pending := []*ServiceStatus{
+		{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+		{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+	}
+
+	tests := []struct {
+		name string
+		a    []*ServiceStatus
+		b    []*ServiceStatus
+		want bool
+	}{
+		{
+			name: "identical lists",
+			a: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			b:    pending,
+			want: true,
+		},
+		{
+			name: "state changed",
+			a:    pending,
+			b: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStateReady},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			want: false,
+		},
+		{
+			name: "name changed",
+			a:    pending,
+			b: []*ServiceStatus{
+				{Name: "other", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			want: false,
+		},
+		{
+			name: "app changed",
+			a:    pending,
+			b: []*ServiceStatus{
+				{Name: "api", App: "other", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			want: false,
+		},
+		{
+			name: "kind changed",
+			a:    pending,
+			b: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			want: false,
+		},
+		{
+			name: "message changed",
+			a:    pending,
+			b: []*ServiceStatus{
+				{Name: "api", App: "game", Kind: ServiceKindArtifact, State: ServiceRolloutStatePending, Message: "changed"},
+				{Name: "mongo", App: "game", Kind: ServiceKindInfra, State: ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			want: false,
+		},
+		{
+			name: "different lengths",
+			a:    pending,
+			b:    pending[:1],
+			want: false,
+		},
+		{
+			name: "both nil",
+			a:    nil,
+			b:    nil,
+			want: true,
+		},
+		{
+			name: "nil vs empty",
+			a:    nil,
+			b:    []*ServiceStatus{},
+			want: true,
+		},
+		{
+			name: "one nil element",
+			a:    []*ServiceStatus{nil},
+			b:    []*ServiceStatus{{Name: "api"}},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got := ServicesEqual(tt.a, tt.b)
+
+			// then
+			if got != tt.want {
+				t.Fatalf("ServicesEqual() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

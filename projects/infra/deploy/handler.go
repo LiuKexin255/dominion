@@ -426,6 +426,52 @@ func toProtoStatus(statusValue *domain.EnvironmentStatus) *EnvironmentStatus {
 		Message:           statusValue.Message,
 		LastReconcileTime: toProtoTimestamp(statusValue.LastReconcileTime),
 		LastSuccessTime:   toProtoTimestamp(statusValue.LastSuccessTime),
+		Services:          toProtoServices(statusValue.Services),
+	}
+}
+
+func toProtoServices(services []*domain.ServiceStatus) []*ServiceStatus {
+	if len(services) == 0 {
+		return nil
+	}
+
+	result := make([]*ServiceStatus, 0, len(services))
+	for _, service := range services {
+		result = append(result, &ServiceStatus{
+			Name:    service.Name,
+			App:     service.App,
+			Kind:    serviceKindToProto(service.Kind),
+			State:   serviceRolloutStateToProto(service.State),
+			Message: service.Message,
+		})
+	}
+
+	return result
+}
+
+func serviceKindToProto(kind domain.ServiceKind) ServiceKind {
+	switch kind {
+	case domain.ServiceKindArtifact:
+		return ServiceKind_SERVICE_KIND_ARTIFACT
+	case domain.ServiceKindInfra:
+		return ServiceKind_SERVICE_KIND_INFRA
+	default:
+		return ServiceKind_SERVICE_KIND_UNSPECIFIED
+	}
+}
+
+func serviceRolloutStateToProto(state domain.ServiceRolloutState) ServiceRolloutState {
+	switch state {
+	case domain.ServiceRolloutStatePending:
+		return ServiceRolloutState_SERVICE_ROLLOUT_STATE_PENDING
+	case domain.ServiceRolloutStateReady:
+		return ServiceRolloutState_SERVICE_ROLLOUT_STATE_READY
+	case domain.ServiceRolloutStateWaiting:
+		return ServiceRolloutState_SERVICE_ROLLOUT_STATE_WAITING
+	case domain.ServiceRolloutStateFailed:
+		return ServiceRolloutState_SERVICE_ROLLOUT_STATE_FAILED
+	default:
+		return ServiceRolloutState_SERVICE_ROLLOUT_STATE_UNSPECIFIED
 	}
 }
 

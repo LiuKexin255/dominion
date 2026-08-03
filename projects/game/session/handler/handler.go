@@ -30,21 +30,28 @@ type SessionHandler struct {
 
 	sessionRepo domain.SessionRepository
 	idGenerator domain.IDGenerator
-	proxyClient game.ProxyServiceClient
 }
 
-// NewSessionHandler creates a new SessionHandler with the given repository, ID generator, and proxy client.
-func NewSessionHandler(repo domain.SessionRepository, idGenerator domain.IDGenerator, proxyClient game.ProxyServiceClient) *SessionHandler {
+// NewSessionHandler creates a new SessionHandler with the given repository and ID generator.
+func NewSessionHandler(repo domain.SessionRepository, idGenerator domain.IDGenerator) *SessionHandler {
 	return &SessionHandler{
 		sessionRepo: repo,
 		idGenerator: idGenerator,
-		proxyClient: proxyClient,
 	}
 }
 
-// CreateSession creates a new Session resource. A caller-supplied session_id
-// (AIP-133) is used when present; otherwise the server generates one.
+// CreateSession creates a new Session resource under the parent template
+// (AIP-133: https://google.aip.dev/133). A caller-supplied session_id is used
+// when present; otherwise the server generates one.
 func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSessionRequest) (*game.Session, error) {
+	tplName, err := game.ParseTemplateName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	sessionID := req.GetSessionId()
 	if sessionID == "" {
 		var err error
@@ -58,13 +65,14 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSess
 	}
 
 	s, err := h.sessionRepo.Create(ctx, &domain.Session{
+		Template:  tplName.TemplateID,
 		SessionID: sessionID,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	sessionName := gameconst.SessionName(s.SessionID)
+	sessionName := game.SessionName{TemplateID: s.Template, SessionID: s.SessionID}.String()
 	logs.Info(ctx, "session created",
 		event.String(logFieldName, sessionName),
 		event.String(logFieldSessionID, s.SessionID),
@@ -75,11 +83,15 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSess
 
 // GetSession retrieves a Session by its resource name.
 func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionRequest) (*game.Session, error) {
-	sessionID, err := gameconst.SessionID(req.GetName())
+	name, err := req.ParseName()
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid session name: %v", err)
 	}
-	s, err := h.sessionRepo.Get(ctx, sessionID)
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	s, err := h.sessionRepo.Get(ctx, name.SessionID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -89,12 +101,15 @@ func (h *SessionHandler) GetSession(ctx context.Context, req *game.GetSessionReq
 
 // DeleteSession deletes a Session by its resource name.
 func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSessionRequest) (*emptypb.Empty, error) {
-	sessionID, err := gameconst.SessionID(req.GetName())
+	name, err := req.ParseName()
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid session name: %v", err)
 	}
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
-	if err := h.sessionRepo.Delete(ctx, sessionID); err != nil {
+	if err := h.sessionRepo.Delete(ctx, name.SessionID); err != nil {
 		return nil, toStatusError(err)
 	}
 
@@ -105,8 +120,16 @@ func (h *SessionHandler) DeleteSession(ctx context.Context, req *game.DeleteSess
 	return new(emptypb.Empty), nil
 }
 
-// ListSessions retrieves a paginated list of Session resources.
+// ListSessions retrieves a paginated list of Session resources under a template.
 func (h *SessionHandler) ListSessions(ctx context.Context, req *game.ListSessionsRequest) (*game.ListSessionsResponse, error) {
+	tplName, err := game.ParseTemplateName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	pageSize := int(req.GetPageSize())
 	if pageSize <= 0 {
 		pageSize = domain.DefaultListSessionsPageSize
@@ -139,7 +162,8 @@ func sessionToProto(s *domain.Session) *game.Session {
 	}
 
 	p := &game.Session{
-		Name:      gameconst.SessionName(s.SessionID),
+		Name:      game.SessionName{TemplateID: s.Template, SessionID: s.SessionID}.String(),
+		Template:  game.TemplateName{TemplateID: s.Template}.String(),
 		SessionId: s.SessionID,
 	}
 	if !s.CreateTime.IsZero() {

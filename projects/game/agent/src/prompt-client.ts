@@ -2,7 +2,11 @@
  * PromptClient — gRPC client for the PromptService.
  *
  * Resolves the prompt service via the dominion resolver and calls the
- * GetAgentProfile RPC to fetch agent configuration profiles.
+ * GetTeamProfile RPC to fetch the template-specialized team configuration
+ * (specs/031-team-template-mode/contracts/api-contract.md §2.3). The saolei
+ * template's TeamProfile carries the player/planner LLM model selection
+ * (SaoleiProfile); the strategy is NOT managed by the prompt service
+ * (specs/031-team-template-mode/contracts/strategy-store-contract.md).
  */
 import * as fs from "node:fs";
 import * as grpc from "@grpc/grpc-js";
@@ -37,12 +41,22 @@ const TLS_CA_CERT = "/etc/tls/ca.crt";
 /** Ample for TCP + TLS handshake on a healthy peer during startup warmup. */
 const DEFAULT_WARMUP_TIMEOUT_MS = 5_000;
 
-/** Return type for PromptClient.getProfile(). */
-export interface ProfileResult {
-  model: string;
-  systemPrompt: string;
-  /** Tool names declared on the profile (proto field `tool_names`). */
-  toolNames: string[];
+/** Return type for PromptClient.getTeamProfile(). */
+export interface TeamProfileResult {
+  /** The player agent's LLM model spec (SaoleiProfile.player_model). */
+  playerModel: string;
+  /** The planner agent's LLM model spec (SaoleiProfile.planner_model). */
+  plannerModel: string;
+  /**
+   * The player's base prompt (SaoleiProfile.player_prompt; empty string =
+   * unset = template default base, FR-034).
+   */
+  playerPrompt: string;
+  /**
+   * The planner's base prompt (SaoleiProfile.planner_prompt; empty string =
+   * unset = template default base, FR-034).
+   */
+  plannerPrompt: string;
 }
 
 function buildClientCredentials(): grpc.ChannelCredentials {
@@ -144,24 +158,33 @@ export class PromptClient {
   }
 
   /**
-   * Fetch an agent profile by name.
+   * Fetch a template's TeamProfile by name.
    *
-   * Calls the `GetAgentProfile` RPC on the prompt service and extracts
-   * the `model` and `systemPrompt` fields from the returned `AgentProfile`
-   * message.
+   * Calls the `GetTeamProfile` RPC on the prompt service and extracts the
+   * player/planner model specs from the response's `oneof spec.saolei`
+   * (SaoleiProfile). `saolei` is the only known template variant today
+   * (specs/031-team-template-mode/contracts/api-contract.md §3.5); a response
+   * whose oneof is unset or names a different variant is a contract
+   * violation and throws (no silent fallback — directive: typed oneof, no
+   * implicit rules).
    *
-   * @param profileName - The agent profile name to fetch.
-   * @returns The profile's model and system prompt.
+   * @param template   The template path segment (e.g. `"saolei"`).
+   * @param profileName The TeamProfile id (the `{profile}` path segment).
+   * @returns The player/planner model specs.
    * @throws {grpc.ServiceError} Propagates gRPC errors from the service.
    *   A missing profile results in NOT_FOUND (code 5).
+   * @throws {Error} When the response's oneof spec is not `saolei`.
    */
-  async getProfile(profileName: string): Promise<ProfileResult> {
-    return new Promise<ProfileResult>((resolve, reject) => {
+  async getTeamProfile(
+    template: string,
+    profileName: string,
+  ): Promise<TeamProfileResult> {
+    return new Promise<TeamProfileResult>((resolve, reject) => {
       const deadline = new Date();
       deadline.setSeconds(deadline.getSeconds() + 10);
 
-      (this.client as any).getAgentProfile(
-        { name: `prompts/agentProfiles/${profileName}` },
+      (this.client as any).getTeamProfile(
+        { name: `templates/${template}/profiles/${profileName}` },
         new grpc.Metadata({ waitForReady: true }),
         { deadline },
         (err: grpc.ServiceError | null, response: any) => {
@@ -169,10 +192,25 @@ export class PromptClient {
             reject(err);
             return;
           }
+          // proto-loader `oneofs: true` populates the `spec` discriminator
+          // only during (de)serialization; outbound raw responses carry it
+          // as the oneof case name (`"saolei"`) with the variant on the
+          // matching field.
+          if (response.spec !== "saolei" || !response.saolei) {
+            reject(
+              new Error(
+                `TeamProfile ${template}/${profileName}: oneof spec must be saolei (got ${String(response.spec)})`,
+              ),
+            );
+            return;
+          }
           resolve({
-            model: response.model,
-            systemPrompt: response.systemPrompt,
-            toolNames: response.toolNames ?? [],
+            playerModel: response.saolei.playerModel ?? "",
+            plannerModel: response.saolei.plannerModel ?? "",
+            // FR-034: base prompts are optional — empty string = unset =
+            // template default base (the graph falls back internally).
+            playerPrompt: response.saolei.playerPrompt ?? "",
+            plannerPrompt: response.saolei.plannerPrompt ?? "",
           });
         },
       );

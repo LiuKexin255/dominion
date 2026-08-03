@@ -1,0 +1,11 @@
+version: "3.0"
+name: team-graph-spike
+app: game
+kind: stateless
+desc: Experimental LangGraph team-graph spike (player + planner StateGraph). Shares app=game so the resolver can resolve game/fake-llm:8080 (common/js/resolver validateServiceApp requires target.app === SERVICE_APP).
+ports:
+  - name: http
+    port: 8080
+artifacts:
+  - name: team-graph-spike
+    target: :cmd_image

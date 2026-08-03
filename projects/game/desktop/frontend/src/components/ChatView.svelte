@@ -1,68 +1,166 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender, MouseClickAction, ToolResultStatus, partKind } from '../api'
-  import type { Part, ImagePart } from '../api'
+  import { FrameSender, messagePartKind, classifyToolResultStatus } from '../api'
+  import type { MessagePart, ImagePart, ToolResultPart } from '../api'
   import { renderMarkdown } from '../markdown'
 
   type ChatEntry = {
     messageId: string
     sender: FrameSender
     timestamp: string
-    agentProfileName?: string
-    parts?: Part[]
+    // D12: team agent name (replaces the former agentProfileName). Each tab
+    // shows one agent's bucket, so this labels the agent run (FR-025).
+    agent?: string
+    parts?: MessagePart[]
     warnMessage?: string
   }
 
-  // Lookup tables for enum → display-name conversions. protojson serializes
-  // enums as their proto names (e.g. "MOUSE_CLICK_ACTION_LEFT_CLICK"), while
-  // the TypeScript types in api.ts declare them as numeric enums. To stay
-  // robust against both forms, each table maps both the numeric enum value
-  // (coerced to string by the Record lookup) and the proto name string to the
-  // same display name.
-  const MOUSE_CLICK_DISPLAY: Record<string, string> = {
-    [String(MouseClickAction.LEFT_CLICK)]: 'LEFT_CLICK',
-    [String(MouseClickAction.LEFT_DOUBLE_CLICK)]: 'LEFT_DOUBLE_CLICK',
-    [String(MouseClickAction.RIGHT_CLICK)]: 'RIGHT_CLICK',
-    [String(MouseClickAction.RIGHT_DOUBLE_CLICK)]: 'RIGHT_DOUBLE_CLICK',
-    [String(MouseClickAction.LEFT_RIGHT_PRESS)]: 'LEFT_RIGHT_PRESS',
-    MOUSE_CLICK_ACTION_LEFT_CLICK: 'LEFT_CLICK',
-    MOUSE_CLICK_ACTION_LEFT_DOUBLE_CLICK: 'LEFT_DOUBLE_CLICK',
-    MOUSE_CLICK_ACTION_RIGHT_CLICK: 'RIGHT_CLICK',
-    MOUSE_CLICK_ACTION_RIGHT_DOUBLE_CLICK: 'RIGHT_DOUBLE_CLICK',
-    MOUSE_CLICK_ACTION_LEFT_RIGHT_PRESS: 'LEFT_RIGHT_PRESS',
+  // A flattened render item. Tool call + result collapse into ONE 'tool' item
+  // keyed by tool_id (spec 023 FR-007 / data-model.md §5): a tool_call creates
+  // the bubble; a later tool_result with the same tool_id merges into it in
+  // place (no new entry). text/thinking/image keep their own items. A pending
+  // (queued, not-yet-consumed) user message is flagged via the `pending`
+  // field on its 'part' items so it can be visually marked
+  // (specs/030-queued-chat-input/spec.md FR-008). NOTE: per the user decision,
+  // specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
+  // is NOT implemented in this feature —
+  // once a message enters the queue it cannot be deleted: the queue lives in
+  // the backend TurnLoop buffer and the inbound desktop→agent channel defines
+  // no remove semantics
+  // (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1).
+  type ToolItem = {
+    kind: 'tool'
+    key: string
+    messageId: string
+    sender: FrameSender
+    timestamp: string
+    agent?: string
+    toolId?: string
+    name?: string
+    argsJson?: string
+    result?: ToolResultPart
   }
-
-  const TOOL_RESULT_SUCCESS_VALUES: ReadonlySet<string> = new Set<string>([
-    String(ToolResultStatus.SUCCEEDED),
-    'TOOL_RESULT_STATUS_SUCCEEDED',
-  ])
+  type RenderItem =
+    | { kind: 'warn'; key: string; messageId: string; timestamp: string; message: string }
+    | { kind: 'profile'; key: string; profile: string }
+    | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart; pending?: boolean }
+    | ToolItem
 
   let {
     messages,
     processing = false,
     queueCount = 0,
+    pendingMessageIds = [],
     loadingMessages = false,
     messagesError = null,
     onSend,
     onZoom = () => {},
     pendingScreenshot = null,
     onRemoveScreenshot = () => {},
+    inputEnabled = true,
   }: {
     messages: ChatEntry[]
     processing?: boolean
     queueCount?: number
+    pendingMessageIds?: string[]
     loadingMessages?: boolean
     messagesError?: string | null
     onSend: (text: string) => void
     onZoom?: (url: string) => void
     pendingScreenshot?: { dataUrl: string; widthPx: number; heightPx: number } | null
     onRemoveScreenshot?: () => void
+    // FR-032: false for agents that do not accept user input (saolei:
+    // planner) — the tab becomes an observe-only view.
+    inputEnabled?: boolean
   } = $props()
 
   let inputText = $state('')
   let scrollContainer: HTMLDivElement | undefined = $state()
 
+  // pendingIdSet is the O(1) lookup over the frontend-tracked pending message
+  // ids (App.svelte owns the FIFO list; the backend QueueSignal drives the
+  // count — specs/030-queued-chat-input/contracts/queue-channel-contract.md §5).
+  const pendingIdSet = $derived(new Set(pendingMessageIds))
+
+  // renderItems flattens the chat entries into an ordered render list, merging
+  // a tool_call and its later tool_result (same tool_id) into one evolving
+  // bubble. The merge is recomputed reactively as messages arrive
+  // (data-model.md §5).
+  const renderItems = $derived.by<RenderItem[]>(() => {
+    const items: RenderItem[] = []
+    const toolByKey = new Map<string, ToolItem>()
+    let lastAgent: string | undefined = undefined
+    for (const msg of messages) {
+      if (msg.warnMessage != null) {
+        items.push({ kind: 'warn', key: msg.messageId, messageId: msg.messageId, timestamp: msg.timestamp, message: msg.warnMessage })
+        continue
+      }
+      const parts = msg.parts ?? []
+      if (parts.length === 0) continue
+      // Agent label: show once per consecutive agent run when the agent
+      // changes (D12 — the entry's agent name).
+      if (msg.sender === FrameSender.AGENT && msg.agent && msg.agent !== lastAgent) {
+        items.push({ kind: 'profile', key: msg.messageId + '-profile', profile: msg.agent })
+        lastAgent = msg.agent
+      } else if (msg.sender !== FrameSender.AGENT) {
+        lastAgent = undefined
+      }
+      const isPending = msg.sender === FrameSender.USER && pendingIdSet.has(msg.messageId)
+      for (const part of parts) {
+        const k = messagePartKind(part)
+        if (k === 'toolCall') {
+          const tc = part.toolCall!
+          const key = 'tool-' + (tc.toolId ?? crypto.randomUUID())
+          const existing = tc.toolId ? toolByKey.get(tc.toolId) : undefined
+          if (existing) {
+            existing.name = tc.name
+            existing.argsJson = tc.argsJson
+          } else {
+            const item: ToolItem = {
+              kind: 'tool',
+              key,
+              messageId: msg.messageId,
+              sender: msg.sender,
+              timestamp: msg.timestamp,
+              agent: msg.agent,
+              toolId: tc.toolId,
+              name: tc.name,
+              argsJson: tc.argsJson,
+            }
+            items.push(item)
+            if (tc.toolId) toolByKey.set(tc.toolId, item)
+          }
+        } else if (k === 'toolResult') {
+          const tr = part.toolResult!
+          const target = tr.toolId ? toolByKey.get(tr.toolId) : undefined
+          if (target) {
+            target.result = tr
+          } else {
+            // Result with no preceding call: create a result-only bubble.
+            const key = 'tool-' + (tr.toolId ?? crypto.randomUUID())
+            const item: ToolItem = {
+              kind: 'tool',
+              key,
+              messageId: msg.messageId,
+              sender: msg.sender,
+              timestamp: msg.timestamp,
+              agent: msg.agent,
+              toolId: tr.toolId,
+              result: tr,
+            }
+            items.push(item)
+            if (tr.toolId) toolByKey.set(tr.toolId, item)
+          }
+        } else {
+          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part, pending: isPending || undefined })
+        }
+      }
+    }
+    return items
+  })
+
   function handleSend() {
+    if (!inputEnabled) return
     const text = inputText.trim()
     if (!text && !pendingScreenshot) return
     onSend(text)
@@ -70,14 +168,15 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (!inputEnabled) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     }
   }
 
-  function isAgentEntry(msg: ChatEntry): boolean {
-    return msg.sender === FrameSender.AGENT
+  function isAgentSender(sender: FrameSender): boolean {
+    return sender === FrameSender.AGENT
   }
 
   function formatTime(t: string): string {
@@ -86,22 +185,6 @@
     } catch {
       return ''
     }
-  }
-
-  function describeMouseClick(click: MouseClickAction | string | undefined): string {
-    // protojson serializes enums as their proto names (e.g.
-    // "MOUSE_CLICK_ACTION_LEFT_CLICK"), not their numeric values, so the
-    // lookup table accepts both the numeric enum (coerced to string) and the
-    // proto name form. See game.proto / protojson defaults.
-    if (click == null) return 'UNSPECIFIED'
-    return MOUSE_CLICK_DISPLAY[String(click)] ?? 'UNSPECIFIED'
-  }
-
-  function isToolResultSucceeded(status: number | string | undefined): boolean {
-    // protojson emits the proto name ("TOOL_RESULT_STATUS_SUCCEEDED"); accept
-    // both that and the numeric enum form.
-    if (status == null) return false
-    return TOOL_RESULT_SUCCESS_VALUES.has(String(status))
   }
 
   // imageUrlForPart builds a display data URL from an ImagePart. protojson
@@ -113,9 +196,24 @@
     return `data:image/${enc};base64,${image.data}`
   }
 
+  // Compact a tool_call's argsJson for INLINE display
+  // (specs/027-chat-bubble-game-state/spec.md FR-005;
+  // specs/027-chat-bubble-game-state/data-model.md §7;
+  // specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3).
+  // Invalid JSON falls back to the raw string (no throw) —
+  // specs/027-chat-bubble-game-state/spec.md FR-005 edge case.
+  function compactArgs(argsJson?: string): string {
+    if (!argsJson) return ''
+    try {
+      return JSON.stringify(JSON.parse(argsJson))
+    } catch {
+      return argsJson
+    }
+  }
+
   $effect(() => {
-    // reactively scroll when messages change
-    messages
+    // reactively scroll when renderItems change
+    renderItems
     const el = scrollContainer
     if (el) {
       requestAnimationFrame(() => {
@@ -134,101 +232,118 @@
   <div class="chat-thread" bind:this={scrollContainer}>
     {#if loadingMessages}
       <div class="chat-loading" data-testid="messages-loading">Loading messages...</div>
-    {:else if messages.length === 0}
+    {:else if renderItems.length === 0}
       <div class="chat-empty" data-testid="chat-empty">No messages yet. Start a conversation below.</div>
     {:else}
-      {#each messages as msg (msg.messageId)}
-        {#if msg.warnMessage != null}
-          <!-- Warn control-signal payload: a warning bubble. -->
+      {#each renderItems as item (item.key)}
+        {#if item.kind === 'warn'}
           <div data-testid="chat-message">
             <div class="msg-row msg-warn">
               <div class="msg-bubble warn-bubble">
                 <span class="warn-icon">&#9888;</span>
-                <span class="msg-content">{msg.warnMessage}</span>
+                <span class="msg-content">{item.message}</span>
               </div>
             </div>
           </div>
-        {:else if msg.parts && msg.parts.length > 0}
-          {#if isAgentEntry(msg) && msg.agentProfileName}
-            <div class="msg-profile-label" data-testid="agent-profile-label">{msg.agentProfileName}</div>
+        {:else if item.kind === 'profile'}
+          <div class="msg-profile-label" data-testid="agent-profile-label">{item.profile}</div>
+        {:else if item.kind === 'part'}
+          {@const kind = messagePartKind(item.part)}
+          {#if kind === 'text' && isAgentSender(item.sender)}
+            {@const sanitizedHtml = renderMarkdown(item.part.text?.content ?? '')}
+            <div class="msg-row msg-agent">
+              <div class="msg-bubble agent-bubble">
+                <div class="msg-sender">Agent</div>
+                <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
+                <div class="msg-time">{formatTime(item.timestamp)}</div>
+              </div>
+            </div>
+          {:else if kind === 'image'}
+            {@const url = imageUrlForPart(item.part.image!)}
+            <div class="msg-row msg-image" class:msg-image-user={item.sender === FrameSender.USER} class:msg-pending={item.pending}>
+              <details class="image-details">
+                <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
+                <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
+              </details>
+            </div>
+          {:else if kind === 'text' || kind === 'thinking'}
+            <!-- Non-agent text (user / system) and thinking parts render via the
+                 ChatMessage bubble component. A pending (queued) user message
+                 is visually marked via .msg-pending
+                 (specs/030-queued-chat-input/spec.md FR-008). -->
+            <div class="msg-row" class:msg-pending={item.pending}>
+              <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
+            </div>
           {/if}
-          <div data-testid="chat-message">
-            <!-- Render each Part by its kind. The part kind — not a separate
-                 `type` field — is the sole discriminator. Unknown / empty
-                 parts are skipped (graceful degradation). -->
-            {#each msg.parts as part, partIndex (partIndex)}
-              {@const kind = partKind(part)}
-              {#if kind === 'text' && isAgentEntry(msg)}
-                {@const sanitizedHtml = renderMarkdown(part.text?.content ?? '')}
-                <div class="msg-row msg-agent">
-                  <div class="msg-bubble agent-bubble">
-                    <div class="msg-sender">Agent</div>
-                    <div class="msg-content markdown-content">{@html sanitizedHtml}</div>
-                    {#if partIndex === msg.parts.length - 1}
-                      <div class="msg-time">{formatTime(msg.timestamp)}</div>
-                    {/if}
-                  </div>
-                </div>
-              {:else if kind === 'image'}
-                {@const url = imageUrlForPart(part.image!)}
-                <div class="msg-row msg-image" class:msg-image-user={msg.sender === FrameSender.USER}>
-                  <details class="image-details">
-                    <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
-                    <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
-                  </details>
-                </div>
-              {:else if kind === 'mouseMove'}
-                {@const mv = part.mouseMove!}
-                <div class="msg-row msg-operation">
-                  <div class="op-card" data-testid="operation-entry">
-                    <span class="op-label">MouseMove</span>
-                    <span class="op-action">MOVE</span>
-                    <span class="op-coords">(@ {mv.xPx}, {mv.yPx})</span>
-                  </div>
-                </div>
-              {:else if kind === 'mouseClick'}
-                {@const mc = part.mouseClick!}
-                <div class="msg-row msg-operation">
-                  <div class="op-card" data-testid="operation-entry">
-                    <span class="op-label">MouseClick</span>
-                    <span class="op-action">{describeMouseClick(mc.click)}</span>
-                  </div>
-                </div>
-              {:else if kind === 'toolResult'}
-                {@const result = part.toolResult!}
-                {@const succeeded = isToolResultSucceeded(result.status)}
-                <div class="msg-row msg-operation-result">
-                  <div class="op-result-card" class:op-result-success={succeeded} class:op-result-failure={!succeeded} data-testid="operation-result-entry">
-                    <span class="op-result-icon">{succeeded ? '✓' : '✗'}</span>
-                    <span class="op-result-status">{succeeded ? 'succeeded' : 'failed'}</span>
-                    {#if result.message}
-                      <span class="op-result-message">{result.message}</span>
-                    {/if}
-                    {#if result.screenshot?.data}
-                      {@const screenshotUrl = imageUrlForPart(result.screenshot)}
-                      <details class="op-result-details">
-                        <summary class="op-result-summary">Result screenshot</summary>
-                        <img
-                          class="screenshot-img clickable"
-                          src={screenshotUrl}
-                          alt="Operation result screenshot"
-                          data-testid="operation-result-screenshot"
-                          onclick={() => onZoom(screenshotUrl)}
-                        />
-                      </details>
-                    {/if}
-                  </div>
-                </div>
-              {:else if kind === 'text' || kind === 'thinking'}
-                <!-- Non-agent text (user / system) and thinking parts render
-                     via the ChatMessage bubble component. -->
-                <ChatMessage {part} sender={msg.sender} timestamp={msg.timestamp} />
+        {:else if item.kind === 'tool'}
+          {@const resolved = item.result != null}
+          {@const statusClass = resolved ? classifyToolResultStatus(item.result!.status) : 'neutral'}
+          {@const statusIcon = statusClass === 'succeeded' ? '✓' : statusClass === 'failed' ? '✗' : '›'}
+          {@const statusLabel = statusClass === 'succeeded' ? 'succeeded' : statusClass === 'failed' ? 'failed' : 'done'}
+          <div class="msg-row msg-operation">
+            <div
+              class="tool-bubble"
+              class:tool-resolved-success={resolved && statusClass === 'succeeded'}
+              class:tool-resolved-failure={resolved && statusClass === 'failed'}
+              class:tool-resolved-neutral={resolved && statusClass === 'neutral'}
+              data-testid="tool-bubble"
+            >
+              <div class="tool-head">
+                <span class="tool-name" data-testid="tool-name">{item.name ?? 'tool'}</span>
+                {#if item.argsJson}
+                  <!-- Inline compact args next to the tool name
+                       (specs/027-chat-bubble-game-state/spec.md FR-005;
+                       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3;
+                       specs/027-chat-bubble-game-state/data-model.md §7). -->
+                  <code class="tool-args-inline" data-testid="tool-args">{compactArgs(item.argsJson)}</code>
+                {/if}
+              </div>
+              {#if resolved}
+                <!-- Collapsible result body
+                     (specs/027-chat-bubble-game-state/spec.md FR-007/008;
+                     specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §5;
+                     specs/027-chat-bubble-game-state/data-model.md §7).
+                     The outer <details> has NO `open`
+                     attribute → the <summary> (status icon + label) is always
+                     visible; the formatted message and the screenshot
+                     sub-toggle are hidden until expanded. The screenshot keeps
+                     its own nested <details> so its open/closed state is
+                     independent (specs/027-chat-bubble-game-state/spec.md FR-008).
+                     The pending "running…" branch below
+                     stays outside the <details> (nothing to collapse before
+                     resolution). -->
+                <details class="tool-result-details">
+                  <summary>
+                    <span class="op-result-icon">{statusIcon}</span>
+                    <span class="op-result-status">{statusLabel}</span>
+                  </summary>
+                  {#if item.result!.message}
+                    <!-- pre-wrap preserves the multi-line text board
+                         (specs/027-chat-bubble-game-state/spec.md FR-006;
+                         specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §4;
+                         specs/027-chat-bubble-game-state/data-model.md §7). -->
+                    <pre class="op-result-message">{item.result!.message}</pre>
+                  {/if}
+                  {#if item.result!.screenshot?.data}
+                    {@const screenshotUrl = imageUrlForPart(item.result!.screenshot)}
+                    <details class="op-result-screenshot-details">
+                      <summary class="op-result-summary">Result screenshot</summary>
+                      <img
+                        class="screenshot-img clickable"
+                        src={screenshotUrl}
+                        alt="Tool result screenshot"
+                        data-testid="operation-result-screenshot"
+                        onclick={() => onZoom(screenshotUrl)}
+                      />
+                    </details>
+                  {/if}
+                </details>
+              {:else}
+                <div class="tool-pending">running…</div>
               {/if}
-            {/each}
+            </div>
           </div>
         {/if}
-        <!-- A content entry with zero parts renders nothing (graceful
-             degradation for empty PartBlocks). -->
       {/each}
     {/if}
 
@@ -244,14 +359,22 @@
     {/if}
 
     {#if queueCount > 0}
-      <div class="queue-indicator">
+      <!-- Phase 5 (T011): queueCount is backend-driven by QueueSignal
+           (specs/030-queued-chat-input/spec.md FR-008). -->
+      <div class="queue-indicator" data-testid="queue-indicator">
         {queueCount} message{queueCount !== 1 ? 's' : ''} queued
       </div>
     {/if}
   </div>
 
-  <!-- Input Area -->
+  <!-- Input Area. FR-032: blocked (observe-only) for agents that do not
+       accept user input (saolei: planner). -->
   <div class="chat-input-area">
+    {#if !inputEnabled}
+      <div class="observe-hint" data-testid="observe-only-hint">
+        Observe only — this agent does not accept user input (FR-032).
+      </div>
+    {/if}
     {#if pendingScreenshot}
       <div class="pending-attachment" data-testid="pending-attachment">
         <img class="attachment-thumb clickable" src={pendingScreenshot.dataUrl} alt="Screenshot attachment" onclick={() => onZoom(pendingScreenshot.dataUrl)} />
@@ -259,6 +382,11 @@
         <button class="attachment-remove" onclick={onRemoveScreenshot} data-testid="remove-attachment">✕</button>
       </div>
     {/if}
+    <!-- Input stays editable/submittable while an agent turn is in progress
+         (specs/030-queued-chat-input/spec.md FR-001). A submit during a run is
+         buffered by the backend TurnLoop (specs/030-queued-chat-input/spec.md
+         FR-002) and rendered as pending via queueCount; the empty-input guard
+         below is unrelated to the processing state. -->
     <textarea
       class="chat-input"
       data-testid="chat-input"
@@ -266,13 +394,13 @@
       bind:value={inputText}
       onkeydown={handleKeydown}
       rows={1}
-      disabled={processing}
+      disabled={!inputEnabled}
     ></textarea>
     <button
       class="send-btn"
       data-testid="chat-send-btn"
       onclick={handleSend}
-      disabled={processing || (!inputText.trim() && !pendingScreenshot)}
+      disabled={!inputEnabled || (!inputText.trim() && !pendingScreenshot)}
     >
       Send
     </button>
@@ -387,6 +515,16 @@
     user-select: none;
   }
 
+  /* ── Pending (queued) message visual mark
+       (specs/030-queued-chat-input/spec.md FR-008). Per the user decision
+       specs/030-queued-chat-input/spec.md FR-010 (removing a queued message)
+       is NOT implemented: a message that
+       has entered the backend queue cannot be deleted
+       (specs/030-queued-chat-input/contracts/queue-channel-contract.md §1). ── */
+  .msg-pending {
+    opacity: 0.65;
+  }
+
   /* ── Input Area ── */
   .chat-input-area {
     display: flex;
@@ -395,6 +533,15 @@
     padding: 8px;
     border-top: 1px solid #0f3460;
     background: #1a1a2e;
+  }
+
+  /* FR-032 observe-only hint (planner tab) */
+  .observe-hint {
+    width: 100%;
+    font-size: 11px;
+    color: #ffb86c;
+    font-style: italic;
+    user-select: none;
   }
 
   /* ── Pending Attachment Preview ── */
@@ -675,11 +822,22 @@
   }
 
   .op-result-message {
+    /* specs/027-chat-bubble-game-state/spec.md FR-006;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §4;
+       specs/027-chat-bubble-game-state/data-model.md §7:
+       preserve newlines and wrap.
+       MDN white-space: https://developer.mozilla.org/en-US/docs/Web/CSS/white-space
+       — `pre-wrap` preserves newlines and wraps overlong lines (unlike `pre`,
+       which would horizontally scroll). */
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 6px 0 0;
     color: #a0a0b0;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
-  .op-result-details {
-    width: 100%;
+  .op-result-screenshot-details {
     margin-top: 4px;
   }
 
@@ -688,6 +846,91 @@
     color: #8888aa;
     cursor: pointer;
     user-select: none;
+  }
+
+  /* ── Tool Bubble (tool call + result; specs/024-tool-render-coord-fix
+       data-model.md §2; research.md D5) ──
+     One evolving bubble per tool_call.id (specs/023-saolei-mcp-refine/spec.md FR-007). These rules reuse the
+     pre-refactor .op-card / .op-result-* visual language: a bordered monospace
+     box whose border/background tint reflects the resolved status
+     (success/failed/neutral — data-model.md §1). The legacy .op-* rules are
+     retained (research.md D5: removal optional). */
+  .tool-bubble {
+    max-width: 80%;
+    padding: 6px 10px;
+    background: rgba(74, 158, 255, 0.06);
+    border: 1px solid rgba(74, 158, 255, 0.2);
+    border-radius: 6px;
+    font-size: 11px;
+    color: #a0c8ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .tool-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tool-name {
+    font-weight: 600;
+    color: #4a9eff;
+  }
+
+  .tool-args-inline {
+    /* Inline compact args (specs/027-chat-bubble-game-state/spec.md FR-005;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §3;
+       specs/027-chat-bubble-game-state/data-model.md §7).
+       `<code>` gives monospace inline without forcing a block. */
+    background: #0d0d2b;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-word;
+  }
+
+  .tool-result-details {
+    /* Collapsible result body (specs/027-chat-bubble-game-state/spec.md FR-007/008;
+       specs/027-chat-bubble-game-state/contracts/desktop-bubble-render-contract.md §5;
+       specs/027-chat-bubble-game-state/data-model.md §7). */
+    margin-top: 4px;
+  }
+
+  .tool-result-details > summary {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .tool-pending {
+    margin-top: 4px;
+    color: #8888aa;
+    font-style: italic;
+  }
+
+  /* Resolved-state tints applied to .tool-bubble: success/failed reuse the
+     .op-result-success/.op-result-failure palette; neutral is the muted
+     palette for an absent/UNSPECIFIED status (protojson omits the zero-value
+     enum — https://protobuf.dev/programming-guides/json/#presence — so a
+     saolei/MCP result arrives with status absent and MUST read neutral, never
+     failed; data-model.md §1). */
+  .tool-resolved-success {
+    background: rgba(80, 250, 123, 0.08);
+    border-color: rgba(80, 250, 123, 0.3);
+    color: #50fa7b;
+  }
+
+  .tool-resolved-failure {
+    background: rgba(255, 107, 107, 0.08);
+    border-color: rgba(255, 107, 107, 0.3);
+    color: #ff6b6b;
+  }
+
+  .tool-resolved-neutral {
+    background: rgba(136, 136, 170, 0.08);
+    border-color: rgba(136, 136, 170, 0.3);
+    color: #8888aa;
   }
 
   /* ── Warn Bubble (control-signal payload) ── */

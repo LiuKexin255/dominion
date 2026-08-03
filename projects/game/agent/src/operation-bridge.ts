@@ -5,16 +5,23 @@
  * OperationBridge is owned by SessionAgent and survives stream reconnects.
  * The Connect handler registers a sink callback on stream open and unregisters
  * it on stream end/error.  LangChain tools (e.g. mouse) call dispatch() to
- * send a tool Part to the desktop and await the matching ToolResultPart.
+ * send a FlowPart operation to the desktop and await the matching FlowResultPart.
  *
  * The bridge never holds a reference to a specific stream instance — only a
  * write callback — so a new stream can re-register its sink without recreating
  * the bridge or losing track of in-flight dispatches.
  *
- * Part-model contract: a tool request is a Part (MouseMovePart or
- * MouseClickPart) wrapped in a PartBlock carried by a content AgentFrame. The
- * desktop replies with a content frame whose ToolResultPart.tool_id matches the
- * request. tool_id is the single correlation key (no invoke_id/sequence).
+ * Content-model contract (specs/023-saolei-mcp-refine/contracts/content-model-contract.md)
+ * + decoupling (research.md D10 / contracts/tool-dispatch-contract.md §1): a
+ * tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
+ * FlowParts AgentFrame (payload "flowParts"). The desktop replies with a
+ * flowParts AgentFrame whose FlowResultPart.tool_id matches the bridge-minted
+ * operation-channel id (spec 025 FR-023/FR-025 — the operation result travels
+ * on the control channel, not as a display tool_result MessagePart). The
+ * conversation channel (tool_call/tool_result MessageParts) is fully DECOUPLED
+ * — it groups by the LangChain `tool_call.id` independently; the operation
+ * channel uses a bridge-minted id that has no relation to any conversation
+ * tool_call.id (revised FR-008 / research.md D10).
  */
 
 import { randomUUID } from "node:crypto";
@@ -22,15 +29,21 @@ import { randomUUID } from "node:crypto";
 import { info, warn } from "@dominion/common-js-logs";
 
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-import type { Part } from "../game_types/projects/game/Part";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
 import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
 import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
+import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart";
+import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
 
-/** Maximum wait time (ms) for a tool result before timing out. */
-const DISPATCH_TIMEOUT_MS = 5_000;
+// Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
+// to 20 min as a safety-net backstop: the desktop's 15-min auto-continue
+// (specs/022-desktop-debug-mode spec.md FR-013) always fires first under debug
+// usage, so under normal operation this longer timeout stays dormant
+// (specs/022-desktop-debug-mode spec.md FR-014, research.md D6).
+const DISPATCH_TIMEOUT_MS = 1_200_000;
 
 /** String literal values for ToolResultStatus (proto enum). */
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
@@ -39,10 +52,21 @@ const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
  * Sink callback registered by the Connect handler.  Receives a full AgentFrame
- * whose payload is "content".  The handler may augment envelope fields
+ * whose payload is "flowParts".  The handler may augment envelope fields
  * (sessionId, frameId, sender, createTime) before writing to the stream.
  */
 export type OperationSink = (frame: AgentFrame) => void;
+
+/**
+ * Opaque identity of a registered sink, returned by registerSink and passed
+ * to unregisterSink for compare-and-delete ownership: a stale close from a
+ * superseded stream must not clobber a fresh registration
+ * (specs/021-agent-session-resync/research.md D3;
+ * specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+ * The handle IS the sink reference, so `===` compares identity without extra
+ * token bookkeeping.
+ */
+export type SinkHandle = OperationSink;
 
 /**
  * Screenshot captured by the desktop alongside a tool result.
@@ -55,7 +79,7 @@ export interface OperationScreenshot {
   heightPx: number;
 }
 
-/** Outcome of a dispatch — mirrors the relevant fields of ToolResultPart. */
+/** Outcome of a dispatch — mirrors the relevant fields of FlowResultPart. */
 export interface OperationResult {
   status: ToolResultStatus;
   message: string;
@@ -92,51 +116,81 @@ export class OperationBridge {
 
   /**
    * Register the stream write callback.  Called by the Connect handler when a
-   * new bidi stream opens.  Replaces any previously registered sink.
+   * new bidi stream opens.  Replaces any previously registered sink and
+   * returns a handle identifying this installation; the caller stores the
+   * handle per session and passes it to unregisterSink so a stale close from
+   * a superseded stream is a no-op (compare-and-delete).
    */
-  registerSink(writeFn: OperationSink): void {
+  registerSink(writeFn: OperationSink): SinkHandle {
     this.sink = writeFn;
     info("operation bridge sink registered");
+    return writeFn;
   }
 
   /**
-   * Clear the registered sink.  Called by the Connect handler on stream end
-   * or error.  In-flight dispatches whose per-turn AbortController fires
-   * resolve immediately with FAILED "aborted"; the 5s timeout remains as a
-   * fallback for dispatches without a signal.
+   * Clear the registered sink, but only when `handle` identifies the
+   * currently-registered sink (compare-and-delete).  A stale close from a
+   * stream whose sink was already superseded is a no-op, so it cannot clobber
+   * a fresh registration (specs/021-agent-session-resync/research.md D3;
+   * specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+   * Omitting `handle` is likewise a no-op: `this.sink` is never undefined
+   * (null or a function), so it never equals undefined.  In-flight dispatches
+   * on a closing stream still resolve FAILED "aborted" via the per-turn
+   * AbortController; the 20-min timeout remains the fallback for dispatches
+   * without a signal.
    */
-  unregisterSink(): void {
-    this.sink = null;
-    info("operation bridge sink unregistered", {
-      pendingCount: this.pending.size,
-    });
+  unregisterSink(handle?: SinkHandle): void {
+    if (this.sink === handle) {
+      this.sink = null;
+      info("operation bridge sink unregistered", {
+        pendingCount: this.pending.size,
+      });
+    }
   }
 
   /**
-   * Dispatch a tool Part (MouseMovePart or MouseClickPart) to the desktop via
-   * the registered sink and await the matching ToolResultPart.
+   * Dispatch a FlowPart operation (MouseMovePart, MouseClickPart,
+   * KeyboardPressPart, or MouseMoveAndClickPart) to the desktop via the
+   * registered sink and await the matching FlowResultPart.
    *
-   * Generates a UUID tool_id on the inner part, wraps the Part in a PartBlock
-   * carried by a content AgentFrame, and writes via the sink.  When no sink
-   * is registered (desktop disconnected), resolves FAILED immediately rather
-   * than throwing.  When the optional `signal` is already aborted, or aborts
-   * while the dispatch is pending, resolves FAILED "aborted" immediately —
-   * abort is a third race participant alongside the 5s timeout and
-   * handleResult, whichever fires first wins.
+   * The bridge ALWAYS mints a fresh UUID as the operation-channel id and stamps
+   * it onto the FlowPart's `tool_id`; this id is for operation-channel
+   * correlation only (dispatch↔`handleResult` via the pending map). It is NOT
+   * related to the conversation-channel `tool_call.id` — the two channels are
+   * decoupled (research.md D10 / contracts/tool-dispatch-contract.md §1: the
+   * conversation groups tool_call↔tool_result by the LangChain `tool_call.id`
+   * independently; the operation channel uses the bridge-minted id). The tool
+   * caller therefore passes NO toolId to dispatch.
    *
-   * @param part   - Tool Part to dispatch.
+   * The operation is wrapped in a FlowParts AgentFrame and written via the
+   * sink. When no sink is registered (desktop disconnected), resolves FAILED
+   * immediately rather than throwing. When the optional `signal` is already
+   * aborted, or aborts while the dispatch is pending, resolves FAILED "aborted"
+   * immediately — abort is a third race participant alongside the 20-min
+   * timeout and handleResult, whichever fires first wins.
+   *
+   * @param part   - FlowPart operation to dispatch.
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
    * @returns SUCCEEDED/FAILED status from the desktop, or FAILED on timeout,
-   *          abort, non-tool Part, no-sink, or sink write error.
+   *          abort, non-operation FlowPart, no-sink, or sink write error.
    */
   async dispatch(
-    part: Part,
+    part: FlowPart,
     signal?: AbortSignal,
   ): Promise<OperationResult> {
-    const toolPart: MouseMovePart | MouseClickPart | undefined =
-      part.mouseMove ?? (part.mouseClick ?? undefined);
+    const toolPart:
+      | MouseMovePart
+      | MouseClickPart
+      | KeyboardPressPart
+      | MouseMoveAndClickPart
+      | undefined =
+      part.mouseMove ??
+      part.mouseClick ??
+      part.keyboardPress ??
+      part.mouseMoveAndClick ??
+      undefined;
     if (!toolPart) {
-      warn("dispatch received a non-tool Part");
+      warn("dispatch received a non-operation FlowPart");
       return { status: STATUS_FAILED, message: "invalid tool part" };
     }
 
@@ -152,20 +206,20 @@ export class OperationBridge {
       return { status: STATUS_FAILED, message: "aborted" };
     }
 
-    const toolId = randomUUID();
-    toolPart.toolId = toolId;
+    const resolvedToolId = randomUUID();
+    toolPart.toolId = resolvedToolId;
 
     return new Promise<OperationResult>((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           signal?.removeEventListener("abort", onAbort);
-          warn("operation dispatch timed out", { toolId });
+          warn("operation dispatch timed out", { toolId: resolvedToolId });
           resolve({ status: STATUS_FAILED, message: "operation timed out" });
         }
       }, DISPATCH_TIMEOUT_MS);
 
       const onAbort = () => {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
           resolve({ status: STATUS_FAILED, message: "aborted" });
         }
@@ -174,7 +228,7 @@ export class OperationBridge {
         signal.addEventListener("abort", onAbort, { once: true });
       }
 
-      this.pending.set(toolId, {
+      this.pending.set(resolvedToolId, {
         resolve,
         timer,
         cleanup: signal
@@ -183,17 +237,17 @@ export class OperationBridge {
       });
 
       const envelope: AgentFrame = {
-        payload: "content",
-        content: { parts: [part] },
+        payload: "flowParts",
+        flowParts: { parts: [part] },
       };
       try {
         sink(envelope);
       } catch (err) {
-        if (this.pending.delete(toolId)) {
+        if (this.pending.delete(resolvedToolId)) {
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
           const msg = err instanceof Error ? err.message : "sink write error";
-          warn("operation dispatch sink threw", { toolId, error: msg });
+          warn("operation dispatch sink threw", { toolId: resolvedToolId, error: msg });
           resolve({ status: STATUS_FAILED, message: msg });
         }
       }
@@ -202,10 +256,12 @@ export class OperationBridge {
 
   /**
    * Resolve a pending dispatch whose tool_id matches the result part.
-   * Called by the Connect handler when a ToolResultPart arrives from the
-   * desktop.  Unknown or stale tool_ids are logged and ignored.
+   * Called by the Connect handler when a FlowResultPart arrives from the
+   * desktop on the control channel (a flowParts frame whose kind is
+   * flow_result — spec 025 FR-023/FR-025). Unknown or stale tool_ids are
+   * logged and ignored.
    */
-  handleResult(result: ToolResultPart): void {
+  handleResult(result: FlowResultPart): void {
     const toolId = result.toolId ?? "";
     if (!toolId) {
       warn("tool result received with no tool_id");

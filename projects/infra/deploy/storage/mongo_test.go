@@ -262,7 +262,7 @@ func TestArtifactSpecs_WorkloadKindPersistence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			var mongoSpecs []mongoArtifactSpec
+			var mongoSpecs []*mongoArtifactSpec
 			if tt.source != nil {
 				// when
 				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
@@ -276,7 +276,7 @@ func TestArtifactSpecs_WorkloadKindPersistence(t *testing.T) {
 				}
 			} else {
 				// when
-				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+				mongoSpecs = []*mongoArtifactSpec{&tt.mongo}
 			}
 
 			got := artifactSpecsFromMongo(mongoSpecs)
@@ -358,7 +358,7 @@ func TestArtifactSpecs_EnvPersistence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			var mongoSpecs []mongoArtifactSpec
+			var mongoSpecs []*mongoArtifactSpec
 			if tt.source != nil {
 				// when
 				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
@@ -368,7 +368,7 @@ func TestArtifactSpecs_EnvPersistence(t *testing.T) {
 					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
 				}
 			} else {
-				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+				mongoSpecs = []*mongoArtifactSpec{&tt.mongo}
 			}
 
 			got := artifactSpecsFromMongo(mongoSpecs)
@@ -431,7 +431,7 @@ func TestArtifactSpecs_SecretBindingsPersistence(t *testing.T) {
 				App:            "app",
 				Image:          "image:v1",
 				Replicas:       1,
-				SecretBindings: []mongoSecretBinding{},
+				SecretBindings: []*mongoSecretBinding{},
 			},
 			want: nil,
 		},
@@ -450,7 +450,7 @@ func TestArtifactSpecs_SecretBindingsPersistence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			var mongoSpecs []mongoArtifactSpec
+			var mongoSpecs []*mongoArtifactSpec
 			if tt.source != nil {
 				// when
 				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
@@ -460,7 +460,7 @@ func TestArtifactSpecs_SecretBindingsPersistence(t *testing.T) {
 					t.Fatalf("artifactSpecsToMongo() len = %d, want 1", len(mongoSpecs))
 				}
 			} else {
-				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+				mongoSpecs = []*mongoArtifactSpec{&tt.mongo}
 			}
 
 			got := artifactSpecsFromMongo(mongoSpecs)
@@ -509,7 +509,7 @@ func TestArtifactSpecs_SecretBindings_BSONRoundTrip(t *testing.T) {
 		t.Fatalf("bson.Unmarshal() error = %v", err)
 	}
 
-	got := artifactSpecsFromMongo([]mongoArtifactSpec{decoded})
+	got := artifactSpecsFromMongo([]*mongoArtifactSpec{&decoded})
 	if len(got) != 1 {
 		t.Fatalf("artifactSpecsFromMongo() len = %d, want 1", len(got))
 	}
@@ -567,7 +567,7 @@ func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			var mongoSpecs []mongoArtifactSpec
+			var mongoSpecs []*mongoArtifactSpec
 			if tt.source != nil {
 				// when
 				mongoSpecs = artifactSpecsToMongo([]*domain.ArtifactSpec{tt.source})
@@ -580,7 +580,7 @@ func TestArtifactSpecs_OSSEnabledPersistence(t *testing.T) {
 					t.Fatalf("artifactSpecsToMongo() oss_enabled = %v, want %v", mongoSpecs[0].OSSEnabled, tt.wantOSS)
 				}
 			} else {
-				mongoSpecs = []mongoArtifactSpec{tt.mongo}
+				mongoSpecs = []*mongoArtifactSpec{&tt.mongo}
 			}
 
 			got := artifactSpecsFromMongo(mongoSpecs)
@@ -1277,6 +1277,118 @@ func newReconcileTestEnv(t *testing.T, envName string, desired domain.Environmen
 	return rehydrated
 }
 
+func TestStatus_ServicesPersistence(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     *domain.EnvironmentStatus
+		mongo      *mongoStatus
+		want       []*domain.ServiceStatus
+		checkRound bool
+	}{
+		{
+			name: "services round trip",
+			source: &domain.EnvironmentStatus{
+				Desired: domain.DesiredPresent,
+				State:   domain.StateWaitingRollout,
+				Services: []*domain.ServiceStatus{
+					{Name: "api", App: "game", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateWaiting, Message: "可用副本不足（available: 0/1）"},
+					{Name: "mongo", App: "game", Kind: domain.ServiceKindInfra, State: domain.ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+				},
+			},
+			want: []*domain.ServiceStatus{
+				{Name: "api", App: "game", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateWaiting, Message: "可用副本不足（available: 0/1）"},
+				{Name: "mongo", App: "game", Kind: domain.ServiceKindInfra, State: domain.ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+			},
+			checkRound: true,
+		},
+		{
+			name:       "nil services round trip",
+			source:     &domain.EnvironmentStatus{Desired: domain.DesiredPresent, State: domain.StateReady, Message: "ready"},
+			want:       nil,
+			checkRound: true,
+		},
+		{
+			name:  "old mongo document without services defaults to nil",
+			mongo: &mongoStatus{Desired: 1, State: 3, Message: "ready"},
+			want:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			var mongoStatuses *mongoStatus
+			if tt.source != nil {
+				// when: domain → mongo
+				mongoStatuses = statusToMongo(tt.source)
+			} else {
+				// given: pre-built mongo struct
+				mongoStatuses = tt.mongo
+			}
+
+			// when: mongo → domain
+			got := statusFromMongo(mongoStatuses)
+
+			// then
+			if !reflect.DeepEqual(got.Services, tt.want) {
+				t.Fatalf("statusFromMongo() services = %#v, want %#v", got.Services, tt.want)
+			}
+			if tt.checkRound && !reflect.DeepEqual(got.Services, tt.source.Services) {
+				t.Fatalf("round trip services = %#v, want %#v", got.Services, tt.source.Services)
+			}
+		})
+	}
+}
+
+func TestMongoRepository_TransitionStatus_ServicesCleared(t *testing.T) {
+	ctx := context.Background()
+	baseTime := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	// given
+	repo, _ := newMongoRepositoryForTest()
+	env := newReconcileTestEnv(t, "env1", domain.DesiredPresent, domain.StateReconciling, 2, 2, baseTime)
+	if err := repo.Create(ctx, env); err != nil {
+		t.Fatalf("Create() unexpected error: %v", err)
+	}
+
+	services := []*domain.ServiceStatus{
+		{Name: "api", App: "game", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateWaiting, Message: "可用副本不足（available: 0/1）"},
+		{Name: "mongo", App: "game", Kind: domain.ServiceKindInfra, State: domain.ServiceRolloutStatePending, Message: "资源已提交，等待观测"},
+	}
+
+	// when — 写入非空 services
+	if err := repo.TransitionStatus(ctx, env.Name(), 2, domain.StateReconciling, &domain.EnvironmentStatus{
+		State: domain.StateWaitingRollout, Desired: domain.DesiredPresent, ObservedGeneration: 2, Services: services,
+	}); err != nil {
+		t.Fatalf("TransitionStatus() write services unexpected error: %v", err)
+	}
+
+	// then — 读回一致
+	got, err := repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.Status().Services, services) {
+		t.Fatalf("Services = %#v, want %#v", got.Status().Services, services)
+	}
+
+	// when — 再次转移写 nil services（清空 stale，决策 R6）
+	if err := repo.TransitionStatus(ctx, env.Name(), 2, domain.StateWaitingRollout, &domain.EnvironmentStatus{
+		State: domain.StateWaitingRollout, Desired: domain.DesiredPresent, Services: nil,
+	}); err != nil {
+		t.Fatalf("TransitionStatus() clear services unexpected error: %v", err)
+	}
+
+	// then — 读回为空
+	got, err = repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status().Services != nil {
+		t.Fatalf("Services after clear = %#v, want nil", got.Status().Services)
+	}
+}
+
 func TestMongoRepository_NewMongoRepository_UsesDeployCollection(t *testing.T) {
 	originalNewCollection := newCollection
 	t.Cleanup(func() {
@@ -1804,6 +1916,24 @@ func (f *fakeCollectionOps) UpdateOne(_ context.Context, filter any, update any,
 	if v, ok := setDoc[mongoFieldStatusMessage]; ok {
 		stored.Status.Message, _ = v.(string)
 	}
+	if v, ok := setDoc[mongoFieldStatusServices]; ok {
+		if v == nil {
+			stored.Status.Services = nil
+		} else {
+			// 兼容原始 []*mongoServiceStatus（bson.M 直达）与经序列化的 primitive.A
+			raw, err := bson.Marshal(bson.M{"s": v})
+			if err != nil {
+				return nil, err
+			}
+			var holder struct {
+				Services []*mongoServiceStatus `bson:"s"`
+			}
+			if err := bson.Unmarshal(raw, &holder); err != nil {
+				return nil, err
+			}
+			stored.Status.Services = holder.Services
+		}
+	}
 	if v, ok := setDoc[mongoFieldStatusLastReconcile]; ok {
 		stored.Status.LastReconcileTime = toTime(v)
 	}
@@ -2302,7 +2432,7 @@ func TestInfraSpecs_CapacityPersistence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// given
-			var mongoSpecs []mongoInfraSpec
+			var mongoSpecs []*mongoInfraSpec
 			if tt.source != nil {
 				// when: domain → mongo
 				mongoSpecs = infraSpecsToMongo([]*domain.InfraSpec{tt.source})
@@ -2316,7 +2446,7 @@ func TestInfraSpecs_CapacityPersistence(t *testing.T) {
 				}
 			} else {
 				// given: use pre-built mongo struct
-				mongoSpecs = []mongoInfraSpec{*tt.mongo}
+				mongoSpecs = []*mongoInfraSpec{tt.mongo}
 			}
 
 			// when: mongo → domain

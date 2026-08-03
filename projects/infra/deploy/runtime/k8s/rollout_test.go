@@ -454,6 +454,7 @@ func TestCheckRollout(t *testing.T) {
 		setup      func(t *testing.T) (*K8sRuntime, *domain.Environment)
 		wantState  domain.RolloutState
 		wantMsgSub string
+		wantSvc    []wantServiceStatus
 		wantErr    bool
 	}{
 		{
@@ -472,6 +473,9 @@ func TestCheckRollout(t *testing.T) {
 				return runtime, env
 			},
 			wantState: domain.RolloutReady,
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateReady},
+			},
 		},
 		{
 			name: "all statefulsets ready",
@@ -489,6 +493,9 @@ func TestCheckRollout(t *testing.T) {
 				return runtime, env
 			},
 			wantState: domain.RolloutReady,
+			wantSvc: []wantServiceStatus{
+				{name: "cache", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateReady},
+			},
 		},
 		{
 			name: "mixed deployments and statefulsets all ready",
@@ -515,6 +522,10 @@ func TestCheckRollout(t *testing.T) {
 				return runtime, env
 			},
 			wantState: domain.RolloutReady,
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateReady},
+				{name: "cache", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateReady},
+			},
 		},
 		{
 			name: "deployment progress deadline exceeded",
@@ -537,6 +548,9 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutFailed,
 			wantMsgSub: "deployment exceeded its progress deadline",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateFailed, msgSub: "deployment exceeded its progress deadline"},
+			},
 		},
 		{
 			name: "deployment replica failure",
@@ -560,6 +574,45 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutFailed,
 			wantMsgSub: "pods are forbidden",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateFailed, msgSub: "pods are forbidden"},
+			},
+		},
+		{
+			name: "one failed and one waiting deployment",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{artifacts: []checkRolloutArtifactOpt{
+					{name: "api", replicas: 2},
+					{name: "worker", replicas: 1},
+				}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.Deployments {
+						if w.ServiceName == "api" {
+							seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+								w.WorkloadName(), 2, 1,
+								appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+									Type:    appsv1.DeploymentProgressing,
+									Reason:  "ProgressDeadlineExceeded",
+									Message: "deployment exceeded its progress deadline",
+								}}},
+							))
+							continue
+						}
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.WorkloadName(), 1, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 0, AvailableReplicas: 0},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutFailed,
+			wantMsgSub: "deployment exceeded its progress deadline",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateFailed, msgSub: "deployment exceeded its progress deadline"},
+				{name: "worker", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "更新副本未完成"},
+			},
 		},
 		{
 			name: "deployment observed generation lag",
@@ -578,6 +631,9 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutWaiting,
 			wantMsgSub: "尚未观察到最新 generation",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "尚未观察到最新 generation"},
+			},
 		},
 		{
 			name: "deployment replicas not updated",
@@ -596,6 +652,9 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutWaiting,
 			wantMsgSub: "更新副本未完成",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "更新副本未完成"},
+			},
 		},
 		{
 			name: "deployment available replicas insufficient",
@@ -614,6 +673,9 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutWaiting,
 			wantMsgSub: "可用副本不足",
+			wantSvc: []wantServiceStatus{
+				{name: "api", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "可用副本不足"},
+			},
 		},
 		{
 			name: "statefulset not ready returns waiting not failed",
@@ -632,6 +694,9 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutWaiting,
 			wantMsgSub: "就绪副本不足",
+			wantSvc: []wantServiceStatus{
+				{name: "cache", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "就绪副本不足"},
+			},
 		},
 		{
 			name: "statefulset observed generation lag",
@@ -650,6 +715,54 @@ func TestCheckRollout(t *testing.T) {
 			},
 			wantState:  domain.RolloutWaiting,
 			wantMsgSub: "尚未观察到最新 generation",
+			wantSvc: []wantServiceStatus{
+				{name: "cache", app: "demo", kind: domain.ServiceKindArtifact, state: domain.ServiceRolloutStateWaiting, msgSub: "尚未观察到最新 generation"},
+			},
+		},
+		{
+			name: "mongodb infra deployment ready",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{infras: []checkRolloutInfraOpt{{name: "mongo", app: "game"}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.MongoDBWorkloads {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.ResourceName(), 1, 1,
+							appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState: domain.RolloutReady,
+			wantSvc: []wantServiceStatus{
+				{name: "mongo", app: "game", kind: domain.ServiceKindInfra, state: domain.ServiceRolloutStateReady},
+			},
+		},
+		{
+			name: "mongodb infra deployment failed",
+			setup: func(t *testing.T) (*K8sRuntime, *domain.Environment) {
+				t.Helper()
+				env := newCheckRolloutTestEnv(t, checkRolloutEnvOpt{infras: []checkRolloutInfraOpt{{name: "mongo", app: "game"}}})
+				runtime := newCheckRolloutSeededRuntime(t, env, func(objects *DeployObjects, client *kubernetesfake.Clientset) {
+					for _, w := range objects.MongoDBWorkloads {
+						seedRolloutTestDeployment(t, client, newRolloutTestDeployment(
+							w.ResourceName(), 1, 1,
+							appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{{
+								Type:    appsv1.DeploymentProgressing,
+								Reason:  "ProgressDeadlineExceeded",
+								Message: "deployment exceeded its progress deadline",
+							}}},
+						))
+					}
+				})
+				return runtime, env
+			},
+			wantState:  domain.RolloutFailed,
+			wantMsgSub: "deployment exceeded its progress deadline",
+			wantSvc: []wantServiceStatus{
+				{name: "mongo", app: "game", kind: domain.ServiceKindInfra, state: domain.ServiceRolloutStateFailed, msgSub: "deployment exceeded its progress deadline"},
+			},
 		},
 		{
 			name: "no workloads returns ready",
@@ -693,8 +806,37 @@ func TestCheckRollout(t *testing.T) {
 			if tt.wantMsgSub != "" && !strings.Contains(got.Message, tt.wantMsgSub) {
 				t.Fatalf("CheckRollout() message = %q, want substring %q", got.Message, tt.wantMsgSub)
 			}
+			if len(got.Services) != len(tt.wantSvc) {
+				t.Fatalf("CheckRollout() services len = %d, want %d", len(got.Services), len(tt.wantSvc))
+			}
+			for i, want := range tt.wantSvc {
+				gotSvc := got.Services[i]
+				if gotSvc.Name != want.name {
+					t.Fatalf("CheckRollout() services[%d].Name = %q, want %q", i, gotSvc.Name, want.name)
+				}
+				if gotSvc.App != want.app {
+					t.Fatalf("CheckRollout() services[%d].App = %q, want %q", i, gotSvc.App, want.app)
+				}
+				if gotSvc.Kind != want.kind {
+					t.Fatalf("CheckRollout() services[%d].Kind = %v, want %v", i, gotSvc.Kind, want.kind)
+				}
+				if gotSvc.State != want.state {
+					t.Fatalf("CheckRollout() services[%d].State = %v, want %v", i, gotSvc.State, want.state)
+				}
+				if want.msgSub != "" && !strings.Contains(gotSvc.Message, want.msgSub) {
+					t.Fatalf("CheckRollout() services[%d].Message = %q, want substring %q", i, gotSvc.Message, want.msgSub)
+				}
+			}
 		})
 	}
+}
+
+type wantServiceStatus struct {
+	name   string
+	app    string
+	kind   domain.ServiceKind
+	state  domain.ServiceRolloutState
+	msgSub string
 }
 
 type checkRolloutArtifactOpt struct {
@@ -702,9 +844,15 @@ type checkRolloutArtifactOpt struct {
 	replicas int32
 }
 
+type checkRolloutInfraOpt struct {
+	name string
+	app  string
+}
+
 type checkRolloutEnvOpt struct {
 	artifacts         []checkRolloutArtifactOpt
 	statefulArtifacts []checkRolloutArtifactOpt
+	infras            []checkRolloutInfraOpt
 }
 
 func newCheckRolloutTestEnv(t *testing.T, opt checkRolloutEnvOpt) *domain.Environment {
@@ -735,8 +883,18 @@ func newCheckRolloutTestEnv(t *testing.T, opt checkRolloutEnvOpt) *domain.Enviro
 		})
 	}
 
+	var infras []*domain.InfraSpec
+	for _, i := range opt.infras {
+		infras = append(infras, &domain.InfraSpec{
+			Resource: "mongodb",
+			Profile:  "default",
+			Name:     i.name,
+			App:      i.app,
+		})
+	}
+
 	env, err := domain.NewEnvironment(envName, domain.EnvironmentTypeProd, "check rollout test",
-		&domain.DesiredState{Artifacts: artifacts},
+		&domain.DesiredState{Artifacts: artifacts, Infras: infras},
 	)
 	if err != nil {
 		t.Fatalf("NewEnvironment() failed: %v", err)

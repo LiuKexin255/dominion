@@ -22,24 +22,39 @@ type commandCall struct {
 }
 
 func TestRun(t *testing.T) {
+	var (
+		deployCtx   context.Context
+		cancel      context.CancelFunc
+		describeCtx context.Context
+	)
 	tests := []struct {
-		name        string
-		config      func(t *testing.T, root string) *guitarconfig.Config
-		run         func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error
-		assertError func(t *testing.T, err error)
-		assertCalls func(t *testing.T, calls []commandCall)
-		assertLog   func(t *testing.T, output string, calls []commandCall)
+		name         string
+		config       func(t *testing.T, root string) *guitarconfig.Config
+		run          func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error
+		ctx          func(t *testing.T) context.Context // optional; defaults to context.Background()
+		assertError  func(t *testing.T, err error)
+		assertCalls  func(t *testing.T, calls []commandCall)
+		assertLog    func(t *testing.T, output string, calls []commandCall)
+		assertStderr func(t *testing.T, output string)
 	}{
 		{
 			name: "deploy failure",
 			config: func(t *testing.T, root string) *guitarconfig.Config {
 				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
 			},
+			ctx: func(t *testing.T) context.Context {
+				deployCtx, cancel = context.WithCancel(context.Background())
+				return deployCtx
+			},
 			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
-				return func(_ context.Context, name string, args ...string) error {
+				return func(ctx context.Context, name string, args ...string) error {
 					*calls = append(*calls, commandCall{name: name, args: append([]string(nil), args...)})
 					if name == deployBinary && len(args) >= 2 && args[0] == deployApplyCommand {
+						cancel()
 						return context.DeadlineExceeded
+					}
+					if name == deployBinary && len(args) >= 2 && args[0] == deployDescribeCommand {
+						describeCtx = ctx
 					}
 					return nil
 				}
@@ -50,12 +65,63 @@ func TestRun(t *testing.T) {
 				}
 			},
 			assertCalls: func(t *testing.T, calls []commandCall) {
-				if len(calls) != 2 {
-					t.Fatalf("calls = %d, want 2", len(calls))
+				if len(calls) != 3 {
+					t.Fatalf("calls = %d, want 3", len(calls))
 				}
 				assertCommand(t, calls[0], deployBinary, deployApplyCommand)
 				runID := assertDeployApplyWithRun(t, calls[0])
-				assertCleanupEnv(t, calls[1], "game."+runID)
+				fullEnvName := "game." + runID
+				assertDescribe(t, calls[1], fullEnvName)
+				assertCleanupEnv(t, calls[2], fullEnvName)
+				if describeCtx == nil {
+					t.Fatal("describe command was never called")
+				}
+				if err := describeCtx.Err(); err != nil {
+					t.Fatalf("describe ctx.Err() = %v, want nil (non-cancelable context)", err)
+				}
+				if err := deployCtx.Err(); err == nil {
+					t.Fatal("outer ctx.Err() = nil, want canceled")
+				}
+			},
+		},
+		{
+			name: "deploy failure with describe degradation",
+			config: func(t *testing.T, root string) *guitarconfig.Config {
+				return newConfig(t, newSuite(t, root, "suite-a", "//case:a"))
+			},
+			run: func(t *testing.T, calls *[]commandCall) func(context.Context, string, ...string) error {
+				return func(_ context.Context, name string, args ...string) error {
+					*calls = append(*calls, commandCall{name: name, args: append([]string(nil), args...)})
+					if name == deployBinary && len(args) >= 2 && args[0] == deployApplyCommand {
+						return fmt.Errorf("apply failed")
+					}
+					if name == deployBinary && len(args) >= 2 && args[0] == deployDescribeCommand {
+						return fmt.Errorf("describe unavailable")
+					}
+					return nil
+				}
+			},
+			assertError: func(t *testing.T, err error) {
+				if err == nil || !strings.Contains(err.Error(), "deploy apply") {
+					t.Fatalf("Run() error = %v, want deploy apply error", err)
+				}
+			},
+			assertCalls: func(t *testing.T, calls []commandCall) {
+				if len(calls) != 3 {
+					t.Fatalf("calls = %d, want 3", len(calls))
+				}
+				assertCommand(t, calls[0], deployBinary, deployApplyCommand)
+				runID := assertDeployApplyWithRun(t, calls[0])
+				fullEnvName := "game." + runID
+				assertDescribe(t, calls[1], fullEnvName)
+				assertCleanupEnv(t, calls[2], fullEnvName)
+			},
+			assertStderr: func(t *testing.T, output string) {
+				for _, want := range []string{"warning: 获取环境", "状态失败"} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("stderr = %q, want containing %q", output, want)
+					}
+				}
 			},
 		},
 		{
@@ -252,6 +318,9 @@ func TestRun(t *testing.T) {
 			var logOutput bytes.Buffer
 			originalStdout := stdout
 			stdout = &logOutput
+			var errOutput bytes.Buffer
+			originalStderr := stderr
+			stderr = &errOutput
 			if tt.name == "run id failure" {
 				originalGenerateRunID := generateRunID
 				generateRunID = func() (string, error) {
@@ -264,14 +333,22 @@ func TestRun(t *testing.T) {
 			defer func() {
 				runCommand = originalRunCommand
 				stdout = originalStdout
+				stderr = originalStderr
 			}()
 
-			err := Run(context.Background(), cfg)
+			ctx := context.Background()
+			if tt.ctx != nil {
+				ctx = tt.ctx(t)
+			}
+			err := Run(ctx, cfg)
 
 			tt.assertError(t, err)
 			tt.assertCalls(t, calls)
 			if tt.assertLog != nil {
 				tt.assertLog(t, logOutput.String(), calls)
+			}
+			if tt.assertStderr != nil {
+				tt.assertStderr(t, errOutput.String())
 			}
 		})
 	}
@@ -386,6 +463,18 @@ func assertCleanupEnv(t *testing.T, call commandCall, wantEnvName string) {
 	}
 	if slices.Contains(call.args, "test.env") {
 		t.Fatalf("cleanup args = %v, must not use suite Env", call.args)
+	}
+}
+
+func assertDescribe(t *testing.T, call commandCall, wantEnvName string) {
+	t.Helper()
+
+	assertCommand(t, call, deployBinary, deployDescribeCommand)
+	if !slices.Contains(call.args, "--timeout=10s") {
+		t.Fatalf("describe args = %v, want %q", call.args, "--timeout=10s")
+	}
+	if !slices.Contains(call.args, wantEnvName) {
+		t.Fatalf("describe args = %v, want %q", call.args, wantEnvName)
 	}
 }
 
@@ -712,6 +801,9 @@ func TestReporter(t *testing.T) {
 				if !strings.Contains(output, colorRed) {
 					t.Fatalf("output = %q, want red color %q", output, colorRed)
 				}
+				if !strings.Contains(output, "  --- 环境状态 (env=game.lt000001) ---") {
+					t.Fatalf("output = %q, want deploy diagnostics header", output)
+				}
 			},
 		},
 	}
@@ -755,6 +847,128 @@ func TestReporter(t *testing.T) {
 
 			_ = Run(context.Background(), cfg)
 			tt.assertOutput(t, logOutput.String())
+		})
+	}
+}
+
+func TestDeployDiagnostics(t *testing.T) {
+	tests := []struct {
+		name     string
+		useColor bool
+		envName  string
+	}{
+		{name: "plain output", useColor: false, envName: "game.lt3x8q2"},
+		{name: "no ANSI even in TTY mode", useColor: true, envName: "game.lt3x8q2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalCheckTerminal := checkTerminal
+			checkTerminal = func(io.Writer) bool { return tt.useColor }
+			defer func() { checkTerminal = originalCheckTerminal }()
+
+			var buf bytes.Buffer
+			r := NewReporter(&buf)
+			r.DeployDiagnostics(tt.envName)
+
+			want := fmt.Sprintf("  --- 环境状态 (env=%s) ---\n", tt.envName)
+			if got := buf.String(); got != want {
+				t.Fatalf("DeployDiagnostics(%q) = %q, want %q", tt.envName, got, want)
+			}
+			if strings.Contains(buf.String(), "\x1b[") {
+				t.Fatalf("DeployDiagnostics(%q) = %q, must not contain ANSI codes", tt.envName, buf.String())
+			}
+		})
+	}
+}
+
+func TestSummary(t *testing.T) {
+	tests := []struct {
+		name         string
+		useColor     bool
+		results      []*SuiteResult
+		assertOutput func(t *testing.T, output string)
+	}{
+		{
+			name:    "empty results produces no output",
+			results: nil,
+			assertOutput: func(t *testing.T, output string) {
+				if output != "" {
+					t.Fatalf("output = %q, want empty", output)
+				}
+			},
+		},
+		{
+			name:     "single success no color",
+			useColor: false,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				for _, want := range []string{
+					"--- Summary ---",
+					"total: 1, passed: 1, failed: 0",
+					"  suite-a: success",
+				} {
+					if !strings.Contains(output, want) {
+						t.Fatalf("output = %q, want containing %q", output, want)
+					}
+				}
+				if strings.Contains(output, "\x1b[") {
+					t.Fatalf("output = %q, must not contain ANSI codes", output)
+				}
+			},
+		},
+		{
+			name:     "all pass uses green counts in TTY",
+			useColor: true,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+				{Name: "suite-b", Status: statusSuccess},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				if !strings.Contains(output, colorGreen+"total: 2, passed: 2, failed: 0"+colorReset) {
+					t.Fatalf("output = %q, want green counts line", output)
+				}
+				if strings.Contains(output, colorRed) {
+					t.Fatalf("output = %q, must not contain red", output)
+				}
+			},
+		},
+		{
+			name:     "mixed results use red counts and per-suite colors",
+			useColor: true,
+			results: []*SuiteResult{
+				{Name: "suite-a", Status: statusSuccess},
+				{Name: "suite-b", Status: statusFailure, Err: fmt.Errorf("boom")},
+			},
+			assertOutput: func(t *testing.T, output string) {
+				if !strings.Contains(output, colorRed+"total: 2, passed: 1, failed: 1"+colorReset) {
+					t.Fatalf("output = %q, want red counts line", output)
+				}
+				if !strings.Contains(output, colorGreen+"success"+colorReset) {
+					t.Fatalf("output = %q, want green success", output)
+				}
+				if !strings.Contains(output, colorRed+"failure"+colorReset) {
+					t.Fatalf("output = %q, want red failure", output)
+				}
+				if !strings.Contains(output, "suite-b: "+colorRed+"failure"+colorReset+", error: boom") {
+					t.Fatalf("output = %q, want failure line with error", output)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalCheckTerminal := checkTerminal
+			checkTerminal = func(io.Writer) bool { return tt.useColor }
+			defer func() { checkTerminal = originalCheckTerminal }()
+
+			var buf bytes.Buffer
+			r := NewReporter(&buf)
+			r.Summary(tt.results)
+			tt.assertOutput(t, buf.String())
 		})
 	}
 }

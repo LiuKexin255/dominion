@@ -11,7 +11,6 @@ go_library(
         "//common/gopkg/mongo",
         "//common/gopkg/otel",
         "//projects/game",
-        "//projects/game/prompt/domain",
         "//projects/game/prompt/handler",
         "//projects/game/prompt/runtime/mongo",
         "@org_golang_google_grpc//:grpc",

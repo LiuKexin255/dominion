@@ -1,16 +1,40 @@
 /**
- * handler.ts — AgentServiceServer gRPC handler implementations.
+ * handler.ts — TeamServiceServer gRPC handler implementations.
  *
- * Implements GetAgent, ListMessages, and Connect RPCs for the AgentService
- * defined in game.proto.
+ * Implements CreateTeam, GetTeam, Connect, ListMessages and RefreshTeam for
+ * the TeamService defined in game.proto (specs/031-team-template-mode/
+ * contracts/api-contract.md §2.2 — replaces the former AgentService
+ * handlers).
  *
- * The handler delegates adapter lifecycle to SessionAgentStore.  Each
- * SessionAgent owns its adapter and manages profile binding/switching.
+ * - **CreateTeam** (AIP-133): the ONLY Team creation point — explicitly
+ *   creates the session's team from a caller-supplied TeamProfile
+ *   (full resource name, AIP-122). There is no lazy creation anymore: every
+ *   other RPC requires the team to already exist (Agent 移除懒加载模式,
+ *   design decision — the former implicit creation with a fixed default
+ *   profile is removed).
+ * - **GetTeam**: returns the Team resource (agents = the template schema's
+ *   `SAOLEI_TEAM_AGENTS` description, D3 — typed, not hard-coded). Requires
+ *   the team to have been created; otherwise NOT_FOUND.
+ * - **Connect**: bidirectional stream. User-input frames route to the team
+ *   agent that `accepts_user_input` (FR-032 — saolei: player only; planner
+ *   is an observation view). Frames carry the producing agent's name
+ *   (`AgentFrame.agent`, D12). Operation results from the desktop
+ *   (flowParts/flow_result) route to the session's `OperationBridge`.
+ *   Frames for a session whose team was not created are rejected with
+ *   NOT_FOUND (delivered over the stream's error channel — see Connect).
+ * - **ListMessages**: reconstructs one agent's message partition from the
+ *   checkpoint state's per-agent channel (`playerMessages`/`plannerMessages`,
+ *   FR-005 / A3); `Message.agent` carries the owning agent. Requires the
+ *   team to exist; otherwise NOT_FOUND.
+ * - **RefreshTeam**: clears the session's short-term memory (FR-018 via
+ *   `SessionTeam.refreshTeam`); rejected while a turn is in flight.
+ *   Requires the team to exist; otherwise NOT_FOUND.
  *
- * Frame contract (Part model): every AgentFrame carries exactly one payload —
- * a PartBlock of content OR a single control signal (wait/warn/status).  User
- * turns and agent output are both content frames distinguished only by
- * `sender`; tool results are content frames carrying a ToolResultPart.
+ * Frame contract (Part model, unchanged from spec 023/025/030): every
+ * AgentFrame carries exactly one payload — a MessageParts batch (display) OR
+ * a FlowParts batch (control). User turns and agent output are both display
+ * frames distinguished by `sender`; operation results from the desktop are
+ * control frames carrying a FlowResultPart.
  */
 
 import * as grpc from "@grpc/grpc-js";
@@ -19,19 +43,26 @@ import { info, warn, error } from "@dominion/common-js-logs";
 
 import type { BaseMessage } from "@langchain/core/messages";
 
-import type { AgentServiceHandlers } from "../game_types/projects/game/AgentService";
-import type { Agent as AgentMessage } from "../game_types/projects/game/Agent";
+import type { TeamServiceHandlers } from "../game_types/projects/game/TeamService";
+import type { Team } from "../game_types/projects/game/Team";
+import type { TeamAgent } from "../game_types/projects/game/TeamAgent";
 import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-import type { Part } from "../game_types/projects/game/Part";
-import type { ImagePart } from "../game_types/projects/game/ImagePart";
-import type { MouseMovePart } from "../game_types/projects/game/MouseMovePart";
-import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart";
+import type { MessagePart } from "../game_types/projects/game/MessagePart";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
+import type { TeamStateValue } from "./team/state";
 
-import type { PromptClient } from "./prompt-client";
-import type { SessionAgentStore } from "./session-agent";
+import { PRIMARY_AGENT_NAME, TeamAlreadyExistsError } from "./session-team";
+import type { SessionTeamStore } from "./session-team";
 import type { TurnContent } from "./llm";
+import { extractToolCalls, readToolResultStatus } from "./llm";
+import type { SinkHandle } from "./operation-bridge";
+import { parseToolResultFields } from "./tools/shared/result-blocks";
+import { deriveStatusSignal } from "./status-signal";
+import { SAOLEI_TEAM_AGENTS } from "./team/graph";
+import type { TeamAgent as TeamAgentSchema } from "./team/graph";
 
 /**
  * FrameSender enum values (proto string literals). Defined locally rather
@@ -46,106 +77,185 @@ const FrameSender = {
   FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
 } as const;
 
-const StatusSignalStatus = {
-  STATUS_SIGNAL_STATUS_UNSPECIFIED: "STATUS_SIGNAL_STATUS_UNSPECIFIED",
-  STATUS_SIGNAL_STATUS_ACTIVE: "STATUS_SIGNAL_STATUS_ACTIVE",
-  STATUS_SIGNAL_STATUS_IDLE: "STATUS_SIGNAL_STATUS_IDLE",
-} as const;
+/** The per-agent message channel map (D5 / FR-005). */
+const AGENT_CHANNELS: Record<string, "playerMessages" | "plannerMessages"> = {
+  player: "playerMessages",
+  planner: "plannerMessages",
+};
 
-export class Handler implements AgentServiceHandlers {
+export class Handler implements TeamServiceHandlers {
   [name: string]: any;
 
-  private promptClient: PromptClient;
-  private sessionAgentStore: SessionAgentStore;
-  private mutexes: Map<string, Promise<void>>;
-  private heldMutexes: Set<string>;
+  private sessionTeamStore: SessionTeamStore;
 
-  constructor(
-    promptClient: PromptClient,
-    sessionAgentStore: SessionAgentStore,
-  ) {
-    this.promptClient = promptClient;
-    this.sessionAgentStore = sessionAgentStore;
-    this.mutexes = new Map();
-    this.heldMutexes = new Set();
+  constructor(sessionTeamStore: SessionTeamStore) {
+    this.sessionTeamStore = sessionTeamStore;
   }
 
   // -----------------------------------------------------------------------
-  // Same-session mutex helpers (FIFO, non-reentrant)
+  // CreateTeam (AIP-133 — the only Team creation point)
   // -----------------------------------------------------------------------
 
-  private async acquireMutex(sessionId: string): Promise<void> {
-    const prev = this.mutexes.get(sessionId) ?? Promise.resolve();
-    let release!: () => void;
-    const next = new Promise<void>((r) => {
-      release = r;
-    });
-    this.mutexes.set(sessionId, prev.then(() => next));
-    await prev;
-    this.heldMutexes.add(sessionId);
-    (this.mutexes as any)[`_release_${sessionId}`] = release;
-  }
+  CreateTeam: grpc.handleUnaryCall<{ parent?: string; profile?: string }, Team> =
+    async (call, callback) => {
+      const parent = call.request.parent ?? "";
+      const profile = call.request.profile ?? "";
 
-  private releaseMutex(sessionId: string): void {
-    const release = (this.mutexes as any)[`_release_${sessionId}`];
-    if (release) {
-      this.heldMutexes.delete(sessionId);
-      release();
-    }
-  }
+      // AIP-133: parent = "templates/{template}/sessions/{session}". The
+      // profile is the TeamProfile full resource name
+      // "templates/{template}/profiles/{profile}" (AIP-122): its template
+      // segment MUST match the parent's — validated explicitly, no implicit
+      // rules (spec 031-team-template-mode directive 2).
+      const sessionParent = parseSessionParent(parent);
+      const profileName = parseProfileName(profile);
+      if (!sessionParent || !profileName) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          details: `parent must be templates/{template}/sessions/{session} and profile must be templates/{template}/profiles/{profile}`,
+        } as grpc.ServiceError);
+        return;
+      }
+      if (profileName.template !== sessionParent.template) {
+        callback({
+          code: grpc.status.INVALID_ARGUMENT,
+          details: `profile template ${profileName.template} does not match parent template ${sessionParent.template}`,
+        } as grpc.ServiceError);
+        return;
+      }
 
-  private isMutexHeld(sessionId: string): boolean {
-    return this.heldMutexes.has(sessionId);
-  }
+      try {
+        // Re-entry is profile-conditional (user refinement — api-contract.md
+        // §2.2): same profile → idempotent, returns the existing team; a
+        // different profile rejects with TeamAlreadyExistsError below.
+        await this.sessionTeamStore.create(
+          sessionParent.sessionId,
+          sessionParent.template,
+          profileName.profileId,
+        );
+        info("team created", { sessionId: sessionParent.sessionId });
+        callback(null, buildTeamResource(`${parent}/team`));
+      } catch (err: unknown) {
+        // A re-entry with a different profile is a configuration mismatch,
+        // not an idempotent retry: ALREADY_EXISTS with the existing profile
+        // in the details (user refinement — api-contract.md §2.2).
+        if (err instanceof TeamAlreadyExistsError) {
+          callback({
+            code: grpc.status.ALREADY_EXISTS,
+            details: err.message,
+          } as grpc.ServiceError);
+          return;
+        }
+        const message =
+          err instanceof Error ? err.message : "Failed to create team";
+        error("create team failed", {
+          sessionId: sessionParent.sessionId,
+          error: message,
+        });
+        // Propagate a downstream gRPC status (e.g. the TeamProfile's
+        // NOT_FOUND from the prompt service) unchanged; fall back to
+        // INTERNAL for non-status errors.
+        const code =
+          err instanceof Error &&
+          typeof (err as grpc.ServiceError).code === "number"
+            ? (err as grpc.ServiceError).code
+            : grpc.status.INTERNAL;
+        callback({ code, details: message } as grpc.ServiceError);
+      }
+    };
 
   // -----------------------------------------------------------------------
-  // GetAgent
+  // GetTeam
   // -----------------------------------------------------------------------
 
-  GetAgent: grpc.handleUnaryCall<{ name?: string }, AgentMessage> = (
+  GetTeam: grpc.handleUnaryCall<{ name?: string }, Team> = (
     call,
     callback,
   ) => {
     const name = call.request.name ?? "";
-    const sessionId = extractSessionId(name);
-    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-    const state = sessionAgent.getAdapterState();
-
-    const agent: AgentMessage = {
-      name,
-      sessionId,
-      agentProfileName: state.activeProfileName ?? "",
-      createTime: timestampNow(),
-    };
-
-    callback(null, agent);
-  };
-
-  // -----------------------------------------------------------------------
-  // RefreshAgent
-  // -----------------------------------------------------------------------
-
-  RefreshAgent: grpc.handleUnaryCall<{ name?: string }, {}> = (
-    call,
-    callback,
-  ) => {
-    const sessionId = extractSessionId(call.request.name ?? "");
-    info("refresh agent requested", { sessionId });
-
-    if (this.isMutexHeld(sessionId)) {
-      warn("refresh agent rejected: turn in-flight", { sessionId });
+    // AIP-131: the name identifies the Team resource
+    // "templates/{template}/sessions/{session}/team". The agents come from
+    // the template's graph schema (D3) — a pure resource-description read.
+    // The team must have been created via CreateTeam first: a missing team
+    // is NOT_FOUND (the desktop uses this as its create-if-missing probe).
+    const { template, sessionId } = parseTeamName(name);
+    if (!template || !sessionId) {
       callback({
-        code: grpc.status.FAILED_PRECONDITION,
-        details: "cannot refresh agent while a turn is in-flight",
+        code: grpc.status.INVALID_ARGUMENT,
+        details: `invalid team name: ${name}`,
       } as grpc.ServiceError);
       return;
     }
 
-    const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-    sessionAgent.invalidateAdapter();
-    info("refresh agent completed", { sessionId });
+    if (!this.sessionTeamStore.get(sessionId)) {
+      callback({
+        code: grpc.status.NOT_FOUND,
+        details: `team not created for session ${sessionId}; call CreateTeam first`,
+      } as grpc.ServiceError);
+      return;
+    }
 
-    callback(null, {});
+    const team: Team = buildTeamResource(name);
+
+    callback(null, team);
+  };
+
+  // -----------------------------------------------------------------------
+  // RefreshTeam
+  // -----------------------------------------------------------------------
+
+  RefreshTeam: grpc.handleUnaryCall<{ name?: string }, {}> = async (
+    call,
+    callback,
+  ) => {
+    const name = call.request.name ?? "";
+    const { template, sessionId } = parseTeamName(name);
+    if (!template || !sessionId) {
+      callback({
+        code: grpc.status.INVALID_ARGUMENT,
+        details: `invalid team name: ${name}`,
+      } as grpc.ServiceError);
+      return;
+    }
+    info("refresh team requested", { sessionId });
+
+    // The team must have been created via CreateTeam first (no lazy
+    // creation). A session without a team has no short-term memory to clear
+    // — NOT_FOUND, consistent with GetTeam/ListMessages (api-contract §2.2).
+    const team = this.sessionTeamStore.get(sessionId);
+    if (!team) {
+      callback({
+        code: grpc.status.NOT_FOUND,
+        details: `team not created for session ${sessionId}; call CreateTeam first`,
+      } as grpc.ServiceError);
+      return;
+    }
+
+    // Reject Refresh while a turn is in flight: the per-session TurnLoop is
+    // the single-flight owner; `isRunning()` covers "turn in flight OR
+    // draining queued work" (specs/030-queued-chat-input/contracts/
+    // turn-loop-contract.md).
+    if (team.isRunning()) {
+      warn("refresh team rejected: turn in-flight", { sessionId });
+      callback({
+        code: grpc.status.FAILED_PRECONDITION,
+        details: "cannot refresh team while a turn is in-flight",
+      } as grpc.ServiceError);
+      return;
+    }
+
+    try {
+      await team.refreshTeam();
+      info("refresh team completed", { sessionId });
+      callback(null, {});
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to refresh team";
+      error("refresh team failed", { sessionId, error: message });
+      callback({
+        code: grpc.status.INTERNAL,
+        details: message,
+      } as grpc.ServiceError);
+    }
   };
 
   // -----------------------------------------------------------------------
@@ -156,18 +266,19 @@ export class Handler implements AgentServiceHandlers {
     // Oneof case names for AgentFrame.payload (game.proto). proto-loader only
     // populates the `payload` discriminator during (de)serialization; outbound
     // raw frame objects built here must carry it explicitly so the frame is
-    // self-describing and matches the contract the handler itself relies on
-    // when reading inbound frames (`frame.payload === "content"` etc.).
-    const PAYLOAD_ONEOF_KEYS = ["content", "wait", "warn", "status"] as const;
+    // self-describing.
+    const PAYLOAD_ONEOF_KEYS = ["messageParts", "flowParts"] as const;
 
     const buildFrame = (
       sessionId: string,
+      templateId: string,
       sender: (typeof FrameSender)[keyof typeof FrameSender],
       payload: Partial<AgentFrame>,
     ): AgentFrame => {
       const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
       return {
         sessionId,
+        templateId,
         frameId: randomUUID(),
         sender,
         createTime: timestampNow(),
@@ -176,224 +287,227 @@ export class Handler implements AgentServiceHandlers {
       };
     };
 
-    // Track sessions whose bridge sink was registered on this stream. The
-    // bridge is per-SessionAgent, so reconnect cleanup must iterate them all.
-    const activeSessions = new Set<string>();
+    // Track the sink handle each session installed on this stream, keyed by
+    // session id. cleanupSinks passes the handle to unregisterSink so only
+    // THIS stream's sink is cleared (compare-and-delete)
+    // (specs/021-agent-session-resync/contracts/agent-session-lifecycle-contract.md §1).
+    const sessionSinkHandles = new Map<string, SinkHandle>();
     const cleanupSinks = () => {
-      for (const sid of activeSessions) {
+      for (const [sid, handle] of sessionSinkHandles) {
         try {
-          const sa = this.sessionAgentStore.getOrCreate(sid);
-          sa.getBridge().unregisterSink();
-        } catch {
+          const team = this.sessionTeamStore.get(sid);
+          team?.getBridge().unregisterSink(handle);
+        } catch (err) {
+          warn("cleanupSinks: failed to unregister sink", {
+            sessionId: sid,
+            error: String(err),
+          });
         }
       }
-      activeSessions.clear();
+      sessionSinkHandles.clear();
     };
 
-    // Per-turn AbortControllers for sessions with an in-flight generateTurn.
-    // Cleared in finally after the turn resolves OR aborted by abortAllTurns
-    // on stream end/error.
-    const activeTurns = new Map<string, AbortController>();
-    const abortAllTurns = () => {
-      // Snapshot values first: finally blocks will asynchronously delete
-      // entries as each aborted turn unwinds.
-      for (const controller of [...activeTurns.values()]) {
-        controller.abort();
+    // Sessions whose per-session TurnLoop emit sink is THIS stream. On stream
+    // end/error the loop must stop emitting to the dead peer: abortLoops calls
+    // team.abort() for each (clears the queue + emits a final `wait`).
+    const activeLoopSessions = new Set<string>();
+    const abortLoops = () => {
+      for (const sid of [...activeLoopSessions.values()]) {
+        try {
+          this.sessionTeamStore.get(sid)?.abort();
+        } catch (err) {
+          warn("abortLoops: failed to abort session loop", {
+            sessionId: sid,
+            error: String(err),
+          });
+        }
       }
-      activeTurns.clear();
+      activeLoopSessions.clear();
     };
 
     stream.on("data", async (frame) => {
-      const sessionId = frame.sessionId ?? "";
-
-      if (frame.payload === "status") {
-        const sessionAgent = this.sessionAgentStore.getOrCreate(sessionId);
-        const state = sessionAgent.getAdapterState();
-        const statusFrame: AgentFrame = buildFrame(
-          sessionId,
-          FrameSender.FRAME_SENDER_SYSTEM,
-          {
-            status: {
-              status: state.isBound
-                ? StatusSignalStatus.STATUS_SIGNAL_STATUS_IDLE
-                : StatusSignalStatus.STATUS_SIGNAL_STATUS_UNSPECIFIED,
-            },
-          },
-        );
-        stream.write(statusFrame);
+      // The gateway injects the BARE session_id (and template_id) from the
+      // connect URL path into every inbound frame (specs/031-team-template-mode/
+      // contracts/api-contract.md §2.2), so the normal path always yields a
+      // bare session id. extractSessionId additionally tolerates the full
+      // resource-name form defensively (legacy/direct-proxy callers), and
+      // frame.templateId is read verbatim (bare by construction) with an
+      // empty-string fallback for the same defensive path.
+      const sessionId = extractSessionId(frame.sessionId ?? "");
+      const templateId = frame.templateId ?? "";
+      if (!sessionId) {
+        warn("connect frame with no session id", {});
         return;
       }
 
-      // Control signals that terminate a turn / flag a warning. The agent
-      // never initiates on these, so inbound wait/warn are acknowledged as
-      // no-ops (logged) rather than driving any turn state.
-      if (frame.payload === "wait") {
-        info("wait signal received from peer", { sessionId });
-        return;
-      }
-      if (frame.payload === "warn") {
-        const message = frame.warn?.message ?? "";
-        warn("warn signal received from peer", { sessionId, message });
-        return;
-      }
+      // Control-only FlowParts (operation result / wait / warn / status). A
+      // flow_result FlowPart is the desktop's operation-execution outcome on
+      // the control channel — route it to the bridge (spec 025 FR-023/FR-025).
+      // A status FlowPart is the desktop's connectivity probe — respond with
+      // the session's working-state signal.
+      if (frame.payload === "flowParts") {
+        const parts = frame.flowParts?.parts ?? [];
 
-      if (frame.payload === "content") {
-        const parts = frame.content?.parts ?? [];
-
-        // Tool results from the desktop arrive as content carrying
-        // ToolResultPart(s); route them to the bridge before any user-turn
-        // handling.
-        const toolResults = parts.filter((p: Part) => p.toolResult);
-        if (toolResults.length > 0) {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
-          for (const p of toolResults) {
-            sa.getBridge().handleResult(p.toolResult as ToolResultPart);
+        const flowResults = parts.filter((p: FlowPart) => p.flowResult);
+        if (flowResults.length > 0) {
+          // A flow_result can only be routed once the session's team exists
+          // (CreateTeam is the only creation point). A stray result for an
+          // uncreated session is dropped — the desktop cannot have dispatched
+          // an operation without a live team, so this is a protocol anomaly.
+          const team = this.sessionTeamStore.get(sessionId);
+          if (!team) {
+            warn("flow_result ignored: team not created", { sessionId });
+            return;
+          }
+          for (const p of flowResults) {
+            team.getBridge().handleResult(p.flowResult as FlowResultPart);
           }
           return;
         }
 
-        // Only user-sent content drives a turn.
+        const statusPart = parts.find((p: FlowPart) => p.status);
+        if (statusPart) {
+          const team = this.sessionTeamStore.get(sessionId);
+          const statusFrame: AgentFrame = buildFrame(
+            sessionId,
+            templateId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              agent: PRIMARY_AGENT_NAME,
+              flowParts: {
+                parts: [
+                  {
+                    status: {
+                      status: deriveStatusSignal(
+                        team?.isRunning() ?? false,
+                        team !== undefined,
+                      ),
+                    },
+                  },
+                ],
+              },
+            },
+          );
+          safeWrite(stream, statusFrame, sessionId);
+          return;
+        }
+        for (const p of parts) {
+          if (p.wait) {
+            info("wait signal received from peer", { sessionId });
+          } else if (p.warn) {
+            const message = p.warn.message ?? "";
+            warn("warn signal received from peer", { sessionId, message });
+          }
+        }
+        return;
+      }
+
+      if (frame.payload === "messageParts") {
+        const parts = frame.messageParts?.parts ?? [];
+
+        // Only user-sent content drives a turn (operation results arrive as
+        // flowParts/flow_result on the control channel, not here).
         if (frame.sender !== FrameSender.FRAME_SENDER_USER) {
           return;
         }
 
-        const userText = parts
-          .map((p: Part) => p.text?.content ?? "")
-          .join("");
-        const imagePart = parts.map((p: Part) => p.image).find(Boolean);
-
-        let effectiveProfileName = frame.agentProfileName ?? "";
-        if (!effectiveProfileName) {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
-          const state = sa.getAdapterState();
-          if (state.isBound && state.activeProfileName) {
-            effectiveProfileName = state.activeProfileName;
-          }
-        }
-
-        if (!effectiveProfileName) {
-          warn("no agent profile name for user content frame", { sessionId });
+        // User-input routing (FR-032): route to the team agent that accepts
+        // user input. The frame's `agent` names the target; empty falls back
+        // to the (first) accepts-user-input agent — saolei: player. A target
+        // that does not accept user input (planner) or is unknown to the
+        // template schema is rejected with warn + wait (the desktop's
+        // planner tab is input-blocked, observation-only).
+        const targetAgent = resolveUserInputAgent(frame.agent ?? "");
+        if (!targetAgent) {
+          const received = frame.agent ?? "";
+          warn("user input rejected: agent does not accept user input", {
+            sessionId,
+            agent: received,
+          });
           const warnFrame: AgentFrame = buildFrame(
             sessionId,
+            templateId,
             FrameSender.FRAME_SENDER_SYSTEM,
             {
-              warn: {
-                message: "agent_profile_name required",
+              agent: PRIMARY_AGENT_NAME,
+              flowParts: {
+                parts: [
+                  {
+                    warn: {
+                      message: `agent '${received}' does not accept user input (observation view); route input to '${PRIMARY_AGENT_NAME}'`,
+                    },
+                  },
+                ],
               },
             },
           );
-          stream.write(warnFrame);
+          safeWrite(stream, warnFrame, sessionId);
+          const waitFrame: AgentFrame = buildFrame(
+            sessionId,
+            templateId,
+            FrameSender.FRAME_SENDER_SYSTEM,
+            {
+              agent: PRIMARY_AGENT_NAME,
+              flowParts: { parts: [{ wait: {} }] },
+            },
+          );
+          safeWrite(stream, waitFrame, sessionId);
           return;
         }
 
-        await this.acquireMutex(sessionId);
-        const controller = new AbortController();
-        activeTurns.set(sessionId, controller);
-        try {
-          const sa = this.sessionAgentStore.getOrCreate(sessionId);
+        const userText = parts
+          .map((p: MessagePart) => p.text?.content ?? "")
+          .join("");
+        const imagePart = parts.map((p: MessagePart) => p.image).find(Boolean);
 
-          sa.getBridge().registerSink((contentEnvelope: AgentFrame) => {
-            stream.write(contentEnvelope);
-          });
-          activeSessions.add(sessionId);
-
-          const adapter = await sa.getOrCreateAdapter(
-            effectiveProfileName,
-            () => this.promptClient.getProfile(effectiveProfileName),
-          );
-
-          const turnContent: TurnContent = { text: userText };
-          if (imagePart?.data) {
-            turnContent.imageData = bytesToBase64String(imagePart.data);
-            turnContent.imageMimeType = encodingToMime(imagePart.encoding);
-            turnContent.imageWidthPx = imagePart.widthPx;
-            turnContent.imageHeightPx = imagePart.heightPx;
-          }
-
-          let blockCount = 0;
-          for await (const block of adapter.generateTurn(
-            sessionId,
-            turnContent,
-            controller.signal,
-          )) {
-            blockCount++;
-            if (block.type === "reasoning") {
-              const thinkFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  content: {
-                    parts: [{ thinking: { content: block.reasoning } }],
-                  },
-                },
-              );
-              stream.write(thinkFrame);
-            } else if (block.type === "text") {
-              const textFrame: AgentFrame = buildFrame(
-                sessionId,
-                FrameSender.FRAME_SENDER_AGENT,
-                {
-                  agentProfileName: effectiveProfileName,
-                  content: {
-                    parts: [{ text: { content: block.text } }],
-                  },
-                },
-              );
-              stream.write(textFrame);
-            }
-          }
-
-          if (controller.signal.aborted) {
-            info("turn aborted on desktop disconnect", { sessionId });
-          } else {
-            info("user content processing completed", {
-              sessionId,
-              blockCount,
-            });
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                agentProfileName: effectiveProfileName,
-                wait: {},
-              },
-            );
-            stream.write(waitFrame);
-          }
-        } catch (err: unknown) {
-          if (controller.signal.aborted) {
-            info("turn aborted on desktop disconnect", { sessionId });
-          } else {
-            const message =
-              err instanceof Error ? err.message : "Processing error";
-            error("LLM processing failed", { sessionId, error: message });
-            const warnFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              {
-                warn: { message: `Processing error: ${message}` },
-              },
-            );
-            stream.write(warnFrame);
-
-            const waitFrame: AgentFrame = buildFrame(
-              sessionId,
-              FrameSender.FRAME_SENDER_SYSTEM,
-              { agentProfileName: effectiveProfileName, wait: {} },
-            );
-            stream.write(waitFrame);
-          }
-        } finally {
-          activeTurns.delete(sessionId);
-          this.releaseMutex(sessionId);
+        // The team must exist before a turn can run — CreateTeam is the only
+        // creation point (no lazy creation). grpc-js delivers a bidi stream's
+        // final status from an 'error' event on the stream
+        // (ServerDuplexStreamImpl: this.on('error', ...) sets the pending
+        // status and ends — @grpc/grpc-js server-call.js), so emit the
+        // NOT_FOUND service error directly.
+        const team = this.sessionTeamStore.get(sessionId);
+        if (!team) {
+          warn("connect frame rejected: team not created", { sessionId });
+          stream.emit("error", {
+            code: grpc.status.NOT_FOUND,
+            details: `team not created for session ${sessionId}; call CreateTeam first`,
+          } as grpc.ServiceError);
+          return;
         }
+
+        // Register the operation-channel sink on the bridge so flow_result
+        // routing continues to work (spec 025 FR-023/FR-025).
+        const handle = team.getBridge().registerSink(
+          (contentEnvelope: AgentFrame) => {
+            safeWrite(stream, contentEnvelope, sessionId);
+          },
+        );
+        sessionSinkHandles.set(sessionId, handle);
+
+        const turnContent: TurnContent = { text: userText };
+        if (imagePart?.data) {
+          turnContent.imageData = bytesToBase64String(imagePart.data);
+          turnContent.imageMimeType = encodingToMime(imagePart.encoding);
+          turnContent.imageWidthPx = imagePart.widthPx;
+          turnContent.imageHeightPx = imagePart.heightPx;
+        }
+
+        // Route the user content to the per-session TurnLoop (single-flight
+        // owner). `submit` is non-blocking: a frame arriving while a turn is
+        // in flight is buffered (FR-002) and becomes the next turn on the
+        // same thread_id.
+        activeLoopSessions.add(sessionId);
+        team.submit(turnContent, (frame: AgentFrame) => {
+          safeWrite(stream, frame, sessionId);
+        });
+        return;
       }
     });
 
     stream.on("error", (err: Error) => {
       error("connect stream error", { error: err.message });
-      abortAllTurns();
+      abortLoops();
       cleanupSinks();
       try {
         stream.end();
@@ -404,7 +518,7 @@ export class Handler implements AgentServiceHandlers {
 
     stream.on("end", () => {
       info("connect stream ended");
-      abortAllTurns();
+      abortLoops();
       cleanupSinks();
     });
   };
@@ -420,27 +534,41 @@ export class Handler implements AgentServiceHandlers {
     { messages?: MessageProto[]; nextPageToken?: string }
   > = async (call, callback) => {
     const parent = call.request.parent ?? "";
+    // parent = "templates/{template}/sessions/{session}/team/agents/{agent}"
+    // (FR-005). The {agent} names the message partition.
+    const parsed = parseMessagesParent(parent);
+    if (!parsed) {
+      callback({
+        code: grpc.status.INVALID_ARGUMENT,
+        details: `invalid messages parent: ${parent}`,
+      } as grpc.ServiceError);
+      return;
+    }
+    const { template, sessionId, agent } = parsed;
 
-    const sessionId = extractSessionId(parent);
+    const channel = AGENT_CHANNELS[agent];
+    if (!channel) {
+      callback({
+        code: grpc.status.INVALID_ARGUMENT,
+        details: `unknown team agent: ${agent}`,
+      } as grpc.ServiceError);
+      return;
+    }
 
     try {
-      const sessionAgent = this.sessionAgentStore.get(sessionId);
-      const adapter = sessionAgent?.getAdapter();
-
-      if (!adapter) {
-        callback(null, { messages: [], nextPageToken: "" });
+      // The team must have been created via CreateTeam first (no lazy
+      // creation): a session without a team has no checkpoint — NOT_FOUND.
+      const team = this.sessionTeamStore.get(sessionId);
+      if (!team) {
+        callback({
+          code: grpc.status.NOT_FOUND,
+          details: `team not created for session ${sessionId}; call CreateTeam first`,
+        } as grpc.ServiceError);
         return;
       }
 
-      const state = await adapter.getState(sessionId);
-
-      const rawMessages: BaseMessage[] = state?.values?.messages ?? [];
-      const checkpointTs: string | undefined = state?.createdAt as
-        | string
-        | undefined;
-      const createTime = checkpointTs
-        ? timestampFromMs(new Date(checkpointTs).getTime())
-        : undefined;
+      const state = await team.getTeamState();
+      const rawMessages: BaseMessage[] = state?.[channel] ?? [];
       const result: MessageProto[] = [];
 
       for (const msg of rawMessages) {
@@ -449,7 +577,6 @@ export class Handler implements AgentServiceHandlers {
         if (msgType === "system") {
           continue;
         }
-
         if (msgType !== "human" && msgType !== "ai" && msgType !== "tool") {
           continue;
         }
@@ -461,13 +588,32 @@ export class Handler implements AgentServiceHandlers {
               ? FrameSender.FRAME_SENDER_AGENT
               : FrameSender.FRAME_SENDER_SYSTEM;
 
-        const parts: Part[] = [];
+        const parts: MessagePart[] = [];
 
         if (msgType === "tool") {
-          const toolResult = reconstructToolResult(msg.content);
-          if (toolResult) {
-            parts.push({ toolResult });
+          // ToolMessage → tool_result MessagePart. Status is read verbatim
+          // from additional_kwargs.toolResultStatus (the real outcome
+          // carried by US2); absent → UNSPECIFIED (neutral, NEVER FAILED —
+          // spec 023 FR-014/FR-015). message + screenshot come from the
+          // content blocks via the shared parser used by the live path too.
+          const statusRaw = readToolResultStatus(msg) as ToolResultPart["status"];
+          const toolCallId = (msg as unknown as { tool_call_id?: string })
+            .tool_call_id;
+          const parsedFields = parseToolResultFields(msg.content);
+          const toolResultPart: ToolResultPart = {
+            toolId: toolCallId ?? "",
+            status: statusRaw,
+            message: parsedFields.message,
+          };
+          if (parsedFields.screenshot) {
+            toolResultPart.screenshot = {
+              encoding: "IMAGE_ENCODING_PNG",
+              data: parsedFields.screenshot.data,
+              widthPx: parsedFields.screenshot.widthPx,
+              heightPx: parsedFields.screenshot.heightPx,
+            };
           }
+          parts.push({ toolResult: toolResultPart });
         } else {
           if (typeof msg.content === "string") {
             if (msg.content) {
@@ -506,12 +652,16 @@ export class Handler implements AgentServiceHandlers {
             }
           }
 
-          // AI tool_calls reconstruct as MouseMovePart / MouseClickPart parts
-          // so operation history renders identically to live tool dispatch.
+          // AIMessage.tool_calls reconstruct as tool_call MessageParts.
           if (msgType === "ai") {
             for (const call of extractToolCalls(msg)) {
-              const part = toolCallToPart(call);
-              if (part) parts.push(part);
+              parts.push({
+                toolCall: {
+                  toolId: call.id ?? "",
+                  name: call.name ?? "",
+                  argsJson: JSON.stringify(call.args ?? {}),
+                },
+              });
             }
           }
         }
@@ -521,11 +671,11 @@ export class Handler implements AgentServiceHandlers {
         }
 
         result.push({
-          name: `sessions/${sessionId}/agent/messages/${msg.id}`,
+          name: `templates/${template}/sessions/${sessionId}/team/agents/${agent}/messages/${msg.id}`,
           messageId: msg.id,
           sender,
+          agent,
           content: { parts },
-          createTime,
         });
       }
 
@@ -546,6 +696,47 @@ export class Handler implements AgentServiceHandlers {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the frame's target agent for user input (FR-032): an empty `agent`
+ * falls back to the first accepts-user-input agent of the template schema
+ * (saolei: player); a named agent is accepted iff the schema declares
+ * `accepts_user_input` (planner/unknown → undefined = reject).
+ */
+function resolveUserInputAgent(agent: string): string | undefined {
+  if (agent === "") {
+    const first = SAOLEI_TEAM_AGENTS.find((a) => a.accepts_user_input);
+    return first ? first.name : undefined;
+  }
+  const schema = SAOLEI_TEAM_AGENTS.find((a) => a.name === agent);
+  return schema?.accepts_user_input ? schema.name : undefined;
+}
+
+/**
+ * Write a frame to the bidi stream, swallowing any synchronous throw that
+ * results from writing to a closed/destroyed stream (peer disconnected).
+ *
+ * The core contract is that this helper NEVER throws: it is the
+ * error-containment boundary that prevents a closed-stream write error from
+ * escaping an async EventEmitter listener and becoming an unhandled rejection
+ * (which would terminate the multi-session agent service).
+ *
+ * Contract: specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §1
+ */
+function safeWrite(
+  stream: grpc.ServerDuplexStream<AgentFrame, AgentFrame>,
+  frame: AgentFrame,
+  sessionId: string,
+): void {
+  try {
+    stream.write(frame);
+  } catch (err: unknown) {
+    warn("stream write failed (peer disconnected?)", {
+      sessionId,
+      error: String(err),
+    });
+  }
+}
+
 function timestampNow(): { seconds: number; nanos: number } {
   const ms = Date.now();
   return {
@@ -554,16 +745,92 @@ function timestampNow(): { seconds: number; nanos: number } {
   };
 }
 
-function timestampFromMs(ms: number): { seconds: number; nanos: number } {
+/**
+ * Build the Team resource response (CreateTeam/GetTeam, AIP-131/133): the
+ * agents come from the template's graph schema (D3, typed — not hard-coded
+ * by clients).
+ */
+function buildTeamResource(name: string): Team {
   return {
-    seconds: Math.floor(ms / 1000),
-    nanos: (ms % 1000) * 1_000_000,
+    name,
+    agents: SAOLEI_TEAM_AGENTS.map((a: TeamAgentSchema): TeamAgent => {
+      return { name: a.name, acceptsUserInput: a.accepts_user_input };
+    }),
+    createTime: timestampNow(),
   };
 }
 
-function extractSessionId(parent: string): string {
-  const match = parent.match(/^sessions\/([^/]+?)(?:\/agent)?$/);
-  return match ? match[1] : parent;
+/**
+ * Parse a Team resource name "templates/{template}/sessions/{session}/team".
+ * Returns empty strings when malformed.
+ */
+function parseTeamName(name: string): {
+  template: string;
+  sessionId: string;
+} {
+  const match = name.match(
+    /^templates\/([^/]+)\/sessions\/([^/]+)\/team$/,
+  );
+  return match
+    ? { template: match[1], sessionId: match[2] }
+    : { template: "", sessionId: "" };
+}
+
+/**
+ * Parse a CreateTeam parent "templates/{template}/sessions/{session}"
+ * (AIP-133). Returns null when malformed.
+ */
+function parseSessionParent(parent: string): {
+  template: string;
+  sessionId: string;
+} | null {
+  const match = parent.match(/^templates\/([^/]+)\/sessions\/([^/]+)$/);
+  return match
+    ? { template: match[1], sessionId: match[2] }
+    : null;
+}
+
+/**
+ * Parse a TeamProfile full resource name "templates/{template}/profiles/
+ * {profile}" (AIP-122). Returns null when malformed.
+ */
+function parseProfileName(profile: string): {
+  template: string;
+  profileId: string;
+} | null {
+  const match = profile.match(/^templates\/([^/]+)\/profiles\/([^/]+)$/);
+  return match ? { template: match[1], profileId: match[2] } : null;
+}
+
+/**
+ * Parse a ListMessages parent "templates/{template}/sessions/{session}/
+ * team/agents/{agent}" (FR-005). Returns null when malformed.
+ */
+function parseMessagesParent(parent: string): {
+  template: string;
+  sessionId: string;
+  agent: string;
+} | null {
+  const match = parent.match(
+    /^templates\/([^/]+)\/sessions\/([^/]+)\/team\/agents\/([^/]+)$/,
+  );
+  return match
+    ? { template: match[1], sessionId: match[2], agent: match[3] }
+    : null;
+}
+
+/**
+ * Extract the session id from a frame's `session_id`. The gateway injects
+ * the BARE session id into every inbound frame (api-contract.md §2.2), so
+ * the normal path returns it unchanged; the full resource-name form
+ * "templates/{template}/sessions/{session}" is tolerated defensively
+ * (legacy/direct-proxy callers) and reduced to the bare id.
+ */
+function extractSessionId(value: string): string {
+  const match = value.match(
+    /^templates\/[^/]+\/sessions\/([^/]+)$/,
+  );
+  return match ? match[1] : value;
 }
 
 function bytesToBase64String(data: Uint8Array | string): string {
@@ -573,9 +840,14 @@ function bytesToBase64String(data: Uint8Array | string): string {
 
 function encodingToMime(encoding: unknown): string {
   if (typeof encoding === "number") {
-    return encoding === 1 ? "image/png" : "image/png";
+    // The proto ImageEncoding enum's only concrete value is PNG (1);
+    // UNSPECIFIED (0) also defaults to PNG — the desktop always sends PNG
+    // screenshots.
+    return "image/png";
   }
-  const subtype = String(encoding ?? "").replace(/^IMAGE_ENCODING_/, "").toLowerCase();
+  const subtype = String(encoding ?? "")
+    .replace(/^IMAGE_ENCODING_/, "")
+    .toLowerCase();
   return `image/${subtype || "png"}`;
 }
 
@@ -602,10 +874,10 @@ function extractBase64FromImageBlock(block: any): string {
  * Coerce a candidate image-data value to a base64 string. Handles the forms a
  * LangChain message content block may carry after a langgraph `MemorySaver`
  * round-trip: a data-url/base64 string, a live `Uint8Array`/`Buffer`, OR a
- * plain object/array produced by JSON-serializing a `Uint8Array` (MemorySaver's
- * default serde yields `{0:137,1:80,...}` — `instanceof Uint8Array` is false on
- * the restored object, so the typed-array branch alone misses checkpointed
- * byte images). Returns "" when the value is not a recognizable byte payload.
+ * plain object/array produced by JSON-serializing a `Uint8Array`
+ * (MemorySaver's default serde yields `{0:137,1:80,...}` — `instanceof
+ * Uint8Array` is false on the restored object). Returns "" when the value is
+ * not a recognizable byte payload.
  */
 function bytesLikeToBase64(raw: unknown): string {
   if (typeof raw === "string" && raw.length > 0) {
@@ -617,161 +889,24 @@ function bytesLikeToBase64(raw: unknown): string {
   if (Buffer.isBuffer(raw) && raw.length > 0) {
     return raw.toString("base64");
   }
-  // JSON-serialized Uint8Array (MemorySaver round-trip): {0:n,1:n,...} or [n,n,...]
+  // JSON-serialized Uint8Array (MemorySaver round-trip): [n,n,...] form.
   if (raw && typeof raw === "object") {
     const src = Array.isArray(raw) ? raw : undefined;
     if (src) {
-      if (src.length > 0 && src.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
+      if (
+        src.length > 0 &&
+        src.every(
+          (b) =>
+            typeof b === "number" &&
+            Number.isInteger(b) &&
+            b >= 0 &&
+            b <= 255,
+        )
+      ) {
         return Buffer.from(src as number[]).toString("base64");
       }
       return "";
     }
-    const keys = Object.keys(raw as Record<string, unknown>);
-    if (
-      keys.length > 0 &&
-      keys.every((k, i) => Number(k) === i)
-    ) {
-      const bytes = keys.map((k) => (raw as Record<string, unknown>)[k]);
-      if (bytes.every((b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255)) {
-        return Buffer.from(bytes as number[]).toString("base64");
-      }
-    }
   }
   return "";
-}
-
-// ---------------------------------------------------------------------------
-// Tool history reconstruction helpers
-//
-// ListMessages best-effort reconstructs MouseMovePart / MouseClickPart /
-// ToolResultPart from LangChain message state so operation history renders
-// identically to the live tool stream.
-// ---------------------------------------------------------------------------
-
-/** Minimal shape of a LangChain tool_call carried on an AIMessage. */
-interface ToolCallLike {
-  name?: string;
-  args?: Record<string, unknown>;
-  id?: string;
-}
-
-/** Matches the pixel-dimension annotation emitted by mouse tools. */
-const PIXEL_SIZE_PATTERN = /图片像素尺寸[：:]?\s*(\d+)\s*[×xX*]\s*(\d+)/;
-
-/** Extract tool_calls from a BaseMessage (AIMessage carries them directly). */
-function extractToolCalls(msg: BaseMessage): ToolCallLike[] {
-  const calls = (msg as unknown as { tool_calls?: unknown }).tool_calls;
-  return Array.isArray(calls) ? (calls as ToolCallLike[]) : [];
-}
-
-/** Coerce a tool argument value to a finite int32, defaulting to 0. */
-function toInt32(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
-}
-
-/** Map a mouse_click click_type arg to the proto MouseClickAction string. */
-function clickTypeToAction(clickType: unknown): string {
-  if (typeof clickType !== "string" || !clickType) {
-    return "MOUSE_CLICK_ACTION_UNSPECIFIED";
-  }
-  return `MOUSE_CLICK_ACTION_${clickType.toUpperCase()}`;
-}
-
-/**
- * Best-effort map a LangChain tool_call to a Part (MouseMovePart or
- * MouseClickPart). Unknown tools return null (no Part emitted for them).
- */
-function toolCallToPart(call: ToolCallLike): Part | null {
-  const name = call.name;
-  const args = call.args ?? {};
-  if (name === "mouse_move") {
-    const part: MouseMovePart = {
-      xPx: toInt32(args.x_px),
-      yPx: toInt32(args.y_px),
-    };
-    return { mouseMove: part };
-  }
-  if (name === "mouse_click") {
-    const part: MouseClickPart = {
-      click: clickTypeToAction(args.click_type) as MouseClickPart["click"],
-    };
-    return { mouseClick: part };
-  }
-  return null;
-}
-
-/** Infer ToolResultStatus from the result message text. */
-function inferToolResultStatus(message: string): string {
-  const lower = message.toLowerCase();
-  return lower.includes("ok") || lower.includes("succeeded")
-    ? "TOOL_RESULT_STATUS_SUCCEEDED"
-    : "TOOL_RESULT_STATUS_FAILED";
-}
-
-/**
- * Best-effort reconstruct a ToolResultPart from a ToolMessage's content
- * blocks.
- *
- * - text block (non-annotation) → message
- * - image_url block → screenshot.data (base64, data-url prefix stripped)
- * - pixel-size annotation text → screenshot widthPx / heightPx
- * - status inferred from message ("ok"/"succeeded" → SUCCEEDED, else FAILED)
- *
- * String content (when the ToolMessage carries a plain string) is used as the
- * message directly. tool_id is unknown from history, so it is left empty.
- */
-function reconstructToolResult(
-  content: BaseMessage["content"],
-): ToolResultPart | null {
-  const blocks: { type?: string; text?: string; image_url?: { url?: string } }[] =
-    Array.isArray(content)
-      ? (content as { type?: string; text?: string; image_url?: { url?: string } }[])
-      : [];
-
-  let message = "";
-  let screenshotData = "";
-  let widthPx = 0;
-  let heightPx = 0;
-
-  for (const block of blocks) {
-    if (block.type === "text" && typeof block.text === "string") {
-      const dims = block.text.match(PIXEL_SIZE_PATTERN);
-      if (dims) {
-        widthPx = Number.parseInt(dims[1], 10) || 0;
-        heightPx = Number.parseInt(dims[2], 10) || 0;
-      } else if (!message) {
-        message = block.text;
-      }
-    } else if (block.type === "image_url" && block.image_url?.url) {
-      screenshotData = stripDataUrlPrefix(block.image_url.url);
-    }
-  }
-
-  if (!message && typeof content === "string") {
-    message = content;
-  }
-
-  const status = inferToolResultStatus(message) as ToolResultPart["status"];
-
-  const result: ToolResultPart = {
-    status,
-    message,
-  };
-  if (screenshotData) {
-    const screenshot: ImagePart = {
-      encoding: "IMAGE_ENCODING_PNG",
-      data: screenshotData,
-      widthPx,
-      heightPx,
-    };
-    result.screenshot = screenshot;
-  }
-  return result;
 }

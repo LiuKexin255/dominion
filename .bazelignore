@@ -10,7 +10,9 @@ common/js/grpc/resolver/node_modules
 common/js/resolver/node_modules
 common/js/otel/node_modules
 projects/game/agent/node_modules
+projects/game/pkg/saolei-board/node_modules
 experimental/grpc_chain/mid/node_modules
 experimental/openai_llm/client/node_modules
+experimental/ts/team_graph_spike/node_modules
 
 

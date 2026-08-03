@@ -2,33 +2,24 @@ package domain
 
 import "context"
 
-// AgentProfileRepository defines storage operations for AgentProfile entities.
-type AgentProfileRepository interface {
-	// CreateAgentProfile stores a new AgentProfile.
-	CreateAgentProfile(ctx context.Context, profile *AgentProfile) error
-	// GetAgentProfile retrieves an AgentProfile by its profile name.
-	GetAgentProfile(ctx context.Context, profileName string) (*AgentProfile, error)
-	// UpdateAgentProfile replaces the stored AgentProfile identified by profile.AgentProfileName.
-	// It returns ErrNotFound if no profile with the given name exists.
-	UpdateAgentProfile(ctx context.Context, profile *AgentProfile) (*AgentProfile, error)
-	// ListAgentProfiles retrieves a page of AgentProfiles.
+// TeamProfileRepository defines storage operations for TeamProfile entities.
+type TeamProfileRepository interface {
+	// CreateTeamProfile stores a new TeamProfile.
+	CreateTeamProfile(ctx context.Context, profile *TeamProfile) error
+	// GetTeamProfile retrieves a TeamProfile by template and profile name.
+	// It returns ErrNotFound if no profile with the given name exists under
+	// the template.
+	GetTeamProfile(ctx context.Context, template, profileName string) (*TeamProfile, error)
+	// UpdateTeamProfile replaces the stored TeamProfile identified by
+	// profile.TeamProfileName. It returns ErrNotFound if no profile with the
+	// given name exists.
+	UpdateTeamProfile(ctx context.Context, profile *TeamProfile) (*TeamProfile, error)
+	// ListTeamProfiles retrieves a page of TeamProfiles under a template.
 	// pageSize controls the maximum number of results; pageToken is the cursor
 	// for the next page. Pass empty string for the first page.
-	ListAgentProfiles(ctx context.Context, pageSize int, pageToken string) ([]*AgentProfile, string, error)
-	// DeleteAgentProfile removes an AgentProfile by its profile name.
-	DeleteAgentProfile(ctx context.Context, profileName string) error
-}
-
-// SkillRepository defines storage operations for Skill entities.
-type SkillRepository interface {
-	// CreateSkill stores a new Skill.
-	CreateSkill(ctx context.Context, skill *Skill) error
-	// GetSkill retrieves a Skill by its skill name.
-	GetSkill(ctx context.Context, skillName string) (*Skill, error)
-	// ListSkills retrieves a page of Skills.
-	// pageSize controls the maximum number of results; pageToken is the cursor
-	// for the next page. Pass empty string for the first page.
-	ListSkills(ctx context.Context, pageSize int, pageToken string) ([]*Skill, string, error)
-	// DeleteSkill removes a Skill by its skill name.
-	DeleteSkill(ctx context.Context, skillName string) error
+	ListTeamProfiles(ctx context.Context, template string, pageSize int, pageToken string) ([]*TeamProfile, string, error)
+	// DeleteTeamProfile removes a TeamProfile by template and profile name.
+	// It returns ErrNotFound if no profile with the given name exists under
+	// the template.
+	DeleteTeamProfile(ctx context.Context, template, profileName string) error
 }

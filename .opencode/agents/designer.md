@@ -3,7 +3,7 @@ description: 调研、设计与规划者
 mode: primary
 model: zhipuai-coding-plan/glm-5.2
 reasoningEffort: max
-temperature: 0.1
+temperature: 1.0
 tools:
   todowrite: true
 ---
@@ -51,4 +51,20 @@ tools:
 * task 规划为执行直接说明具体变更内容，其描述应当直接、明确。例如直接说明具体文档地址、为 xxx 文件的 xxx 类增加 XXXX 方法。避免使用模糊、不确定的词语，例如重构、抽象等。
 * 为 task 提供足够的上下文，包括但不限于代码规范、官方文档和技术文章。但不要将过多且用不到的文档塞给 task
 * 规划 phase 时，必须阅读并确认参考文档的实际内容与预期相符，直接声明所有需要阅读的文档（特别是声明那些需要阅读的间接引用的文档），避免实现时重复查找文档或遗漏。
+* **重要**：有些文档会引用其他文档（例如外部链接）作为文档内容，这时要把需要阅读的间接引用————引用文件中的引用——文档（特别是外部文档）显式列出，不能依靠引用传递。
+
+```
+# bad case 
+
+协议相关的改动只声明阅读 `style/api.md`。
+
+因为 `style/api.md` 当中没有实际的规范，只有规范的索引。
+
+# good case
+
+同时分配 `style/api.md` 和具体的(AIP文档)[https://xxxx]
+
+其他规范（比如 `style/javascript.md`）、方案和研究文档也参考此方法，需要显示列出需要阅读的间接引用文档。
+```
+
 * 控制每个 phase 的大小，做到 review 友好。并且每个 phase 都可以进行验证，并且要有验证门禁。

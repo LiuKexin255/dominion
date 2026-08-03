@@ -51,6 +51,7 @@ Python 依赖更新步骤：
 ## 代码规范 
 
 1. 参阅 `style` 目录下的文档，**任何**编辑代码前应当先阅读代码规范要求。
+2. **注意**规范文档通常会引用为外部文档作为规范一部分，阅读和规划任务必读文档时**不要忽略掉引用外部的规范文档**。
 
 ## 调试与大型测试
 
@@ -60,7 +61,8 @@ Python 依赖更新步骤：
 
 ## 注释
 
-Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
+* Do not add comments that restate what the code already expresses. Only add comments when they explain why (design decisions, workarounds) or when code is complex and requires additional context. 
+* 如果注释要引用其他文件，需要写明引用链接，避免发生歧义。例如引用 specs 内容需要注明链接，不能只写 `FR-xx` 这类，避免不同的需求导致的歧义。
 
 ## 依赖
 
@@ -75,11 +77,13 @@ Do not add comments that restate what the code already expresses. Only add comme
 * 加载 `context7-mcp` SKILL，使用 `context7` MCP 检索某个项目或者代码库的文档。
 * 使用 `grep.app` MCP 检索 `github` 代码。
 * 使用 `explore` sub-agent 探索代码仓库。
+* 使用 `general` sub-agent 研究复杂问题。
 
 ## 其他
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
+* 获取 `bazel` 产物和测试报告等信息使用仓库下的 `bazel-*` 等目录，而不是 `~/.cache/bazel` 目录
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,

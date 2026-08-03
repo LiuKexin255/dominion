@@ -1,29 +1,34 @@
 /**
- * handler.test.ts — Tests for AgentServiceServer handler implementations.
+ * handler.test.ts — Tests for the TeamService handler implementations
+ * (specs/031-team-template-mode/contracts/api-contract.md §2.2; tasks.md
+ * T020).
  *
- * Uses mocked PromptClient + SessionAgentStore, and REAL MemorySaver +
- * StateGraph for ListMessages round-trip tests.
+ * The handler is exercised against a REAL `SessionTeam` (compiled team graph
+ * with fakeModel + fake player tool driving the sink — same pattern as
+ * team/graph.test.ts), so GetTeam / Connect routing / ListMessages
+ * partitions / RefreshTeam run end-to-end without an LLM or MCP server.
  *
- * Part-model contract: user turns and agent output are content frames
- * (PartBlock) distinguished by `sender`; tool results are content frames
- * carrying a ToolResultPart. No invoke_id/sequence/echo machinery.
+ * Mock strategy (style/javascript.md §测试): the handler's only dependency is
+ * the `SessionTeamStore`, whose factory is injected (DI seam) — no `vi.mock`.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import * as grpc from "@grpc/grpc-js";
 
-import { HumanMessage, AIMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
-import {
-  MemorySaver,
-  StateGraph,
-  MessagesAnnotation,
-} from "@langchain/langgraph";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { fakeModel } from "@langchain/core/testing";
+import { tool } from "langchain";
+import { z } from "zod";
+import type { GameState } from "@dominion/game-saolei-board";
 
-import type { AgentAdapter, AdapterFactory, ContentBlock, AdapterStateSnapshot, TurnContent } from "./llm";
+import { FakeStrategyStore } from "./strategy-store";
 import { Handler } from "./handler";
-import { SessionAgent } from "./session-agent";
+import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
+import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
+import { buildTeamGraph } from "./team/graph";
+import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
 
 const FRAME_SENDER_USER = "FRAME_SENDER_USER";
 const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
@@ -33,116 +38,100 @@ const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
 // Mock helpers
 // ---------------------------------------------------------------------------
 
-function createMockPromptClient(
-  profiles: Record<string, { model: string; systemPrompt: string }> = {},
+function makeState(): GameState {
+  return {
+    width: 3,
+    height: 3,
+    grid: Array.from({ length: 3 }, () =>
+      Array.from({ length: 3 }, () => "0" as const),
+    ),
+  };
+}
+
+/** A releasable gate so a player turn can be held in-flight. */
+interface Gate {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function makeGate(): Gate {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function buildGameEndingPlayerTool(
+  buffer: ReturnType<typeof createEphemeralGameBuffer>,
+  gate?: Gate,
 ) {
-  return {
-    getProfile: vi.fn(async (name: string) => {
-      const profile = profiles[name];
-      if (!profile) {
-        throw new Error(`Agent profile not found: ${name}`);
-      }
-      return profile;
-    }),
-    close: vi.fn(),
-  };
-}
-
-function createMockAdapter(blocks: ContentBlock[]): AgentAdapter {
-  return {
-    async *generateTurn(): AsyncIterable<ContentBlock> {
-      for (const block of blocks) yield block;
+  const sink = createTeamSink(buffer);
+  return tool(
+    async ({ x, y }: { x: number; y: number }) => {
+      if (gate) await gate.promise;
+      await sink.onGameEnd(makeState(), "won");
+      return `moved to (${x},${y}); game won`;
     },
-    async getState() { return null; },
-  };
+    {
+      name: "fake_saolei_move",
+      description: "Fake saolei move that ends the game.",
+      schema: z.object({ x: z.number(), y: z.number() }),
+    },
+  );
 }
 
-function createRecordingAdapter(blocks: ContentBlock[]): {
-  adapter: AgentAdapter;
-  calls: Array<{ threadId: string; content: TurnContent }>;
+function playOneGamePlayerModel() {
+  return fakeModel()
+    .respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+    .respond(new AIMessage("won, stopping"))
+    .respond(new AIMessage("idle, no new game"));
+}
+
+function updateStrategyPlannerModel(content: string) {
+  return fakeModel()
+    .respondWithTools([{ name: "update_strategy", args: { content } }])
+    .respond(new AIMessage("strategy updated"));
+}
+
+/** A store whose factory builds REAL SessionTeams (compiled graph). */
+function createTeamStore(gate?: Gate): {
+  store: SessionTeamStore;
+  strategies: FakeStrategyStore;
 } {
-  const calls: Array<{ threadId: string; content: TurnContent }> = [];
-  const adapter: AgentAdapter = {
-    async *generateTurn(threadId, content) {
-      calls.push({ threadId, content });
-      for (const block of blocks) yield block;
-    },
-    async getState() { return null; },
-  };
-  return { adapter, calls };
-}
-
-interface MockBridge {
-  registerSink: ReturnType<typeof vi.fn>;
-  unregisterSink: ReturnType<typeof vi.fn>;
-  handleResult: ReturnType<typeof vi.fn>;
-  dispatch: ReturnType<typeof vi.fn>;
-}
-
-interface MockSessionAgent {
-  getOrCreateAdapter: ReturnType<typeof vi.fn>;
-  getAdapterState: ReturnType<typeof vi.fn>;
-  getAdapter: ReturnType<typeof vi.fn>;
-  invalidateAdapter: ReturnType<typeof vi.fn>;
-  getBridge: ReturnType<typeof vi.fn>;
-  bridge: MockBridge;
-}
-
-interface MockSessionAgentStore {
-  getOrCreate: ReturnType<typeof vi.fn>;
-  get: ReturnType<typeof vi.fn>;
-  _getAgent(sessionId: string): MockSessionAgent;
-  _setBinding(sessionId: string, profileName: string, adapter: AgentAdapter): void;
-  _clear(): void;
-}
-
-function createMockBridge(): MockBridge {
-  return {
-    registerSink: vi.fn(),
-    unregisterSink: vi.fn(),
-    handleResult: vi.fn(),
-    dispatch: vi.fn(),
-  };
-}
-
-function createMockSessionAgentStore(): MockSessionAgentStore {
-  const agents = new Map<string, MockSessionAgent>();
-
-  function getAgent(sessionId: string): MockSessionAgent {
-    if (!agents.has(sessionId)) {
-      const bridge = createMockBridge();
-      agents.set(sessionId, {
-        getOrCreateAdapter: vi.fn(),
-        getAdapterState: vi.fn(() => ({
-          activeProfileName: null,
-          isBound: false,
-        })),
-        getAdapter: vi.fn(() => null),
-        invalidateAdapter: vi.fn(),
-        getBridge: vi.fn(() => bridge),
-        bridge,
+  const strategies = new FakeStrategyStore();
+  const store = new SessionTeamStore(
+    async (sessionId, template, _profileName) => {
+      const buffer = createEphemeralGameBuffer();
+      const handle = buildTeamGraph({
+        playerModel: playOneGamePlayerModel(),
+        plannerModel: updateStrategyPlannerModel("corner-first"),
+        strategyStore: strategies,
+        buffer,
+        sessionId,
+        playerTools: [buildGameEndingPlayerTool(buffer, gate)],
+        playerBasePrompt: "",
+        plannerBasePrompt: "",
       });
-    }
-    return agents.get(sessionId)!;
-  }
+      // Pre-built bridge/sink like the production factory (server.ts) — the
+      // SessionTeam constructor no longer creates them internally.
+      const bridge = new OperationBridge();
+      const sink = createTeamSink(buffer);
+      return new SessionTeam(handle, buffer, sessionId, template, bridge, sink);
+    },
+  );
+  return { store, strategies };
+}
 
-  return {
-    getOrCreate: vi.fn((sessionId: string) => getAgent(sessionId)),
-    get: vi.fn((sessionId: string) => getAgent(sessionId)),
-    _getAgent: getAgent,
-    _setBinding(sessionId, profileName, adapter) {
-      const agent = getAgent(sessionId);
-      agent.getOrCreateAdapter.mockResolvedValue(adapter);
-      agent.getAdapter.mockReturnValue(adapter);
-      agent.getAdapterState.mockReturnValue({
-        activeProfileName: profileName,
-        isBound: true,
-      });
-    },
-    _clear() {
-      agents.clear();
-    },
-  };
+/**
+ * Explicitly create the session's team (CreateTeam is now the ONLY creation
+ * point — the handler never creates teams implicitly).
+ */
+function createTestTeam(
+  store: SessionTeamStore,
+  sessionId: string,
+): Promise<SessionTeam> {
+  return store.create(sessionId, "saolei", "default");
 }
 
 function createUnaryCall<T>(request: T) {
@@ -210,358 +199,361 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-/** Build an inbound user content frame (TextPart, sender USER). */
+/** Build an inbound user messageParts frame (TextPart, sender USER). The
+ * gateway injects both template_id and session_id into inbound frames
+ * (api-contract.md §2.2), so tests carry them like the real path. */
 function userContentFrame(
   sessionId: string,
   text: string,
-  profileName?: string,
+  agent?: string,
 ) {
   return {
     sessionId,
-    payload: "content",
-    content: { parts: [{ text: { content: text } }] },
+    templateId: "saolei",
+    payload: "messageParts",
+    messageParts: { parts: [{ text: { content: text } }] },
     sender: FRAME_SENDER_USER,
-    ...(profileName ? { agentProfileName: profileName } : {}),
+    ...(agent ? { agent } : {}),
   };
 }
 
-/** Build an inbound user content frame carrying text + image. */
-function userContentWithImageFrame(
-  sessionId: string,
-  text: string,
-  image: { data: Uint8Array | string; encoding: string },
-  profileName?: string,
-) {
-  return {
-    sessionId,
-    payload: "content",
-    content: {
-      parts: [
-        { text: { content: text } },
-        { image: { data: image.data, encoding: image.encoding } },
-      ],
-    },
-    sender: FRAME_SENDER_USER,
-    ...(profileName ? { agentProfileName: profileName } : {}),
-  };
-}
-
-function flush(ms = 50): Promise<void> {
+function flush(ms = 60): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-interface HandlerDeps {
-  promptClient: ReturnType<typeof createMockPromptClient>;
-  sessionAgentStore: MockSessionAgentStore;
+function createHandler(store: SessionTeamStore): Handler {
+  return new Handler(store);
 }
 
-function createHandler(deps: HandlerDeps): Handler {
-  const HandlerCtor = Handler as any;
-  return new HandlerCtor(
-    deps.promptClient,
-    deps.sessionAgentStore,
+/** Extract frames of a given payload kind written to the stream. */
+function framesOfKind(stream: FakeStream, payload: string): unknown[] {
+  return stream.written.filter(
+    (f) => (f as Record<string, unknown>).payload === payload,
   );
 }
 
-// ===========================================================================
-// Tests: Connect — user content frame produces thinking/text/wait frames
-// ===========================================================================
-
-describe("Handler.Connect user content frame", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient({
-      "helpful-assistant": {
-        model: "opencode-go/deepseek-v4",
-        systemPrompt: "You are helpful.",
-      },
-    });
-    sessionAgentStore = createMockSessionAgentStore();
+function waitFrames(stream: FakeStream): unknown[] {
+  return framesOfKind(stream, "flowParts").filter((f) => {
+    const parts = (f as { flowParts?: { parts?: Record<string, unknown>[] } })
+      .flowParts?.parts;
+    return parts?.some((p) => "wait" in p);
   });
+}
 
-  it("produces thinking + text + wait frames for profile-bound user content frame", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "reasoning", reasoning: "Let me think..." },
-      { type: "text", text: "The answer is 42." },
-    ];
-    sessionAgentStore._setBinding(
-      "sess-1",
-      "helpful-assistant",
-      createMockAdapter(blocks),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-1", "What is the answer?", "helpful-assistant"));
-    await flush();
-
-    expect(stream.written).toHaveLength(3);
-
-    const f0 = stream.written[0] as Record<string, unknown>;
-    expect(f0.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f0.payload).toBe("content");
-    expect(f0.content).toEqual({
-      parts: [{ thinking: { content: "Let me think..." } }],
-    });
-
-    const f1 = stream.written[1] as Record<string, unknown>;
-    expect(f1.sender).toBe(FRAME_SENDER_AGENT);
-    expect(f1.content).toEqual({
-      parts: [{ text: { content: "The answer is 42." } }],
-    });
-
-    const f2 = stream.written[2] as Record<string, unknown>;
-    expect(f2.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f2.payload).toBe("wait");
-    expect(f2.wait).toEqual({});
+function warnFrames(stream: FakeStream): unknown[] {
+  return framesOfKind(stream, "flowParts").filter((f) => {
+    const parts = (f as { flowParts?: { parts?: Record<string, unknown>[] } })
+      .flowParts?.parts;
+    return parts?.some((p) => "warn" in p);
   });
-
-  it("produces text + wait for response with no thinking", async () => {
-    sessionAgentStore._setBinding(
-      "sess-nt",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "Direct answer" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-nt", "hello", "helpful-assistant"));
-    await flush();
-
-    expect(stream.written).toHaveLength(2);
-    expect((stream.written[0] as Record<string, unknown>).content).toEqual({
-      parts: [{ text: { content: "Direct answer" } }],
-    });
-    expect((stream.written[1] as Record<string, unknown>).wait).toEqual({});
-  });
-
-  it("generates unique frameId per frame", async () => {
-    sessionAgentStore._setBinding(
-      "sess-uuid",
-      "helpful-assistant",
-      createMockAdapter([
-        { type: "reasoning", reasoning: "hmm" },
-        { type: "text", text: "ok" },
-      ]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-uuid", "go", "helpful-assistant"));
-    await flush();
-
-    const frameIds = stream.written.map(
-      (f) => (f as Record<string, unknown>).frameId,
-    );
-    expect(new Set(frameIds).size).toBe(frameIds.length);
-  });
-});
+}
 
 // ===========================================================================
-// Tests: Connect — missing profile name
+// GetTeam
 // ===========================================================================
 
-describe("Handler.Connect missing profile name", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
+describe("Handler.GetTeam", () => {
+  it("returns the Team with the template schema's agents (player input=true, planner=false)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    await createTestTeam(store, "sess-1");
 
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-    sessionAgentStore = createMockSessionAgentStore();
-  });
-
-  it("returns warn frame when profile name is missing and no adapter is bound", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-missing", "hello"));
-    await flush();
-
-    expect(stream.written).toHaveLength(1);
-    const f0 = stream.written[0] as Record<string, unknown>;
-    expect(f0.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f0.payload).toBe("warn");
-    expect(f0.warn).toBeDefined();
-    expect((f0.warn as Record<string, unknown>).message).toContain(
-      "agent_profile_name",
+    handler.GetTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-1/team" }),
+      callback,
     );
-  });
 
-  it("does NOT call getOrCreateAdapter when profile is missing", async () => {
-    const { adapter, calls } = createRecordingAdapter([
-      { type: "text", text: "should not happen" },
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+    expect(response.name).toBe("templates/saolei/sessions/sess-1/team");
+    expect(response.agents).toEqual([
+      { name: "player", acceptsUserInput: true },
+      { name: "planner", acceptsUserInput: false },
     ]);
-    sessionAgentStore._setBinding("sess-no-profile", "some-profile", adapter);
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-fresh", "hello"));
-    await flush();
-
-    expect(calls).toHaveLength(0);
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — profile switch mid-connection
-// ===========================================================================
-
-describe("Handler.Connect profile switch", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient({
-      "profile-a": { model: "model-a", systemPrompt: "Prompt A" },
-      "profile-b": { model: "model-b", systemPrompt: "Prompt B" },
-    });
-    sessionAgentStore = createMockSessionAgentStore();
   });
 
-  it("second message with different profile uses new adapter from getOrCreateAdapter", async () => {
-    const adapterA = createMockAdapter([{ type: "text", text: "Response from A" }]);
-    const adapterB = createMockAdapter([{ type: "text", text: "Response from B" }]);
+  it("returns NOT_FOUND when the team was not created (CreateTeam is the only creation point)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
 
-    const calls: string[] = [];
-    const agent = sessionAgentStore._getAgent("sess-switch");
-    agent.getOrCreateAdapter.mockImplementation(async (profileName: string) => {
-      calls.push(profileName);
-      return profileName === "profile-a" ? adapterA : adapterB;
-    });
-    agent.getAdapterState.mockReturnValue({ activeProfileName: null, isBound: false });
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-switch", "msg1", "profile-a"));
-    await flush();
-
-    stream.emit("data", userContentFrame("sess-switch", "msg2", "profile-b"));
-    await flush();
-
-    expect(calls).toEqual(["profile-a", "profile-b"]);
-
-    const texts = stream.written
-      .filter(
-        (f) =>
-          (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-          (f as Record<string, unknown>).payload === "content",
-      )
-      .map((f) => {
-        const parts = ((f as Record<string, unknown>).content as { parts: { text?: { content?: string } }[] }).parts;
-        return parts[0]?.text?.content ?? "";
-      });
-    expect(texts).toEqual(["Response from A", "Response from B"]);
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — failed profile switch does not corrupt history
-// ===========================================================================
-
-describe("Handler.Connect failed profile switch", () => {
-  it("emits warn frame and does not call generateTurn when profile not found", async () => {
-    const promptClient = createMockPromptClient({
-      "valid-profile": {
-        model: "model-x",
-        systemPrompt: "prompt-x",
-      },
-    });
-
-    const { adapter, calls } = createRecordingAdapter([
-      { type: "text", text: "OK" },
-    ]);
-    const sessionAgentStore = createMockSessionAgentStore();
-    const agent = sessionAgentStore._getAgent("sess-fail");
-
-    agent.getOrCreateAdapter
-      .mockResolvedValueOnce(adapter)
-      .mockRejectedValueOnce(new Error("Agent profile not found: nonexistent-profile"));
-
-    agent.getAdapterState.mockReturnValue({ activeProfileName: "valid-profile", isBound: true });
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-fail", "hello", "valid-profile"));
-    await flush();
-
-    stream.emit("data", userContentFrame("sess-fail", "switch me", "nonexistent-profile"));
-    await flush();
-
-    const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).payload === "warn",
+    handler.GetTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-missing/team" }),
+      callback,
     );
-    expect(warnFrames).toHaveLength(1);
-    expect(
-      ((warnFrames[0] as Record<string, unknown>).warn as Record<string, unknown>)
-        .message,
-    ).toContain("Agent profile not found");
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].content.text).toBe("hello");
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.NOT_FOUND);
+  });
+
+  it("rejects a malformed team name with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.GetTeam(createUnaryCall({ name: "sessions/sess-1/team" }), callback);
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
   });
 });
 
 // ===========================================================================
-// Tests: Connect — ToolResultPart content frame dispatches to bridge.handleResult
+// CreateTeam (AIP-133 — the only Team creation point)
 // ===========================================================================
 
-describe("Handler.Connect tool result content frame", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
+describe("Handler.CreateTeam", () => {
+  it("creates the team and returns the Team resource", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
 
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-    sessionAgentStore = createMockSessionAgentStore();
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct",
+        profile: "templates/saolei/profiles/default",
+      }),
+      callback,
+    );
+
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+    expect(response.name).toBe(
+      "templates/saolei/sessions/sess-ct/team",
+    );
+    expect(response.agents).toEqual([
+      { name: "player", acceptsUserInput: true },
+      { name: "planner", acceptsUserInput: false },
+    ]);
+    expect(store.get("sess-ct")).toBeDefined();
   });
 
-  it("calls getBridge().handleResult when a ToolResultPart content frame arrives", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
+  it("is idempotent for an already-created session with the SAME profile (per-session singleton)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    // createTestTeam creates the session's team with profile "default" —
+    // the CreateTeam below repeats that same profile.
+    await createTestTeam(store, "sess-ct2");
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct2",
+        profile: "templates/saolei/profiles/default",
+      }),
+      callback,
+    );
+
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+    expect(response.name).toBe("templates/saolei/sessions/sess-ct2/team");
+    expect(store.get("sess-ct2")).toBeDefined();
+  });
+
+  it("returns ALREADY_EXISTS with the existing profile when re-created with a DIFFERENT profile", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    // createTestTeam creates the session's team with profile "default".
+    await createTestTeam(store, "sess-ct-diff");
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct-diff",
+        profile: "templates/saolei/profiles/other",
+      }),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.ALREADY_EXISTS);
+    // The details carry the existing profile for diagnostics.
+    expect(error?.details).toContain("default");
+  });
+
+  it("rejects a malformed parent with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "sessions/sess-ct3",
+        profile: "templates/saolei/profiles/default",
+      }),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+  });
+
+  it("rejects a malformed profile with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct4",
+        profile: "default",
+      }),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+  });
+
+  it("rejects a profile whose template does not match the parent's template", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct5",
+        profile: "templates/other/profiles/default",
+      }),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
+  });
+
+  it("propagates a downstream gRPC status (profile NOT_FOUND) unchanged", async () => {
+    const store = new SessionTeamStore(async () => {
+      throw Object.assign(new Error("profile not found"), {
+        code: grpc.status.NOT_FOUND,
+      }) as grpc.ServiceError;
+    });
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+
+    handler.CreateTeam(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-ct6",
+        profile: "templates/saolei/profiles/missing",
+      }),
+      callback,
+    );
+
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.NOT_FOUND);
+  });
+});
+
+// ===========================================================================
+// Connect — user input routing (FR-032)
+// ===========================================================================
+
+describe("Handler.Connect user input routing", () => {
+  it("routes a user content frame to the player (accepts_user_input) and streams the team turn + terminal wait", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
+    await createTestTeam(store, "sess-a");
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    const toolResult = {
-      toolId: "tool-1",
-      status: "TOOL_RESULT_STATUS_SUCCEEDED",
-      message: "ok",
-    };
-    stream.emit("data", {
-      sessionId: "sess-or",
-      payload: "content",
-      content: { parts: [{ toolResult }] },
-      sender: FRAME_SENDER_SYSTEM,
-    });
+    stream.emit(
+      "data",
+      userContentFrame("templates/saolei/sessions/sess-a", "开始游戏", "player"),
+    );
     await flush();
 
-    const bridge = sessionAgentStore._getAgent("sess-or").bridge;
-    expect(bridge.handleResult).toHaveBeenCalledTimes(1);
-    expect(bridge.handleResult).toHaveBeenCalledWith(toolResult);
+    // The turn ran to completion: display frames (agent-tagged) + one wait.
+    const display = framesOfKind(stream, "messageParts");
+    expect(display.length).toBeGreaterThan(0);
+    for (const f of display) {
+      expect((f as Record<string, unknown>).sender).toBe(FRAME_SENDER_AGENT);
+      expect(["player", "planner"]).toContain(
+        (f as Record<string, unknown>).agent,
+      );
+    }
+    expect(waitFrames(stream)).toHaveLength(1);
   });
 
-  it("does not write any frame for a tool result content frame", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
+  it("falls back to the accepts-user-input agent when the frame carries no agent", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-noagent");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-noagent", "开始游戏"));
+    await flush();
+
+    expect(framesOfKind(stream, "messageParts").length).toBeGreaterThan(0);
+    expect(waitFrames(stream)).toHaveLength(1);
+  });
+
+  it("rejects a user content frame for a session whose team was not created (NOT_FOUND)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    const streamError: { error: grpc.ServiceError | null } = { error: null };
+    stream.on("error", (err: unknown) => {
+      streamError.error = err as grpc.ServiceError;
+    });
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-no-team", "开始游戏", "player"));
+    await flush();
+
+    // No lazy creation: the frame is rejected with NOT_FOUND (delivered via
+    // the stream error channel — grpc-js ServerDuplexStreamImpl maps it to
+    // the final status; see handler.ts Connect).
+    expect(streamError.error?.code).toBe(grpc.status.NOT_FOUND);
+    expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
+    expect(store.get("sess-no-team")).toBeUndefined();
+  });
+
+  it("rejects a user content frame targeting the planner (observation view, FR-032)", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit(
+      "data",
+      userContentFrame("sess-planner", "开始游戏", "planner"),
+    );
+    await flush();
+
+    // Warn + wait emitted; NO display frames (the turn never ran).
+    expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
+    expect(warnFrames(stream)).toHaveLength(1);
+    expect(waitFrames(stream)).toHaveLength(1);
+  });
+
+  it("rejects a user content frame with an unknown agent name", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+
+    stream.emit("data", userContentFrame("sess-unknown", "开始游戏", "ghost"));
+    await flush();
+
+    expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
+    expect(warnFrames(stream)).toHaveLength(1);
+    expect(waitFrames(stream)).toHaveLength(1);
+  });
+
+  it("ignores non-user frames", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
     stream.emit("data", {
-      sessionId: "sess-or2",
-      payload: "content",
-      content: { parts: [{ toolResult: { toolId: "tool-2", status: 1, message: "" } }] },
-      sender: FRAME_SENDER_SYSTEM,
+      sessionId: "sess-ignore",
+      payload: "messageParts",
+      messageParts: { parts: [{ text: { content: "echo" } }] },
+      sender: FRAME_SENDER_AGENT,
+      agent: "player",
     });
     await flush();
 
@@ -570,1104 +562,306 @@ describe("Handler.Connect tool result content frame", () => {
 });
 
 // ===========================================================================
-// Tests: Connect — OperationBridge sink lifecycle (register/unregister)
+// Connect — flow_result routing + status probe
 // ===========================================================================
 
-describe("Handler.Connect bridge lifecycle", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
+describe("Handler.Connect flow result + status", () => {
+  it("routes a flow_result control frame to the session's bridge", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-bridge");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-  beforeEach(() => {
-    promptClient = createMockPromptClient({
-      "helpful-assistant": {
-        model: "opencode-go/deepseek-v4",
-        systemPrompt: "You are helpful.",
+    // Establish the team, then send a flow_result whose tool_id is
+    // registered by a dispatch; the bridge resolves it.
+    stream.emit("data", userContentFrame("sess-bridge", "开始游戏", "player"));
+    await flush();
+
+    const team = (await store.create("sess-bridge", "saolei", "default")) as SessionTeam;
+    // The handler registered the bridge sink onto the stream on the user
+    // frame above, so dispatch writes its flowParts frame to the stream.
+    const pendingResult = new Promise<unknown>((resolve) => {
+      void team.getBridge().dispatch({ mouseMove: { toolId: "" } }).then(resolve);
+    });
+    await flush(0);
+
+    // Find the dispatched flowParts frame written to the stream (the bridge
+    // sink forwards it), grab the minted tool id, and reply with a
+    // flow_result frame.
+    const sent = framesOfKind(stream, "flowParts").find(
+      (f) =>
+        (f as { flowParts?: { parts?: { mouseMove?: unknown }[] } })
+          .flowParts?.parts?.[0]?.mouseMove,
+    ) as { flowParts: { parts: { mouseMove: { toolId?: string } }[] } };
+    expect(sent).toBeDefined();
+    const toolId = sent.flowParts.parts[0].mouseMove.toolId ?? "";
+
+    stream.emit("data", {
+      sessionId: "sess-bridge",
+      payload: "flowParts",
+      flowParts: {
+        parts: [
+          {
+            flowResult: {
+              toolId,
+              status: "TOOL_RESULT_STATUS_SUCCEEDED",
+              message: "ok",
+            },
+          },
+        ],
       },
     });
-    sessionAgentStore = createMockSessionAgentStore();
+
+    const result = (await pendingResult) as {
+      status: string;
+      message: string;
+    };
+    expect(result.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
   });
 
-  it("registers bridge sink on user content frame", async () => {
-    sessionAgentStore._setBinding(
-      "sess-sink",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
+  it("responds to a status probe with ACTIVE/IDLE derived from the session state", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit("data", userContentFrame("sess-sink", "hi", "helpful-assistant"));
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-sink").bridge;
-    expect(bridge.registerSink).toHaveBeenCalledTimes(1);
-    expect(typeof bridge.registerSink.mock.calls[0][0]).toBe("function");
-  });
-
-  it("calls generateTurn with text+image TurnContent when both provided", async () => {
-    const { adapter, calls } = createRecordingAdapter([
-      { type: "text", text: "done" },
-    ]);
-    sessionAgentStore._setBinding("sess-tc", "helpful-assistant", adapter);
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
-    stream.emit(
-      "data",
-      userContentWithImageFrame(
-        "sess-tc",
-        "look at this",
-        { data: pngBytes, encoding: "IMAGE_ENCODING_PNG" },
-        "helpful-assistant",
-      ),
-    );
-    await flush();
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].content).toEqual({
-      text: "look at this",
-      imageData: pngBytes.toString("base64"),
-      imageMimeType: "image/png",
+    // No team yet → UNSPECIFIED. The inbound frame carries the gateway-
+    // injected template_id; the response must carry it back (api-contract.md
+    // §2.2).
+    stream.emit("data", {
+      sessionId: "sess-status",
+      templateId: "saolei",
+      payload: "flowParts",
+      flowParts: { parts: [{ status: {} }] },
     });
-  });
+    await flush(0);
 
-  it("calls generateTurn with text-only TurnContent when no image", async () => {
-    const { adapter, calls } = createRecordingAdapter([
-      { type: "text", text: "done" },
-    ]);
-    sessionAgentStore._setBinding("sess-tc2", "helpful-assistant", adapter);
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-tc2", "plain text", "helpful-assistant"));
-    await flush();
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].content).toEqual({ text: "plain text" });
-  });
-
-  it("unregisters bridge sink on stream end for active sessions", async () => {
-    sessionAgentStore._setBinding(
-      "sess-end",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
+    const statusFrames = framesOfKind(stream, "flowParts").filter(
+      (f) =>
+        (f as { flowParts?: { parts?: { status?: unknown }[] } })
+          .flowParts?.parts?.[0]?.status !== undefined,
     );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-end", "hi", "helpful-assistant"));
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-end").bridge;
-    expect(bridge.unregisterSink).not.toHaveBeenCalled();
-
-    stream.emit("end");
-    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
-  });
-
-  it("unregisters bridge sink on stream error", async () => {
-    sessionAgentStore._setBinding(
-      "sess-err-sink",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-err-sink", "hi", "helpful-assistant"));
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-err-sink").bridge;
-    expect(bridge.unregisterSink).not.toHaveBeenCalled();
-
-    stream.emit("error", new Error("socket reset"));
-    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
-  });
-
-  it("sink callback writes content envelope to stream", async () => {
-    sessionAgentStore._setBinding(
-      "sess-write",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "ok" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-write", "hi", "helpful-assistant"));
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-write").bridge;
-    const sinkFn = bridge.registerSink.mock.calls[0][0] as (f: unknown) => void;
-    const envelope = { payload: "content", content: { parts: [{ mouseMove: { toolId: "x", xPx: 1, yPx: 2 } }] } };
-    const before = stream.written.length;
-    sinkFn(envelope);
-    expect(stream.written.length).toBe(before + 1);
-    expect(stream.written[stream.written.length - 1]).toBe(envelope);
+    expect(statusFrames.length).toBeGreaterThan(0);
+    const first = statusFrames[0] as { flowParts: { parts: { status: { status: string } }[] } };
+    expect(
+      ["STATUS_SIGNAL_STATUS_UNSPECIFIED", "STATUS_SIGNAL_STATUS_IDLE"].includes(
+        first.flowParts.parts[0].status.status,
+      ),
+    ).toBe(true);
+    expect((statusFrames[0] as { templateId?: string }).templateId).toBe("saolei");
+    expect((statusFrames[0] as { sessionId?: string }).sessionId).toBe("sess-status");
   });
 });
 
 // ===========================================================================
-// Tests: Connect — desktop disconnect aborts in-flight turn
+// Connect — abort lifecycle
 // ===========================================================================
 
 describe("Handler.Connect abort lifecycle", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient({
-      "helpful-assistant": {
-        model: "opencode-go/deepseek-v4",
-        systemPrompt: "You are helpful.",
-      },
-    });
-    sessionAgentStore = createMockSessionAgentStore();
-  });
-
-  // Adapter that captures the signal passed to generateTurn and parks the
-  // generator on the signal's abort event after each yield, so a test can
-  // emit stream end/error mid-turn and observe the abort.
-  function createAbortAwareAdapter(blocks: ContentBlock[]): {
-    adapter: AgentAdapter;
-    capturedSignal: () => AbortSignal | undefined;
-    yieldedCount: () => number;
-  } {
-    let signal: AbortSignal | undefined;
-    let count = 0;
-    const adapter: AgentAdapter = {
-      async *generateTurn(_threadId, _content, sig) {
-        signal = sig;
-        for (const block of blocks) {
-          if (sig?.aborted) return;
-          count++;
-          yield block;
-          if (sig) {
-            await new Promise<void>((resolve) => {
-              if (sig.aborted) {
-                resolve();
-                return;
-              }
-              sig.addEventListener("abort", () => resolve(), { once: true });
-            });
-          }
-        }
-      },
-      async getState() { return null; },
-    };
-    return { adapter, capturedSignal: () => signal, yieldedCount: () => count };
-  }
-
-  it("stream end aborts in-flight turn via AbortController", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "text", text: "chunk-1" },
-      { type: "text", text: "chunk-2" },
-      { type: "text", text: "chunk-3" },
-    ];
-    const { adapter, capturedSignal, yieldedCount } =
-      createAbortAwareAdapter(blocks);
-    sessionAgentStore._setBinding(
-      "sess-abort-end",
-      "helpful-assistant",
-      adapter,
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
+  it("aborts session loops on stream end", async () => {
+    const gate = makeGate();
+    const { store } = createTeamStore(gate);
+    const handler = createHandler(store);
     const stream = createFakeStream();
+    await createTestTeam(store, "sess-abort");
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
 
-    stream.emit(
-      "data",
-      userContentFrame("sess-abort-end", "hi", "helpful-assistant"),
-    );
-    await flush();
+    stream.emit("data", userContentFrame("sess-abort", "开始游戏", "player"));
+    await flush(0);
+
+    // The player turn is held in-flight on the gate.
+    const team = (await store.create("sess-abort", "saolei", "default")) as SessionTeam;
+    expect(team.isRunning()).toBe(true);
 
     stream.emit("end");
     await flush();
 
-    const signal = capturedSignal();
-    expect(signal).toBeDefined();
-    expect(signal!.aborted).toBe(true);
-    expect(yieldedCount()).toBeLessThan(blocks.length);
-
-    const waitWarnFrames = stream.written.filter(
-      (f) =>
-        (f as { payload?: string }).payload === "wait" ||
-        (f as { payload?: string }).payload === "warn",
-    );
-    expect(waitWarnFrames).toHaveLength(0);
+    // Abort cleared the in-flight turn.
+    expect(team.isRunning()).toBe(false);
+    gate.resolve();
   });
+});
 
-  it("stream error aborts in-flight turn", async () => {
-    const blocks: ContentBlock[] = [
-      { type: "text", text: "chunk-1" },
-      { type: "text", text: "chunk-2" },
-      { type: "text", text: "chunk-3" },
-    ];
-    const { adapter, capturedSignal, yieldedCount } =
-      createAbortAwareAdapter(blocks);
-    sessionAgentStore._setBinding(
-      "sess-abort-err",
-      "helpful-assistant",
-      adapter,
-    );
+// ===========================================================================
+// ListMessages — per-agent partitions (FR-005)
+// ===========================================================================
 
-    const handler = createHandler({ promptClient, sessionAgentStore });
+describe("Handler.ListMessages", () => {
+  it("reconstructs the player partition from the checkpoint channel with agent tagging", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
+    await createTestTeam(store, "sess-lm");
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
     stream.emit(
       "data",
-      userContentFrame("sess-abort-err", "hi", "helpful-assistant"),
+      userContentFrame("templates/saolei/sessions/sess-lm", "开始游戏", "player"),
     );
     await flush();
 
-    stream.emit("error", new Error("socket reset"));
-    await flush();
-
-    const signal = capturedSignal();
-    expect(signal).toBeDefined();
-    expect(signal!.aborted).toBe(true);
-    expect(yieldedCount()).toBeLessThan(blocks.length);
-
-    const waitWarnFrames = stream.written.filter(
-      (f) =>
-        (f as { payload?: string }).payload === "wait" ||
-        (f as { payload?: string }).payload === "warn",
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-lm/team/agents/player",
+      }),
+      callback,
     );
-    expect(waitWarnFrames).toHaveLength(0);
-  });
-
-  it("turn boundary disconnect: abort is a no-op on empty map", async () => {
-    sessionAgentStore._setBinding(
-      "sess-boundary",
-      "helpful-assistant",
-      createMockAdapter([{ type: "text", text: "done" }]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit(
-      "data",
-      userContentFrame("sess-boundary", "hi", "helpful-assistant"),
-    );
-    await flush();
-
-    const bridge = sessionAgentStore._getAgent("sess-boundary").bridge;
-    expect(bridge.unregisterSink).not.toHaveBeenCalled();
-
-    // Turn already completed: finally block deleted the controller from
-    // activeTurns. abortAllTurns must be a no-op, not throw.
-    stream.emit("end");
-    expect(bridge.unregisterSink).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — status probe
-// ===========================================================================
-
-describe("Handler.Connect probes", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-    sessionAgentStore = createMockSessionAgentStore();
-  });
-
-  it("responds to status probe with 'unknown' for unbound session", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", {
-      sessionId: "sess-status",
-      payload: "status",
-      sender: FRAME_SENDER_USER,
-    });
-    await flush();
-
-    expect(stream.written).toHaveLength(1);
-    const f = stream.written[0] as Record<string, unknown>;
-    expect(f.sender).toBe(FRAME_SENDER_SYSTEM);
-    expect(f.payload).toBe("status");
-    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
-    // as the full proto name (game.proto:368 STATUS_SIGNAL_STATUS_*); the handler
-    // emits the UNSPECIFIED variant for an unbound session.
-    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_UNSPECIFIED" });
-  });
-
-  it("responds to status probe with 'idle' for bound session", async () => {
-    sessionAgentStore._setBinding(
-      "sess-bound",
-      "some-profile",
-      createMockAdapter([]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", {
-      sessionId: "sess-bound",
-      payload: "status",
-      sender: FRAME_SENDER_USER,
-    });
-    await flush();
-
-    expect(stream.written).toHaveLength(1);
-    const f = stream.written[0] as Record<string, unknown>;
-    // proto-loader enums:String (prompt-client.ts:26) serializes StatusSignalStatus
-    // as the full proto name (game.proto:374 STATUS_SIGNAL_STATUS_IDLE); the
-    // handler emits the IDLE variant for a bound session.
-    expect(f.status).toEqual({ status: "STATUS_SIGNAL_STATUS_IDLE" });
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — LLM error handling
-// ===========================================================================
-
-describe("Handler.Connect LLM error", () => {
-  it("emits warn frame on LLM error and keeps stream open", async () => {
-    const promptClient = createMockPromptClient({
-      "error-profile": { model: "m", systemPrompt: "s" },
-    });
-    const throwingAdapter: AgentAdapter = {
-      generateTurn(): AsyncIterable<ContentBlock> {
-        const it: AsyncIterator<ContentBlock> = {
-          async next() {
-            throw new Error("Provider timeout");
-          },
-        };
-        return { [Symbol.asyncIterator]: () => it };
-      },
-      async getState() { return null; },
-    };
-    const sessionAgentStore = createMockSessionAgentStore();
-    sessionAgentStore._setBinding("sess-err", "error-profile", throwingAdapter);
-
-    const handler = createHandler({
-      promptClient,
-      sessionAgentStore,
-    });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-err", "break me", "error-profile"));
-    await flush();
-
-    expect(stream.written.length).toBeGreaterThanOrEqual(1);
-    expect(stream.ended).toBe(false);
-
-    const warnFrames = stream.written.filter(
-      (f) => (f as Record<string, unknown>).payload === "warn",
-    );
-    expect(warnFrames.length).toBeGreaterThanOrEqual(1);
-  });
-});
-
-// ===========================================================================
-// Tests: Connect — same-session serialization
-// ===========================================================================
-
-describe("Handler.Connect same-session serialization", () => {
-  it("serializes concurrent user content frames on same session (FIFO)", async () => {
-    const promptClient = createMockPromptClient({
-      "test-profile": { model: "m", systemPrompt: "s" },
-    });
-
-    let concurrentCount = 0;
-    let maxConcurrent = 0;
-    const processedMessages: string[] = [];
-
-    const adapter: AgentAdapter = {
-      async *generateTurn(_threadId: string, content: TurnContent) {
-        const userMessage = content.text ?? "";
-        concurrentCount++;
-        maxConcurrent = Math.max(maxConcurrent, concurrentCount);
-        processedMessages.push(userMessage);
-        await new Promise((r) => setTimeout(r, 10));
-        yield { type: "text", text: `Reply to: ${userMessage}` };
-        concurrentCount--;
-      },
-      async getState() { return null; },
-    };
-
-    const sessionAgentStore = createMockSessionAgentStore();
-    sessionAgentStore._setBinding("sess-conc", "test-profile", adapter);
-
-    const handler = createHandler({
-      promptClient,
-      sessionAgentStore,
-    });
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", userContentFrame("sess-conc", "msg-1", "test-profile"));
-    stream.emit("data", userContentFrame("sess-conc", "msg-2", "test-profile"));
-
-    await new Promise((r) => setTimeout(r, 100));
-
-    expect(maxConcurrent).toBe(1);
-    expect(processedMessages).toEqual(["msg-1", "msg-2"]);
-  });
-});
-
-// ===========================================================================
-// Tests: GetAgent
-// ===========================================================================
-
-describe("Handler.GetAgent", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-  });
-
-  it("returns adapter state with active profile when bound", async () => {
-    const sessionAgentStore = createMockSessionAgentStore();
-    sessionAgentStore._setBinding(
-      "sess-bound",
-      "my-profile",
-      createMockAdapter([]),
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const call = createUnaryCall({ name: "sessions/sess-bound/agent" });
-    const { callback, promise } = createCallback<{
-      name: string;
-      sessionId: string;
-      agentProfileName: string;
-      createTime?: unknown;
-    }>();
-
-    handler.GetAgent(call, callback);
     const { error, response } = await promise;
-
     expect(error).toBeNull();
-    expect(response!.sessionId).toBe("sess-bound");
-    expect(response!.agentProfileName).toBe("my-profile");
-    expect(response!.name).toBe("sessions/sess-bound/agent");
-    expect(response!.createTime).toBeDefined();
+    expect(response.messages.length).toBeGreaterThan(0);
+    for (const m of response.messages) {
+      expect(m.agent).toBe("player");
+      expect(m.name).toMatch(
+        /^templates\/saolei\/sessions\/sess-lm\/team\/agents\/player\/messages\//,
+      );
+    }
   });
 
-  it("returns empty profile for never-connected session (200 OK)", async () => {
-    const sessionAgentStore = createMockSessionAgentStore();
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const call = createUnaryCall({ name: "sessions/never-connected/agent" });
-    const { callback, promise } = createCallback<{
-      agentProfileName: string;
-    }>();
-
-    handler.GetAgent(call, callback);
-    const { error, response } = await promise;
-
-    expect(error).toBeNull();
-    expect(response!.agentProfileName).toBe("");
-  });
-});
-
-// ===========================================================================
-// Tests: RefreshAgent
-// ===========================================================================
-
-describe("Handler.RefreshAgent", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-    sessionAgentStore = createMockSessionAgentStore();
-  });
-
-  function refreshAgent(handler: Handler, sessionId: string) {
-    const call = createUnaryCall({ name: `sessions/${sessionId}/agent` });
-    const { callback, promise } = createCallback<{}>();
-    handler.RefreshAgent(call, callback);
-    return promise;
-  }
-
-  it("succeeds and invalidates adapter when no turn is in-flight", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const { error, response } = await refreshAgent(handler, "sess-refresh");
-
-    expect(error).toBeNull();
-    expect(response).toEqual({});
-
-    const agent = sessionAgentStore._getAgent("sess-refresh");
-    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns FAILED_PRECONDITION when a turn is in-flight", async () => {
-    const blocks: ContentBlock[] = [{ type: "text", text: "late reply" }];
-    const slowAdapter: AgentAdapter = {
-      async *generateTurn(): AsyncIterable<ContentBlock> {
-        await new Promise((r) => setTimeout(r, 50));
-        for (const block of blocks) yield block;
-      },
-      async getState() { return null; },
-    };
-    sessionAgentStore._setBinding(
-      "sess-busy",
-      "test-profile",
-      slowAdapter,
-    );
-
-    const handler = createHandler({ promptClient, sessionAgentStore });
+  it("partitions planner messages separately (FR-005) and excludes system messages", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
+    await createTestTeam(store, "sess-lm2");
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
     stream.emit(
       "data",
-      userContentFrame("sess-busy", "hello", "test-profile"),
+      userContentFrame("templates/saolei/sessions/sess-lm2", "开始游戏", "player"),
     );
+    await flush();
 
-    await new Promise((r) => setTimeout(r, 10));
+    // A game ended → the planner ran → its partition is non-empty.
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-lm2/team/agents/planner",
+      }),
+      callback,
+    );
+    const { error, response } = await promise;
+    expect(error).toBeNull();
+    expect(response.messages.length).toBeGreaterThan(0);
+    for (const m of response.messages) {
+      expect(m.agent).toBe("planner");
+    }
+  });
 
-    const { error, response } = await refreshAgent(handler, "sess-busy");
-
-    expect(error).not.toBeNull();
-    expect(error!.code).toBe(grpc.status.FAILED_PRECONDITION);
+  it("returns NOT_FOUND for a session whose team was not created", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/ghost/team/agents/player",
+      }),
+      callback,
+    );
+    const { error, response } = await promise;
+    expect(error?.code).toBe(grpc.status.NOT_FOUND);
     expect(response).toBeNull();
-
-    const agent = sessionAgentStore._getAgent("sess-busy");
-    expect(agent.invalidateAdapter).not.toHaveBeenCalled();
-
-    await new Promise((r) => setTimeout(r, 60));
   });
 
-  it("releases mutex so subsequent RefreshAgent calls still succeed", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const first = await refreshAgent(handler, "sess-repeat");
-    expect(first.error).toBeNull();
-
-    const second = await refreshAgent(handler, "sess-repeat");
-    expect(second.error).toBeNull();
-
-    const agent = sessionAgentStore._getAgent("sess-repeat");
-    expect(agent.invalidateAdapter).toHaveBeenCalledTimes(2);
+  it("rejects an unknown agent partition with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    handler.ListMessages(
+      createUnaryCall({
+        parent: "templates/saolei/sessions/sess-x/team/agents/ghost",
+      }),
+      callback,
+    );
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
   });
+});
 
-  it("does not block subsequent Connect turns after RefreshAgent", async () => {
-    const adapter = createMockAdapter([
-      { type: "text", text: "after refresh" },
-    ]);
-    const handler = createHandler({ promptClient, sessionAgentStore });
+// ===========================================================================
+// RefreshTeam (FR-018)
+// ===========================================================================
 
-    const refreshResult = await refreshAgent(handler, "sess-post");
-    expect(refreshResult.error).toBeNull();
-
-    const agent = sessionAgentStore._getAgent("sess-post");
-    agent.getOrCreateAdapter.mockResolvedValue(adapter);
-    agent.getAdapterState.mockReturnValue({
-      activeProfileName: "p",
-      isBound: true,
-    });
-
+describe("Handler.RefreshTeam", () => {
+  it("clears short-term messages; strategy survives (FR-018)", async () => {
+    const { store, strategies } = createTeamStore();
+    const handler = createHandler(store);
     const stream = createFakeStream();
+    await createTestTeam(store, "sess-ref");
     handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
     stream.emit(
       "data",
-      userContentFrame("sess-post", "go", "p"),
+      userContentFrame("templates/saolei/sessions/sess-ref", "开始游戏", "player"),
     );
     await flush();
 
-    expect(stream.written.length).toBeGreaterThanOrEqual(1);
-    const textFrames = stream.written.filter(
-      (f) =>
-        (f as Record<string, unknown>).sender === FRAME_SENDER_AGENT &&
-        (f as Record<string, unknown>).payload === "content",
+    const team = (await store.create("sess-ref", "saolei", "default")) as SessionTeam;
+    const before = await team.getTeamState();
+    expect(before?.playerMessages.length ?? 0).toBeGreaterThan(0);
+    // The planner wrote the strategy during the turn.
+    expect(await strategies.get("sess-ref")).toBe("corner-first");
+
+    const { callback, promise } = createCallback<any>();
+    handler.RefreshTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-ref/team" }),
+      callback,
     );
-    expect(textFrames).toHaveLength(1);
-  });
-});
+    const { error } = await promise;
+    expect(error).toBeNull();
 
-// ===========================================================================
-// Tests: SessionAgent.invalidateAdapter + getBridge (integration)
-// ===========================================================================
-
-describe("SessionAgent.invalidateAdapter integration", () => {
-  it("nulls adapter so next getOrCreateAdapter rebuilds", async () => {
-    const created: AgentAdapter[] = [];
-    const factory: AdapterFactory = async () => {
-      const adapter = createMockAdapter([
-        { type: "text", text: `adapter-${created.length}` },
-      ]);
-      created.push(adapter);
-      return adapter;
-    };
-
-    const throwProvider = async () => {
-      throw new Error("not used");
-    };
-    const agent = new SessionAgent(throwProvider, factory, new MemorySaver());
-
-    const fetcher = async () => ({
-      model: "m",
-      systemPrompt: "s",
-      toolNames: [],
-    });
-
-    const first = await agent.getOrCreateAdapter("p", fetcher);
-    expect(created).toHaveLength(1);
-    expect(agent.getAdapterState().isBound).toBe(true);
-
-    agent.invalidateAdapter();
-    expect(agent.getAdapter()).toBeNull();
-    expect(agent.getAdapterState()).toEqual({
-      activeProfileName: null,
-      isBound: false,
-    });
-
-    const second = await agent.getOrCreateAdapter("p", fetcher);
-    expect(second).not.toBe(first);
-    expect(created).toHaveLength(2);
+    const after = await team.getTeamState();
+    expect(after?.playerMessages).toEqual([]);
+    expect(after?.plannerMessages).toEqual([]);
+    expect(await strategies.get("sess-ref")).toBe("corner-first");
   });
 
-  it("invalidateAdapter on never-bound session is a no-op", () => {
-    const agent = new SessionAgent(
-      async () => { throw new Error("x"); },
-      async () => { throw new Error("x"); },
-      new MemorySaver(),
+  it("rejects RefreshTeam while a turn is in-flight (FAILED_PRECONDITION)", async () => {
+    const gate = makeGate();
+    const { store } = createTeamStore(gate);
+    const handler = createHandler(store);
+    const stream = createFakeStream();
+    await createTestTeam(store, "sess-busy");
+    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
+    stream.emit(
+      "data",
+      userContentFrame("templates/saolei/sessions/sess-busy", "开始游戏", "player"),
     );
+    await flush(0);
 
-    expect(() => agent.invalidateAdapter()).not.toThrow();
-    expect(agent.getAdapter()).toBeNull();
-  });
+    // The player turn is held in-flight on the gate.
+    const team = (await store.create("sess-busy", "saolei", "default")) as SessionTeam;
+    expect(team.isRunning()).toBe(true);
 
-  it("getBridge returns a stable OperationBridge instance", () => {
-    const agent = new SessionAgent(
-      async () => { throw new Error("x"); },
-      async () => { throw new Error("x"); },
-      new MemorySaver(),
+    const { callback, promise } = createCallback<any>();
+    handler.RefreshTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/sess-busy/team" }),
+      callback,
     );
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.FAILED_PRECONDITION);
 
-    const b1 = agent.getBridge();
-    const b2 = agent.getBridge();
-    expect(b1).toBe(b2);
-    expect(b1).toBeInstanceOf(OperationBridge);
-  });
-});
-
-
-
-describe("Handler.ListMessages (real MemorySaver)", () => {
-  let promptClient: ReturnType<typeof createMockPromptClient>;
-  let sessionAgentStore: MockSessionAgentStore;
-
-  beforeEach(() => {
-    promptClient = createMockPromptClient();
-    sessionAgentStore = createMockSessionAgentStore();
+    // Release the gate so the turn completes and the loop drains.
+    gate.resolve();
+    await flush();
+    expect(team.isRunning()).toBe(false);
   });
 
-  function createStateAdapter(): {
-    adapter: AgentAdapter;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    graph: any;
-  } {
-    const checkpointer = new MemorySaver();
-    const graph = new StateGraph(MessagesAnnotation)
-      .addNode("pass", async () => ({}))
-      .addEdge("__start__", "pass")
-      .addEdge("pass", "__end__")
-      .compile({ checkpointer });
-
-    const adapter: AgentAdapter = {
-      async *generateTurn() {},
-      async getState(threadId: string): Promise<AdapterStateSnapshot | null> {
-        const snapshot = await graph.getState({
-          configurable: { thread_id: threadId },
-        });
-        if (!snapshot) return null;
-        return {
-          values: snapshot.values ?? {},
-          createdAt: snapshot.createdAt,
-        };
-      },
-    };
-    return { adapter, graph };
-  }
-
-  async function writeMessages(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    graph: any,
-    sessionId: string,
-    messages: Array<HumanMessage | AIMessage | SystemMessage | ToolMessage>,
-  ) {
-    await graph.invoke(
-      { messages },
-      { configurable: { thread_id: sessionId } },
+  it("returns NOT_FOUND for a session whose team was not created", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    handler.RefreshTeam(
+      createUnaryCall({ name: "templates/saolei/sessions/ghost/team" }),
+      callback,
     );
-  }
-
-  async function listMessages(handler: Handler, sessionId: string) {
-    const call = createUnaryCall({
-      parent: `sessions/${sessionId}`,
-    });
-    const { callback, promise } = createCallback<{
-      messages?: Array<Record<string, unknown>>;
-    }>();
-    handler.ListMessages(call, callback);
-    return promise;
-  }
-
-  /** Extract the single Part's content string from a Message's PartBlock. */
-  function firstPartText(msg: Record<string, unknown>): string {
-    const parts = (msg.content as { parts: { text?: { content?: string } }[] }).parts;
-    return parts[0]?.text?.content ?? "";
-  }
-
-  it("round-trips text messages (human + ai) in chronological order", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-text-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-text-rt", [
-      new HumanMessage("Hello"),
-      new AIMessage("Hi there!"),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-text-rt");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
-
-    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    expect(firstPartText(response!.messages![0])).toBe("Hello");
-
-    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    expect(firstPartText(response!.messages![1])).toBe("Hi there!");
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.NOT_FOUND);
   });
 
-  it("maps AIMessage with only reasoning blocks to a ThinkingPart", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-think-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-think-rt", [
-      new HumanMessage("Question"),
-      new AIMessage({
-        content: [{ type: "reasoning", reasoning: "Let me analyze..." }],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-think-rt");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
-
-    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string } }[] }).parts;
-    expect(parts[0]?.thinking?.content).toBe("Let me analyze...");
-  });
-
-  it("maps AIMessage with mixed reasoning + text to both parts", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-mixed-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-mixed-rt", [
-      new HumanMessage("Why?"),
-      new AIMessage({
-        content: [
-          { type: "reasoning", reasoning: "Step 1" },
-          { type: "text", text: "The answer is 42." },
-        ],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-mixed-rt");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
-    const parts = (response!.messages![1].content as { parts: { thinking?: { content?: string }; text?: { content?: string } }[] }).parts;
-    expect(parts).toHaveLength(2);
-    expect(parts[0]?.thinking?.content).toBe("Step 1");
-    expect(parts[1]?.text?.content).toBe("The answer is 42.");
-  });
-
-  it("reconstructs image content blocks as an ImagePart alongside text", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-image-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-image-rt", [
-      new HumanMessage({
-        content: [
-          { type: "text", text: "What is in this image?" },
-          {
-            type: "image_url",
-            image_url: { url: "data:image/png;base64,base64imagedata" },
-          },
-        ],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-image-rt");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(1);
-
-    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    const parts = (response!.messages![0].content as { parts: { text?: { content?: string }; image?: { data?: unknown; encoding?: string } }[] }).parts;
-    expect(parts).toHaveLength(2);
-    expect(parts[0]?.text?.content).toBe("What is in this image?");
-    expect(parts[1]?.image?.data).toBe("base64imagedata");
-    expect(parts[1]?.image?.encoding).toBe("IMAGE_ENCODING_PNG");
-  });
-
-  it("reconstructs image content blocks when data is a Uint8Array", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-image-uint8", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
-    const expectedBase64 = Buffer.from(imageBytes).toString("base64");
-
-    await writeMessages(graph, "sess-image-uint8", [
-      new HumanMessage({
-        content: [
-          { type: "text", text: "look" },
-          {
-            type: "image",
-            data: imageBytes,
-            mime_type: "image/png",
-          },
-        ],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-image-uint8");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(1);
-    const parts = (response!.messages![0].content as { parts: { image?: { data?: unknown } }[] }).parts;
-    expect(parts[1]?.image?.data).toBe(expectedBase64);
-  });
-
-  it("filters out SystemMessages from the result", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-sys-filter", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-sys-filter", [
-      new SystemMessage("You are a system prompt."),
-      new HumanMessage("Hello"),
-      new AIMessage("Hi!"),
-      new SystemMessage("Another system message."),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-sys-filter");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(2);
-    expect(response!.messages![0].sender).toBe(FRAME_SENDER_USER);
-    expect(response!.messages![1].sender).toBe(FRAME_SENDER_AGENT);
-  });
-
-  it("returns empty messages for session with no adapter bound", async () => {
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    const { error, response } = await listMessages(handler, "never-bound");
-
-    expect(error).toBeNull();
-    expect(response!.messages ?? []).toHaveLength(0);
-  });
-
-  it("preserves chronological ordering across multiple turns", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-chrono", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-chrono", [new HumanMessage("first")]);
-    await writeMessages(graph, "sess-chrono", [new AIMessage("second")]);
-    await writeMessages(graph, "sess-chrono", [new HumanMessage("third")]);
-    await writeMessages(graph, "sess-chrono", [new AIMessage("fourth")]);
-
-    const { error, response } = await listMessages(handler, "sess-chrono");
-
-    expect(error).toBeNull();
-    expect(response!.messages).toHaveLength(4);
-    expect(firstPartText(response!.messages![0])).toBe("first");
-    expect(firstPartText(response!.messages![1])).toBe("second");
-    expect(firstPartText(response!.messages![2])).toBe("third");
-    expect(firstPartText(response!.messages![3])).toBe("fourth");
-  });
-
-  it("emits a MouseMovePart for AIMessage with a mouse_move tool_call", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-op-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-op-rt", [
-      new HumanMessage("click the button"),
-      new AIMessage({
-        content: "I'll move the mouse first.",
-        tool_calls: [
-          {
-            name: "mouse_move",
-            args: { x_px: 150, y_px: 250 },
-            id: "call-move-1",
-            type: "tool_call" as const,
-          },
-        ],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-op-rt");
-
-    expect(error).toBeNull();
-    const opMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { mouseMove?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.mouseMove);
-    });
-    expect(opMsg).toBeDefined();
-    expect(opMsg!.sender).toBe(FRAME_SENDER_AGENT);
-    const movePart = (opMsg!.content as { parts: { mouseMove?: { xPx?: number; yPx?: number } }[] }).parts.find((p) => p.mouseMove)!.mouseMove;
-    expect(movePart?.xPx).toBe(150);
-    expect(movePart?.yPx).toBe(250);
-  });
-
-  it("emits a MouseClickPart for a mouse_click tool_call with click_type", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-opclick-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-opclick-rt", [
-      new HumanMessage("click here"),
-      new AIMessage({
-        content: "",
-        tool_calls: [
-          {
-            name: "mouse_click",
-            args: { click_type: "LEFT_CLICK" },
-            id: "call-click-1",
-            type: "tool_call" as const,
-          },
-        ],
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-opclick-rt");
-
-    expect(error).toBeNull();
-    const opMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { mouseClick?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.mouseClick);
-    });
-    expect(opMsg).toBeDefined();
-    const clickPart = (opMsg!.content as { parts: { mouseClick?: { click?: string } }[] }).parts.find((p) => p.mouseClick)!.mouseClick;
-    expect(clickPart?.click).toBe("MOUSE_CLICK_ACTION_LEFT_CLICK");
-  });
-
-  it("emits a ToolResultPart for a ToolMessage with reconstructed fields", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-opres-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-opres-rt", [
-      new HumanMessage("move the mouse"),
-      new AIMessage({
-        content: "",
-        tool_calls: [
-          {
-            name: "mouse_move",
-            args: { x_px: 10, y_px: 20 },
-            id: "call-2",
-            type: "tool_call" as const,
-          },
-        ],
-      }),
-      new ToolMessage({
-        content: [
-          { type: "text", text: "ok" },
-          {
-            type: "image_url",
-            image_url: { url: "data:image/png;base64,screenshotdata" },
-          },
-          {
-            type: "text",
-            text: "[图片像素尺寸：800×600（宽×高，单位：像素）。鼠标工具坐标基于此像素空间。]",
-          },
-        ],
-        tool_call_id: "call-2",
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-opres-rt");
-
-    expect(error).toBeNull();
-
-    // The ToolMessage produces a Message carrying a ToolResultPart.
-    const resultMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.toolResult);
-    });
-    expect(resultMsg).toBeDefined();
-    expect(resultMsg!.sender).toBe(FRAME_SENDER_SYSTEM);
-    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string; message?: string; screenshot?: { data?: string; encoding?: string; widthPx?: number; heightPx?: number } } }[] }).parts.find((p) => p.toolResult)!.toolResult;
-    expect(tr?.status).toBe("TOOL_RESULT_STATUS_SUCCEEDED");
-    expect(tr?.message).toBe("ok");
-    expect(tr?.screenshot).toBeDefined();
-    expect(tr?.screenshot?.data).toBe("screenshotdata");
-    expect(tr?.screenshot?.widthPx).toBe(800);
-    expect(tr?.screenshot?.heightPx).toBe(600);
-  });
-
-  it("infers FAILED status from ToolMessage message without ok/succeeded", async () => {
-    const { adapter, graph } = createStateAdapter();
-    sessionAgentStore._setBinding("sess-opfail-rt", "test-profile", adapter);
-    const handler = createHandler({ promptClient, sessionAgentStore });
-
-    await writeMessages(graph, "sess-opfail-rt", [
-      new HumanMessage("do something"),
-      new AIMessage({
-        content: "",
-        tool_calls: [
-          {
-            name: "mouse_click",
-            args: { click_type: "RIGHT_CLICK" },
-            id: "call-3",
-            type: "tool_call" as const,
-          },
-        ],
-      }),
-      new ToolMessage({
-        content: [{ type: "text", text: "operation timed out" }],
-        tool_call_id: "call-3",
-      }),
-    ]);
-
-    const { error, response } = await listMessages(handler, "sess-opfail-rt");
-
-    expect(error).toBeNull();
-    const resultMsg = response!.messages!.find((m) => {
-      const parts = (m.content as { parts: { toolResult?: unknown }[] } | undefined)?.parts ?? [];
-      return parts.some((p) => p.toolResult);
-    });
-    expect(resultMsg).toBeDefined();
-    const tr = (resultMsg!.content as { parts: { toolResult?: { status?: string } }[] }).parts.find((p) => p.toolResult)!.toolResult;
-    expect(tr?.status).toBe("TOOL_RESULT_STATUS_FAILED");
+  it("rejects a malformed name with INVALID_ARGUMENT", async () => {
+    const { store } = createTeamStore();
+    const handler = createHandler(store);
+    const { callback, promise } = createCallback<any>();
+    handler.RefreshTeam(createUnaryCall({ name: "sessions/x/team" }), callback);
+    const { error } = await promise;
+    expect(error?.code).toBe(grpc.status.INVALID_ARGUMENT);
   });
 });

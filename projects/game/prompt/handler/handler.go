@@ -1,4 +1,6 @@
-// Package handler implements the PromptServiceServer gRPC interface.
+// Package handler implements the PromptServiceServer gRPC interface for
+// TeamProfile CRUD (spec 031-team-template-mode: AgentProfile/Skill resources
+// removed, TeamProfile replaces them — clean break, FR-006/FR-007).
 package handler
 
 import (
@@ -6,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	game "dominion/projects/game"
@@ -19,222 +22,233 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Handler implements PromptServiceServer for AgentProfile and Skill CRUD operations.
+// Handler implements PromptServiceServer for TeamProfile CRUD operations.
 type Handler struct {
 	game.UnimplementedPromptServiceServer
 
-	agentProfileRepo domain.AgentProfileRepository
-	skillRepo        domain.SkillRepository
+	teamProfileRepo domain.TeamProfileRepository
 }
 
-// NewHandler creates a new Handler with the given repositories.
-func NewHandler(agentProfileRepo domain.AgentProfileRepository, skillRepo domain.SkillRepository) *Handler {
+// NewHandler creates a new Handler with the given repository.
+func NewHandler(teamProfileRepo domain.TeamProfileRepository) *Handler {
 	return &Handler{
-		agentProfileRepo: agentProfileRepo,
-		skillRepo:        skillRepo,
+		teamProfileRepo: teamProfileRepo,
 	}
 }
 
-// ─── AgentProfile RPCs ────────────────────────────────────────────────────
+// ─── TeamProfile RPCs ─────────────────────────────────────────────────────
 
-// CreateAgentProfile creates an AgentProfile under the prompts singleton
-// namespace (AIP-133: https://google.aip.dev/133). The resource body is read
-// from req.GetAgentProfile(); the caller-supplied ID from req.GetAgentProfileId().
-func (h *Handler) CreateAgentProfile(ctx context.Context, req *game.CreateAgentProfileRequest) (*game.AgentProfile, error) {
-	if req.GetParent() != gameconst.PromptsParent {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parent must be %q, got %q", gameconst.PromptsParent, req.GetParent()))
+// CreateTeamProfile creates a TeamProfile under a template (AIP-133:
+// https://google.aip.dev/133). The caller supplies the team_profile_id
+// (REQUIRED per the proto contract, spec 031-team-template-mode §2.3). The
+// template field of the resource body must agree with the parent, and the
+// template must agree with the active oneof spec variant — the handler
+// validates the consistency (no implicit rules, spec 031-team-template-mode
+// directive 2).
+func (h *Handler) CreateTeamProfile(ctx context.Context, req *game.CreateTeamProfileRequest) (*game.TeamProfile, error) {
+	tplName, err := game.ParseTemplateName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	profileID := req.GetTeamProfileId()
+	if profileID == "" {
+		return nil, status.Error(codes.InvalidArgument, "team_profile_id is required")
+	}
+	if strings.Contains(profileID, "/") {
+		return nil, status.Error(codes.InvalidArgument, "team_profile_id must not contain '/'")
+	}
+
+	tp := req.GetTeamProfile()
+	if err := validateTeamProfileBody(tp, tplName); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
-	ap := req.GetAgentProfile()
-	profile := &domain.AgentProfile{
-		AgentProfileName: req.GetAgentProfileId(),
-		Model:            ap.GetModel(),
-		SystemPrompt:     ap.GetSystemPrompt(),
-		SkillNames:       ap.GetSkillNames(),
-		MCPNames:         ap.GetMcpNames(),
-		Enabled:          ap.GetEnabled(),
-		ToolNames:        ap.GetToolNames(),
-		CreateTime:       now,
-		UpdateTime:       now,
+	profile := &domain.TeamProfile{
+		TeamProfileName:     profileID,
+		Template:            tplName.TemplateID,
+		SaoleiPlayerModel:   tp.GetSaolei().GetPlayerModel(),
+		SaoleiPlannerModel:  tp.GetSaolei().GetPlannerModel(),
+		SaoleiPlayerPrompt:  tp.GetSaolei().GetPlayerPrompt(),
+		SaoleiPlannerPrompt: tp.GetSaolei().GetPlannerPrompt(),
+		CreateTime:          now,
+		UpdateTime:          now,
 	}
 
-	if err := h.agentProfileRepo.CreateAgentProfile(ctx, profile); err != nil {
+	if err := h.teamProfileRepo.CreateTeamProfile(ctx, profile); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	return agentProfileToProto(profile), nil
+	return teamProfileToProto(profile), nil
 }
 
-// GetAgentProfile retrieves an AgentProfile by its resource name.
-func (h *Handler) GetAgentProfile(ctx context.Context, req *game.GetAgentProfileRequest) (*game.AgentProfile, error) {
-	profileID, err := gameconst.AgentProfileID(req.GetName())
+// GetTeamProfile retrieves a TeamProfile by its resource name.
+func (h *Handler) GetTeamProfile(ctx context.Context, req *game.GetTeamProfileRequest) (*game.TeamProfile, error) {
+	name, err := req.ParseName()
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	profile, err := h.agentProfileRepo.GetAgentProfile(ctx, profileID)
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	profile, err := h.teamProfileRepo.GetTeamProfile(ctx, name.TemplateID, name.ProfileID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	return agentProfileToProto(profile), nil
+	return teamProfileToProto(profile), nil
 }
 
-// UpdateAgentProfile applies a partial update described by update_mask to an existing AgentProfile.
-// Paths in update_mask must reference writable AgentProfile fields. Unknown paths return
+// ListTeamProfiles retrieves a paginated list of TeamProfile resources under
+// a template (AIP-132: https://google.aip.dev/132).
+func (h *Handler) ListTeamProfiles(ctx context.Context, req *game.ListTeamProfilesRequest) (*game.ListTeamProfilesResponse, error) {
+	tplName, err := game.ParseTemplateName(req.GetParent())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := gameconst.ValidateTemplateName(tplName); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	pageSize := int(req.GetPageSize())
+	if pageSize <= 0 {
+		pageSize = domain.DefaultListTeamProfilesPageSize
+	}
+	if pageSize > domain.MaxListTeamProfilesPageSize {
+		return nil, status.Errorf(codes.InvalidArgument, "page_size exceeds maximum of %d", domain.MaxListTeamProfilesPageSize)
+	}
+
+	profiles, nextPageToken, err := h.teamProfileRepo.ListTeamProfiles(ctx, tplName.TemplateID, pageSize, req.GetPageToken())
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+
+	protos := make([]*game.TeamProfile, 0, len(profiles))
+	for _, p := range profiles {
+		protos = append(protos, teamProfileToProto(p))
+	}
+
+	return &game.ListTeamProfilesResponse{
+		TeamProfiles:  protos,
+		NextPageToken: nextPageToken,
+	}, nil
+}
+
+// UpdateTeamProfile applies a partial update described by update_mask to an
+// existing TeamProfile (AIP-134: https://google.aip.dev/134). Identity is
+// carried on the resource itself (TeamProfile.name), surfaced via
+// req.GetTeamProfile().GetName(). update_mask supports oneof-member paths
+// (saolei.player_model / saolei.planner_model, AIP-161). Unknown paths return
 // INVALID_ARGUMENT; missing profiles return NOT_FOUND.
-// AIP-134: https://google.aip.dev/134. Identity is carried on the resource itself
-// (AgentProfile.name), surfaced via req.GetAgentProfile().GetName().
-func (h *Handler) UpdateAgentProfile(ctx context.Context, req *game.UpdateAgentProfileRequest) (*game.AgentProfile, error) {
-	profileID, err := gameconst.AgentProfileID(req.GetAgentProfile().GetName())
+func (h *Handler) UpdateTeamProfile(ctx context.Context, req *game.UpdateTeamProfileRequest) (*game.TeamProfile, error) {
+	name, err := game.ParseTeamProfileName(req.GetTeamProfile().GetName())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
-	existing, err := h.agentProfileRepo.GetAgentProfile(ctx, profileID)
+	patch := req.GetTeamProfile()
+	if patch.GetTemplate() != "" {
+		patchTpl, err := game.ParseTemplateName(patch.GetTemplate())
+		if err != nil || patchTpl.TemplateID != name.TemplateID {
+			return nil, status.Errorf(codes.InvalidArgument, "team_profile.template %q does not match the resource name template %q", patch.GetTemplate(), name.TemplateID)
+		}
+	}
+
+	existing, err := h.teamProfileRepo.GetTeamProfile(ctx, name.TemplateID, name.ProfileID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	updated, err := applyAgentProfileMask(existing, req.GetAgentProfile(), req.GetUpdateMask())
+	updated, err := applyTeamProfileMask(existing, patch, req.GetUpdateMask())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	updated.UpdateTime = time.Now()
 
-	persisted, err := h.agentProfileRepo.UpdateAgentProfile(ctx, updated)
+	persisted, err := h.teamProfileRepo.UpdateTeamProfile(ctx, updated)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
 
-	return agentProfileToProto(persisted), nil
+	return teamProfileToProto(persisted), nil
 }
 
-// ListAgentProfiles retrieves a paginated list of AgentProfile resources.
-func (h *Handler) ListAgentProfiles(ctx context.Context, req *game.ListAgentProfilesRequest) (*game.ListAgentProfilesResponse, error) {
-	pageSize := int(req.GetPageSize())
-	if pageSize <= 0 {
-		pageSize = 100
-	}
-
-	profiles, nextPageToken, err := h.agentProfileRepo.ListAgentProfiles(ctx, pageSize, req.GetPageToken())
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-
-	protos := make([]*game.AgentProfile, 0, len(profiles))
-	for _, p := range profiles {
-		protos = append(protos, agentProfileToProto(p))
-	}
-
-	return &game.ListAgentProfilesResponse{
-		AgentProfiles: protos,
-		NextPageToken: nextPageToken,
-	}, nil
-}
-
-// DeleteAgentProfile deletes an AgentProfile by its resource name.
-func (h *Handler) DeleteAgentProfile(ctx context.Context, req *game.DeleteAgentProfileRequest) (*emptypb.Empty, error) {
-	profileID, err := gameconst.AgentProfileID(req.GetName())
+// DeleteTeamProfile deletes a TeamProfile by its resource name.
+func (h *Handler) DeleteTeamProfile(ctx context.Context, req *game.DeleteTeamProfileRequest) (*emptypb.Empty, error) {
+	name, err := req.ParseName()
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := h.agentProfileRepo.DeleteAgentProfile(ctx, profileID); err != nil {
+	if err := gameconst.ValidateTemplateName(name.Parent()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	if err := h.teamProfileRepo.DeleteTeamProfile(ctx, name.TemplateID, name.ProfileID); err != nil {
 		return nil, toStatusError(err)
 	}
 	return new(emptypb.Empty), nil
 }
 
-// ─── Skill RPCs ───────────────────────────────────────────────────────────
+// ─── Validation helpers ───────────────────────────────────────────────────
 
-// CreateSkill creates a Skill under the prompts singleton namespace
-// (AIP-133: https://google.aip.dev/133). The resource body is read from
-// req.GetSkill(); the caller-supplied ID from req.GetSkillId().
-func (h *Handler) CreateSkill(ctx context.Context, req *game.CreateSkillRequest) (*game.Skill, error) {
-	if req.GetParent() != gameconst.PromptsParent {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parent must be %q, got %q", gameconst.PromptsParent, req.GetParent()))
+// validateTeamProfileBody enforces the template/oneof consistency rule: the
+// resource body's template must equal the parent's template, and the template
+// must agree with the active oneof spec variant (spec 031-team-template-mode
+// directive 2 — no implicit rules).
+func validateTeamProfileBody(tp *game.TeamProfile, parent game.TemplateName) error {
+	if tp == nil {
+		return status.Error(codes.InvalidArgument, "team_profile is required")
 	}
-
-	now := time.Now()
-	s := req.GetSkill()
-	skill := &domain.Skill{
-		SkillName:  req.GetSkillId(),
-		Content:    s.GetContent(),
-		Enabled:    s.GetEnabled(),
-		CreateTime: now,
-		UpdateTime: now,
+	bodyTpl, err := game.ParseTemplateName(tp.GetTemplate())
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "team_profile.template must be a template resource name: %v", err)
 	}
-
-	if err := h.skillRepo.CreateSkill(ctx, skill); err != nil {
-		return nil, toStatusError(err)
+	if bodyTpl.TemplateID != parent.TemplateID {
+		return status.Errorf(codes.InvalidArgument, "team_profile.template %q does not match the parent template %q", bodyTpl.String(), parent.String())
 	}
-
-	return skillToProto(skill), nil
+	if err := validateSpecConsistency(bodyTpl, tp.GetSaolei() != nil); err != nil {
+		return err
+	}
+	return nil
 }
 
-// GetSkill retrieves a Skill by its resource name.
-func (h *Handler) GetSkill(ctx context.Context, req *game.GetSkillRequest) (*game.Skill, error) {
-	skillID, err := gameconst.SkillID(req.GetName())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+// validateSpecConsistency checks that the template refers to a known template
+// and that its oneof spec variant is present (FR 禁潜规则: exactly one
+// variant must be set, matching the template).
+func validateSpecConsistency(template game.TemplateName, hasSaolei bool) error {
+	if err := gameconst.ValidateTemplateName(template); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	skill, err := h.skillRepo.GetSkill(ctx, skillID)
-	if err != nil {
-		return nil, toStatusError(err)
+	if template.TemplateID == gameconst.SaoleiTemplate.TemplateID && !hasSaolei {
+		return status.Errorf(codes.InvalidArgument, "template %q requires the saolei spec variant to be set", template.String())
 	}
-	return skillToProto(skill), nil
-}
-
-// ListSkills retrieves a paginated list of Skill resources.
-func (h *Handler) ListSkills(ctx context.Context, req *game.ListSkillsRequest) (*game.ListSkillsResponse, error) {
-	pageSize := int(req.GetPageSize())
-	if pageSize <= 0 {
-		pageSize = 100
-	}
-
-	skills, nextPageToken, err := h.skillRepo.ListSkills(ctx, pageSize, req.GetPageToken())
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-
-	protos := make([]*game.Skill, 0, len(skills))
-	for _, s := range skills {
-		protos = append(protos, skillToProto(s))
-	}
-
-	return &game.ListSkillsResponse{
-		Skills:        protos,
-		NextPageToken: nextPageToken,
-	}, nil
-}
-
-// DeleteSkill deletes a Skill by its resource name.
-func (h *Handler) DeleteSkill(ctx context.Context, req *game.DeleteSkillRequest) (*emptypb.Empty, error) {
-	skillID, err := gameconst.SkillID(req.GetName())
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if err := h.skillRepo.DeleteSkill(ctx, skillID); err != nil {
-		return nil, toStatusError(err)
-	}
-	return new(emptypb.Empty), nil
+	return nil
 }
 
 // ─── Conversion helpers ───────────────────────────────────────────────────
 
-// agentProfileToProto converts a domain AgentProfile to a proto AgentProfile.
-func agentProfileToProto(p *domain.AgentProfile) *game.AgentProfile {
+// teamProfileToProto converts a domain TeamProfile to a proto TeamProfile.
+func teamProfileToProto(p *domain.TeamProfile) *game.TeamProfile {
 	if p == nil {
 		return nil
 	}
 
-	pb := &game.AgentProfile{
-		Name:         gameconst.AgentProfileName(p.AgentProfileName),
-		Model:        p.Model,
-		SystemPrompt: p.SystemPrompt,
-		SkillNames:   p.SkillNames,
-		McpNames:     p.MCPNames,
-		Enabled:      p.Enabled,
-		ToolNames:    p.ToolNames,
+	pb := &game.TeamProfile{
+		Name:     game.TeamProfileName{TemplateID: p.Template, ProfileID: p.TeamProfileName}.String(),
+		Template: game.TemplateName{TemplateID: p.Template}.String(),
+		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
+			PlayerModel:   p.SaoleiPlayerModel,
+			PlannerModel:  p.SaoleiPlannerModel,
+			PlayerPrompt:  p.SaoleiPlayerPrompt,
+			PlannerPrompt: p.SaoleiPlannerPrompt,
+		}},
 	}
 	if !p.CreateTime.IsZero() {
 		pb.CreateTime = timestamppb.New(p.CreateTime)
@@ -246,44 +260,31 @@ func agentProfileToProto(p *domain.AgentProfile) *game.AgentProfile {
 	return pb
 }
 
-// skillToProto converts a domain Skill to a proto Skill.
-func skillToProto(s *domain.Skill) *game.Skill {
-	if s == nil {
-		return nil
-	}
-
-	pb := &game.Skill{
-		Name:    gameconst.SkillName(s.SkillName),
-		Content: s.Content,
-		Enabled: s.Enabled,
-	}
-	if !s.CreateTime.IsZero() {
-		pb.CreateTime = timestamppb.New(s.CreateTime)
-	}
-	if !s.UpdateTime.IsZero() {
-		pb.UpdateTime = timestamppb.New(s.UpdateTime)
-	}
-
-	return pb
+// teamProfileMaskFields enumerates the writable TeamProfile fields addressable
+// via update_mask, including the saolei oneof member paths (AIP-161
+// https://google.aip.dev/161).
+var teamProfileMaskFields = []string{
+	"saolei", "saolei.player_model", "saolei.planner_model", "saolei.player_prompt", "saolei.planner_prompt",
 }
 
-// agentProfileMaskFields enumerates the writable AgentProfile fields addressable via update_mask.
-// Order is irrelevant; the slice is searched with slices.Contains.
-var agentProfileMaskFields = []string{
-	"model", "system_prompt", "skill_names", "mcp_names", "enabled", "tool_names",
-}
-
-// applyAgentProfileMask returns a copy of existing with the masked fields overwritten by patch.
-// An error is returned if update_mask references a path outside agentProfileMaskFields.
-// A nil update_mask (or one with no paths) leaves existing unchanged.
-func applyAgentProfileMask(existing *domain.AgentProfile, patch *game.AgentProfile, mask *fieldmaskpb.FieldMask) (*domain.AgentProfile, error) {
-	if mask == nil || len(mask.GetPaths()) == 0 {
-		return existing, nil
+// applyTeamProfileMask returns a copy of existing with the masked fields
+// overwritten by patch. An error is returned if update_mask references a path
+// outside teamProfileMaskFields. A nil update_mask (or one with no paths) is
+// treated as "all populated fields": the whole saolei spec when the patch
+// carries it, otherwise no change (AIP-134).
+func applyTeamProfileMask(existing *domain.TeamProfile, patch *game.TeamProfile, mask *fieldmaskpb.FieldMask) (*domain.TeamProfile, error) {
+	paths := mask.GetPaths()
+	if len(paths) == 0 {
+		if patch.GetSaolei() != nil {
+			paths = []string{"saolei"}
+		} else {
+			return existing, nil
+		}
 	}
 
-	for _, path := range mask.GetPaths() {
-		if !slices.Contains(agentProfileMaskFields, path) {
-			return nil, fmt.Errorf("update_mask path %q is not a writable AgentProfile field", path)
+	for _, path := range paths {
+		if !slices.Contains(teamProfileMaskFields, path) {
+			return nil, fmt.Errorf("update_mask path %q is not a writable TeamProfile field", path)
 		}
 	}
 
@@ -292,20 +293,25 @@ func applyAgentProfileMask(existing *domain.AgentProfile, patch *game.AgentProfi
 		return &updated, nil
 	}
 
-	for _, path := range mask.GetPaths() {
+	for _, path := range paths {
 		switch path {
-		case "model":
-			updated.Model = patch.GetModel()
-		case "system_prompt":
-			updated.SystemPrompt = patch.GetSystemPrompt()
-		case "skill_names":
-			updated.SkillNames = patch.GetSkillNames()
-		case "mcp_names":
-			updated.MCPNames = patch.GetMcpNames()
-		case "enabled":
-			updated.Enabled = patch.GetEnabled()
-		case "tool_names":
-			updated.ToolNames = patch.GetToolNames()
+		case "saolei":
+			s := patch.GetSaolei()
+			if s == nil {
+				return nil, fmt.Errorf("update_mask path %q requires the saolei spec variant to be set", path)
+			}
+			updated.SaoleiPlayerModel = s.GetPlayerModel()
+			updated.SaoleiPlannerModel = s.GetPlannerModel()
+			updated.SaoleiPlayerPrompt = s.GetPlayerPrompt()
+			updated.SaoleiPlannerPrompt = s.GetPlannerPrompt()
+		case "saolei.player_model":
+			updated.SaoleiPlayerModel = patch.GetSaolei().GetPlayerModel()
+		case "saolei.planner_model":
+			updated.SaoleiPlannerModel = patch.GetSaolei().GetPlannerModel()
+		case "saolei.player_prompt":
+			updated.SaoleiPlayerPrompt = patch.GetSaolei().GetPlayerPrompt()
+		case "saolei.planner_prompt":
+			updated.SaoleiPlannerPrompt = patch.GetSaolei().GetPlannerPrompt()
 		}
 	}
 

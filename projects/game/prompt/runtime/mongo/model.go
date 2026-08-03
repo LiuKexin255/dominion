@@ -1,5 +1,6 @@
-// Package mongo provides the MongoDB-backed repository implementations for
-// AgentProfile and Skill entities.
+// Package mongo provides the MongoDB-backed repository implementation for
+// TeamProfile entities (spec 031-team-template-mode: TeamProfile replaces the
+// former AgentProfile/Skill entities, clean break).
 package mongo
 
 import (
@@ -10,109 +11,71 @@ import (
 
 // BSON field name constants for MongoDB documents.
 const (
-	fieldAgentProfileName = "agent_profile_name"
-	fieldSkillName        = "skill_name"
-	fieldCreateTime       = "create_time"
+	fieldTeamProfileName = "team_profile_name"
+	fieldTemplate        = "template"
+	fieldPlayerModel     = "player_model"
+	fieldPlannerModel    = "planner_model"
+	fieldPlayerPrompt    = "player_prompt"
+	fieldPlannerPrompt   = "planner_prompt"
+	fieldCreateTime      = "create_time"
+	fieldUpdateTime      = "update_time"
 )
 
-// agentProfileDocument stores AgentProfile documents in MongoDB.
-type agentProfileDocument struct {
-	ID               interface{} `bson:"_id,omitempty"`
-	AgentProfileName string      `bson:"agent_profile_name"`
-	Model            string      `bson:"model"`
-	SystemPrompt     string      `bson:"system_prompt"`
-	SkillNames       []string    `bson:"skill_names"`
-	MCPNames         []string    `bson:"mcp_names"`
-	Enabled          bool        `bson:"enabled"`
-	ToolNames        []string    `bson:"tool_names"`
-	CreateTime       time.Time   `bson:"create_time"`
-	UpdateTime       time.Time   `bson:"update_time"`
+// teamProfileDocument stores TeamProfile documents in MongoDB.
+// The saolei oneof spec is flattened into the player_model/planner_model and
+// player_prompt/planner_prompt fields; other templates add their own spec
+// fields (typed, no blobs).
+type teamProfileDocument struct {
+	ID                  interface{} `bson:"_id,omitempty"`
+	TeamProfileName     string      `bson:"team_profile_name"`
+	Template            string      `bson:"template"`
+	SaoleiPlayerModel   string      `bson:"player_model"`
+	SaoleiPlannerModel  string      `bson:"planner_model"`
+	SaoleiPlayerPrompt  string      `bson:"player_prompt"`
+	SaoleiPlannerPrompt string      `bson:"planner_prompt"`
+	CreateTime          time.Time   `bson:"create_time"`
+	UpdateTime          time.Time   `bson:"update_time"`
 }
 
 // toDomain converts a MongoDB document into its domain representation.
-func (d *agentProfileDocument) toDomain() *domain.AgentProfile {
+func (d *teamProfileDocument) toDomain() *domain.TeamProfile {
 	if d == nil {
 		return nil
 	}
 
-	return &domain.AgentProfile{
-		AgentProfileName: d.AgentProfileName,
-		Model:            d.Model,
-		SystemPrompt:     d.SystemPrompt,
-		SkillNames:       d.SkillNames,
-		MCPNames:         d.MCPNames,
-		Enabled:          d.Enabled,
-		ToolNames:        d.ToolNames,
-		CreateTime:       d.CreateTime,
-		UpdateTime:       d.UpdateTime,
+	return &domain.TeamProfile{
+		TeamProfileName:     d.TeamProfileName,
+		Template:            d.Template,
+		SaoleiPlayerModel:   d.SaoleiPlayerModel,
+		SaoleiPlannerModel:  d.SaoleiPlannerModel,
+		SaoleiPlayerPrompt:  d.SaoleiPlayerPrompt,
+		SaoleiPlannerPrompt: d.SaoleiPlannerPrompt,
+		CreateTime:          d.CreateTime,
+		UpdateTime:          d.UpdateTime,
 	}
 }
 
-// agentProfileDocumentFromDomain converts a domain AgentProfile into its MongoDB representation.
-func agentProfileDocumentFromDomain(p *domain.AgentProfile) *agentProfileDocument {
+// teamProfileDocumentFromDomain converts a domain TeamProfile into its MongoDB representation.
+func teamProfileDocumentFromDomain(p *domain.TeamProfile) *teamProfileDocument {
 	if p == nil {
 		return nil
 	}
 
-	return &agentProfileDocument{
-		AgentProfileName: p.AgentProfileName,
-		Model:            p.Model,
-		SystemPrompt:     p.SystemPrompt,
-		SkillNames:       p.SkillNames,
-		MCPNames:         p.MCPNames,
-		Enabled:          p.Enabled,
-		ToolNames:        p.ToolNames,
-		CreateTime:       p.CreateTime,
-		UpdateTime:       p.UpdateTime,
+	return &teamProfileDocument{
+		TeamProfileName:     p.TeamProfileName,
+		Template:            p.Template,
+		SaoleiPlayerModel:   p.SaoleiPlayerModel,
+		SaoleiPlannerModel:  p.SaoleiPlannerModel,
+		SaoleiPlayerPrompt:  p.SaoleiPlayerPrompt,
+		SaoleiPlannerPrompt: p.SaoleiPlannerPrompt,
+		CreateTime:          p.CreateTime,
+		UpdateTime:          p.UpdateTime,
 	}
 }
 
-// skillDocument stores Skill documents in MongoDB.
-type skillDocument struct {
-	ID         interface{} `bson:"_id,omitempty"`
-	SkillName  string      `bson:"skill_name"`
-	Content    string      `bson:"content"`
-	Enabled    bool        `bson:"enabled"`
-	CreateTime time.Time   `bson:"create_time"`
-	UpdateTime time.Time   `bson:"update_time"`
-}
-
-// toDomain converts a MongoDB document into its domain representation.
-func (d *skillDocument) toDomain() *domain.Skill {
-	if d == nil {
-		return nil
-	}
-
-	return &domain.Skill{
-		SkillName:  d.SkillName,
-		Content:    d.Content,
-		Enabled:    d.Enabled,
-		CreateTime: d.CreateTime,
-		UpdateTime: d.UpdateTime,
-	}
-}
-
-// skillDocumentFromDomain converts a domain Skill into its MongoDB representation.
-func skillDocumentFromDomain(s *domain.Skill) *skillDocument {
-	if s == nil {
-		return nil
-	}
-
-	return &skillDocument{
-		SkillName:  s.SkillName,
-		Content:    s.Content,
-		Enabled:    s.Enabled,
-		CreateTime: s.CreateTime,
-		UpdateTime: s.UpdateTime,
-	}
-}
-
-// agentProfileFilter is a concrete BSON filter struct for querying by agent_profile_name.
-type agentProfileFilter struct {
-	AgentProfileName string `bson:"agent_profile_name"`
-}
-
-// skillFilter is a concrete BSON filter struct for querying by skill_name.
-type skillFilter struct {
-	SkillName string `bson:"skill_name"`
+// teamProfileFilter is a concrete BSON filter struct for querying by
+// team_profile_name under a template.
+type teamProfileFilter struct {
+	TeamProfileName string `bson:"team_profile_name"`
+	Template        string `bson:"template"`
 }

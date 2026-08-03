@@ -1,0 +1,19 @@
+{
+  "name": "@dominion/team-graph-spike",
+  "private": true,
+  "dependencies": {
+    "@dominion/common-js-logs": "workspace:*",
+    "@dominion/common-js-otel": "workspace:*",
+    "@dominion/common-js-resolver": "workspace:*",
+    "@langchain/core": "catalog:",
+    "@langchain/langgraph": "catalog:",
+    "@langchain/openai": "catalog:",
+    "langchain": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

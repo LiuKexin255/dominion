@@ -1,157 +1,156 @@
 /**
- * context-middleware.test.ts — Tests for ContextMiddleware.
- */
-
-import { describe, it, expect } from "vitest";
-import { HumanMessage, AIMessage } from "@langchain/core/messages";
-import type { BaseMessage } from "@langchain/core/messages";
-import { beforeModelMiddleware } from "./context-middleware";
-
-/**
- * Helper: unwrap the beforeModel handler from the middleware.
+ * context-middleware.test.ts — Tests for the RefreshTeam short-term memory
+ * clearing helpers (FR-018 / specs/031-team-template-mode/contracts/
+ * team-graph-contract.md §5).
  *
- * The beforeModel hook can be either a plain function or an object
- * with `hook` and optional `canJumpTo` properties.
+ * Covers:
+ *  - `clearChannel` produces a per-channel `RemoveMessage(REMOVE_ALL_MESSAGES)`
+ *    update (per-channel independence, spike A1).
+ *  - `refreshTeamChannels` on a REAL compiled team graph clears BOTH channels
+ *    in the outer MemorySaver, keeps the strategy readable, and leaves the
+ *    `gameEnded` control field untouched.
+ *
+ * The mechanism intentionally does NOT use a `beforeModel` middleware hook:
+ * the player/planner createAgents carry no checkpointer (D14 A2), so their
+ * middleware cannot reach the outer per-agent channels; the clear lands in
+ * `graph.updateState` instead (see the module header note).
  */
-function getBeforeModelHandler(
-  mw: typeof beforeModelMiddleware,
-): (state: { messages: BaseMessage[] }, runtime: unknown) => unknown {
-  const hook = mw.beforeModel;
-  if (typeof hook === "function") {
-    return hook as (
-      state: { messages: BaseMessage[] },
-      runtime: unknown,
-    ) => unknown;
-  }
-  if (hook && typeof hook === "object" && "hook" in hook) {
-    return hook.hook as (
-      state: { messages: BaseMessage[] },
-      runtime: unknown,
-    ) => unknown;
-  }
-  throw new Error(
-    "beforeModel is neither a function nor a { hook, canJumpTo } object",
+
+import { describe, expect, it } from "vitest";
+import { AIMessage, HumanMessage, RemoveMessage } from "@langchain/core/messages";
+import { fakeModel } from "@langchain/core/testing";
+import { tool } from "langchain";
+import { z } from "zod";
+import type { GameState } from "@dominion/game-saolei-board";
+
+import { FakeStrategyStore } from "./strategy-store";
+import { clearChannel, refreshTeamChannels } from "./context-middleware";
+import {
+  createEphemeralGameBuffer,
+  createTeamSink,
+} from "./team/team-sink";
+import { buildTeamGraph } from "./team/graph";
+import type { TeamStateValue } from "./team/state";
+
+function makeState(): GameState {
+  return {
+    width: 3,
+    height: 3,
+    grid: Array.from({ length: 3 }, () =>
+      Array.from({ length: 3 }, () => "0" as const),
+    ),
+  };
+}
+
+function buildGameEndingPlayerTool(buffer: ReturnType<typeof createEphemeralGameBuffer>) {
+  const sink = createTeamSink(buffer);
+  return tool(
+    async ({ x, y }: { x: number; y: number }) => {
+      await sink.onGameEnd(makeState(), "won");
+      return `moved to (${x},${y}); game won`;
+    },
+    {
+      name: "fake_saolei_move",
+      description: "Fake saolei move that ends the game.",
+      schema: z.object({ x: z.number(), y: z.number() }),
+    },
   );
 }
 
-describe("ContextMiddleware", () => {
-  // -------------------------------------------------------------------------
-  // Identity & replaceability
-  // -------------------------------------------------------------------------
-
-  it("has a identifiable name", () => {
-    expect(beforeModelMiddleware.name).toBe("ContextMiddleware");
+/** Run one full player→planner turn on a fresh graph (both channels fill). */
+async function runOneGameTurn(sessionId: string) {
+  const store = new FakeStrategyStore();
+  const buffer = createEphemeralGameBuffer();
+  const playerModel = fakeModel()
+    .respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+    .respond(new AIMessage("won, stopping"))
+    .respond(new AIMessage("idle"));
+  const plannerModel = fakeModel()
+    .respondWithTools([{ name: "update_strategy", args: { content: "corner-first" } }])
+    .respond(new AIMessage("strategy updated"));
+  const { graph } = buildTeamGraph({
+    playerModel,
+    plannerModel,
+    strategyStore: store,
+    buffer,
+    sessionId,
+    playerTools: [buildGameEndingPlayerTool(buffer)],
+    playerBasePrompt: "",
+    plannerBasePrompt: "",
   });
 
-  it("has a beforeModel hook", () => {
-    expect(beforeModelMiddleware.beforeModel).toBeDefined();
+  await graph.invoke(
+    { playerMessages: [new HumanMessage("开始游戏")] },
+    { configurable: { thread_id: sessionId }, recursionLimit: 50 },
+  );
+  return { graph, store, sessionId };
+}
+
+describe("clearChannel", () => {
+  it("builds a per-channel RemoveMessage(REMOVE_ALL_MESSAGES) update", () => {
+    const update = clearChannel("playerMessages");
+    expect(update).toHaveProperty("playerMessages");
+    expect(update).not.toHaveProperty("plannerMessages");
+    const msgs = update.playerMessages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toBeInstanceOf(RemoveMessage);
+    // The sentinel string: "__remove_all__" (spike A1 — messagesStateReducer
+    // drops all prior messages when a RemoveMessage with this id appears).
+    expect((msgs[0] as { id?: string }).id).toBe("__remove_all__");
   });
 
-  it("is replaceable (has same structural shape as any AgentMiddleware)", () => {
-    expect(beforeModelMiddleware).toHaveProperty("name");
-    expect(beforeModelMiddleware).toHaveProperty("beforeModel");
+  it("clears each channel independently (spike A1)", () => {
+    expect(clearChannel("plannerMessages")).toHaveProperty("plannerMessages");
+    expect(clearChannel("plannerMessages")).not.toHaveProperty("playerMessages");
+  });
+});
+
+describe("refreshTeamChannels (FR-018)", () => {
+  it("clears BOTH per-agent channels, keeps the strategy, leaves gameEnded alone", async () => {
+    const { graph, store, sessionId } = await runOneGameTurn("ctx-refresh-1");
+
+    // Precondition: both channels carry history after the turn.
+    const before = (await graph.getState({
+      configurable: { thread_id: sessionId },
+    })) as { values: TeamStateValue };
+    expect(before.values.playerMessages.length).toBeGreaterThan(0);
+    expect(before.values.plannerMessages.length).toBeGreaterThan(0);
+    expect(await store.get(sessionId)).toBe("corner-first");
+
+    await refreshTeamChannels(graph, sessionId);
+
+    const after = (await graph.getState({
+      configurable: { thread_id: sessionId },
+    })) as { values: TeamStateValue };
+    // Both short-term channels cleared (FR-018).
+    expect(after.values.playerMessages).toEqual([]);
+    expect(after.values.plannerMessages).toEqual([]);
+    // Strategy (long-term) survives.
+    expect(await store.get(sessionId)).toBe("corner-first");
+    // gameEnded is untouched by RefreshTeam (null after the planner cleared
+    // it in the turn — D6 step 6; RefreshTeam never writes it).
+    expect(after.values.gameEnded).toBeNull();
   });
 
-  // -------------------------------------------------------------------------
-  // Functional behavior: receives state.messages, returns equivalent state
-  // -------------------------------------------------------------------------
+  it("is a no-op-safe on a thread with no prior messages", async () => {
+    const store = new FakeStrategyStore();
+    const buffer = createEphemeralGameBuffer();
+    const { graph } = buildTeamGraph({
+      playerModel: fakeModel().respond(new AIMessage("hi")),
+      plannerModel: fakeModel().respond(new AIMessage("ok")),
+      strategyStore: store,
+      buffer,
+      sessionId: "ctx-refresh-empty",
+      playerTools: [],
+      playerBasePrompt: "",
+      plannerBasePrompt: "",
+    });
 
-  it("receives state with messages and returns equivalent state", async () => {
-    const handler = getBeforeModelHandler(beforeModelMiddleware);
-
-    const state = {
-      messages: [
-        new HumanMessage("Hello from user"),
-        new AIMessage("Hello from assistant"),
-      ],
-    };
-
-    const result = await handler(state, {});
-
-    // The middleware should either return undefined (pass-through)
-    // or return an object with the same messages.
-    if (result === undefined) {
-      // Undefined means pass-through: verify state unaffected.
-      expect(state.messages).toHaveLength(2);
-      expect(state.messages[0].content).toBe("Hello from user");
-      expect(state.messages[1].content).toBe("Hello from assistant");
-    } else {
-      const partial = result as { messages?: BaseMessage[] };
-      expect(partial).toHaveProperty("messages");
-      expect(partial.messages).toHaveLength(2);
-      expect(partial.messages![0].content).toBe("Hello from user");
-      expect(partial.messages![1].content).toBe("Hello from assistant");
-    }
-  });
-
-  it("preserves message types through the middleware", async () => {
-    const handler = getBeforeModelHandler(beforeModelMiddleware);
-
-    const state = {
-      messages: [new HumanMessage("Test")],
-    };
-
-    const result = await handler(state, {});
-
-    if (result !== undefined) {
-      const partial = result as { messages?: BaseMessage[] };
-      expect(partial.messages![0]).toBeInstanceOf(HumanMessage);
-    }
-  });
-
-  it("is callable with empty messages array", async () => {
-    const handler = getBeforeModelHandler(beforeModelMiddleware);
-
-    const state = {
-      messages: [],
-    };
-
-    const result = await handler(state, {});
-
-    // Should not throw — empty array is valid.
-    if (result !== undefined) {
-      const partial = result as { messages?: BaseMessage[] };
-      expect(partial.messages).toEqual([]);
-    }
-  });
-
-  it("does not mutate the input state", async () => {
-    const handler = getBeforeModelHandler(beforeModelMiddleware);
-
-    const originalMessages = [new HumanMessage("Don't touch me")];
-    const state = {
-      messages: originalMessages,
-    };
-
-    const result = await handler(state, {});
-
-    // Original state should be unchanged.
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0].content).toBe("Don't touch me");
-
-    if (result !== undefined) {
-      const partial = result as { messages?: BaseMessage[] };
-      expect(partial.messages).toHaveLength(1);
-      expect(partial.messages![0].content).toBe("Don't touch me");
-    }
-  });
-
-  it("correctly reports message count in log context", async () => {
-    const handler = getBeforeModelHandler(beforeModelMiddleware);
-
-    const threeMessages = {
-      messages: [
-        new HumanMessage("First"),
-        new AIMessage("Second"),
-        new HumanMessage("Third"),
-      ],
-    };
-
-    const result = await handler(threeMessages, {});
-
-    if (result !== undefined) {
-      const partial = result as { messages?: BaseMessage[] };
-      expect(partial.messages).toHaveLength(3);
-    }
+    await expect(refreshTeamChannels(graph, "ctx-refresh-empty")).resolves.toBeUndefined();
+    const state = (await graph.getState({
+      configurable: { thread_id: "ctx-refresh-empty" },
+    })) as { values: TeamStateValue };
+    expect(state.values.playerMessages).toEqual([]);
+    expect(state.values.plannerMessages).toEqual([]);
   });
 });

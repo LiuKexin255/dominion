@@ -3,8 +3,12 @@
 // and a WebSocket handler for bidirectional streaming RPCs.
 //
 // Routes:
-//   - /api/v1/* → grpc-gateway (SessionService + ProxyService unary RPCs)
-//   - /api/v1/sessions/{session_id}/connect → WebSocket (ProxyService.ConnectAgent stream)
+//   - /api/v1/* → grpc-gateway (SessionService + TeamService unary RPCs:
+//     CreateTeam/GetTeam/ListMessages/RefreshTeam per
+//     projects/game/game.proto HTTP annotations, AIP-127)
+//   - /api/v1/templates/{template}/sessions/{session}/connect → WebSocket
+//     (TeamService.Connect stream; the WebSocket endpoint mirrors the Team
+//     resource hierarchy per spec 031-team-template-mode FR-004)
 package main
 
 import (
@@ -30,7 +34,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -56,9 +60,12 @@ func main() {
 		log.Fatalf("session dial: %v", err)
 	}
 
-	proxyConn, err := grpc.NewClient(solver.URI(gameconst.ProxyTarget), clientOpts...)
+	// teamConn hosts the TeamService — implemented by the proxy service,
+	// which replaced the former ProxyService (clean break, spec
+	// 031-team-template-mode). TeamTarget resolves to "game/proxy:grpc".
+	teamConn, err := grpc.NewClient(solver.URI(gameconst.TeamTarget), clientOpts...)
 	if err != nil {
-		log.Fatalf("proxy dial: %v", err)
+		log.Fatalf("team dial: %v", err)
 	}
 
 	promptConn, err := grpc.NewClient(solver.URI(gameconst.PromptTarget), clientOpts...)
@@ -73,8 +80,8 @@ func main() {
 	if err := game.RegisterSessionServiceHandler(ctx, gwmux, sessionConn); err != nil {
 		log.Fatalf("register session handler: %v", err)
 	}
-	if err := game.RegisterProxyServiceHandler(ctx, gwmux, proxyConn); err != nil {
-		log.Fatalf("register proxy handler: %v", err)
+	if err := game.RegisterTeamServiceHandler(ctx, gwmux, teamConn); err != nil {
+		log.Fatalf("register team handler: %v", err)
 	}
 	if err := game.RegisterPromptServiceHandler(ctx, gwmux, promptConn); err != nil {
 		log.Fatalf("register prompt handler: %v", err)
@@ -89,7 +96,7 @@ func main() {
 
 	rootMux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
 		if isWebSocketConnectPath(r.URL.Path) {
-			handleWebSocketConnect(w, r, proxyConn)
+			handleWebSocketConnect(w, r, teamConn)
 			return
 		}
 		gwmux.ServeHTTP(w, r)
@@ -107,93 +114,106 @@ func main() {
 	b := bootstrap.New()
 	b.Register(otel.Component())
 	b.Register(bootstrap.GRPCConn("session", sessionConn))
-	b.Register(bootstrap.GRPCConn("proxy", proxyConn))
+	b.Register(bootstrap.GRPCConn("team", teamConn))
 	b.Register(bootstrap.GRPCConn("prompt", promptConn))
 	b.Register(bootstrap.HTTPServer("http", srv))
 	log.Fatal(b.Run(context.Background()))
 }
 
 // isWebSocketConnectPath reports whether the request path matches the
-// WebSocket connect pattern: /api/v1/sessions/{session_id}/connect
+// WebSocket connect pattern: /api/v1/templates/{template}/sessions/{session}/connect
+// (spec 031-team-template-mode FR-004).
 func isWebSocketConnectPath(path string) bool {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	return len(parts) >= 5 &&
-		parts[0] == "api" && parts[1] == "v1" && parts[2] == "sessions" &&
-		parts[3] != "" && parts[4] == "connect"
+	return len(parts) == 7 &&
+		parts[0] == "api" && parts[1] == "v1" && parts[2] == "templates" &&
+		parts[3] != "" && parts[4] == "sessions" &&
+		parts[5] != "" && parts[6] == "connect"
 }
 
-// extractSessionID extracts the session_id segment from a path matching
-// /api/v1/sessions/{session_id}/connect
-func extractSessionID(path string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) >= 4 && parts[2] == "sessions" {
-		return parts[3]
+// extractConnectIdentity extracts the template and session segments from a
+// path matching /api/v1/templates/{template}/sessions/{session}/connect. It
+// only accepts the full connect path shape (delegating to
+// isWebSocketConnectPath) so a foreign path such as
+// .../sessions/{id}/team never yields a template/session id.
+func extractConnectIdentity(path string) (template, session string) {
+	if !isWebSocketConnectPath(path) {
+		return "", ""
 	}
-	return ""
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return parts[3], parts[5]
 }
 
 // wsStream adapts a WebSocket connection to bind.AgentFrameStream.
-// It handles protojson serialization/deserialization and injects the
-// sessionID from the URL path into every received frame, overwriting
-// any client-supplied value.
+// It handles binary-protobuf serialization/deserialization and injects the
+// templateID/sessionID from the URL path into every received frame,
+// overwriting any client-supplied value. The proxy reconstructs the session
+// resource name from this pair without parsing (spec
+// 031-team-template-mode contracts/api-contract.md §2.2).
 //
 // ctx holds the HTTP request context so that Read/Write respect request
 // cancellation (e.g. client disconnect).
 type wsStream struct {
-	ctx       context.Context
-	conn      *websocket.Conn
-	sessionID string
+	ctx        context.Context
+	conn       *websocket.Conn
+	templateID string
+	sessionID  string
 }
 
-// Recv reads a text frame from the WebSocket, unmarshals it as an
-// AgentFrame (protojson, DiscardUnknown), and injects the sessionID
-// from the URL path.
+// Recv reads a binary frame from the WebSocket, unmarshals it as an
+// AgentFrame (protobuf wire format), and injects the templateID/sessionID
+// from the URL path. proto.Unmarshal preserves unknown fields per the proto
+// spec, maintaining the forward-compatibility that protojson's DiscardUnknown
+// previously provided
+// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
 func (s *wsStream) Recv() (*game.AgentFrame, error) {
 	_, data, err := s.conn.Read(s.ctx)
 	if err != nil {
 		return nil, err
 	}
 	var frame game.AgentFrame
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, &frame); err != nil {
+	if err := proto.Unmarshal(data, &frame); err != nil {
 		return nil, errors.Join(errProtocol, err)
 	}
-	// CRITICAL: inject sessionID from URL path — always wins over client-supplied value
+	// CRITICAL: inject templateID/sessionID from URL path — always wins over
+	// client-supplied values.
+	frame.TemplateId = s.templateID
 	frame.SessionId = s.sessionID
 	return &frame, nil
 }
 
-// Send marshals the AgentFrame as JSON and writes it as a text frame to
-// the WebSocket connection.
+// Send marshals the AgentFrame as binary protobuf and writes it as a binary
+// frame to the WebSocket connection.
 func (s *wsStream) Send(frame *game.AgentFrame) error {
-	data, err := protojson.Marshal(frame)
+	data, err := proto.Marshal(frame)
 	if err != nil {
 		return err
 	}
-	return s.conn.Write(s.ctx, websocket.MessageText, data)
+	return s.conn.Write(s.ctx, websocket.MessageBinary, data)
 }
 
 // errProtocol is a sentinel error for protocol-level errors (e.g. invalid
-// AgentFrame JSON) that should result in a WebSocket InvalidFramePayloadData
-// close code.
+// AgentFrame protobuf) that should result in a WebSocket
+// InvalidFramePayloadData close code.
 var errProtocol = errors.New("protocol error")
 
 // isProtocolError reports whether err is a protocol-level error (invalid
-// AgentFrame JSON) from the WebSocket adapter.
+// AgentFrame protobuf) from the WebSocket adapter.
 func isProtocolError(err error) bool {
 	return errors.Is(err, errProtocol)
 }
 
 // handleWebSocketConnect upgrades an HTTP connection to WebSocket and
 // establishes a bidirectional forwarding bridge between the WebSocket
-// and the underlying ProxyService.ConnectAgent gRPC stream.
+// and the underlying TeamService.Connect gRPC stream.
 //
-// Messages are serialized as AgentFrame JSON (protojson) over WebSocket
-// text frames on both directions. Unknown JSON fields are silently
-// discarded during deserialization (DiscardUnknown).
-func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *grpc.ClientConn) {
-	sessionID := extractSessionID(r.URL.Path)
-	if sessionID == "" {
-		http.Error(w, "missing session_id", http.StatusBadRequest)
+// Messages are serialized as AgentFrame binary protobuf over WebSocket
+// binary frames in both directions. proto.Unmarshal preserves unknown
+// fields for forward compatibility.
+func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, teamConn *grpc.ClientConn) {
+	templateID, sessionID := extractConnectIdentity(r.URL.Path)
+	if templateID == "" || sessionID == "" {
+		http.Error(w, "missing template_id or session_id", http.StatusBadRequest)
 		return
 	}
 
@@ -202,6 +222,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	})
 	if err != nil {
 		logs.Error(r.Context(), "ws accept failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
@@ -209,28 +230,31 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	}
 	defer conn.CloseNow()
 	logs.Info(r.Context(), "ws connected",
+		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 	)
 
 	// Allow up to 10MB per frame to support PNG screenshot uploads.
 	conn.SetReadLimit(10 << 20)
 
-	proxyClient := game.NewProxyServiceClient(proxyConn)
-	stream, err := proxyClient.ConnectAgent(r.Context())
+	teamClient := game.NewTeamServiceClient(teamConn)
+	stream, err := teamClient.Connect(r.Context())
 	if err != nil {
-		logs.Error(r.Context(), "proxy ConnectAgent: stream creation failed",
+		logs.Error(r.Context(), "team Connect: stream creation failed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
 		return
 	}
 
-	ws := &wsStream{ctx: r.Context(), conn: conn, sessionID: sessionID}
+	ws := &wsStream{ctx: r.Context(), conn: conn, templateID: templateID, sessionID: sessionID}
 	b := bind.NewBinder()
 	err = b.Bind(ws, stream)
 
 	if err == nil {
 		logs.Info(r.Context(), "agent connect stream closed",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -238,6 +262,7 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	}
 	if isCleanClose(err) {
 		logs.Info(r.Context(), "agent connect stream closed (clean)",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 		)
 		conn.Close(websocket.StatusNormalClosure, "")
@@ -245,13 +270,15 @@ func handleWebSocketConnect(w http.ResponseWriter, r *http.Request, proxyConn *g
 	}
 	if isProtocolError(err) {
 		logs.Warn(r.Context(), "agent connect: protocol error",
+			event.String("template_id", templateID),
 			event.String("session_id", sessionID),
 			event.Err(err),
 		)
-		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame JSON")
+		conn.Close(websocket.StatusInvalidFramePayloadData, "invalid AgentFrame protobuf")
 		return
 	}
 	logs.Error(r.Context(), "agent connect: internal error",
+		event.String("template_id", templateID),
 		event.String("session_id", sessionID),
 		event.Err(err),
 	)

@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("//tools/dev/go:defs.bzl", "go_unittest")
+
+# Demo of protoc-gen-go-aip codegen. The aip compiler is applied automatically
+# by the repo-wide go_proto_compilers directive in //BUILD.bazel (this proto
+# has no service). See FINDINGS.md for the full spike report.
+
+proto_library(
+    name = "aip_codegen_proto",
+    srcs = ["aip_codegen.proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@googleapis//google/api:field_behavior_proto",
+        "@googleapis//google/api:resource_proto",
+    ],
+)
+
+go_proto_library(
+    name = "aip_codegen_go_proto",
+    compilers = [
+        "@rules_go//proto:go_proto",
+        "//:go_gen_aip",
+    ],
+    importpath = "dominion/experimental/golang/aip_codegen",
+    proto = ":aip_codegen_proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        # keep: the generated .pb.go imports the genproto annotations package
+        # even though the .proto does not directly import annotations.proto.
+        "@googleapis//google/api:annotations_go_proto",
+        "@googleapis//google/api:field_behavior_go_proto",
+        "@googleapis//google/api:resource_go_proto",
+    ],
+)
+
+go_library(
+    name = "aip_codegen",
+    embed = [":aip_codegen_go_proto"],
+    importpath = "dominion/experimental/golang/aip_codegen",
+    visibility = ["//visibility:public"],
+)
+
+go_unittest(
+    name = "aip_codegen_test",
+    srcs = ["aip_codegen_test.go"],
+    deps = [":aip_codegen"],
+)

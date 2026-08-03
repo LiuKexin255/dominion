@@ -1,0 +1,73 @@
+# sample_saolei_tools.yaml — chains the saolei MCP tool results so the
+# model drives a stateless init→click→click sequence (back-to-back, no
+# update) in large tests (specs/023-saolei-mcp-refine/quickstart.md
+# Scenario 5 / SC-004; spec 023 FR-021 — the four saolei tools are callable
+# back-to-back with no intervening step). Each entry is keyed by the
+# tool_name LangChain reports on the tool-result message (role: "tool",
+# name: <tool>), matched against the tools branch of the fake-LLM dispatch.
+#
+# Flow driven by these configs (the test supplies each click result with a
+# coordinate-tagged message so the matcher can distinguish the two
+# saolei_click results — match_result_contains is ALL-substrings required):
+#   saolei_init  result                                  → saolei_click{3,4}
+#   saolei_click result (msg contains "(3,4)")           → saolei_click{5,6}   (back-to-back; no update)
+#   saolei_click result (msg contains "(5,6)")           → final text          (terminates the tool loop)
+#
+# Per spec 023 FR-016 / research.md D7, `saolei_update` is removed and the
+# MCP exposes exactly four stateless tools; this fixture no longer references
+# it.
+tools:
+  - name: saolei-click-3-4-followup-click
+    tool_name: saolei_click
+    match_result_contains:
+      - "(3,4)"
+    respond_with:
+      tool_call:
+        name: saolei_click
+        arguments:
+          x: 5
+          y: 6
+  - name: saolei-click-5-6-final-text
+    tool_name: saolei_click
+    match_result_contains:
+      - "(5,6)"
+    respond_with:
+      text: "Minesweeper sequence complete."
+  - name: saolei-init-followup-click
+    tool_name: saolei_init
+    match_result_contains: []
+    respond_with:
+      tool_call:
+        name: saolei_click
+        arguments:
+          x: 3
+          y: 4
+  # saolei-remain-final-text terminates the saolei_remain tool loop with a
+  # plain text response (specs/029-saolei-coord-remain/contracts/saolei-
+  # remain-tool-contract.md §8 / quickstart.md Scenario 5). saolei_remain
+  # dispatches nothing (FR-007), so after its tool_result the fake-LLM MUST
+  # return text (not a tool_call) to end the turn deterministically;
+  # otherwise MatchToolResult's no-match random fallback (matcher.go) could
+  # emit an unrelated tool_call and dispatch an operation, muddying the
+  # large test's zero-dispatch assertion. tool_name=saolei_remain is unique
+  # to this config, so it is the only MatchToolResult candidate for a
+  # saolei_remain result.
+  - name: saolei-remain-final-text
+    tool_name: saolei_remain
+    match_result_contains: []
+    respond_with:
+      text: "Remaining mines computed."
+  # saolei-click-terminal-text terminates ANY saolei_click result that does
+  # not match the coordinate-tagged configs above (saolei-mcp.ts
+  # rejectionText bodies — e.g. the pre-dispatch `game_won`/`game_over`
+  # rejections on a terminal board — carry NO "(x,y)" substring). It makes
+  # the post-rejection tool loop DETERMINISTIC under the team model: the
+  # saolei_team suite drives a game to won/lost (planner trigger) and MUST
+  # NOT depend on the no-match random fallback, whose pool includes mouse
+  # tool_calls that the team's player agent does not hold (FR-028 — the
+  # player's tools are template-fixed to the saolei MCP tools).
+  - name: saolei-click-terminal-text
+    tool_name: saolei_click
+    match_result_contains: []
+    respond_with:
+      text: "Minesweeper sequence complete."

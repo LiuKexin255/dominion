@@ -4,345 +4,137 @@ import (
 	"errors"
 	"testing"
 
+	game "dominion/projects/game"
 	"dominion/projects/game/pkg/gameconst"
 )
 
-func TestSessionID(t *testing.T) {
+func TestSaoleiTemplate(t *testing.T) {
+	// when
+	got := gameconst.SaoleiTemplate
+
+	// then
+	if got.TemplateID != "saolei" {
+		t.Fatalf("SaoleiTemplate.TemplateID = %q, want %q", got.TemplateID, "saolei")
+	}
+	if got.String() != "templates/saolei" {
+		t.Fatalf("SaoleiTemplate.String() = %q, want %q", got.String(), "templates/saolei")
+	}
+	if got.Validate() != nil {
+		t.Fatalf("SaoleiTemplate.Validate() error = %v, want nil", got.Validate())
+	}
+}
+
+func TestParseTemplateName(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
 		want    string
+		wantErr bool
+	}{
+		{
+			name:  "valid template name",
+			input: "templates/saolei",
+			want:  "saolei",
+		},
+		{
+			name:    "missing templates prefix",
+			input:   "saolei",
+			wantErr: true,
+		},
+		{
+			name:    "empty template segment",
+			input:   "templates/",
+			wantErr: true,
+		},
+		{
+			name:    "extra segment",
+			input:   "templates/saolei/extra",
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when
+			got, err := game.ParseTemplateName(tt.input)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseTemplateName(%q) expected error, got nil", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseTemplateName(%q) unexpected error: %v", tt.input, err)
+			}
+			if got.TemplateID != tt.want {
+				t.Fatalf("ParseTemplateName(%q) TemplateID = %q, want %q", tt.input, got.TemplateID, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateTemplateName(t *testing.T) {
+	tests := []struct {
+		name    string
+		tpl     game.TemplateName
 		wantErr error
 	}{
 		{
-			name:    "valid session name returns ID",
-			input:   "sessions/abc",
-			want:    "abc",
+			name:    "known template",
+			tpl:     gameconst.SaoleiTemplate,
 			wantErr: nil,
 		},
 		{
-			name:    "missing prefix returns ErrInvalidSessionName",
-			input:   "abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSessionName,
+			name:    "unknown template",
+			tpl:     game.TemplateName{TemplateID: "xxx"},
+			wantErr: gameconst.ErrInvalidTemplate,
 		},
 		{
-			name:    "prefix only (empty ID) returns ErrInvalidSessionName",
-			input:   "sessions/",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSessionName,
-		},
-		{
-			name:    "extra slashes in ID returns ErrInvalidSessionName",
-			input:   "sessions/abc/agent",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSessionName,
-		},
-		{
-			name:    "empty string returns ErrInvalidSessionName",
-			input:   "",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSessionName,
+			name:    "empty template id",
+			tpl:     game.TemplateName{TemplateID: ""},
+			wantErr: gameconst.ErrInvalidTemplate,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// input is set via tt.input
-
 			// when
-			got, err := gameconst.SessionID(tt.input)
+			err := gameconst.ValidateTemplateName(tt.tpl)
 
 			// then
 			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("SessionID(%q) error = %v, want %v", tt.input, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("SessionID(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Fatalf("ValidateTemplateName(%v) error = %v, want %v", tt.tpl, err, tt.wantErr)
 			}
 		})
 	}
 }
 
-func TestSessionName(t *testing.T) {
-	tests := []struct {
-		name      string
-		sessionID string
-		want      string
-	}{
-		{
-			name:      "valid session ID returns prefixed name",
-			sessionID: "abc",
-			want:      "sessions/abc",
-		},
-		{
-			name:      "empty session ID returns prefix only",
-			sessionID: "",
-			want:      "sessions/",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// sessionID is set via tt.sessionID
-
-			// when
-			got := gameconst.SessionName(tt.sessionID)
-
-			// then
-			if got != tt.want {
-				t.Fatalf("SessionName(%q) = %q, want %q", tt.sessionID, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAgentSessionID(t *testing.T) {
+func TestIsKnownTemplateID(t *testing.T) {
 	tests := []struct {
 		name    string
-		input   string
-		want    string
-		wantErr error
+		segment string
+		want    bool
 	}{
-		{
-			name:    "valid agent name returns session ID",
-			input:   "sessions/abc/agent",
-			want:    "abc",
-			wantErr: nil,
-		},
-		{
-			name:    "session name without agent suffix returns ErrInvalidAgentName",
-			input:   "sessions/abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentName,
-		},
-		{
-			name:    "missing sessions prefix returns ErrInvalidSessionName",
-			input:   "abc/agent",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSessionName,
-		},
-		{
-			name:    "empty string returns ErrInvalidAgentName",
-			input:   "",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentName,
-		},
-		{
-			name:    "extra segment returns ErrInvalidAgentName",
-			input:   "sessions/abc/agent/extra",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentName,
-		},
+		{name: "known template", segment: "saolei", want: true},
+		{name: "unknown template", segment: "xxx", want: false},
+		{name: "empty segment", segment: "", want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := gameconst.AgentSessionID(tt.input)
-
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("AgentSessionID(%q) error = %v, want %v", tt.input, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("AgentSessionID(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAgentProfileID(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    string
-		wantErr error
-	}{
-		{
-			name:    "valid agent profile name returns ID",
-			input:   "prompts/agentProfiles/abc",
-			want:    "abc",
-			wantErr: nil,
-		},
-		{
-			name:    "missing prefix returns ErrInvalidAgentProfileName",
-			input:   "abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentProfileName,
-		},
-		{
-			name:    "old single-segment prefix returns ErrInvalidAgentProfileName",
-			input:   "agentProfiles/abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentProfileName,
-		},
-		{
-			name:    "prefix only (empty ID) returns ErrInvalidAgentProfileName",
-			input:   "prompts/agentProfiles/",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentProfileName,
-		},
-		{
-			name:    "extra slashes in ID returns ErrInvalidAgentProfileName",
-			input:   "prompts/agentProfiles/abc/extra",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentProfileName,
-		},
-		{
-			name:    "empty string returns ErrInvalidAgentProfileName",
-			input:   "",
-			want:    "",
-			wantErr: gameconst.ErrInvalidAgentProfileName,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// input is set via tt.input
-
 			// when
-			got, err := gameconst.AgentProfileID(tt.input)
-
-			// then
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("AgentProfileID(%q) error = %v, want %v", tt.input, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("AgentProfileID(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestAgentProfileName(t *testing.T) {
-	tests := []struct {
-		name      string
-		profileID string
-		want      string
-	}{
-		{
-			name:      "valid profile ID returns prefixed name",
-			profileID: "abc",
-			want:      "prompts/agentProfiles/abc",
-		},
-		{
-			name:      "empty profile ID returns prefix only",
-			profileID: "",
-			want:      "prompts/agentProfiles/",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// profileID is set via tt.profileID
-
-			// when
-			got := gameconst.AgentProfileName(tt.profileID)
+			got := gameconst.IsKnownTemplateID(tt.segment)
 
 			// then
 			if got != tt.want {
-				t.Fatalf("AgentProfileName(%q) = %q, want %q", tt.profileID, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSkillID(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    string
-		wantErr error
-	}{
-		{
-			name:    "valid skill name returns ID",
-			input:   "prompts/skills/abc",
-			want:    "abc",
-			wantErr: nil,
-		},
-		{
-			name:    "missing prefix returns ErrInvalidSkillName",
-			input:   "abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSkillName,
-		},
-		{
-			name:    "old single-segment prefix returns ErrInvalidSkillName",
-			input:   "skills/abc",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSkillName,
-		},
-		{
-			name:    "prefix only (empty ID) returns ErrInvalidSkillName",
-			input:   "prompts/skills/",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSkillName,
-		},
-		{
-			name:    "extra slashes in ID returns ErrInvalidSkillName",
-			input:   "prompts/skills/abc/extra",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSkillName,
-		},
-		{
-			name:    "empty string returns ErrInvalidSkillName",
-			input:   "",
-			want:    "",
-			wantErr: gameconst.ErrInvalidSkillName,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// input is set via tt.input
-
-			// when
-			got, err := gameconst.SkillID(tt.input)
-
-			// then
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("SkillID(%q) error = %v, want %v", tt.input, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("SkillID(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSkillName(t *testing.T) {
-	tests := []struct {
-		name    string
-		skillID string
-		want    string
-	}{
-		{
-			name:    "valid skill ID returns prefixed name",
-			skillID: "abc",
-			want:    "prompts/skills/abc",
-		},
-		{
-			name:    "empty skill ID returns prefix only",
-			skillID: "",
-			want:    "prompts/skills/",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			// skillID is set via tt.skillID
-
-			// when
-			got := gameconst.SkillName(tt.skillID)
-
-			// then
-			if got != tt.want {
-				t.Fatalf("SkillName(%q) = %q, want %q", tt.skillID, got, tt.want)
+				t.Fatalf("IsKnownTemplateID(%q) = %v, want %v", tt.segment, got, tt.want)
 			}
 		})
 	}

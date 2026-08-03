@@ -80,4 +80,36 @@ run={runID} env={envName} deploy={deployPath}
 - TTY 模式下自动启用颜色，非 TTY 或管道模式下自动禁用
 - 每个 suite 执行受其 `timeout` 或全局 `--timeout` 限制，超时则终止该 suite
 
+当 suite 的部署步骤不成功时，`  Deploy` 之后会附加「环境状态」诊断输出，格式如下：
+
+```
+  --- 环境状态 (env=game.lt3x8q2) ---
+环境 game.lt3x8q2
+状态: 等待滚动发布
+服务:
+  - service (app=game) [artifact] 就绪
+  - gateway (app=game) [artifact] 等待发布: 可用副本不足（available: 0/1）
+  - mongo (app=game) [infra: mongodb] 已提交，等待观测
+最近调和: 2026-08-03T10:30:05Z
+最近成功: -
+```
+
+- 第一行为醒目分隔头部（2 空格缩进，`--- ... ---` 包裹，不着色）
+- 紧随其后为 `deploy describe` 的顶格文本（环境名/状态/服务列表/最近调和与成功时间），不做逐行缩进
+- describe 输出以 **per-service 状态**为主线：服务列表每项内联其 rollout 状态——`就绪`、`等待发布: {原因}`、`失败: {原因}`、`已提交，等待观测`——直接显示哪个服务等待或失败及其原因；有 per-service 数据时不输出 `说明:` 行（仅当无 per-service 数据且环境级 message 非空时输出）
+- deploy service 在 `applyAndWait`（资源提交、进入 `WAITING_ROLLOUT`）即写入每个服务的初始 PENDING 状态（决策 R4），故短超时场景（如 `--timeout=5s`）describe 亦能列出服务及「已提交，等待观测」状态，消除了初版的时序空窗——见 `../../../specs/032-guitar-deploy-failure-state/research.md` 决策 R4 与 `../../../specs/032-guitar-deploy-failure-state/contracts/environment-status.md`
+- 若 `deploy describe` 自身失败（如环境不存在、deploy service 不可达），向 stderr 输出 warning 降级，不影响原始部署错误上报与后续清理
+- 部署成功时不输出该诊断（与既有行为一致）
+
+诊断触发条件与降级语义见 `../../../specs/032-guitar-deploy-failure-state/contracts/guitar-integration.md`；describe 输出格式见 `../../../specs/032-guitar-deploy-failure-state/contracts/deploy-describe.md`。
+
+执行结束后输出一个 Summary，列出每个 suite 的结果与总计统计，方便用 `tail` 查看执行结果：
+
+```
+--- Summary ---
+total: 2, passed: 1, failed: 1
+  suite-a: success
+  suite-b: failure, error: <error>
+```
+
 注意：suite 中不再包含 `env` 字段。环境名由 `guitar run` 为每个 suite 自动生成（lt + 6 位 base36 随机串），并通过环境变量注入测试进程。

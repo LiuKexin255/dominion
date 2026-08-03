@@ -63,10 +63,10 @@ func TestSerializeFrame(t *testing.T) {
 		SessionId: "test-session",
 		FrameId:   "test-frame",
 		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
-		Payload: &game.AgentFrame_Content{
-			Content: &game.PartBlock{
-				Parts: []*game.Part{
-					{Kind: &game.Part_Text{Text: &game.TextPart{Content: "hello"}}},
+		Payload: &game.AgentFrame_MessageParts{
+			MessageParts: &game.MessageParts{
+				Parts: []*game.MessagePart{
+					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
 				},
 			},
 		},

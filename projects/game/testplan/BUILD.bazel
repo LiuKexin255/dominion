@@ -1,20 +1,29 @@
 load("//tools/dev/go:defs.bzl", "go_largetest")
 
-go_largetest(
-    name = "testplan_test",
-    size = "small",
-    srcs = [
-        "helpers_test.go",
-        "prompt_test.go",
-    ],
-    deps = [
-        "//common/gopkg/testtool",
-        "//projects/game",
-        "//projects/game/pkg/gameconst",
-        "@com_github_gorilla_websocket//:websocket",
-        "@org_golang_google_protobuf//encoding/protojson",
-    ],
-)
+# saolei_fixtures_test.go embeds real Minesweeper screenshots reused from the
+# @dominion/game-saolei-board golden testdata (declared in
+# saolei_fixtures_test.go). The deployed agent runs the real recognition
+# engine (no DI seam), so the FlowResultPart.screenshot the test attaches
+# MUST be a recognizable board; the embedded PNGs are the authoritative bytes
+# owned by the saolei-board package (golden-tested). The fixtures span every
+# game outcome (specs/027-chat-bubble-game-state/research.md D12;
+# specs/028-saolei-win-counter-fix): in-progress (saolei_1.png 16×16
+# all-INITIAL, saolei_2.png 9×9 partially revealed), win (saolei_10.png 9×9
+# win board, counter 000), loss (saolei_5.png 16×16 with HIT_MINE/MINE), and
+# the over-flag false-positive (saolei_9.png 9×9 grid all-revealed with 11
+# flags, counter -01 — spec 028). Each is a cmp-identical copy of its
+# library-original, mirroring the saolei_1/saolei_2 precedent.
+SAOLEI_FIXTURES = [
+    "saolei_fixtures_test.go",
+]
+
+SAOLEI_EMBEDSRCS = [
+    "testdata/saolei_1.png",
+    "testdata/saolei_2.png",
+    "testdata/saolei_10.png",
+    "testdata/saolei_5.png",
+    "testdata/saolei_9.png",
+]
 
 go_largetest(
     name = "session_test",
@@ -26,24 +35,10 @@ go_largetest(
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
-        "@com_github_gorilla_websocket//:websocket",
-        "@org_golang_google_protobuf//encoding/protojson",
-    ],
-)
-
-go_largetest(
-    name = "agent_lifecycle_test",
-    size = "small",
-    srcs = [
-        "agent_lifecycle_test.go",
-        "helpers_test.go",
-    ],
-    deps = [
-        "//common/gopkg/testtool",
-        "//projects/game",
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -53,13 +48,16 @@ go_largetest(
     srcs = [
         "agent_checkpoint_test.go",
         "helpers_test.go",
+        "saolei_fixtures_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -76,6 +74,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -92,6 +91,7 @@ go_largetest(
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )
 
@@ -101,12 +101,61 @@ go_largetest(
     srcs = [
         "agent_operation_test.go",
         "helpers_test.go",
+        "saolei_fixtures_test.go",
     ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [
         "//common/gopkg/testtool",
         "//projects/game",
         "//projects/game/pkg/gameconst",
         "@com_github_gorilla_websocket//:websocket",
         "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_largetest(
+    name = "agent_saolei_test",
+    size = "small",
+    srcs = [
+        "agent_saolei_test.go",
+        "helpers_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# testplan_test is the saolei template TEAM suite (spec
+# 031-team-template-mode quickstart.md §2.1 / tasks.md Phase 8 T029): team
+# lifecycle, TeamProfile CRUD, per-TeamProfile model, player-exclusive
+# control, planner-trigger-per-game, strategy persistence, RefreshTeam, and
+# per-agent message partitioning. It replaces the removed prompt /
+# session-agent-lifecycle / per-profile-model suites. The target uses the
+# gazelle default name ({package_name}_test) so gazelle does not regenerate a
+# go_unittest (style/large_test.md).
+go_largetest(
+    name = "testplan_test",
+    size = "small",
+    srcs = [
+        "helpers_test.go",
+        "saolei_team_test.go",
+        "saolei_fixtures_test.go",
+    ],
+    embedsrcs = SAOLEI_EMBEDSRCS,
+    deps = [
+        "//common/gopkg/testtool",
+        "//projects/game",
+        "//projects/game/pkg/gameconst",
+        "@com_github_gorilla_websocket//:websocket",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
     ],
 )

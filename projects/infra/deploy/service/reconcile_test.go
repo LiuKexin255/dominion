@@ -109,6 +109,7 @@ func mustEnvironmentWithGeneration(t *testing.T, env *domain.Environment, genera
 			Message:            env.Status().Message,
 			LastReconcileTime:  env.Status().LastReconcileTime,
 			LastSuccessTime:    env.Status().LastSuccessTime,
+			Services:           env.Status().Services,
 		},
 		Generation: generation,
 		CreateTime: env.CreateTime(),
@@ -220,6 +221,7 @@ func (r *fakeReconcileRepository) TransitionStatus(_ context.Context, name domai
 		Message:            toStatus.Message,
 		LastReconcileTime:  toStatus.LastReconcileTime,
 		LastSuccessTime:    toStatus.LastSuccessTime,
+		Services:           toStatus.Services,
 	}
 
 	envSnap := domain.EnvironmentSnapshot{
@@ -267,6 +269,7 @@ func cloneServiceEnvironment(env *domain.Environment) *domain.Environment {
 			Message:            env.Status().Message,
 			LastReconcileTime:  env.Status().LastReconcileTime,
 			LastSuccessTime:    env.Status().LastSuccessTime,
+			Services:           env.Status().Services,
 		},
 		Generation: env.Generation(),
 		CreateTime: env.CreateTime(),
@@ -474,6 +477,15 @@ func TestProcessOne_reconcilingToWaitingRollout(t *testing.T) {
 	if got.Status().ObservedGeneration != got.Generation() {
 		t.Fatalf("ObservedGeneration = %d, want %d", got.Status().ObservedGeneration, got.Generation())
 	}
+
+	// per-service 初始 PENDING 状态随转移一并写入（决策 R4）
+	wantServices := []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact,
+		State: domain.ServiceRolloutStatePending, Message: "资源已提交，等待观测",
+	}}
+	if !domain.ServicesEqual(got.Status().Services, wantServices) {
+		t.Fatalf("Services = %#v, want %#v", got.Status().Services, wantServices)
+	}
 }
 
 func TestProcessOne_reconcilingApplyFailureStaysReconciling(t *testing.T) {
@@ -510,9 +522,12 @@ func TestProcessOne_waitingRolloutToReady(t *testing.T) {
 	ctx := context.Background()
 	env := mustWaitingRolloutServiceEnvironment(t, "dev", "alpha")
 	repo := newFakeReconcileRepository(env)
+	checkServices := []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateReady,
+	}}
 	runtime := &fakeReconcileRuntime{
 		checkRolloutFn: func() (*domain.RolloutStatus, error) {
-			return &domain.RolloutStatus{State: domain.RolloutReady}, nil
+			return &domain.RolloutStatus{State: domain.RolloutReady, Services: checkServices}, nil
 		},
 	}
 	svc := NewReconcileService(repo, runtime)
@@ -541,6 +556,9 @@ func TestProcessOne_waitingRolloutToReady(t *testing.T) {
 	if got.Status().LastSuccessTime.IsZero() {
 		t.Fatal("LastSuccessTime is zero, want non-zero")
 	}
+	if !domain.ServicesEqual(got.Status().Services, checkServices) {
+		t.Fatalf("Services = %#v, want %#v", got.Status().Services, checkServices)
+	}
 }
 
 func TestProcessOne_waitingRolloutToFailed(t *testing.T) {
@@ -548,9 +566,13 @@ func TestProcessOne_waitingRolloutToFailed(t *testing.T) {
 	env := mustWaitingRolloutServiceEnvironment(t, "dev", "alpha")
 	repo := newFakeReconcileRepository(env)
 	failMsg := "CrashLoopBackOff"
+	checkServices := []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact,
+		State: domain.ServiceRolloutStateFailed, Message: failMsg,
+	}}
 	runtime := &fakeReconcileRuntime{
 		checkRolloutFn: func() (*domain.RolloutStatus, error) {
-			return &domain.RolloutStatus{State: domain.RolloutFailed, Message: failMsg}, nil
+			return &domain.RolloutStatus{State: domain.RolloutFailed, Message: failMsg, Services: checkServices}, nil
 		},
 	}
 	svc := NewReconcileService(repo, runtime)
@@ -575,6 +597,9 @@ func TestProcessOne_waitingRolloutToFailed(t *testing.T) {
 	}
 	if got.Status().Message != failMsg {
 		t.Fatalf("message = %q, want %q", got.Status().Message, failMsg)
+	}
+	if !domain.ServicesEqual(got.Status().Services, checkServices) {
+		t.Fatalf("Services = %#v, want %#v", got.Status().Services, checkServices)
 	}
 }
 
@@ -645,6 +670,82 @@ func TestProcessOne_waitingRolloutMessageChanged(t *testing.T) {
 	}
 	if got.Status().Message != newMsg {
 		t.Fatalf("message = %q, want %q", got.Status().Message, newMsg)
+	}
+}
+
+func TestProcessOne_waitingRolloutMessageUnchangedServicesChanged(t *testing.T) {
+	ctx := context.Background()
+	env := mustWaitingRolloutServiceEnvironment(t, "dev", "alpha")
+	if err := env.SetWaitingRolloutMessage("still deploying"); err != nil {
+		t.Fatalf("SetWaitingRolloutMessage() error = %v", err)
+	}
+	env.Status().Services = []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact,
+		State: domain.ServiceRolloutStatePending, Message: "资源已提交，等待观测",
+	}}
+	repo := newFakeReconcileRepository(env)
+	// 拼接后的 env-level message 不变，但某服务状态从 PENDING 变为 READY
+	checkServices := []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateReady,
+	}}
+	runtime := &fakeReconcileRuntime{
+		checkRolloutFn: func() (*domain.RolloutStatus, error) {
+			return &domain.RolloutStatus{State: domain.RolloutWaiting, Message: "still deploying", Services: checkServices}, nil
+		},
+	}
+	svc := NewReconcileService(repo, runtime)
+
+	result, err := svc.ProcessOne(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("ProcessOne() error = %v", err)
+	}
+	if result.Changed {
+		t.Fatal("ProcessResult.Changed = true, want false (message-only update)")
+	}
+	if result.RequeueAfter == 0 {
+		t.Fatal("ProcessResult.RequeueAfter = 0, want non-zero")
+	}
+	if repo.transitionCount() != 1 {
+		t.Fatalf("TransitionStatus calls = %d, want 1 (services changed while message unchanged)", repo.transitionCount())
+	}
+
+	got, err := repo.Get(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !domain.ServicesEqual(got.Status().Services, checkServices) {
+		t.Fatalf("Services = %#v, want %#v (per-service update not persisted)", got.Status().Services, checkServices)
+	}
+}
+
+func TestProcessOne_waitingRolloutMessageAndServicesUnchanged(t *testing.T) {
+	ctx := context.Background()
+	env := mustWaitingRolloutServiceEnvironment(t, "dev", "alpha")
+	if err := env.SetWaitingRolloutMessage("still deploying"); err != nil {
+		t.Fatalf("SetWaitingRolloutMessage() error = %v", err)
+	}
+	env.Status().Services = []*domain.ServiceStatus{{
+		Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateReady,
+	}}
+	repo := newFakeReconcileRepository(env)
+	runtime := &fakeReconcileRuntime{
+		checkRolloutFn: func() (*domain.RolloutStatus, error) {
+			return &domain.RolloutStatus{State: domain.RolloutWaiting, Message: "still deploying", Services: []*domain.ServiceStatus{{
+				Name: "api", App: "gateway", Kind: domain.ServiceKindArtifact, State: domain.ServiceRolloutStateReady,
+			}}}, nil
+		},
+	}
+	svc := NewReconcileService(repo, runtime)
+
+	result, err := svc.ProcessOne(ctx, env.Name())
+	if err != nil {
+		t.Fatalf("ProcessOne() error = %v", err)
+	}
+	if result.Changed {
+		t.Fatal("ProcessResult.Changed = true, want false")
+	}
+	if repo.transitionCount() != 0 {
+		t.Fatalf("TransitionStatus calls = %d, want 0 (message and services unchanged)", repo.transitionCount())
 	}
 }
 

@@ -216,11 +216,14 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 
 	got := store.Messages()
-	if len(got) != 3 {
-		t.Fatalf("NewMessageStore loaded %d messages, want 3 (chat-only + farewell + greeting)", len(got))
+	if len(got) != 7 {
+		t.Fatalf("NewMessageStore loaded %d messages, want 7 (chat-only + farewell + greeting + mouse-trigger + planner-update-strategy + saolei-remain + saolei-start)", len(got))
 	}
 
-	// Sorted alphabetically: chat-only before farewell before greeting.
+	// Sorted alphabetically: chat-only before farewell before greeting
+	// before mouse-trigger before planner-update-strategy before saolei-remain
+	// before saolei-start ("planner-update-strategy" < "saolei-remain" because
+	// 'p' < 's'; "saolei-remain" < "saolei-start" because 'r' < 's').
 	if got[0].Name != "chat-only" {
 		t.Fatalf("first message = %q, want chat-only", got[0].Name)
 	}
@@ -229,6 +232,18 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	}
 	if got[2].Name != "greeting" {
 		t.Fatalf("third message = %q, want greeting", got[2].Name)
+	}
+	if got[3].Name != "mouse-trigger" {
+		t.Fatalf("fourth message = %q, want mouse-trigger", got[3].Name)
+	}
+	if got[4].Name != "planner-update-strategy" {
+		t.Fatalf("fifth message = %q, want planner-update-strategy", got[4].Name)
+	}
+	if got[5].Name != "saolei-remain" {
+		t.Fatalf("sixth message = %q, want saolei-remain", got[5].Name)
+	}
+	if got[6].Name != "saolei-start" {
+		t.Fatalf("seventh message = %q, want saolei-start", got[6].Name)
 	}
 
 	chatOnly := got[0]
@@ -263,6 +278,66 @@ func TestNewMessageStore_LoadsEmbeddedSamples(t *testing.T) {
 	if !slices.Contains(greeting.Keywords, "hello") {
 		t.Errorf("greeting keywords missing hello: %v", greeting.Keywords)
 	}
+
+	// mouse-trigger carries a tool_call (the dispatch fix): a user turn
+	// matching its keyword makes fake-LLM return a mouse_move tool_call
+	// so the agent_operation large tests drive the real dispatch chain.
+	mouseTrigger := got[3]
+	if mouseTrigger.ToolCall == nil {
+		t.Fatalf("mouse-trigger tool_call is nil")
+	}
+	if mouseTrigger.ToolCall.Name != "mouse_move" {
+		t.Errorf("mouse-trigger tool_call.name = %q, want mouse_move", mouseTrigger.ToolCall.Name)
+	}
+	if !slices.Contains(mouseTrigger.Keywords, "move the mouse") {
+		t.Errorf("mouse-trigger keywords missing 'move the mouse': %v", mouseTrigger.Keywords)
+	}
+
+	// planner-update-strategy carries an update_strategy tool_call (spec
+	// 031-team-template-mode FR-012): the team graph's planner agent — whose
+	// review HumanMessage always carries the fixed prefix "本局已结束，以下是
+	// 终局棋盘" — matches this Message deterministically, so the saolei_team
+	// large tests drive the planner→update_strategy→StrategyStore flow
+	// end-to-end.
+	plannerStrategy := got[4]
+	if plannerStrategy.ToolCall == nil {
+		t.Fatalf("planner-update-strategy tool_call is nil")
+	}
+	if plannerStrategy.ToolCall.Name != "update_strategy" {
+		t.Errorf("planner-update-strategy tool_call.name = %q, want update_strategy", plannerStrategy.ToolCall.Name)
+	}
+	if !slices.Contains(plannerStrategy.Keywords, "本局已结束，以下是终局棋盘") {
+		t.Errorf("planner-update-strategy keywords missing the review prefix: %v", plannerStrategy.Keywords)
+	}
+
+	// saolei-remain carries a saolei_remain tool_call (spec 029 US2): a user
+	// turn matching its keyword makes fake-LLM return a saolei_remain
+	// tool_call so the agent_saolei large test drives the read-only remain
+	// query end-to-end (specs/029-saolei-coord-remain/contracts/saolei-
+	// remain-tool-contract.md §8).
+	saoleiRemain := got[5]
+	if saoleiRemain.ToolCall == nil {
+		t.Fatalf("saolei-remain tool_call is nil")
+	}
+	if saoleiRemain.ToolCall.Name != "saolei_remain" {
+		t.Errorf("saolei-remain tool_call.name = %q, want saolei_remain", saoleiRemain.ToolCall.Name)
+	}
+	if !slices.Contains(saoleiRemain.Keywords, "show remaining mines") {
+		t.Errorf("saolei-remain keywords missing 'show remaining mines': %v", saoleiRemain.Keywords)
+	}
+
+	// saolei-start carries the first saolei_init tool_call (the entry
+	// point of the agent_saolei large-test flow).
+	saoleiStart := got[6]
+	if saoleiStart.ToolCall == nil {
+		t.Fatalf("saolei-start tool_call is nil")
+	}
+	if saoleiStart.ToolCall.Name != "saolei_init" {
+		t.Errorf("saolei-start tool_call.name = %q, want saolei_init", saoleiStart.ToolCall.Name)
+	}
+	if !slices.Contains(saoleiStart.Keywords, "start saolei") {
+		t.Errorf("saolei-start keywords missing 'start saolei': %v", saoleiStart.Keywords)
+	}
 }
 
 // TestNewMessageStore_LoadsEmbeddedTools verifies the embedded
@@ -279,8 +354,8 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 
 	tools := store.Tools()
-	if len(tools) != 6 {
-		t.Fatalf("NewMessageStore loaded %d tools, want 6 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text)", len(tools))
+	if len(tools) != 12 {
+		t.Fatalf("NewMessageStore loaded %d tools, want 12 (keyboard-success-text, mouse-click-button, mouse-click-success-text, mouse-move-followup-click, mouse-move-oob, mouse-move-success-text, saolei-click-3-4-followup-click, saolei-click-5-6-final-text, saolei-click-terminal-text, saolei-init-followup-click, saolei-remain-final-text, update-strategy-success-text)", len(tools))
 	}
 
 	// Sorted alphabetically by Name.
@@ -291,6 +366,12 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 		"mouse-move-followup-click",
 		"mouse-move-oob",
 		"mouse-move-success-text",
+		"saolei-click-3-4-followup-click",
+		"saolei-click-5-6-final-text",
+		"saolei-click-terminal-text",
+		"saolei-init-followup-click",
+		"saolei-remain-final-text",
+		"update-strategy-success-text",
 	}
 	for i, want := range wantNames {
 		if tools[i].Name != want {
@@ -371,5 +452,118 @@ func TestNewMessageStore_LoadsEmbeddedTools(t *testing.T) {
 	}
 	if moveSuccess.RespondWith.ToolCall != nil {
 		t.Errorf("mouse-move-success-text respond_with.tool_call should be nil")
+	}
+
+	// saolei-init-followup-click chains a saolei_init result into a
+	// saolei_click{3,4} tool_call (specs/023-saolei-mcp-refine/quickstart.md
+	// Scenario 5 — stateless init→click flow, no update).
+	saoleiInitClick := tools[9]
+	if saoleiInitClick.ToolName != "saolei_init" {
+		t.Errorf("saolei-init-followup-click tool_name = %q, want saolei_init", saoleiInitClick.ToolName)
+	}
+	if saoleiInitClick.RespondWith.ToolCall == nil {
+		t.Fatalf("saolei-init-followup-click respond_with.tool_call is nil")
+	}
+	if saoleiInitClick.RespondWith.ToolCall.Name != "saolei_click" {
+		t.Errorf("saolei-init-followup-click tool_call.name = %q, want saolei_click", saoleiInitClick.RespondWith.ToolCall.Name)
+	}
+
+	// saolei-click-3-4-followup-click chains the first saolei_click{3,4}
+	// result into a back-to-back saolei_click{5,6} tool_call (spec 023
+	// FR-021 — tools callable back-to-back with no intervening step). The
+	// match_result_contains=["(3,4)"] substring distinguishes this result
+	// from the second click's "(5,6)" result.
+	saoleiClick34 := tools[6]
+	if saoleiClick34.Name != "saolei-click-3-4-followup-click" {
+		t.Errorf("tools[6] name = %q, want saolei-click-3-4-followup-click", saoleiClick34.Name)
+	}
+	if saoleiClick34.ToolName != "saolei_click" {
+		t.Errorf("saolei-click-3-4-followup-click tool_name = %q, want saolei_click", saoleiClick34.ToolName)
+	}
+	if !slices.Contains(saoleiClick34.MatchResultContains, "(3,4)") {
+		t.Errorf("saolei-click-3-4-followup-click match_result_contains missing (3,4): %v", saoleiClick34.MatchResultContains)
+	}
+	if saoleiClick34.RespondWith.ToolCall == nil {
+		t.Fatalf("saolei-click-3-4-followup-click respond_with.tool_call is nil")
+	}
+	if saoleiClick34.RespondWith.ToolCall.Name != "saolei_click" {
+		t.Errorf("saolei-click-3-4-followup-click tool_call.name = %q, want saolei_click", saoleiClick34.RespondWith.ToolCall.Name)
+	}
+
+	// saolei-click-5-6-final-text terminates the saolei tool loop with
+	// text after the second click's "(5,6)" result.
+	saoleiClick56Final := tools[7]
+	if saoleiClick56Final.Name != "saolei-click-5-6-final-text" {
+		t.Errorf("tools[7] name = %q, want saolei-click-5-6-final-text", saoleiClick56Final.Name)
+	}
+	if saoleiClick56Final.ToolName != "saolei_click" {
+		t.Errorf("saolei-click-5-6-final-text tool_name = %q, want saolei_click", saoleiClick56Final.ToolName)
+	}
+	if !slices.Contains(saoleiClick56Final.MatchResultContains, "(5,6)") {
+		t.Errorf("saolei-click-5-6-final-text match_result_contains missing (5,6): %v", saoleiClick56Final.MatchResultContains)
+	}
+	if saoleiClick56Final.RespondWith.Text != "Minesweeper sequence complete." {
+		t.Errorf("saolei-click-5-6-final-text respond_with.text = %q, want 'Minesweeper sequence complete.'", saoleiClick56Final.RespondWith.Text)
+	}
+	if saoleiClick56Final.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-click-5-6-final-text respond_with.tool_call should be nil")
+	}
+
+	// saolei-click-terminal-text terminates ANY saolei_click result that does
+	// not match the coordinate-tagged configs (e.g. the pre-dispatch
+	// rejections on terminal boards, whose bodies carry no "(x,y)") — it
+	// keeps the saolei_team suite's post-rejection tool loop deterministic
+	// instead of falling into the no-match random fallback.
+	saoleiClickTerminal := tools[8]
+	if saoleiClickTerminal.Name != "saolei-click-terminal-text" {
+		t.Errorf("tools[8] name = %q, want saolei-click-terminal-text", saoleiClickTerminal.Name)
+	}
+	if saoleiClickTerminal.ToolName != "saolei_click" {
+		t.Errorf("saolei-click-terminal-text tool_name = %q, want saolei_click", saoleiClickTerminal.ToolName)
+	}
+	if saoleiClickTerminal.RespondWith.Text != "Minesweeper sequence complete." {
+		t.Errorf("saolei-click-terminal-text respond_with.text = %q, want 'Minesweeper sequence complete.'", saoleiClickTerminal.RespondWith.Text)
+	}
+	if saoleiClickTerminal.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-click-terminal-text respond_with.tool_call should be nil")
+	}
+
+	// saolei-remain-final-text terminates the saolei_remain tool loop with
+	// a plain text response (spec 029 US2). saolei_remain dispatches
+	// nothing, so the fake-LLM must return text after its result to end the
+	// turn deterministically (otherwise the no-match random fallback could
+	// emit an unrelated tool_call). tool_name=saolei_remain is unique to
+	// this config.
+	saoleiRemainFinal := tools[10]
+	if saoleiRemainFinal.Name != "saolei-remain-final-text" {
+		t.Errorf("tools[9] name = %q, want saolei-remain-final-text", saoleiRemainFinal.Name)
+	}
+	if saoleiRemainFinal.ToolName != "saolei_remain" {
+		t.Errorf("saolei-remain-final-text tool_name = %q, want saolei_remain", saoleiRemainFinal.ToolName)
+	}
+	if saoleiRemainFinal.RespondWith.Text != "Remaining mines computed." {
+		t.Errorf("saolei-remain-final-text respond_with.text = %q, want 'Remaining mines computed.'", saoleiRemainFinal.RespondWith.Text)
+	}
+	if saoleiRemainFinal.RespondWith.ToolCall != nil {
+		t.Errorf("saolei-remain-final-text respond_with.tool_call should be nil")
+	}
+
+	// update-strategy-success-text terminates the planner agent's
+	// update_strategy tool loop with a plain text response (spec
+	// 031-team-template-mode FR-012/D6). tool_name=update_strategy is unique
+	// to this config, so it is the only MatchToolResult candidate for an
+	// update_strategy result — deterministic, no random fallback.
+	updateStrategyFinal := tools[11]
+	if updateStrategyFinal.Name != "update-strategy-success-text" {
+		t.Errorf("tools[10] name = %q, want update-strategy-success-text", updateStrategyFinal.Name)
+	}
+	if updateStrategyFinal.ToolName != "update_strategy" {
+		t.Errorf("update-strategy-success-text tool_name = %q, want update_strategy", updateStrategyFinal.ToolName)
+	}
+	if updateStrategyFinal.RespondWith.Text != "策略已更新，下一局将按新策略执行。" {
+		t.Errorf("update-strategy-success-text respond_with.text = %q, want '策略已更新，下一局将按新策略执行。'", updateStrategyFinal.RespondWith.Text)
+	}
+	if updateStrategyFinal.RespondWith.ToolCall != nil {
+		t.Errorf("update-strategy-success-text respond_with.tool_call should be nil")
 	}
 }

@@ -1,0 +1,19 @@
+board size 16*16
+
+       col0  col1  col2  col3  col4  col5  col6  col7  col8  col9 col10 col11 col12 col13 col14 col15
+ row0     *     M     *     M     *     *     *     *     *     *     *     *     *     *     *     M
+ row1     *     *     *     *     *     *     *     *     *     M     *     *     *     M     M     *
+ row2     *     *     *     M     *     *     *     *     M     *     *     *     M     *     *     *
+ row3     *     *     *     *     *     *     *     *     *     *     *     *     *     *     *     *
+ row4     M     *     *     *     M     M     *     *     M     *     *     M     *     *     *     *
+ row5     *     M     *     1     2     2     1     1     1     1     *     *     *     *     M     M
+ row6     *     *     *     1     0     0     0     0     0     1     1     *     *     *     *     *
+ row7     *     *     M     1     1     1     1     0     0     1     M     *     *     *     *     *
+ row8     *     *     *     *     M     F     1     1     1     2     1     1     1     M     *     *
+ row9     *     *     M     *     *     M     M     *     F     2     0     0     1     2     *     M
+row10     *     *     *     *     *     *     M     M     M     2     0     1     1     *     M     *
+row11     *     *     *     *     *     *     *     *     *     1     1     2     M     *     *     *
+row12     *     *     *     *     *     *     M     *     *     *     *     M     2     *     *     *
+row13     *     *     M     *     *     *     *     *     *     1     1     2     *     *     *     M
+row14     *     M     *     M     *     *     *     M     M     *     *     *     M     *     *     M
+row15     *     *     *     *     *     *     M     *     *     M     X     *     *     *     *     *

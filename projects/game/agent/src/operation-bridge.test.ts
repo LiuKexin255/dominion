@@ -3,28 +3,28 @@
  *
  * Covers the core scenarios:
  *   1. register sink → dispatch → handleResult → SUCCEEDED
- *   2. no sink registered → dispatch → 5s timeout → FAILED
+ *   2. no sink registered → dispatch → 20-min timeout → FAILED
  *   3. unregister mid-dispatch → timeout → FAILED
  *
  * Plus additional coverage for sink-throw, unknown result, UUID uniqueness,
  * and concurrent dispatch correlation.
  *
  * Part-model contract: dispatch accepts a Part (MouseMovePart/MouseClickPart),
- * stamps a tool_id, and wraps it in a content PartBlock frame. handleResult
- * accepts a ToolResultPart correlated by tool_id.
+ * stamps a tool_id, and wraps it in a flowParts frame. handleResult accepts a
+ * FlowResultPart correlated by tool_id (spec 025 FR-023/FR-025).
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { OperationBridge } from "./operation-bridge";
 
-import type { Part } from "../game_types/projects/game/Part";
-import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart";
+import type { FlowPart } from "../game_types/projects/game/FlowPart";
+import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 
 const STATUS_SUCCEEDED = "TOOL_RESULT_STATUS_SUCCEEDED";
 const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 
-function makeMovePart(): Part {
+function makeMovePart(): FlowPart {
   return { mouseMove: { xPx: 10, yPx: 20 } };
 }
 
@@ -32,10 +32,10 @@ function makeResult(
   toolId: string,
   status: string,
   message = "",
-): ToolResultPart {
+): FlowResultPart {
   return {
     toolId,
-    status: status as ToolResultPart["status"],
+    status: status as FlowResultPart["status"],
     message,
   };
 }
@@ -87,11 +87,12 @@ describe("OperationBridge", () => {
   });
 
   // ------------------------------------------------------------------
-  // Required scenario 3: unregister mid-dispatch → timeout → FAILED
+  // Required scenario 3: unregister with the current handle mid-dispatch
+  // clears the sink; the pending dispatch then times out → FAILED.
   // ------------------------------------------------------------------
-  it("unregister mid-dispatch → timeout → FAILED", async () => {
+  it("unregister with current handle mid-dispatch → timeout → FAILED", async () => {
     const written: unknown[] = [];
-    bridge.registerSink((frame) => {
+    const handle = bridge.registerSink((frame) => {
       written.push(frame);
     });
 
@@ -100,13 +101,87 @@ describe("OperationBridge", () => {
 
     expect(written).toHaveLength(1);
 
-    bridge.unregisterSink();
+    bridge.unregisterSink(handle);
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
     expect(result.message).toContain("timed out");
+  });
+
+  // ------------------------------------------------------------------
+  // Required scenario 2 (quickstart): sink compare-and-delete prevents a
+  // stale stream close from clobbering a fresh registration
+  // (specs/021-agent-session-resync/quickstart.md Scenario 2;
+  //  specs/021-agent-session-resync/research.md D3).
+  // ------------------------------------------------------------------
+  it("stale unregister(handleA) after B superseded A leaves sink=B; dispatch routes via B (not FAILED)", async () => {
+    const sinkA = vi.fn();
+    const sinkB = vi.fn();
+    const handleA = bridge.registerSink(sinkA);
+    bridge.registerSink(sinkB); // stream-B supersedes stream-A
+
+    // stream-A's late close arrives with its stale handle: compare-and-delete
+    // must be a no-op so it cannot null the fresh sink-B.
+    bridge.unregisterSink(handleA);
+
+    // sink-B is still the live sink: dispatch writes through B and resolves
+    // via it, rather than resolving FAILED "desktop disconnected" (which
+    // would mean the sink had been clobbered to null).
+    const promise = bridge.dispatch(makeMovePart());
+
+    expect(sinkA).not.toHaveBeenCalled();
+    expect(sinkB).toHaveBeenCalledOnce();
+
+    const frame = sinkB.mock.calls[0]![0] as {
+      flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] };
+    };
+    const toolId = frame.flowParts?.parts?.[0]?.mouseMove?.toolId ?? "";
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
+  });
+
+  it("unregister with current handle clears the sink; subsequent dispatch FAILED 'desktop disconnected'", async () => {
+    const sinkB = vi.fn();
+    const handleB = bridge.registerSink(sinkB);
+
+    bridge.unregisterSink(handleB);
+
+    const result = await bridge.dispatch(makeMovePart());
+    expect(result.status).toBe(STATUS_FAILED);
+    expect(result.message).toContain("desktop disconnected");
+    expect(sinkB).not.toHaveBeenCalled();
+  });
+
+  it("unregisterSink() with no handle is a no-op: sink stays live", async () => {
+    // unregisterSink(handle?) JSDoc: omitting handle is a no-op because
+    // `this.sink` is never undefined (null or a function), so
+    // `this.sink === undefined` is always false (operation-bridge.ts
+    // unregisterSink). A call site that forgets the handle must NOT clear a
+    // live registration.
+    const sink = vi.fn();
+    bridge.registerSink(sink);
+
+    bridge.unregisterSink();
+
+    // Sink is still registered: dispatch routes through it and resolves via
+    // handleResult, rather than FAILED "desktop disconnected".
+    const promise = bridge.dispatch(makeMovePart());
+    expect(sink).toHaveBeenCalledOnce();
+
+    const frame = sink.mock.calls[0]![0] as {
+      flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] };
+    };
+    const toolId = frame.flowParts?.parts?.[0]?.mouseMove?.toolId ?? "";
+    bridge.handleResult(makeResult(toolId, STATUS_SUCCEEDED, "ok"));
+
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
+    expect(result.message).toBe("ok");
   });
 
   // ------------------------------------------------------------------
@@ -122,7 +197,7 @@ describe("OperationBridge", () => {
     expect(result.message).toBe("aborted");
   });
 
-  it("signal aborts mid-dispatch → resolves FAILED before 5s timeout", async () => {
+  it("signal aborts mid-dispatch → resolves FAILED before 20-min timeout", async () => {
     bridge.registerSink(() => {});
     const controller = new AbortController();
     const part = makeMovePart();
@@ -139,7 +214,7 @@ describe("OperationBridge", () => {
   it("handleResult wins over late signal abort (no double-resolve)", async () => {
     let capturedToolId = "";
     bridge.registerSink((frame) => {
-      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
       capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
     });
     const controller = new AbortController();
@@ -179,7 +254,7 @@ describe("OperationBridge", () => {
 
     bridge.handleResult(makeResult("nonexistent-id", STATUS_SUCCEEDED, "stale"));
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
 
     const result = await promise;
     expect(result.status).toBe(STATUS_FAILED);
@@ -188,7 +263,7 @@ describe("OperationBridge", () => {
   it("dispatch assigns a unique UUID tool_id to each part", async () => {
     const ids: string[] = [];
     bridge.registerSink((frame) => {
-      const parts = (frame as { content?: { parts?: { mouseMove?: { toolId?: string } }[] } }).content?.parts ?? [];
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
       const id = parts[0]?.mouseMove?.toolId;
       if (id) ids.push(id);
     });
@@ -199,11 +274,32 @@ describe("OperationBridge", () => {
       bridge.dispatch(makeMovePart()),
     ];
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
     await Promise.all(promises);
 
     expect(ids).toHaveLength(3);
     expect(new Set(ids).size).toBe(3);
+  });
+
+  // T026 (contracts/tool-dispatch-contract.md §1 / research.md D10): dispatch
+  // mints its own operation-channel UUID and does NOT take a toolId parameter.
+  // The bridge-minted id is independent of any conversation tool_call.id; two
+  // consecutive dispatches yield two distinct minted ids.
+  it("dispatch always mints a fresh UUID operation id (no toolId param)", async () => {
+    let capturedToolId = "";
+    bridge.registerSink((frame) => {
+      const parts = (frame as { flowParts?: { parts?: { mouseMove?: { toolId?: string } }[] } }).flowParts?.parts ?? [];
+      capturedToolId = parts[0]?.mouseMove?.toolId ?? "";
+    });
+
+    const promise = bridge.dispatch(makeMovePart());
+    // The minted id is a non-empty UUID, NOT any caller-supplied tool_call.id.
+    expect(capturedToolId).not.toBe("");
+    expect(capturedToolId).toHaveLength(36);
+
+    bridge.handleResult(makeResult(capturedToolId, STATUS_SUCCEEDED, "ok"));
+    const result = await promise;
+    expect(result.status).toBe(STATUS_SUCCEEDED);
   });
 
   it("handleResult resolves the correct pending dispatch when multiple in-flight", async () => {
@@ -224,9 +320,9 @@ describe("OperationBridge", () => {
     expect(rB.message).toBe("b-done");
   });
 
-  it("written envelope has payload='content' and carries the tool Part", async () => {
+  it("written envelope has payload='flowParts' and carries the FlowPart", async () => {
     let captured:
-      | { payload?: string; content?: { parts?: Part[] } }
+      | { payload?: string; flowParts?: { parts?: FlowPart[] } }
       | undefined;
     bridge.registerSink((frame) => {
       captured = frame as typeof captured;
@@ -239,11 +335,11 @@ describe("OperationBridge", () => {
     await promise;
 
     expect(captured).toBeDefined();
-    expect(captured!.payload).toBe("content");
-    expect(captured!.content).toBeDefined();
-    expect(captured!.content!.parts).toHaveLength(1);
-    expect(captured!.content!.parts![0]).toBe(part);
-    expect(captured!.content!.parts![0].mouseMove!.toolId).toBe(
+    expect(captured!.payload).toBe("flowParts");
+    expect(captured!.flowParts).toBeDefined();
+    expect(captured!.flowParts!.parts).toHaveLength(1);
+    expect(captured!.flowParts!.parts![0]).toBe(part);
+    expect(captured!.flowParts!.parts![0].mouseMove!.toolId).toBe(
       part.mouseMove!.toolId,
     );
   });
@@ -261,7 +357,7 @@ describe("OperationBridge", () => {
     const pngBytes = Uint8Array.of(0x89, 0x50, 0x4e, 0x47);
     bridge.handleResult({
       toolId: part.mouseMove!.toolId!,
-      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      status: STATUS_SUCCEEDED as FlowResultPart["status"],
       message: "done",
       screenshot: {
         encoding: "IMAGE_ENCODING_PNG",
@@ -287,7 +383,7 @@ describe("OperationBridge", () => {
 
     bridge.handleResult({
       toolId: part.mouseMove!.toolId!,
-      status: STATUS_SUCCEEDED as ToolResultPart["status"],
+      status: STATUS_SUCCEEDED as FlowResultPart["status"],
       message: "done",
       screenshot: {
         encoding: "IMAGE_ENCODING_PNG",

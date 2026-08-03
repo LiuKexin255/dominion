@@ -10,8 +10,10 @@ import (
 )
 
 // TestCreateSession verifies that a session can be created successfully via
-// POST /api/v1/sessions with an empty body and that the server returns a
-// non-empty, server-generated sessionId.
+// POST /api/v1/templates/{template}/sessions with an empty body (AIP-133 —
+// the parent template lives in the URI path, spec 031-team-template-mode
+// contracts/api-contract.md §2.1) and that the server returns a non-empty,
+// server-generated sessionId.
 func TestCreateSession(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -19,36 +21,37 @@ func TestCreateSession(t *testing.T) {
 	// given: empty CreateSessionRequest
 
 	// when
-	sessionID, body := createSession(t, sutHostURL, sutEnvName)
+	sessionID, body := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 
 	// then
 	if sessionID == "" {
 		t.Error("createSession returned empty sessionId")
 	}
 
-	// verify the response body contains the expected name format
+	// verify the response body contains the expected template-scoped name
 	sess := new(sessionResponse)
 	if err := json.Unmarshal(body, sess); err != nil {
 		t.Fatalf("json.Unmarshal session response: %v", err)
 	}
-	wantName := "sessions/" + sessionID
+	wantName := "templates/" + saoleiTemplateID + "/sessions/" + sessionID
 	if sess.Name != wantName {
 		t.Errorf("session name = %q, want %q", sess.Name, wantName)
 	}
 }
 
-// TestListSessions verifies that listing sessions returns all created sessions
-// and that nextPageToken is empty when all sessions fit in one page.
+// TestListSessions verifies that listing sessions of a template returns all
+// created sessions and that nextPageToken is empty when all sessions fit in
+// one page.
 func TestListSessions(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
 
 	// given: create two sessions
-	sess1ID, _ := createSession(t, sutHostURL, sutEnvName)
-	sess2ID, _ := createSession(t, sutHostURL, sutEnvName)
+	sess1ID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	sess2ID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 
 	// when: list sessions with large page size to avoid pagination from prior tests
-	respBody := listSessions(t, sutHostURL, sutEnvName, 100)
+	respBody := listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 100)
 
 	// then: both sessions are in the response
 	got := new(listSessionsResponse)

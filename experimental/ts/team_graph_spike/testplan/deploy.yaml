@@ -1,0 +1,19 @@
+version: "3.0"
+name: tgspike.{{run}}
+type: test
+desc: "LangGraph team-graph spike (game fake-llm + player/planner team service)"
+services:
+  - artifact:
+      path: //projects/game/fake-llm/service.yaml
+      name: fake-llm
+  - artifact:
+      path: //experimental/ts/team_graph_spike/service.yaml
+      name: team-graph-spike
+    http:
+      hostnames:
+        - apitest.liukexin.com
+      matches:
+        - backend: http
+          path:
+            type: PathPrefix
+            value: /experimental/team-graph

@@ -57,9 +57,10 @@ func main() {
 	// Bidirectional stream binder.
 	binder := bind.NewBinder()
 
-	// Proxy handler implements the ProxyService gRPC server interface directly:
+	// Team handler implements the TeamService gRPC server interface directly:
 	// owner resolution, agent-client routing, and stream binding live here.
-	grpcHandler := handler.NewProxyHandler(mongoOwnerStore, hashPicker, manager, binder)
+	// (spec 031-team-template-mode: ProxyService/AgentService merged into TeamService.)
+	grpcHandler := handler.NewTeamHandler(mongoOwnerStore, hashPicker, manager, binder)
 
 	// gRPC server with default service options (OTel tracing, TLS).
 	serverOpts := append(
@@ -68,7 +69,7 @@ func main() {
 		grpcgo.MaxSendMsgSize(8*1024*1024),
 	)
 	grpcServer := grpcgo.NewServer(serverOpts...)
-	game.RegisterProxyServiceServer(grpcServer, grpcHandler)
+	game.RegisterTeamServiceServer(grpcServer, grpcHandler)
 	reflection.Register(grpcServer)
 
 	// Bootstrap lifecycle: OTEL → Mongo client → Agent client manager → gRPC server.

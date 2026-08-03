@@ -2,6 +2,7 @@ package applog
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,9 +18,10 @@ type Entry struct {
 // Logger is an in-memory log store with optional event sink callback.
 // It is safe for concurrent use.
 type Logger struct {
-	mu        sync.Mutex
-	entries   []Entry
-	eventSink func(Entry)
+	mu           sync.Mutex
+	entries      []Entry
+	eventSink    func(Entry)
+	debugEnabled atomic.Bool
 }
 
 // NewLogger creates a new Logger.
@@ -35,6 +37,24 @@ func (l *Logger) Info(source, msg string, fields ...map[string]any) {
 // Error logs an error-level message. Source should be "backend" or "frontend".
 func (l *Logger) Error(source, msg string, fields ...map[string]any) {
 	l.log("error", source, msg, fields...)
+}
+
+// SetDebug enables or disables debug-level logging. When disabled, Debug is a
+// zero-overhead no-op (no entry append, no event-sink push), so call sites may
+// invoke Debug freely on hot paths. See specs/022-desktop-debug-mode/research.md D5.
+func (l *Logger) SetDebug(enabled bool) {
+	l.debugEnabled.Store(enabled)
+}
+
+// Debug logs a debug-level message. It is a no-op unless debug mode was enabled
+// via SetDebug, so production (debug OFF) pays nothing. When enabled it flows
+// the same Entry.Level/event-sink path as Info/Error.
+// See specs/022-desktop-debug-mode/research.md D5.
+func (l *Logger) Debug(source, msg string, fields ...map[string]any) {
+	if !l.debugEnabled.Load() {
+		return
+	}
+	l.log("debug", source, msg, fields...)
 }
 
 // Entries returns a copy of all log entries (prevents mutation of internal state).

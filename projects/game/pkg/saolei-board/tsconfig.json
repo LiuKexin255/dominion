@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "rootDir": "src",
+    "strict": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "paths": {
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

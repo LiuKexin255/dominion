@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	commandApply = "apply"
-	commandDel   = "del"
-	commandList  = "list"
-	commandScope = "scope"
+	commandApply    = "apply"
+	commandDel      = "del"
+	commandDescribe = "describe"
+	commandList     = "list"
+	commandScope    = "scope"
 
 	flagEndpoint = "endpoint"
 	flagTimeout  = "timeout"
@@ -52,17 +53,19 @@ type flagSpec struct {
 }
 
 var commandExecTable = map[string]commandExecFunc{
-	commandApply: applyCommand,
-	commandDel:   delCommand,
-	commandList:  listCommand,
-	commandScope: scopeCommand,
+	commandApply:    applyCommand,
+	commandDel:      delCommand,
+	commandDescribe: describeCommand,
+	commandList:     listCommand,
+	commandScope:    scopeCommand,
 }
 
 var commandValidatorTable = map[string]commandValidatorFunc{
-	commandApply: validateApplyOptions,
-	commandDel:   validateDelOptions,
-	commandList:  validateListOptions,
-	commandScope: validateScopeOptions,
+	commandApply:    validateApplyOptions,
+	commandDel:      validateDelOptions,
+	commandDescribe: validateDescribeOptions,
+	commandList:     validateListOptions,
+	commandScope:    validateScopeOptions,
 }
 
 var flagSpecs = map[string]flagSpec{
@@ -109,10 +112,11 @@ var flagSpecs = map[string]flagSpec{
 }
 
 var commandFlagTable = map[string][]string{
-	commandApply: {flagEndpoint, flagTimeout, flagScope, flagRun, flagVerbose},
-	commandDel:   {flagEndpoint, flagTimeout, flagScope, flagVerbose},
-	commandList:  {flagEndpoint, flagTimeout, flagScope, flagVerbose},
-	commandScope: {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandApply:    {flagEndpoint, flagTimeout, flagScope, flagRun, flagVerbose},
+	commandDel:      {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandDescribe: {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandList:     {flagEndpoint, flagTimeout, flagScope, flagVerbose},
+	commandScope:    {flagEndpoint, flagTimeout, flagScope, flagVerbose},
 }
 
 var stdout io.Writer = os.Stdout
@@ -151,7 +155,7 @@ func run(args []string) error {
 
 func parseOptions(args []string) (*options, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("must provide command: %s, %s, %s or %s", commandApply, commandDel, commandList, commandScope)
+		return nil, fmt.Errorf("must provide command: %s, %s, %s, %s or %s", commandApply, commandDel, commandDescribe, commandList, commandScope)
 	}
 
 	fs, opts, err := newCommandFlagSet(args[0])
@@ -236,6 +240,13 @@ func validateDelOptions(opts *options) error {
 	return nil
 }
 
+func validateDescribeOptions(opts *options) error {
+	if opts.target == "" {
+		return fmt.Errorf("%s requires env name", commandDescribe)
+	}
+	return nil
+}
+
 func validateListOptions(opts *options) error {
 	if opts.target != "" {
 		return fmt.Errorf("%s does not accept positional args", commandList)
@@ -270,6 +281,7 @@ func usageText() string {
 		"Commands:",
 		"  apply [-v] [--endpoint=url] [--timeout=5m] [--scope=name] [--run=id] <deploy.yaml>",
 		"  del [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
+		"  describe [-v] [--endpoint=url] [--timeout=5m] [--scope=name] <env>",
 		"  list [-v] [--endpoint=url] [--timeout=5m] [--scope=name]",
 		"  scope [-v] [--scope=name] [scope-name]",
 		"",

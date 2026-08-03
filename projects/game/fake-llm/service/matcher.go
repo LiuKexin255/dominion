@@ -43,7 +43,24 @@ func Match(messages []*Message, userText string, rng *rand.Rand) (*Message, bool
 		return best, true
 	}
 
-	pick := messages[rng.IntN(len(messages))]
+	// Random fallback: only text-only Messages are eligible. A Message
+	// carrying a ToolCall represents an explicit test trigger that
+	// requires a keyword match; emitting one at random would
+	// nonsensically invoke a desktop operation. Spec 012's random-
+	// fallback contract (FR-008) predates tool_call Messages, so
+	// restricting the fallback pool to text-only Messages is the
+	// coherent extension. When every Message carries a ToolCall the
+	// full set is used rather than panicking on IntN(0).
+	var pool []*Message
+	for i := range messages {
+		if messages[i].ToolCall == nil {
+			pool = append(pool, messages[i])
+		}
+	}
+	if len(pool) == 0 {
+		pool = messages
+	}
+	pick := pool[rng.IntN(len(pool))]
 	slog.Warn("no keyword matched for user text, returning random message",
 		slog.String("user_snippet", snippet(userText, maxSnippetRunes)),
 		slog.String("random_name", pick.Name),

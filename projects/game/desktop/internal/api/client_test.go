@@ -21,18 +21,21 @@ import (
 func TestClient_CreateSession(t *testing.T) {
 	tests := []struct {
 		name       string
+		template   string
 		statusCode int
 		respBody   string
 		wantErr    bool
 	}{
 		{
 			name:       "success",
+			template:   "saolei",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/test-session","sessionId":"test-session","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"templates/saolei/sessions/test-session","sessionId":"test-session","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
 			name:       "server error",
+			template:   "saolei",
 			statusCode: http.StatusInternalServerError,
 			respBody:   "internal error",
 			wantErr:    true,
@@ -46,8 +49,9 @@ func TestClient_CreateSession(t *testing.T) {
 				if r.Method != http.MethodPost {
 					t.Errorf("expected POST, got %s", r.Method)
 				}
-				if r.URL.Path != "/api/v1/sessions" {
-					t.Errorf("expected /api/v1/sessions, got %s", r.URL.Path)
+				wantPath := "/api/v1/templates/" + tt.template + "/sessions"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
 				if r.Header.Get("Content-Type") != "application/json" {
 					t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
@@ -66,7 +70,7 @@ func TestClient_CreateSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when: call CreateSession
-			session, err := client.CreateSession(context.Background())
+			session, err := client.CreateSession(context.Background(), tt.template)
 
 			// then: verify result
 			if tt.wantErr {
@@ -87,8 +91,11 @@ func TestClient_CreateSession(t *testing.T) {
 			if session.GetSessionId() != "test-session" {
 				t.Errorf("expected session_id %q, got %q", "test-session", session.GetSessionId())
 			}
-			if session.GetName() != "sessions/test-session" {
-				t.Errorf("expected name %q, got %q", "sessions/test-session", session.GetName())
+			if session.GetName() != "templates/saolei/sessions/test-session" {
+				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/test-session", session.GetName())
+			}
+			if session.GetTemplate() != "templates/saolei" {
+				t.Errorf("expected template %q, got %q", "templates/saolei", session.GetTemplate())
 			}
 		})
 	}
@@ -110,18 +117,21 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
+		if r.URL.Path != "/api/v1/templates/saolei/sessions" {
+			t.Errorf("expected /api/v1/templates/saolei/sessions, got %s", r.URL.Path)
+		}
 
 		// return a session with server-generated ID
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"sessions/server-gen-abc","sessionId":"server-gen-abc","createTime":"2024-06-01T12:00:00Z"}`))
+		w.Write([]byte(`{"name":"templates/saolei/sessions/server-gen-abc","sessionId":"server-gen-abc","template":"templates/saolei","createTime":"2024-06-01T12:00:00Z"}`))
 	}))
 	defer srv.Close()
 
 	client := NewClient(Config{GatewayURL: srv.URL})
 
 	// when: call CreateSession (no session_id argument)
-	session, err := client.CreateSession(context.Background())
+	session, err := client.CreateSession(context.Background(), "saolei")
 
 	// then: verify SessionId is extracted from response
 	if err != nil {
@@ -130,8 +140,8 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 	if session.GetSessionId() != "server-gen-abc" {
 		t.Errorf("expected session_id %q, got %q", "server-gen-abc", session.GetSessionId())
 	}
-	if session.GetName() != "sessions/server-gen-abc" {
-		t.Errorf("expected name %q, got %q", "sessions/server-gen-abc", session.GetName())
+	if session.GetName() != "templates/saolei/sessions/server-gen-abc" {
+		t.Errorf("expected name %q, got %q", "templates/saolei/sessions/server-gen-abc", session.GetName())
 	}
 }
 
@@ -142,6 +152,7 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 func TestClient_ListSessions(t *testing.T) {
 	tests := []struct {
 		name       string
+		template   string
 		pageSize   int32
 		pageToken  string
 		statusCode int
@@ -151,14 +162,16 @@ func TestClient_ListSessions(t *testing.T) {
 	}{
 		{
 			name:       "success with page_size and page_token",
+			template:   "saolei",
 			pageSize:   10,
 			pageToken:  "token1",
 			statusCode: http.StatusOK,
-			respBody:   `{"sessions":[{"name":"sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/s2","sessionId":"s2","createTime":"2024-01-02T00:00:00Z"}],"nextPageToken":"next"}`,
+			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/s2","sessionId":"s2","template":"templates/saolei","createTime":"2024-01-02T00:00:00Z"}],"nextPageToken":"next"}`,
 			wantErr:    false,
 		},
 		{
 			name:       "success with page_size only",
+			template:   "saolei",
 			pageSize:   5,
 			statusCode: http.StatusOK,
 			respBody:   `{"sessions":[],"nextPageToken":""}`,
@@ -166,12 +179,14 @@ func TestClient_ListSessions(t *testing.T) {
 		},
 		{
 			name:       "success with no parameters",
+			template:   "saolei",
 			statusCode: http.StatusOK,
-			respBody:   `{"sessions":[{"name":"sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"}]}`,
+			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}]}`,
 			wantErr:    false,
 		},
 		{
 			name:       "server error",
+			template:   "saolei",
 			pageSize:   10,
 			statusCode: http.StatusInternalServerError,
 			respBody:   "internal error",
@@ -187,15 +202,14 @@ func TestClient_ListSessions(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				if r.URL.Path != "/api/v1/sessions" {
-					t.Errorf("expected /api/v1/sessions, got %s", r.URL.Path)
+				wantPath := "/api/v1/templates/" + tt.template + "/sessions"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
 
 				if tt.pageSize > 0 {
-					if got := r.URL.Query().Get("page_size"); got != "" {
-						if got != fmtInt32(tt.pageSize) {
-							t.Errorf("expected page_size %d, got %s", tt.pageSize, got)
-						}
+					if got := r.URL.Query().Get("page_size"); got != fmtInt32(tt.pageSize) {
+						t.Errorf("expected page_size %d, got %s", tt.pageSize, got)
 					}
 				}
 				if tt.pageToken != "" {
@@ -212,7 +226,7 @@ func TestClient_ListSessions(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			resp, err := client.ListSessions(context.Background(), tt.pageSize, tt.pageToken)
+			resp, err := client.ListSessions(context.Background(), tt.template, tt.pageSize, tt.pageToken)
 
 			// then
 			if tt.wantErr {
@@ -262,6 +276,7 @@ func fmtInt32(v int32) string {
 func TestClient_GetSession(t *testing.T) {
 	tests := []struct {
 		name       string
+		template   string
 		sessionID  string
 		statusCode int
 		respBody   string
@@ -269,13 +284,15 @@ func TestClient_GetSession(t *testing.T) {
 	}{
 		{
 			name:       "success",
+			template:   "saolei",
 			sessionID:  "test123",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/test123","sessionId":"test123","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"templates/saolei/sessions/test123","sessionId":"test123","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
 			name:       "not found",
+			template:   "saolei",
 			sessionID:  "missing",
 			statusCode: http.StatusNotFound,
 			respBody:   `{"error":"not found"}`,
@@ -290,7 +307,7 @@ func TestClient_GetSession(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID
+				wantPath := "/api/v1/templates/" + tt.template + "/sessions/" + tt.sessionID
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -302,7 +319,7 @@ func TestClient_GetSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			session, err := client.GetSession(context.Background(), tt.sessionID)
+			session, err := client.GetSession(context.Background(), tt.template, tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -355,7 +372,7 @@ func TestClient_DeleteSession(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Errorf("expected DELETE, got %s", r.Method)
 				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID
+				wantPath := "/api/v1/templates/saolei/sessions/" + tt.sessionID
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -367,7 +384,7 @@ func TestClient_DeleteSession(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			err := client.DeleteSession(context.Background(), tt.sessionID)
+			err := client.DeleteSession(context.Background(), "saolei", tt.sessionID)
 
 			// then
 			if tt.wantErr {
@@ -384,12 +401,13 @@ func TestClient_DeleteSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_GetAgent
+// TestClient_GetTeam
 // ---------------------------------------------------------------------------
 
-func TestClient_GetAgent(t *testing.T) {
+func TestClient_GetTeam(t *testing.T) {
 	tests := []struct {
 		name       string
+		template   string
 		sessionID  string
 		statusCode int
 		respBody   string
@@ -397,14 +415,16 @@ func TestClient_GetAgent(t *testing.T) {
 	}{
 		{
 			name:       "success",
+			template:   "saolei",
 			sessionID:  "sess-1",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"sessions/sess-1/agent","sessionId":"sess-1","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"templates/saolei/sessions/sess-1/team","agents":[{"name":"player","acceptsUserInput":true},{"name":"planner","acceptsUserInput":false}],"createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
-			name:       "not found",
-			sessionID:  "no-agent",
+			name:       "not found (team not created)",
+			template:   "saolei",
+			sessionID:  "no-team",
 			statusCode: http.StatusNotFound,
 			respBody:   "not found",
 			wantErr:    true,
@@ -418,7 +438,7 @@ func TestClient_GetAgent(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID + "/agent"
+				wantPath := "/api/v1/templates/" + tt.template + "/sessions/" + tt.sessionID + "/team"
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -430,23 +450,125 @@ func TestClient_GetAgent(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			agent, err := client.GetAgent(context.Background(), tt.sessionID)
+			team, err := client.GetTeam(context.Background(), tt.template, tt.sessionID)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
+				if !strings.Contains(err.Error(), "get team") {
+					t.Errorf("error should contain 'get team', got %q", err.Error())
+				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if agent == nil {
-				t.Fatal("expected agent, got nil")
+			if team == nil {
+				t.Fatal("expected team, got nil")
 			}
-			if agent.GetSessionId() != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, agent.GetSessionId())
+			if team.GetName() != "templates/saolei/sessions/sess-1/team" {
+				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/sess-1/team", team.GetName())
+			}
+			if len(team.GetAgents()) != 2 {
+				t.Fatalf("expected 2 agents, got %d", len(team.GetAgents()))
+			}
+			if team.GetAgents()[0].GetName() != "player" || !team.GetAgents()[0].GetAcceptsUserInput() {
+				t.Errorf("expected first agent player/acceptsUserInput=true, got %+v", team.GetAgents()[0])
+			}
+			if team.GetAgents()[1].GetName() != "planner" || team.GetAgents()[1].GetAcceptsUserInput() {
+				t.Errorf("expected second agent planner/acceptsUserInput=false, got %+v", team.GetAgents()[1])
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_CreateTeam
+// ---------------------------------------------------------------------------
+
+func TestClient_CreateTeam(t *testing.T) {
+	tests := []struct {
+		name       string
+		template   string
+		sessionID  string
+		profile    string
+		statusCode int
+		respBody   string
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			template:   "saolei",
+			sessionID:  "sess-1",
+			profile:    "templates/saolei/profiles/p1",
+			statusCode: http.StatusOK,
+			respBody:   `{"name":"templates/saolei/sessions/sess-1/team","agents":[{"name":"player","acceptsUserInput":true}],"createTime":"2024-01-01T00:00:00Z"}`,
+			wantErr:    false,
+		},
+		{
+			name:       "conflict with different profile",
+			template:   "saolei",
+			sessionID:  "sess-2",
+			profile:    "templates/saolei/profiles/p2",
+			statusCode: http.StatusConflict,
+			respBody:   `{"error":"already exists"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				wantPath := "/api/v1/templates/" + tt.template + "/sessions/" + tt.sessionID + "/team"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				body, _ := io.ReadAll(r.Body)
+				req := new(game.CreateTeamRequest)
+				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, req); err != nil {
+					t.Fatalf("failed to parse request body: %v", err)
+				}
+				wantParent := "templates/" + tt.template + "/sessions/" + tt.sessionID
+				if req.GetParent() != wantParent {
+					t.Errorf("expected parent %q, got %q", wantParent, req.GetParent())
+				}
+				if req.GetProfile() != tt.profile {
+					t.Errorf("expected profile %q, got %q", tt.profile, req.GetProfile())
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			team, err := client.CreateTeam(context.Background(), tt.template, tt.sessionID, tt.profile)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "create team") {
+					t.Errorf("error should contain 'create team', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if team == nil {
+				t.Fatal("expected team, got nil")
+			}
+			if team.GetName() != "templates/saolei/sessions/sess-1/team" {
+				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/sess-1/team", team.GetName())
 			}
 		})
 	}
@@ -460,6 +582,7 @@ func TestClient_ListMessages(t *testing.T) {
 	tests := []struct {
 		name       string
 		sessionID  string
+		agent      string
 		statusCode int
 		respBody   string
 		wantErr    bool
@@ -468,14 +591,16 @@ func TestClient_ListMessages(t *testing.T) {
 		{
 			name:       "success with messages",
 			sessionID:  "test-session",
+			agent:      "player",
 			statusCode: http.StatusOK,
-			respBody:   `{"messages":[{"name":"sessions/test-session/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"sessions/test-session/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
+			respBody:   `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","agent":"player","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
 		{
 			name:       "success with empty list",
 			sessionID:  "empty-session",
+			agent:      "planner",
 			statusCode: http.StatusOK,
 			respBody:   `{"messages":[]}`,
 			wantErr:    false,
@@ -484,6 +609,7 @@ func TestClient_ListMessages(t *testing.T) {
 		{
 			name:       "server error",
 			sessionID:  "bad-session",
+			agent:      "player",
 			statusCode: http.StatusInternalServerError,
 			respBody:   "internal error",
 			wantErr:    true,
@@ -497,7 +623,7 @@ func TestClient_ListMessages(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				wantPath := "/api/v1/sessions/" + tt.sessionID + "/messages"
+				wantPath := "/api/v1/templates/saolei/sessions/" + tt.sessionID + "/team/agents/" + tt.agent + "/messages"
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -509,7 +635,7 @@ func TestClient_ListMessages(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			resp, err := client.ListMessages(context.Background(), tt.sessionID)
+			resp, err := client.ListMessages(context.Background(), "saolei", tt.sessionID, tt.agent)
 
 			// then
 			if tt.wantErr {
@@ -535,12 +661,80 @@ func TestClient_ListMessages(t *testing.T) {
 				if first.GetMessageId() != "msg-1" {
 					t.Errorf("expected message_id %q, got %q", "msg-1", first.GetMessageId())
 				}
+				if first.GetAgent() != tt.agent {
+					t.Errorf("expected agent %q, got %q", tt.agent, first.GetAgent())
+				}
 				if got := firstTextPartContent(first); got != "hello" {
 					t.Errorf("expected text part content %q, got %q", "hello", got)
 				}
 				if first.GetSender() != game.FrameSender_FRAME_SENDER_USER {
 					t.Errorf("expected sender FRAME_SENDER_USER, got %v", first.GetSender())
 				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_RefreshTeam
+// ---------------------------------------------------------------------------
+
+func TestClient_RefreshTeam(t *testing.T) {
+	tests := []struct {
+		name       string
+		sessionID  string
+		statusCode int
+		respBody   string
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			sessionID:  "ref-me",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "not found",
+			sessionID:  "no-team",
+			statusCode: http.StatusNotFound,
+			respBody:   `{"error":"not found"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				wantPath := "/api/v1/templates/saolei/sessions/" + tt.sessionID + "/team:refresh"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			err := client.RefreshTeam(context.Background(), "saolei", tt.sessionID)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "refresh team") {
+					t.Errorf("error should contain 'refresh team', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 		})
 	}
@@ -557,14 +751,14 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 			t.Errorf("URL path contains double slash: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"sessions/ts","sessionId":"ts","createTime":"2024-01-01T00:00:00Z"}`))
+		w.Write([]byte(`{"name":"templates/saolei/sessions/ts","sessionId":"ts","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
 	client := NewClient(Config{GatewayURL: srv.URL + "/"})
 
 	// when: make a request
-	session, err := client.GetSession(context.Background(), "ts")
+	session, err := client.GetSession(context.Background(), "saolei", "ts")
 
 	// then: no double slash, request succeeds
 	if err != nil {
@@ -606,7 +800,7 @@ func TestClient_EnvHeader(t *testing.T) {
 					t.Errorf("expected env header %q, got %q", tt.wantEnv, got)
 				}
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"name":"sessions/e","sessionId":"e","createTime":"2024-01-01T00:00:00Z"}`))
+				w.Write([]byte(`{"name":"templates/saolei/sessions/e","sessionId":"e","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`))
 			}))
 			defer srv.Close()
 
@@ -616,7 +810,7 @@ func TestClient_EnvHeader(t *testing.T) {
 			})
 
 			// when
-			_, err := client.GetSession(context.Background(), "e")
+			_, err := client.GetSession(context.Background(), "saolei", "e")
 
 			// then
 			if err != nil {
@@ -627,37 +821,43 @@ func TestClient_EnvHeader(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_CreateAgentProfile
+// TestClient_CreateTeamProfile
 // ---------------------------------------------------------------------------
 
-func TestClient_CreateAgentProfile(t *testing.T) {
+func TestClient_CreateTeamProfile(t *testing.T) {
 	tests := []struct {
 		name       string
-		req        *game.CreateAgentProfileRequest
+		template   string
+		profileID  string
+		profile    *game.TeamProfile
 		statusCode int
 		respBody   string
 		wantErr    bool
-		wantName   string
 	}{
 		{
-			name: "success",
-			req: &game.CreateAgentProfileRequest{
-				AgentProfileId: "my-agent",
-				AgentProfile: &game.AgentProfile{
-					Model:        "gpt-4",
-					SystemPrompt: "You are a helpful assistant.",
+			name:      "success",
+			template:  "saolei",
+			profileID: "my-profile",
+			profile: &game.TeamProfile{
+				Template: "templates/saolei",
+				Spec: &game.TeamProfile_Saolei{
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "openai/gpt-4o",
+						PlannerModel:  "anthropic/claude-3-5-sonnet",
+						PlayerPrompt:  "player base prompt",
+						PlannerPrompt: "planner base prompt",
+					},
 				},
 			},
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"prompts/agentProfiles/my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","skillNames":["skill1"],"mcpNames":["mcp1"],"enabled":true}`,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`,
 			wantErr:    false,
-			wantName:   "prompts/agentProfiles/my-agent",
 		},
 		{
-			name: "conflict",
-			req: &game.CreateAgentProfileRequest{
-				AgentProfileId: "existing",
-			},
+			name:       "conflict",
+			template:   "saolei",
+			profileID:  "existing",
+			profile:    &game.TeamProfile{Template: "templates/saolei"},
 			statusCode: http.StatusConflict,
 			respBody:   `{"error":"already exists"}`,
 			wantErr:    true,
@@ -671,28 +871,35 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 				if r.Method != http.MethodPost {
 					t.Errorf("expected POST, got %s", r.Method)
 				}
-				if r.URL.Path != "/api/v1/prompts/agentProfiles" {
-					t.Errorf("expected /api/v1/prompts/agentProfiles, got %s", r.URL.Path)
+				wantPath := "/api/v1/templates/" + tt.template + "/profiles"
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
 				if r.Header.Get("Content-Type") != "application/json" {
 					t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
 				}
 
-			body, _ := io.ReadAll(r.Body)
-			profile := new(game.AgentProfile)
-			if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, profile); err != nil {
-				t.Fatalf("failed to parse request body: %v", err)
-			}
-			gotID := r.URL.Query().Get("agent_profile_id")
-			if gotID != tt.req.GetAgentProfileId() {
-				t.Errorf("expected agent_profile_id %q, got %q", tt.req.GetAgentProfileId(), gotID)
-			}
-			if profile.GetModel() != tt.req.GetAgentProfile().GetModel() {
-				t.Errorf("expected model %q, got %q", tt.req.GetAgentProfile().GetModel(), profile.GetModel())
-			}
-			if profile.GetSystemPrompt() != tt.req.GetAgentProfile().GetSystemPrompt() {
-				t.Errorf("expected system_prompt %q, got %q", tt.req.GetAgentProfile().GetSystemPrompt(), profile.GetSystemPrompt())
-			}
+				body, _ := io.ReadAll(r.Body)
+				got := new(game.TeamProfile)
+				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, got); err != nil {
+					t.Fatalf("failed to parse request body: %v", err)
+				}
+				gotID := r.URL.Query().Get("team_profile_id")
+				if gotID != tt.profileID {
+					t.Errorf("expected team_profile_id %q, got %q", tt.profileID, gotID)
+				}
+				if got.GetTemplate() != tt.profile.GetTemplate() {
+					t.Errorf("expected template %q, got %q", tt.profile.GetTemplate(), got.GetTemplate())
+				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei() == nil {
+					t.Errorf("expected saolei spec variant, got nil")
+				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerModel() != tt.profile.GetSaolei().GetPlayerModel() {
+					t.Errorf("expected player_model %q, got %+v", tt.profile.GetSaolei().GetPlayerModel(), got.GetSaolei())
+				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerPrompt() != tt.profile.GetSaolei().GetPlayerPrompt() {
+					t.Errorf("expected player_prompt %q, got %q", tt.profile.GetSaolei().GetPlayerPrompt(), got.GetSaolei().GetPlayerPrompt())
+				}
 
 				w.WriteHeader(tt.statusCode)
 				w.Write([]byte(tt.respBody))
@@ -702,15 +909,15 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			profile, err := client.CreateAgentProfile(context.Background(), tt.req)
+			profile, err := client.CreateTeamProfile(context.Background(), tt.template, tt.profileID, tt.profile)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !strings.Contains(err.Error(), "create agent profile") {
-					t.Errorf("error should contain 'create agent profile', got %q", err.Error())
+				if !strings.Contains(err.Error(), "create team profile") {
+					t.Errorf("error should contain 'create team profile', got %q", err.Error())
 				}
 				return
 			}
@@ -720,53 +927,50 @@ func TestClient_CreateAgentProfile(t *testing.T) {
 			if profile == nil {
 				t.Fatal("expected profile, got nil")
 			}
-			if profile.GetName() != tt.wantName {
-				t.Errorf("expected name %q, got %q", tt.wantName, profile.GetName())
+			if profile.GetName() != "templates/saolei/profiles/my-profile" {
+				t.Errorf("expected name %q, got %q", "templates/saolei/profiles/my-profile", profile.GetName())
 			}
-			if profile.GetModel() != "gpt-4" {
-				t.Errorf("expected model %q, got %q", "gpt-4", profile.GetModel())
+			if profile.GetSaolei().GetPlayerModel() != "openai/gpt-4o" {
+				t.Errorf("expected player_model %q, got %q", "openai/gpt-4o", profile.GetSaolei().GetPlayerModel())
 			}
-			if profile.GetSystemPrompt() != "You are a helpful assistant." {
-				t.Errorf("expected system_prompt %q, got %q", "You are a helpful assistant.", profile.GetSystemPrompt())
+			if profile.GetSaolei().GetPlannerModel() != "anthropic/claude-3-5-sonnet" {
+				t.Errorf("expected planner_model %q, got %q", "anthropic/claude-3-5-sonnet", profile.GetSaolei().GetPlannerModel())
 			}
-			if len(profile.GetSkillNames()) != 1 || profile.GetSkillNames()[0] != "skill1" {
-				t.Errorf("expected skill_names [skill1], got %v", profile.GetSkillNames())
+			if profile.GetSaolei().GetPlayerPrompt() != "player base prompt" {
+				t.Errorf("expected player_prompt %q, got %q", "player base prompt", profile.GetSaolei().GetPlayerPrompt())
 			}
-			if len(profile.GetMcpNames()) != 1 || profile.GetMcpNames()[0] != "mcp1" {
-				t.Errorf("expected mcp_names [mcp1], got %v", profile.GetMcpNames())
-			}
-			if !profile.GetEnabled() {
-				t.Errorf("expected enabled true, got false")
+			if profile.GetSaolei().GetPlannerPrompt() != "planner base prompt" {
+				t.Errorf("expected planner_prompt %q, got %q", "planner base prompt", profile.GetSaolei().GetPlannerPrompt())
 			}
 		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_GetAgentProfile
+// TestClient_GetTeamProfile
 // ---------------------------------------------------------------------------
 
-func TestClient_GetAgentProfile(t *testing.T) {
+func TestClient_GetTeamProfile(t *testing.T) {
 	tests := []struct {
-		name             string
-		agentProfileName string
-		statusCode       int
-		respBody         string
-		wantErr          bool
+		name        string
+		profileName string
+		statusCode  int
+		respBody    string
+		wantErr     bool
 	}{
 		{
-			name:             "success",
-			agentProfileName: "my-agent",
-			statusCode:       http.StatusOK,
-			respBody:         `{"name":"agentProfiles/my-agent","model":"gpt-4","systemPrompt":"You are a helpful assistant.","enabled":true}`,
-			wantErr:          false,
+			name:        "success",
+			profileName: "my-profile",
+			statusCode:  http.StatusOK,
+			respBody:    `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`,
+			wantErr:     false,
 		},
 		{
-			name:             "not found",
-			agentProfileName: "nonexistent",
-			statusCode:       http.StatusNotFound,
-			respBody:         `{"error":"not found"}`,
-			wantErr:          true,
+			name:        "not found",
+			profileName: "nonexistent",
+			statusCode:  http.StatusNotFound,
+			respBody:    `{"error":"not found"}`,
+			wantErr:     true,
 		},
 	}
 
@@ -777,7 +981,7 @@ func TestClient_GetAgentProfile(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				wantPath := "/api/v1/prompts/agentProfiles/" + tt.agentProfileName
+				wantPath := "/api/v1/templates/saolei/profiles/" + tt.profileName
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -789,15 +993,15 @@ func TestClient_GetAgentProfile(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			profile, err := client.GetAgentProfile(context.Background(), tt.agentProfileName)
+			profile, err := client.GetTeamProfile(context.Background(), "saolei", tt.profileName)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !strings.Contains(err.Error(), "get agent profile") {
-					t.Errorf("error should contain 'get agent profile', got %q", err.Error())
+				if !strings.Contains(err.Error(), "get team profile") {
+					t.Errorf("error should contain 'get team profile', got %q", err.Error())
 				}
 				return
 			}
@@ -807,43 +1011,247 @@ func TestClient_GetAgentProfile(t *testing.T) {
 			if profile == nil {
 				t.Fatal("expected profile, got nil")
 			}
-			if profile.GetName() != "agentProfiles/"+tt.agentProfileName {
-				t.Errorf("expected name %q, got %q", "agentProfiles/"+tt.agentProfileName, profile.GetName())
+			if profile.GetName() != "templates/saolei/profiles/my-profile" {
+				t.Errorf("expected name %q, got %q", "templates/saolei/profiles/my-profile", profile.GetName())
 			}
-			if profile.GetModel() != "gpt-4" {
-				t.Errorf("expected model %q, got %q", "gpt-4", profile.GetModel())
-			}
-			if profile.GetSystemPrompt() != "You are a helpful assistant." {
-				t.Errorf("expected system_prompt %q, got %q", "You are a helpful assistant.", profile.GetSystemPrompt())
+			if profile.GetSaolei().GetPlayerModel() != "openai/gpt-4o" {
+				t.Errorf("expected player_model %q, got %q", "openai/gpt-4o", profile.GetSaolei().GetPlayerModel())
 			}
 		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// TestClient_DeleteAgentProfile
+// TestClient_ListTeamProfiles
 // ---------------------------------------------------------------------------
 
-func TestClient_DeleteAgentProfile(t *testing.T) {
+func TestClient_ListTeamProfiles(t *testing.T) {
 	tests := []struct {
-		name             string
-		agentProfileName string
-		statusCode       int
-		respBody         string
-		wantErr          bool
+		name       string
+		pageSize   int32
+		pageToken  string
+		statusCode int
+		respBody   string
+		wantErr    bool
+		wantCount  int
 	}{
 		{
-			name:             "success",
-			agentProfileName: "del-me",
-			statusCode:       http.StatusOK,
-			wantErr:          false,
+			name:       "success with pagination",
+			pageSize:   10,
+			pageToken:  "tok",
+			statusCode: http.StatusOK,
+			respBody:   `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","template":"templates/saolei"},{"name":"templates/saolei/profiles/p2","template":"templates/saolei"}],"nextPageToken":"next"}`,
+			wantErr:    false,
+			wantCount:  2,
 		},
 		{
-			name:             "not found",
-			agentProfileName: "nonexistent",
-			statusCode:       http.StatusNotFound,
-			respBody:         `{"error":"not found"}`,
-			wantErr:          true,
+			name:       "server error",
+			statusCode: http.StatusInternalServerError,
+			respBody:   "internal error",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if r.URL.Path != "/api/v1/templates/saolei/profiles" {
+					t.Errorf("expected /api/v1/templates/saolei/profiles, got %s", r.URL.Path)
+				}
+				if tt.pageSize > 0 {
+					if got := r.URL.Query().Get("page_size"); got != fmtInt32(tt.pageSize) {
+						t.Errorf("expected page_size %d, got %s", tt.pageSize, got)
+					}
+				}
+				if tt.pageToken != "" {
+					if got := r.URL.Query().Get("page_token"); got != tt.pageToken {
+						t.Errorf("expected page_token %q, got %q", tt.pageToken, got)
+					}
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			resp, err := client.ListTeamProfiles(context.Background(), "saolei", tt.pageSize, tt.pageToken)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "list team profiles") {
+					t.Errorf("error should contain 'list team profiles', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("expected response, got nil")
+			}
+			if len(resp.GetTeamProfiles()) != tt.wantCount {
+				t.Errorf("expected %d team profiles, got %d", tt.wantCount, len(resp.GetTeamProfiles()))
+			}
+			if tt.wantCount > 0 {
+				if resp.GetTeamProfiles()[0].GetName() != "templates/saolei/profiles/p1" {
+					t.Errorf("expected first name %q, got %q", "templates/saolei/profiles/p1", resp.GetTeamProfiles()[0].GetName())
+				}
+				if resp.GetNextPageToken() != "next" {
+					t.Errorf("expected next_page_token %q, got %q", "next", resp.GetNextPageToken())
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_UpdateTeamProfile
+// ---------------------------------------------------------------------------
+
+func TestClient_UpdateTeamProfile(t *testing.T) {
+	tests := []struct {
+		name            string
+		profileName     string
+		profile         *game.TeamProfile
+		updateMaskPaths []string
+		statusCode      int
+		respBody        string
+		wantErr         bool
+	}{
+		{
+			name:        "success with oneof member mask",
+			profileName: "my-profile",
+			profile: &game.TeamProfile{
+				Name:     "templates/saolei/profiles/my-profile",
+				Template: "templates/saolei",
+				Spec: &game.TeamProfile_Saolei{
+					Saolei: &game.SaoleiProfile{
+						PlayerModel:   "openai/gpt-5",
+						PlayerPrompt:  "custom player base",
+						PlannerPrompt: "custom planner base",
+					},
+				},
+			},
+			updateMaskPaths: []string{
+				"saolei.player_model",
+				"saolei.planner_model",
+				"saolei.player_prompt",
+				"saolei.planner_prompt",
+			},
+			statusCode: http.StatusOK,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`,
+			wantErr:    false,
+		},
+		{
+			name:        "not found",
+			profileName: "nonexistent",
+			profile:     &game.TeamProfile{Name: "templates/saolei/profiles/nonexistent"},
+			statusCode:  http.StatusNotFound,
+			respBody:    `{"error":"not found"}`,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("expected PATCH, got %s", r.Method)
+				}
+				wantPath := "/api/v1/templates/saolei/profiles/" + tt.profileName
+				if r.URL.Path != wantPath {
+					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
+				}
+				if got := r.URL.Query().Get("update_mask"); got != strings.Join(tt.updateMaskPaths, ",") {
+					t.Errorf("expected update_mask %q, got %q", strings.Join(tt.updateMaskPaths, ","), got)
+				}
+				body, _ := io.ReadAll(r.Body)
+				got := new(game.TeamProfile)
+				if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(body, got); err != nil {
+					t.Fatalf("failed to parse patch body: %v", err)
+				}
+				if got.GetName() != tt.profile.GetName() {
+					t.Errorf("expected body name %q, got %q", tt.profile.GetName(), got.GetName())
+				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerModel() != tt.profile.GetSaolei().GetPlayerModel() {
+					t.Errorf("expected player_model %q, got %q", tt.profile.GetSaolei().GetPlayerModel(), got.GetSaolei().GetPlayerModel())
+				}
+				if tt.profile.GetSaolei() != nil && got.GetSaolei().GetPlayerPrompt() != tt.profile.GetSaolei().GetPlayerPrompt() {
+					t.Errorf("expected player_prompt %q, got %q", tt.profile.GetSaolei().GetPlayerPrompt(), got.GetSaolei().GetPlayerPrompt())
+				}
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.respBody))
+			}))
+			defer srv.Close()
+
+			client := NewClient(Config{GatewayURL: srv.URL})
+
+			// when
+			updated, err := client.UpdateTeamProfile(context.Background(), "saolei", tt.profileName, tt.profile, tt.updateMaskPaths)
+
+			// then
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), "update team profile") {
+					t.Errorf("error should contain 'update team profile', got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if updated == nil {
+				t.Fatal("expected updated profile, got nil")
+			}
+			if updated.GetSaolei().GetPlayerModel() != "openai/gpt-5" {
+				t.Errorf("expected player_model %q, got %q", "openai/gpt-5", updated.GetSaolei().GetPlayerModel())
+			}
+			if updated.GetSaolei().GetPlayerPrompt() != "custom player base" {
+				t.Errorf("expected player_prompt %q, got %q", "custom player base", updated.GetSaolei().GetPlayerPrompt())
+			}
+			if updated.GetSaolei().GetPlannerPrompt() != "custom planner base" {
+				t.Errorf("expected planner_prompt %q, got %q", "custom planner base", updated.GetSaolei().GetPlannerPrompt())
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClient_DeleteTeamProfile
+// ---------------------------------------------------------------------------
+
+func TestClient_DeleteTeamProfile(t *testing.T) {
+	tests := []struct {
+		name        string
+		profileName string
+		statusCode  int
+		respBody    string
+		wantErr     bool
+	}{
+		{
+			name:        "success",
+			profileName: "del-me",
+			statusCode:  http.StatusOK,
+			wantErr:     false,
+		},
+		{
+			name:        "not found",
+			profileName: "nonexistent",
+			statusCode:  http.StatusNotFound,
+			respBody:    `{"error":"not found"}`,
+			wantErr:     true,
 		},
 	}
 
@@ -854,7 +1262,7 @@ func TestClient_DeleteAgentProfile(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Errorf("expected DELETE, got %s", r.Method)
 				}
-				wantPath := "/api/v1/prompts/agentProfiles/" + tt.agentProfileName
+				wantPath := "/api/v1/templates/saolei/profiles/" + tt.profileName
 				if r.URL.Path != wantPath {
 					t.Errorf("expected %s, got %s", wantPath, r.URL.Path)
 				}
@@ -866,15 +1274,15 @@ func TestClient_DeleteAgentProfile(t *testing.T) {
 			client := NewClient(Config{GatewayURL: srv.URL})
 
 			// when
-			err := client.DeleteAgentProfile(context.Background(), tt.agentProfileName)
+			err := client.DeleteTeamProfile(context.Background(), "saolei", tt.profileName)
 
 			// then
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !strings.Contains(err.Error(), "delete agent profile") {
-					t.Errorf("error should contain 'delete agent profile', got %q", err.Error())
+				if !strings.Contains(err.Error(), "delete team profile") {
+					t.Errorf("error should contain 'delete team profile', got %q", err.Error())
 				}
 				return
 			}

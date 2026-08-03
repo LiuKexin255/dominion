@@ -7,14 +7,24 @@ package service
 // uniqueness and matched by Keywords at request time (T2). Reasoning
 // and Text are the literal strings returned to the caller.
 //
+// ToolCall optionally turns a Message into a tool-call trigger: when a
+// user/assistant/system turn matches the Keywords, the response carries a
+// tool_calls entry (finish_reason "tool_calls") instead of text. This lets
+// large tests drive the model→tool_call→execution chain from a plain user
+// turn — the original spec 012 (line 162) scoped tool-call simulation out,
+// but the feature was later extended to support it. A nil ToolCall preserves
+// the original text-only behaviour, so existing Message entries are
+// unchanged.
+//
 // Name, Reasoning and Text are the single source of truth asserted by
 // the T6 integration tests; the testdata files are the only place they
 // are defined.
 type Message struct {
-	Name      string   `json:"name" yaml:"name"`
-	Keywords  []string `json:"keywords" yaml:"keywords"`
-	Reasoning string   `json:"reasoning" yaml:"reasoning"`
-	Text      string   `json:"text" yaml:"text"`
+	Name      string    `json:"name" yaml:"name"`
+	Keywords  []string  `json:"keywords" yaml:"keywords"`
+	Reasoning string    `json:"reasoning" yaml:"reasoning"`
+	Text      string    `json:"text" yaml:"text"`
+	ToolCall  *ToolCall `json:"tool_call,omitempty" yaml:"tool_call,omitempty"`
 }
 
 // ToolConfig is a single templated response to a tool result message.
