@@ -2,53 +2,6 @@ package domain
 
 import "testing"
 
-func TestParseResourceName(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    EnvironmentName
-		wantErr bool
-	}{
-		{
-			name:  "valid resource name",
-			input: "deploy/scopes/scope1/environments/dev",
-			want: EnvironmentName{
-				scope:   "scope1",
-				envName: "dev",
-			},
-		},
-		{name: "empty", input: "", wantErr: true},
-		{name: "wrong format", input: "deploy/scopes/scope1/dev", wantErr: true},
-		{name: "invalid characters", input: "deploy/scopes/Scope1/environments/dev", wantErr: true},
-		{name: "too long", input: "deploy/scopes/scope1234/environments/dev", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			input := tt.input
-
-			// when
-			got, err := ParseResourceName(input)
-
-			// then
-			if tt.wantErr {
-				if err != ErrInvalidName {
-					t.Fatalf("ParseResourceName(%q) error = %v, want %v", input, err, ErrInvalidName)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("ParseResourceName(%q) unexpected error: %v", input, err)
-			}
-			if got != tt.want {
-				t.Fatalf("ParseResourceName(%q) = %#v, want %#v", input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewEnvironmentName(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -105,6 +58,45 @@ func TestNewEnvironmentName(t *testing.T) {
 			}
 			if got.EnvName() != envName {
 				t.Fatalf("EnvName() = %q, want %q", got.EnvName(), envName)
+			}
+		})
+	}
+}
+
+func TestValidateScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		scope   string
+		wantErr bool
+	}{
+		{name: "valid scope", scope: "scope1"},
+		{name: "single char scope", scope: "a"},
+		{name: "max length scope", scope: "a1234567"},
+		{name: "empty scope", scope: "", wantErr: true},
+		{name: "invalid scope chars", scope: "Scope1", wantErr: true},
+		{name: "scope too long", scope: "scope1234", wantErr: true},
+		{name: "scope starting with digit", scope: "1abc", wantErr: true},
+		{name: "scope with underscore", scope: "scope_1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given
+			scope := tt.scope
+
+			// when
+			err := ValidateScope(scope)
+
+			// then
+			if tt.wantErr {
+				if err != ErrInvalidName {
+					t.Fatalf("ValidateScope(%q) error = %v, want %v", scope, err, ErrInvalidName)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ValidateScope(%q) unexpected error: %v", scope, err)
 			}
 		})
 	}

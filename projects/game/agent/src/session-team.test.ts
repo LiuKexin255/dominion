@@ -25,7 +25,7 @@ import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
 import type { TeamStateValue } from "./team/state";
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 
 /** Template id of the test sessions (saolei — CreateTeam default in tests). */
 const TID = "saolei";
@@ -91,14 +91,14 @@ function buildTestTeam(sessionId: string, store = new FakeStrategyStore()) {
 
 /** Recording emit sink collecting every frame the loop pushes. */
 function recordingEmit(): {
-	emit: (f: AgentFrame) => void;
-	frames: AgentFrame[];
+	emit: (f: TeamFrame) => void;
+	frames: TeamFrame[];
 } {
-	const frames: AgentFrame[] = [];
+	const frames: TeamFrame[] = [];
 	return { emit: (f) => frames.push(f), frames };
 }
 
-function textBlocks(frames: AgentFrame[]): { agent?: string; text: string }[] {
+function textBlocks(frames: TeamFrame[]): { agent?: string; text: string }[] {
 	const out: { agent?: string; text: string }[] = [];
 	for (const f of frames) {
 		const fr = f as Record<string, unknown>;
@@ -111,7 +111,7 @@ function textBlocks(frames: AgentFrame[]): { agent?: string; text: string }[] {
 	return out;
 }
 
-function waitCount(frames: AgentFrame[]): number {
+function waitCount(frames: TeamFrame[]): number {
 	return frames.filter((f) => {
 		const fr = f as Record<string, unknown>;
 		return (
@@ -129,8 +129,8 @@ function flush(ms = 60): Promise<void> {
 
 /** Poll `frames` until `predicate` matches (or fail after `timeoutMs`). */
 async function waitForFrame(
-	frames: AgentFrame[],
-	predicate: (f: AgentFrame) => boolean,
+	frames: TeamFrame[],
+	predicate: (f: TeamFrame) => boolean,
 	timeoutMs: number,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
@@ -142,7 +142,7 @@ async function waitForFrame(
 }
 
 /** Collect messageParts frames carrying a `toolCall` / `toolResult` part. */
-function partFrames(frames: AgentFrame[], kind: "toolCall" | "toolResult"): AgentFrame[] {
+function partFrames(frames: TeamFrame[], kind: "toolCall" | "toolResult"): TeamFrame[] {
 	return frames.filter((f) => {
 		const fr = f as Record<string, unknown>;
 		if (fr.payload !== "messageParts") return false;
@@ -278,7 +278,7 @@ describe("SessionTeam", () => {
 			sink,
 		);
 		const { emit, frames } = recordingEmit();
-		const dispatched: AgentFrame[] = [];
+		const dispatched: TeamFrame[] = [];
 		bridge.registerSink((frame) => dispatched.push(frame));
 
 		team.submit({ text: "开始游戏" }, emit);

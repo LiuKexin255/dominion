@@ -15,7 +15,6 @@ import (
 type SessionView struct {
 	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
-	Template   string `json:"template"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -43,7 +42,7 @@ type TeamAgentView struct {
 }
 
 // MessageViewModel is the Wails view model for game.Message. The message
-// content is projected as the same MessageParts shape a live AgentFrame's
+// content is projected as the same MessageParts shape a live TeamFrame's
 // message_parts payload carries, so history and live view render identically:
 // Content holds the protojson-serialized MessageParts ({"parts":[...]} with
 // camelCase field names, flattened oneofs, and base64 image bytes), matching
@@ -52,7 +51,7 @@ type TeamAgentView struct {
 type MessageViewModel struct {
 	Name       string         `json:"name"`
 	MessageID  string         `json:"messageId"`
-	Sender     string         `json:"sender"`
+	Role       string         `json:"role"`
 	Agent      string         `json:"agent"`
 	CreateTime string         `json:"createTime,omitempty"`
 	Content    map[string]any `json:"content,omitempty"`
@@ -81,7 +80,6 @@ type CreateTeamProfileView struct {
 type TeamProfileView struct {
 	Name          string `json:"name"`
 	ProfileName   string `json:"profileName"`
-	Template      string `json:"template"`
 	PlayerModel   string `json:"playerModel"`
 	PlannerModel  string `json:"plannerModel"`
 	PlayerPrompt  string `json:"playerPrompt"`
@@ -117,15 +115,22 @@ type ChatStreamHandoff struct {
 	LastEventID int64  `json:"lastEventId"`
 }
 
-// sessionViewFromProto converts a proto Session to a view model.
+// sessionViewFromProto converts a proto Session to a view model. The session
+// id is derived from the Session resource name
+// (templates/{template}/sessions/{session}) so the frontend keeps the Wails
+// `sessionId` JSON shape without a separate proto field
+// (specs/035-proto-contract-refine/contracts/resource-fields.md §3.1).
 func sessionViewFromProto(s *game.Session) *SessionView {
 	if s == nil {
 		return nil
 	}
+	sessionID := ""
+	if name, err := game.ParseSessionName(s.GetName()); err == nil {
+		sessionID = name.SessionID
+	}
 	return &SessionView{
 		Name:       s.GetName(),
-		SessionID:  s.GetSessionId(),
-		Template:   s.GetTemplate(),
+		SessionID:  sessionID,
 		CreateTime: timestampString(s.GetCreateTime()),
 	}
 }
@@ -186,7 +191,7 @@ func teamAgentViewFromProto(a *game.TeamAgent) *TeamAgentView {
 // ToMessageViewModels converts a slice of proto Message to view models. Each
 // message's Content MessageParts is serialized via protojson (camelCase field
 // names, flattened oneofs, base64 image bytes) so it matches the live
-// AgentFrame messageParts emitted by app.go's chatstream — history and live
+// TeamFrame messageParts emitted by app.go's chatstream — history and live
 // view render identically. The MessagePart oneof flattens so each part's
 // active variant (text/thinking/image/toolCall/toolResult) appears camelCase.
 func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
@@ -198,7 +203,7 @@ func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
 		views[i] = &MessageViewModel{
 			Name:       m.GetName(),
 			MessageID:  m.GetMessageId(),
-			Sender:     m.GetSender().String(),
+			Role:       m.GetRole().String(),
 			Agent:      m.GetAgent(),
 			CreateTime: timestampString(m.GetCreateTime()),
 			Content:    protoToJSONMap(m.GetContent()),
@@ -253,7 +258,6 @@ func teamProfileViewFromProto(p *game.TeamProfile) *TeamProfileView {
 	view := &TeamProfileView{
 		Name:        p.GetName(),
 		ProfileName: profileName,
-		Template:    p.GetTemplate(),
 	}
 	if saolei != nil {
 		view.PlayerModel = saolei.GetPlayerModel()

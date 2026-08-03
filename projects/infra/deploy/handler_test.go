@@ -248,6 +248,19 @@ func TestHandler_ListEnvironments(t *testing.T) {
 			wantCode:      codes.OK,
 		},
 		{
+			name: "wildcard scope returns environments across all scopes",
+			seed: []*domain.Environment{
+				mustNewDomainEnvironment(t, "dev", "alpha", newDesiredState()),
+				mustNewDomainEnvironment(t, "prod", "beta", newDesiredState()),
+			},
+			request: &ListEnvironmentsRequest{Parent: "deploy/scopes/-"},
+			wantNames: []string{
+				"deploy/scopes/dev/environments/alpha",
+				"deploy/scopes/prod/environments/beta",
+			},
+			wantCode: codes.OK,
+		},
+		{
 			name:     "invalid parent",
 			request:  &ListEnvironmentsRequest{Parent: "bad-parent"},
 			wantCode: codes.InvalidArgument,
@@ -329,6 +342,15 @@ func TestHandler_CreateEnvironment(t *testing.T) {
 			name: "invalid name",
 			request: &CreateEnvironmentRequest{
 				Parent:      "deploy/scopes/INVALID",
+				EnvName:     "alpha",
+				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
+			},
+			wantCode: codes.InvalidArgument,
+		},
+		{
+			name: "wildcard parent rejected",
+			request: &CreateEnvironmentRequest{
+				Parent:      "deploy/scopes/-",
 				EnvName:     "alpha",
 				Environment: &Environment{Description: "alpha", DesiredState: newProtoDesiredState(), Type: EnvironmentType_ENVIRONMENT_TYPE_PROD},
 			},
@@ -431,9 +453,9 @@ func TestHandler_CreateEnvironmentThenGet(t *testing.T) {
 	if got.GetStatus().GetState() != EnvironmentState_ENVIRONMENT_STATE_PENDING {
 		t.Fatalf("GetEnvironment() state = %v, want %v (async: no worker to reconcile)", got.GetStatus().GetState(), EnvironmentState_ENVIRONMENT_STATE_PENDING)
 	}
-	envName, err := domain.ParseResourceName("deploy/scopes/dev/environments/alpha")
+	envName, err := domain.NewEnvironmentName("dev", "alpha")
 	if err != nil {
-		t.Fatalf("ParseResourceName() error = %v", err)
+		t.Fatalf("NewEnvironmentName() error = %v", err)
 	}
 	stored, err := repo.Get(ctx, envName)
 	if err != nil {

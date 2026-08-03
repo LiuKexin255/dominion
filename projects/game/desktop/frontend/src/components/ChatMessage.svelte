@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte'
-  import { FrameSender, messagePartKind } from '../api'
+  import { MessageRole, messagePartKind } from '../api'
   import type { MessagePart } from '../api'
 
   // ChatMessage renders a single MessagePart as a simple bubble. It owns the
@@ -9,11 +9,11 @@
   // The part kind — not a `type` field — is the discriminator.
   let {
     part,
-    sender,
+    role,
     timestamp,
   }: {
     part: MessagePart
-    sender: FrameSender
+    role: MessageRole
     timestamp: string
   } = $props()
 
@@ -31,7 +31,7 @@
   }
 
   let kind = $derived(messagePartKind(part))
-  let isUser = $derived(sender === FrameSender.USER)
+  let isUser = $derived(role === MessageRole.USER)
   let isUserText = $derived(kind === 'text' && isUser)
   let isSystemText = $derived(kind === 'text' && !isUser)
   let isThinking = $derived(kind === 'thinking')

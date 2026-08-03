@@ -4,6 +4,7 @@ package testplan
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"dominion/common/gopkg/testtool"
@@ -12,8 +13,10 @@ import (
 // TestCreateSession verifies that a session can be created successfully via
 // POST /api/v1/templates/{template}/sessions with an empty body (AIP-133 —
 // the parent template lives in the URI path, spec 031-team-template-mode
-// contracts/api-contract.md §2.1) and that the server returns a non-empty,
-// server-generated sessionId.
+// contracts/api-contract.md §2.1) and that the server returns a name with
+// the expected template-scoped format. The session id and template are
+// carried by the name path segments only (Session.template/session_id were
+// removed, specs/035-proto-contract-refine/data-model.md §1.1).
 func TestCreateSession(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -23,9 +26,9 @@ func TestCreateSession(t *testing.T) {
 	// when
 	sessionID, body := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 
-	// then
+	// then: the session id parsed from the name is non-empty
 	if sessionID == "" {
-		t.Error("createSession returned empty sessionId")
+		t.Error("createSession returned empty session id in name")
 	}
 
 	// verify the response body contains the expected template-scoped name
@@ -41,7 +44,9 @@ func TestCreateSession(t *testing.T) {
 
 // TestListSessions verifies that listing sessions of a template returns all
 // created sessions and that nextPageToken is empty when all sessions fit in
-// one page.
+// one page. Sessions are matched by their name (the session id is a name
+// path segment, not a JSON field — specs/035-proto-contract-refine/
+// data-model.md §1.1).
 func TestListSessions(t *testing.T) {
 	sutHostURL := testtool.MustEndpoint("http", "public")
 	sutEnvName := testtool.MustEnv()
@@ -49,6 +54,8 @@ func TestListSessions(t *testing.T) {
 	// given: create two sessions
 	sess1ID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
 	sess2ID, _ := createSession(t, sutHostURL, sutEnvName, saoleiTemplateID)
+	want1 := fmt.Sprintf("templates/%s/sessions/%s", saoleiTemplateID, sess1ID)
+	want2 := fmt.Sprintf("templates/%s/sessions/%s", saoleiTemplateID, sess2ID)
 
 	// when: list sessions with large page size to avoid pagination from prior tests
 	respBody := listSessions(t, sutHostURL, sutEnvName, saoleiTemplateID, 100)
@@ -62,18 +69,18 @@ func TestListSessions(t *testing.T) {
 	found1 := false
 	found2 := false
 	for _, s := range got.Sessions {
-		if s.SessionID == sess1ID {
+		if s.Name == want1 {
 			found1 = true
 		}
-		if s.SessionID == sess2ID {
+		if s.Name == want2 {
 			found2 = true
 		}
 	}
 	if !found1 {
-		t.Errorf("session %q not found in list result", sess1ID)
+		t.Errorf("session %q not found in list result", want1)
 	}
 	if !found2 {
-		t.Errorf("session %q not found in list result", sess2ID)
+		t.Errorf("session %q not found in list result", want2)
 	}
 	if got.NextPageToken != "" && len(got.Sessions) < 100 {
 		t.Errorf("next_page_token = %q, want empty (got %d sessions)", got.NextPageToken, len(got.Sessions))

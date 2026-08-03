@@ -41,7 +41,7 @@ import { peekGameState } from "./team-sink";
 import { buildUpdateStrategyTool } from "./update-strategy";
 import type { CreateAgentFn } from "./player";
 
-/** The planner agent's name — the `AgentFrame.agent` value (FR-023/D12). */
+/** The planner agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLANNER_AGENT_NAME = "planner";
 
 /**

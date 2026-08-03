@@ -20,8 +20,6 @@ import (
 	desktoptrace "dominion/projects/game/desktop/internal/trace"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
-
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // debugHoldTimeout is the maximum wall-clock wait for a user to confirm a
@@ -350,8 +348,12 @@ func (a *App) CreateSession(template string) (*SessionView, error) {
 		})
 		return nil, err
 	}
+	sessionID := ""
+	if name, err := game.ParseSessionName(session.GetName()); err == nil {
+		sessionID = name.SessionID
+	}
 	a.logger.Info("backend", "Session created", map[string]any{
-		"session_id":     session.GetSessionId(),
+		"session_id":     sessionID,
 		"template":       template,
 		"trace_id":       traceID,
 		"correlation_id": corrID,
@@ -558,14 +560,11 @@ func (a *App) SendUserTurn(template, sessionID string, text string, screenshotDa
 		})
 	}
 
-	frame := &game.AgentFrame{
+	frame := &game.UserFrame{
 		SessionId:  sessionID,
 		TemplateId: template,
-		FrameId:    frameID,
-		CreateTime: timestamppb.Now(),
-		Sender:     game.FrameSender_FRAME_SENDER_USER,
 		Agent:      agent,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: parts},
 		},
 	}
@@ -626,11 +625,11 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				"frame_count": frameCount,
 				"error":       err.Error(),
 			})
-			a.chatStreams.Append(sessionID, &game.AgentFrame{
+			a.chatStreams.Append(sessionID, &game.TeamFrame{
 				SessionId:  sessionID,
 				TemplateId: a.template,
 				FrameId:    frameID,
-				Payload: &game.AgentFrame_FlowParts{
+				Payload: &game.TeamFrame_FlowParts{
 					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 						{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}},
 					}},
@@ -646,10 +645,10 @@ func (a *App) recvLoop(sessionID, frameID string) {
 		})
 
 		switch payload := resp.GetPayload().(type) {
-		case *game.AgentFrame_MessageParts:
+		case *game.TeamFrame_MessageParts:
 			// Display channel: render in the conversation.
 			a.chatStreams.Append(sessionID, resp)
-		case *game.AgentFrame_FlowParts:
+		case *game.TeamFrame_FlowParts:
 			for _, fp := range payload.FlowParts.GetParts() {
 				// Operation kinds drive desktop execution and are never
 				// conversation entries (FR-005). Signal kinds are forwarded to
@@ -668,13 +667,13 @@ func (a *App) recvLoop(sessionID, frameID string) {
 				}
 				// Signal FlowPart (wait/warn/status): append so the frontend
 				// reacts; not rendered as a chat bubble by ChatView.
-				a.chatStreams.Append(sessionID, &game.AgentFrame{
+				a.chatStreams.Append(sessionID, &game.TeamFrame{
 					SessionId:  resp.GetSessionId(),
 					TemplateId: a.template,
 					FrameId:    resp.GetFrameId(),
 					CreateTime: resp.GetCreateTime(),
-					Sender:     resp.GetSender(),
-					Payload: &game.AgentFrame_FlowParts{
+					Role:       resp.GetRole(),
+					Payload: &game.TeamFrame_FlowParts{
 						FlowParts: &game.FlowParts{Parts: []*game.FlowPart{fp}},
 					},
 				})
@@ -717,23 +716,13 @@ func (a *App) recvLoop(sessionID, frameID string) {
 func (a *App) handleInboundOperation(sessionID string, part *game.FlowPart) error {
 	result := a.executeAgentOperation(part)
 
-	resultFrameID, err := randomHex(8)
-	if err != nil {
-		a.logger.Error("backend", "handleInboundOperation: frame id failed", map[string]any{
-			"session_id": sessionID,
-			"tool_id":    result.GetToolId(),
-			"error":      err.Error(),
-		})
-		return fmt.Errorf("send user turn: operation result: %w", err)
-	}
-
-	resultFrame := &game.AgentFrame{
+	// The result travels as a flowParts UserFrame (inbound control channel);
+	// UserFrame carries no frame_id — the server does not consume it
+	// (specs/035-proto-contract-refine/contracts/frame-split.md §2).
+	resultFrame := &game.UserFrame{
 		SessionId:  sessionID,
 		TemplateId: a.template,
-		FrameId:    resultFrameID,
-		CreateTime: timestamppb.Now(),
-		Sender:     game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{
 				Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_FlowResult{FlowResult: result}},
@@ -1283,7 +1272,6 @@ func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*Te
 	protoProfile := &game.TeamProfile{
 		// Resource name construction is codegen-owned (spec
 		// 031-team-template-mode contracts/api-contract.md §5).
-		Template: game.TemplateName{TemplateID: template}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   req.PlayerModel,
@@ -1430,8 +1418,7 @@ func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfil
 	protoProfile := &game.TeamProfile{
 		// Resource name construction is codegen-owned (spec
 		// 031-team-template-mode contracts/api-contract.md §5).
-		Name:     game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
-		Template: game.TemplateName{TemplateID: template}.String(),
+		Name: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   profile.PlayerModel,
@@ -1640,12 +1627,12 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	// This verifies the full path: desktop → gateway → proxy → agent. Status is
 	// now a FlowPart kind (spec 023 C3 / FR-003).
 	probeFrameID := "connect-probe-" + corrID[len("corr-"):]
-	probeFrame := &game.AgentFrame{
+	// The probe travels as a flowParts UserFrame (inbound control channel);
+	// UserFrame carries no frame_id/create_time (server does not consume them).
+	probeFrame := &game.UserFrame{
 		SessionId:  sessionID,
 		TemplateId: template,
-		FrameId:    probeFrameID,
-		CreateTime: timestamppb.Now(),
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_ACTIVE}}},
 			}},
@@ -1692,7 +1679,7 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	// (spec 023 C3); when the response carries no status FlowPart, the
 	// zero-value enum resolves to STATUS_SIGNAL_STATUS_UNSPECIFIED.
 	status := "STATUS_SIGNAL_STATUS_UNSPECIFIED"
-	if fp, ok := resp.GetPayload().(*game.AgentFrame_FlowParts); ok {
+	if fp, ok := resp.GetPayload().(*game.TeamFrame_FlowParts); ok {
 		for _, p := range fp.FlowParts.GetParts() {
 			if s := p.GetStatus(); s != nil {
 				status = s.GetStatus().String()
@@ -1721,8 +1708,9 @@ func (a *App) Connect(template, sessionID string) (string, error) {
 	return status, nil
 }
 
-// SendAgentFrame sends a frame over the WebSocket and returns the response.
-func (a *App) SendAgentFrame(frame *game.AgentFrame) (*game.AgentFrame, error) {
+// SendAgentFrame sends a UserFrame over the WebSocket and returns the
+// response TeamFrame.
+func (a *App) SendAgentFrame(frame *game.UserFrame) (*game.TeamFrame, error) {
 	if a.ws == nil {
 		return nil, fmt.Errorf("send frame: not connected")
 	}

@@ -76,17 +76,11 @@ Python 依赖更新步骤：
 * 使用 `websearch` 工具在网络上检索信息。
 * 加载 `context7-mcp` SKILL，使用 `context7` MCP 检索某个项目或者代码库的文档。
 * 使用 `grep.app` MCP 检索 `github` 代码。
-* 使用 `explore` sub-agent 探索代码仓库。
-* 使用 `general` sub-agent 研究复杂问题。
+* 使用 `explore` subagent 探索代码仓库。
+* 使用 `general` subagent 研究复杂问题。
 
 ## 其他
 
 * 对服务进行问题排查时，应当优先查看 tracing 和 log 确认实际情况，特别是提供 tracing id 的情况。
 * **Read 工具无传递性阅读能力**，例如 Read 工具阅读文件 `style/api.md` 文件，并不会阅读其中引用的 AIP 规范链接的内容。外部链接需要 agent 自己使用 web 工具阅读文档，无法通过 Read 其他文件间接获取。
-* 获取 `bazel` 产物和测试报告等信息使用仓库下的 `bazel-*` 等目录，而不是 `~/.cache/bazel` 目录
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-at `specs/018-saolei-mcp/plan.md`
-<!-- SPECKIT END -->
+* 对同一文件编辑建议**串行**进行，避免并发编辑导致更新丢失。

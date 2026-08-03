@@ -58,12 +58,13 @@ func cjkBytes(n int) []byte {
 }
 
 func TestSerializeFrame(t *testing.T) {
-	// given: a minimal content AgentFrame.
-	frame := &game.AgentFrame{
-		SessionId: "test-session",
-		FrameId:   "test-frame",
-		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
-		Payload: &game.AgentFrame_MessageParts{
+	// given: a minimal content TeamFrame.
+	frame := &game.TeamFrame{
+		SessionId:  "test-session",
+		TemplateId: "saolei",
+		FrameId:    "test-frame",
+		Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},

@@ -1,12 +1,12 @@
 <script lang="ts">
   import ChatMessage from './ChatMessage.svelte'
-  import { FrameSender, messagePartKind, classifyToolResultStatus } from '../api'
+  import { MessageRole, messagePartKind, classifyToolResultStatus } from '../api'
   import type { MessagePart, ImagePart, ToolResultPart } from '../api'
   import { renderMarkdown } from '../markdown'
 
   type ChatEntry = {
     messageId: string
-    sender: FrameSender
+    role: MessageRole
     timestamp: string
     // D12: team agent name (replaces the former agentProfileName). Each tab
     // shows one agent's bucket, so this labels the agent run (FR-025).
@@ -32,7 +32,7 @@
     kind: 'tool'
     key: string
     messageId: string
-    sender: FrameSender
+    role: MessageRole
     timestamp: string
     agent?: string
     toolId?: string
@@ -43,7 +43,7 @@
   type RenderItem =
     | { kind: 'warn'; key: string; messageId: string; timestamp: string; message: string }
     | { kind: 'profile'; key: string; profile: string }
-    | { kind: 'part'; key: string; messageId: string; sender: FrameSender; timestamp: string; part: MessagePart; pending?: boolean }
+    | { kind: 'part'; key: string; messageId: string; role: MessageRole; timestamp: string; part: MessagePart; pending?: boolean }
     | ToolItem
 
   let {
@@ -99,13 +99,13 @@
       if (parts.length === 0) continue
       // Agent label: show once per consecutive agent run when the agent
       // changes (D12 — the entry's agent name).
-      if (msg.sender === FrameSender.AGENT && msg.agent && msg.agent !== lastAgent) {
+      if (msg.role === MessageRole.AGENT && msg.agent && msg.agent !== lastAgent) {
         items.push({ kind: 'profile', key: msg.messageId + '-profile', profile: msg.agent })
         lastAgent = msg.agent
-      } else if (msg.sender !== FrameSender.AGENT) {
+      } else if (msg.role !== MessageRole.AGENT) {
         lastAgent = undefined
       }
-      const isPending = msg.sender === FrameSender.USER && pendingIdSet.has(msg.messageId)
+      const isPending = msg.role === MessageRole.USER && pendingIdSet.has(msg.messageId)
       for (const part of parts) {
         const k = messagePartKind(part)
         if (k === 'toolCall') {
@@ -120,7 +120,7 @@
               kind: 'tool',
               key,
               messageId: msg.messageId,
-              sender: msg.sender,
+              role: msg.role,
               timestamp: msg.timestamp,
               agent: msg.agent,
               toolId: tc.toolId,
@@ -142,7 +142,7 @@
               kind: 'tool',
               key,
               messageId: msg.messageId,
-              sender: msg.sender,
+              role: msg.role,
               timestamp: msg.timestamp,
               agent: msg.agent,
               toolId: tr.toolId,
@@ -152,7 +152,7 @@
             if (tr.toolId) toolByKey.set(tr.toolId, item)
           }
         } else {
-          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, sender: msg.sender, timestamp: msg.timestamp, part, pending: isPending || undefined })
+          items.push({ kind: 'part', key: msg.messageId + '-' + items.length, messageId: msg.messageId, role: msg.role, timestamp: msg.timestamp, part, pending: isPending || undefined })
         }
       }
     }
@@ -175,8 +175,8 @@
     }
   }
 
-  function isAgentSender(sender: FrameSender): boolean {
-    return sender === FrameSender.AGENT
+  function isAgentRole(role: MessageRole): boolean {
+    return role === MessageRole.AGENT
   }
 
   function formatTime(t: string): string {
@@ -249,7 +249,7 @@
           <div class="msg-profile-label" data-testid="agent-profile-label">{item.profile}</div>
         {:else if item.kind === 'part'}
           {@const kind = messagePartKind(item.part)}
-          {#if kind === 'text' && isAgentSender(item.sender)}
+          {#if kind === 'text' && isAgentRole(item.role)}
             {@const sanitizedHtml = renderMarkdown(item.part.text?.content ?? '')}
             <div class="msg-row msg-agent">
               <div class="msg-bubble agent-bubble">
@@ -260,7 +260,7 @@
             </div>
           {:else if kind === 'image'}
             {@const url = imageUrlForPart(item.part.image!)}
-            <div class="msg-row msg-image" class:msg-image-user={item.sender === FrameSender.USER} class:msg-pending={item.pending}>
+            <div class="msg-row msg-image" class:msg-image-user={item.role === MessageRole.USER} class:msg-pending={item.pending}>
               <details class="image-details">
                 <summary class="image-summary" data-testid="image-entry-summary">Screenshot</summary>
                 <img class="screenshot-img clickable" src={url} alt="Screenshot" data-testid="image-entry-img" onclick={() => onZoom(url)} />
@@ -272,7 +272,7 @@
                  is visually marked via .msg-pending
                  (specs/030-queued-chat-input/spec.md FR-008). -->
             <div class="msg-row" class:msg-pending={item.pending}>
-              <ChatMessage part={item.part} sender={item.sender} timestamp={item.timestamp} />
+              <ChatMessage part={item.part} role={item.role} timestamp={item.timestamp} />
             </div>
           {/if}
         {:else if item.kind === 'tool'}

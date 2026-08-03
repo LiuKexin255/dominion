@@ -30,7 +30,7 @@ func TestClient_CreateSession(t *testing.T) {
 			name:       "success",
 			template:   "saolei",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/sessions/test-session","sessionId":"test-session","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"templates/saolei/sessions/test-session","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -88,14 +88,8 @@ func TestClient_CreateSession(t *testing.T) {
 			if session == nil {
 				t.Fatal("expected session, got nil")
 			}
-			if session.GetSessionId() != "test-session" {
-				t.Errorf("expected session_id %q, got %q", "test-session", session.GetSessionId())
-			}
 			if session.GetName() != "templates/saolei/sessions/test-session" {
 				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/test-session", session.GetName())
-			}
-			if session.GetTemplate() != "templates/saolei" {
-				t.Errorf("expected template %q, got %q", "templates/saolei", session.GetTemplate())
 			}
 		})
 	}
@@ -124,7 +118,7 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 		// return a session with server-generated ID
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"templates/saolei/sessions/server-gen-abc","sessionId":"server-gen-abc","template":"templates/saolei","createTime":"2024-06-01T12:00:00Z"}`))
+		w.Write([]byte(`{"name":"templates/saolei/sessions/server-gen-abc","createTime":"2024-06-01T12:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -136,9 +130,6 @@ func TestCreateSession_ServerGeneratedID(t *testing.T) {
 	// then: verify SessionId is extracted from response
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if session.GetSessionId() != "server-gen-abc" {
-		t.Errorf("expected session_id %q, got %q", "server-gen-abc", session.GetSessionId())
 	}
 	if session.GetName() != "templates/saolei/sessions/server-gen-abc" {
 		t.Errorf("expected name %q, got %q", "templates/saolei/sessions/server-gen-abc", session.GetName())
@@ -166,7 +157,7 @@ func TestClient_ListSessions(t *testing.T) {
 			pageSize:   10,
 			pageToken:  "token1",
 			statusCode: http.StatusOK,
-			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/s2","sessionId":"s2","template":"templates/saolei","createTime":"2024-01-02T00:00:00Z"}],"nextPageToken":"next"}`,
+			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/s2","createTime":"2024-01-02T00:00:00Z"}],"nextPageToken":"next"}`,
 			wantErr:    false,
 		},
 		{
@@ -181,7 +172,7 @@ func TestClient_ListSessions(t *testing.T) {
 			name:       "success with no parameters",
 			template:   "saolei",
 			statusCode: http.StatusOK,
-			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}]}`,
+			respBody:   `{"sessions":[{"name":"templates/saolei/sessions/s1","createTime":"2024-01-01T00:00:00Z"}]}`,
 			wantErr:    false,
 		},
 		{
@@ -251,8 +242,8 @@ func TestClient_ListSessions(t *testing.T) {
 				if len(resp.GetSessions()) != 2 {
 					t.Errorf("expected 2 sessions, got %d", len(resp.GetSessions()))
 				}
-				if resp.GetSessions()[0].GetSessionId() != "s1" {
-					t.Errorf("expected first session_id %q, got %q", "s1", resp.GetSessions()[0].GetSessionId())
+				if resp.GetSessions()[0].GetName() != "templates/saolei/sessions/s1" {
+					t.Errorf("expected first name %q, got %q", "templates/saolei/sessions/s1", resp.GetSessions()[0].GetName())
 				}
 			}
 			if tt.pageSize == 5 {
@@ -287,7 +278,7 @@ func TestClient_GetSession(t *testing.T) {
 			template:   "saolei",
 			sessionID:  "test123",
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/sessions/test123","sessionId":"test123","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`,
+			respBody:   `{"name":"templates/saolei/sessions/test123","createTime":"2024-01-01T00:00:00Z"}`,
 			wantErr:    false,
 		},
 		{
@@ -331,8 +322,8 @@ func TestClient_GetSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if session.GetSessionId() != tt.sessionID {
-				t.Errorf("expected session_id %q, got %q", tt.sessionID, session.GetSessionId())
+			if session.GetName() != "templates/saolei/sessions/"+tt.sessionID {
+				t.Errorf("expected name %q, got %q", "templates/saolei/sessions/"+tt.sessionID, session.GetName())
 			}
 		})
 	}
@@ -593,7 +584,7 @@ func TestClient_ListMessages(t *testing.T) {
 			sessionID:  "test-session",
 			agent:      "player",
 			statusCode: http.StatusOK,
-			respBody:   `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","agent":"player","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
+			respBody:   `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","role":"MESSAGE_ROLE_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","role":"MESSAGE_ROLE_AGENT","agent":"player","content":{"parts":[{"text":{"content":"hi there"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
@@ -667,8 +658,8 @@ func TestClient_ListMessages(t *testing.T) {
 				if got := firstTextPartContent(first); got != "hello" {
 					t.Errorf("expected text part content %q, got %q", "hello", got)
 				}
-				if first.GetSender() != game.FrameSender_FRAME_SENDER_USER {
-					t.Errorf("expected sender FRAME_SENDER_USER, got %v", first.GetSender())
+				if first.GetRole() != game.MessageRole_MESSAGE_ROLE_USER {
+					t.Errorf("expected role MESSAGE_ROLE_USER, got %v", first.GetRole())
 				}
 			}
 		})
@@ -751,7 +742,7 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 			t.Errorf("URL path contains double slash: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"name":"templates/saolei/sessions/ts","sessionId":"ts","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`))
+		w.Write([]byte(`{"name":"templates/saolei/sessions/ts","createTime":"2024-01-01T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -764,8 +755,8 @@ func TestClient_URLTrailingSlash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if session.GetSessionId() != "ts" {
-		t.Errorf("expected session_id %q, got %q", "ts", session.GetSessionId())
+	if session.GetName() != "templates/saolei/sessions/ts" {
+		t.Errorf("expected name %q, got %q", "templates/saolei/sessions/ts", session.GetName())
 	}
 }
 
@@ -800,7 +791,7 @@ func TestClient_EnvHeader(t *testing.T) {
 					t.Errorf("expected env header %q, got %q", tt.wantEnv, got)
 				}
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"name":"templates/saolei/sessions/e","sessionId":"e","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`))
+				w.Write([]byte(`{"name":"templates/saolei/sessions/e","createTime":"2024-01-01T00:00:00Z"}`))
 			}))
 			defer srv.Close()
 
@@ -839,7 +830,6 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 			template:  "saolei",
 			profileID: "my-profile",
 			profile: &game.TeamProfile{
-				Template: "templates/saolei",
 				Spec: &game.TeamProfile_Saolei{
 					Saolei: &game.SaoleiProfile{
 						PlayerModel:   "openai/gpt-4o",
@@ -850,14 +840,14 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 				},
 			},
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`,
 			wantErr:    false,
 		},
 		{
 			name:       "conflict",
 			template:   "saolei",
 			profileID:  "existing",
-			profile:    &game.TeamProfile{Template: "templates/saolei"},
+			profile:    &game.TeamProfile{},
 			statusCode: http.StatusConflict,
 			respBody:   `{"error":"already exists"}`,
 			wantErr:    true,
@@ -887,9 +877,6 @@ func TestClient_CreateTeamProfile(t *testing.T) {
 				gotID := r.URL.Query().Get("team_profile_id")
 				if gotID != tt.profileID {
 					t.Errorf("expected team_profile_id %q, got %q", tt.profileID, gotID)
-				}
-				if got.GetTemplate() != tt.profile.GetTemplate() {
-					t.Errorf("expected template %q, got %q", tt.profile.GetTemplate(), got.GetTemplate())
 				}
 				if tt.profile.GetSaolei() != nil && got.GetSaolei() == nil {
 					t.Errorf("expected saolei spec variant, got nil")
@@ -962,7 +949,7 @@ func TestClient_GetTeamProfile(t *testing.T) {
 			name:        "success",
 			profileName: "my-profile",
 			statusCode:  http.StatusOK,
-			respBody:    `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`,
+			respBody:    `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`,
 			wantErr:     false,
 		},
 		{
@@ -1040,7 +1027,7 @@ func TestClient_ListTeamProfiles(t *testing.T) {
 			pageSize:   10,
 			pageToken:  "tok",
 			statusCode: http.StatusOK,
-			respBody:   `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","template":"templates/saolei"},{"name":"templates/saolei/profiles/p2","template":"templates/saolei"}],"nextPageToken":"next"}`,
+			respBody:   `{"teamProfiles":[{"name":"templates/saolei/profiles/p1"},{"name":"templates/saolei/profiles/p2"}],"nextPageToken":"next"}`,
 			wantErr:    false,
 			wantCount:  2,
 		},
@@ -1131,8 +1118,7 @@ func TestClient_UpdateTeamProfile(t *testing.T) {
 			name:        "success with oneof member mask",
 			profileName: "my-profile",
 			profile: &game.TeamProfile{
-				Name:     "templates/saolei/profiles/my-profile",
-				Template: "templates/saolei",
+				Name: "templates/saolei/profiles/my-profile",
 				Spec: &game.TeamProfile_Saolei{
 					Saolei: &game.SaoleiProfile{
 						PlayerModel:   "openai/gpt-5",
@@ -1148,7 +1134,7 @@ func TestClient_UpdateTeamProfile(t *testing.T) {
 				"saolei.planner_prompt",
 			},
 			statusCode: http.StatusOK,
-			respBody:   `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`,
+			respBody:   `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`,
 			wantErr:    false,
 		},
 		{

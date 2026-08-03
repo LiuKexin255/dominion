@@ -358,7 +358,15 @@ func (r *MongoRepository) ListByScope(ctx context.Context, scope string, pageSiz
 		return nil, "", fmt.Errorf("invalid page token: %w", err)
 	}
 
-	filter := bson.M{mongoFieldScope: scope}
+	// "-" is the AIP-159 cross-collection wildcard: an empty filter matches
+	// documents in all scopes. References: https://google.aip.dev/159,
+	// specs/033-deploy-scope-cleanup/research.md R1.
+	var filter bson.M
+	if scope == "-" {
+		filter = bson.M{}
+	} else {
+		filter = bson.M{mongoFieldScope: scope}
+	}
 	total, err := r.collection.CountDocuments(ctx, filter)
 	if err != nil {
 		return nil, "", err

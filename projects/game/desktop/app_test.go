@@ -50,17 +50,18 @@ func TestConnect_ProbeSuccess(t *testing.T) {
 		if err != nil {
 			return
 		}
-		frame := new(game.AgentFrame)
+		frame := new(game.UserFrame)
 		if err := proto.Unmarshal(data, frame); err != nil {
 			return
 		}
 		// respond with a status signal (any response proves the round-trip).
 		// Status rides as a FlowPart kind (spec 023 C3 / FR-003).
-		respFrame := &game.AgentFrame{
+		respFrame := &game.TeamFrame{
 			SessionId:  frame.GetSessionId(),
+			TemplateId: frame.GetTemplateId(),
 			FrameId:    "test-status-frame",
 			CreateTime: timestamppb.Now(),
-			Payload: &game.AgentFrame_FlowParts{
+			Payload: &game.TeamFrame_FlowParts{
 				FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 					{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 				}},
@@ -231,7 +232,7 @@ func TestListMessages_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","sender":"FRAME_SENDER_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","sender":"FRAME_SENDER_AGENT","agent":"player","content":{"parts":[{"thinking":{"content":"pondering"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`)
+		fmt.Fprint(w, `{"messages":[{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-1","messageId":"msg-1","role":"MESSAGE_ROLE_USER","agent":"player","content":{"parts":[{"text":{"content":"hello"}}]},"createTime":"2024-01-01T00:00:00Z"},{"name":"templates/saolei/sessions/test-session/team/agents/player/messages/msg-2","messageId":"msg-2","role":"MESSAGE_ROLE_AGENT","agent":"player","content":{"parts":[{"thinking":{"content":"pondering"}}]},"createTime":"2024-01-01T00:00:01Z"}]}`)
 	}))
 	defer srv.Close()
 
@@ -256,8 +257,8 @@ func TestListMessages_Success(t *testing.T) {
 	if views[0].MessageID != "msg-1" {
 		t.Errorf("expected first MessageID %q, got %q", "msg-1", views[0].MessageID)
 	}
-	if views[0].Sender != "FRAME_SENDER_USER" {
-		t.Errorf("expected first Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
+	if views[0].Role != "MESSAGE_ROLE_USER" {
+		t.Errorf("expected first Role %q, got %q", "MESSAGE_ROLE_USER", views[0].Role)
 	}
 	if views[0].Agent != "player" {
 		t.Errorf("expected first Agent %q, got %q", "player", views[0].Agent)
@@ -515,23 +516,25 @@ func Test_executeAgentOperation_ActionAndScreenshotFail_NoEarlyReturn(t *testing
 // signal must both land in the log, in order, terminating the loop.
 func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 	// given: a mock WS server that sends one content frame then a wait signal
-	contentFrame := &game.AgentFrame{
-		SessionId: "recv-session",
-		FrameId:   "srv-content-1",
-		Payload: &game.AgentFrame_MessageParts{
+	contentFrame := &game.TeamFrame{
+		SessionId:  "recv-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-content-1",
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello from agent"}}},
 			}},
 		},
 	}
-	waitFrame := &game.AgentFrame{
-		SessionId: "recv-session",
-		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
+	waitFrame := &game.TeamFrame{
+		SessionId:  "recv-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-wait-1",
+		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
+		for _, f := range []*game.TeamFrame{contentFrame, waitFrame} {
 			data, _ := proto.Marshal(f)
 			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
@@ -599,7 +602,7 @@ func TestRecvLoop_AppendsToChatStream(t *testing.T) {
 }
 
 // TestRecvLoop_SynthesizesWaitOnRecvError verifies the T6 error path: when
-// RecvFrame errors, recvLoop appends a synthesized AgentFrame_Wait that
+// RecvFrame errors, recvLoop appends a synthesized TeamFrame_Wait that
 // reuses the in-flight turn's frameID (F13b) so the frontend can settle the
 // turn before the failure surfaces. The synthesized wait lands in the log
 // after any frames already delivered, with a monotonic id.
@@ -608,10 +611,11 @@ func TestRecvLoop_SynthesizesWaitOnRecvError(t *testing.T) {
 	// connection, causing the next RecvFrame to error.
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
-		contentFrame := &game.AgentFrame{
-			SessionId: "sess-recv",
-			FrameId:   "srv-frame-1",
-			Payload: &game.AgentFrame_MessageParts{
+		contentFrame := &game.TeamFrame{
+			SessionId:  "sess-recv",
+			TemplateId: "saolei",
+			FrameId:    "srv-frame-1",
+			Payload: &game.TeamFrame_MessageParts{
 				MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
 				}},
@@ -695,10 +699,11 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 	// given: mock WS server sends a flowParts frame with a MouseClickPart, then
 	// a wait signal. It captures client-sent frames (the tool result) so the
 	// test can assert the result was returned to the agent over the WS.
-	clickFrame := &game.AgentFrame{
-		SessionId: "op-session",
-		FrameId:   "srv-click-1",
-		Payload: &game.AgentFrame_FlowParts{
+	clickFrame := &game.TeamFrame{
+		SessionId:  "op-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-click-1",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_MouseClick{MouseClick: &game.MouseClickPart{
 					ToolId: "click-1",
@@ -707,12 +712,13 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 			}},
 		},
 	}
-	waitFrame := &game.AgentFrame{
-		SessionId: "op-session",
-		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
+	waitFrame := &game.TeamFrame{
+		SessionId:  "op-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-wait-1",
+		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
-	sentFrames := make(chan *game.AgentFrame, 4)
+	sentFrames := make(chan *game.TeamFrame, 4)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		go func() {
@@ -721,7 +727,7 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 				if err != nil {
 					return
 				}
-				var f game.AgentFrame
+				var f game.TeamFrame
 				if err := proto.Unmarshal(data, &f); err == nil {
 					select {
 					case sentFrames <- &f:
@@ -730,7 +736,7 @@ func TestRecvLoop_ExecutesOperationAndSendsResultNotMirrored(t *testing.T) {
 				}
 			}
 		}()
-		for _, f := range []*game.AgentFrame{clickFrame, waitFrame} {
+		for _, f := range []*game.TeamFrame{clickFrame, waitFrame} {
 			data, _ := proto.Marshal(f)
 			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
@@ -860,19 +866,21 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 
 	// given: a flowParts frame carrying the op, followed by a wait signal that
 	// terminates recvLoop. The server captures client-sent frames.
-	contentFrame := &game.AgentFrame{
-		SessionId: "filter-session",
-		FrameId:   "srv-content-1",
-		Payload: &game.AgentFrame_FlowParts{
+	contentFrame := &game.TeamFrame{
+		SessionId:  "filter-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-content-1",
+		Payload: &game.TeamFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{op}},
 		},
 	}
-	waitFrame := &game.AgentFrame{
-		SessionId: "filter-session",
-		FrameId:   "srv-wait-1",
-		Payload:   &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
+	waitFrame := &game.TeamFrame{
+		SessionId:  "filter-session",
+		TemplateId: "saolei",
+		FrameId:    "srv-wait-1",
+		Payload:    &game.TeamFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{{Kind: &game.FlowPart_Wait{Wait: &game.WaitSignal{}}}}}},
 	}
-	sentFrames := make(chan *game.AgentFrame, 4)
+	sentFrames := make(chan *game.TeamFrame, 4)
 	srv := mockWSServer(t, func(conn *websocket.Conn) {
 		ctx := context.Background()
 		go func() {
@@ -881,7 +889,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 				if err != nil {
 					return
 				}
-				var f game.AgentFrame
+				var f game.TeamFrame
 				if err := proto.Unmarshal(data, &f); err == nil {
 					select {
 					case sentFrames <- &f:
@@ -890,7 +898,7 @@ func runRecvLoopFilterAdmissionTest(t *testing.T, op *game.FlowPart, toolID stri
 				}
 			}
 		}()
-		for _, f := range []*game.AgentFrame{contentFrame, waitFrame} {
+		for _, f := range []*game.TeamFrame{contentFrame, waitFrame} {
 			data, _ := proto.Marshal(f)
 			if err := conn.Write(ctx, websocket.MessageBinary, data); err != nil {
 				return
@@ -1988,7 +1996,7 @@ func TestCreateSession_Template(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 
@@ -2009,9 +2017,6 @@ func TestCreateSession_Template(t *testing.T) {
 	}
 	if view.SessionID != "s1" {
 		t.Errorf("expected SessionID %q, got %q", "s1", view.SessionID)
-	}
-	if view.Template != "templates/saolei" {
-		t.Errorf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 }
 
@@ -2267,9 +2272,6 @@ func TestCreateTeamProfile_Success(t *testing.T) {
 		if gotID != "my-profile" {
 			t.Errorf("expected team_profile_id %q, got %q", "my-profile", gotID)
 		}
-		if profile.GetTemplate() != "templates/saolei" {
-			t.Errorf("expected template %q, got %q", "templates/saolei", profile.GetTemplate())
-		}
 		if profile.GetSaolei() == nil || profile.GetSaolei().GetPlayerModel() != "openai/gpt-4o" {
 			t.Errorf("expected player_model %q, got %+v", "openai/gpt-4o", profile.GetSaolei())
 		}
@@ -2283,7 +2285,7 @@ func TestCreateTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected planner_prompt %q, got %q", "planner base prompt", profile.GetSaolei().GetPlannerPrompt())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`)
 	}))
 	defer srv.Close()
 
@@ -2367,7 +2369,7 @@ func TestGetTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`)
 	}))
 	defer srv.Close()
 
@@ -2388,9 +2390,6 @@ func TestGetTeamProfile_Success(t *testing.T) {
 	}
 	if view.ProfileName != "my-profile" {
 		t.Errorf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.Template != "templates/saolei" {
-		t.Errorf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.PlayerModel != "openai/gpt-4o" {
 		t.Errorf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
@@ -2438,7 +2437,7 @@ func TestListTeamProfiles_Success(t *testing.T) {
 			t.Errorf("expected /api/v1/templates/saolei/profiles, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","template":"templates/saolei","saolei":{"playerModel":"a/b"}},{"name":"templates/saolei/profiles/p2","template":"templates/saolei"}],"nextPageToken":"next"}`)
+		fmt.Fprint(w, `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","saolei":{"playerModel":"a/b"}},{"name":"templates/saolei/profiles/p2"}],"nextPageToken":"next"}`)
 	}))
 	defer srv.Close()
 
@@ -2507,7 +2506,7 @@ func TestUpdateTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected planner_prompt %q, got %q", "custom planner base", profile.GetSaolei().GetPlannerPrompt())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`)
 	}))
 	defer srv.Close()
 

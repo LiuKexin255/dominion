@@ -152,10 +152,12 @@ func (h *TeamHandler) ListMessages(ctx context.Context, req *game.ListMessagesRe
 // exist (CreateTeam is the only RPC that allocates one): Connect does NOT
 // allocate an owner anymore — a session without a created team yields
 // NotFound, consistent with GetTeam/ListMessages/RefreshTeam. The first
-// frame carries the routing pair template_id/session_id (both bare segments,
-// injected by the gateway from the connect URL path —
+// UserFrame carries the routing pair template_id/session_id (both bare
+// segments, injected by the gateway from the connect URL path —
 // specs/031-team-template-mode/contracts/api-contract.md §2.2); the session
-// resource name is reconstructed from the pair without parsing.
+// resource name is reconstructed from the pair without parsing. The inbound
+// direction is UserFrame and the outbound direction is TeamFrame
+// (specs/035-proto-contract-refine/contracts/frame-split.md §6.3).
 func (h *TeamHandler) Connect(stream game.TeamService_ConnectServer) error {
 	ctx := stream.Context()
 

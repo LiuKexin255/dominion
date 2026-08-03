@@ -211,13 +211,14 @@ func (c *mockAgentClient) RefreshTeam(_ context.Context, req *game.RefreshTeamRe
 }
 
 // mockAgentStream implements game.TeamService_ConnectClient for testing.
+// It is a bind.TeamFrameStream (right side): Send UserFrame / Recv TeamFrame.
 type mockAgentStream struct {
-	recvCh  <-chan *game.AgentFrame
-	sendCh  chan<- *game.AgentFrame
+	recvCh  <-chan *game.TeamFrame
+	sendCh  chan<- *game.UserFrame
 	sendErr error
 }
 
-func (s *mockAgentStream) Recv() (*game.AgentFrame, error) {
+func (s *mockAgentStream) Recv() (*game.TeamFrame, error) {
 	f, ok := <-s.recvCh
 	if !ok {
 		return nil, io.EOF
@@ -225,7 +226,7 @@ func (s *mockAgentStream) Recv() (*game.AgentFrame, error) {
 	return f, nil
 }
 
-func (s *mockAgentStream) Send(f *game.AgentFrame) error {
+func (s *mockAgentStream) Send(f *game.UserFrame) error {
 	if s.sendErr != nil {
 		return s.sendErr
 	}
@@ -241,13 +242,14 @@ func (s *mockAgentStream) SendMsg(m interface{}) error  { return nil }
 func (s *mockAgentStream) RecvMsg(m interface{}) error  { return nil }
 
 // mockProxyStream implements game.TeamService_ConnectServer for testing.
+// It is a bind.UserFrameStream (left side): Recv UserFrame / Send TeamFrame.
 type mockProxyStream struct {
 	ctx    context.Context
-	recvCh <-chan *game.AgentFrame
-	sendCh chan<- *game.AgentFrame
+	recvCh <-chan *game.UserFrame
+	sendCh chan<- *game.TeamFrame
 }
 
-func (s *mockProxyStream) Recv() (*game.AgentFrame, error) {
+func (s *mockProxyStream) Recv() (*game.UserFrame, error) {
 	f, ok := <-s.recvCh
 	if !ok {
 		return nil, io.EOF
@@ -255,7 +257,7 @@ func (s *mockProxyStream) Recv() (*game.AgentFrame, error) {
 	return f, nil
 }
 
-func (s *mockProxyStream) Send(f *game.AgentFrame) error {
+func (s *mockProxyStream) Send(f *game.TeamFrame) error {
 	s.sendCh <- f
 	return nil
 }
@@ -272,7 +274,7 @@ type mockBinder struct {
 	err error
 }
 
-func (b *mockBinder) Bind(_ bind.AgentFrameStream, _ bind.AgentFrameStream) error {
+func (b *mockBinder) Bind(_ bind.UserFrameStream, _ bind.TeamFrameStream) error {
 	return b.err
 }
 
@@ -594,7 +596,7 @@ func TestConnect(t *testing.T) {
 		store := newMockOwnerStore()
 		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 
-		agentStream := &mockAgentStream{recvCh: make(<-chan *game.AgentFrame), sendCh: make(chan<- *game.AgentFrame)}
+		agentStream := &mockAgentStream{recvCh: make(<-chan *game.TeamFrame), sendCh: make(chan<- *game.UserFrame)}
 		agentMock := &mockAgentClient{agentStream: agentStream}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -612,7 +614,7 @@ func TestConnect(t *testing.T) {
 		store := newMockOwnerStore()
 		mgr := &mockManager{connRefs: []*agentclient.ConnRef{{OwnerIndex: 1, Owner: "agent-1"}}}
 
-		agentStream := &mockAgentStream{recvCh: make(<-chan *game.AgentFrame), sendCh: make(chan<- *game.AgentFrame)}
+		agentStream := &mockAgentStream{recvCh: make(<-chan *game.TeamFrame), sendCh: make(chan<- *game.UserFrame)}
 		agentMock := &mockAgentClient{agentStream: agentStream}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -654,7 +656,7 @@ func TestConnect(t *testing.T) {
 	t.Run("recv error", func(t *testing.T) {
 		h := NewTeamHandler(newMockOwnerStore(), picker, &mockManager{}, &mockBinder{})
 
-		recvCh := make(chan *game.AgentFrame)
+		recvCh := make(chan *game.UserFrame)
 		close(recvCh)
 		stream := &mockProxyStream{ctx: context.Background(), recvCh: recvCh}
 
@@ -683,7 +685,7 @@ func TestConnect(t *testing.T) {
 		store := newMockOwnerStore()
 		store.records[ownerKey("saolei", "sid")] = &domain.AgentOwner{TemplateID: "saolei", SessionID: "sid", OwnerIndex: 1}
 
-		agentStream := &mockAgentStream{recvCh: make(<-chan *game.AgentFrame), sendCh: make(chan<- *game.AgentFrame)}
+		agentStream := &mockAgentStream{recvCh: make(<-chan *game.TeamFrame), sendCh: make(chan<- *game.UserFrame)}
 		agentMock := &mockAgentClient{agentStream: agentStream}
 		restore := setMockNewAgentClient(agentMock)
 		defer restore()
@@ -885,15 +887,15 @@ func TestParseMessagesParent(t *testing.T) {
 }
 
 // makeProxyStream builds a mockProxyStream whose first Recv yields a status
-// FlowPart frame carrying the given template/session id pair (both bare
+// FlowPart UserFrame carrying the given template/session id pair (both bare
 // segments; the gateway injects them from the connect URL path). status is a
 // FlowPart kind (spec 023 C3 / FR-003 — specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2).
 func makeProxyStream(templateID, sessionID string) *mockProxyStream {
-	recvCh := make(chan *game.AgentFrame, 1)
-	recvCh <- &game.AgentFrame{
+	recvCh := make(chan *game.UserFrame, 1)
+	recvCh <- &game.UserFrame{
 		TemplateId: templateID,
 		SessionId:  sessionID,
-		Payload: &game.AgentFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
+		Payload: &game.UserFrame_FlowParts{FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 			{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 		}}},
 	}

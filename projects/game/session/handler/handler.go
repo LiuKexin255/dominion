@@ -162,9 +162,7 @@ func sessionToProto(s *domain.Session) *game.Session {
 	}
 
 	p := &game.Session{
-		Name:      game.SessionName{TemplateID: s.Template, SessionID: s.SessionID}.String(),
-		Template:  game.TemplateName{TemplateID: s.Template}.String(),
-		SessionId: s.SessionID,
+		Name: game.SessionName{TemplateID: s.Template, SessionID: s.SessionID}.String(),
 	}
 	if !s.CreateTime.IsZero() {
 		p.CreateTime = timestamppb.New(s.CreateTime)

@@ -2,60 +2,6 @@ package domain
 
 import "testing"
 
-func TestParseServiceEndpointsName(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		want    ServiceEndpointsName
-		wantErr bool
-	}{
-		{
-			name:  "valid resource name",
-			input: "deploy/scopes/scope1/environments/dev/apps/my-app/services/api-v1/endpoints",
-			want: ServiceEndpointsName{
-				scope:   "scope1",
-				envName: "dev",
-				app:     "my-app",
-				service: "api-v1",
-			},
-		},
-		{name: "empty", input: "", wantErr: true},
-		{name: "missing segments", input: "deploy/scopes/scope1/environments/dev/apps/my-app/services/api-v1", wantErr: true},
-		{name: "invalid scope", input: "deploy/scopes/Scope1/environments/dev/apps/my-app/services/api-v1/endpoints", wantErr: true},
-		{name: "invalid env name", input: "deploy/scopes/scope1/environments/Dev/apps/my-app/services/api-v1/endpoints", wantErr: true},
-		{name: "invalid app", input: "deploy/scopes/scope1/environments/dev/apps/MyApp/services/api-v1/endpoints", wantErr: true},
-		{name: "invalid service", input: "deploy/scopes/scope1/environments/dev/apps/my-app/services/API/endpoints", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// given
-			input := tt.input
-
-			// when
-			got, err := ParseServiceEndpointsName(input)
-
-			// then
-			if tt.wantErr {
-				if err != ErrInvalidName {
-					t.Fatalf("ParseServiceEndpointsName(%q) error = %v, want %v", input, err, ErrInvalidName)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("ParseServiceEndpointsName(%q) unexpected error: %v", input, err)
-			}
-			if got != tt.want {
-				t.Fatalf("ParseServiceEndpointsName(%q) = %#v, want %#v", input, got, tt.want)
-			}
-			if got.String() != input {
-				t.Fatalf("String() = %q, want %q", got.String(), input)
-			}
-		})
-	}
-}
-
 func TestNewServiceEndpointsName(t *testing.T) {
 	tests := []struct {
 		name    string

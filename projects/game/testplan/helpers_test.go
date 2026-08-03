@@ -125,10 +125,11 @@ func mustLargePNG() []byte {
 // ─── JSON-response types (mirroring proto messages) ─────────────────────────
 
 // sessionResponse mirrors the Session proto message returned via gRPC-gateway
-// with protojson camelCase field names.
+// with protojson camelCase field names. template and session_id are carried by
+// the name path segments (AIP-124; specs/035-proto-contract-refine/
+// data-model.md §1.1), so the JSON carries only name + createTime.
 type sessionResponse struct {
 	Name       string `json:"name"`
-	SessionID  string `json:"sessionId"`
 	CreateTime string `json:"createTime"`
 }
 
@@ -200,8 +201,10 @@ func buildWSURL(sutHostURL, path string) string {
 // body ({}) to /api/v1/templates/{template}/sessions (AIP-133 — the parent
 // template lives in the URI path, spec 031-team-template-mode
 // contracts/api-contract.md §2.1) and returns the server-generated session
-// ID together with the raw response body. Calls t.Fatal on non-200
-// responses.
+// ID together with the raw response body. The session ID is parsed from the
+// response's name path segment (Session.session_id was removed,
+// specs/035-proto-contract-refine/data-model.md §1.1). Calls t.Fatal on
+// non-200 responses.
 func createSession(t *testing.T, sutHostURL, sutEnvName, template string) (string, []byte) {
 	t.Helper()
 
@@ -218,10 +221,14 @@ func createSession(t *testing.T, sutHostURL, sutEnvName, template string) (strin
 	if err := json.Unmarshal(respBody, sess); err != nil {
 		t.Fatalf("json.Unmarshal createSession response: %v", err)
 	}
-	if sess.SessionID == "" {
-		t.Fatal("createSession: server returned empty sessionId")
+	name, err := game.ParseSessionName(sess.Name)
+	if err != nil {
+		t.Fatalf("parse createSession response name %q: %v", sess.Name, err)
 	}
-	return sess.SessionID, respBody
+	if name.SessionID == "" {
+		t.Fatal("createSession: server returned empty session id in name")
+	}
+	return name.SessionID, respBody
 }
 
 // listSessions sends a GET request to list sessions of a template with the
@@ -288,7 +295,6 @@ func createTeamProfile(t *testing.T, sutHostURL, sutEnvName, template, profileID
 	t.Helper()
 
 	profile := &game.TeamProfile{
-		Template: game.TemplateName{TemplateID: template}.String(),
 		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 			PlayerModel:  playerModel,
 			PlannerModel: plannerModel,
@@ -596,7 +602,10 @@ func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, template, sessionID st
 }
 
 // writeWSFrame marshals a proto frame to binary protobuf and writes it over
-// the WebSocket connection. Calls t.Fatal on marshal or write errors.
+// the WebSocket connection. The test writes USER frames (the desktop→server
+// direction: user messages, operation results, connectivity probes — the
+// frame split of specs/035-proto-contract-refine/contracts/frame-split.md
+// §2). Calls t.Fatal on marshal or write errors.
 //
 // spec 025 FR-011 / image-transport-contract.md §2: the desktop↔gateway WS
 // leg now carries binary protobuf frames (was protojson text). The large
@@ -604,7 +613,7 @@ func connectAgentWS(t *testing.T, sutHostURL, sutEnvName, template, sessionID st
 // otherwise the gateway's `proto.Unmarshal` on a text frame fails and the
 // connection is closed. `proto.Marshal` is also the compact representation
 // required by FR-008 (no base64 inflation of image bytes).
-func writeWSFrame(t *testing.T, conn *websocket.Conn, frame *game.AgentFrame) {
+func writeWSFrame(t *testing.T, conn *websocket.Conn, frame *game.UserFrame) {
 	t.Helper()
 
 	data, err := proto.Marshal(frame)
@@ -616,14 +625,16 @@ func writeWSFrame(t *testing.T, conn *websocket.Conn, frame *game.AgentFrame) {
 	}
 }
 
-// readWSFrame reads a single WebSocket message and unmarshals it into an
-// AgentFrame. Calls t.Fatal on timeout or parse error.
+// readWSFrame reads a single WebSocket message and unmarshals it into a
+// TeamFrame — the server→desktop direction (agent display content, control
+// signals, operation requests; specs/035-proto-contract-refine/contracts/
+// frame-split.md §3). Calls t.Fatal on timeout or parse error.
 //
 // The WS leg is binary protobuf (see writeWSFrame doc); `proto.Unmarshal`
 // preserves unknown fields per the proto spec, matching the forward-
 // compatibility behaviour that `protojson.Unmarshal{DiscardUnknown:true}`
 // provided before spec 025.
-func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
+func readWSFrame(t *testing.T, conn *websocket.Conn) *game.TeamFrame {
 	t.Helper()
 
 	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
@@ -632,42 +643,43 @@ func readWSFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 		t.Fatalf("ReadMessage: %v", err)
 	}
 
-	frame := new(game.AgentFrame)
+	frame := new(game.TeamFrame)
 	if err := proto.Unmarshal(data, frame); err != nil {
-		t.Fatalf("Unmarshal AgentFrame: %v (raw len=%d)", err, len(data))
+		t.Fatalf("Unmarshal TeamFrame: %v (raw len=%d)", err, len(data))
 	}
 	return frame
 }
 
 // readWSFrameNoFatal reads a single WebSocket message with a bounded
-// deadline and returns it unmarshalled as an AgentFrame, or an error when
+// deadline and returns it unmarshalled as a TeamFrame, or an error when
 // the read times out or the peer closed the connection. Unlike readWSFrame
 // it does NOT call t.Fatal — used to assert negative WS outcomes (a session
 // whose team was not created closes the connection; a superseded connection
 // receives no turn output).
-func readWSFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*game.AgentFrame, error) {
+func readWSFrameNoFatal(conn *websocket.Conn, timeout time.Duration) (*game.TeamFrame, error) {
 	conn.SetReadDeadline(time.Now().Add(timeout))
 	_, data, err := conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
-	frame := new(game.AgentFrame)
+	frame := new(game.TeamFrame)
 	if err := proto.Unmarshal(data, frame); err != nil {
 		return nil, err
 	}
 	return frame, nil
 }
 
-// buildTextFrame constructs an AgentFrame whose message_parts payload carries
+// buildTextFrame constructs a UserFrame whose message_parts payload carries
 // a single TextPart (specs/023-saolei-mcp-refine/contracts/content-model-contract.md
-// §3/§4 — display channel). Sets the session ID, the target/producing team
-// agent (AgentFrame.agent, spec 031-team-template-mode FR-023), and sender.
-func buildTextFrame(sessionID, agent, content string, sender game.FrameSender) *game.AgentFrame {
-	return &game.AgentFrame{
+// §3/§4 — display channel). It sets the session ID and the target team agent
+// (UserFrame.agent, spec 031-team-template-mode FR-023). UserFrame has no
+// sender field — the inbound direction is inherently the user
+// (specs/035-proto-contract-refine/contracts/frame-split.md §2).
+func buildTextFrame(sessionID, agent, content string) *game.UserFrame {
+	return &game.UserFrame{
 		SessionId: sessionID,
 		Agent:     agent,
-		Sender:    sender,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: content}}},
 			}},
@@ -680,11 +692,11 @@ func buildTextFrame(sessionID, agent, content string, sender game.FrameSender) *
 // connection. Calls t.Fatal on write errors.
 func sendText(t *testing.T, conn *websocket.Conn, sessionID, text string) {
 	t.Helper()
-	frame := buildTextFrame(sessionID, "player", text, game.FrameSender_FRAME_SENDER_USER)
+	frame := buildTextFrame(sessionID, "player", text)
 	writeWSFrame(t, conn, frame)
 }
 
-// sendStatusFrame writes a flow_parts AgentFrame over the WebSocket carrying a
+// sendStatusFrame writes a flow_parts UserFrame over the WebSocket carrying a
 // single StatusSignal FlowPart (specs/023-saolei-mcp-refine/contracts/content-model-contract.md
 // §2 — status became a FlowPart kind per spec 023 C3 / FR-003). The desktop
 // sends this on session (re-)entry to probe the agent's working state; the
@@ -692,10 +704,9 @@ func sendText(t *testing.T, conn *websocket.Conn, sessionID, text string) {
 // (specs/021-agent-session-resync/contracts/agent-desktop-channel-contract.md §1).
 func sendStatusFrame(t *testing.T, conn *websocket.Conn, sessionID string, status game.StatusSignalStatus) {
 	t.Helper()
-	frame := &game.AgentFrame{
+	frame := &game.UserFrame{
 		SessionId: sessionID,
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: status}}},
 			}},
@@ -751,22 +762,21 @@ func buildSaoleiFlowResultScreenshot(pngData []byte) *game.ImagePart {
 	}
 }
 
-// buildUserTurnFrame constructs an AgentFrame whose message_parts payload
+// buildUserTurnFrame constructs a UserFrame whose message_parts payload
 // carries [TextPart, (optional) ImagePart], targeted at the player agent.
 // Pass a nil image for a text-only user turn
 // (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
-func buildUserTurnFrame(sessionID, text string, image *game.ImagePart) *game.AgentFrame {
+func buildUserTurnFrame(sessionID, text string, image *game.ImagePart) *game.UserFrame {
 	parts := []*game.MessagePart{
 		{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: text}}},
 	}
 	if image != nil {
 		parts = append(parts, &game.MessagePart{Kind: &game.MessagePart_Image{Image: image}})
 	}
-	return &game.AgentFrame{
+	return &game.UserFrame{
 		SessionId: sessionID,
 		Agent:     "player",
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{Parts: parts},
 		},
 	}
@@ -779,7 +789,7 @@ func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, text string, im
 	writeWSFrame(t, conn, buildUserTurnFrame(sessionID, text, image))
 }
 
-// buildOperationResultFrame constructs an AgentFrame whose flow_parts payload
+// buildOperationResultFrame constructs a UserFrame whose flow_parts payload
 // carries a single FlowResultPart. Used to simulate a desktop-executed tool
 // operation result delivered back to the agent on the CONTROL channel
 // (spec 025 FR-023/FR-024 — the desktop reports operation outcomes as a
@@ -790,7 +800,7 @@ func sendUserTurn(t *testing.T, conn *websocket.Conn, sessionID, text string, im
 //
 // This variant carries no screenshot; use buildFlowResultFrame for the
 // screenshot-bearing variant (saolei tests).
-func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string) *game.AgentFrame {
+func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string) *game.UserFrame {
 	return buildFlowResultFrame(sessionID, toolID, status, message, nil)
 }
 
@@ -799,7 +809,7 @@ func buildOperationResultFrame(sessionID, toolID string, status game.ToolResultS
 // (spec 025 FR-026 — control-channel carrier for the post-action screenshot);
 // pass nil to omit it. Saolei tests use this so the agent's recognition engine
 // (@dominion/game-saolei-board) can consume the screenshot.
-func buildFlowResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string, screenshot *game.ImagePart) *game.AgentFrame {
+func buildFlowResultFrame(sessionID, toolID string, status game.ToolResultStatus, message string, screenshot *game.ImagePart) *game.UserFrame {
 	part := &game.FlowResultPart{
 		ToolId:  toolID,
 		Status:  status,
@@ -808,10 +818,9 @@ func buildFlowResultFrame(sessionID, toolID string, status game.ToolResultStatus
 	if screenshot != nil {
 		part.Screenshot = screenshot
 	}
-	return &game.AgentFrame{
+	return &game.UserFrame{
 		SessionId: sessionID,
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_FlowResult{FlowResult: part}},
 			}},
@@ -822,15 +831,17 @@ func buildFlowResultFrame(sessionID, toolID string, status game.ToolResultStatus
 // ─── Content-projection helpers ─────────────────────────────────────────────
 //
 // The content-model split (specs/023-saolei-mcp-refine/contracts/content-model-contract.md)
-// carries display blocks in AgentFrame.message_parts / Message.content
-// (MessageParts) and control blocks in AgentFrame.flow_parts (FlowParts).
+// carries display blocks in TeamFrame.message_parts / Message.content
+// (MessageParts) and control blocks in TeamFrame.flow_parts (FlowParts).
 // These helpers project a MessagePart/FlowPart variant out of a frame or
 // Message the way the old frame.GetThinking() / frame.GetText() /
-// frame.GetWarn() accessors did before the split.
+// frame.GetWarn() accessors did before the split. Frames here are TeamFrames
+// (the server→desktop direction; specs/035-proto-contract-refine/contracts/
+// frame-split.md §3).
 
 // frameMessageParts returns the MessageParts payload of a frame, or nil when
 // the frame carries no display channel (e.g. it is a flow_parts frame).
-func frameMessageParts(f *game.AgentFrame) *game.MessageParts {
+func frameMessageParts(f *game.TeamFrame) *game.MessageParts {
 	if f == nil {
 		return nil
 	}
@@ -839,7 +850,7 @@ func frameMessageParts(f *game.AgentFrame) *game.MessageParts {
 
 // frameFlowParts returns the FlowParts payload of a frame, or nil when the
 // frame carries no control channel (e.g. it is a message_parts frame).
-func frameFlowParts(f *game.AgentFrame) *game.FlowParts {
+func frameFlowParts(f *game.TeamFrame) *game.FlowParts {
 	if f == nil {
 		return nil
 	}
@@ -848,7 +859,7 @@ func frameFlowParts(f *game.AgentFrame) *game.FlowParts {
 
 // frameHasThinking reports whether a message_parts frame carries a
 // ThinkingPart.
-func frameHasThinking(f *game.AgentFrame) bool {
+func frameHasThinking(f *game.TeamFrame) bool {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return false
@@ -862,7 +873,7 @@ func frameHasThinking(f *game.AgentFrame) bool {
 }
 
 // frameHasText reports whether a message_parts frame carries a TextPart.
-func frameHasText(f *game.AgentFrame) bool {
+func frameHasText(f *game.TeamFrame) bool {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return false
@@ -877,7 +888,7 @@ func frameHasText(f *game.AgentFrame) bool {
 
 // frameThinking returns the content of the first ThinkingPart in a
 // message_parts frame, or "" if the frame has no thinking part.
-func frameThinking(f *game.AgentFrame) string {
+func frameThinking(f *game.TeamFrame) string {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return ""
@@ -892,7 +903,7 @@ func frameThinking(f *game.AgentFrame) string {
 
 // frameText returns the content of the first TextPart in a message_parts
 // frame, or "" if the frame has no text part.
-func frameText(f *game.AgentFrame) string {
+func frameText(f *game.TeamFrame) string {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return ""
@@ -906,9 +917,9 @@ func frameText(f *game.AgentFrame) string {
 }
 
 // frameWarn returns the WarnSignal in a flow_parts frame, or nil when the
-// frame carries no warn FlowPart. Replaces the removed AgentFrame.warn
+// frame carries no warn FlowPart. Replaces the removed TeamFrame.warn
 // payload accessor — warn is now a FlowPart kind (spec 023 C3 / FR-003).
-func frameWarn(f *game.AgentFrame) *game.WarnSignal {
+func frameWarn(f *game.TeamFrame) *game.WarnSignal {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -922,11 +933,11 @@ func frameWarn(f *game.AgentFrame) *game.WarnSignal {
 }
 
 // frameWait returns the WaitSignal in a flow_parts frame, or nil when the
-// frame carries no wait FlowPart. Replaces the removed AgentFrame.wait
+// frame carries no wait FlowPart. Replaces the removed TeamFrame.wait
 // payload accessor — wait is now a FlowPart kind (spec 023 C3 / FR-003).
 // Tests drain for a wait frame to detect turn completion (the agent emits
 // a wait FlowPart when its turn ends).
-func frameWait(f *game.AgentFrame) *game.WaitSignal {
+func frameWait(f *game.TeamFrame) *game.WaitSignal {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -940,10 +951,10 @@ func frameWait(f *game.AgentFrame) *game.WaitSignal {
 }
 
 // frameStatus returns the StatusSignal in a flow_parts frame, or nil when
-// the frame carries no status FlowPart. Replaces the removed AgentFrame.status
+// the frame carries no status FlowPart. Replaces the removed TeamFrame.status
 // payload accessor — status is now a FlowPart kind (spec 023 C3 / FR-003).
 // Used by the session-agent lifecycle suite to assert IDLE/ACTIVE probes.
-func frameStatus(f *game.AgentFrame) *game.StatusSignal {
+func frameStatus(f *game.TeamFrame) *game.StatusSignal {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -961,7 +972,7 @@ func frameStatus(f *game.AgentFrame) *game.StatusSignal {
 // the per-session queue depth changes (submit⇒new depth, drain⇒0, abort⇒0)
 // per specs/030-queued-chat-input/contracts/queue-channel-contract.md §2.
 // Used by the agent-dialog queue-while-running suite to assert depth changes.
-func frameQueueSignal(f *game.AgentFrame) *game.QueueSignal {
+func frameQueueSignal(f *game.TeamFrame) *game.QueueSignal {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -976,7 +987,7 @@ func frameQueueSignal(f *game.AgentFrame) *game.QueueSignal {
 
 // frameHasQueueSignal reports whether a flow_parts frame carries a QueueSignal
 // FlowPart. Used as a drainWSFrame predicate.
-func frameHasQueueSignal(f *game.AgentFrame) bool {
+func frameHasQueueSignal(f *game.TeamFrame) bool {
 	return frameQueueSignal(f) != nil
 }
 
@@ -986,9 +997,9 @@ func frameHasQueueSignal(f *game.AgentFrame) bool {
 // per-session TurnLoop (specs/030-queued-chat-input/contracts/turn-loop-contract.md).
 // Used by the queue-while-running suite to collect the full frame stream for
 // depth-sequence and turn-count analysis.
-func drainUntilWait(t *testing.T, conn *websocket.Conn) []*game.AgentFrame {
+func drainUntilWait(t *testing.T, conn *websocket.Conn) []*game.TeamFrame {
 	t.Helper()
-	var frames []*game.AgentFrame
+	var frames []*game.TeamFrame
 	for i := 0; i < 60; i++ {
 		frame := readWSFrame(t, conn)
 		frames = append(frames, frame)
@@ -1003,7 +1014,7 @@ func drainUntilWait(t *testing.T, conn *websocket.Conn) []*game.AgentFrame {
 // values from a slice of frames (specs/030-queued-chat-input/contracts/
 // queue-channel-contract.md §2). Used to assert the depth-change emission
 // rules: submit⇒+1/new depth, drain-to-next-turn⇒0.
-func queueSignalDepths(frames []*game.AgentFrame) []int32 {
+func queueSignalDepths(frames []*game.TeamFrame) []int32 {
 	var depths []int32
 	for _, f := range frames {
 		if q := frameQueueSignal(f); q != nil {
@@ -1017,7 +1028,7 @@ func queueSignalDepths(frames []*game.AgentFrame) []int32 {
 // Each wait marks a turn/loop boundary; the queue-while-running suite asserts
 // exactly ONE terminal wait when messages are queued and auto-handed-off
 // (specs/030-queued-chat-input/spec.md FR-006).
-func countWaitFrames(frames []*game.AgentFrame) int {
+func countWaitFrames(frames []*game.TeamFrame) int {
 	count := 0
 	for _, f := range frames {
 		if frameWait(f) != nil {
@@ -1028,12 +1039,14 @@ func countWaitFrames(frames []*game.AgentFrame) int {
 }
 
 // collectTextContents returns the text content of every agent-sent text
-// MessagePart frame in the slice, in order. Used to verify which queued
-// messages produced turns and in what order.
-func collectTextContents(frames []*game.AgentFrame) []string {
+// MessagePart frame in the slice, in order. The role filter keeps only
+// agent-role frames (TeamFrame.role; specs/035-proto-contract-refine/
+// contracts/frame-split.md §3.2). Used to verify which queued messages
+// produced turns and in what order.
+func collectTextContents(frames []*game.TeamFrame) []string {
 	var texts []string
 	for _, f := range frames {
-		if f.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
+		if f.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
 			continue
 		}
 		if !frameHasText(f) {
@@ -1193,8 +1206,8 @@ func assertMessageContentDisplayOnly(t *testing.T, messages []*game.Message) {
 
 // drainWSFrame reads and discards frames until a frame matches the predicate,
 // or all frames from the timeout are exhausted. Returns the first matching
-// frame, or nil if none found. Reads up to 20 frames.
-func drainWSFrame(t *testing.T, conn *websocket.Conn, match func(*game.AgentFrame) bool) *game.AgentFrame {
+// TeamFrame, or nil if none found. Reads up to 20 frames.
+func drainWSFrame(t *testing.T, conn *websocket.Conn, match func(*game.TeamFrame) bool) *game.TeamFrame {
 	t.Helper()
 
 	for i := 0; i < 20; i++ {
@@ -1206,16 +1219,14 @@ func drainWSFrame(t *testing.T, conn *websocket.Conn, match func(*game.AgentFram
 	return nil
 }
 
-// senderString returns a human-readable name for a FrameSender value (for test
+// roleString returns a human-readable name for a MessageRole value (for test
 // diagnostics).
-func senderString(sender game.FrameSender) string {
-	switch sender {
-	case game.FrameSender_FRAME_SENDER_USER:
+func roleString(role game.MessageRole) string {
+	switch role {
+	case game.MessageRole_MESSAGE_ROLE_USER:
 		return "USER"
-	case game.FrameSender_FRAME_SENDER_AGENT:
+	case game.MessageRole_MESSAGE_ROLE_AGENT:
 		return "AGENT"
-	case game.FrameSender_FRAME_SENDER_SYSTEM:
-		return "SYSTEM"
 	default:
 		return "UNSPECIFIED"
 	}
@@ -1226,7 +1237,7 @@ func senderString(sender game.FrameSender) string {
 // When the model emits a tool_call, the agent executes the tool, which calls
 // OperationBridge.dispatch. The bridge wraps the operation FlowPart
 // (MouseMovePart, MouseClickPart, KeyboardPressPart, or MouseMoveAndClickPart)
-// in a flow_parts AgentFrame and writes it to the session WebSocket sink
+// in a flow_parts TeamFrame and writes it to the session WebSocket sink
 // (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §2;
 // research.md D10 — the FlowPart carries a bridge-minted operation-channel
 // tool_id, decoupled from the conversation tool_call.id). A large test that
@@ -1243,7 +1254,7 @@ func senderString(sender game.FrameSender) string {
 // tool_id is the bridge-minted operation-channel id the bridge matches against
 // the ToolResultPart (projects/game/agent/src/operation-bridge.ts
 // dispatch/handleResult; research.md D10).
-func frameOperationToolID(f *game.AgentFrame) string {
+func frameOperationToolID(f *game.TeamFrame) string {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return ""
@@ -1268,7 +1279,7 @@ func frameOperationToolID(f *game.AgentFrame) string {
 // frameKeyboardPress returns the first KeyboardPressPart in a flow_parts
 // frame, or nil. Used by the saolei suite to assert saolei_init dispatched an
 // F2 key (specs/018-saolei-mcp/contracts/proto-operation-contract.md §2).
-func frameKeyboardPress(f *game.AgentFrame) *game.KeyboardPressPart {
+func frameKeyboardPress(f *game.TeamFrame) *game.KeyboardPressPart {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -1285,7 +1296,7 @@ func frameKeyboardPress(f *game.AgentFrame) *game.KeyboardPressPart {
 // flow_parts frame, or nil. Used by the saolei suite to assert a cell
 // operation dispatched the correct window-message mouse Part
 // (specs/018-saolei-mcp/contracts/proto-operation-contract.md §3).
-func frameMouseMoveAndClick(f *game.AgentFrame) *game.MouseMoveAndClickPart {
+func frameMouseMoveAndClick(f *game.TeamFrame) *game.MouseMoveAndClickPart {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -1301,7 +1312,7 @@ func frameMouseMoveAndClick(f *game.AgentFrame) *game.MouseMoveAndClickPart {
 // frameMouseMove returns the first MouseMovePart in a flow_parts frame, or
 // nil. Used by the agent_operation suite to assert a mouse_move tool_call
 // dispatched.
-func frameMouseMove(f *game.AgentFrame) *game.MouseMovePart {
+func frameMouseMove(f *game.TeamFrame) *game.MouseMovePart {
 	fp := frameFlowParts(f)
 	if fp == nil {
 		return nil
@@ -1318,9 +1329,9 @@ func frameMouseMove(f *game.AgentFrame) *game.MouseMovePart {
 // a tool-operation Part, and returns it. Fails the test if no operation frame
 // arrives within the drain limit — the model→tool_call→dispatch chain is the
 // behaviour under test, so its absence is a real failure, not a timeout.
-func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
+func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.TeamFrame {
 	t.Helper()
-	f := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	f := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameOperationToolID(f) != ""
 	})
 	if f == nil {
@@ -1347,7 +1358,7 @@ func readOperationFrame(t *testing.T, conn *websocket.Conn) *game.AgentFrame {
 // slot without discarding the other, and returns once both are present. Used
 // by the agent_operation and agent_checkpoint suites (style/large_test.md
 // §反模式3 — shared helper, not copied).
-func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame, opFrame *game.AgentFrame) {
+func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame, opFrame *game.TeamFrame) {
 	t.Helper()
 	for i := 0; i < 40; i++ {
 		if toolCallFrame != nil && opFrame != nil {
@@ -1376,7 +1387,7 @@ func readToolCallAndOperation(t *testing.T, conn *websocket.Conn) (toolCallFrame
 // channel). The bridge's handleResult resolves the pending dispatch so the
 // model's tool-call loop continues. No screenshot is attached (mouse-tool
 // tests rely on the agent emitting its own display tool_result).
-func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string) {
+func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.TeamFrame, status game.ToolResultStatus, message string) {
 	t.Helper()
 	toolID := frameOperationToolID(opFrame)
 	if toolID == "" {
@@ -1389,7 +1400,7 @@ func respondToOperation(t *testing.T, conn *websocket.Conn, sessionID string, op
 // respondToOperation. The screenshot rides on the FlowResultPart (spec 025
 // FR-026 — control-channel carrier); saolei tests use it so the agent's
 // recognition engine can decode the board. Pass nil to omit the screenshot.
-func respondToOperationWithScreenshot(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.AgentFrame, status game.ToolResultStatus, message string, screenshot *game.ImagePart) {
+func respondToOperationWithScreenshot(t *testing.T, conn *websocket.Conn, sessionID string, opFrame *game.TeamFrame, status game.ToolResultStatus, message string, screenshot *game.ImagePart) {
 	t.Helper()
 	toolID := frameOperationToolID(opFrame)
 	if toolID == "" {
@@ -1410,13 +1421,13 @@ func respondToOperationWithScreenshot(t *testing.T, conn *websocket.Conn, sessio
 
 // frameHasToolCall reports whether a message_parts frame carries a
 // ToolCallPart.
-func frameHasToolCall(f *game.AgentFrame) bool {
+func frameHasToolCall(f *game.TeamFrame) bool {
 	return frameToolCall(f) != nil
 }
 
 // frameToolCall returns the first ToolCallPart in a message_parts frame, or
 // nil.
-func frameToolCall(f *game.AgentFrame) *game.ToolCallPart {
+func frameToolCall(f *game.TeamFrame) *game.ToolCallPart {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return nil
@@ -1431,13 +1442,13 @@ func frameToolCall(f *game.AgentFrame) *game.ToolCallPart {
 
 // frameHasToolResult reports whether a message_parts frame carries a
 // ToolResultPart.
-func frameHasToolResult(f *game.AgentFrame) bool {
+func frameHasToolResult(f *game.TeamFrame) bool {
 	return frameToolResult(f) != nil
 }
 
 // frameToolResult returns the first ToolResultPart in a message_parts frame,
 // or nil.
-func frameToolResult(f *game.AgentFrame) *game.ToolResultPart {
+func frameToolResult(f *game.TeamFrame) *game.ToolResultPart {
 	mp := frameMessageParts(f)
 	if mp == nil {
 		return nil

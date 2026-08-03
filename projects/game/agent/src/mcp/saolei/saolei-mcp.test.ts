@@ -45,7 +45,7 @@ import type { SaoleiBoardApi, CellTool, SaoleiEventSink } from "./saolei-mcp";
 import { BOARD_ORIGIN_X_PX, BOARD_ORIGIN_Y_PX, CELL_SIZE_PX } from "./geometry";
 import type { CellStatus, GameState, MineCounter } from "@dominion/game-saolei-board";
 import type { FlowPart } from "../../../../game_types/projects/game/FlowPart";
-import type { AgentFrame } from "../../../../game_types/projects/game/AgentFrame";
+import type { TeamFrame } from "../../../../game_types/projects/game/TeamFrame";
 import type { KeyboardPressPart } from "../../../../game_types/projects/game/KeyboardPressPart";
 import type { MouseMoveAndClickPart } from "../../../../game_types/projects/game/MouseMoveAndClickPart";
 
@@ -128,7 +128,7 @@ function makeFakeBridge(
 	const bridge = new OperationBridge();
 	const dispatched: CapturedPart[] = [];
 	const signals: AbortSignal[] = [];
-	bridge.registerSink((frame: AgentFrame) => {
+	bridge.registerSink((frame: TeamFrame) => {
 		const op = frame.flowParts?.parts?.[0] as CapturedPart | undefined;
 		if (!op) return;
 		dispatched.push(op);

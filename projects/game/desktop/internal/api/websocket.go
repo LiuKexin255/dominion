@@ -71,8 +71,9 @@ func (w *WSClient) Connect(ctx context.Context, gatewayURL, template, sessionID,
 	return nil
 }
 
-// SendFrame sends a binary-protobuf-encoded AgentFrame over the WebSocket.
-func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error {
+// SendFrame sends a binary-protobuf-encoded UserFrame over the WebSocket
+// (the inbound direction — desktop → server).
+func (w *WSClient) SendFrame(ctx context.Context, frame *game.UserFrame) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -91,7 +92,8 @@ func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error 
 	return nil
 }
 
-// RecvFrame receives a binary-protobuf-encoded AgentFrame from the WebSocket.
+// RecvFrame receives a binary-protobuf-encoded TeamFrame from the WebSocket
+// (the outbound direction — server → desktop).
 // proto.Unmarshal preserves unknown fields per the proto spec, maintaining the
 // forward-compatibility that protojson's DiscardUnknown previously provided
 // (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
@@ -99,7 +101,7 @@ func (w *WSClient) SendFrame(ctx context.Context, frame *game.AgentFrame) error 
 // The connection is snapshotted under w.mu and Read is called WITHOUT the
 // lock held: conn.Read blocks for the lifetime of the turn, so holding w.mu
 // across it would deadlock Close (R5).
-func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
+func (w *WSClient) RecvFrame(ctx context.Context) (*game.TeamFrame, error) {
 	w.mu.Lock()
 	conn := w.conn
 	w.mu.Unlock()
@@ -113,7 +115,7 @@ func (w *WSClient) RecvFrame(ctx context.Context) (*game.AgentFrame, error) {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}
 
-	frame := new(game.AgentFrame)
+	frame := new(game.TeamFrame)
 	if err := proto.Unmarshal(data, frame); err != nil {
 		return nil, fmt.Errorf("receive frame: %w", err)
 	}

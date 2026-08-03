@@ -78,7 +78,6 @@ func TestV3ApplyCommand_Success(t *testing.T) {
 		target:    deployPath,
 		endpoint:  server.URL,
 		timeout:   50 * time.Millisecond,
-		scope:     "team",
 		apiClient: clientpkg.NewClient(server.URL),
 	})
 	if err != nil {
@@ -103,7 +102,7 @@ func TestV3ApplyCommand_RejectsV2Config(t *testing.T) {
 		"      name: service-a",
 	}, "\n")+"\n")
 
-	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, scope: "team", apiClient: clientpkg.NewClient("http://example.invalid")})
+	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://example.invalid")})
 	if err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("applyCommand() error = %v, want version error", err)
 	}
@@ -132,7 +131,7 @@ func TestV3ApplyCommand_RejectsMixedVersion(t *testing.T) {
 		"        port: 50051",
 	}, "\n")+"\n")
 
-	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, scope: "team", apiClient: clientpkg.NewClient("http://example.invalid")})
+	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://example.invalid")})
 	if err == nil || !strings.Contains(err.Error(), "service config version") {
 		t.Fatalf("applyCommand() error = %v, want service version error", err)
 	}
@@ -165,7 +164,7 @@ func TestV3ApplyCommand_MetadataValidationFails(t *testing.T) {
 	}
 	t.Cleanup(func() { newV3ImageRunner = oldRunner })
 
-	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, scope: "team", apiClient: clientpkg.NewClient("http://example.invalid")})
+	err := applyCommand(context.Background(), &options{target: deployPath, timeout: 50 * time.Millisecond, apiClient: clientpkg.NewClient("http://example.invalid")})
 	if err == nil || !strings.Contains(err.Error(), "metadata app") {
 		t.Fatalf("applyCommand() error = %v, want metadata app error", err)
 	}

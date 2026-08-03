@@ -15,11 +15,14 @@
  * - **GetTeam**: returns the Team resource (agents = the template schema's
  *   `SAOLEI_TEAM_AGENTS` description, D3 — typed, not hard-coded). Requires
  *   the team to have been created; otherwise NOT_FOUND.
- * - **Connect**: bidirectional stream. User-input frames route to the team
- *   agent that `accepts_user_input` (FR-032 — saolei: player only; planner
- *   is an observation view). Frames carry the producing agent's name
- *   (`AgentFrame.agent`, D12). Operation results from the desktop
- *   (flowParts/flow_result) route to the session's `OperationBridge`.
+ * - **Connect**: bidirectional stream. The client sends UserFrame (user
+ *   input, operation results, connectivity probes); the server sends
+ *   TeamFrame (agent display content, control signals, operation requests).
+ *   User-input frames route to the team agent that `accepts_user_input`
+ *   (FR-032 — saolei: player only; planner is an observation view). Frames
+ *   carry the producing agent's name (`TeamFrame.agent`, D12). Operation
+ *   results from the desktop (flowParts/flow_result) route to the session's
+ *   `OperationBridge`.
  *   Frames for a session whose team was not created are rejected with
  *   NOT_FOUND (delivered over the stream's error channel — see Connect).
  * - **ListMessages**: reconstructs one agent's message partition from the
@@ -30,15 +33,15 @@
  *   `SessionTeam.refreshTeam`); rejected while a turn is in flight.
  *   Requires the team to exist; otherwise NOT_FOUND.
  *
- * Frame contract (Part model, unchanged from spec 023/025/030): every
- * AgentFrame carries exactly one payload — a MessageParts batch (display) OR
- * a FlowParts batch (control). User turns and agent output are both display
- * frames distinguished by `sender`; operation results from the desktop are
- * control frames carrying a FlowResultPart.
+ * Frame contract (specs/035-proto-contract-refine/contracts/frame-split.md):
+ * inbound frames are UserFrame (message_parts = user turns; flow_parts =
+ * operation results / status probes); outbound frames are TeamFrame
+ * (message_parts = agent display content; flow_parts = control signals /
+ * operation requests). Outbound envelopes are built via `buildTeamFrame`
+ * (FR-013 — every TeamFrame sets session_id/template_id/frame_id/create_time).
  */
 
 import * as grpc from "@grpc/grpc-js";
-import { randomUUID } from "node:crypto";
 import { info, warn, error } from "@dominion/common-js-logs";
 
 import type { BaseMessage } from "@langchain/core/messages";
@@ -46,7 +49,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { TeamServiceHandlers } from "../game_types/projects/game/TeamService";
 import type { Team } from "../game_types/projects/game/Team";
 import type { TeamAgent } from "../game_types/projects/game/TeamAgent";
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { UserFrame } from "../game_types/projects/game/UserFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { MessagePart } from "../game_types/projects/game/MessagePart";
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
@@ -54,6 +58,7 @@ import type { ToolResultPart } from "../game_types/projects/game/ToolResultPart"
 import type { Message as MessageProto } from "../game_types/projects/game/Message";
 import type { TeamStateValue } from "./team/state";
 
+import { buildTeamFrame } from "./turn-loop";
 import { PRIMARY_AGENT_NAME, TeamAlreadyExistsError } from "./session-team";
 import type { SessionTeamStore } from "./session-team";
 import type { TurnContent } from "./llm";
@@ -65,19 +70,8 @@ import { SAOLEI_TEAM_AGENTS } from "./team/graph";
 import type { TeamAgent as TeamAgentSchema } from "./team/graph";
 
 /**
- * FrameSender enum values (proto string literals). Defined locally rather
- * than imported as a value so the handler has no runtime dependency on the
- * generated game_types modules (which are not resolvable from the test
- * runfiles tree); all other game_types references are type-only.
+ * The per-agent message channel map (D5 / FR-005).
  */
-const FrameSender = {
-  FRAME_SENDER_UNSPECIFIED: "FRAME_SENDER_UNSPECIFIED",
-  FRAME_SENDER_USER: "FRAME_SENDER_USER",
-  FRAME_SENDER_AGENT: "FRAME_SENDER_AGENT",
-  FRAME_SENDER_SYSTEM: "FRAME_SENDER_SYSTEM",
-} as const;
-
-/** The per-agent message channel map (D5 / FR-005). */
 const AGENT_CHANNELS: Record<string, "playerMessages" | "plannerMessages"> = {
   player: "playerMessages",
   planner: "plannerMessages",
@@ -262,31 +256,7 @@ export class Handler implements TeamServiceHandlers {
   // Connect (bidirectional streaming)
   // -----------------------------------------------------------------------
 
-  Connect: grpc.handleBidiStreamingCall<AgentFrame, AgentFrame> = (stream) => {
-    // Oneof case names for AgentFrame.payload (game.proto). proto-loader only
-    // populates the `payload` discriminator during (de)serialization; outbound
-    // raw frame objects built here must carry it explicitly so the frame is
-    // self-describing.
-    const PAYLOAD_ONEOF_KEYS = ["messageParts", "flowParts"] as const;
-
-    const buildFrame = (
-      sessionId: string,
-      templateId: string,
-      sender: (typeof FrameSender)[keyof typeof FrameSender],
-      payload: Partial<AgentFrame>,
-    ): AgentFrame => {
-      const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
-      return {
-        sessionId,
-        templateId,
-        frameId: randomUUID(),
-        sender,
-        createTime: timestampNow(),
-        ...(payloadKind ? { payload: payloadKind } : {}),
-        ...payload,
-      };
-    };
-
+  Connect: grpc.handleBidiStreamingCall<UserFrame, TeamFrame> = (stream) => {
     // Track the sink handle each session installed on this stream, keyed by
     // session id. cleanupSinks passes the handle to unregisterSink so only
     // THIS stream's sink is cleared (compare-and-delete)
@@ -368,10 +338,9 @@ export class Handler implements TeamServiceHandlers {
         const statusPart = parts.find((p: FlowPart) => p.status);
         if (statusPart) {
           const team = this.sessionTeamStore.get(sessionId);
-          const statusFrame: AgentFrame = buildFrame(
+          const statusFrame: TeamFrame = buildTeamFrame(
             sessionId,
             templateId,
-            FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
               flowParts: {
@@ -405,11 +374,9 @@ export class Handler implements TeamServiceHandlers {
       if (frame.payload === "messageParts") {
         const parts = frame.messageParts?.parts ?? [];
 
-        // Only user-sent content drives a turn (operation results arrive as
-        // flowParts/flow_result on the control channel, not here).
-        if (frame.sender !== FrameSender.FRAME_SENDER_USER) {
-          return;
-        }
+        // Inbound frames are naturally user-sent (the direction split removed
+        // the sender gate — specs/035-proto-contract-refine/research.md R2):
+        // every messageParts UserFrame drives a turn.
 
         // User-input routing (FR-032): route to the team agent that accepts
         // user input. The frame's `agent` names the target; empty falls back
@@ -424,10 +391,9 @@ export class Handler implements TeamServiceHandlers {
             sessionId,
             agent: received,
           });
-          const warnFrame: AgentFrame = buildFrame(
+          const warnFrame: TeamFrame = buildTeamFrame(
             sessionId,
             templateId,
-            FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
               flowParts: {
@@ -442,10 +408,9 @@ export class Handler implements TeamServiceHandlers {
             },
           );
           safeWrite(stream, warnFrame, sessionId);
-          const waitFrame: AgentFrame = buildFrame(
+          const waitFrame: TeamFrame = buildTeamFrame(
             sessionId,
             templateId,
-            FrameSender.FRAME_SENDER_SYSTEM,
             {
               agent: PRIMARY_AGENT_NAME,
               flowParts: { parts: [{ wait: {} }] },
@@ -479,7 +444,7 @@ export class Handler implements TeamServiceHandlers {
         // Register the operation-channel sink on the bridge so flow_result
         // routing continues to work (spec 025 FR-023/FR-025).
         const handle = team.getBridge().registerSink(
-          (contentEnvelope: AgentFrame) => {
+          (contentEnvelope: TeamFrame) => {
             safeWrite(stream, contentEnvelope, sessionId);
           },
         );
@@ -498,7 +463,7 @@ export class Handler implements TeamServiceHandlers {
         // in flight is buffered (FR-002) and becomes the next turn on the
         // same thread_id.
         activeLoopSessions.add(sessionId);
-        team.submit(turnContent, (frame: AgentFrame) => {
+        team.submit(turnContent, (frame: TeamFrame) => {
           safeWrite(stream, frame, sessionId);
         });
         return;
@@ -581,12 +546,14 @@ export class Handler implements TeamServiceHandlers {
           continue;
         }
 
-        const sender =
+        // MessageRole derivation (FR-020): human → USER; ai + tool → AGENT
+        // (tool messages are unified as AGENT, aligned with the live stream's
+        // tool_result frames — the former FRAME_SENDER_SYSTEM had no live
+        // counterpart; specs/035-proto-contract-refine/contracts/frame-split.md §4.2).
+        const role =
           msgType === "human"
-            ? FrameSender.FRAME_SENDER_USER
-            : msgType === "ai"
-              ? FrameSender.FRAME_SENDER_AGENT
-              : FrameSender.FRAME_SENDER_SYSTEM;
+            ? "MESSAGE_ROLE_USER"
+            : "MESSAGE_ROLE_AGENT";
 
         const parts: MessagePart[] = [];
 
@@ -673,7 +640,7 @@ export class Handler implements TeamServiceHandlers {
         result.push({
           name: `templates/${template}/sessions/${sessionId}/team/agents/${agent}/messages/${msg.id}`,
           messageId: msg.id,
-          sender,
+          role,
           agent,
           content: { parts },
         });
@@ -723,8 +690,8 @@ function resolveUserInputAgent(agent: string): string | undefined {
  * Contract: specs/026-agent-abort-crash-fix/contracts/stream-abort-contract.md §1
  */
 function safeWrite(
-  stream: grpc.ServerDuplexStream<AgentFrame, AgentFrame>,
-  frame: AgentFrame,
+  stream: grpc.ServerDuplexStream<UserFrame, TeamFrame>,
+  frame: TeamFrame,
   sessionId: string,
 ): void {
   try {

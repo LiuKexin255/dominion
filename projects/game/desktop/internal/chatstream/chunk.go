@@ -13,7 +13,7 @@ import (
 
 // maxFragmentBytes is the per-SSE-event byte ceiling. Chromium buffers
 // each SSE event before dispatch and silently drops events that exceed
-// its internal buffer (research.md R-002), so a serialized AgentFrame
+// its internal buffer (research.md R-002), so a serialized TeamFrame
 // JSON larger than this MUST be split into a chunk group
 // (contracts/chat-stream.md §4.2).
 const maxFragmentBytes = 48 * 1024
@@ -26,7 +26,7 @@ const maxFragmentBytes = 48 * 1024
 // for a 6.7 MiB payload → ~145 fragments).
 const chunkEnvelopeProbe = 9999999999
 
-// ChunkPiece is one fragment of a chunked AgentFrame event. The SSE
+// ChunkPiece is one fragment of a chunked TeamFrame event. The SSE
 // handler emits each piece as a separate "event: chunk" line; the
 // frontend concatenates Fragment in Index order within a GroupID to
 // rebuild the original serialized JSON (contracts/chat-stream.md §4.2).
@@ -50,10 +50,10 @@ type ChunkPiece struct {
 // frontend decodes — the output of protojson with EmitUnpopulated
 // disabled, mirroring app.go's frameToMap and internal/api/client.go's
 // serializer. Returns the raw JSON bytes, or nil if protojson fails (a
-// well-formed AgentFrame never fails). The caller emits the bytes as a
+// well-formed TeamFrame never fails). The caller emits the bytes as a
 // single "chat" event or, when they exceed maxFragmentBytes, fragments
 // them via ChunkPayload.
-func SerializeFrame(frame *game.AgentFrame) []byte {
+func SerializeFrame(frame *game.TeamFrame) []byte {
 	jsonBytes, err := (protojson.MarshalOptions{EmitUnpopulated: false}).Marshal(frame)
 	if err != nil {
 		return nil
@@ -61,7 +61,7 @@ func SerializeFrame(frame *game.AgentFrame) []byte {
 	return jsonBytes
 }
 
-// ChunkPayload splits serialized AgentFrame JSON into UTF-8-safe
+// ChunkPayload splits serialized TeamFrame JSON into UTF-8-safe
 // fragments whose chunk envelopes each marshal to at most
 // maxFragmentBytes. If jsonBytes fits within maxFragmentBytes it
 // returns nil — the caller emits it as a single "chat" event

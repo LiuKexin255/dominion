@@ -20,8 +20,6 @@ func TestSessionViewFromProto(t *testing.T) {
 	createTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	proto := &game.Session{
 		Name:       "templates/saolei/sessions/test-session-1",
-		SessionId:  "test-session-1",
-		Template:   "templates/saolei",
 		CreateTime: timestamppb.New(createTime),
 	}
 
@@ -34,9 +32,6 @@ func TestSessionViewFromProto(t *testing.T) {
 	}
 	if view.SessionID != "test-session-1" {
 		t.Fatalf("expected SessionID %q, got %q", "test-session-1", view.SessionID)
-	}
-	if view.Template != "templates/saolei" {
-		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.CreateTime != "2024-01-01T00:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-01-01T00:00:00Z", view.CreateTime)
@@ -88,11 +83,11 @@ func TestListSessionsViewFromProto(t *testing.T) {
 	proto := &game.ListSessionsResponse{
 		Sessions: []*game.Session{
 			{
-				SessionId:  "s1",
+				Name:       "templates/saolei/sessions/s1",
 				CreateTime: timestamppb.New(createTime1),
 			},
 			{
-				SessionId:  "s2",
+				Name:       "templates/saolei/sessions/s2",
 				CreateTime: timestamppb.New(createTime2),
 			},
 		},
@@ -270,8 +265,7 @@ func TestTeamViewFromProto_NoAgents(t *testing.T) {
 func TestTeamProfileViewFromProto(t *testing.T) {
 	// given: a proto TeamProfile with the saolei spec variant
 	proto := &game.TeamProfile{
-		Name:     "templates/saolei/profiles/my-profile",
-		Template: "templates/saolei",
+		Name: "templates/saolei/profiles/my-profile",
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   "openai/gpt-4o",
@@ -291,9 +285,6 @@ func TestTeamProfileViewFromProto(t *testing.T) {
 	}
 	if view.ProfileName != "my-profile" {
 		t.Fatalf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.Template != "templates/saolei" {
-		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.PlayerModel != "openai/gpt-4o" {
 		t.Fatalf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
@@ -358,8 +349,7 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 	proto := &game.ListTeamProfilesResponse{
 		TeamProfiles: []*game.TeamProfile{
 			{
-				Name:     "templates/saolei/profiles/p1",
-				Template: "templates/saolei",
+				Name: "templates/saolei/profiles/p1",
 				Spec: &game.TeamProfile_Saolei{
 					Saolei: &game.SaoleiProfile{
 						PlayerModel:   "a/b",
@@ -370,8 +360,7 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 				},
 			},
 			{
-				Name:     "templates/saolei/profiles/p2",
-				Template: "templates/saolei",
+				Name: "templates/saolei/profiles/p2",
 			},
 		},
 		NextPageToken: "next-token-7",
@@ -462,7 +451,7 @@ func TestToMessageViewModels(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/msg-1",
 			MessageId:  "msg-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "Hello from user"}}},
@@ -471,7 +460,7 @@ func TestToMessageViewModels(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/planner/messages/msg-2",
 			MessageId:  "msg-2",
-			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Thinking{Thinking: &game.ThinkingPart{Content: "Agent is thinking"}}},
@@ -494,8 +483,8 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[0].MessageID != "msg-1" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-1", views[0].MessageID)
 	}
-	if views[0].Sender != "FRAME_SENDER_USER" {
-		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_USER", views[0].Sender)
+	if views[0].Role != "MESSAGE_ROLE_USER" {
+		t.Fatalf("expected Role %q, got %q", "MESSAGE_ROLE_USER", views[0].Role)
 	}
 	if views[0].CreateTime != "2024-07-01T12:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-07-01T12:00:00Z", views[0].CreateTime)
@@ -511,8 +500,8 @@ func TestToMessageViewModels(t *testing.T) {
 	if views[1].MessageID != "msg-2" {
 		t.Fatalf("expected MessageID %q, got %q", "msg-2", views[1].MessageID)
 	}
-	if views[1].Sender != "FRAME_SENDER_AGENT" {
-		t.Fatalf("expected Sender %q, got %q", "FRAME_SENDER_AGENT", views[1].Sender)
+	if views[1].Role != "MESSAGE_ROLE_AGENT" {
+		t.Fatalf("expected Role %q, got %q", "MESSAGE_ROLE_AGENT", views[1].Role)
 	}
 	if got := messagePartThinking(views[1].Content); got != "Agent is thinking" {
 		t.Fatalf("expected second thinking part content %q, got %q", "Agent is thinking", got)
@@ -543,7 +532,7 @@ func TestToMessageViewModels_Image(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/sess-1/team/agents/player/messages/img-1",
 			MessageId:  "img-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			CreateTime: timestamppb.New(createTime),
 			Content: &game.MessageParts{Parts: []*game.MessagePart{
 				{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
@@ -647,14 +636,14 @@ func TestToMessageViewModels_AgentPartition(t *testing.T) {
 		{
 			Name:       "templates/saolei/sessions/s1/team/agents/player/messages/msg-1",
 			MessageId:  "msg-1",
-			Sender:     game.FrameSender_FRAME_SENDER_USER,
+			Role:       game.MessageRole_MESSAGE_ROLE_USER,
 			Agent:      "player",
 			CreateTime: timestamppb.New(createTime),
 		},
 		{
 			Name:       "templates/saolei/sessions/s1/team/agents/planner/messages/msg-2",
 			MessageId:  "msg-2",
-			Sender:     game.FrameSender_FRAME_SENDER_AGENT,
+			Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
 			Agent:      "planner",
 			CreateTime: timestamppb.New(createTime),
 		},

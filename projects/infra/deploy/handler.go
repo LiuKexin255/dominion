@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"dominion/common/gopkg/logs"
@@ -22,7 +21,6 @@ import (
 )
 
 const (
-	deployParentPrefix              = "deploy/scopes/"
 	errorDomain                     = "infra.liukexin.com"
 	invalidViewReason               = "INVALID_VIEW"
 	serviceEndpointsNotFoundReason  = "SERVICE_ENDPOINTS_NOT_FOUND"
@@ -54,7 +52,11 @@ func NewHandler(repo domain.Repository, runtime domain.EnvironmentRuntime, comma
 
 // GetEnvironment returns an environment by resource name.
 func (h *Handler) GetEnvironment(ctx context.Context, req *GetEnvironmentRequest) (*Environment, error) {
-	envName, err := domain.ParseResourceName(req.GetName())
+	name, err := req.ParseName()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	envName, err := domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -69,7 +71,11 @@ func (h *Handler) GetEnvironment(ctx context.Context, req *GetEnvironmentRequest
 
 // GetServiceEndpoints returns the effective runtime endpoints for a logical service.
 func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpointsRequest) (*ServiceEndpoints, error) {
-	name, err := domain.ParseServiceEndpointsName(req.GetName())
+	cgName, err := req.ParseName()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	name, err := domain.NewServiceEndpointsName(cgName.ScopeID, cgName.EnvNameID, cgName.AppID, cgName.ServiceID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -195,10 +201,21 @@ func (h *Handler) GetServiceEndpoints(ctx context.Context, req *GetServiceEndpoi
 }
 
 // ListEnvironments lists environments under a scope.
+//
+// When the scope segment of parent is the AIP-159 wildcard "-" (e.g.
+// deploy/scopes/-), environments from all scopes are returned.
+// See https://google.aip.dev/159.
 func (h *Handler) ListEnvironments(ctx context.Context, req *ListEnvironmentsRequest) (*ListEnvironmentsResponse, error) {
-	scope, err := parseParent(req.GetParent())
+	scopeName, err := ParseScopeName(req.GetParent())
 	if err != nil {
-		return nil, toStatusError(err)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	scope := scopeName.ScopeID
+	if !scopeName.ContainsWildcard() {
+		if err := domain.ValidateScope(scope); err != nil {
+			return nil, toStatusError(err)
+		}
 	}
 
 	envs, nextPageToken, err := h.repo.ListByScope(ctx, scope, req.GetPageSize(), req.GetPageToken())
@@ -224,12 +241,18 @@ func (h *Handler) CreateEnvironment(ctx context.Context, req *CreateEnvironmentR
 		return nil, status.Error(codes.InvalidArgument, "environment is required")
 	}
 
-	scope, err := parseParent(req.GetParent())
+	scopeName, err := ParseScopeName(req.GetParent())
 	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if scopeName.ContainsWildcard() {
+		return nil, status.Error(codes.InvalidArgument, "scope wildcard '-' is not allowed for create")
+	}
+	if err := domain.ValidateScope(scopeName.ScopeID); err != nil {
 		return nil, toStatusError(err)
 	}
 
-	envName, err := domain.NewEnvironmentName(scope, req.GetEnvName())
+	envName, err := domain.NewEnvironmentName(scopeName.ScopeID, req.GetEnvName())
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -264,7 +287,11 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 		return nil, status.Error(codes.InvalidArgument, "type is immutable")
 	}
 
-	envName, err := domain.ParseResourceName(req.GetEnvironment().GetName())
+	name, err := req.GetEnvironment().ParseName()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	envName, err := domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -290,7 +317,11 @@ func (h *Handler) UpdateEnvironment(ctx context.Context, req *UpdateEnvironmentR
 
 // DeleteEnvironment marks an environment for deletion and enqueues reconciliation.
 func (h *Handler) DeleteEnvironment(ctx context.Context, req *DeleteEnvironmentRequest) (*emptypb.Empty, error) {
-	envName, err := domain.ParseResourceName(req.GetName())
+	name, err := req.ParseName()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	envName, err := domain.NewEnvironmentName(name.ScopeID, name.EnvNameID)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -321,24 +352,6 @@ func toProtoEnvironment(env *domain.Environment) *Environment {
 		UpdateTime:   toProtoTimestamp(env.UpdateTime()),
 		Etag:         env.ETag(),
 	}
-}
-
-func fromProtoEnvironment(env *Environment) (*domain.Environment, error) {
-	if env == nil {
-		return nil, domain.ErrInvalidSpec
-	}
-
-	envName, err := domain.ParseResourceName(env.GetName())
-	if err != nil {
-		return nil, err
-	}
-
-	desiredState, err := fromProtoDesiredState(env.GetDesiredState())
-	if err != nil {
-		return nil, err
-	}
-
-	return domain.NewEnvironment(envName, fromProtoEnvironmentType(env.GetType()), env.GetDescription(), desiredState)
 }
 
 func toProtoState(state domain.EnvironmentState) EnvironmentState {
@@ -772,20 +785,6 @@ func toProtoTimestamp(value time.Time) *timestamppb.Timestamp {
 	}
 
 	return timestamppb.New(value)
-}
-
-func parseParent(parent string) (string, error) {
-	scope, ok := strings.CutPrefix(parent, deployParentPrefix)
-	if !ok || scope == "" || strings.Contains(scope, "/") {
-		return "", domain.ErrInvalidName
-	}
-
-	envName, err := domain.NewEnvironmentName(scope, "env")
-	if err != nil {
-		return "", err
-	}
-
-	return envName.Scope(), nil
 }
 
 func toStatusError(err error) error {

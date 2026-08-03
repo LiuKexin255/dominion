@@ -39,7 +39,6 @@ export interface Config {
 export interface Session {
   name: string
   sessionId: string
-  template: string
   createTime: string
 }
 
@@ -62,11 +61,14 @@ export interface TeamAgent {
 
 // ─── Enums ──────────────────────────────────────────────────────────────────
 
-export enum FrameSender {
+// MessageRole identifies the sender role of a persisted conversation Message
+// (history) and of TeamFrame bubbles (real-time messageParts = AGENT; flowParts
+// = UNSPECIFIED). Replaces the former FrameSender enum
+// (specs/035-proto-contract-refine/contracts/frame-split.md §4).
+export enum MessageRole {
   UNSPECIFIED = 0,
   USER = 1,
   AGENT = 2,
-  SYSTEM = 3,
 }
 
 export enum ImageEncoding {
@@ -99,11 +101,11 @@ export enum ToolResultStatus {
 // spec 023 C3 / FR-001..FR-004):
 //
 //   - MessagePart (display only): text / thinking / image / tool_call /
-//     tool_result. Carried by AgentFrame.messageParts (live) and Message.content
+//     tool_result. Carried by TeamFrame.messageParts (live) and Message.content
 //     (history) — identical shape so live and history render identically.
 //   - FlowPart (control only — never rendered in the conversation): mouse/
 //     keyboard operations + wait/warn/status signals. Carried by
-//     AgentFrame.flowParts. protojson flattens each oneof so exactly one
+//     TeamFrame.flowParts. protojson flattens each oneof so exactly one
 //     variant field is set (the field name is the discriminator).
 
 export interface TextPart {
@@ -273,7 +275,7 @@ export function classifyToolResultStatus(
 // ─── Control Signals (FlowPart kinds; never persisted to history) ──────────
 // WaitSignal / WarnSignal / StatusSignal carry turn-control signals. Per the
 // content-model split (spec 023 C3 / FR-003) they are FlowPart kinds, carried
-// by AgentFrame.flowParts and never rendered as conversation entries.
+// by TeamFrame.flowParts and never rendered as conversation entries.
 
 export interface WaitSignal {
   reason?: string
@@ -325,7 +327,6 @@ export interface SaoleiProfile {
 export interface TeamProfile {
   name: string
   profileName: string
-  template: string
   // spec.saolei → SaoleiProfile (flattened): the Wails view model lifts the
   // oneof variant fields to the TeamProfile top level (desktop/view_model.go
   // TeamProfileView); absent when the variant is unset. The base prompts are
@@ -354,31 +355,51 @@ export interface ListTeamProfilesResponse {
 
 // ─── Frame & Message Envelopes ─────────────────────────────────────────────
 
-// AgentFrame is the transport unit exchanged over WebSocket / gRPC streams.
-// A frame carries exactly one payload (protojson flattens the oneof): a batch
-// of display blocks (messageParts) OR a batch of control blocks (flowParts).
-// `agent` (D12) replaces the former agentProfileName: it names the team agent
-// the frame belongs to (FR-023), and is the dimension frames are routed into
-// per-agent tabs by (FR-025).
-export interface AgentFrame {
+// UserFrame is the outbound transport unit the desktop sends over WebSocket /
+// gRPC streams (client → server). A frame carries exactly one payload
+// (protojson flattens the oneof): a batch of display blocks (messageParts —
+// user message content) OR a batch of control blocks (flowParts — operation
+// results, connectivity probes). It excludes the outbound-only envelope fields
+// (frameId/createTime/sender): the server does not consume them
+// (specs/035-proto-contract-refine/contracts/frame-split.md §2).
+export interface UserFrame {
   sessionId?: string
+  templateId?: string
+  // The team agent the user input targets (e.g. player/planner); only
+  // messageParts (user message) frames need it.
+  agent?: string
+  messageParts?: MessageParts
+  flowParts?: FlowParts
+}
+
+// TeamFrame is the inbound transport unit received over WebSocket / gRPC
+// streams (server → client). A frame carries exactly one payload (protojson
+// flattens the oneof): a batch of display blocks (messageParts) OR a batch of
+// control blocks (flowParts). `agent` (D12) names the team agent the frame
+// belongs to (FR-023) and is the dimension frames are routed into per-agent
+// tabs by (FR-025). `role` aligns bubbles: real-time messageParts frames are
+// AGENT; history seed-replay frames carry the Message.role copy; flowParts are
+// UNSPECIFIED (specs/035-proto-contract-refine/contracts/frame-split.md §3).
+export interface TeamFrame {
+  sessionId?: string
+  templateId?: string
   frameId?: string
   createTime?: string
-  sender?: FrameSender | string
   agent?: string
+  role?: MessageRole | string
   messageParts?: MessageParts
   flowParts?: FlowParts
 }
 
 // Message is one normalized conversation entry reconstructed from checkpoint
 // state (history), partitioned per team agent (FR-005). Its content is a
-// MessageParts (display blocks only) — the identical shape a live AgentFrame's
+// MessageParts (display blocks only) — the identical shape a live TeamFrame's
 // messageParts payload carries, so history and live view render identically
 // (spec 023 FR-009). Control blocks (FlowParts) never appear here.
 export interface Message {
   name?: string
   messageId?: string
-  sender?: FrameSender | string
+  role?: MessageRole | string
   agent?: string
   createTime?: string
   content?: MessageParts
@@ -432,7 +453,7 @@ interface WailsApp {
   CaptureScreenshot(): Promise<CapturedImage>
   Connect(template: string, sessionID: string): Promise<string>
   CloseAgent(): Promise<void>
-  SendAgentFrame(frame: AgentFrame): Promise<AgentFrame>
+  SendAgentFrame(frame: UserFrame): Promise<TeamFrame>
   SendUserTurn(template: string, sessionID: string, text: string, screenshotData: string, screenshotWidth: number, screenshotHeight: number, agent: string): Promise<void>
   ListMessages(template: string, sessionID: string, agent: string): Promise<Message[]>
   CloseChatStream(sessionID: string): Promise<void>
@@ -542,7 +563,7 @@ export async function closeAgent(): Promise<void> {
   return a.CloseAgent()
 }
 
-export async function sendAgentFrame(frame: AgentFrame): Promise<AgentFrame> {
+export async function sendAgentFrame(frame: UserFrame): Promise<TeamFrame> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')
   return a.SendAgentFrame(frame)
@@ -582,7 +603,7 @@ export async function closeChatStream(sessionId: string): Promise<void> {
 // message partition. The Go chatstream Registry is per-session (single stream,
 // RotateToken on every open — desktop/internal/chatstream/stream.go), so the
 // frontend opens ONE stream per session (seeded by the first team agent) and
-// routes inbound frames by AgentFrame.agent.
+// routes inbound frames by TeamFrame.agent.
 export async function openChatStream(sessionId: string, agent: string): Promise<ChatStreamHandoff> {
   const a = app()
   if (!a) throw new Error('Wails runtime not available')

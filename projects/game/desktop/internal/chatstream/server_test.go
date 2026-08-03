@@ -153,15 +153,16 @@ func readFirstLine(t *testing.T, r io.Reader, deadline time.Duration) string {
 	}
 }
 
-// bigTextFrame builds a content AgentFrame whose serialized JSON exceeds
+// bigTextFrame builds a content TeamFrame whose serialized JSON exceeds
 // maxFragmentBytes (48 KiB), forcing ChunkPayload to fragment it.
-func bigTextFrame(id int64) *game.AgentFrame {
+func bigTextFrame(id int64) *game.TeamFrame {
 	big := strings.Repeat("x", 60*1024)
-	return &game.AgentFrame{
-		SessionId: "big",
-		FrameId:   fmt.Sprintf("frame-%d", id),
-		Sender:    game.FrameSender_FRAME_SENDER_AGENT,
-		Payload: &game.AgentFrame_MessageParts{
+	return &game.TeamFrame{
+		SessionId:  "big",
+		TemplateId: "saolei",
+		FrameId:    fmt.Sprintf("frame-%d", id),
+		Role:       game.MessageRole_MESSAGE_ROLE_AGENT,
+		Payload: &game.TeamFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: big}}},

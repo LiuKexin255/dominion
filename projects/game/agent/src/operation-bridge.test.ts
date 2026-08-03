@@ -320,9 +320,17 @@ describe("OperationBridge", () => {
     expect(rB.message).toBe("b-done");
   });
 
-  it("written envelope has payload='flowParts' and carries the FlowPart", async () => {
+  it("written envelope has payload='flowParts', full TeamFrame envelope, and carries the FlowPart", async () => {
     let captured:
-      | { payload?: string; flowParts?: { parts?: FlowPart[] } }
+      | {
+          payload?: string;
+          sessionId?: string;
+          templateId?: string;
+          frameId?: string;
+          createTime?: { seconds: number; nanos: number };
+          role?: string;
+          flowParts?: { parts?: FlowPart[] };
+        }
       | undefined;
     bridge.registerSink((frame) => {
       captured = frame as typeof captured;
@@ -342,6 +350,39 @@ describe("OperationBridge", () => {
     expect(captured!.flowParts!.parts![0].mouseMove!.toolId).toBe(
       part.mouseMove!.toolId,
     );
+    // Envelope completeness (FR-013): the dispatched TeamFrame is built via
+    // buildTeamFrame, so frame_id/create_time are always set (the former
+    // payload-only dispatch was the FR-013 defect —
+    // specs/035-proto-contract-refine/contracts/frame-split.md §3.3).
+    expect(captured!.frameId).toBeDefined();
+    expect(captured!.frameId).not.toBe("");
+    expect(captured!.createTime).toBeDefined();
+    // flowParts payload ⇒ role UNSPECIFIED (research.md R3).
+    expect(captured!.role).toBe("MESSAGE_ROLE_UNSPECIFIED");
+  });
+
+  it("dispatch stamps the session's session_id/template_id on the TeamFrame envelope (FR-013)", async () => {
+    const sessBridge = new OperationBridge("sess-fr013", "saolei");
+    let captured:
+      | { sessionId?: string; templateId?: string; frameId?: string }
+      | undefined;
+    sessBridge.registerSink((frame) => {
+      captured = frame as typeof captured;
+    });
+
+    const part = makeMovePart();
+    const promise = sessBridge.dispatch(part);
+
+    sessBridge.handleResult(
+      makeResult(part.mouseMove!.toolId!, STATUS_SUCCEEDED),
+    );
+    await promise;
+
+    expect(captured).toBeDefined();
+    expect(captured!.sessionId).toBe("sess-fr013");
+    expect(captured!.templateId).toBe("saolei");
+    expect(captured!.frameId).toBeDefined();
+    expect(captured!.frameId).not.toBe("");
   });
 
   // ------------------------------------------------------------------

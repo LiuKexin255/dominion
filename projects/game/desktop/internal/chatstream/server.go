@@ -232,7 +232,7 @@ func (s *Server) serveChatStream(w http.ResponseWriter, r *http.Request) {
 func emitEvent(w http.ResponseWriter, flusher http.Flusher, ev *ChatEvent) bool {
 	jsonBytes := SerializeFrame(ev.Frame)
 	if len(jsonBytes) == 0 {
-		// A well-formed AgentFrame never fails protojson; skip if it does.
+		// A well-formed TeamFrame never fails protojson; skip if it does.
 		return true
 	}
 

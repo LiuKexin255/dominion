@@ -14,21 +14,28 @@
  * Content-model contract (specs/023-saolei-mcp-refine/contracts/content-model-contract.md)
  * + decoupling (research.md D10 / contracts/tool-dispatch-contract.md §1): a
  * tool request is a FlowPart (a mouse/keyboard operation) wrapped in a
- * FlowParts AgentFrame (payload "flowParts"). The desktop replies with a
- * flowParts AgentFrame whose FlowResultPart.tool_id matches the bridge-minted
+ * FlowParts TeamFrame (payload "flowParts"). The desktop replies with a
+ * flowParts UserFrame whose FlowResultPart.tool_id matches the bridge-minted
  * operation-channel id (spec 025 FR-023/FR-025 — the operation result travels
  * on the control channel, not as a display tool_result MessagePart). The
  * conversation channel (tool_call/tool_result MessageParts) is fully DECOUPLED
  * — it groups by the LangChain `tool_call.id` independently; the operation
  * channel uses a bridge-minted id that has no relation to any conversation
  * tool_call.id (revised FR-008 / research.md D10).
+ *
+ * Envelope contract (FR-013): dispatch builds the outbound TeamFrame via
+ * `buildTeamFrame` with the session's session_id/template_id, so the
+ * operation frame carries the full envelope (session_id/template_id/frame_id/
+ * create_time) like every other TeamFrame — the former dispatch that set only
+ * the payload was the FR-013 defect
+ * (specs/035-proto-contract-refine/contracts/frame-split.md §3.3).
  */
 
 import { randomUUID } from "node:crypto";
 
 import { info, warn } from "@dominion/common-js-logs";
 
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
 import type { FlowPart } from "../game_types/projects/game/FlowPart";
 import type { FlowResultPart } from "../game_types/projects/game/FlowResultPart";
 import type { ImagePart } from "../game_types/projects/game/ImagePart";
@@ -37,6 +44,8 @@ import type { MouseClickPart } from "../game_types/projects/game/MouseClickPart"
 import type { KeyboardPressPart } from "../game_types/projects/game/KeyboardPressPart";
 import type { MouseMoveAndClickPart } from "../game_types/projects/game/MouseMoveAndClickPart";
 import type { ToolResultStatus } from "../game_types/projects/game/ToolResultStatus";
+
+import { buildTeamFrame } from "./turn-loop";
 
 // Maximum wait time (ms) for a tool result before timing out. Raised from 5 s
 // to 20 min as a safety-net backstop: the desktop's 15-min auto-continue
@@ -51,11 +60,10 @@ const STATUS_FAILED = "TOOL_RESULT_STATUS_FAILED";
 const STATUS_UNSPECIFIED = "TOOL_RESULT_STATUS_UNSPECIFIED";
 
 /**
- * Sink callback registered by the Connect handler.  Receives a full AgentFrame
- * whose payload is "flowParts".  The handler may augment envelope fields
- * (sessionId, frameId, sender, createTime) before writing to the stream.
+ * Sink callback registered by the Connect handler.  Receives a full TeamFrame
+ * whose payload is "flowParts". The handler writes it to the stream as-is.
  */
-export type OperationSink = (frame: AgentFrame) => void;
+export type OperationSink = (frame: TeamFrame) => void;
 
 /**
  * Opaque identity of a registered sink, returned by registerSink and passed
@@ -111,8 +119,21 @@ function toOperationScreenshot(source: ImagePart): OperationScreenshot {
 }
 
 export class OperationBridge {
+  private readonly sessionId: string;
+  private readonly templateId: string;
   private sink: OperationSink | null = null;
   private readonly pending = new Map<string, PendingDispatch>();
+
+  /**
+   * @param sessionId The session id (bare segment) stamped on dispatched
+   *   TeamFrame envelopes (FR-013).
+   * @param templateId The session's template id (bare segment) stamped on
+   *   dispatched TeamFrame envelopes (FR-013).
+   */
+  constructor(sessionId = "", templateId = "") {
+    this.sessionId = sessionId;
+    this.templateId = templateId;
+  }
 
   /**
    * Register the stream write callback.  Called by the Connect handler when a
@@ -162,12 +183,14 @@ export class OperationBridge {
    * independently; the operation channel uses the bridge-minted id). The tool
    * caller therefore passes NO toolId to dispatch.
    *
-   * The operation is wrapped in a FlowParts AgentFrame and written via the
-   * sink. When no sink is registered (desktop disconnected), resolves FAILED
-   * immediately rather than throwing. When the optional `signal` is already
-   * aborted, or aborts while the dispatch is pending, resolves FAILED "aborted"
-   * immediately — abort is a third race participant alongside the 20-min
-   * timeout and handleResult, whichever fires first wins.
+   * The operation is wrapped in a FlowParts TeamFrame (built via
+   * `buildTeamFrame` with the session's session_id/template_id — full
+   * envelope per FR-013) and written via the sink. When no sink is registered
+   * (desktop disconnected), resolves FAILED immediately rather than throwing.
+   * When the optional `signal` is already aborted, or aborts while the
+   * dispatch is pending, resolves FAILED "aborted" immediately — abort is a
+   * third race participant alongside the 20-min timeout and handleResult,
+   * whichever fires first wins.
    *
    * @param part   - FlowPart operation to dispatch.
    * @param signal - Optional AbortSignal; when aborted, resolves FAILED.
@@ -236,10 +259,9 @@ export class OperationBridge {
           : undefined,
       });
 
-      const envelope: AgentFrame = {
-        payload: "flowParts",
+      const envelope: TeamFrame = buildTeamFrame(this.sessionId, this.templateId, {
         flowParts: { parts: [part] },
-      };
+      });
       try {
         sink(envelope);
       } catch (err) {

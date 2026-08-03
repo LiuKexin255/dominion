@@ -20,7 +20,7 @@
  *   write `TeamState.gameEnded = status` (the conditional edge then routes to
  *   the planner). The event is marked consumed, so the planner fires at most
  *   once per game end.
- * - **Streaming output** (`ContentBlock` → `AgentFrame`, `agent="player"`):
+ * - **Streaming output** (`ContentBlock` → `TeamFrame`, `agent="player"`):
  *   Batch 1 leaves this to Batch 2 (the handler streams the node's channel
  *   messages); {@link PLAYER_AGENT_NAME} is the frame's `agent` value.
  *
@@ -41,7 +41,7 @@ import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
 import { consumeGameEvent } from "./team-sink";
 
-/** The player agent's name — the `AgentFrame.agent` value (FR-023/D12). */
+/** The player agent's name — the `TeamFrame.agent` value (FR-023/D12). */
 export const PLAYER_AGENT_NAME = "player";
 
 /**

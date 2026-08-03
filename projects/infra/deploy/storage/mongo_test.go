@@ -897,6 +897,34 @@ func TestMongoRepository_ListByScope(t *testing.T) {
 		}
 	})
 
+	t.Run("wildcard scope returns environments across all scopes", func(t *testing.T) {
+		// given
+		repo, collection := newMongoRepositoryForTest()
+		envs := []*domain.Environment{
+			newMongoSaveTestEnv(t, "dev", "alpha", "env alpha", "image:v1", "etag-alpha"),
+			newMongoSaveTestEnv(t, "prod", "beta", "env beta", "image:v2", "etag-beta"),
+		}
+		for _, env := range envs {
+			if err := repo.Create(ctx, env); err != nil {
+				t.Fatalf("Create() unexpected error: %v", err)
+			}
+		}
+
+		// when
+		results, nextToken, err := repo.ListByScope(ctx, "-", 10, "")
+
+		// then
+		if err != nil {
+			t.Fatalf("ListByScope() unexpected error: %v", err)
+		}
+		assertEnvironmentNames(t, results, []string{"alpha", "beta"})
+		if nextToken != "" {
+			t.Fatalf("ListByScope() nextToken = %q, want empty", nextToken)
+		}
+		assertBSONMapEqual(t, collection.lastCountFilter, bson.M{}, "CountDocuments() filter")
+		assertBSONMapEqual(t, collection.lastFindFilter, bson.M{}, "Find() filter")
+	})
+
 	t.Run("empty scope returns nil", func(t *testing.T) {
 		// given
 		repo, collection := newMongoRepositoryForTest()
@@ -2012,11 +2040,11 @@ func (f *fakeCollectionOps) CountDocuments(_ context.Context, filter any, _ ...*
 	if err != nil {
 		return 0, err
 	}
-	scope, _ := filterDoc["scope"].(string)
+	scope, hasScope := filterDoc["scope"].(string)
 
 	var count int64
 	for _, doc := range f.docs {
-		if doc.Scope == scope {
+		if !hasScope || doc.Scope == scope {
 			count++
 		}
 	}

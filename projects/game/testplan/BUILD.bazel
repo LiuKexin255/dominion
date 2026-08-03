@@ -146,8 +146,8 @@ go_largetest(
     size = "small",
     srcs = [
         "helpers_test.go",
-        "saolei_team_test.go",
         "saolei_fixtures_test.go",
+        "saolei_team_test.go",
     ],
     embedsrcs = SAOLEI_EMBEDSRCS,
     deps = [

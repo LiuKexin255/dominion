@@ -44,7 +44,7 @@ func TestAgentCheckpointResume(t *testing.T) {
 	for _, msg := range messages {
 		sendText(t, conn, sessionID, msg)
 
-		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		thinkingResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasThinking(f)
 		})
 		if thinkingResp == nil {
@@ -53,7 +53,7 @@ func TestAgentCheckpointResume(t *testing.T) {
 		if !strings.Contains(frameThinking(thinkingResp), expectedGreetingReasoning) {
 			t.Errorf("message %q: thinking = %q, want to contain %q", msg, frameThinking(thinkingResp), expectedGreetingReasoning)
 		}
-		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		textResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasText(f)
 		})
 		if textResp == nil {
@@ -80,13 +80,13 @@ func TestAgentCheckpointResume(t *testing.T) {
 		t.Errorf("ListMessages after 3 turns returned %d messages, want at least 6", gotCount)
 	}
 	for i, msg := range lmr.GetMessages() {
-		t.Logf("message[%d]: type=%s sender=%s content=%q", i, messageKind(msg), senderString(msg.GetSender()), messageText(msg))
+		t.Logf("message[%d]: type=%s role=%s content=%q", i, messageKind(msg), roleString(msg.GetRole()), messageText(msg))
 	}
 
 	// Verify user messages are present and in order
 	foundFirst := false
 	for _, msg := range lmr.GetMessages() {
-		if msg.GetSender() == game.FrameSender_FRAME_SENDER_USER && messageText(msg) == messages[0] {
+		if msg.GetRole() == game.MessageRole_MESSAGE_ROLE_USER && messageText(msg) == messages[0] {
 			foundFirst = true
 			break
 		}
@@ -101,23 +101,23 @@ func TestAgentCheckpointResume(t *testing.T) {
 
 	// Send follow-up referencing turn 1, carrying the greeting keyword.
 	followUp := "Hello, what is my name and what do I do for work?"
-	textFrame := buildTextFrame(sessionID, "player", followUp, game.FrameSender_FRAME_SENDER_USER)
+	textFrame := buildTextFrame(sessionID, "player", followUp)
 	writeWSFrame(t, conn2, textFrame)
 
-	followThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	followThinking := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if followThinking == nil {
 		t.Fatal("did not receive thinking response for follow-up after re-enter")
 	}
-	textResp := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	textResp := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textResp == nil {
 		t.Fatal("did not receive text response for follow-up after re-enter")
 	}
-	if textResp.GetSender() != game.FrameSender_FRAME_SENDER_AGENT {
-		t.Errorf("follow-up sender = %s, want AGENT", senderString(textResp.GetSender()))
+	if textResp.GetRole() != game.MessageRole_MESSAGE_ROLE_AGENT {
+		t.Errorf("follow-up role = %s, want AGENT", roleString(textResp.GetRole()))
 	}
 	if !strings.Contains(frameText(textResp), expectedGreetingText) {
 		t.Errorf("follow-up text = %q, want to contain %q", frameText(textResp), expectedGreetingText)
@@ -148,7 +148,7 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	for _, msg := range userMessages {
 		sendText(t, conn, sessionID, msg)
 
-		thinkingResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		thinkingResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasThinking(f)
 		})
 		if thinkingResp == nil {
@@ -157,7 +157,7 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 		if !strings.Contains(frameThinking(thinkingResp), expectedGreetingReasoning) {
 			t.Errorf("message %q: thinking = %q, want to contain %q", msg, frameThinking(thinkingResp), expectedGreetingReasoning)
 		}
-		textResp := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		textResp := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasText(f)
 		})
 		if textResp == nil {
@@ -187,16 +187,16 @@ func TestAgentCheckpointResumeVerifyContext(t *testing.T) {
 	defer conn2.Close()
 
 	thirdMsg := "Hello, turn three continuing"
-	textFrame := buildTextFrame(sessionID, "player", thirdMsg, game.FrameSender_FRAME_SENDER_USER)
+	textFrame := buildTextFrame(sessionID, "player", thirdMsg)
 	writeWSFrame(t, conn2, textFrame)
 
-	thirdThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	thirdThinking := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if thirdThinking == nil {
 		t.Fatal("third message: no thinking response after re-enter")
 	}
-	textR := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	textR := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if textR == nil {
@@ -237,10 +237,10 @@ func TestAgentConcurrentSerialization(t *testing.T) {
 	wantTexts := []string{expectedGreetingText, expectedFarewellText}
 
 	for i, want := range wantTexts {
-		_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasThinking(f)
 		})
-		textFrame := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+		textFrame := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 			return frameHasText(f)
 		})
 		if textFrame == nil {
@@ -309,8 +309,8 @@ func TestAgentCheckpointToolResultStatusPersists(t *testing.T) {
 	}
 	// Drain the terminal text frame and the wait FlowPart so the turn is
 	// fully settled (the in-progress board does not trigger the planner).
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameHasText(f) })
-	_ = drainWSFrame(t, conn, func(f *game.AgentFrame) bool { return frameWait(f) != nil })
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameHasText(f) })
+	_ = drainWSFrame(t, conn, func(f *game.TeamFrame) bool { return frameWait(f) != nil })
 
 	// when: the session is left (WS closed). ListMessages reads from the
 	// checkpoint, not the live socket, so it must reflect the neutral
@@ -398,7 +398,7 @@ func TestServiceSurvivesDisconnectDuringTurn(t *testing.T) {
 	// (catch block + finally → releaseMutex) is the code under test.
 	conn := connectAgentWS(t, sutHostURL, sutEnvName, saoleiTemplateID, sessionID)
 	sendText(t, conn, sessionID, "Hello, mid-turn abort")
-	firstThinking := drainWSFrame(t, conn, func(f *game.AgentFrame) bool {
+	firstThinking := drainWSFrame(t, conn, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if firstThinking == nil {
@@ -429,7 +429,7 @@ func TestServiceSurvivesDisconnectDuringTurn(t *testing.T) {
 	defer conn2.Close()
 	sendText(t, conn2, sessionID, "Hello, after reconnect")
 
-	reconnectThinking := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	reconnectThinking := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasThinking(f)
 	})
 	if reconnectThinking == nil {
@@ -439,7 +439,7 @@ func TestServiceSurvivesDisconnectDuringTurn(t *testing.T) {
 		t.Errorf("post-disconnect thinking = %q, want to contain %q",
 			frameThinking(reconnectThinking), expectedGreetingReasoning)
 	}
-	reconnectText := drainWSFrame(t, conn2, func(f *game.AgentFrame) bool {
+	reconnectText := drainWSFrame(t, conn2, func(f *game.TeamFrame) bool {
 		return frameHasText(f)
 	})
 	if reconnectText == nil {

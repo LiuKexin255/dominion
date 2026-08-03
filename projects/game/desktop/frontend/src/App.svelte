@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Session, Team, TeamAgent, TeamProfile, CreateTeamProfileRequest, AgentFrame, Config, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
-  import { FrameSender, TEMPLATE_SAOLEI, TEMPLATES } from './api'
+  import type { Session, Team, TeamAgent, TeamProfile, CreateTeamProfileRequest, TeamFrame, Config, MessagePart, FlowPart, WindowRef, CapturedImage, ChatStreamHandoff, HeldOperation, DebugResultHeldPayload, DebugResultReleasedPayload } from './api'
+  import { MessageRole, TEMPLATE_SAOLEI, TEMPLATES } from './api'
   import {
     setConfig,
     createSession,
@@ -65,7 +65,7 @@
   // former agentProfileName) — the per-tab routing dimension (FR-025).
   type ChatEntry = {
     messageId: string
-    sender: FrameSender
+    role: MessageRole
     timestamp: string
     agent?: string
     parts?: MessagePart[]
@@ -89,7 +89,7 @@
   // only when it accepts user input (FR-032).
   let teamAgents: TeamAgent[] = $state([])
   let selectedAgent = $state('')
-  // Per-agent message buckets — frames are routed by AgentFrame.agent.
+  // Per-agent message buckets — frames are routed by TeamFrame.agent.
   let chatMessages: Record<string, ChatEntry[]> = $state({})
   // Dedupe between the listMessages history fetch and the chat-stream seed
   // replay (same messageId/frameId): the Go chatstream seeds the session
@@ -130,7 +130,7 @@
   // live streaming share this single channel. The Go chatstream is per-session
   // (one stream, token rotation on every open), so the desktop opens ONE
   // stream per session (seeded by the first team agent) and routes inbound
-  // frames by AgentFrame.agent into per-agent tabs.
+  // frames by TeamFrame.agent into per-agent tabs.
   let chatStreamHandoff: ChatStreamHandoff | null = $state(null)
   let currentEventSource: EventSource | null = $state(null)
   let openingPromise: Promise<void> | null = $state(null)
@@ -474,7 +474,7 @@
           if (parts.length === 0) continue
           entries.push({
             messageId: mid ?? crypto.randomUUID(),
-            sender: resolveSender(m.sender),
+            role: resolveRole(m.role),
             timestamp: m.createTime ?? '',
             agent: agent.name,
             parts,
@@ -517,19 +517,21 @@
     }
   }
 
-  function senderFromString(raw: string): FrameSender {
-    if (raw === 'FRAME_SENDER_USER') return FrameSender.USER
-    if (raw === 'FRAME_SENDER_AGENT') return FrameSender.AGENT
-    if (raw === 'FRAME_SENDER_SYSTEM') return FrameSender.SYSTEM
-    return FrameSender.SYSTEM
+  function roleFromString(raw: string): MessageRole {
+    if (raw === 'MESSAGE_ROLE_USER') return MessageRole.USER
+    if (raw === 'MESSAGE_ROLE_AGENT') return MessageRole.AGENT
+    return MessageRole.AGENT
   }
 
-  // resolveSender normalizes a frame/message sender, which arrives as the
-  // protojson enum name string (or, defensively, as a numeric enum).
-  function resolveSender(sender: FrameSender | string | undefined): FrameSender {
-    if (typeof sender === 'number') return sender
-    if (typeof sender === 'string') return senderFromString(sender)
-    return FrameSender.SYSTEM
+  // resolveRole normalizes a frame/message role, which arrives as the
+  // protojson enum name string (or, defensively, as a numeric enum). The
+  // default is AGENT: live messageParts frames are always agent-produced, and
+  // flowParts control frames never render as conversation entries
+  // (specs/035-proto-contract-refine/contracts/frame-split.md §3.2).
+  function resolveRole(role: MessageRole | string | undefined): MessageRole {
+    if (typeof role === 'number') return role
+    if (typeof role === 'string') return roleFromString(role)
+    return MessageRole.AGENT
   }
 
   // homogeneousStreamKind classifies a content frame's parts for the streaming
@@ -543,12 +545,12 @@
   }
 
   // frameBucketAgent resolves the per-agent tab a frame belongs to (D12
-  // routing). Live frames carry AgentFrame.agent; seeded history replay frames
+  // routing). Live frames carry TeamFrame.agent; seeded history replay frames
   // carry no agent field (Go SeedFromHistory omits it), so they fall back to
   // seedAgent. A frame whose agent is NOT in Team.agents (unknown agent edge
   // case, desktop-contract §2.2) is routed into the default (first) tab with a
   // warning — never dropped, never crashes.
-  function frameBucketAgent(frame: AgentFrame): string {
+  function frameBucketAgent(frame: TeamFrame): string {
     const raw = frame.agent ?? seedAgent
     if (raw && teamAgents.some(a => a.name === raw)) return raw
     const fallback = teamAgents[0]?.name ?? ''
@@ -673,7 +675,7 @@
   // preceding entry by concatenating content onto the trailing same-kind part.
   // Every other messageParts frame (image, tool_call, tool_result, mixed)
   // starts a new entry. (data-model.md §4; spec 023 FR-005.)
-  function handleMessageParts(frame: AgentFrame, block: { parts?: MessagePart[] }, timestamp: string) {
+  function handleMessageParts(frame: TeamFrame, block: { parts?: MessagePart[] }, timestamp: string) {
     const incomingParts = block.parts ?? []
     // Graceful degradation: a messageParts frame with zero parts is a no-op.
     if (incomingParts.length === 0) return
@@ -685,13 +687,16 @@
     if (frame.frameId && renderedMessageIds.has(frame.frameId)) return
     if (frame.frameId) renderedMessageIds.add(frame.frameId)
 
-    const sender = resolveSender(frame.sender)
+    // Real-time messageParts frames are always agent-produced (role AGENT);
+    // history seed-replay frames carry their Message.role copy
+    // (specs/035-proto-contract-refine/research.md R3).
+    const role = resolveRole(frame.role)
     const kind = homogeneousStreamKind(incomingParts)
     const list = chatMessages[agent] ?? []
 
-    if (sender === FrameSender.AGENT && (kind === 'text' || kind === 'thinking')) {
+    if (role === MessageRole.AGENT && (kind === 'text' || kind === 'thinking')) {
       const last = list[list.length - 1]
-      if (last && last.sender === FrameSender.AGENT
+      if (last && last.role === MessageRole.AGENT
           && last.agent === agent
           && last.mergeKind === kind
           && last.parts && last.parts.length > 0) {
@@ -713,7 +718,7 @@
       ...chatMessages,
       [agent]: [...list, {
         messageId: frame.frameId ?? crypto.randomUUID(),
-        sender,
+        role,
         timestamp,
         agent,
         parts: incomingParts,
@@ -722,14 +727,14 @@
     }
   }
 
-  function handleAgentFrame(frame: AgentFrame) {
+  function handleAgentFrame(frame: TeamFrame) {
     const timestamp = frame.createTime || new Date().toISOString()
     // FR-004 frontend: surface every inbound chat frame at debug level. A no-op
     // when debug is off (logDebug short-circuits), so this is safe on the hot
     // SSE path.
     logDebug('frontend', 'inbound chat frame', {
       frame_id: frame.frameId,
-      sender: frame.sender,
+      role: frame.role,
       agent: frame.agent,
     })
     // A frame carries exactly one payload (protojson flattens the oneof):
@@ -756,7 +761,10 @@
             ...chatMessages,
             [agent]: [...(chatMessages[agent] ?? []), {
               messageId: frame.frameId ?? crypto.randomUUID(),
-              sender: FrameSender.SYSTEM,
+              // Control-signal warn entry: role is unused by ChatView (warn
+              // bubbles render from warnMessage only); AGENT is the server-side
+              // origin of the signal.
+              role: MessageRole.AGENT,
               timestamp,
               warnMessage: fp.warn.message ?? '',
             }],
@@ -853,7 +861,7 @@
           ...chatMessages,
           [targetAgent]: [...(chatMessages[targetAgent] ?? []), {
             messageId: msgId,
-            sender: FrameSender.USER,
+            role: MessageRole.USER,
             timestamp: new Date().toISOString(),
             agent: targetAgent,
             parts: optimisticParts,

@@ -40,6 +40,10 @@ service DeployService {
   }
 
   // ListEnvironments lists Environment resources under a scope.
+  //
+  // When the scope segment of parent is the AIP-159 wildcard "-" (e.g.
+  // deploy/scopes/-), environments from all scopes are returned.
+  // See https://google.aip.dev/159.
   rpc ListEnvironments(ListEnvironmentsRequest) returns (ListEnvironmentsResponse) {
     option (google.api.http) = {
       get: "/v1/{parent=deploy/scopes/*}/environments"
@@ -84,6 +88,22 @@ service DeployService {
 
     option (google.api.method_signature) = "name";
   }
+}
+
+// Scope is the collection-level resource that groups environments. It has no
+// standard methods (no CRUD RPCs): it exists for resource-hierarchy typing
+// (google.api.resource_reference) and to drive codegen of ParseScopeName, so
+// parent parsing is fully codegen-driven — no hand-written string prefix
+// stripping. Mirrors the Template resource pattern in projects/game.
+message Scope {
+  option (google.api.resource) = {
+    type: "deploy.infra.liukexin.com/Scope"
+    pattern: "deploy/scopes/{scope}"
+    singular: "scope"
+    plural: "scopes"
+  };
+
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
 }
 
 message Environment {

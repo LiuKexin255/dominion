@@ -1,6 +1,6 @@
 ---
 description: 调研、设计与规划者
-mode: primary
+mode: all
 model: zhipuai-coding-plan/glm-5.2
 reasoningEffort: max
 temperature: 1.0

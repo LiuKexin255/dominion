@@ -21,6 +21,8 @@ type Repository interface {
 
 	// ListByScope lists environments under a scope with pagination.
 	// It returns the matching environments, the next page token, and an error.
+	// When scope is "-", it matches environments across all scopes (AIP-159
+	// cross-collection reading; see https://google.aip.dev/159).
 	ListByScope(ctx context.Context, scope string, pageSize int32, pageToken string) ([]*Environment, string, error)
 
 	// Create persists a new environment. Returns ErrAlreadyExists if an environment

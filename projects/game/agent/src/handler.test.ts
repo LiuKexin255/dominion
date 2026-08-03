@@ -28,11 +28,7 @@ import { SessionTeam, SessionTeamStore } from "./session-team";
 import { OperationBridge } from "./operation-bridge";
 import { createEphemeralGameBuffer, createTeamSink } from "./team/team-sink";
 import { buildTeamGraph } from "./team/graph";
-import type { AgentFrame } from "../game_types/projects/game/AgentFrame";
-
-const FRAME_SENDER_USER = "FRAME_SENDER_USER";
-const FRAME_SENDER_AGENT = "FRAME_SENDER_AGENT";
-const FRAME_SENDER_SYSTEM = "FRAME_SENDER_SYSTEM";
+import type { UserFrame } from "../game_types/projects/game/UserFrame";
 
 // ---------------------------------------------------------------------------
 // Mock helpers
@@ -114,8 +110,9 @@ function createTeamStore(gate?: Gate): {
         plannerBasePrompt: "",
       });
       // Pre-built bridge/sink like the production factory (server.ts) — the
-      // SessionTeam constructor no longer creates them internally.
-      const bridge = new OperationBridge();
+      // SessionTeam constructor no longer creates them internally. sessionId/
+      // template are stamped on dispatched operation frames (FR-013).
+      const bridge = new OperationBridge(sessionId, template);
       const sink = createTeamSink(buffer);
       return new SessionTeam(handle, buffer, sessionId, template, bridge, sink);
     },
@@ -199,20 +196,21 @@ function createFakeStream(): FakeStream {
   return stream;
 }
 
-/** Build an inbound user messageParts frame (TextPart, sender USER). The
- * gateway injects both template_id and session_id into inbound frames
- * (api-contract.md §2.2), so tests carry them like the real path. */
+/** Build an inbound user messageParts UserFrame (TextPart). The gateway
+ * injects both template_id and session_id into inbound frames
+ * (api-contract.md §2.2), so tests carry them like the real path. UserFrame
+ * has no sender field — the inbound direction is naturally user-sent
+ * (specs/035-proto-contract-refine/contracts/frame-split.md §2). */
 function userContentFrame(
   sessionId: string,
   text: string,
   agent?: string,
-) {
+): UserFrame {
   return {
     sessionId,
     templateId: "saolei",
     payload: "messageParts",
     messageParts: { parts: [{ text: { content: text } }] },
-    sender: FRAME_SENDER_USER,
     ...(agent ? { agent } : {}),
   };
 }
@@ -467,7 +465,7 @@ describe("Handler.Connect user input routing", () => {
     const display = framesOfKind(stream, "messageParts");
     expect(display.length).toBeGreaterThan(0);
     for (const f of display) {
-      expect((f as Record<string, unknown>).sender).toBe(FRAME_SENDER_AGENT);
+      expect((f as Record<string, unknown>).role).toBe("MESSAGE_ROLE_AGENT");
       expect(["player", "planner"]).toContain(
         (f as Record<string, unknown>).agent,
       );
@@ -540,24 +538,6 @@ describe("Handler.Connect user input routing", () => {
     expect(framesOfKind(stream, "messageParts")).toHaveLength(0);
     expect(warnFrames(stream)).toHaveLength(1);
     expect(waitFrames(stream)).toHaveLength(1);
-  });
-
-  it("ignores non-user frames", async () => {
-    const { store } = createTeamStore();
-    const handler = createHandler(store);
-    const stream = createFakeStream();
-    handler.Connect(stream as unknown as Parameters<typeof handler.Connect>[0]);
-
-    stream.emit("data", {
-      sessionId: "sess-ignore",
-      payload: "messageParts",
-      messageParts: { parts: [{ text: { content: "echo" } }] },
-      sender: FRAME_SENDER_AGENT,
-      agent: "player",
-    });
-    await flush();
-
-    expect(stream.written).toHaveLength(0);
   });
 });
 

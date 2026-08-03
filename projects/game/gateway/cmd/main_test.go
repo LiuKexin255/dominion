@@ -118,8 +118,9 @@ type mockTeamServer struct {
 	game.UnimplementedTeamServiceServer
 
 	// onConnect is called when Connect is invoked. It receives the
-	// gRPC stream and can read/write AgentFrames. It should return when
-	// done or on error.
+	// gRPC stream and can read/write frames (Recv returns UserFrame, Send
+	// takes TeamFrame — the direction-split frame types). It should return
+	// when done or on error.
 	onConnect func(stream game.TeamService_ConnectServer) error
 }
 
@@ -127,16 +128,34 @@ func (m *mockTeamServer) Connect(stream game.TeamService_ConnectServer) error {
 	if m.onConnect != nil {
 		return m.onConnect(stream)
 	}
-	// Default: echo received frames back.
+	// Default: echo each received frame back as a TeamFrame (Recv returns
+	// UserFrame, Send takes TeamFrame).
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
 			return err
 		}
-		if err := stream.Send(frame); err != nil {
+		if err := stream.Send(echoAsTeamFrame(frame)); err != nil {
 			return err
 		}
 	}
+}
+
+// echoAsTeamFrame converts an inbound UserFrame into the outbound TeamFrame
+// echo, preserving the routing pair and payload. Recv returns UserFrame while
+// Send takes TeamFrame (specs/035-proto-contract-refine/contracts/
+// frame-split.md §1), so a server-side echo must translate the types.
+func echoAsTeamFrame(f *game.UserFrame) *game.TeamFrame {
+	out := &game.TeamFrame{
+		SessionId:  f.GetSessionId(),
+		TemplateId: f.GetTemplateId(),
+	}
+	if mp := f.GetMessageParts(); mp != nil {
+		out.Payload = &game.TeamFrame_MessageParts{MessageParts: mp}
+	} else if fp := f.GetFlowParts(); fp != nil {
+		out.Payload = &game.TeamFrame_FlowParts{FlowParts: fp}
+	}
+	return out
 }
 
 // setupTestGRPC starts a gRPC server with the given mock and returns the
@@ -236,7 +255,7 @@ func TestHandleWebSocketConnect_InvalidProtobufClosesConnection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
-	received := make(chan *game.AgentFrame, 1)
+	received := make(chan *game.UserFrame, 1)
 
 	mock := &mockTeamServer{
 		onConnect: func(stream game.TeamService_ConnectServer) error {
@@ -265,13 +284,13 @@ func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Build a valid AgentFrame (status is a FlowPart kind), marshal as binary
+	// Build a valid UserFrame (status is a FlowPart kind), marshal as binary
 	// protobuf, then append an unknown field (field 999, length-delimited)
 	// to verify proto.Unmarshal tolerates unknown fields — the forward-
 	// compatibility mechanism that replaced protojson's DiscardUnknown
 	// (specs/025-desktop-image-state-refine/contracts/image-transport-contract.md §2).
-	sendFrame := &game.AgentFrame{
-		Payload: &game.AgentFrame_FlowParts{
+	sendFrame := &game.UserFrame{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -326,13 +345,13 @@ func TestHandleWebSocketConnect_ForwardCompatUnknownFields(t *testing.T) {
 func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	mock := &mockTeamServer{
 		onConnect: func(stream game.TeamService_ConnectServer) error {
-			// Echo each received frame back.
+			// Echo each received frame back as a TeamFrame.
 			for {
 				frame, err := stream.Recv()
 				if err != nil {
 					return err
 				}
-				if err := stream.Send(frame); err != nil {
+				if err := stream.Send(echoAsTeamFrame(frame)); err != nil {
 					return err
 				}
 			}
@@ -358,9 +377,9 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 	// Send a message_parts frame (MessageParts with a single TextPart) —
 	// the display payload unit. The server echoes it back unmodified
 	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3/§4).
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "echo-session",
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "hello"}}},
@@ -384,7 +403,7 @@ func TestHandleWebSocketConnect_BidirectionalForward(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	recvFrame := new(game.AgentFrame)
+	recvFrame := new(game.TeamFrame)
 	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
@@ -464,9 +483,9 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 
 	// Send a valid frame — the gRPC server will error on Recv or the
 	// stream will error immediately. status is a FlowPart kind (spec 023).
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "err-session",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -495,7 +514,7 @@ func TestHandleWebSocketConnect_GRPCStreamError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
-	received := make(chan *game.AgentFrame, 1)
+	received := make(chan *game.UserFrame, 1)
 
 	mock := &mockTeamServer{
 		onConnect: func(stream game.TeamService_ConnectServer) error {
@@ -527,9 +546,9 @@ func TestHandleWebSocketConnect_SessionIDFromPath(t *testing.T) {
 
 	// Send a frame with a DIFFERENT session_id in the protobuf — gateway
 	// should overwrite it with the URL session_id. status is a FlowPart kind.
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "from-proto",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -566,10 +585,11 @@ func TestProtoUnmarshalForwardCompat(t *testing.T) {
 	// the forward-compatibility mechanism that replaced protojson's
 	// DiscardUnknown (specs/025-desktop-image-state-refine/contracts/
 	// image-transport-contract.md §2). Unknown fields are preserved per
-	// the proto spec, not discarded.
-	want := &game.AgentFrame{
+	// the proto spec, not discarded. The inbound frame type is UserFrame
+	// (the WebSocket adapter's Recv unmarshal target).
+	want := &game.UserFrame{
 		SessionId: "s1",
-		Payload: &game.AgentFrame_FlowParts{
+		Payload: &game.UserFrame_FlowParts{
 			FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 				{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 			}},
@@ -585,7 +605,7 @@ func TestProtoUnmarshalForwardCompat(t *testing.T) {
 	data = append(data, 0xBA, 0x3E, 0x06)
 	data = append(data, []byte("future")...)
 
-	frame := new(game.AgentFrame)
+	frame := new(game.UserFrame)
 	if err := proto.Unmarshal(data, frame); err != nil {
 		t.Fatalf("Unmarshal with unknown field: %v", err)
 	}
@@ -685,7 +705,7 @@ func TestHandleWebSocketConnect_ClientDisconnectNoLeak(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestContentFrameWithImageRoundtrip(t *testing.T) {
-	received := make(chan *game.AgentFrame, 1)
+	received := make(chan *game.UserFrame, 1)
 	statusSent := make(chan struct{})
 
 	mock := &mockTeamServer{
@@ -695,12 +715,13 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 				return err
 			}
 			received <- frame
-			// Reply with a StatusSignal FlowPart — the control-signal
-			// payload used for connectivity / lifecycle confirmation.
-			// status is a FlowPart kind (spec 023 C3 / FR-003).
-			if err := stream.Send(&game.AgentFrame{
-				SessionId: frame.GetSessionId(),
-				Payload: &game.AgentFrame_FlowParts{
+			// Reply with a StatusSignal FlowPart TeamFrame — the
+			// control-signal payload used for connectivity / lifecycle
+			// confirmation. status is a FlowPart kind (spec 023 C3 / FR-003).
+			if err := stream.Send(&game.TeamFrame{
+				SessionId:  frame.GetSessionId(),
+				TemplateId: frame.GetTemplateId(),
+				Payload: &game.TeamFrame_FlowParts{
 					FlowParts: &game.FlowParts{Parts: []*game.FlowPart{
 						{Kind: &game.FlowPart_Status{Status: &game.StatusSignal{Status: game.StatusSignalStatus_STATUS_SIGNAL_STATUS_IDLE}}},
 					}},
@@ -735,14 +756,12 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		pngData[i] = byte(i)
 	}
 
-	// Send a message_parts frame carrying [TextPart, ImagePart] — the
+	// Send a message_parts UserFrame carrying [TextPart, ImagePart] — the
 	// display payload for a multimodal user turn
 	// (specs/023-saolei-mcp-refine/contracts/content-model-contract.md §3).
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "shot-session",
-		FrameId:   "frame-1",
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Text{Text: &game.TextPart{Content: "look"}}},
@@ -809,7 +828,7 @@ func TestContentFrameWithImageRoundtrip(t *testing.T) {
 		t.Fatalf("read status: %v", err)
 	}
 
-	recvFrame := new(game.AgentFrame)
+	recvFrame := new(game.TeamFrame)
 	if err := proto.Unmarshal(resp, recvFrame); err != nil {
 		t.Fatalf("unmarshal status: %v", err)
 	}
@@ -839,7 +858,7 @@ func TestReadLimitSet(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := stream.Send(frame); err != nil {
+			if err := stream.Send(echoAsTeamFrame(frame)); err != nil {
 				return err
 			}
 			// Keep stream alive so the WS client can read the echoed frame.
@@ -874,10 +893,9 @@ func TestReadLimitSet(t *testing.T) {
 		largeData[i] = byte(i % 256)
 	}
 
-	sendFrame := &game.AgentFrame{
+	sendFrame := &game.UserFrame{
 		SessionId: "limit-test",
-		Sender:    game.FrameSender_FRAME_SENDER_USER,
-		Payload: &game.AgentFrame_MessageParts{
+		Payload: &game.UserFrame_MessageParts{
 			MessageParts: &game.MessageParts{
 				Parts: []*game.MessagePart{
 					{Kind: &game.MessagePart_Image{Image: &game.ImagePart{
