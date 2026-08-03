@@ -39,7 +39,6 @@ export interface Config {
 export interface Session {
   name: string
   sessionId: string
-  template: string
   createTime: string
 }
 
@@ -325,7 +324,6 @@ export interface SaoleiProfile {
 export interface TeamProfile {
   name: string
   profileName: string
-  template: string
   // spec.saolei → SaoleiProfile (flattened): the Wails view model lifts the
   // oneof variant fields to the TeamProfile top level (desktop/view_model.go
   // TeamProfileView); absent when the variant is unset. The base prompts are

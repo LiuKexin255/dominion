@@ -194,14 +194,13 @@ message Session {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  // The template resource name this session belongs to (e.g.
-  // "templates/saolei"). Derived from the parent "templates/{template}" at
-  // create time; clients do not set it in the resource body.
-  string template = 2 [
-    (google.api.field_behavior) = OUTPUT_ONLY,
-    (google.api.resource_reference) = { type: "game.liukexin.com/Template" }
-  ];
-  string session_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // The template and the session id are carried by the name pattern path
+  // segments (AIP-124: https://google.aip.dev/124); fields 2 (template) and
+  // 3 (session_id) removed (clean break,
+  // specs/035-proto-contract-refine/data-model.md §1.1).
+  reserved 2, 3;
+  reserved "template", "session_id";
+
   google.protobuf.Timestamp create_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
@@ -249,13 +248,14 @@ message TeamProfile {
   };
 
   string name = 1 [(google.api.field_behavior) = IDENTIFIER];
-  // The template resource name this profile belongs to (e.g.
-  // "templates/saolei"). Client-provided; the handler validates it against
-  // the resource-name template segment and the active oneof spec variant.
-  string template = 2 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference) = { type: "game.liukexin.com/Template" }
-  ];
+  // The template is carried by the name pattern path segment (AIP-124:
+  // https://google.aip.dev/124); the oneof spec consistency check derives it
+  // from the name/parent path segment instead of the removed body field.
+  // field 2 (template) removed (clean break,
+  // specs/035-proto-contract-refine/data-model.md §1.2).
+  reserved 2;
+  reserved "template";
+
   google.protobuf.Timestamp create_time = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp update_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 

@@ -1988,7 +1988,7 @@ func TestCreateSession_Template(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1","sessionId":"s1","template":"templates/saolei","createTime":"2024-01-01T00:00:00Z"}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/sessions/s1","sessionId":"s1","createTime":"2024-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 
@@ -2009,9 +2009,6 @@ func TestCreateSession_Template(t *testing.T) {
 	}
 	if view.SessionID != "s1" {
 		t.Errorf("expected SessionID %q, got %q", "s1", view.SessionID)
-	}
-	if view.Template != "templates/saolei" {
-		t.Errorf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 }
 
@@ -2267,9 +2264,6 @@ func TestCreateTeamProfile_Success(t *testing.T) {
 		if gotID != "my-profile" {
 			t.Errorf("expected team_profile_id %q, got %q", "my-profile", gotID)
 		}
-		if profile.GetTemplate() != "templates/saolei" {
-			t.Errorf("expected template %q, got %q", "templates/saolei", profile.GetTemplate())
-		}
 		if profile.GetSaolei() == nil || profile.GetSaolei().GetPlayerModel() != "openai/gpt-4o" {
 			t.Errorf("expected player_model %q, got %+v", "openai/gpt-4o", profile.GetSaolei())
 		}
@@ -2283,7 +2277,7 @@ func TestCreateTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected planner_prompt %q, got %q", "planner base prompt", profile.GetSaolei().GetPlannerPrompt())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet","playerPrompt":"player base prompt","plannerPrompt":"planner base prompt"}}`)
 	}))
 	defer srv.Close()
 
@@ -2367,7 +2361,7 @@ func TestGetTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected path %q, got %q", wantPath, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-4o","plannerModel":"anthropic/claude-3-5-sonnet"}}`)
 	}))
 	defer srv.Close()
 
@@ -2388,9 +2382,6 @@ func TestGetTeamProfile_Success(t *testing.T) {
 	}
 	if view.ProfileName != "my-profile" {
 		t.Errorf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.Template != "templates/saolei" {
-		t.Errorf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.PlayerModel != "openai/gpt-4o" {
 		t.Errorf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
@@ -2438,7 +2429,7 @@ func TestListTeamProfiles_Success(t *testing.T) {
 			t.Errorf("expected /api/v1/templates/saolei/profiles, got %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","template":"templates/saolei","saolei":{"playerModel":"a/b"}},{"name":"templates/saolei/profiles/p2","template":"templates/saolei"}],"nextPageToken":"next"}`)
+		fmt.Fprint(w, `{"teamProfiles":[{"name":"templates/saolei/profiles/p1","saolei":{"playerModel":"a/b"}},{"name":"templates/saolei/profiles/p2"}],"nextPageToken":"next"}`)
 	}))
 	defer srv.Close()
 
@@ -2507,7 +2498,7 @@ func TestUpdateTeamProfile_Success(t *testing.T) {
 			t.Errorf("expected planner_prompt %q, got %q", "custom planner base", profile.GetSaolei().GetPlannerPrompt())
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","template":"templates/saolei","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`)
+		fmt.Fprint(w, `{"name":"templates/saolei/profiles/my-profile","saolei":{"playerModel":"openai/gpt-5","playerPrompt":"custom player base","plannerPrompt":"custom planner base"}}`)
 	}))
 	defer srv.Close()
 

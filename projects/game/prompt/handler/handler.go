@@ -41,10 +41,11 @@ func NewHandler(teamProfileRepo domain.TeamProfileRepository) *Handler {
 // CreateTeamProfile creates a TeamProfile under a template (AIP-133:
 // https://google.aip.dev/133). The caller supplies the team_profile_id
 // (REQUIRED per the proto contract, spec 031-team-template-mode §2.3). The
-// template field of the resource body must agree with the parent, and the
-// template must agree with the active oneof spec variant — the handler
+// template is derived from the request parent (the resource-name path
+// segment); it must agree with the active oneof spec variant — the handler
 // validates the consistency (no implicit rules, spec 031-team-template-mode
-// directive 2).
+// directive 2; specs/035-proto-contract-refine/contracts/resource-fields.md
+// §2.3).
 func (h *Handler) CreateTeamProfile(ctx context.Context, req *game.CreateTeamProfileRequest) (*game.TeamProfile, error) {
 	tplName, err := game.ParseTemplateName(req.GetParent())
 	if err != nil {
@@ -154,12 +155,6 @@ func (h *Handler) UpdateTeamProfile(ctx context.Context, req *game.UpdateTeamPro
 	}
 
 	patch := req.GetTeamProfile()
-	if patch.GetTemplate() != "" {
-		patchTpl, err := game.ParseTemplateName(patch.GetTemplate())
-		if err != nil || patchTpl.TemplateID != name.TemplateID {
-			return nil, status.Errorf(codes.InvalidArgument, "team_profile.template %q does not match the resource name template %q", patch.GetTemplate(), name.TemplateID)
-		}
-	}
 
 	existing, err := h.teamProfileRepo.GetTeamProfile(ctx, name.TemplateID, name.ProfileID)
 	if err != nil {
@@ -199,21 +194,16 @@ func (h *Handler) DeleteTeamProfile(ctx context.Context, req *game.DeleteTeamPro
 // ─── Validation helpers ───────────────────────────────────────────────────
 
 // validateTeamProfileBody enforces the template/oneof consistency rule: the
-// resource body's template must equal the parent's template, and the template
+// template derived from the request parent (the resource-name path segment)
 // must agree with the active oneof spec variant (spec 031-team-template-mode
-// directive 2 — no implicit rules).
+// directive 2 — no implicit rules). The former resource-body template field
+// double-check is removed (specs/035-proto-contract-refine/contracts/
+// resource-fields.md §2.3).
 func validateTeamProfileBody(tp *game.TeamProfile, parent game.TemplateName) error {
 	if tp == nil {
 		return status.Error(codes.InvalidArgument, "team_profile is required")
 	}
-	bodyTpl, err := game.ParseTemplateName(tp.GetTemplate())
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "team_profile.template must be a template resource name: %v", err)
-	}
-	if bodyTpl.TemplateID != parent.TemplateID {
-		return status.Errorf(codes.InvalidArgument, "team_profile.template %q does not match the parent template %q", bodyTpl.String(), parent.String())
-	}
-	if err := validateSpecConsistency(bodyTpl, tp.GetSaolei() != nil); err != nil {
+	if err := validateSpecConsistency(parent, tp.GetSaolei() != nil); err != nil {
 		return err
 	}
 	return nil
@@ -241,8 +231,7 @@ func teamProfileToProto(p *domain.TeamProfile) *game.TeamProfile {
 	}
 
 	pb := &game.TeamProfile{
-		Name:     game.TeamProfileName{TemplateID: p.Template, ProfileID: p.TeamProfileName}.String(),
-		Template: game.TemplateName{TemplateID: p.Template}.String(),
+		Name: game.TeamProfileName{TemplateID: p.Template, ProfileID: p.TeamProfileName}.String(),
 		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 			PlayerModel:   p.SaoleiPlayerModel,
 			PlannerModel:  p.SaoleiPlannerModel,

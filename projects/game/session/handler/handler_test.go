@@ -60,14 +60,12 @@ func TestCreateSession(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name         string
-		req          *game.CreateSessionRequest
-		idGen        *mockIDGenerator
-		mock         *mockSessionRepo
-		wantName     string
-		wantID       string
-		wantTemplate string
-		wantCode     codes.Code
+		name     string
+		req      *game.CreateSessionRequest
+		idGen    *mockIDGenerator
+		mock     *mockSessionRepo
+		wantName string
+		wantCode codes.Code
 	}{
 		{
 			name:  "success - handler generates ID and returns proto with template-scoped name",
@@ -85,10 +83,8 @@ func TestCreateSession(t *testing.T) {
 					}, nil
 				},
 			},
-			wantName:     "templates/saolei/sessions/test-id-123",
-			wantID:       "test-id-123",
-			wantTemplate: "templates/saolei",
-			wantCode:     codes.OK,
+			wantName: "templates/saolei/sessions/test-id-123",
+			wantCode: codes.OK,
 		},
 		{
 			name:  "already exists - returns AlreadyExists status",
@@ -144,12 +140,6 @@ func TestCreateSession(t *testing.T) {
 			if got.GetName() != tt.wantName {
 				t.Fatalf("CreateSession() name = %q, want %q", got.GetName(), tt.wantName)
 			}
-			if got.GetSessionId() != tt.wantID {
-				t.Fatalf("CreateSession() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
-			}
-			if got.GetTemplate() != tt.wantTemplate {
-				t.Fatalf("CreateSession() template = %v, want %v", got.GetTemplate(), tt.wantTemplate)
-			}
 		})
 	}
 }
@@ -187,14 +177,11 @@ func TestListSessions(t *testing.T) {
 		if len(got.GetSessions()) != 2 {
 			t.Fatalf("ListSessions() returned %d sessions, want 2", len(got.GetSessions()))
 		}
-		if got.GetSessions()[0].GetSessionId() != "aaa" {
-			t.Fatalf("ListSessions()[0] session_id = %q, want %q", got.GetSessions()[0].GetSessionId(), "aaa")
-		}
 		if got.GetSessions()[0].GetName() != "templates/saolei/sessions/aaa" {
 			t.Fatalf("ListSessions()[0] name = %q, want %q", got.GetSessions()[0].GetName(), "templates/saolei/sessions/aaa")
 		}
-		if got.GetSessions()[1].GetSessionId() != "bbb" {
-			t.Fatalf("ListSessions()[1] session_id = %q, want %q", got.GetSessions()[1].GetSessionId(), "bbb")
+		if got.GetSessions()[1].GetName() != "templates/saolei/sessions/bbb" {
+			t.Fatalf("ListSessions()[1] name = %q, want %q", got.GetSessions()[1].GetName(), "templates/saolei/sessions/bbb")
 		}
 		if got.GetNextPageToken() != "" {
 			t.Fatalf("ListSessions() next_page_token = %q, want empty", got.GetNextPageToken())
@@ -271,8 +258,8 @@ func TestListSessions_Pagination(t *testing.T) {
 		if len(page2.GetSessions()) != 1 {
 			t.Fatalf("page 2: got %d sessions, want 1", len(page2.GetSessions()))
 		}
-		if page2.GetSessions()[0].GetSessionId() != "s3" {
-			t.Fatalf("page 2: session_id = %q, want %q", page2.GetSessions()[0].GetSessionId(), "s3")
+		if page2.GetSessions()[0].GetName() != "templates/saolei/sessions/s3" {
+			t.Fatalf("page 2: name = %q, want %q", page2.GetSessions()[0].GetName(), "templates/saolei/sessions/s3")
 		}
 		if page2.GetNextPageToken() != "" {
 			t.Fatalf("page 2: next_page_token = %q, want empty", page2.GetNextPageToken())
@@ -481,12 +468,10 @@ func Test_toStatusError(t *testing.T) {
 
 func Test_sessionToProto(t *testing.T) {
 	tests := []struct {
-		name         string
-		session      *domain.Session
-		wantNil      bool
-		wantName     string
-		wantID       string
-		wantTemplate string
+		name     string
+		session  *domain.Session
+		wantNil  bool
+		wantName string
 	}{
 		{
 			name:    "nil session returns nil",
@@ -500,10 +485,8 @@ func Test_sessionToProto(t *testing.T) {
 				SessionID:  "test",
 				CreateTime: time.Date(2025, 3, 20, 8, 0, 0, 0, time.UTC),
 			},
-			wantNil:      false,
-			wantName:     "templates/saolei/sessions/test",
-			wantID:       "test",
-			wantTemplate: "templates/saolei",
+			wantNil:  false,
+			wantName: "templates/saolei/sessions/test",
 		},
 		{
 			name: "session with zero create time has no create_time",
@@ -511,10 +494,8 @@ func Test_sessionToProto(t *testing.T) {
 				Template:  "saolei",
 				SessionID: "notime",
 			},
-			wantNil:      false,
-			wantName:     "templates/saolei/sessions/notime",
-			wantID:       "notime",
-			wantTemplate: "templates/saolei",
+			wantNil:  false,
+			wantName: "templates/saolei/sessions/notime",
 		},
 	}
 
@@ -532,12 +513,6 @@ func Test_sessionToProto(t *testing.T) {
 			}
 			if got.GetName() != tt.wantName {
 				t.Fatalf("sessionToProto() name = %q, want %q", got.GetName(), tt.wantName)
-			}
-			if got.GetSessionId() != tt.wantID {
-				t.Fatalf("sessionToProto() session_id = %q, want %q", got.GetSessionId(), tt.wantID)
-			}
-			if got.GetTemplate() != tt.wantTemplate {
-				t.Fatalf("sessionToProto() template = %v, want %v", got.GetTemplate(), tt.wantTemplate)
 			}
 		})
 	}

@@ -81,10 +81,9 @@ func (r *inMemoryTeamProfileRepo) DeleteTeamProfile(_ context.Context, template,
 }
 
 // saoleiProfile returns a proto TeamProfile with the saolei spec variant set.
-// template is the template resource name (e.g. "templates/saolei").
-func saoleiProfile(template string) *game.TeamProfile {
+// The template is derived from the request parent, not the resource body.
+func saoleiProfile() *game.TeamProfile {
 	return &game.TeamProfile{
-		Template: template,
 		Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 			PlayerModel:   "opencode-go/deepseek-v4-pro",
 			PlannerModel:  "opencode-go/deepseek-v4-pro",
@@ -104,7 +103,7 @@ func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	createReq := &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "default",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	}
 
 	// when — create
@@ -114,9 +113,6 @@ func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	assertStatusCode(t, err, codes.OK)
 	if created.GetName() != "templates/saolei/profiles/default" {
 		t.Fatalf("CreateTeamProfile() name = %q, want %q", created.GetName(), "templates/saolei/profiles/default")
-	}
-	if created.GetTemplate() != "templates/saolei" {
-		t.Fatalf("CreateTeamProfile() template = %q, want %q", created.GetTemplate(), "templates/saolei")
 	}
 	if created.GetSaolei().GetPlayerModel() != "opencode-go/deepseek-v4-pro" {
 		t.Fatalf("CreateTeamProfile() player_model = %q, want %q", created.GetSaolei().GetPlayerModel(), "opencode-go/deepseek-v4-pro")
@@ -143,9 +139,6 @@ func TestPromptService_CreateGetTeamProfile(t *testing.T) {
 	if got.GetName() != created.GetName() {
 		t.Fatalf("GetTeamProfile() name = %q, want %q", got.GetName(), created.GetName())
 	}
-	if got.GetTemplate() != created.GetTemplate() {
-		t.Fatalf("GetTeamProfile() template = %v, want %v", got.GetTemplate(), created.GetTemplate())
-	}
 	if got.GetSaolei().GetPlayerModel() != created.GetSaolei().GetPlayerModel() {
 		t.Fatalf("GetTeamProfile() player_model = %q, want %q", got.GetSaolei().GetPlayerModel(), created.GetSaolei().GetPlayerModel())
 	}
@@ -170,7 +163,7 @@ func TestPromptService_CreateTeamProfileValidation(t *testing.T) {
 			req: &game.CreateTeamProfileRequest{
 				Parent:        "profiles",
 				TeamProfileId: "default",
-				TeamProfile:   saoleiProfile("templates/saolei"),
+				TeamProfile:   saoleiProfile(),
 			},
 			wantErr: true,
 		},
@@ -179,30 +172,12 @@ func TestPromptService_CreateTeamProfileValidation(t *testing.T) {
 			req: &game.CreateTeamProfileRequest{
 				Parent:        "templates/unknown-template",
 				TeamProfileId: "default",
-				TeamProfile:   saoleiProfile("templates/saolei"),
+				TeamProfile:   saoleiProfile(),
 			},
 			wantErr: true,
 		},
 		{
-			name: "template mismatch with parent",
-			req: &game.CreateTeamProfileRequest{
-				Parent:        "templates/saolei",
-				TeamProfileId: "default",
-				TeamProfile:   saoleiProfile("templates/xxx"),
-			},
-			wantErr: true,
-		},
-		{
-			name: "template without saolei spec variant",
-			req: &game.CreateTeamProfileRequest{
-				Parent:        "templates/saolei",
-				TeamProfileId: "default",
-				TeamProfile:   &game.TeamProfile{Template: "templates/saolei"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "unspecified template without spec",
+			name: "saolei template requires saolei spec variant",
 			req: &game.CreateTeamProfileRequest{
 				Parent:        "templates/saolei",
 				TeamProfileId: "default",
@@ -215,7 +190,7 @@ func TestPromptService_CreateTeamProfileValidation(t *testing.T) {
 			req: &game.CreateTeamProfileRequest{
 				Parent:        "templates/saolei",
 				TeamProfileId: "bad/id",
-				TeamProfile:   saoleiProfile("templates/saolei"),
+				TeamProfile:   saoleiProfile(),
 			},
 			wantErr: true,
 		},
@@ -223,7 +198,7 @@ func TestPromptService_CreateTeamProfileValidation(t *testing.T) {
 			name: "empty team_profile_id is rejected (REQUIRED per proto)",
 			req: &game.CreateTeamProfileRequest{
 				Parent:      "templates/saolei",
-				TeamProfile: saoleiProfile("templates/saolei"),
+				TeamProfile: saoleiProfile(),
 			},
 			wantErr: true,
 		},
@@ -269,7 +244,7 @@ func TestPromptService_ListTeamProfiles(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "default",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
@@ -302,15 +277,14 @@ func TestPromptService_UpdateTeamProfileViaFieldMask(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "mask-profile",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update player_model only via FieldMask (oneof member path)
 	updateReq := &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/mask-profile",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/mask-profile",
 			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 				PlayerModel: "opencode-go/gpt-5",
 			}},
@@ -360,15 +334,14 @@ func TestPromptService_UpdateTeamProfilePromptViaFieldMask(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "prompt-profile",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update player_prompt only via FieldMask (oneof member path)
 	updateReq := &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/prompt-profile",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/prompt-profile",
 			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 				PlayerPrompt: "custom player base",
 			}},
@@ -418,15 +391,14 @@ func TestPromptService_UpdateTeamProfileWholeSpec(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "whole-spec",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
 	// when — update the whole saolei spec via FieldMask path "saolei"
 	updateReq := &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/whole-spec",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/whole-spec",
 			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 				PlayerModel:  "model-p",
 				PlannerModel: "model-l",
@@ -456,15 +428,14 @@ func TestPromptService_UpdateTeamProfileValidation(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "unknown-path-profile",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
-	// when — update with unknown FieldMask path
+	// when — update with an unknown FieldMask path
 	_, err = h.UpdateTeamProfile(ctx, &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/unknown-path-profile",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/unknown-path-profile",
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nonexistent_field"}},
 	})
@@ -472,12 +443,10 @@ func TestPromptService_UpdateTeamProfileValidation(t *testing.T) {
 	// then — returns InvalidArgument
 	assertStatusCode(t, err, codes.InvalidArgument)
 
-	// when — update with an explicit template that agrees with the resource
-	// name: must succeed (template consistency against the name is validated)
+	// when — update with a matching oneof-member mask path: must succeed
 	_, err = h.UpdateTeamProfile(ctx, &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/unknown-path-profile",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/unknown-path-profile",
 			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 				PlayerModel: "x",
 			}},
@@ -498,8 +467,7 @@ func TestPromptService_UpdateTeamProfileNotFound(t *testing.T) {
 	// when — update missing profile
 	updateReq := &game.UpdateTeamProfileRequest{
 		TeamProfile: &game.TeamProfile{
-			Name:     "templates/saolei/profiles/ghost",
-			Template: "templates/saolei",
+			Name: "templates/saolei/profiles/ghost",
 			Spec: &game.TeamProfile_Saolei{Saolei: &game.SaoleiProfile{
 				PlayerModel: "opencode-go/deepseek-v4-pro",
 			}},
@@ -543,7 +511,7 @@ func Test_applyTeamProfileMask(t *testing.T) {
 		},
 		{
 			name:              "nil mask without spec leaves existing unchanged",
-			patch:             &game.TeamProfile{Template: "templates/saolei"},
+			patch:             &game.TeamProfile{},
 			mask:              nil,
 			wantPlayer:        "old-player",
 			wantPlanner:       "old-planner",
@@ -552,7 +520,7 @@ func Test_applyTeamProfileMask(t *testing.T) {
 		},
 		{
 			name:              "empty mask paths without spec leaves existing unchanged",
-			patch:             &game.TeamProfile{Template: "templates/saolei"},
+			patch:             &game.TeamProfile{},
 			mask:              &fieldmaskpb.FieldMask{Paths: nil},
 			wantPlayer:        "old-player",
 			wantPlanner:       "old-planner",
@@ -687,7 +655,7 @@ func TestPromptService_DeleteTeamProfile(t *testing.T) {
 	_, err := h.CreateTeamProfile(ctx, &game.CreateTeamProfileRequest{
 		Parent:        "templates/saolei",
 		TeamProfileId: "to-delete",
-		TeamProfile:   saoleiProfile("templates/saolei"),
+		TeamProfile:   saoleiProfile(),
 	})
 	assertStatusCode(t, err, codes.OK)
 
@@ -796,9 +764,6 @@ func Test_teamProfileToProto(t *testing.T) {
 			}
 			if got.GetName() != tt.wantName {
 				t.Fatalf("teamProfileToProto() name = %q, want %q", got.GetName(), tt.wantName)
-			}
-			if got.GetTemplate() != "templates/saolei" {
-				t.Fatalf("teamProfileToProto() template = %q, want %q", got.GetTemplate(), "templates/saolei")
 			}
 			if got.GetSaolei() == nil {
 				t.Fatalf("teamProfileToProto() saolei spec is nil, want set")

@@ -20,8 +20,6 @@ func TestSessionViewFromProto(t *testing.T) {
 	createTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	proto := &game.Session{
 		Name:       "templates/saolei/sessions/test-session-1",
-		SessionId:  "test-session-1",
-		Template:   "templates/saolei",
 		CreateTime: timestamppb.New(createTime),
 	}
 
@@ -34,9 +32,6 @@ func TestSessionViewFromProto(t *testing.T) {
 	}
 	if view.SessionID != "test-session-1" {
 		t.Fatalf("expected SessionID %q, got %q", "test-session-1", view.SessionID)
-	}
-	if view.Template != "templates/saolei" {
-		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.CreateTime != "2024-01-01T00:00:00Z" {
 		t.Fatalf("expected CreateTime %q, got %q", "2024-01-01T00:00:00Z", view.CreateTime)
@@ -88,11 +83,11 @@ func TestListSessionsViewFromProto(t *testing.T) {
 	proto := &game.ListSessionsResponse{
 		Sessions: []*game.Session{
 			{
-				SessionId:  "s1",
+				Name:       "templates/saolei/sessions/s1",
 				CreateTime: timestamppb.New(createTime1),
 			},
 			{
-				SessionId:  "s2",
+				Name:       "templates/saolei/sessions/s2",
 				CreateTime: timestamppb.New(createTime2),
 			},
 		},
@@ -270,8 +265,7 @@ func TestTeamViewFromProto_NoAgents(t *testing.T) {
 func TestTeamProfileViewFromProto(t *testing.T) {
 	// given: a proto TeamProfile with the saolei spec variant
 	proto := &game.TeamProfile{
-		Name:     "templates/saolei/profiles/my-profile",
-		Template: "templates/saolei",
+		Name: "templates/saolei/profiles/my-profile",
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   "openai/gpt-4o",
@@ -291,9 +285,6 @@ func TestTeamProfileViewFromProto(t *testing.T) {
 	}
 	if view.ProfileName != "my-profile" {
 		t.Fatalf("expected ProfileName %q, got %q", "my-profile", view.ProfileName)
-	}
-	if view.Template != "templates/saolei" {
-		t.Fatalf("expected Template %q, got %q", "templates/saolei", view.Template)
 	}
 	if view.PlayerModel != "openai/gpt-4o" {
 		t.Fatalf("expected PlayerModel %q, got %q", "openai/gpt-4o", view.PlayerModel)
@@ -358,8 +349,7 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 	proto := &game.ListTeamProfilesResponse{
 		TeamProfiles: []*game.TeamProfile{
 			{
-				Name:     "templates/saolei/profiles/p1",
-				Template: "templates/saolei",
+				Name: "templates/saolei/profiles/p1",
 				Spec: &game.TeamProfile_Saolei{
 					Saolei: &game.SaoleiProfile{
 						PlayerModel:   "a/b",
@@ -370,8 +360,7 @@ func TestListTeamProfilesViewFromProto(t *testing.T) {
 				},
 			},
 			{
-				Name:     "templates/saolei/profiles/p2",
-				Template: "templates/saolei",
+				Name: "templates/saolei/profiles/p2",
 			},
 		},
 		NextPageToken: "next-token-7",

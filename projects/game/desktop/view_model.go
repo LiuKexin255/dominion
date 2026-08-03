@@ -15,7 +15,6 @@ import (
 type SessionView struct {
 	Name       string `json:"name"`
 	SessionID  string `json:"sessionId"`
-	Template   string `json:"template"`
 	CreateTime string `json:"createTime,omitempty"`
 }
 
@@ -81,7 +80,6 @@ type CreateTeamProfileView struct {
 type TeamProfileView struct {
 	Name          string `json:"name"`
 	ProfileName   string `json:"profileName"`
-	Template      string `json:"template"`
 	PlayerModel   string `json:"playerModel"`
 	PlannerModel  string `json:"plannerModel"`
 	PlayerPrompt  string `json:"playerPrompt"`
@@ -117,15 +115,22 @@ type ChatStreamHandoff struct {
 	LastEventID int64  `json:"lastEventId"`
 }
 
-// sessionViewFromProto converts a proto Session to a view model.
+// sessionViewFromProto converts a proto Session to a view model. The session
+// id is derived from the Session resource name
+// (templates/{template}/sessions/{session}) so the frontend keeps the Wails
+// `sessionId` JSON shape without a separate proto field
+// (specs/035-proto-contract-refine/contracts/resource-fields.md §3.1).
 func sessionViewFromProto(s *game.Session) *SessionView {
 	if s == nil {
 		return nil
 	}
+	sessionID := ""
+	if name, err := game.ParseSessionName(s.GetName()); err == nil {
+		sessionID = name.SessionID
+	}
 	return &SessionView{
 		Name:       s.GetName(),
-		SessionID:  s.GetSessionId(),
-		Template:   s.GetTemplate(),
+		SessionID:  sessionID,
 		CreateTime: timestampString(s.GetCreateTime()),
 	}
 }
@@ -253,7 +258,6 @@ func teamProfileViewFromProto(p *game.TeamProfile) *TeamProfileView {
 	view := &TeamProfileView{
 		Name:        p.GetName(),
 		ProfileName: profileName,
-		Template:    p.GetTemplate(),
 	}
 	if saolei != nil {
 		view.PlayerModel = saolei.GetPlayerModel()

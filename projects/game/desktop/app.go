@@ -350,8 +350,12 @@ func (a *App) CreateSession(template string) (*SessionView, error) {
 		})
 		return nil, err
 	}
+	sessionID := ""
+	if name, err := game.ParseSessionName(session.GetName()); err == nil {
+		sessionID = name.SessionID
+	}
 	a.logger.Info("backend", "Session created", map[string]any{
-		"session_id":     session.GetSessionId(),
+		"session_id":     sessionID,
 		"template":       template,
 		"trace_id":       traceID,
 		"correlation_id": corrID,
@@ -1283,7 +1287,6 @@ func (a *App) CreateTeamProfile(template string, req CreateTeamProfileView) (*Te
 	protoProfile := &game.TeamProfile{
 		// Resource name construction is codegen-owned (spec
 		// 031-team-template-mode contracts/api-contract.md §5).
-		Template: game.TemplateName{TemplateID: template}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   req.PlayerModel,
@@ -1430,8 +1433,7 @@ func (a *App) UpdateTeamProfile(template, profileName string, profile TeamProfil
 	protoProfile := &game.TeamProfile{
 		// Resource name construction is codegen-owned (spec
 		// 031-team-template-mode contracts/api-contract.md §5).
-		Name:     game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
-		Template: game.TemplateName{TemplateID: template}.String(),
+		Name: game.TeamProfileName{TemplateID: template, ProfileID: profileName}.String(),
 		Spec: &game.TeamProfile_Saolei{
 			Saolei: &game.SaoleiProfile{
 				PlayerModel:   profile.PlayerModel,
