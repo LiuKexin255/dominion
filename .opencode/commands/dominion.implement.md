@@ -108,7 +108,7 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ### Step 1 — 分发 developer（per-phase 开发）
 
-通过 Task 工具启动子代理 `developer` 执行该 phase。委派时必须：
+通过工具启动 subagent `developer` 执行该 phase。委派时必须：
 
 - 明确说明负责的 phase（例如 `specs/[xxx-xxx]/tasks.md` 当中 Phase x）
 - 要求 developer 在 coding 前按 SDD 规范阅读 spec 文档和其他要求的文档
@@ -129,11 +129,11 @@ You **MUST** consider the user input before proceeding (if not empty).
 1. **一致性校验**：developer 的反馈与代码仓库是否一致（例如 developer 声明修改的文件是否被更改、新增的文件是否存在）。
 2. **符合性校验**：developer 的工作内容是否与 spec/plan/task 要求一致。
 
-任一校验不通过，回到 Step 1 resume developer 子代理并反馈问题让其修改，重复至通过。
+任一校验不通过，回到 Step 1 resume `developer` subagent 并反馈问题让其修改，重复至通过。
 
 ### Step 3 — 分发 reviewer（per-phase 代码审查）
 
-通过 Task 工具启动子代理 `reviewer` 对该 phase 的代码变更进行审查。委派时**必须显式**说明：
+通过工具启动 subagent `reviewer` 对该 phase 的代码变更进行审查。委派时**必须显式**说明：
 
 - 参考文档列表（该 phase 的 Required Reading，同样**禁止删减/总结**）
 - 需要 review 的代码文件列表
@@ -150,9 +150,9 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 ### Step 4 — 修复回路
 
-对于 Step 2 或 Step 3 出现的任何问题，resume developer 子代理并反馈问题让其修改。代码修改后**必须**再次执行 Step 2 校验与 Step 3 review。**重复 Step 2 到 Step 4 直到所有问题被解决且无新增问题**，才允许准入到提交环节。
+对于 Step 2 或 Step 3 出现的任何问题，resume `developer` subagent 并反馈问题让其修改。代码修改后**必须**再次执行 Step 2 校验与 Step 3 review。**重复 Step 2 到 Step 4 直到所有问题被解决且无新增问题**，才允许准入到提交环节。
 
-> 准出门控：[ ] **当前**代码子代理 `reviewer` 评审 PASS。**禁止**修改后未经评审准出。
+> 准出门控：[ ] **当前**代码 subagent `reviewer` 评审 PASS。**禁止**修改后未经评审准出。
 
 ### Step 5 — 提交
 
