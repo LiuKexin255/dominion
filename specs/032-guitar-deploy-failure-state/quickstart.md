@@ -1,100 +1,129 @@
 # Quickstart: Guitar Deploy Failure Environment Diagnostics
 
 **Feature**: 032-guitar-deploy-failure-state
-**Date**: 2026-08-02
+**Date**: 2026-08-02（初版）, 2026-08-03（修订：per-service 状态验证）
 
-本文件为验证指南：如何端到端证明本特性工作正常。不含完整实现代码（实现见后续 `tasks.md`）。
+本文档为可运行的端到端验证指南，证明本特性（per-service 状态 + describe 主线 + guitar 诊断）工作正常。分两部分：①deploy service / describe 侧单测验证（确定性，不依赖远端部署）；②端到端冒烟（依赖 deploy service 新版上线 infra.liukexin.com）。
 
 ## 前置条件
 
-1. 仓库可编译：`bazel build //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar`。
-2. 已安装 `deploy` 与 `guitar` 到 `$PATH`：
-   - `bazel run //:deploy_install`
-   - `bazel run //:guitar_install`
-3. 可访问 deploy service（默认 `http://infra.liukexin.com`；可用 `--endpoint` 覆盖）。
-4. 具备一个可部署的环境配置（deploy.yaml），并能构造"部署不成功"场景（见下）。
+- 仓库已 `bazel build //...` 通过。
+- deploy service endpoint 可达：`http://infra.liukexin.com`（`.env/cli.json` 默认 scope `liukexin`）。
+- 可用的测试 testplan：`experimental/ts/grpc_hello_world/testplan/interface_test.yaml`（deploy.yaml 含 2 个 artifact：service + gateway，env 名 `liukexin.{{run}}`）。
+- **端到端冒烟（第二部分）额外前置**：deploy service **新版本**（含 `EnvironmentStatus.services` 字段）已部署到 infra.liukexin.com。deploy service 因无法自举（`projects/infra/deploy/README.md:24-28`）经其独立 k8s 部署流程上线，**不**经 guitar/testplan——故端到端冒烟须在 deploy service 新版上线后进行；若远端仍为旧版，第二部分会回退到初版行为（无 per-service 文本），此时第一部分单测仍为权威验收。
 
-## 单测验证（快速反馈，PR 必过）
+## 第一部分：单测验证（确定性，主验收门禁）
 
-```bash
-bazel test //tools/release/deploy/v3:deploy_test     # 含新增 describe_test.go
-bazel test //tools/test/guitar/pkg/run:run_test  # 含扩展的 deploy-failure 用例
-```
-
-**期望**：全绿。关键断言：
-- `describe_test.go`：`describeCommand` 对 FAILED/READY/PENDING/WAITING_ROLLOUT/不存在 等场景输出正确字段（状态中文、message、服务列表、时间戳），格式见 [data-model.md](./data-model.md) 输出模型。
-- `del_list_test.go`（`TestListCommand`）：增补 WAITING_ROLLOUT 环境断言（`formatState` 扩展波及 list）。
-- guitar `run_test.go` 的 "deploy failure" 用例：调用顺序为 `apply → describe → del`；`describe` 实参含 `--timeout=10s` 与 `fullEnvName`；`describe` 收到的 ctx `Err()==nil`（非取消上下文，外层 ctx 已取消）；`SuiteResult.Err` 为原始 apply 错误（未被诊断掩盖）。
-
-## 端到端验证 1：`deploy describe` 单命令（人工可跑）
-
-**目的**：验证新 `describe` 命令对真实环境的输出。
-
-1. 部署一个可就绪的测试环境（或复用已存在的 test 环境）：
-   ```bash
-   deploy apply --run ltabcd01 //path/to/some/deploy.yaml
-   ```
-2. 待其就绪后查询：
-   ```bash
-   deploy describe game.ltabcd01
-   ```
-3. **期望输出**（字段顺序见 [contracts/deploy-describe.md](./contracts/deploy-describe.md)）：
-   ```
-   环境 game.ltabcd01
-   状态: 就绪
-   服务:
-      - <service> (app=<app>) [artifact]
-   最近调和: <RFC3339>
-   最近成功: <RFC3339>
-   ```
-4. 查询不存在的环境：
-   ```bash
-   deploy describe game.nonexist
-   ```
-   **期望**：输出 `环境 game.nonexist 不存在`，退出码非零。
-5. 清理：`deploy del game.ltabcd01`。
-
-## 端到端验证 2：guitar 部署失败时打印诊断（核心场景）
-
-**目的**：验证 spec FR-001~FR-004、SC-001/SC-002/SC-003。
-
-构造部署失败场景的二选一：
-
-- **A. 超时场景**：准备一个 deploy.yaml，其 suite `timeout` 或全局 `--timeout` 设得很短（如 `--timeout=20s`），使环境未及就绪即超时。
-- **B. 失败终态场景**：准备一个 deploy.yaml 引用一个会拉镜像失败/无法就绪的 service（例如不存在的 image target），使环境达到 `FAILED`。
-
-执行：
+deploy service 不进行大型测试（`projects/infra/deploy/README.md:28`），故单测是 deploy service 侧变更的权威验收。
 
 ```bash
-guitar run <plan-with-failing-deploy.yaml>
+# deploy service 全量单测（proto 映射 / domain / reconcile / storage / runtime / handler）
+bazel test //projects/infra/deploy/...
+
+# deploy CLI v3（describe per-service 输出）
+bazel test //tools/release/deploy/v3:deploy_test
+
+# guitar（诊断 hook 行为，无改动，回归）
+bazel test //tools/test/guitar/pkg/run:run_test
 ```
 
-**期望**（控制台）：
-- 出现 `--- Suite: <name> ---` 头与 `  Deploy`。
-- 部署失败后出现醒目诊断头部行 `  --- 环境状态 (env=<scope>.<runID>) ---`，紧随其后是顶格的 `deploy describe` 详情文本：
-  - 场景 A（超时）：`状态:` 显示 `部署中` 或 `等待滚动发布`（区分超时未完成，满足 SC-002）。
-  - 场景 B（失败）：`状态: 失败`，并出现 `说明: <失败原因，含哪个 service>`（满足 SC-001），`服务:` 列出本次部署的 service（满足 SC-003）。
-- 随后 `  Cleanup` 正常执行，环境被删除（满足 FR-007/SC-004）。
-- Summary 中该 suite 为 `failure, error: deploy apply ...`（原始错误未被改写，满足 FR-006）。
+**须新增/扩展的断言点**（实现阶段在 tasks.md 细化，此处为验证目标）：
 
-## 端到端验证 3：成功路径无影响（回归）
+- `domain`：`buildInitialServiceStatuses` 对 artifacts+infras 产出正确 PENDING 列表；`cloneStatus` 深拷贝 Services（修改副本不影响原）。
+- `service/reconcile_test.go`：`applyAndWait` 转移写入初始 PENDING Services；`retainWaitingRollout`/`markFailedFromRollout`/`markReadyFromRollout` 持久化 CheckRollout 返回的 Services；`transitionToReconciling`/`transitionToDeleting` 清空 Services。
+- `storage/mongo_test.go`：Services 往返（写入→读回一致）；nil Services 清空 stale（先写非空再写 nil → 读回为空）。
+- `runtime/k8s/rollout_test.go`：`CheckRollout` 产出 per-service 列表（含 failed 时其余服务状态仍上报，验证不再 early-return）；env-level State/Message 由 per-service 正确派生。
+- `handler_test.go`：`GetEnvironment` 返回的 `status.services` 与 domain 一致。
+- `v3/describe_test.go`：per-service 状态文本内联（READY/WAITING/FAILED/PENDING）；有 per-service 数据时无 `说明:` 行；无 per-service 且 message 非空时输出 `说明:`。
 
-**目的**：验证 FR-008/SC-005。
+**通过标准**：上述全部 `bazel test` 用例 PASS。
+
+## 第二部分：端到端冒烟（依赖 deploy service 新版上线）
+
+> 本部分为**冒烟验证**，非强制 testplan 门禁（deploy service 因无法自举不进行大型测试，见 [../plan.md](./plan.md) Constitution Check 原则 VI）。目的是在 deploy service 新版上线后，人工确认 per-service 状态在真实 guitar 失败诊断中可见。
+
+### 场景 A：部署超时（验证 per-service 状态 + 时序空窗消除）
+
+用极短 `--timeout` 触发部署超时，观察诊断输出是否列出每个服务及其状态。
 
 ```bash
-guitar run <plan-with-healthy-deploy.yaml>
+guitar run experimental/ts/grpc_hello_world/testplan/interface_test.yaml --timeout=5s
 ```
 
-**期望**：输出与未引入本特性时完全一致——无诊断头部行、无 describe 文本；suite 成功；环境正常清理。
+**预期**（deploy service 新版上线后）：
+- 控制台在 `  --- 环境状态 (env=liukexin.<run>) ---` 头部后，顶格输出 describe：
+  - `状态: 等待滚动发布`（或 `部署中`，取决于首个 checkRollout 是否完成）
+  - `服务:` 列表，每个 artifact 一行，含 per-service 状态文本：
+    - 若在空窗期（applyAndWait 已写、checkRollout 未完成）：`  - service (app=grpc-hello-world-ts) [artifact] 已提交，等待观测` + `  - gateway (...) [artifact] 已提交，等待观测`
+    - 若 checkRollout 已完成：失败/等待的服务显示 ` 等待发布: ...` 或 ` 失败: ...`，已就绪的显示 ` 就绪`
+  - **无 `说明:` 行**（有 per-service 数据时按契约不输出）
+- 原始错误保留：`suite default: failure, error: deploy apply ...: signal: killed`
+- cleanup 仍执行：`环境 liukexin.<run> 已删除`
 
-## 边界验证
+**对比初版**：初版同场景 `说明:` 为空（message 未填充）、服务列表无状态文本；修订后 per-service 状态稳定可见。
 
-- **环境创建前即失败**（如镜像推送失败 / deploy.yaml 配置错误）：deploy apply 在环境创建前报错，`describe` 会返回"环境不存在"。**期望**：guitar 向 stderr 打 warning，suite 仍以原始 apply 错误失败（满足 FR-005）。
-- **非 TTY 输出**：`guitar run <plan> 2>&1 | tee out.log`，**期望**：日志中无 ANSI 颜色码（满足 FR-009）。
-- **describe 自身失败**（deploy service 临时不可达）：**期望**：guitar 打 warning，不崩溃，cleanup 仍执行（满足 FR-006）。
+### 场景 B：部署成功（验证零影响，FR-008）
 
-## 通过判据
+```bash
+guitar run experimental/ts/grpc_hello_world/testplan/interface_test.yaml --timeout=60s
+```
 
-- 单测全绿。
-- 端到端验证 1/2/3 与边界验证的"期望"全部符合。
-- 失败场景下，用户能仅凭控制台诊断信息读出失败原因与涉及的 service（无需手动二次查询 deploy service）。
+**预期**：
+- apply 成功，**不**打印 `  --- 环境状态 ---` 头部、**不**调用 describe（成功路径不进诊断分支）。
+- 测试通过（或按测试本身结果），输出与未引入本特性一致。
+
+### 场景 C：standalone describe（READY 环境）
+
+部署一个环境后，直接调 describe 观察 READY 态 per-service 状态：
+
+```bash
+# 先 apply 一个环境（手动或借用 testplan 的 deploy.yaml）
+deploy apply --run smoke032 experimental/ts/grpc_hello_world/testplan/deploy.yaml
+# 轮询至就绪后
+deploy describe liukexin.smoke032
+# 清理
+deploy del liukexin.smoke032
+```
+
+**预期**：
+```
+环境 liukexin.smoke032
+状态: 就绪
+服务:
+  - service (app=grpc-hello-world-ts) [artifact] 就绪
+  - gateway (app=grpc-hello-world-ts) [artifact] 就绪
+最近调和: <ts>
+最近成功: <ts>
+```
+- 每个 artifact 显示 ` 就绪`，无 `说明:` 行（READY message 历来为 "ready"，与状态行冗余，契约规定有 per-service 时不输出）。
+
+### 场景 D：环境不存在（降级，FR-005）
+
+```bash
+deploy describe liukexin.nonexistent032
+```
+
+**预期**：输出 `环境 liukexin.nonexistent032 不存在`，退出码 1。guitar 场景下转为 stderr warning，原始部署错误保留。
+
+## 非终端输出边界（FR-009）
+
+```bash
+guitar run experimental/ts/grpc_hello_world/testplan/interface_test.yaml --timeout=5s 2>&1 | cat
+```
+
+**预期**：管道输出无 ANSI 颜色码（describe 输出本就无色；Reporter 头部行遵循 `checkTerminal` 降级）。
+
+## 验收门禁总结
+
+| 层 | 门禁 | 责任 |
+|----|------|------|
+| deploy service / describe / guitar 单测 | 第一部分 `bazel test` 全 PASS | **主验收**（deploy service 不进行大型测试） |
+| 端到端冒烟（per-service 可见、零影响、降级） | 第二部分场景 A~D 人工确认 | 冒烟（依赖 deploy service 新版上线，非阻塞门禁） |
+
+## 参考
+
+- 数据契约：[contracts/environment-status.md](./contracts/environment-status.md)
+- describe 契约：[contracts/deploy-describe.md](./contracts/deploy-describe.md)
+- guitar 契约：[contracts/guitar-integration.md](./contracts/guitar-integration.md)
+- 输出模型：[data-model.md](./data-model.md)
+- deploy service 大型测试例外：`projects/infra/deploy/README.md:28`、[plan.md](./plan.md) Constitution Check 原则 VI

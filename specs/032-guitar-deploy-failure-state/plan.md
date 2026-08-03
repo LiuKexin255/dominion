@@ -1,6 +1,6 @@
 # Implementation Plan: Guitar Deploy Failure Environment Diagnostics
 
-**Branch**: `032-guitar-deploy-failure-state` | **Date**: 2026-08-02 | **Spec**: [spec.md](./spec.md)
+**Branch**: `032-guitar-deploy-failure-state` | **Date**: 2026-08-02 (revised 2026-08-03) | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `/specs/032-guitar-deploy-failure-state/spec.md`
 
@@ -8,27 +8,44 @@
 
 When `guitar run` 执行某 suite 的部署步骤不成功时，当前仅返回一句 `deploy apply <path>: <error>`，无法直观看出环境最终状态、失败原因（哪个 service 失败）或涉及哪些服务。
 
-技术方案（详见 [research.md](./research.md)）：在 `deploy` CLI（v3）中新增 `describe` 子命令，调用既有 `GetEnvironment` API 打印单个环境的详细状态（状态、失败说明、服务列表、调和时间）；`guitar` 在部署失败分支中通过非取消上下文调用 `deploy describe <env>`，使其输出直接流入控制台，并对 describe 自身失败做降级处理。该方案契合 `guitar` 既有"shell-out 编排器"架构（已通过外部 `deploy` 二进制执行 apply/del），并填补了 deploy CLI 缺少单环境详情视图的真实缺口。
+初版方案（已落地：`describe` 命令 + guitar 失败诊断 hook）依赖 `EnvironmentStatus.message` 自由文本承载 per-service 信息。实测（`--timeout=5s`）暴露该数据源**不稳定**：`message` 由 reconciler 在 `checkRollout`（`projects/infra/deploy/service/reconcile.go:147`）每 5s 轮询一次后填充（`runtime/k8s/rollout.go:263` 的 `CheckRollout` 将各 workload 的状态 `strings.Join(..., "; ")` 折叠为单一环境级字符串），首次轮询前 `message` 为空 → describe 无法指认哪个 service。
+
+**修订方案**（详见 [research.md](./research.md)）：根因是 Environment **缺乏结构化的 per-service 状态**。因此：
+1. **deploy service 侧**：为 `EnvironmentStatus` 新增 `repeated ServiceStatus services` 字段（proto + domain + runtime + reconcile + storage + handler），reconciler 在 `applyAndWait`（资源已提交、进入 `WAITING_ROLLOUT`）即写入每个服务的初始状态（`PENDING`），并在每次 `checkRollout` 用真实的 k8s rollout 状态（ready/waiting/failed + 可读原因 + 副本数）更新之——**不再折叠为单一 message**。
+2. **deploy `describe` CLI 侧**：输出改为以 per-service 状态为主线（每个服务一行，标注其 rollout 状态/原因），结构化数据成为稳定主诊断；环境级 `message` 降级为次要补充（仅对非 rollout 原因如 apply 失败、retry-exhausted 有意义时显示）。
+3. **guitar 侧**：**无需改动**——guitar 经 shell-out 调 `deploy describe`（既有链路），describe 输出的 per-service 状态自然流入控制台。
+
+该方案直接服务于 spec 用户故事"判断具体哪个 service 部署失败或者超时"，并以"环境进入 WAITING_ROLLOUT 即有 per-service 数据"消除了初版的时序空窗。
 
 ## Technical Context
 
-**Language/Version**: Go（仓库 toolchain；`guitar` 与 `deploy` 均为 Go CLI）
+**Language/Version**: Go（仓库 toolchain；`deploy` service、`deploy` CLI v3、`guitar` 均为 Go）
 
-**Primary Dependencies**: `github.com/spf13/pflag`（CLI 解析，两工具均用）、deploy v2 HTTP client（`tools/release/deploy/v2/client`，已提供 `GetEnvironment`/`ListEnvironments`）、deploy proto（`projects/infra/deploy`，已生成 `Environment`/`EnvironmentStatus`/`EnvironmentDesiredState`）
+**Primary Dependencies**:
+- **deploy service**（`projects/infra/deploy`）：proto3 + gRPC + grpc-gateway（REST transcoding）；存储 MongoDB（schemaless）；reconcile 经 `domain.EnvironmentRuntime`（k8s 实现 `runtime/k8s`）。
+- **deploy CLI v3**（`tools/release/deploy/v3`）：`pflag`；经 v2 HTTP client（`tools/release/deploy/v2/client`）消费 deploy service。
+- **guitar**（`tools/test/guitar`）：`pflag`；shell-out 编排 `deploy` 二进制。
 
-**Storage**: N/A（CLI 工具，无本地存储；状态数据来自 deploy service）
+**Storage**: MongoDB（`projects/infra/deploy/storage/mongo.go`，schemaless——新增字段无需 migration，旧文档缺字段解码为零值）。
 
-**Testing**: `bazel test`（Go 单测）。deploy v3 用 `httptest` 桩部署 service；guitar `run` 用可替换的 `runCommand` 包级变量桩外部命令
+**Testing**: `bazel test`（Go 单测）。deploy service 各层有既有单测（domain/service/runtime/handler）；deploy v3 用 `httptest` 桩；guitar `run` 用可替换 `runCommand` 桩。大型测试经 testplan skill（`tools/test/guitar`）执行——guitar e2e（如 `experimental/ts/grpc_hello_world/testplan/interface_test.yaml`）端到端覆盖 deploy service。
 
-**Target Platform**: Linux/macOS 开发机（CLI 工具）
+**Target Platform**: Linux/macOS（CLI 工具 + 服务端 deploy service 部署于 infra.liukexin.com）。
 
-**Project Type**: CLI 工具（编排器 + 部署客户端 CLI）
+**Project Type**: 服务型应用（deploy service）+ CLI 工具（deploy v3 / guitar）。
 
-**Performance Goals**: 失败诊断调用远小于部署超时——guitar shell-out 显式传 `--timeout=10s`（单次 HTTP GET，无轮询）
+**Performance Goals**: per-service 状态随 reconcile 正常流转写入（无额外查询）；describe 仍是单次 `GetEnvironment`（HTTP GET，`--timeout=10s`）。
 
-**Constraints**: 诊断调用必须使用非取消上下文（部署失败常为 `context.DeadlineExceeded`，原 ctx 已取消，与 cleanup 用 `context.WithoutCancel` 同理）；诊断失败不得掩盖原始部署错误
+**Constraints**:
+- proto 变更必须**向后兼容**（proto3 additive：新增字段/枚举，不删改已有编号）。
+- reconciler 的乐观并发模型不变（`TransitionStatus` 的 generation+fromState 前置条件）。
+- 诊断调用须用非取消上下文（部署失败常为 ctx 已取消），失败降级不掩盖原始错误（既有设计，guitar 侧不变）。
+- guitar 经 shell-out 消费 describe，**不直接 import deploy service client**（保持既有架构）。
 
-**Scale/Scope**: 新增 1 个 deploy 子命令（`describe.go`）+ guitar 失败分支诊断钩子 + 配套单测；不改动 deploy service、不改 deploy apply/del 行为
+**Scale/Scope**:
+- deploy service：proto 新增 1 message + 2 enum + 1 字段；domain 新增对应类型 + `EnvironmentStatus.Services` + `RolloutStatus.Services`；runtime `CheckRollout` 重构为产出 per-service 列表（不再折叠）；reconcile `applyAndWait`/`checkRollout`/`retainWaitingRollout`/`markFailedFromRollout`/`markReadyFromRollout` 持久化 Services；storage `mongoStatus` + `TransitionStatus` 增列；handler `toProtoStatus` 增映射；配套单测。
+- deploy CLI：`describe.go` 输出改为 per-service 主线 + message 次要；配套单测。
+- guitar：无代码改动（描述变更已在初版落地，describe 输出增强自动生效）。
 
 ## Constitution Check
 
@@ -37,13 +54,18 @@ When `guitar run` 执行某 suite 的部署步骤不成功时，当前仅返回�
 依据 `.specify/memory/constitution.md`（v1.3.0）：
 
 - **原则 I（引用溯源）**：本 plan 及产物中的仓库内引用使用相对路径，外部引用使用完整 URL。✅ 合规。
-- **原则 II（重构式变更）**：现有 deploy CLI 无任何方式打印单环境详情（`list` 仅输出 `scope.env\tstate`，无 message/服务）。新增 `describe` 是对真实缺口的功能扩展（非补丁）；guitar 失败分支从"仅返回错误"改为"打印结构化诊断"，是设计层面的恰当处理。✅ 合规。
-- **原则 III（接口优先）**：先定 `deploy describe` 的 CLI 契约与 guitar 集成契约（见 [contracts/](./contracts/)），再实现。✅ 合规。
-- **原则 IV（测试颗粒度）**：编译 + 单测作为开发任务的一部分，不单列 task。✅ 合规。
+- **原则 II（重构式变更）**：现有 `EnvironmentStatus` 仅环境级 `message`，`CheckRollout` 将 per-workload 状态折叠为单一字符串——该设计相对新需求"判断具体哪个 service"**不足**。本方案在数据模型层面**重构**：新增结构化 `ServiceStatus`、reconciler 不再折叠而是逐服务持久化、describe 以 per-service 为主线。属设计层面的恰当重构，而非打补丁。✅ 合规。
+- **原则 III（接口优先）**：先定 proto `ServiceStatus`/`ServiceKind`/`ServiceRolloutState` + `EnvironmentStatus.services` 契约与 describe 输出契约（见 [contracts/](./contracts/)），再实现。✅ 合规。
+- **原则 IV（测试颗粒度）**：编译 + 单测作为开发任务的一部分（proto 映射、reconcile、storage、runtime、describe 各层单测），不单列 task。大型测试单独验收（见 VI）。✅ 合规。
 - **原则 V（编码前阅读文档）**：由后续 `/speckit.tasks` 在 tasks.md 中按 phase 声明文档清单。✅ 预留。
-- **原则 VI（大型测试验收）**：本特性改的是 CLI 工具（guitar 编排器、deploy CLI 客户端），非服务型应用；deploy service 自身不在改动范围。故大型测试不作强制验收门禁，端到端验证见 [quickstart.md](./quickstart.md)。✅ 合规（不适用服务型应用条款）。
+- **原则 VI（大型测试验收）**：本次改动包含 deploy service（服务型应用），原则上 VI 适用。但 `projects/infra/deploy/README.md:28` 明确声明 deploy service **不进行大型测试**——根因是技术性的无法自举：deploy service 是 `deploy`/guitar/testplan 部署链路的后端（`README.md:24`："本服务禁止使用 `deploy` 工具部署"），不能用自己部署自己，故无 testplan 适用于它（全仓库各 `testplan` 目录无 deploy service 用例，已核实）。这是仓库既定的、基于技术约束的例外。据此：deploy service 的代码变更（新增 `services` 字段 + reconcile + 持久化）以**单测**为验收门禁（proto 映射、reconcile 各转移路径持久化 Services、storage 往返、`CheckRollout` 产出 per-service、handler 返回 services、describe 输出 per-service）。端到端价值验证（per-service 状态在真实 describe 中可见）依赖 deploy service 新版本经其独立 k8s 部署流程上线 infra.liukexin.com 后，可用 guitar e2e（`experimental/ts/grpc_hello_world/testplan/interface_test.yaml`）做**冒烟验证**（非强制 testplan 门禁，因受限于 deploy service 的独立部署周期，超出本特性 scope）——见 [quickstart.md](./quickstart.md)。guitar 自身改动为零（初版已落地），其大型测试行为不受影响。✅ 合规（遵循 deploy service 既定例外）。
 
-**结论**：无违规，Complexity Tracking 留空。
+**结论**：无违规。Complexity Tracking：
+
+| 复杂项 | 说明 | 缓解 |
+|--------|------|------|
+| reconcile 流为乐观并发状态机 | 新增 Services 字段须随状态转移正确持久化/清空 | TransitionStatus 的"非零字段写入"语义需为 Services 显式处理；单测覆盖每条转移路径 |
+| CheckRollout 行为变更（不再 early-return on first failed） | 影响既有 rollout_test.go 断言 | 同步更新 k8s rollout 单测；保留 env-level State/Message 派生以维持 reconcile 语义不变 |
 
 ## Project Structure
 
@@ -51,30 +73,47 @@ When `guitar run` 执行某 suite 的部署步骤不成功时，当前仅返回�
 
 ```text
 specs/032-guitar-deploy-failure-state/
-├── plan.md              # 本文件
-├── research.md          # Phase 0：技术决策（describe 命令方案）与备选
-├── data-model.md        # Phase 1：describe 输出模型与实体
-├── quickstart.md        # Phase 1：端到端验证指南
+├── plan.md                       # 本文件
+├── research.md                   # Phase 0：per-service 状态方案决策与备选
+├── data-model.md                 # Phase 1：ServiceStatus 实体 + describe 输出模型
+├── quickstart.md                 # Phase 1：端到端验证指南（含失败场景）
 ├── contracts/
-│   ├── deploy-describe.md   # deploy describe CLI 契约
-│   └── guitar-integration.md # guitar 集成契约
-└── tasks.md             # Phase 2（/speckit.tasks 生成，非本命令产物；其内部实现 phase（Phase 1/2/3）编号独立于本文档的规划 phase 编号）
+│   ├── environment-status.md     # NEW: proto/domain per-service 状态 API 契约
+│   ├── deploy-describe.md        # REVISED: describe 输出契约（per-service 主线）
+│   └── guitar-integration.md     # guitar 集成契约（无代码改动，仅引用 describe 输出）
+└── tasks.md                      # Phase 2（/speckit.tasks 生成）
 ```
 
 ### Source Code (repository root)
 
 ```text
-tools/release/deploy/v3/
-├── main.go            # 注册 describe 命令（commandExecTable/commandValidatorTable/commandFlagTable/usageText）
-├── describe.go        # 新增：describeCommand，调用 GetEnvironment 打印详情（镜像 del.go 的 scope 解析）
-├── apply.go           # 扩展 formatState：新增 WAITING_ROLLOUT→"等待滚动发布"（决策 7）
-├── describe_test.go   # 新增：单测（httptest 桩 + 输出断言）
-└── del_list_test.go   # 更新：TestListCommand 增补 WAITING_ROLLOUT 断言（formatState 扩展波及 list）
+projects/infra/deploy/
+├── deploy.proto                  # 新增 ServiceStatus message + ServiceKind/ServiceRolloutState enum + EnvironmentStatus.services(=5)
+├── domain/
+│   ├── environment.go            # EnvironmentStatus 增 Services；cloneStatus 深拷贝；新 buildInitialServiceStatuses helper
+│   ├── reconcile_types.go        # RolloutStatus 增 Services；新增 ServiceStatus/ServiceKind/ServiceRolloutState 类型
+│   └── *_test.go                 # 单测：ServiceStatus 构建/克隆/状态
+├── service/
+│   ├── reconcile.go              # applyAndWait 写初始 Services；checkRollout 路径持久化 Services（retain/ready/failed）
+│   └── reconcile_test.go         # 单测：per-service 状态在各转移路径的持久化
+├── runtime/k8s/
+│   ├── rollout.go                # CheckRollout 重构：产出 per-service 列表 + 派生 env-level state/message（不再折叠/early-return）
+│   └── rollout_test.go           # 单测：断言 got.Services（含 failed 时其余服务状态仍上报）
+├── storage/
+│   ├── mongo.go                  # mongoStatus 增 Services；TransitionStatus 写入；statusToMongo/statusFromMongo 映射
+│   └── mongo_test.go             # 单测：Services 持久化往返
+├── handler.go                    # toProtoStatus 增 services 映射；新增 toProtoServices + ServiceKind/State 映射
+└── handler_test.go               # 单测：GetEnvironment 返回 services
 
-tools/test/guitar/pkg/run/
-├── run.go             # 新增 deployDescribeCommand 常量；runSuite 部署失败分支调用诊断 helper（传 --timeout=10s）
-├── reporter.go        # 新增 Reporter.DeployDiagnostics(envName)：醒目头部行 "--- 环境状态 (env=...) ---"
-└── run_test.go        # 扩展：deploy failure 场景断言 apply→describe(--timeout=10s)→del 顺序、非取消 ctx、错误保留
+tools/release/deploy/v3/
+├── describe.go                   # printEnvironmentDetail 改为 per-service 主线（每服务一行状态/原因）+ message 次要
+└── describe_test.go              # 单测：per-service 状态输出断言
+
+tools/test/guitar/pkg/run/        # 无改动（初版已落地：diagnoseDeployFailure shell-out describe）
 ```
 
-**Structure Decision**: 沿用两工具既有目录布局。deploy 侧遵循 v3 现有"一命令一文件 + main.go 注册表"模式（参考 `del.go`/`list.go`）；guitar 侧改动集中在 `pkg/run`（编排逻辑）与 `reporter.go`（输出）。两工具均通过既有 `bazel` target 编译，gazelle 生成 BUILD 变更。
+**Structure Decision**:
+- deploy service 侧遵循既有分层（proto → domain → service → runtime → storage → handler），per-service 状态沿同一链路贯穿，每层既有单测同步扩展。
+- proto codegen 由 bazel `go_proto_library`（`projects/infra/deploy/BUILD.bazel:58`）驱动，编辑 `deploy.proto` 后 `bazel build`/`bazel test` 自动重新生成 gRPC + gateway + AIP 桩——无需手动 codegen 步骤。
+- v2 client（`tools/release/deploy/v2/client/client.go:94`）直接返回生成的 proto `*deploy.Environment`（`protojson` 解码），**proto 新字段自动流经、无需改 client**。
+- describe 与 guitar 沿用初版 shell-out 链路（guitar → describe → GetEnvironment），describe 输出增强后 guitar 无需改动。

@@ -13,6 +13,9 @@ description: "Task list for 032-guitar-deploy-failure-state"
 
 **Organization**: 本特性仅 1 个用户故事（US1，P1：部署失败时打印环境状态）。实现拆为两段：① 基础（deploy `describe` 命令，作为数据源契约）；② US1（guitar 消费 describe、在部署失败时打印诊断）。MVP = 基础 + US1 两段合计。
 
+> **初版 Phase 1–3（T001–T008）已实现并提交**（依赖环境级 `message`，实测 5s 超时 `message` 为空、无法指认服务，详见 [research.md](./research.md) 背景）。
+> **修订范围（Phase 4–6，T009–T018，2026-08-03 规划）**：为 deploy service 新增结构化 per-service 状态（proto→domain→runtime→reconcile→storage→handler），并修订 `deploy describe` 以 per-service 状态为主线；guitar **无代码改动**（shell-out 消费 describe，输出增强自动生效）。代码现状已核实：初版 T001–T008 实现均在代码中（`apply.go:248` formatState、`describe.go`、`main.go` 注册、`reporter.go:83`、`run.go:175` diagnoseDeployFailure）；per-service 状态尚未实现（proto/domain/runtime 均无 `Services`）。
+
 ## Format: `[ID] [P?] [Story?] Description`
 
 - **[P]**: 可并行（不同文件、无未完成依赖）
@@ -39,7 +42,7 @@ description: "Task list for 032-guitar-deploy-failure-state"
 
 ### Tasks
 
-- [X] T001 扩展 `formatState` 在 `tools/release/deploy/v3/apply.go:236`：新增 `case deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT: return "等待滚动发布"`；并在 `tools/release/deploy/v3/del_list_test.go` 的 `TestListCommand` 增补一条 WAITING_ROLLOUT 环境断言（输出 `\t等待滚动发布`）。验证：`bazel test //tools/release/deploy/v3:deploy_test`。（依 data-model.md 决策 7；该扩展波及 list 输出，须同步更新其测试）
+- [X] T001 扩展 `formatState` 在 `tools/release/deploy/v3/apply.go:236`：新增 `case deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT: return "等待滚动发布"`；并在 `tools/release/deploy/v3/del_list_test.go` 的 `TestListCommand` 增补一条 WAITING_ROLLOUT 环境断言（输出 `\t等待滚动发布`）。验证：`bazel test //tools/release/deploy/v3:deploy_test`。（依 research.md 决策 R9；该扩展波及 list 输出，须同步更新其测试）
 - [X] T002 新增 `tools/release/deploy/v3/describe.go`：实现 `describeCommand(ctx, opts)`——镜像 `del.go`（`workspace.MustRoot`→`loadConfig` 取默认 scope→`NewFullEnvName`→`ParseFullEnvName`→`environmentResourceName`），调 `opts.apiClient.GetEnvironment(ctx, name)`（`tools/release/deploy/v2/client/client.go:94`），按 [data-model.md](./data-model.md)「输出模型」与 [contracts/deploy-describe.md](./contracts/deploy-describe.md) 打印（环境名/状态 via `formatState`——返回空串（UNSPECIFIED）时输出 `未知`/说明/服务列表来自 `desired_state.artifacts[]`+`infras[]`/最近调和/最近成功）；`ErrNotFound` 时打印 `环境 {fullEnvName} 不存在` 并返回非零错误。同时新增 `tools/release/deploy/v3/describe_test.go`：httptest 桩（镜像 `del_list_test.go` 的 `writeDelListJSONResponse`/`clientpkg.NewClient`），表驱动覆盖 FAILED（含 message）、READY、PENDING、WAITING_ROLLOUT、DELETING（→ `删除中`）、UNSPECIFIED（→ `未知`）、服务列表（artifact+infra）、时间戳 nil/非 nil、`ErrNotFound`。验证：`bazel test //tools/release/deploy/v3:deploy_test`。（依赖 T001 的 formatState）
 - [X] T003 在 `tools/release/deploy/v3/main.go` 注册 `describe` 命令：新增 `commandDescribe="describe"` 常量；`commandExecTable`（main.go:54）加 `describe→describeCommand`；`commandValidatorTable`（main.go:61）加 `describe→validateDescribeOptions`（target 非空，镜像 `validateDelOptions` main.go:232）；`commandFlagTable`（main.go:111）加 `describe:{flagEndpoint,flagTimeout,flagScope,flagVerbose}`；`usageText()`（main.go:266）增补 `describe` 行。运行 `bazel run //:gazelle tools/release/deploy/v3`（将 `describe.go` 加入 `deploy_lib.srcs`、`describe_test.go` 加入 `deploy_test.srcs`）。验证：`bazel build //tools/release/deploy/v3:deploy_v3` 与 `bazel test //tools/release/deploy/v3:deploy_test`，并手跑 `bazel run //tools/release/deploy/v3:deploy_v3 -- describe --help` 确认 usage 含 describe。（依赖 T002）
 
@@ -86,7 +89,7 @@ description: "Task list for 032-guitar-deploy-failure-state"
 
 ---
 
-## Dependencies & Execution Order
+## Dependencies & Execution Order（初版，已落地）
 
 ### Phase 依赖
 
@@ -117,7 +120,7 @@ Task: "T007 更新 tools/test/guitar/README.md 输出格式小节"
 
 ---
 
-## Implementation Strategy
+## Implementation Strategy（初版，已落地）
 
 ### MVP First（Phase 1 + Phase 2）
 
@@ -134,7 +137,7 @@ Task: "T007 更新 tools/test/guitar/README.md 输出格式小节"
 
 ---
 
-## Notes
+## Notes（初版，已落地）
 
 - 依宪法原则 IV，编译 + 单测内嵌于各实现 task（T001/T002/T005 自带单测与 `bazel test`），无独立测试 task
 - [P] task = 不同文件、无未完成依赖
@@ -154,3 +157,136 @@ Task: "T007 更新 tools/test/guitar/README.md 输出格式小节"
 - **边界 2（环境创建前失败）**：`guitar run ... --timeout=2s` → deploy apply 被杀（env 未创建）→ describe 返回 not-found（stdout `环境 ... 不存在`）+ stderr 降级 `warning: 获取环境 ... 状态失败`，原始错误保留、不崩溃、cleanup 仍尝试。满足 FR-005/FR-006。
 - **边界 3（describe 自身失败降级）**：边界 2 已实测降级机制（describe 非零退出 → warning）；单测 `TestRun/deploy_failure_with_describe_degradation` 精确覆盖。
 - **FAILED 终态渲染**（SC-001）未单独构造实环境（scenario B），由 `describe` 的 message 字段渲染已验证（READY 显示 `说明: ready`）+ 单测 `TestDescribeCommand/failed_with_message_and_services` 覆盖 FAILED+message 渲染。
+
+---
+
+# 修订范围：deploy service per-service 状态（2026-08-03 规划）
+
+**背景**：初版依赖环境级 `message` 承载失败/等待原因；实测 `--timeout=5s` 场景 `message` 为空、describe 无法指认哪个 service（根因：`runtime/k8s/rollout.go:263` `CheckRollout` 将各 workload 状态 `strings.Join("; ")` 折叠为单一环境级字符串，且仅在每 5s 的 `checkRollout` 后填充，首次轮询前为空——详见 [research.md](./research.md) 背景）。修订方案：① deploy service 新增结构化 per-service 状态（reconciler 在 `applyAndWait` 即写入初始 PENDING、`checkRollout` 写真实状态），不再折叠；② `deploy describe` 以 per-service 状态为主线。决策见 [research.md](./research.md) R1~R11、契约见 [contracts/environment-status.md](./contracts/environment-status.md) / [contracts/deploy-describe.md](./contracts/deploy-describe.md)。
+
+> 初版 Phase 1–3 Notes 中"改动不涉及 deploy service"仅适用于初版；以下 Phase 4–6 显式改动 deploy service。
+
+---
+
+## Phase 4: Foundational（修订）— deploy service per-service 状态（阻塞前置）
+
+**Purpose**: 为 `Environment.status` 新增结构化 per-service rollout 状态（proto → domain → runtime → reconcile → storage → handler 全链路），使 Phase 5 的 describe 能稳定展示每个服务的状态与原因。
+
+**⚠️ CRITICAL**: Phase 5（describe per-service 主线）须等本 phase 完成（proto 新字段 + handler 映射就绪）方可端到端验证。
+
+### 文档清单
+
+- **代码规范文档**：
+  - `style/golang.md`（导入三级分组；**容器元素强制 `[]*T`**（line 49-55）、深拷贝仅在需要时、`new` 构造无初始化指针对象、注释、单测表驱动 given/when/then + 命名 + 禁外部依赖 + target 用 gazelle 默认名）；及其引用的 [Google Go Style Guide（入口）](https://google.github.io/styleguide/go/)——[Style Guide](https://google.github.io/styleguide/go/guide)（必读）、[Style Decisions](https://google.github.io/styleguide/go/decisions)、[Best Practices](https://google.github.io/styleguide/go/best-practices)
+  - `style/api.md`（REST+gRPC、google.api 注解、proto 规范索引）；及其引用的相关 AIP——[AIP-126 Enumerations](https://google.aip.dev/126)（`UPPER_SNAKE_CASE`、`_UNSPECIFIED=0`、包级枚举值前缀）、[AIP-144 Repeated fields](https://google.aip.dev/144)（复数名、宜用 message）、[AIP-203 Field behavior](https://google.aip.dev/203)（`OUTPUT_ONLY`、新增字段向后兼容、nested 行为独立）——适用于 T009
+  - `style/mongo.md`（field 为对象时定义具体模型**不用 `bson.M`**、`_id` 自动生成）——适用于 T013
+- **官方文档**：无（proto 变更为 additive，镜像 `projects/infra/deploy/deploy.proto` 既有模式；runtime 复用既有 k8s client-go；storage 复用既有 mongo-driver——均不引入新第三方 API）
+- **技术文章**：无
+
+### Tasks
+
+- [ ] T009 [P] 在 `projects/infra/deploy/deploy.proto` 新增 per-service 状态定义（依 [contracts/environment-status.md](./contracts/environment-status.md) proto 契约）：① 在 `EnvironmentStatus`（proto:158-166）新增 `repeated ServiceStatus services = 5 [(google.api.field_behavior) = OUTPUT_ONLY];`；② 新增 `message ServiceStatus { string name=1; string app=2; ServiceKind kind=3; ServiceRolloutState state=4; string message=5; }`（字段注释，对齐既有 message 风格）；③ 新增包级 enum `ServiceKind`（`SERVICE_KIND_UNSPECIFIED=0`/`SERVICE_KIND_ARTIFACT=1`/`SERVICE_KIND_INFRA=2`）与 `ServiceRolloutState`（`SERVICE_ROLLOUT_STATE_UNSPECIFIED=0`/`..._PENDING=1`/`..._READY=2`/`..._WAITING=3`/`..._FAILED=4`），值名前缀加枚举名（AIP-126 包级规则）；布局对齐既有 `EnvironmentState`/`ArtifactSpec`。`ServiceStatus` 子字段不重复标 `field_behavior`（对齐 `ArtifactSpec`/`InfraSpec`，AIP-203 nested 独立）。完成后 `bazel build //projects/infra/deploy:deploy`（触发 `go_proto_library` 重生成）通过，确认生成 Go 包含 `ServiceStatus`/`ServiceKind`/`ServiceRolloutState`。
+- [ ] T010 [P] 在 `projects/infra/deploy/domain/` 新增 per-service domain 类型与扩展：① `domain/reconcile_types.go` 新增 `ServiceKind`（`Unspecified`/`Artifact`/`Infra`）、`ServiceRolloutState`（`Unspecified`/`Pending`/`Ready`/`Waiting`/`Failed`）int 枚举（各带 `String()`，对齐 `domain/state.go:53`）与 `ServiceStatus{Name,App string; Kind ServiceKind; State ServiceRolloutState; Message string}`；在 `RolloutStatus`（reconcile_types.go:18-23）新增 `Services []*ServiceStatus`。② `domain/environment.go`：`EnvironmentStatus`（environment.go:46-53）新增 `Services []*ServiceStatus`（指针 slice，`style/golang.md:49-55`）；`cloneStatus`（environment.go:369-376）改为对 `Services` 深拷贝（`make([]*ServiceStatus, len)` + 逐元素 `cp := *s; cloned[i] = &cp`，镜像 `cloneArtifacts` environment.go:383-411）；新增 `buildInitialServiceStatuses(ds *DesiredState) []*ServiceStatus`（artifact→`{Kind:Artifact,State:Pending,Message:"资源已提交，等待观测"}`、infra→`{Kind:Infra,...}`，先 artifacts 后 infras，nil/空返回 nil）。③ 单测：`Test_buildInitialServiceStatuses`、`Test_cloneStatus_services_deep_copy`、枚举 `String()`。验证：`bazel test //projects/infra/deploy/domain:domain_test`。（与 T009 不同包、可并行）
+- [ ] T011 在 `projects/infra/deploy/runtime/k8s/rollout.go` 重构 `CheckRollout`（rollout.go:263-336，依 [contracts/environment-status.md](./contracts/environment-status.md) runtime 契约 + research.md 决策 R3）：遍历 `objects.Deployments`+`objects.MongoDBWorkloads`+`objects.StatefulWorkloads`（经 `ConvertToWorkloads`），逐 workload 取 k8s 对象判定状态，构造 `domain.ServiceStatus{name=workload.ServiceName, app=workload.App, kind, state, message}`——Deployment（artifact `kind=Artifact`）据 `isDeploymentReady`/`isDeploymentFailed` + `deploymentNotReadyMessage`/`deploymentFailureMessage`；MongoDB（infra `kind=Infra`，名取 `ResourceName()`）同 Deployment；StatefulSet（artifact）据 `isStatefulSetReady` + `statefulSetNotReadyMessage`。**不再** early-return on first failed（rollout.go:306 现状）——收集**全部**。派生 env-level `State`（任一 FAILED→Failed；否则任一非 READY→Waiting；否则 Ready）+ `Message`（拼接非 READY message）；返回 `RolloutStatus{State, Message, Services}`。更新 `runtime/k8s/rollout_test.go` `TestCheckRollout`（rollout_test.go:451）：断言 `got.Services` 全部服务 + 各 state/message；新增"一 failed + 一 waiting"用例（两者均在 `Services`，env-level=Failed）。验证：`bazel test //projects/infra/deploy/runtime/k8s:k8s_test`。（依赖 T010）
+- [ ] T012 在 `projects/infra/deploy/service/reconcile.go` 各 `repo.TransitionStatus` 调用点持久化 Services（research.md 决策 R4/R6/R11 表格 + [contracts/environment-status.md](./contracts/environment-status.md) 写入语义）：① `applyAndWait`（reconcile.go:125-144）RECONCILING→WAITING_ROLLOUT 增 `Services: buildInitialServiceStatuses(env.DesiredState())`（初始 PENDING，消除时序空窗）；②③④ **签名重构**：`markReadyFromRollout`（reconcile.go:164-177）/`markFailedFromRollout`（reconcile.go:180-191）/`retainWaitingRollout`（reconcile.go:195-209）的 `message string` 参数改为整体 `status *domain.RolloutStatus`，`checkRollout`（reconcile.go:153-160）switch 三分支随之传 `status`——markReady 写 `Message: "ready"`（既有硬编码）+ `Services: status.Services`（全 READY）；markFailed 写 `Message: status.Message` + `Services: status.Services`（含失败）；retainWaitingRollout 的**早退条件**由 `env.Status().Message == message` 改为 `env.Status().Message == status.Message && servicesEqual(env.Status().Services, status.Services)`（新增 domain helper `servicesEqual`，放 `domain/reconcile_types.go`，比较 Name/App/Kind/State/Message；二者均未变化才跳过写入，避免 message 不变时 per-service 更新不落库，决策 R11）；⑤ `transitionToReconciling`/`transitionToDeleting`/`MarkRetryExhausted` 显式 `Services: nil`（清空 stale）。扩展 `service/reconcile_test.go`：`checkRolloutFn`（reconcile_test.go:290）返回携带 `Services`，断言 `fakeRepository.TransitionStatus` 收到的 `toStatus.Services` 一致；**新增用例**：message 不变但 Services 变化（如某服务 PENDING→READY 而其余等待、拼接 message 相同）时仍触发写入。验证：`bazel test //projects/infra/deploy/service:service_test`。（依赖 T010、T011）
+- [ ] T013 [P] 在 `projects/infra/deploy/storage/mongo.go` 持久化 Services（research.md 决策 R6 + style/mongo.md）：① 新增具体 struct `mongoServiceStatus{Name,App string; Kind,State int; Message string}`（bson tag，**不用 `bson.M`**）；`mongoStatus`（mongo.go:196-203）增 `Services []mongoServiceStatus`（bson `services`，**无 `omitempty`**）；② `TransitionStatus`（mongo.go:426-473）`setFields` 中**无条件**置 `mongoFieldStatusServices: servicesToMongo(toStatus.Services)`（nil→空→清空；新增常量 `mongoFieldStatusServices="status.services"`）；③ `statusToMongo`/`statusFromMongo`（mongo.go:633-645,797-808）增 `Services` 双向映射。④ 单测 `storage/mongo_test.go`：往返一致、清空语义、旧文档缺字段零值。验证：`bazel test //projects/infra/deploy/storage:storage_test`。（依赖 T010；MongoDB schemaless 无 migration）
+- [ ] T014 [P] 在 `projects/infra/deploy/handler.go` 增 proto↔domain Services 映射：① `toProtoStatus`（handler.go:420-430）增 `Services: toProtoServices(statusValue.Services)`；② 新增 `toProtoServices([]*domain.ServiceStatus) []*ServiceStatus`（镜像 `toProtoArtifacts` handler.go:432-455）+ 枚举映射 `serviceKindToProto`/`serviceRolloutStateToProto`（对齐 `toProtoState` handler.go:344-361）。③ 单测 `handler_test.go`：`GetEnvironment` 返回 `status.services` 与 domain 一致（枚举映射、透传、nil→空）。验证：`bazel test //projects/infra/deploy:deploy_test`。（依赖 T009 proto 类型、T010 domain 类型）
+
+**Checkpoint**: deploy service 全链路支持 per-service 状态产出与持久化，`bazel test //projects/infra/deploy/...` 全绿——Phase 5 describe 可消费 `Environment.status.services`。
+
+---
+
+## Phase 5: User Story 1（修订）— describe per-service 状态主线 (Priority: P1)
+
+**Goal**: `deploy describe` 输出以 per-service rollout 状态为主线（每服务一行内联 就绪/等待发布/失败/已提交 + 原因），环境级 `message` 降级为次要（仅当无 per-service 数据且 message 非空时输出）。guitar 经 shell-out 自动呈现、**无需改 guitar**。
+
+**Independent Test**: 单测 `describe_test.go` 覆盖 per-service 文本内联与 message 降级规则（确定性，不依赖远端）；端到端冒烟（可选，需 deploy service 新版上线）见 [quickstart.md](./quickstart.md) 场景 A/B/C。
+
+### 文档清单
+
+- **代码规范文档**：`style/golang.md`（同 Phase 4 Go 风格要点）；及 [Google Go Style Guide — Style Guide](https://google.github.io/styleguide/go/guide)（必读）、[Style Decisions](https://google.github.io/styleguide/go/decisions)、[Best Practices](https://google.github.io/styleguide/go/best-practices)
+- **官方文档**：无（describe 复用既有 `GetEnvironment` proto 与 v2 client，仅改 `printEnvironmentDetail` 格式化）
+- **技术文章**：无
+
+### Tasks
+
+- [ ] T015 [US1] 修订 `tools/release/deploy/v3/describe.go` `printEnvironmentDetail`（describe.go:53-84，依 [contracts/deploy-describe.md](./contracts/deploy-describe.md) + research.md 决策 R5）：① 服务列表项内联 per-service 状态——遍历 desired_state 的 artifacts 段（kind=artifact）与 infras 段（kind=infra:resource）时，按 `name`+`app`+`kind` 三元组在 `environment.Status.Services` 查找匹配项，匹配则项尾追加：`READY`→` 就绪`、`WAITING`→` 等待发布: {service.message}`、`FAILED`→` 失败: {service.message}`、`PENDING`→` 已提交，等待观测`、`UNSPECIFIED`/无匹配→不追加（兼容旧版服务端）；② `说明:` 行改为**仅当 `len(Status.Services)==0` 且 `Message!=""`** 时输出。修订 `describe_test.go`：表驱动覆盖 READY（各 ` 就绪`、无 `说明:`）、WAITING（` 等待发布:...`、无 `说明:`）、FAILED（` 失败:...`、无 `说明:`）、PENDING（` 已提交，等待观测`）、无 per-service+message 非空（输出 `说明:`）、无 per-service+message 空（无 `说明:`）。验证：`bazel test //tools/release/deploy/v3:deploy_test`。（依赖 Phase 4：至少 T009 proto 类型；端到端需 T014 handler 映射）
+
+**Checkpoint**: `deploy describe` 以 per-service 为主线，`deploy_test` 全绿——用户故事 1（判断哪个 service 失败/超时）独立可验证。
+
+---
+
+## Phase 6: Polish（修订）— 文档同步与全量验证
+
+**Purpose**: 文档同步（describe/guitar 输出示例）与全量验证。
+
+### 文档清单
+
+- **代码规范文档**：无（README 文档更新 + 验证，无代码风格适用）
+- **官方文档**：无
+- **技术文章**：无
+
+### Tasks
+
+- [ ] T016 [P] 更新 `tools/release/deploy/README.md`：将初版 `describe` 小节输出示例改为 per-service 主线（服务项内联 就绪/等待发布/失败/已提交），说明 per-service 状态来自 `Environment.status.services`、`说明:` 仅在无 per-service 数据时输出。
+- [ ] T017 [P] 更新 `tools/test/guitar/README.md`：在初版「部署失败环境状态诊断」小节补充诊断输出含 per-service 状态（哪个服务等待/失败 + 原因），备注 `applyAndWait` 即写初始 PENDING、短超时亦能列出服务（消除初版时序空窗）。
+- [ ] T018 全量验证门禁：① `bazel build //projects/infra/deploy/... //tools/release/deploy/v3:deploy_v3 //tools/test/guitar/cmd:guitar` 与 `bazel test //projects/infra/deploy/domain:domain_test //projects/infra/deploy/service:service_test //projects/infra/deploy/storage:storage_test //projects/infra/deploy/runtime/k8s:k8s_test //projects/infra/deploy:deploy_test //tools/release/deploy/v3:deploy_test //tools/test/guitar/pkg/run:run_test` 全绿（deploy service 不进行大型测试，见 `projects/infra/deploy/README.md:28`，单测为权威验收）。② 按 [quickstart.md](./quickstart.md) 第二部分端到端冒烟（**可选/非阻塞**——依赖 deploy service 新版经独立 k8s 流程上线 infra.liukexin.com）：场景 A（`--timeout=5s` 确认 per-service 可见）、B（成功路径无诊断）、C（standalone describe READY 各 ` 就绪`）、D（环境不存在降级）；远端旧版则跳过并记录，单测（①）仍为通过门禁。
+
+**Checkpoint**: 文档同步、全量单测全绿；端到端冒烟视部署前置决定执行或记录跳过。
+
+---
+
+## Dependencies & Execution Order（修订范围）
+
+### Phase 依赖
+
+- **Phase 4（Foundational 修订）**：无前置依赖（初版 Phase 1–3 已完成），可立即开始；**阻塞** Phase 5。
+- **Phase 5（US1 修订）**：依赖 Phase 4 完成。
+- **Phase 6（Polish 修订）**：依赖 Phase 4 + Phase 5 完成。
+
+### Task 级依赖
+
+- T009（proto） ∥ T010（domain）：不同包、无编译依赖，可并行
+- T011（runtime/k8s） ← T010
+- T012（reconcile） ← T010、T011
+- T013（storage） ← T010
+- T014（handler） ← T009、T010
+- T015（describe） ← Phase 4（至少 T009；端到端需 T014）
+- T016 ∥ T017（不同 README，可并行）；T016/T017 ← T015
+- T018 ← 全部修订 task 完成
+
+### 推荐执行序（单实现者，review 友好）
+
+T009 ∥ T010 → T011 → T012 → T013 ∥ T014 → T015 → T016 ∥ T017 → T018
+
+### 并行机会
+
+- T009、T010 可并行（Phase 4 起始）
+- T013、T014 可并行（均依赖 T010；T014 另依赖 T009）
+- T016、T017 可并行（Phase 6，不同 README）
+
+---
+
+## Implementation Strategy（修订范围）
+
+### MVP First（Phase 4 + Phase 5）
+
+1. 完成 Phase 4：deploy service per-service 状态全链路 → `Environment.status.services` 可产出与持久化
+2. 完成 Phase 5：describe per-service 主线 → describe 稳定展示"哪个 service 失败/超时"
+3. **STOP and VALIDATE**：`bazel test //projects/infra/deploy/... //tools/release/deploy/v3:deploy_test` 全绿（单测为权威验收）；端到端冒烟视 deploy service 新版上线前置决定
+4. Phase 6 文档同步与全量门禁
+
+### 关于 deploy service 部署与端到端验证
+
+deploy service 因无法自举（`projects/infra/deploy/README.md:24`）禁止用 `deploy`/guitar/testplan 部署自身，经其独立 k8s 流程上线。故 Phase 5/6 的端到端冒烟须在 deploy service 新版上线 infra.liukexin.com 后进行——属后续独立步骤，不阻塞本特性单测验收。
+
+---
+
+## Notes（修订范围补充）
+
+- 依宪法原则 IV，编译 + 单测内嵌于各实现 task（T009~T015 自带单测与 `bazel test`），无独立测试 task
+- 依宪法原则 VI + `projects/infra/deploy/README.md:28`，deploy service 不进行大型测试，单测为权威验收；端到端冒烟为可选非阻塞
+- proto 变更为 proto3 additive（新增字段+枚举，不删改已有编号），向后兼容（AIP-180/AIP-203）；旧版服务端不返回 `services` 时 describe 回退初版纯服务列表
+- v2 HTTP client（`tools/release/deploy/v2/client/client.go:94`）直接返回 proto `*deploy.Environment`，新字段自动流经、无需改 client
+- guitar **无代码改动**（初版 shell-out 链路不变，describe 输出增强自动生效）
+- 容器元素用指针 slice `[]*ServiceStatus`（`style/golang.md:49-55`，与既有 `[]*ArtifactSpec`/`[]*InfraSpec` 一致）
