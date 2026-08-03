@@ -6,11 +6,21 @@
     ".specify/memory/constitution.md"
   ],
   "agent": {
+    "build": {
+      "model": "opencode-go/deepseek-v4-flash",
+      "reasoningEffort": "max"
+    },
     "explore": {
       "model": "opencode-go/deepseek-v4-flash",
       "reasoningEffort": "max"
     },
+    "plan": {
+      "model": "zhipuai-coding-plan/glm-5.2",
+      "reasoningEffort": "high",
+    },
     "general": {
+      "model": "zhipuai-coding-plan/glm-5.2",
+      "reasoningEffort": "max",
       "tools": {
         "todowrite": true
       }
