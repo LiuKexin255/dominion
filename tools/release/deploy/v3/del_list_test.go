@@ -129,6 +129,7 @@ func TestListCommand(t *testing.T) {
 	tests := []struct {
 		name       string
 		scope      string
+		wantPath   string
 		response   any
 		status     int
 		wantOutput string
@@ -136,6 +137,7 @@ func TestListCommand(t *testing.T) {
 		{
 			name:       "success with environments",
 			scope:      "dev",
+			wantPath:   "/v1/deploy/scopes/dev/environments",
 			status:     http.StatusOK,
 			response:   &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{{Name: "deploy/scopes/dev/environments/api", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}}, {Name: "deploy/scopes/dev/environments/web", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_RECONCILING}}}},
 			wantOutput: "dev.api\t就绪\ndev.web\t部署中",
@@ -143,19 +145,35 @@ func TestListCommand(t *testing.T) {
 		{
 			name:       "empty list",
 			scope:      "dev",
+			wantPath:   "/v1/deploy/scopes/dev/environments",
 			status:     http.StatusOK,
 			response:   &deploy.ListEnvironmentsResponse{},
 			wantOutput: "",
 		},
 		{
-			name:   "waiting rollout environment",
-			scope:  "dev",
-			status: http.StatusOK,
+			name:     "waiting rollout environment",
+			scope:    "dev",
+			wantPath: "/v1/deploy/scopes/dev/environments",
+			status:   http.StatusOK,
 			response: &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{{
 				Name:   "deploy/scopes/dev/environments/api",
 				Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_WAITING_ROLLOUT},
 			}}},
 			wantOutput: "dev.api\t等待滚动发布",
+		},
+		{
+			// US4 验收场景 1/3（specs/033-deploy-scope-cleanup/spec.md:96,98）：
+			// 不指定 --scope 时发送 `-` 通配符跨 scope 列出所有环境，
+			// 输出使用响应中的实际完整环境名（而非 `-`），遵循 AIP-159。
+			name:     "cross-scope listing",
+			scope:    "",
+			wantPath: "/v1/deploy/scopes/-/environments",
+			status:   http.StatusOK,
+			response: &deploy.ListEnvironmentsResponse{Environments: []*deploy.Environment{
+				{Name: "deploy/scopes/alice/environments/dev", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+				{Name: "deploy/scopes/bob/environments/prod", Status: &deploy.EnvironmentStatus{State: deploy.EnvironmentState_ENVIRONMENT_STATE_READY}},
+			}},
+			wantOutput: "alice.dev\t就绪\nbob.prod\t就绪",
 		},
 	}
 
@@ -165,8 +183,8 @@ func TestListCommand(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Fatalf("method = %s, want GET", r.Method)
 				}
-				if r.URL.Path != "/v1/deploy/scopes/dev/environments" {
-					t.Fatalf("path = %s", r.URL.Path)
+				if r.URL.Path != tt.wantPath {
+					t.Fatalf("path = %s, want %s", r.URL.Path, tt.wantPath)
 				}
 				writeDelListJSONResponse(t, w, tt.status, tt.response)
 			}))

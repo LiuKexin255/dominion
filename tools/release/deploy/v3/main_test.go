@@ -71,6 +71,10 @@ func Test_parseOptions(t *testing.T) {
 		{name: "apply missing target", args: []string{"apply"}, wantErr: true},
 		{name: "delete missing target", args: []string{"del"}, wantErr: true},
 		{name: "list positional arg rejected", args: []string{"list", "team"}, wantErr: true},
+		// R5（specs/033-deploy-scope-cleanup/research.md:92）：--scope 值须匹配
+		// envPartRegexp（^[a-z][a-z0-9]{0,7}$），非法值与 "-" 通配符均被拒绝。
+		{name: "list invalid scope rejected", args: []string{"list", "--scope=INVALID"}, wantErr: true},
+		{name: "list wildcard scope rejected", args: []string{"list", "--scope=-"}, wantErr: true},
 		{
 			name: "apply with verbose flag",
 			args: []string{"apply", "-v", "--endpoint=http://localhost:8081", "--timeout=30s", "deploy.yaml"},

@@ -241,6 +241,11 @@ func validateListOptions(opts *options) error {
 	if opts.target != "" {
 		return fmt.Errorf("%s does not accept positional args", commandList)
 	}
+	// --scope 为可选过滤参数（specs/033-deploy-scope-cleanup/research.md R5）：非空时校验格式，
+	// 空值表示 AIP-159 通配符跨 scope 列出（specs/033-deploy-scope-cleanup/spec.md FR-007）。
+	if opts.scope != "" && !envPartRegexp.MatchString(opts.scope) {
+		return fmt.Errorf("非法 scope: %q", opts.scope)
+	}
 	return nil
 }
 
