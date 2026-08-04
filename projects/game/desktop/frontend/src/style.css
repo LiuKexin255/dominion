@@ -60,6 +60,23 @@ html, body, #app {
   border-color: #4a9eff;
 }
 
+/* The template select shares the config inputs' look (selects do not inherit
+   font-family by default, so it is set explicitly). */
+.config-row select {
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #0f3460;
+  border: 1px solid #1a3a6e;
+  color: #e0e0e0;
+  border-radius: 4px;
+}
+
+.config-row select:focus {
+  outline: none;
+  border-color: #4a9eff;
+}
+
 /* ===== Action Area ===== */
 .action-area {
   display: flex;
