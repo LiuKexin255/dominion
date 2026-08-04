@@ -13,7 +13,10 @@
  *   (+ updates `gameState`);
  * - the player node post-process consumes the event once (player.ts) and
  *   writes `TeamState.gameEnded = status`;
- * - the planner reads `gameState` for the review (planner.ts).
+ * - the planner reads `gameState` for the review (planner.ts);
+ * - the three callbacks also accumulate `gameLog` — the full move sequence of
+ *   the CURRENT game (reset on `onGameStart`), which the planner renders as
+ *   its review input (`specs/036-team-mode-bugfix/data-model.md` §2).
  *
  * Contract: `specs/031-team-template-mode/contracts/saolei-sink-contract.md`
  * §4 (consumer) + `contracts/team-graph-contract.md` §3/§4. The buffer is NOT
@@ -21,8 +24,10 @@
  * not "memory").
  */
 
+import { isWin } from "@dominion/game-saolei-board";
 import type { GameState } from "@dominion/game-saolei-board";
 
+import { isTerminalState } from "../mcp/saolei/saolei-mcp";
 import type { CellTool, SaoleiEventSink } from "../mcp/saolei/saolei-mcp";
 
 /** A structured game-end event written by the sink (D6 step 3). */
@@ -35,18 +40,44 @@ export interface GameEventRecord {
 }
 
 /**
+ * A single game-log entry: one step of the game — the tool that triggered it,
+ * the operation coordinates (where applicable), the board state after the
+ * operation, and the resulting game status. The sink accumulates one entry per
+ * step into `EphemeralGameBuffer.gameLog` (reset on `onGameStart`), and the
+ * planner renders the full sequence as its review input
+ * (`specs/036-team-mode-bugfix/data-model.md` §2).
+ */
+export interface GameLogEntry {
+	/** Tool that triggered this step ("saolei_init", "saolei_click", ...).
+	 *  Game-end events use the literal "(game-end)". */
+	tool: string;
+	/** Operation x coordinate (click/flag apply; init has none). */
+	x?: number;
+	/** Operation y coordinate (click/flag apply; init has none). */
+	y?: number;
+	/** Board state after the operation (text-rendered for the planner). */
+	state: GameState;
+	/** Game status after the operation. */
+	status: "won" | "lost" | "playing";
+}
+
+/**
  * The per-session ephemeral game-state buffer (D7): the latest recognized
- * `gameState` and the latest (unconsumed) `gameEvent`. A plain in-process
- * object, one instance per session (created by `SessionTeam`, Batch 2).
+ * `gameState`, the latest (unconsumed) `gameEvent`, and the `gameLog` of the
+ * current game. A plain in-process object, one instance per session (created
+ * by `SessionTeam`, Batch 2).
  */
 export interface EphemeralGameBuffer {
 	gameState: GameState | null;
 	gameEvent: GameEventRecord | null;
+	/** Full operation sequence of the current game (reset on `onGameStart`,
+	 *  `specs/036-team-mode-bugfix/data-model.md` §1). */
+	gameLog: GameLogEntry[];
 }
 
 /** Create an empty per-session ephemeral buffer. */
 export function createEphemeralGameBuffer(): EphemeralGameBuffer {
-	return { gameState: null, gameEvent: null };
+	return { gameState: null, gameEvent: null, gameLog: [] };
 }
 
 /**
@@ -58,7 +89,9 @@ export function createEphemeralGameBuffer(): EphemeralGameBuffer {
  *   buffer records the LATEST end event (D6 遗留假设 — "buffer 仅记最新结束
  *   事件"), so an unconsumed event from a prior game still triggers the
  *   planner once when the player run returns, and `onGameEnd` overwrites it
- *   with the newest event.
+ *   with the newest event. It DOES reset `gameLog` — the planner reviews only
+ *   the CURRENT game, never an accumulation across games
+ *   (`specs/036-team-mode-bugfix/data-model.md` §2, `specs/036-team-mode-bugfix/spec.md` FR-007).
  * - `onMove`: the recognized state after a legal cell operation.
  * - `onGameEnd`: write the structured end event (status is the MCP's
  *   first-hand `won|lost` computation, FR-017) + update `gameState`.
@@ -67,14 +100,24 @@ export function createTeamSink(buffer: EphemeralGameBuffer): SaoleiEventSink {
 	return {
 		onGameStart: (state: GameState) => {
 			buffer.gameState = state;
+			buffer.gameLog = [];
+			buffer.gameLog.push({ tool: "saolei_init", state, status: "playing" });
 		},
-		onMove: (
-			_tool: CellTool,
-			_x: number,
-			_y: number,
-			state: GameState,
-		) => {
+		onMove: (tool: CellTool, x: number, y: number, state: GameState) => {
 			buffer.gameState = state;
+			// Same loss-first decision order as the MCP's private `gameStatus`
+			// (`specs/036-team-mode-bugfix/data-model.md` §3).
+			buffer.gameLog.push({
+				tool,
+				x,
+				y,
+				state,
+				status: isTerminalState(state)
+					? "lost"
+					: isWin(state)
+						? "won"
+						: "playing",
+			});
 		},
 		onGameEnd: (state: GameState, status: "won" | "lost") => {
 			buffer.gameEvent = {
@@ -84,6 +127,7 @@ export function createTeamSink(buffer: EphemeralGameBuffer): SaoleiEventSink {
 				consumed: false,
 			};
 			buffer.gameState = state;
+			buffer.gameLog.push({ tool: "(game-end)", state, status });
 		},
 	};
 }
