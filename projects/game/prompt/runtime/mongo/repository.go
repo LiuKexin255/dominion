@@ -6,7 +6,6 @@ package mongo
 import (
 	"context"
 	"errors"
-	"time"
 
 	"dominion/projects/game/prompt/domain"
 
@@ -107,16 +106,10 @@ func NewRepository(client *mongodriver.Client, dbName string) domain.TeamProfile
 	}
 }
 
-// CreateTeamProfile stores a new TeamProfile in MongoDB.
+// CreateTeamProfile stores a new TeamProfile in MongoDB. The caller is
+// responsible for populating CreateTime and UpdateTime.
 func (r *teamProfileRepository) CreateTeamProfile(ctx context.Context, profile *domain.TeamProfile) error {
 	doc := teamProfileDocumentFromDomain(profile)
-	now := time.Now()
-	if doc.CreateTime.IsZero() {
-		doc.CreateTime = now
-	}
-	if doc.UpdateTime.IsZero() {
-		doc.UpdateTime = now
-	}
 
 	if _, err := r.collection.InsertOne(ctx, doc); err != nil {
 		if mongodriver.IsDuplicateKeyError(err) {
@@ -143,25 +136,21 @@ func (r *teamProfileRepository) GetTeamProfile(ctx context.Context, template, pr
 }
 
 // UpdateTeamProfile replaces the stored TeamProfile identified by profile.TeamProfileName.
-// The _id and create_time of the existing document are preserved.
+// The _id is preserved by MongoDB's ReplaceOne when the replacement omits it;
+// create_time is carried by the caller-provided profile (the handler merges it
+// from the existing resource), so no extra read is needed.
 func (r *teamProfileRepository) UpdateTeamProfile(ctx context.Context, profile *domain.TeamProfile) (*domain.TeamProfile, error) {
 	// The filter carries only the profile name: the template field is not part
 	// of the update identity (the caller-provided profile supplies it).
 	filter := bson.M{fieldTeamProfileName: profile.TeamProfileName}
-	existing := new(teamProfileDocument)
-	if err := r.collection.FindOne(ctx, filter).Decode(existing); err != nil {
-		if errors.Is(err, mongodriver.ErrNoDocuments) {
-			return nil, domain.ErrNotFound
-		}
+	doc := teamProfileDocumentFromDomain(profile)
+
+	result, err := r.collection.ReplaceOne(ctx, filter, doc)
+	if err != nil {
 		return nil, err
 	}
-
-	doc := teamProfileDocumentFromDomain(profile)
-	doc.ID = existing.ID
-	doc.CreateTime = existing.CreateTime
-
-	if _, err := r.collection.ReplaceOne(ctx, filter, doc); err != nil {
-		return nil, err
+	if result.MatchedCount == 0 {
+		return nil, domain.ErrNotFound
 	}
 
 	return doc.toDomain(), nil

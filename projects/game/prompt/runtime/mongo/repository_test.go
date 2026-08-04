@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"testing"
+	"time"
 
 	"dominion/projects/game/prompt/domain"
 
@@ -216,6 +217,7 @@ func TestTeamProfileCreateGet(t *testing.T) {
 
 	// given
 	repo := newTestRepo()
+	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 	profile := &domain.TeamProfile{
 		TeamProfileName:     "default",
 		Template:            "saolei",
@@ -223,6 +225,8 @@ func TestTeamProfileCreateGet(t *testing.T) {
 		SaoleiPlannerModel:  "opencode-go/deepseek-v4-pro",
 		SaoleiPlayerPrompt:  "player base prompt",
 		SaoleiPlannerPrompt: "planner base prompt",
+		CreateTime:          now,
+		UpdateTime:          now,
 	}
 
 	// when - create
@@ -258,11 +262,11 @@ func TestTeamProfileCreateGet(t *testing.T) {
 	if got.SaoleiPlannerPrompt != "planner base prompt" {
 		t.Fatalf("GetTeamProfile() planner_prompt = %q, want %q", got.SaoleiPlannerPrompt, "planner base prompt")
 	}
-	if got.CreateTime.IsZero() {
-		t.Fatalf("GetTeamProfile() create_time is zero, expected non-zero timestamp")
+	if !got.CreateTime.Equal(now) {
+		t.Fatalf("GetTeamProfile() create_time = %v, want %v", got.CreateTime, now)
 	}
-	if got.UpdateTime.IsZero() {
-		t.Fatalf("GetTeamProfile() update_time is zero, expected non-zero timestamp")
+	if !got.UpdateTime.Equal(now) {
+		t.Fatalf("GetTeamProfile() update_time = %v, want %v", got.UpdateTime, now)
 	}
 }
 
@@ -391,6 +395,7 @@ func TestTeamProfileUpdate(t *testing.T) {
 
 	// given - seed a profile
 	repo := newTestRepo()
+	seedCreateTime := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
 	seed := &domain.TeamProfile{
 		TeamProfileName:     "updatable",
 		Template:            "saolei",
@@ -398,6 +403,8 @@ func TestTeamProfileUpdate(t *testing.T) {
 		SaoleiPlannerModel:  "model-b",
 		SaoleiPlayerPrompt:  "player base prompt",
 		SaoleiPlannerPrompt: "planner base prompt",
+		CreateTime:          seedCreateTime,
+		UpdateTime:          seedCreateTime,
 	}
 	if err := repo.CreateTeamProfile(ctx, seed); err != nil {
 		t.Fatalf("CreateTeamProfile() seed unexpected error: %v", err)
