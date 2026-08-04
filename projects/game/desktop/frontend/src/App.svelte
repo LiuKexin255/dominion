@@ -37,6 +37,7 @@
   import ProfileManagement from './components/ProfileManagement.svelte'
   import LogPanel from './components/LogPanel.svelte'
   import ScreenshotModal from './components/ScreenshotModal.svelte'
+  import ProfileSelectDialog from './components/ProfileSelectDialog.svelte'
 
   // --- Page state ---
   // The template is the TOP-LEVEL control plane: it is a local constant and
@@ -158,6 +159,13 @@
   let managedProfiles: TeamProfile[] = $state([])
   let profileMgmtLoading = $state(false)
   let profileMgmtError: string | null = $state(null)
+
+  // Profile selection dialog state — shown when entering a session whose Team
+  // does not exist yet, so the user picks the TeamProfile to create it with.
+  let showProfileSelect = $state(false)
+  let profileSelectProfiles: TeamProfile[] = $state([])
+  let profileSelectLoading = $state(false)
+  let profileSelectError: string | null = $state(null)
 
   function resetPlayPageState() {
     pendingScreenshot = null
@@ -352,50 +360,6 @@
     }
   }
 
-  // defaultTeamProfileName builds the TeamProfile full resource name used by
-  // create-if-missing (templates/{template}/profiles/default, AIP-122).
-  //
-  // SIMPLIFICATION (Phase 6, decision 2): the desktop pins the `default`
-  // profile — profile SELECTION UX is deferred to Phase 7
-  // (ProfileManagement / TeamProfile CRUD). The `default` name itself is a
-  // convention the desktop assumes to exist for the template.
-  function defaultTeamProfileName(tpl: string): string {
-    return `templates/${tpl}/profiles/default`
-  }
-
-  // ensureTeam returns the session's Team, creating it when missing
-  // (create-if-missing, decision 2 — desktop-contract §2.3). The Team MUST
-  // exist before connect/sendUserTurn (FR-033: GetTeam/Connect return
-  // NOT_FOUND before CreateTeam; no lazy creation). CreateTeam with the same
-  // profile is idempotent (api-contract §2.2), so a concurrent create race
-  // (multi-tab) resolves via a re-read.
-  async function ensureTeam(): Promise<Team | null> {
-    if (!selectedSession) return null
-    const tpl = template
-    const sessionId = selectedSession.sessionId
-    try {
-      return await getTeam(tpl, sessionId)
-    } catch (e) {
-      // GetTeam failed (typically NOT_FOUND — team not yet created).
-      log('info', 'team', `GetTeam failed (${String(e)}); creating team with default profile`)
-      try {
-        return await createTeam(tpl, sessionId, defaultTeamProfileName(tpl))
-      } catch (e2) {
-        // Concurrent create may have won; re-read (idempotent create would
-        // also have returned the existing team).
-        log('warn', 'team', `CreateTeam failed (${String(e2)}); re-reading team`)
-        try {
-          return await getTeam(tpl, sessionId)
-        } catch {
-          // All three attempts failed (get → create → re-read): the team
-          // could not be ensured. Fail soft — the contract is "null on
-          // failure", never throw.
-          return null
-        }
-      }
-    }
-  }
-
   function agentAcceptsInput(agentName: string): boolean {
     const a = teamAgents.find(a => a.name === agentName)
     return a?.acceptsUserInput ?? false
@@ -416,13 +380,26 @@
     handleLoadWindows()
     playState = 'connecting'
 
-    // Team must exist before connect (FR-033) — create-if-missing (decision 2).
-    const t = await ensureTeam()
-    if (!t) {
-      playState = 'connection_error'
-      messagesError = 'Failed to load team. Retry to enter the session.'
-      return
+    // Team must exist before connect (FR-033). When the session has no Team
+    // yet, the user picks the TeamProfile to create it with (replacing the
+    // former hardcoded `default` profile auto-creation).
+    try {
+      const t = await getTeam(template, session.sessionId)
+      await continueSessionEntry(t)
+    } catch (e) {
+      // GetTeam failed (typically NOT_FOUND — team not yet created). Open the
+      // profile selection dialog; creation happens on user confirm.
+      log('info', 'team', `GetTeam failed (${String(e)}); opening profile selection`)
+      showProfileSelect = true
+      await loadProfilesForSelect()
     }
+  }
+
+  // continueSessionEntry finishes the session-entry flow once the Team exists:
+  // wires the agent tabs (FR-025), connects, and seeds the chat stream. Called
+  // both when the Team already exists and after the user picks a TeamProfile
+  // to create it.
+  async function continueSessionEntry(t: Team) {
     team = t
     // Tab set comes from Team.agents — never hardcoded (FR-025).
     teamAgents = t.agents ?? []
@@ -453,6 +430,54 @@
     } else {
       playState = 'connection_error'
     }
+  }
+
+  // handleProfileSelected creates the session's Team with the chosen
+  // TeamProfile (full resource name from the dialog), then continues the entry
+  // flow. A concurrent create (multi-tab) resolves via a re-read — CreateTeam
+  // with the same profile is idempotent (api-contract §2.2).
+  async function handleProfileSelected(profileFullName: string) {
+    if (!selectedSession) return
+    showProfileSelect = false
+    const tpl = template
+    const sessionId = selectedSession.sessionId
+    try {
+      const t = await createTeam(tpl, sessionId, profileFullName)
+      await continueSessionEntry(t)
+    } catch (e) {
+      log('warn', 'team', `CreateTeam failed (${String(e)}); re-reading team`)
+      try {
+        const t = await getTeam(tpl, sessionId)
+        await continueSessionEntry(t)
+      } catch {
+        playState = 'connection_error'
+        messagesError = 'Failed to create team. Retry to enter the session.'
+      }
+    }
+  }
+
+  // handleProfileSelectCancel aborts session entry and returns to the sessions
+  // list (the Team is not created).
+  function handleProfileSelectCancel() {
+    showProfileSelect = false
+    profileSelectProfiles = []
+    profileSelectError = null
+    void handleBackToSessions()
+  }
+
+  // handleProfileSelectGoToProfiles leaves the aborted entry for the Team
+  // Profile management page so the user can create a profile first; they
+  // re-enter the session afterwards.
+  async function handleProfileSelectGoToProfiles() {
+    showProfileSelect = false
+    profileSelectProfiles = []
+    profileSelectError = null
+    selectedSession = null
+    team = null
+    teamAgents = []
+    selectedAgent = ''
+    seedAgent = ''
+    await handleEnterProfiles()
   }
 
   // loadAgentHistories fetches each team agent's message partition
@@ -804,16 +829,11 @@
       return
     }
     // Auto-connect fallback if WS dropped (sendUserTurn relies on the backend
-    // connection). The Team must exist before connect (FR-033) —
-    // create-if-missing (decision 2).
+    // connection). The Team already exists from session entry (FR-033) —
+    // reconnect needs no create-if-missing here; handleConnect's error path
+    // covers a missing-team failure.
     const wasConnected = connectionState === 'connected'
     if (!wasConnected) {
-      const t = await ensureTeam()
-      if (!t) {
-        playState = 'connection_error'
-        messagesError = 'Connection failed. Retry to send your message.'
-        return
-      }
       playState = 'connecting'
       await handleConnect()
     }
@@ -1024,6 +1044,21 @@
   // The profiles page manages TeamProfiles of the CURRENT template via the
   // TeamProfile Wails bindings (T024 — projects/game/desktop/frontend/src/
   // api.ts); the page is specialized per template (FR-026/FR-029).
+  // loadProfilesForSelect feeds the session-entry profile selection dialog
+  // (same single-page list shape as the profiles page).
+  async function loadProfilesForSelect() {
+    profileSelectLoading = true
+    profileSelectError = null
+    try {
+      const resp = await listTeamProfiles(template, 100, '')
+      profileSelectProfiles = resp.teamProfiles
+    } catch (err) {
+      profileSelectError = err instanceof Error ? err.message : 'Failed to load team profiles'
+    } finally {
+      profileSelectLoading = false
+    }
+  }
+
   async function handleEnterProfiles() {
     profileMgmtLoading = true
     profileMgmtError = null
@@ -1257,6 +1292,18 @@
 
   {#if zoomedImageUrl}
     <ScreenshotModal imageUrl={zoomedImageUrl} onClose={() => zoomedImageUrl = null} />
+  {/if}
+
+  {#if showProfileSelect}
+    <ProfileSelectDialog
+      profiles={profileSelectProfiles}
+      loading={profileSelectLoading}
+      error={profileSelectError}
+      onSelect={handleProfileSelected}
+      onCancel={handleProfileSelectCancel}
+      onRefresh={loadProfilesForSelect}
+      onGoToProfiles={handleProfileSelectGoToProfiles}
+    />
   {/if}
 </div>
 
