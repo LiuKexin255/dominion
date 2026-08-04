@@ -4,7 +4,6 @@ package mongo
 import (
 	"context"
 	"errors"
-	"time"
 
 	"dominion/projects/game/session/domain"
 
@@ -99,13 +98,10 @@ func NewSessionRepository(client *mongodriver.Client, dbName string, collName st
 	}
 }
 
-// Create stores a new session in MongoDB.
+// Create stores a new session in MongoDB. The caller is responsible for
+// populating CreateTime.
 func (r *sessionRepository) Create(ctx context.Context, session *domain.Session) (*domain.Session, error) {
 	doc := sessionDocumentFromDomain(session)
-	now := time.Now()
-	if doc.CreateTime.IsZero() {
-		doc.CreateTime = now
-	}
 
 	if _, err := r.collection.InsertOne(ctx, doc); err != nil {
 		if mongodriver.IsDuplicateKeyError(err) {

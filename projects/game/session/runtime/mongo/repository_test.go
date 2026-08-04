@@ -255,7 +255,8 @@ func TestCreateSession(t *testing.T) {
 		{
 			name: "success",
 			session: &domain.Session{
-				SessionID: "abc123",
+				SessionID:  "abc123",
+				CreateTime: time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 			},
 			wantID: "abc123",
 		},
@@ -285,8 +286,8 @@ func TestCreateSession(t *testing.T) {
 			if got.SessionID != tt.wantID {
 				t.Fatalf("Create() session_id = %q, want %q", got.SessionID, tt.wantID)
 			}
-			if got.CreateTime.IsZero() {
-				t.Fatalf("Create() create_time is zero, expected non-zero timestamp")
+			if !got.CreateTime.Equal(tt.session.CreateTime) {
+				t.Fatalf("Create() create_time = %v, want %v", got.CreateTime, tt.session.CreateTime)
 			}
 		})
 	}

@@ -4,7 +4,6 @@ package mongo
 import (
 	"context"
 	"errors"
-	"time"
 
 	"dominion/projects/game/proxy/domain"
 
@@ -86,10 +85,6 @@ func (s *mongoOwnerStore) Create(ctx context.Context, owner *domain.AgentOwner) 
 	}
 
 	doc := agentOwnerDocumentFromDomain(owner)
-	now := time.Now()
-	if doc.CreateTime.IsZero() {
-		doc.CreateTime = now
-	}
 
 	if _, err := s.collection.InsertOne(ctx, doc); err != nil {
 		if mongodriver.IsDuplicateKeyError(err) {
