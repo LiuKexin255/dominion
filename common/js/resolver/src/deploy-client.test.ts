@@ -46,6 +46,7 @@ describe("createDeployClient", () => {
       expect(fakeFetch).toHaveBeenCalledOnce();
       expect(fakeFetch).toHaveBeenCalledWith(
         "http://infra.liukexin.com/v1/deploy/scopes/prod/environments/staging/apps/myapp/services/mysvc/endpoints",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
     });
 
@@ -154,6 +155,36 @@ describe("createDeployClient", () => {
     });
   });
 
+  describe("request timeout", () => {
+    it("throws DeployServiceError when the request exceeds requestTimeoutMs", async () => {
+      // Simulate undici behavior: the fetch hangs until the injected signal
+      // aborts, then rejects with the signal's TimeoutError reason.
+      const fakeFetch = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              reject(init.signal!.reason);
+            });
+          }),
+      );
+
+      const client = createDeployClient({ fetch: fakeFetch, requestTimeoutMs: 50 });
+
+      await expect(
+        client.getServiceEndpoints("deploy/scopes/test/endpoints"),
+      ).rejects.toThrow(DeployServiceError);
+
+      try {
+        await client.getServiceEndpoints("deploy/scopes/test/endpoints");
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect((err as DeployServiceError).message).toBe(
+          "deploy service request timed out after 50ms",
+        );
+      }
+    });
+  });
+
   describe("defaults", () => {
     it("uses default deployBaseUrl and globalThis.fetch when not provided", async () => {
       const fakeFetch = vi.fn().mockResolvedValue(
@@ -174,6 +205,7 @@ describe("createDeployClient", () => {
 
         expect(fakeFetch).toHaveBeenCalledWith(
           "http://infra.liukexin.com/v1/deploy/scopes/test/endpoints",
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
         expect(result.endpoints).toEqual(["10.0.0.1:50051"]);
       } finally {
@@ -200,6 +232,7 @@ describe("createDeployClient", () => {
 
       expect(fakeFetch).toHaveBeenCalledWith(
         "http://custom-deploy.example.com/v1/some/resource",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
     });
   });

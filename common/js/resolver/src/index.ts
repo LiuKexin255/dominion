@@ -1,6 +1,6 @@
 export * from "./errors";
 export * from "./target";
-export { createDeployClient } from "./deploy-client";
+export { createDeployClient, DEFAULT_REQUEST_TIMEOUT_MS } from "./deploy-client";
 export type { DeployClient } from "./deploy-client";
 export { validateServiceApp, parseDominionEnvironment, buildResourceName } from "./environment";
 export { createResolver } from "./resolver";

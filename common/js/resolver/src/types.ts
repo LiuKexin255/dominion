@@ -30,6 +30,12 @@ export interface ResolverConfig {
   env?: Record<string, string | undefined>;
   refreshIntervalMs?: number;
   scheduler?: Scheduler;
+  /**
+   * Timeout in milliseconds for each deploy API request. A hung request
+   * (e.g. DNS stall) must fail fast so the next refresh cycle can retry
+   * instead of blocking resolution forever.
+   */
+  requestTimeoutMs?: number;
 }
 
 /**
