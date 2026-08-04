@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"dominion/common/gopkg/logs"
 	"dominion/common/gopkg/logs/event"
@@ -65,8 +66,9 @@ func (h *SessionHandler) CreateSession(ctx context.Context, req *game.CreateSess
 	}
 
 	s, err := h.sessionRepo.Create(ctx, &domain.Session{
-		Template:  tplName.TemplateID,
-		SessionID: sessionID,
+		Template:   tplName.TemplateID,
+		SessionID:  sessionID,
+		CreateTime: time.Now(),
 	})
 	if err != nil {
 		return nil, toStatusError(err)
