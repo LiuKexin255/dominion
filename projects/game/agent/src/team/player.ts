@@ -15,6 +15,12 @@
  *   carries a FIXED id and is filtered out of the channel write-back, so the
  *   strategy never becomes part of the short-term message state (D4: strategy
  *   and short-term messages are decoupled).
+ * - **Game-end guard (Issue 1 — `specs/036-team-mode-bugfix/spec.md` FR-001)**:
+ *   a `beforeModel` middleware stops the createAgent loop as soon as an
+ *   unconsumed game-end event exists in the ephemeral buffer (the LLM never
+ *   gets to restart a new game mid-run). The post-process is wrapped in
+ *   try/finally, so the event is consumed and `gameEnded` set even when the
+ *   invoke throws (FR-002 — US1 acceptance #5).
  * - **Post-process (once, after `createAgent` returns — D6 step 4)**: consume
  *   the ephemeral buffer's `gameEvent`; if an unconsumed end event exists,
  *   write `TeamState.gameEnded = status` (the conditional edge then routes to
@@ -32,6 +38,7 @@
 import { createAgent } from "langchain";
 import { SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import { appendSkillBodyToPrompt } from "../skill-loader";
@@ -115,12 +122,15 @@ function buildStrategyMessage(strategy: string): BaseMessage {
  * checkpointer-less `createAgent` (D14 注意事项 4), runs it to completion,
  * then post-processes the sink buffer into `TeamState.gameEnded`.
  *
- * @returns An async node `(state) => Partial<TeamStateValue>` suitable for
- *   `StateGraph.addNode("player", ...)`.
+ * @returns An async node `(state, config?) => Partial<TeamStateValue>`
+ *   suitable for `StateGraph.addNode("player", ...)`.
  */
 export function createPlayerNode(
 	deps: PlayerNodeDeps,
-): (state: TeamStateValue) => Promise<Partial<TeamStateValue>> {
+): (
+	state: TeamStateValue,
+	config?: RunnableConfig,
+) => Promise<Partial<TeamStateValue>> {
 	const { strategyStore, buffer, sessionId } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
@@ -139,9 +149,30 @@ export function createPlayerNode(
 		model: deps.model,
 		tools: deps.tools,
 		systemPrompt,
+		// Issue 1 (036): beforeModel guard — stops the createAgent loop before
+		// the next model call once an unconsumed game-end event exists
+		// (`specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md`
+		// §1.1, FR-001 / US1 acceptance #4). `canJumpTo: ["end"]` is required
+		// for the `jumpTo` return (research.md D1).
+		middleware: [
+			{
+				name: "gameEndGuard",
+				beforeModel: {
+					canJumpTo: ["end"],
+					hook: () => {
+						if (buffer.gameEvent && !buffer.gameEvent.consumed) {
+							return { jumpTo: "end" };
+						}
+					},
+				},
+			},
+		],
 	});
 
-	return async (state: TeamStateValue): Promise<Partial<TeamStateValue>> => {
+	return async (
+		state: TeamStateValue,
+		config?: RunnableConfig,
+	): Promise<Partial<TeamStateValue>> => {
 		// FR-015: code-level "当前态势" injection, read fresh each entry.
 		const strategy = await strategyStore.get(sessionId);
 		const input: BaseMessage[] = [
@@ -149,20 +180,32 @@ export function createPlayerNode(
 			...state.playerMessages,
 		];
 
-		const result = (await playerAgent.invoke({
-			messages: input,
-		})) as { messages: BaseMessage[] };
-
-		// D6 step 4: consume the buffer's end event ONCE (marks consumed).
-		const gameEvent = consumeGameEvent(buffer);
-
-		return {
-			// Filter the strategy message out of the channel write-back — the
-			// strategy stays in StrategyStore, not in short-term state (D4).
-			playerMessages: result.messages.filter(
-				(m: BaseMessage) => m.id !== STRATEGY_MESSAGE_ID,
-			),
-			...(gameEvent ? { gameEnded: gameEvent.status } : {}),
-		};
+		// Issue 1 (036): try/finally — `consumeGameEvent` runs even when the
+		// invoke throws (GraphRecursionError / model / tool errors), so the
+		// game-end event is consumed and `gameEnded` set on BOTH paths. The
+		// finally's return intentionally swallows the exception — the node
+		// returns normally and the conditional edge routes to the planner
+		// (`specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md`
+		// §1.4, FR-002 / US1 acceptance #5).
+		let result: { messages: BaseMessage[] } | undefined;
+		try {
+			result = (await playerAgent.invoke(
+				{ messages: input },
+				config,
+			)) as { messages: BaseMessage[] };
+		} finally {
+			// D6 step 4: consume the buffer's end event ONCE (marks consumed).
+			const gameEvent = consumeGameEvent(buffer);
+			return {
+				// Filter the strategy message out of the channel write-back —
+				// the strategy stays in StrategyStore, not in short-term state
+				// (D4). `result` is undefined when the invoke threw — no
+				// messages to write back.
+				playerMessages: (result?.messages ?? []).filter(
+					(m: BaseMessage) => m.id !== STRATEGY_MESSAGE_ID,
+				),
+				...(gameEvent ? { gameEnded: gameEvent.status } : {}),
+			};
+		}
 	};
 }
