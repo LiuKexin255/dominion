@@ -38,6 +38,8 @@ export interface ResolverConfig {
   fetch?: FetchLike;
   env?: Record<string, string | undefined>;
   refreshIntervalMs?: number;
+  scheduler?: Scheduler;
+  requestTimeoutMs?: number;
 }
 
 export interface EndpointResolver {
@@ -50,6 +52,7 @@ export function createResolver(config?: ResolverConfig): EndpointResolver;
 **Behavior**:
 - Reads `DOMINION_ENVIRONMENT=scope.envName` from `config.env ?? process.env`.
 - Calls `GET {deployBaseUrl}/v1/deploy/scopes/{scope}/environments/{env}/apps/{app}/services/{service}/endpoints`.
+- Each deploy API request aborts after `config.requestTimeoutMs ?? 5_000` ms; a timed-out request throws `DeployServiceError` with a `timed out after {ms}ms` message so a hung request cannot block the next refresh cycle.
 - Numeric ports keep only endpoint addresses with the requested port.
 - Named ports resolve through the deploy response `ports` map and rewrite each endpoint host to the resolved numeric port.
 - Returns sorted, unique `host:port` strings.
@@ -84,6 +87,8 @@ export function registerDominionResolver(config?: ResolverConfig): void;
 - For `dominion-stateful`, the URI must include `?instance=N`.
 - The resolver maps resolved `host:port` strings to grpc-js `experimental.Endpoint[]` and publishes them asynchronously through the resolver listener.
 - The resolver reports refresh errors without clearing the last known good endpoint list.
+- The resolver re-emits the endpoint list when a refresh fails and the next refresh succeeds, even if the endpoints are unchanged — so a channel that entered a degraded state from the error emit is healed by the next successful refresh.
+- Refresh failures are logged via `@dominion/common-js-logs` (level `warn`) with the target and error message.
 - The resolver refresh interval is `config.refreshIntervalMs ?? 30_000`.
 - Closing/destroying the grpc-js resolver clears the interval.
 - Callers who want round-robin balancing should provide grpc-js service config, e.g. `{ "loadBalancingConfig": [{ "round_robin": {} }], "methodConfig": [] }`, unless the implementation later chooses to provide an equivalent resolver service config.

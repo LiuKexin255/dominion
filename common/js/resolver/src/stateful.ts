@@ -39,7 +39,11 @@ export function createStatefulResolver(
   const doFetch = config?.fetch ?? globalThis.fetch;
   const env = config?.env ?? process.env;
 
-  const client = createDeployClient({ deployBaseUrl, fetch: doFetch });
+  const client = createDeployClient({
+    deployBaseUrl,
+    fetch: doFetch,
+    requestTimeoutMs: config?.requestTimeoutMs,
+  });
 
   return {
     async resolveInstance(

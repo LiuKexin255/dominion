@@ -32,6 +32,7 @@ export function createResolver(config?: ResolverConfig): EndpointResolver {
   const deployClient = createDeployClient({
     deployBaseUrl,
     fetch: doFetch,
+    requestTimeoutMs: config?.requestTimeoutMs,
   });
 
   return {

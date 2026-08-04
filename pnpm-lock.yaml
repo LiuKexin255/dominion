@@ -168,6 +168,9 @@ importers:
 
   common/js/grpc/resolver:
     dependencies:
+      '@dominion/common-js-logs':
+        specifier: workspace:*
+        version: link:../../logs
       '@dominion/common-js-resolver':
         specifier: workspace:*
         version: link:../../resolver

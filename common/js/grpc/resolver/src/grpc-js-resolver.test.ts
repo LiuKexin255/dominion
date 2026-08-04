@@ -206,6 +206,79 @@ describe("DominionResolver", () => {
     );
   });
 
+  it("refresh failure followed by success with same endpoints re-emits ok=true", async () => {
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+    const endpointsBody = {
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    };
+
+    // Fetch sequence: success -> failure -> success (same endpoints).
+    let callCount = 0;
+    const togglingFetch = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1 || callCount === 3) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => JSON.parse(JSON.stringify(endpointsBody)),
+          text: async () => JSON.stringify(endpointsBody),
+        } as Response;
+      }
+      throw new Error("network error");
+    });
+
+    const resolver = new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch: togglingFetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(false);
+    listener.mockClear();
+
+    // The channel may have entered a degraded state from the error emit;
+    // the next success MUST re-emit even though endpoints are unchanged.
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+  });
+
+  it("passes an abort-signal with requestTimeoutMs to the deploy fetch", async () => {
+    const fetch = fakeFetchReturning({
+      endpoints: ["10.0.0.1:50051"],
+      ports: {},
+      isStateful: false,
+      statefulInstances: [],
+    });
+    const listener = mockListener();
+    const target = dominionTarget("myapp/myservice:50051");
+
+    new DominionResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch,
+      scheduler: spyScheduler(),
+      requestTimeoutMs: 7_000,
+    });
+    await vi.runAllTimersAsync();
+
+    expect(fetch).toHaveBeenCalledOnce();
+    const init = fetch.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal?.aborted).toBe(false);
+  });
+
   it("initial failure: listener called with ok=false, no endpoint data", async () => {
     const failFetch = vi.fn(async () => {
       throw new Error("initial failure");
@@ -363,5 +436,57 @@ describe("DominionStatefulResolver", () => {
       { addresses: [{ host: "10.0.0.1", port: 50051 }] },
       { addresses: [{ host: "10.0.0.2", port: 50051 }] },
     ]);
+  });
+
+  it("stateful scheme: re-emits ok=true after a failed refresh with same endpoints", async () => {
+    const listener = mockListener();
+    const target = statefulTarget("myapp/myservice:50051?instance=1");
+    const endpointsBody = {
+      endpoints: [],
+      ports: {},
+      isStateful: true,
+      statefulInstances: [
+        {
+          index: 1,
+          endpoints: ["10.0.0.1:50051"],
+          hostname: "instance-1",
+        },
+      ],
+    };
+
+    let callCount = 0;
+    const togglingFetch = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1 || callCount === 3) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => JSON.parse(JSON.stringify(endpointsBody)),
+          text: async () => JSON.stringify(endpointsBody),
+        } as Response;
+      }
+      throw new Error("network error");
+    });
+
+    const resolver = new DominionStatefulResolver(target, listener, {}, {
+      env: TEST_ENV,
+      fetch: togglingFetch,
+      scheduler: spyScheduler(),
+    });
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(false);
+    listener.mockClear();
+
+    resolver.updateResolution();
+    await vi.runAllTimersAsync();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0][0].ok).toBe(true);
   });
 });

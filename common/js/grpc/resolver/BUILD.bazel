@@ -18,6 +18,7 @@ ts_project(
     tsconfig = ":tsconfig.json",
     visibility = ["//visibility:public"],
     deps = [
+        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",
@@ -50,6 +51,7 @@ js_runtime_library(
     package_json = "package.json",
     visibility = ["//visibility:public"],
     runtime_deps = [
+        "//common/js/logs:runtime_pkg",
         "//common/js/resolver:runtime_pkg",
     ],
 )
@@ -63,6 +65,7 @@ vitest_test(
         ["src/**/*.ts"],
         allow_empty = True,
     ) + [
+        ":node_modules/@dominion/common-js-logs",
         ":node_modules/@dominion/common-js-resolver",
         ":node_modules/@grpc/grpc-js",
         ":node_modules/@types/node",

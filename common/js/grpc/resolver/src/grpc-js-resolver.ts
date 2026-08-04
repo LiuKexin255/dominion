@@ -18,9 +18,11 @@ import {
   validateServiceApp,
   createResolver,
   createStatefulResolver,
+  DEFAULT_REQUEST_TIMEOUT_MS,
 } from "@dominion/common-js-resolver";
 import type { ResolverConfig, Scheduler } from "@dominion/common-js-resolver";
 import type { ResolverState } from "./grpc-types";
+import { warn } from "@dominion/common-js-logs";
 
 let registered = false;
 let storedConfig: ResolverConfig | undefined;
@@ -189,10 +191,12 @@ class _DominionResolver {
   private refreshHandle: unknown | null = null;
   private scheduler: Scheduler;
   private refreshIntervalMs: number;
+  private requestTimeoutMs: number;
   private targetStr: string;
   private env: Record<string, string | undefined>;
   private deployBaseUrl?: string;
   private fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+  private lastRefreshFailed = false;
 
   constructor(
     target: GrpcUri,
@@ -210,6 +214,7 @@ class _DominionResolver {
     this.listener = listener;
     this.scheduler = cfg.scheduler ?? defaultScheduler;
     this.refreshIntervalMs = cfg.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+    this.requestTimeoutMs = cfg.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.deployBaseUrl = cfg.deployBaseUrl;
     this.fetchImpl = cfg.fetch;
 
@@ -246,6 +251,7 @@ class _DominionResolver {
       env: this.env,
       fetch: this.fetchImpl,
       deployBaseUrl: this.deployBaseUrl,
+      requestTimeoutMs: this.requestTimeoutMs,
     });
 
     try {
@@ -253,7 +259,7 @@ class _DominionResolver {
       const endpoints = addressesToEndpoints(addresses);
       const newKey = endpointsKey(endpoints);
 
-      if (this.state.status === "ready") {
+      if (this.state.status === "ready" && !this.lastRefreshFailed) {
         const prevKey = endpointsKey(this.state.endpoints);
         if (newKey === prevKey) {
           return;
@@ -266,11 +272,17 @@ class _DominionResolver {
         endpoints,
         lastUpdatedAt: new Date(),
       };
+      this.lastRefreshFailed = false;
 
       const value = statusOrFromValue(endpoints);
       setImmediate(() => this._emit(value));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      this.lastRefreshFailed = true;
+      warn("service endpoints refresh failed", {
+        target: this.targetStr,
+        error: message,
+      });
       const error = statusOrFromError<Endpoint[]>({
         code: Status.UNAVAILABLE,
         details: message,
@@ -295,11 +307,13 @@ class _DominionStatefulResolver {
   private refreshHandle: unknown | null = null;
   private scheduler: Scheduler;
   private refreshIntervalMs: number;
+  private requestTimeoutMs: number;
   private targetStr: string;
   private instanceNum: number;
   private env: Record<string, string | undefined>;
   private deployBaseUrl?: string;
   private fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
+  private lastRefreshFailed = false;
 
   constructor(
     target: GrpcUri,
@@ -319,6 +333,7 @@ class _DominionStatefulResolver {
     this.listener = listener;
     this.scheduler = cfg.scheduler ?? defaultScheduler;
     this.refreshIntervalMs = cfg.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+    this.requestTimeoutMs = cfg.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.deployBaseUrl = cfg.deployBaseUrl;
     this.fetchImpl = cfg.fetch;
 
@@ -355,6 +370,7 @@ class _DominionStatefulResolver {
       env: this.env,
       fetch: this.fetchImpl,
       deployBaseUrl: this.deployBaseUrl,
+      requestTimeoutMs: this.requestTimeoutMs,
     });
 
     try {
@@ -365,7 +381,7 @@ class _DominionStatefulResolver {
       const endpoints = addressesToEndpoints(addresses);
       const newKey = endpointsKey(endpoints);
 
-      if (this.state.status === "ready") {
+      if (this.state.status === "ready" && !this.lastRefreshFailed) {
         const prevKey = endpointsKey(this.state.endpoints);
         if (newKey === prevKey) {
           return;
@@ -378,11 +394,17 @@ class _DominionStatefulResolver {
         endpoints,
         lastUpdatedAt: new Date(),
       };
+      this.lastRefreshFailed = false;
 
       const value = statusOrFromValue(endpoints);
       setImmediate(() => this._emit(value));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      this.lastRefreshFailed = true;
+      warn("service endpoints refresh failed", {
+        target: this.targetStr,
+        error: message,
+      });
       const error = statusOrFromError<Endpoint[]>({
         code: Status.UNAVAILABLE,
         details: message,
