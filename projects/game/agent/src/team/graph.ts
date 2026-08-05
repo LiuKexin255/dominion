@@ -53,8 +53,9 @@ import { createPlannerNode } from "./planner";
  * TS2883 note in `state.ts`; the value type is exported there as the
  * structural {@link TeamStateValue} instead. Uses `Annotation.Root` (NOT
  * `new StateSchema` + zod — D14 注意事项 1) with `messagesStateReducer`
- * channels (REMOVE_ALL_MESSAGES support, D8/A1) and a last-write-wins
- * `gameEnded` control field (A6).
+ * channels (REMOVE_ALL_MESSAGES support, D8/A1), a last-write-wins
+ * `gameEnded` control field (A6) and a last-write-wins `gameCounter`
+ * (specs/037-saolei-team-optimize/data-model.md §2).
  */
 const TeamState = Annotation.Root({
 	playerMessages: Annotation<BaseMessage[]>({
@@ -70,6 +71,13 @@ const TeamState = Annotation.Root({
 		// reads it (A6). `null` after the planner clears it (D6 step 6).
 		reducer: (_prev: GameEnded, next: GameEnded) => next,
 		default: () => null,
+	}),
+	gameCounter: Annotation<number>({
+		// Overwrite (last-write-wins) counter; the planner increments it on
+		// return and RefreshTeam resets it (specs/037-saolei-team-optimize/
+		// data-model.md §2, FR-006/FR-014). Same pattern as `gameEnded`.
+		reducer: (_prev: number, next: number) => next,
+		default: () => 0,
 	}),
 });
 

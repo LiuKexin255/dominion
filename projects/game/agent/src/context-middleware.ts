@@ -5,7 +5,10 @@
  * (`playerMessages` and `plannerMessages`) while leaving the long-term
  * strategy (StrategyStore/mongo) and the `gameEnded` control field intact
  * (specs/031-team-template-mode/contracts/team-graph-contract.md §5;
- * research.md D8).
+ * research.md D8). It also resets the `gameCounter` state field to 0 — the
+ * counter shares the short-term lifetime (per-session, reset with the team)
+ * and RefreshTeam must clear it alongside the channels
+ * (specs/037-saolei-team-optimize/spec.md FR-014; data-model.md §2).
  *
  * **Mechanism note (deviation from the contract's "beforeModel hook"
  * wording)**: the contract text says the clear lands in a `beforeModel`
@@ -71,10 +74,12 @@ export async function refreshTeamChannels(
 ): Promise<void> {
   const config = { configurable: { thread_id: sessionId } };
   // One update carrying both channel clears: per-channel independence (A1)
-  // means the two `RemoveMessage`s never interfere.
+  // means the two `RemoveMessage`s never interfere. `gameCounter` is reset
+  // alongside (last-write-wins reducer, FR-014).
   await graph.updateState(config, {
     ...clearChannel("playerMessages"),
     ...clearChannel("plannerMessages"),
+    gameCounter: 0,
   });
   info("refresh team: cleared short-term message channels", { sessionId });
 }

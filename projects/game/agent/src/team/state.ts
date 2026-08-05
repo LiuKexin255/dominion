@@ -13,7 +13,11 @@
  *   desktop's per-agent tabs), each driven by `messagesStateReducer` so the
  *   channels support `REMOVE_ALL_MESSAGES` (D8 / RefreshTeam);
  * - a structured `gameEnded` control field (`"won" | "lost" | null`) with a
- *   last-write-wins reducer — read by the conditional edge (D6 / A6).
+ *   last-write-wins reducer — read by the conditional edge (D6 / A6);
+ * - a `gameCounter` field (integer, per-session completed-game counter) with
+ *   a last-write-wins reducer — incremented by the planner on return and
+ *   reset by RefreshTeam (specs/037-saolei-team-optimize/data-model.md §2;
+ *   FR-014).
  *
  * The strategy is NOT in state (it lives in `StrategyStore`, injected into
  * prompts at code level — contract §3); gameState/gameEvent are NOT in state
@@ -55,4 +59,6 @@ export interface TeamStateValue {
 	playerMessages: BaseMessage[];
 	plannerMessages: BaseMessage[];
 	gameEnded: GameEnded;
+	/** Completed-game counter (won/lost, planner-returned); reset by RefreshTeam. */
+	gameCounter: number;
 }

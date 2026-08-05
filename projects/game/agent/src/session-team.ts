@@ -42,8 +42,10 @@
 import { HumanMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 
+import type { TeamFrame } from "../game_types/projects/game/TeamFrame";
+
 import type { OperationBridge } from "./operation-bridge";
-import { TurnLoop } from "./turn-loop";
+import { TurnLoop, buildTeamFrame } from "./turn-loop";
 import type { TurnLoopEmit } from "./turn-loop";
 import type { TurnBlock } from "./turn-loop";
 import type { ContentBlock, TurnContent } from "./llm";
@@ -78,6 +80,17 @@ export type SessionTeamFactory = (
 	template: string,
 	profileName: string,
 ) => Promise<SessionTeam>;
+
+/**
+ * Emit a non-model-produced channel message as a real-time agent frame
+ * (specs/037-saolei-team-optimize/data-model.md §4 — planner review input,
+ * compression summaries). Passed to the graph nodes via the LangGraph
+ * `configurable` object (tasks.md 决策 #1) rather than TeamGraphDeps, so the
+ * node signature stays DI-free; {@link SessionTeam.runTeamTurn} installs it in
+ * the `streamEvents` config, and planner/compress nodes read
+ * `config?.configurable?.emitChannelFrame` (type `ChannelFrameEmitter | undefined`).
+ */
+export type ChannelFrameEmitter = (agent: string, content: string) => void;
 
 // ---------------------------------------------------------------------------
 // SessionTeam
@@ -259,7 +272,26 @@ export class SessionTeam {
 				],
 			},
 			{
-				configurable: { thread_id: this.sessionId },
+				// `configurable.emitChannelFrame` carries the channel-frame
+				// emitter to the nodes (tasks.md 决策 #1 — configurable instead
+				// of TeamGraphDeps, see {@link ChannelFrameEmitter}): planner /
+				// compress read it as `config?.configurable?.emitChannelFrame`.
+				configurable: {
+					thread_id: this.sessionId,
+					emitChannelFrame: (agent: string, content: string) => {
+						const frame: TeamFrame = buildTeamFrame(
+							this.sessionId,
+							this.template,
+							{
+								agent,
+								messageParts: {
+									parts: [{ text: { content } }],
+								},
+							},
+						);
+						this.turnLoopEmit?.(frame);
+					},
+				},
 				metadata: { session_id: this.sessionId },
 				version: "v3",
 				recursionLimit: RECURSION_LIMIT,
