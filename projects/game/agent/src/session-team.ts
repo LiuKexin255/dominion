@@ -89,8 +89,19 @@ export type SessionTeamFactory = (
  * node signature stays DI-free; {@link SessionTeam.runTeamTurn} installs it in
  * the `streamEvents` config, and planner/compress nodes read
  * `config?.configurable?.emitChannelFrame` (type `ChannelFrameEmitter | undefined`).
+ *
+ * `frameId` is an optional dedup anchor: the compress node passes its summary
+ * AIMessage's id so the live frame and the reloaded ListMessages entry share
+ * one id (data-model.md §4 去重规则, research.md D9 — desktop
+ * `renderedMessageIds` dedups on `frameId == msg.id`). The planner's
+ * review-input emission omits it (the frame gets a fresh randomUUID, the
+ * historical behavior — the review-input dedup gap is a US1 follow-up).
  */
-export type ChannelFrameEmitter = (agent: string, content: string) => void;
+export type ChannelFrameEmitter = (
+	agent: string,
+	content: string,
+	frameId?: string,
+) => void;
 
 // ---------------------------------------------------------------------------
 // SessionTeam
@@ -278,7 +289,11 @@ export class SessionTeam {
 				// compress read it as `config?.configurable?.emitChannelFrame`.
 				configurable: {
 					thread_id: this.sessionId,
-					emitChannelFrame: (agent: string, content: string) => {
+					emitChannelFrame: (
+						agent: string,
+						content: string,
+						frameId?: string,
+					) => {
 						const frame: TeamFrame = buildTeamFrame(
 							this.sessionId,
 							this.template,
@@ -288,6 +303,9 @@ export class SessionTeam {
 									parts: [{ text: { content } }],
 								},
 							},
+							// Dedup anchor: the compress node's summary
+							// message id (frameId == msg.id, data-model.md §4).
+							frameId,
 						);
 						this.turnLoopEmit?.(frame);
 					},

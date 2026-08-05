@@ -18,11 +18,15 @@
  *   loop (the model may retry the call), and a failing agent invoke is
  *   retried a bounded number of times before degrading. The graph scheduler
  *   never re-routes the planner.
- * - **Return**: `{ plannerMessages, gameEnded: null }` — the graph clears
- *   `gameEnded` UNCONDITIONALLY after the planner node returns (D6 step 6,
- *   whether or not `update_strategy` succeeded), so the planner fires at most
- *   once per game end; the edge back to `player` follows (FR-009 — continuing
- *   is driven by the player LLM / user, not a forced loop).
+ * - **Return**: `{ plannerMessages, gameEnded: null, gameCounter }` — the graph
+ *   clears `gameEnded` UNCONDITIONALLY after the planner node returns (D6 step
+ *   6, whether or not `update_strategy` succeeded), so the planner fires at
+ *   most once per game end; the edge back to `player` follows (FR-009 —
+ *   continuing is driven by the player LLM / user, not a forced loop). The
+ *   node also increments the per-session `gameCounter` on BOTH paths (success
+ *   and degrade): every ended game — won or lost — counts toward the 5-game
+ *   compression trigger (specs/037-saolei-team-optimize/spec.md FR-006;
+ *   contracts/compression-contract.md §4).
  *
  * **createAgent carries NO checkpointer** (D14 注意事项 4 / A2), same as the
  * player node: history lives in the outer graph's single `MemorySaver`.
@@ -249,7 +253,12 @@ export function createPlannerNode(
 			// writes NO plannerMessages, so the live frame and the reloaded
 			// channel history diverge while degraded — accepted: real-time
 			// visibility takes priority when the planner LLM is unavailable.
-			return { gameEnded: null };
+			// The ended game still counts toward the compression trigger even
+			// when degraded (FR-006, compression-contract.md §4).
+			return {
+				gameEnded: null,
+				gameCounter: state.gameCounter + 1,
+			};
 		}
 
 		return {
@@ -259,6 +268,9 @@ export function createPlannerNode(
 			// D6 step 6: unconditional clear — the planner fires at most once
 			// per game end; the edge routes back to the player (FR-009).
 			gameEnded: null,
+			// FR-006: the ended game (won or lost) counts toward the 5-game
+			// compression trigger (compression-contract.md §4).
+			gameCounter: state.gameCounter + 1,
 		};
 	};
 }

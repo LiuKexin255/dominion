@@ -115,6 +115,12 @@ export type TurnRunner = (
  * is the session's template path segment (bare, REQUIRED by the proto contract
  * — specs/031-team-template-mode/contracts/api-contract.md §3.6).
  *
+ * `frameId` is an explicit override: the channel-frame emitter passes the
+ * source message's id so the live frame and the reloaded ListMessages entry
+ * share one dedup anchor (specs/037-saolei-team-optimize/data-model.md §4,
+ * research.md D9 — desktop `renderedMessageIds` dedups on `frameId == msg.id`).
+ * Defaults to a fresh randomUUID when omitted (the pre-existing behavior).
+ *
  * Exported as the canonical TeamFrame builder: `handler.ts` and
  * `operation-bridge.ts` reuse it so every outbound frame carries the full
  * envelope (the former operation-bridge dispatch set only the payload — the
@@ -124,12 +130,13 @@ export function buildTeamFrame(
   sessionId: string,
   templateId: string,
   payload: Partial<TeamFrame>,
+  frameId?: string,
 ): TeamFrame {
   const payloadKind = PAYLOAD_ONEOF_KEYS.find((k) => k in payload);
   return {
     sessionId,
     templateId,
-    frameId: randomUUID(),
+    frameId: frameId ?? randomUUID(),
     createTime: timestampNow(),
     role:
       payloadKind === "messageParts"

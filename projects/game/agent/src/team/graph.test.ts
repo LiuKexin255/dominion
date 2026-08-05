@@ -18,6 +18,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { fakeModel } from "@langchain/core/testing";
 import { createAgent, tool } from "langchain";
 import { z } from "zod";
@@ -25,13 +26,14 @@ import type { GameState } from "@dominion/game-saolei-board";
 
 import { FakeStrategyStore } from "../strategy-store";
 import { appendSkillBodyToPrompt, SKILL_PROMPT_SEPARATOR } from "../skill-loader";
+import { refreshTeamChannels } from "../context-middleware";
 import {
 	createEphemeralGameBuffer,
 	createTeamSink,
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
-import { createPlayerNode, DEFAULT_PLAYER_BASE } from "./player";
+import { createPlayerNode, DEFAULT_PLAYER_BASE, PLAYER_AGENT_NAME } from "./player";
 import type { CreateAgentFn } from "./player";
 import { DEFAULT_PLANNER_BASE, PLANNER_AGENT_NAME } from "./planner";
 import type { TeamStateValue } from "./state";
@@ -64,6 +66,26 @@ function buildGameEndingPlayerTool(buffer: EphemeralGameBuffer) {
 	);
 }
 
+/**
+ * The fake player tool with a MIXED won/lost outcome (FR-006 — both end a
+ * game and both count toward the compression trigger): even x ⇒ won, odd x ⇒
+ * lost.
+ */
+function buildMixedOutcomePlayerTool(buffer: EphemeralGameBuffer) {
+	const sink = createTeamSink(buffer);
+	return tool(
+		async ({ x, y }: { x: number; y: number }) => {
+			await sink.onGameEnd(makeState(), x % 2 === 0 ? "won" : "lost");
+			return `moved to (${x},${y}); ${x % 2 === 0 ? "won" : "lost"}`;
+		},
+		{
+			name: "fake_saolei_move",
+			description: "Fake saolei move that ends the game (won/lost mix).",
+			schema: z.object({ x: z.number(), y: z.number() }),
+		},
+	);
+}
+
 /** The player's fake model for a "play one game then idle" flow. */
 function playOneGamePlayerModel() {
 	// call 1: make a move (fires the fake tool → sink.onGameEnd("won"));
@@ -91,6 +113,7 @@ function buildTestGraph(
 		playerBasePrompt?: string;
 		plannerBasePrompt?: string;
 		createAgentFn?: CreateAgentFn;
+		playerTools?: StructuredToolInterface[];
 	} = {},
 ) {
 	const store = overrides.store ?? new FakeStrategyStore();
@@ -103,12 +126,48 @@ function buildTestGraph(
 		strategyStore: store,
 		buffer,
 		sessionId,
-		playerTools: [buildGameEndingPlayerTool(buffer)],
+		playerTools:
+			overrides.playerTools ?? [buildGameEndingPlayerTool(buffer)],
 		playerBasePrompt: overrides.playerBasePrompt ?? "",
 		plannerBasePrompt: overrides.plannerBasePrompt ?? "",
 		createAgentFn: overrides.createAgentFn,
 	});
 	return { graph, checkpointer, store, buffer, sessionId };
+}
+
+/**
+ * The player's fake model for "5 consecutive game endings then compress": one
+ * move tool call per game (each move fires the fake tool → sink.onGameEnd,
+ * FR-006 — every ended game counts), then the compress node's player-channel
+ * summary call returns `summaryContent`.
+ */
+function fiveGamesPlayerModel(summaryContent: string) {
+	const model = fakeModel();
+	for (let i = 0; i < 5; i += 1) {
+		model.respondWithTools([
+			{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+		]);
+	}
+	model.respond(new AIMessage(summaryContent));
+	return model;
+}
+
+/**
+ * The planner's fake model for "5 review runs then compress": per game one
+ * `update_strategy` tool call + a plain response (2 model calls per planner
+ * run — strategy v1..v5 accumulate, last write wins), then the compress
+ * node's planner-channel summary call returns `summaryContent`.
+ */
+function fiveGamesPlannerModel(summaryContent: string) {
+	const model = fakeModel();
+	for (let i = 0; i < 5; i += 1) {
+		model.respondWithTools([
+			{ name: "update_strategy", args: { content: `v${i + 1}` } },
+		]);
+		model.respond(new AIMessage(`v${i + 1} written`));
+	}
+	model.respond(new AIMessage(summaryContent));
+	return model;
 }
 
 function contentType(m: BaseMessage): string {
@@ -1057,5 +1116,236 @@ describe("player/planner base prompts from the TeamProfile (FR-034 semantics A)"
 
 		expect(plannerSystemPrompt()).toBe(DEFAULT_PLANNER_BASE);
 		expect(createAgentFn).toHaveBeenCalled();
+	});
+});
+
+describe("team graph — US2 (037): 5-game compression (FR-006..FR-015)", () => {
+	it("compresses both channels into one summary after 5 ended games, player stops (FR-006/FR-008/FR-009/FR-010/FR-012)", async () => {
+		// Mixed won AND lost outcomes — both count a game (FR-006). The tool
+		// closes over the SAME buffer the graph uses (sink → buffer → node).
+		const buffer = createEphemeralGameBuffer();
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [buildMixedOutcomePlayerTool(buffer)],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-compress5" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// FR-006: 5 ended games (won/lost) → counter 5.
+		expect(result.gameCounter).toBe(5);
+		// FR-008/FR-012: each channel shrank to ONE meaningful summary
+		// AIMessage (non-blank content).
+		expect(result.playerMessages).toHaveLength(1);
+		expect(result.playerMessages[0]._getType()).toBe("ai");
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		expect(result.plannerMessages).toHaveLength(1);
+		expect(contentType(result.plannerMessages[0] as BaseMessage)).toBe(
+			"planner 摘要内容",
+		);
+		// FR-009: the strategy (long-term memory) is untouched by compression
+		// (the planner's last update wins).
+		expect(await store.get("graph-test")).toBe("v5");
+		// FR-010: the graph routed compress → END, NOT back to the player —
+		// the player model was called 5× (one move per game) + 1× (the
+		// compress summary); a 6th player run would consume a 7th response.
+		expect(playerModel.callCount).toBe(6);
+		// D6 step 6: gameEnded stays cleared after the turn.
+		expect(result.gameEnded).toBeNull();
+	});
+
+	it("resumes game 6 with the summary context after compression (FR-010, US2 AS4)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		playerModel.respondWithTools([
+			{ name: "fake_saolei_move", args: { x: 6, y: 6 } },
+		]);
+		playerModel.respond(new AIMessage("idle, no new game"));
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		plannerModel.respondWithTools([
+			{ name: "update_strategy", args: { content: "v6" } },
+		]);
+		plannerModel.respond(new AIMessage("v6 written"));
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+		const thread = "t-resume";
+
+		// Games 1-5 + compression (gameCounter 0 → 5, channels shrink).
+		const compressed = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: thread }, recursionLimit: 200 },
+		)) as TeamStateValue;
+		expect(compressed.gameCounter).toBe(5);
+		expect(compressed.playerMessages).toHaveLength(1);
+
+		// Game 6: a new user input starts a new turn; the player resumes with
+		// the summary as its (only) channel history.
+		const result6 = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("继续")] },
+			{ configurable: { thread_id: thread }, recursionLimit: 200 },
+		)) as TeamStateValue;
+		expect(result6.gameCounter).toBe(6);
+		// The player's game-6 first model input carries the summary context
+		// (calls[0..4] = moves 1-5, calls[5] = the compress summary call).
+		const game6Input = playerModel.calls[6].messages as BaseMessage[];
+		expect(
+			game6Input.some((m) => contentType(m).includes("player 摘要内容")),
+		).toBe(true);
+	});
+
+	it("aborts when a compression LLM call throws (FR-013)", async () => {
+		const playerModel = fakeModel();
+		for (let i = 0; i < 5; i += 1) {
+			playerModel.respondWithTools([
+				{ name: "fake_saolei_move", args: { x: i + 1, y: i + 1 } },
+			]);
+		}
+		// The compress node's player-channel summary call (6th) throws.
+		playerModel.respond(new Error("compression llm down"));
+		const plannerModel = fiveGamesPlannerModel("unused");
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		// FR-013: the node re-throws → the graph invoke rejects (abort).
+		await expect(
+			graph.invoke(
+				{ playerMessages: [new HumanMessage("开始游戏")] },
+				{ configurable: { thread_id: "t-compress-fail" }, recursionLimit: 200 },
+			),
+		).rejects.toThrow("compression llm down");
+	});
+
+	it("skips an empty channel at compression time (FR-015)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fakeModel();
+		// Every planner invoke fails → the node degrades and writes NO
+		// plannerMessages, so the planner channel is empty when compression
+		// triggers (5 games × MAX_PLANNER_ATTEMPTS=3 = 15 error responses).
+		for (let i = 0; i < 15; i += 1) {
+			plannerModel.respond(new Error("planner llm down"));
+		}
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-empty-channel" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// 5 games still counted (the degrade path increments too, FR-006).
+		expect(result.gameCounter).toBe(5);
+		// Non-empty player channel: compressed to one summary.
+		expect(result.playerMessages).toHaveLength(1);
+		expect(contentType(result.playerMessages[0] as BaseMessage)).toBe(
+			"player 摘要内容",
+		);
+		// Empty planner channel: skipped — no summary message written.
+		expect(result.plannerMessages).toEqual([]);
+		// The planner model was never invoked for a summary (15 = the 5
+		// degraded planner runs' retries only).
+		expect(plannerModel.callCount).toBe(15);
+	});
+
+	it("does not compress at a non-5 gameCounter (FR-006: MUST NOT trigger)", async () => {
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 2, y: 2 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = fakeModel()
+			.respondWithTools([{ name: "update_strategy", args: { content: "v1" } }])
+			.respond(new AIMessage("v1 written"))
+			.respondWithTools([{ name: "update_strategy", args: { content: "v2" } }])
+			.respond(new AIMessage("v2 written"));
+		const { graph, store } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-no-compress" }, recursionLimit: 200 },
+		)) as TeamStateValue;
+
+		// 2 ended games → counter 2 (not a 5-multiple) → no compression.
+		expect(result.gameCounter).toBe(2);
+		// The player channel still holds the raw history (length > 1).
+		expect(result.playerMessages.length).toBeGreaterThan(1);
+		// The compress node never ran: no summary calls (player: 2 moves + 1
+		// idle; planner: 2 runs × 2 calls).
+		expect(playerModel.callCount).toBe(3);
+		expect(plannerModel.callCount).toBe(4);
+		expect(await store.get("graph-test")).toBe("v2");
+	});
+
+	it("emits player+planner summary frames carrying the summary message id (FR-011/SC-004, data-model.md §4)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const emitChannelFrame = vi.fn<
+			(agent: string, content: string, frameId?: string) => void
+		>();
+		const { graph } = buildTestGraph({ playerModel, plannerModel });
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-compress-frame", emitChannelFrame },
+				recursionLimit: 200,
+			},
+		)) as TeamStateValue;
+
+		// 5 planner review-input frames (US1, agent="planner") + 2 summary
+		// frames (player channel, planner channel) = 7.
+		expect(emitChannelFrame).toHaveBeenCalledTimes(7);
+		const calls = emitChannelFrame.mock.calls;
+		for (let i = 0; i < 5; i += 1) {
+			expect(calls[i][0]).toBe(PLANNER_AGENT_NAME);
+		}
+		// Player summary frame: agent + content match the summary model output
+		// (FR-011), and the frameId equals the summary message's id — the
+		// desktop dedup anchor (frameId == msg.id, data-model.md §4 / D9).
+		const [playerAgent, playerContent, playerFrameId] = calls[5];
+		expect(playerAgent).toBe(PLAYER_AGENT_NAME);
+		expect(playerContent).toBe("player 摘要内容");
+		expect(playerFrameId).toBeDefined();
+		expect(playerFrameId).toBe(result.playerMessages[0].id);
+		// Planner summary frame: same for the planner channel.
+		const [plannerAgent, plannerContent, plannerFrameId] = calls[6];
+		expect(plannerAgent).toBe(PLANNER_AGENT_NAME);
+		expect(plannerContent).toBe("planner 摘要内容");
+		expect(plannerFrameId).toBeDefined();
+		expect(plannerFrameId).toBe(result.plannerMessages[0].id);
+	});
+
+	it("clears the compressed channels and resets gameCounter on RefreshTeam (FR-014 / US2 AS8)", async () => {
+		const playerModel = fiveGamesPlayerModel("player 摘要内容");
+		const plannerModel = fiveGamesPlannerModel("planner 摘要内容");
+		const { graph, store, sessionId } = buildTestGraph({
+			playerModel,
+			plannerModel,
+		});
+		// The invoke runs on the session thread (thread_id == sessionId) so
+		// refreshTeamChannels(graph, sessionId) targets the same thread.
+		await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: sessionId }, recursionLimit: 200 },
+		);
+
+		await refreshTeamChannels(graph, sessionId);
+
+		const snapshot = (await graph.getState({
+			configurable: { thread_id: sessionId },
+		})) as unknown as { values: TeamStateValue };
+		// The summaries (short-term messages) are cleared alongside the rest.
+		expect(snapshot.values.playerMessages).toEqual([]);
+		expect(snapshot.values.plannerMessages).toEqual([]);
+		expect(snapshot.values.gameCounter).toBe(0);
+		// The strategy (long-term memory) is untouched (FR-014).
+		expect(await store.get(sessionId)).toBe("v5");
 	});
 });
