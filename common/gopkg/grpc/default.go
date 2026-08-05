@@ -1,8 +1,6 @@
 package grpc
 
 import (
-	"time"
-
 	"dominion/common/gopkg/grpc/gateway"
 	"dominion/common/gopkg/grpc/solver"
 	grpctls "dominion/common/gopkg/grpc/tls"
@@ -10,12 +8,6 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	otelgrpc "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	grpcgo "google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-)
-
-const (
-	defaultKeepaliveTime    = 30 * time.Second
-	defaultKeepaliveTimeout = 10 * time.Second
 )
 
 // ServiceDefault returns the default grpc server options for dominion services.
@@ -34,11 +26,6 @@ func ServiceDefault() []grpcgo.ServerOption {
 func ClientDefault() []grpcgo.DialOption {
 
 	opts := []grpcgo.DialOption{
-		grpcgo.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                defaultKeepaliveTime,
-			Timeout:             defaultKeepaliveTimeout,
-			PermitWithoutStream: true,
-		}),
 		grpcgo.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 		grpcgo.WithResolvers(solver.NewBuilder()),
 		grpcgo.WithStatsHandler(otelgrpc.NewClientHandler()),

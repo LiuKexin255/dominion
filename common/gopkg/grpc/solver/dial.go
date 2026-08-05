@@ -3,19 +3,11 @@ package solver
 import (
 	"fmt"
 	"sync"
-	"time"
 
 	"dominion/common/gopkg/solver"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
 	grpcresolver "google.golang.org/grpc/resolver"
-)
-
-const (
-	defaultKeepaliveTime    = 30 * time.Second
-	defaultKeepaliveTimeout = 10 * time.Second
 )
 
 // StatefulScheme is the grpc resolver scheme for stateful service instances.
@@ -64,18 +56,6 @@ type uriConfig struct {
 func WithInstance(index int) URIOption {
 	return func(c *uriConfig) {
 		c.instance = &index
-	}
-}
-
-func defaultDialOptions() []grpc.DialOption {
-	return []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                defaultKeepaliveTime,
-			Timeout:             defaultKeepaliveTimeout,
-			PermitWithoutStream: true,
-		}),
-		grpc.WithResolvers(newResolverBuilder()),
 	}
 }
 

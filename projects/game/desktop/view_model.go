@@ -195,9 +195,12 @@ func teamAgentViewFromProto(a *game.TeamAgent) *TeamAgentView {
 // view render identically. The MessagePart oneof flattens so each part's
 // active variant (text/thinking/image/toolCall/toolResult) appears camelCase.
 func ToMessageViewModels(messages []*game.Message) []*MessageViewModel {
-	if messages == nil {
-		return nil
-	}
+	// Deviation from style/golang.md "return nil for empty arrays": this
+	// value crosses the Wails→JS boundary, where encoding/json serializes a
+	// nil slice as JSON null. The frontend iterates the result
+	// (App.svelte loadAgentHistories), so null would throw "not iterable"
+	// for agents whose partition is empty (e.g. planner). An empty non-nil
+	// slice serializes as [] instead.
 	views := make([]*MessageViewModel, len(messages))
 	for i, m := range messages {
 		views[i] = &MessageViewModel{

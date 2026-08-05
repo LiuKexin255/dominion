@@ -172,6 +172,30 @@ describe("SessionTeam", () => {
 		expect(texts.every((t) => t.agent === "player" || t.agent === "planner")).toBe(true);
 	});
 
+	it("streams model text from content-block-delta events exactly once (regression: no finish double-emit)", async () => {
+		// The turn runner must consume ONLY `content-block-delta` events for
+		// text/reasoning (token-granular live updates; the pre-team
+		// single-agent path streamed the same deltas via `stream.messages`).
+		// Consuming `content-block-finish` on top would double-emit each
+		// model response, and skipping the deltas entirely would drop text
+		// until the next tool call (spec 031 desktop batching regression).
+		const { team } = buildTestTeam("st-delta");
+		const { emit, frames } = recordingEmit();
+
+		team.submit({ text: "开始游戏" }, emit);
+		await flush();
+
+		const texts = textBlocks(frames);
+		const count = (needle: string) =>
+			texts.filter((t) => t.text.trim() === needle).length;
+		// Each model response's text appears exactly once across the streamed
+		// frames (the player's "won, stopping" answer and the planner's
+		// post-review answer; the third queued player response is never
+		// invoked — the player agent loop stops after a text-only answer).
+		expect(count("won, stopping")).toBe(1);
+		expect(count("strategy updated")).toBe(1);
+	});
+
 	it("getTeamState reconstructs both per-agent channels from the single checkpointer (A3)", async () => {
 		const { team, sessionId } = buildTestTeam("st-state");
 		const { emit } = recordingEmit();

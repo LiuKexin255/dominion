@@ -52,6 +52,10 @@ var newAgentConn = func(ctx context.Context, instanceIndex int) (*grpc.ClientCon
 	uri := grpcsolver.URI(gameconst.AgentTarget, grpcsolver.WithInstance(instanceIndex))
 	opts := append(
 		pgrpc.ClientDefault(),
+		// The agent bidi Connect stream is long-lived: opt into keepalive
+		// pings for dead-connection detection (the agent's grpc-js server
+		// is permissive — it does not enforce a ping minimum, so no GOAWAY).
+		pgrpc.WithLongLivedClientKeepalive(),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(8*1024*1024),
 			grpc.MaxCallSendMsgSize(8*1024*1024),

@@ -63,7 +63,14 @@ func main() {
 	// teamConn hosts the TeamService — implemented by the proxy service,
 	// which replaced the former ProxyService (clean break, spec
 	// 031-team-template-mode). TeamTarget resolves to "game/proxy:grpc".
-	teamConn, err := grpc.NewClient(solver.URI(gameconst.TeamTarget), clientOpts...)
+	// The TeamService.Connect bidi stream is long-lived, so this conn opts
+	// into keepalive pings (paired with the proxy's
+	// WithLongLivedServerKeepalive); session/prompt stay unary → default.
+	teamClientOpts := append(
+		clientOpts,
+		pgrpc.WithLongLivedClientKeepalive(),
+	)
+	teamConn, err := grpc.NewClient(solver.URI(gameconst.TeamTarget), teamClientOpts...)
 	if err != nil {
 		log.Fatalf("team dial: %v", err)
 	}

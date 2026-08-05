@@ -489,7 +489,9 @@
     const sessionId = selectedSession.sessionId
     for (const agent of teamAgents) {
       try {
-        const msgs = await listMessages(tpl, sessionId, agent.name)
+        // Defensive: an empty agent partition may come back as null (Wails
+        // serializes a nil Go slice as null); iterating it would throw.
+        const msgs = (await listMessages(tpl, sessionId, agent.name)) ?? []
         const entries: ChatEntry[] = []
         for (const m of msgs) {
           const mid = m.messageId

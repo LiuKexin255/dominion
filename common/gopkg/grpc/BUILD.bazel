@@ -3,7 +3,10 @@ load("//tools/dev/go:defs.bzl", "go_unittest")
 
 go_library(
     name = "grpc",
-    srcs = ["default.go"],
+    srcs = [
+        "default.go",
+        "keepalive.go",
+    ],
     importpath = "dominion/common/gopkg/grpc",
     visibility = ["//visibility:public"],
     deps = [
@@ -19,6 +22,9 @@ go_library(
 
 go_unittest(
     name = "grpc_test",
-    srcs = ["default_test.go"],
+    srcs = [
+        "default_test.go",
+        "keepalive_test.go",
+    ],
     embed = [":grpc"],
 )
