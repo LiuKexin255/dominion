@@ -66,7 +66,7 @@
 6. **Given** 压缩产生的摘要 agent message，**When** 该消息写入通道，**Then** 其在 desktop 上**实时可见**（复用 US1 帧发射机制），并在重载（ListMessages）后仍可见。
 7. **Given** 会话继续完成第 6–10 局游戏，**When** 第 10 局游戏结束且 planner 复盘返回，**Then** 再次触发压缩（计数器达到 10 = 5 的倍数）。
 8. **Given** 压缩后执行 `RefreshTeam`（`specs/031-team-template-mode/spec.md` FR-018），**When** 刷新执行，**Then** 摘要消息与其他短期消息一并被清空，策略保留（RefreshTeam 语义不变）。
-9. **Given** 第 5 局之前（计数 < 5），**When** 任一局游戏结束且 planner 返回，**Then** **不触发**压缩，player 正常继续（planner → player 边不变）。
+9. **Given** 第 5 局之前（计数 < 5），**When** 任一局游戏结束且 planner 返回，**Then** **不触发**压缩，player 正常继续（路由行为不变：仍回到 player）。
 
 ---
 
@@ -130,7 +130,7 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 
 ### Edge Cases
 
-- **压缩 LLM 调用失败 → 直接 abort**：压缩摘要由 LLM 生成（与 player/planner 复用各自模型的合理默认见 Assumptions）。若压缩 LLM 调用失败，系统**直接 abort 连接、终止 loop**（FR-013，不降级、不重试）。中断后的恢复/重连/状态一致性等统一中断场景处理不在本特性范围内（后续统一处理）。
+- **压缩 LLM 调用失败 → 直接 abort**：压缩摘要由 LLM 生成（模型选择见 Assumptions）。失败处理遵循 FR-013（直接 abort 连接、终止 loop，不降级、不重试）；中断后的恢复/重连/状态一致性等统一中断场景处理不在本特性范围内（后续统一处理）。
 - **压缩与游戏计数的并发**：游戏计数器为 per-session、in-process，由 team turn 串行驱动（单飞 TurnLoop，`specs/031-team-template-mode/contracts/team-graph-contract.md` §6），不存在跨 turn 的并发竞态。
 - **压缩时恰好无短期消息**：若某通道在压缩触发时为空（例如 planner 通道因异常无复盘消息），压缩该通道应是无害的空操作（不产生空摘要消息、不崩溃）。
 - **压缩后立即 RefreshTeam**：压缩已将通道替换为摘要；RefreshTeam 随后清空该摘要（FR-018 清全部短期消息）。策略保留。语义自洽，无冲突。
@@ -163,7 +163,7 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 - **FR-009**: 压缩 MUST NOT 影响策略（长期记忆，StrategyStore）——压缩仅作用于短期消息通道，与 `specs/031-team-template-mode/spec.md` FR-013/FR-018 的"短期/长期解耦"一致。
 - **FR-010**: 压缩完成后，player MUST 在该 turn 内不再继续（不开新局），turn 路由到 END，等待用户输入。下一次用户输入开启新 turn 时，player MUST 以压缩后的摘要上下文（通道中仅摘要一条消息）重建并开始下一局。
 - **FR-011**: 压缩产生的摘要 agent message MUST 在 desktop 上实时可见（复用 FR-005 的帧发射机制），并在重载（ListMessages）后仍可见。
-- **FR-012**: 压缩摘要 MUST 是一条有意义的 agent message（概括已发生的游戏与复盘要点，使 player/planner 能据此继续），MUST NOT 为空消息或无意义占位。
+- **FR-012**: 压缩摘要 MUST 是一条有意义的 agent message（概括已发生的游戏与复盘要点，使 player/planner 能据此继续）。可测判据：摘要文本 MUST 为非空白（trim 后长度 > 0）；若 LLM 返回空或纯空白摘要，视为压缩失败，按 FR-013 处理（abort）。
 - **FR-013**: 当压缩 LLM 调用失败时，系统 MUST 直接 abort 连接并终止 loop（不降级、不重试、不静默吞错）。即压缩失败视为致命错误，立即中断当前 turn 与连接。中断后的恢复/重连等统一中断场景处理不在本特性范围内（后续统一处理）。
 - **FR-014**: 压缩后执行 `RefreshTeam`（FR-018）时，摘要消息与其他短期消息 MUST 一并被清空，策略保留（RefreshTeam 语义不变）。
 - **FR-015**: 若某通道在压缩触发时为空，压缩该通道 MUST 为无害空操作（不产生空摘要消息、不崩溃）。
@@ -177,9 +177,9 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 
 #### desktop 对话消息显示数量上限（FIFO）
 
-- **FR-020**: desktop 的 session 对话页面 MUST 为每个 agent 标签页的显示消息设置数量上限（按 agent tab 独立计数）。
+- **FR-020**: desktop 的 session 对话页面 MUST 为每个 agent 标签页设置独立的消息数量上限。
 - **FR-021**: 当某 agent tab 的消息数量超出上限时，MUST 按先进先出（FIFO）移除该 tab 内最旧的消息，仅保留最新的上限数量条。
-- **FR-022**: 不同 agent 标签页的消息计数 MUST 相互独立——某 tab 超出上限仅移除该 tab 的最旧消息，不影响其他 tab。
+- **FR-022**: 某 agent 标签页的消息数量超出上限时，MUST 仅移除该 tab 的最旧消息——其他 tab 的消息与计数 MUST NOT 受影响。
 - **FR-023**: 上下文压缩（FR-008）发生时，desktop MUST NOT 显式清理旧的压缩前消息——压缩摘要作为新消息到来后，旧消息随后续 FIFO 自然滚动移除（不因压缩而清空本地已显示的历史）。
 - **FR-024**: 历史加载（ListMessages）返回的消息数量超过上限时，MUST 仅保留最新的上限数量条，超出部分的最旧消息被丢弃。
 - **FR-025**: FIFO 上限 MUST 统一生效于实时流消息与历史加载消息（不区分消息来源，统一按到达顺序淘汰最旧）。
@@ -216,7 +216,7 @@ saolei MCP 在游戏结束（game end）事件中应增加本局的游戏统计�
 - **SC-004**: 压缩摘要消息在 desktop 实时可见（复用 SC-001 的机制），重载后仍可见。
 - **SC-005**: planner 的系统提示词包含 player 工具描述清单，但 planner 工具集仍仅 `update_strategy`（player 工具未被注入为可调用工具）。
 - **SC-006**: desktop 各 agent 标签页显示消息受数量上限约束，超出时最旧消息按 FIFO 移除；压缩时无需显式清理旧消息（自然滚动）。
-- **SC-007**: 大型测试（经 testplan skill 完整部署→测试→清理执行）全部用例通过，覆盖 SC-001/SC-002/SC-003/SC-005/SC-008（宪法原则 VI）。
+- **SC-007**: 大型测试（经 testplan skill 完整部署→测试→清理执行）全部用例通过，覆盖 FR-034 所列验收范围（宪法原则 VI）。
 - **SC-008**: saolei MCP 在游戏结束时正确计算游戏统计数据（操作次数 = 成功格子操作数、正确标记地雷数 = 总地雷数 − 终局 MINE/HIT_MINE 格数、每雷平均操作数 = x/y 保留两位小数），且该数据被纳入 planner 复盘 message（planner 据此评估 player 操作效率与标记准确性）。
 
 ## Assumptions

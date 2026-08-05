@@ -119,9 +119,11 @@ return {
 
 ### 帧构造
 
+帧在 `SessionTeam` 闭包内构造（`runTeamTurn` 注入的 `configurable.emitChannelFrame`，类型 `ChannelFrameEmitter = (agent: string, content: string) => void`；tasks.md 决策 #1）；节点仅调用 `emitChannelFrame(agent, content)`，不直接持有 TeamFrame 构造依赖。
+
 ```ts
-// 复用 turn-loop.ts buildTeamFrame
-const frame: TeamFrame = buildTeamFrame(sessionId, templateId, {
+// session-team.ts runTeamTurn — emitter 闭包（复用 turn-loop.ts buildTeamFrame）
+const frame: TeamFrame = buildTeamFrame(this.sessionId, this.template, {
   agent: "planner",  // 或 "player"
   messageParts: {
     parts: [{ text: { content: messageText } }],
@@ -290,10 +292,10 @@ function trimFifo<T>(entries: T[], max: number = MAX_CHAT_ENTRIES_PER_AGENT): T[
 
 | 写入位置 | 函数 | 当前行（App.svelte） | 截断方式 |
 |---|---|---|---|
-| 实时帧（流式合并） | `handleMessageParts` | ~737, ~742 | `trimFifo([...list])` after merge / new entry |
-| 历史加载 | `loadAgentHistories` | ~509-512 | `trimFifo([...existing, ...entries])` |
-| warn 控制帧 | `handleAgentFrame` warn 分支 | ~785-796 | `trimFifo([...list, warnEntry])` |
-| optimistic user turn | `handleSendChatText` | ~880-889 | `trimFifo([...list, userEntry])` |
+| 实时帧（流式合并） | `handleMessageParts` | ~739, ~744 | `trimFifo([...list])` after merge / new entry |
+| 历史加载 | `loadAgentHistories` | ~511-513 | `trimFifo([...existing, ...entries])` |
+| warn 控制帧 | `handleAgentFrame` warn 分支 | ~787-789 | `trimFifo([...list, warnEntry])` |
+| optimistic user turn | `handleSendChatText` | ~882-884 | `trimFifo([...list, userEntry])` |
 
 ### 行为约束
 
@@ -325,26 +327,31 @@ interface TeamGraphDeps {
 }
 ```
 
-### 扩展后
+### 帧发射传递机制（US1/US2）
+
+`TeamGraphDeps` **无变更**（tasks.md 决策 #1：不通过 deps 注入帧发射回调，宪法原则 II 简化）。实时帧发射经 LangGraph `configurable` 传递：
 
 ```ts
-interface TeamGraphDeps {
-  playerModel: ChatModel;
-  plannerModel: ChatModel;
-  strategyStore: ChatModel;
-  buffer: EphemeralGameBuffer;
-  sessionId: string;
-  template: string;                                          // NEW — buildTeamFrame 需要
-  playerTools: StructuredToolInterface[];
-  playerBasePrompt: string;
-  plannerBasePrompt: string;
-  createAgentFn?: CreateAgentFn;
-  emitFrame?: (frame: TeamFrame) => void;                    // NEW — US1/US2 实时帧发射
-}
+// projects/game/agent/src/session-team.ts — runTeamTurn 内 streamEvents config
+type ChannelFrameEmitter = (agent: string, content: string) => void; // 从此模块导出
+
+const stream = await graphHandle.graph.streamEvents(input, {
+  configurable: {
+    thread_id: this.sessionId,
+    emitChannelFrame: (agent: string, content: string) => {
+      const frame: TeamFrame = buildTeamFrame(this.sessionId, this.template, {
+        agent,
+        messageParts: { parts: [{ text: { content } }] },
+      });
+      this.turnLoopEmit?.(frame);
+    },
+  },
+});
 ```
 
-- `template`: 当前 `buildTeamGraph` 不持有 template，但 emitFrame 构造 TeamFrame 需要 sessionId + templateId。由 `SessionTeam` 在构造时传入。
-- `emitFrame`: 可选（默认 no-op），测试中注入录制数组。
+- planner/compress 节点从 `config?.configurable?.emitChannelFrame` 读取（`ChannelFrameEmitter | undefined`）。
+- `SessionTeam` 已持有 `sessionId` 与 `template`（既有字段，`session-team.ts` 构造器），无需传入 TeamGraphDeps。
+- 测试中通过 `streamEvents` config 注入录制回调。
 
 ---
 
@@ -366,8 +373,8 @@ interface TeamGraphDeps {
 │  Planner Node       │                   │  Compress Node (NEW) │
 │  gameCounter += 1   │──────────────────▶│  if counter % 5 == 0 │
 │  gameEnded = null   │  conditional edge │  → summarize channels│
-│  buildReviewInput   │                   │  → emitFrame         │
-│  emitFrame(review)  │                   │  → route to END      │
+│  buildReviewInput   │                   │  → emitChannelFrame  │
+│  emitChannelFrame   │                   │  → route to END      │
 └─────────────────────┘                   └──────────────────────┘
          │
          │ read

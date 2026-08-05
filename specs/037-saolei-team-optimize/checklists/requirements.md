@@ -37,3 +37,10 @@
 - **新增特性（游戏统计数据）**：saolei MCP game end 事件增加三项统计（操作次数、正确标记地雷数、每雷平均操作数）。经调研确认统计数据可由 MCP 第一手计算：correctFlags = 总地雷数（取自开局 mineCounter）− 终局 MINE/HIT_MINE 格数；operationCount = 本局 onMove 触发次数。统计数据经 onGameEnd → buffer → planner 复盘输入流转。除零（y=0）与 counter 不可解码情形有降级约束（FR-029/FR-033）。扩展 sink 接口携带游戏统计不违背 FR-019（统计数据为游戏概念，非 team mode 耦合）。
 - 所有模糊项（压缩语义=整体替换、压缩模型=复用各自模型、desktop 上限默认值、压缩失败=直接 abort、统计数据除零表示）均有明确决策或合理默认并记录于 Clarifications/Assumptions，无阻塞澄清项。
 - Items marked incomplete require spec updates before `/speckit.clarify` or `/speckit.plan` — 全部通过，可进入下一阶段。
+- **2026-08-05 复审精化（/speckit.analyze → /speckit.specify）**：基于分析报告修订以下条目并复验全部通过：
+  - **D1**：FR-020 与 FR-022 语义重复——FR-020 收敛为"每 agent tab 独立的消息数量上限"，FR-022 聚焦"移除仅作用于该 tab、其他 tab 不受影响"（消除"独立计数"重复表述）。
+  - **B1**：FR-012 "有意义的摘要"增加可测判据——摘要文本 trim 后长度 > 0，空/纯空白视为压缩失败按 FR-013 abort。
+  - **B2**：US2 AS9 "planner → player 边不变"改为"路由行为不变：仍回到 player"（与条件路由实现一致，消除字面冲突）。
+  - **D2**：Edge Case "压缩失败 abort"精简为 FR-013 指针，删除重复规范性正文。
+  - **D3/F6**：SC-007 大型测试覆盖清单改为引用 FR-034 所列范围（消除与 FR-034 的重复枚举，并修正与 tasks.md T024 实际用例不一致的问题）。
+  - 复验：无 [NEEDS CLARIFICATION] 残留、无占位符、全部 22 项清单条目通过。

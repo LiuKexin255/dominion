@@ -22,10 +22,10 @@
 
 **单元/集成测试验证**（`projects/game/agent/src/team/`）:
 
-1. 构建 team graph，注入 `emitFrame` 录制数组。
+1. 构建 team graph，在 `streamEvents` config 注入 `configurable.emitChannelFrame` 录制回调（tasks.md 决策 #1）。
 2. 构造 fake tool 产生游戏结束事件（sink 写入 gameLog + onGameEnd）。
 3. 触发 planner 节点运行。
-4. 断言：`emitFrame` 被调用，帧携带 `agent="planner"`，内容包含完整游戏过程（每步操作的 tool/coord/status）。
+4. 断言：`emitChannelFrame` 被调用且携带 `agent="planner"`，内容包含完整游戏过程（每步操作的 tool/coord/status）。
 
 **desktop 验证**:
 

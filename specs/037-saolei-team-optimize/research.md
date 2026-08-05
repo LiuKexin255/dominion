@@ -119,23 +119,26 @@
 
 US1 要求 planner 的复盘输入（HumanMessage）在 desktop 实时可见。当前 `streamEvents` 仅产出 createAgent 内部的 `messages`/`tools` 协议事件，不产出 createAgent 的**输入** HumanMessage（`projects/game/agent/src/session-team.ts` `runTeamTurn` 仅订阅 `messages` 的 `content-block-finish` 与 `tools` 的 `tool-started`/`tool-finished`）。
 
-### 决策：在 graph 节点级别注入帧发射回调
+### 决策：实时帧发射经 LangGraph `configurable` 传递（tasks.md 决策 #1 最终确定）
 
-**Decision**: 为 team graph 注入一个 `emitFrame` 回调（`TurnLoopEmit` 类型），使节点能在 `createAgent.invoke` 之外主动发射 `TeamFrame`。planner 节点在构造 reviewInput 后、调用 createAgent 之前，调用 `emitFrame` 发射复盘输入帧（携带 `agent="planner"`）。
+**Decision**: 帧发射通过 LangGraph `configurable` 传递 `emitChannelFrame` 回调（类型 `ChannelFrameEmitter = (agent: string, content: string) => void`）：`SessionTeam.runTeamTurn` 在 `streamEvents` 的 config 中设置 `configurable.emitChannelFrame`（闭包内用 `buildTeamFrame(this.sessionId, this.template, …)` 构造 TeamFrame 并调用 `this.turnLoopEmit?.(frame)`）；planner/compress 节点从 `config?.configurable?.emitChannelFrame` 读取，在 `createAgent.invoke` 之外主动发射复盘输入帧（携带 `agent="planner"`）与压缩摘要帧（`agent="player"`/`agent="planner"`）。本 D3 初版曾选 `TeamGraphDeps` 注入 `emitFrame`，Phase 2（`tasks.md` 决策 #1）权衡后改为 configurable 传递。
 
 **Rationale**:
-1. **最小侵入**：不需要修改 LangGraph 的 streamEvents 机制或 createAgent 的 middleware。
-2. **通用性**：US1 建立的机制（FR-005）可复用于 US2 的压缩摘要（压缩节点写入摘要后同样调用 emitFrame 发射摘要帧）。
-3. **与现有帧格式一致**：复用 `turn-loop.ts` `buildTeamFrame` 构造帧，`agent` 字段标记归属 tab。
-4. **DI 友好**：`emitFrame` 通过 `TeamGraphDeps` 注入，测试中传入录制数组（`style/javascript.md` §测试）。
+1. **最小侵入**：不修改 TeamGraphDeps / PlannerNodeDeps / SessionTeam 构造器 / server.ts factory（宪法原则 II：简化）。
+2. **LangGraph 原生机制**：`configurable` 经 run config 传递给节点——`thread_id` 已有同模式先例（`projects/game/agent/src/session-team.ts` `runTeamTurn`，`streamEvents` config `configurable: { thread_id }`）。
+3. **通用性**：US1 建立的机制（FR-005）可复用于 US2 的压缩摘要（压缩节点写入摘要后同样经 `emitChannelFrame` 发射摘要帧）。
+4. **与现有帧格式一致**：复用 `turn-loop.ts` `buildTeamFrame` 构造帧，`agent` 字段标记归属 tab；构造集中在 SessionTeam 闭包（已持有 `sessionId` 与 `template` 既有字段）。
+5. **DI 友好**：测试中在 `streamEvents` config 注入录制回调（`style/javascript.md` §测试）。
 
 **设计要点**:
-- `TeamGraphDeps` 新增 `emitFrame?: (frame: TeamFrame) => void`（可选，默认 no-op）。
-- planner 节点在 `buildReviewInput(buffer)` 后，将 reviewInput 内容转换为 `ContentBlock[]`（复用 `session-team.ts` `messageToContentBlocks` 或直接构造 TextPart），调用 `emitFrame(buildTeamFrame(...))`。
-- 压缩节点同理：写入摘要 AIMessage 后，调用 `emitFrame` 发射摘要帧。
+- `ChannelFrameEmitter` 类型从 `session-team.ts` 导出，供 planner/compress 节点 import。
+- `runTeamTurn` 在 `streamEvents` config 的 `configurable` 增加 `emitChannelFrame`；emitter 构造 `TeamFrame`（`buildTeamFrame(this.sessionId, this.template, { agent, messageParts: { parts: [{ text: { content } }] } })`）后调用 `this.turnLoopEmit?.(frame)`。
+- planner 节点在 `buildReviewInput(buffer)` 后、调用 createAgent 之前，调用 `emitChannelFrame(PLANNER_AGENT_NAME, reviewContent)`（FR-001）。
+- 压缩节点同理：写入摘要 AIMessage 后，调用 `emitChannelFrame` 发射摘要帧（FR-011）。
 - 帧去重：实时发射的帧与重载时 ListMessages 返回的同一条消息（相同 messageId/frameId）MUST 去重（复用 desktop 的 `renderedMessageIds` 机制，`projects/game/desktop/frontend/src/App.svelte`）。
 
 **Alternatives considered**:
+- *TeamGraphDeps 注入 `emitFrame?: (frame: TeamFrame) => void`*（本 D3 初版方案）：需要修改 TeamGraphDeps / PlannerNodeDeps，且 `buildTeamFrame` 需要 sessionId + templateId，须将 `template` 传入 deps，波及 SessionTeam 构造与 server.ts factory 装配；Phase 2 权衡后弃用，改为 configurable 传递（`tasks.md` 决策 #1，宪法原则 II 简化）。
 - *createAgent middleware `afterModel`/`beforeModel`*：middleware 可以拦截模型调用前后的状态，但复盘输入是 createAgent 的**输入参数**（不在 model call 循环中），middleware 无法捕获。
 - *自定义 LangGraph stream mode*：可以实现自定义事件类型，但侵入性大且 LangGraph v1.4.8 的 streamEvents v3 不支持自定义 event method。
 - *在 `runTeamTurn` 中检测 channel 变化并补发帧*：需要在 streamEvents 之外额外监测 channel 写入，复杂且时序不确定。
@@ -336,7 +339,7 @@ const TeamState = Annotation.Root({
 
 ### 决策
 
-压缩节点在写入摘要 AIMessage 后，调用 `emitFrame` 发射摘要帧：
+压缩节点在写入摘要 AIMessage 后，读取 `config?.configurable?.emitChannelFrame`（`ChannelFrameEmitter | undefined`）并调用 `emitChannelFrame(agent, summaryText)` 发射摘要帧：
 - 帧携带 `agent="player"`（player 通道摘要）或 `agent="planner"`（planner 通道摘要）。
 - 帧的 `messageParts.parts` 为 `[{ text: { content: summaryText } }]`。
 - 帧的 `frameId` 与摘要 AIMessage 的 `id` 一致，使 desktop 去重（`renderedMessageIds`）在重载时正确去重。

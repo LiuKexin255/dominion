@@ -90,10 +90,9 @@ export function createCompressNode(
 interface CompressNodeDeps {
   playerModel: ChatModel;
   plannerModel: ChatModel;
-  sessionId: string;
-  template: string;
-  emitFrame?: (frame: TeamFrame) => void;
 }
+// 摘要帧经 config?.configurable?.emitChannelFrame 发射（tasks.md 决策 #1，
+// 不通过 deps 注入；ChannelFrameEmitter 类型从 session-team.ts 导出）
 ```
 
 ### 节点行为
@@ -106,7 +105,7 @@ interface CompressNodeDeps {
 3. 若任一摘要生成失败（LLM 调用抛错）→ **re-throw**（不捕获、不降级）。异常传播到 TurnLoop → abort 连接（FR-013）。
 4. 摘要生成成功后：
    - 构造 channel update：`[RemoveMessage(REMOVE_ALL_MESSAGES), summaryAIMessage]`。
-   - 调用 `emitFrame` 发射摘要帧（FR-011，实时可见）。
+   - 读取 `config?.configurable?.emitChannelFrame`（`ChannelFrameEmitter | undefined`），对每个非空通道调用 `emitChannelFrame(agent, summaryContent)` 发射摘要帧（FR-011，实时可见）。
 5. 返回 `{ playerMessages: [...], plannerMessages: [...] }`。
 
 ### 返回值
@@ -211,17 +210,16 @@ planner 节点在构造 `reviewInput` 后、调用 `createAgent.invoke` 之前�
 const reviewInput = buildReviewInput(buffer);
 
 // US1: 发射复盘输入帧（实时可见，FR-001）
-if (deps.emitFrame) {
+// 经 config?.configurable?.emitChannelFrame 读取（tasks.md 决策 #1）
+const emitChannelFrame = config?.configurable?.emitChannelFrame as
+  | ChannelFrameEmitter
+  | undefined;
+if (emitChannelFrame) {
   const content = typeof reviewInput.content === "string"
     ? reviewInput.content
     : "";
   if (content) {
-    deps.emitFrame(
-      buildTeamFrame(deps.sessionId, deps.template, {
-        agent: PLANNER_AGENT_NAME,
-        messageParts: { parts: [{ text: { content } }] },
-      }),
-    );
+    emitChannelFrame(PLANNER_AGENT_NAME, content);
   }
 }
 
@@ -240,11 +238,11 @@ interface PlannerNodeDeps {
   strategyStore: StrategyStore;
   buffer: EphemeralGameBuffer;
   sessionId: string;
-  template: string;                                              // NEW
   plannerBasePrompt: string;
   playerTools: StructuredToolInterface[];                        // NEW (US3)
   createAgentFn?: CreateAgentFn;
-  emitFrame?: (frame: TeamFrame) => void;                        // NEW (US1)
+  // reviewInput 帧经 config?.configurable?.emitChannelFrame 发射（tasks.md 决策 #1，
+  // 不通过 deps 注入 emitFrame；ChannelFrameEmitter 类型从 session-team.ts 导出）
 }
 ```
 
@@ -297,5 +295,5 @@ await graph.updateState(config, {
 - **压缩失败**：LLM 调用抛错 → 节点 re-throw → TurnLoop catch → abort。
 - **空通道**：空通道压缩 = 空操作（通道不变）。
 - **RefreshTeam**：刷新后 `gameCounter === 0`，通道为空。
-- **实时帧**：compress 节点调用 `emitFrame` 后，desktop 对应 tab 实时显示摘要。
+- **实时帧**：compress 节点调用 `configurable.emitChannelFrame` 后，desktop 对应 tab 实时显示摘要。
 - **gameCounter 计数**：won 和 lost 均计数；planner 降级也计数。
