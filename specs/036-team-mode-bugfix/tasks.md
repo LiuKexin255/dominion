@@ -33,7 +33,7 @@
 
 ---
 
-- [ ] T001 确认当前代码基线编译通过（基线门禁：仅确认变更前编译状态，非新增代码的编译 task）：执行 `bazel build //projects/game/agent/src/team:lib //projects/game/desktop/frontend/src/components:lib`（或 `bazel build //...`），确认无编译错误
+- [X] T001 确认当前代码基线编译通过（基线门禁：仅确认变更前编译状态，非新增代码的编译 task）：执行 `bazel build //projects/game/agent/src/team:lib //projects/game/desktop/frontend/src/components:lib`（或 `bazel build //...`），确认无编译错误
 
 **验证门禁**: 现有代码编译通过
 
@@ -53,15 +53,15 @@
 
 ---
 
-- [ ] T002 [P] 在 `projects/game/agent/src/team/team-sink.ts` 中新增 `GameLogEntry` interface（字段：`tool: string`、`x?: number`、`y?: number`、`state: GameState`、`status: "won" | "lost" | "playing"`），并在 `EphemeralGameBuffer` interface 中新增 `gameLog: GameLogEntry[]` 字段。同时更新 `createEphemeralGameBuffer()` 返回值初始化 `gameLog: []`。参考 [`data-model.md`](./data-model.md) §1-2
+- [X] T002 [P] 在 `projects/game/agent/src/team/team-sink.ts` 中新增 `GameLogEntry` interface（字段：`tool: string`、`x?: number`、`y?: number`、`state: GameState`、`status: "won" | "lost" | "playing"`），并在 `EphemeralGameBuffer` interface 中新增 `gameLog: GameLogEntry[]` 字段。同时更新 `createEphemeralGameBuffer()` 返回值初始化 `gameLog: []`。参考 [`data-model.md`](./data-model.md) §1-2
 
-- [ ] T003 在 `projects/game/agent/src/team/team-sink.ts` 的 `createTeamSink(buffer)` 中修改三个 sink 回调以累积 gameLog：
+- [X] T003 在 `projects/game/agent/src/team/team-sink.ts` 的 `createTeamSink(buffer)` 中修改三个 sink 回调以累积 gameLog：
   - `onGameStart(state)`：在现有 `buffer.gameState = state` 之后，**清空** `buffer.gameLog = []` 并 push 初始条目 `{ tool: "saolei_init", state, status: "playing" }`（每局重置——planner 仅复盘当前局）
   - `onMove(tool, x, y, state)`：在现有 `buffer.gameState = state` 之后，push 操作条目 `{ tool, x, y, state, status: <computed> }`。status 的计算：import `isTerminalState` from `"../mcp/saolei/saolei-mcp"`、`isWin` from `"@dominion/game-saolei-board"`，计算逻辑 `isTerminalState(state) ? "lost" : isWin(state) ? "won" : "playing"`
   - `onGameEnd(state, status)`：在现有 `buffer.gameEvent = {...}` + `buffer.gameState = state` 之后，push 终局条目 `{ tool: "(game-end)", state, status }`
   - 参考 [`data-model.md`](./data-model.md) §2 写入规则表与 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §2.1
 
-- [ ] T004 在 `projects/game/agent/src/team/team-sink.test.ts` 中新增 gameLog 相关测试用例：
+- [X] T004 在 `projects/game/agent/src/team/team-sink.test.ts` 中新增 gameLog 相关测试用例：
   - `onGameStart` 清空并写入初始条目：先写入一条 onMove 旧数据，再调 onGameStart，断言 `buffer.gameLog.length === 1` 且 `gameLog[0].tool === "saolei_init"`
   - `onMove` 累积操作条目：调 onMove 两次，断言 `buffer.gameLog` 有 2 条条目，含正确 `tool`/`x`/`y`/`status`
   - `onGameEnd` 累积终局条目：调 onGameEnd，断言 `buffer.gameLog` 末尾条目 `tool === "(game-end)"` 且 `status` 为传入的 won/lost
@@ -86,13 +86,13 @@
 
 ---
 
-- [ ] T005 [US1] 在 `projects/game/agent/src/team/player.ts` 的 `createPlayerNode` 中，为 `createAgentFn({...})` 调用新增 `middleware` 参数，添加 `gameEndGuard` middleware。middleware 结构：`{ name: "gameEndGuard", beforeModel: { canJumpTo: ["end"], hook: () => { if (buffer.gameEvent && !buffer.gameEvent.consumed) return { jumpTo: "end" }; } } }`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §1.1 和 [`research.md`](./research.md) D1。同时新增 `import type { RunnableConfig } from "@langchain/core/runnables"` 以支持 US4 的 config 参数
+- [X] T005 [US1] 在 `projects/game/agent/src/team/player.ts` 的 `createPlayerNode` 中，为 `createAgentFn({...})` 调用新增 `middleware` 参数，添加 `gameEndGuard` middleware。middleware 结构：`{ name: "gameEndGuard", beforeModel: { canJumpTo: ["end"], hook: () => { if (buffer.gameEvent && !buffer.gameEvent.consumed) return { jumpTo: "end" }; } } }`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §1.1 和 [`research.md`](./research.md) D1。同时新增 `import type { RunnableConfig } from "@langchain/core/runnables"` 以支持 US4 的 config 参数
 
-- [ ] T006 [US1] 在 `projects/game/agent/src/team/player.ts` 中，将节点函数签名从 `(state: TeamStateValue)` 改为 `(state: TeamStateValue, config?: RunnableConfig)`（US4 player 部分）。在内部 `playerAgent.invoke({ messages: input })` 调用中传入 config 作为第二参数：`playerAgent.invoke({ messages: input }, config)`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §3.1 和 [`research.md`](./research.md) D2
+- [X] T006 [US1] 在 `projects/game/agent/src/team/player.ts` 中，将节点函数签名从 `(state: TeamStateValue)` 改为 `(state: TeamStateValue, config?: RunnableConfig)`（US4 player 部分）。在内部 `playerAgent.invoke({ messages: input })` 调用中传入 config 作为第二参数：`playerAgent.invoke({ messages: input }, config)`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §3.1 和 [`research.md`](./research.md) D2
 
-- [ ] T007 [US1] 在 `projects/game/agent/src/team/player.ts` 中，将节点函数体内的 `invoke` 调用与后处理重构为 try/finally 结构，确保 `consumeGameEvent(buffer)` 在 invoke 正常返回或异常时都能执行。结构参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §1.4：try 块内执行 `invoke` 并处理 `result.messages`；finally 块内执行 `consumeGameEvent(buffer)` 并组装返回值 `{ playerMessages, ...(gameEvent ? { gameEnded: gameEvent.status } : {}) }`。注意：invoke 正常返回时也需在 finally 中 consume（因 middleware 停止 loop 是正常返回，consumeGameEvent 在正常和异常路径都执行）。**异常语义**：finally 中组装返回值会吞掉 invoke 抛出的所有异常（节点正常返回、`gameEnded` 被设置并路由到 planner）——这是有意设计（US1 acceptance #5：异常终止时游戏结束事件仍被正确消费；与 spec.md edge case "player 持续落子但游戏不结束" 的递归超限场景一致），实现时无需在 finally 中重新抛出
+- [X] T007 [US1] 在 `projects/game/agent/src/team/player.ts` 中，将节点函数体内的 `invoke` 调用与后处理重构为 try/finally 结构，确保 `consumeGameEvent(buffer)` 在 invoke 正常返回或异常时都能执行。结构参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §1.4：try 块内执行 `invoke` 并处理 `result.messages`；finally 块内执行 `consumeGameEvent(buffer)` 并组装返回值 `{ playerMessages, ...(gameEvent ? { gameEnded: gameEvent.status } : {}) }`。注意：invoke 正常返回时也需在 finally 中 consume（因 middleware 停止 loop 是正常返回，consumeGameEvent 在正常和异常路径都执行）。**异常语义**：finally 中组装返回值会吞掉 invoke 抛出的所有异常（节点正常返回、`gameEnded` 被设置并路由到 planner）——这是有意设计（US1 acceptance #5：异常终止时游戏结束事件仍被正确消费；与 spec.md edge case "player 持续落子但游戏不结束" 的递归超限场景一致），实现时无需在 finally 中重新抛出
 
-- [ ] T008 [US1] 在 `projects/game/agent/src/team/graph.test.ts` 中新增测试用例覆盖 Issue 1：
+- [X] T008 [US1] 在 `projects/game/agent/src/team/graph.test.ts` 中新增测试用例覆盖 Issue 1：
   - **lost 场景 → planner 触发**：构造 fake player tool 在调用时 `sink.onGameEnd(makeState(), "lost")`；fake player model 先调用该 tool → 再尝试调用 `saolei_init`（重开）。验证 `gameEnded` 被清除（planner 清除）、`plannerMessages` 非空（planner 运行了）、且 `saolei_init` tool 未被调用（middleware 停止了 loop——可通过 tool call count 断言）。复用 `buildTestGraph` helper，参考现有 `buildGameEndingPlayerTool` 改为 lost
   - **invoke 异常 → 后处理执行**：构造一个会抛异常的 `createAgentFn`（DI spy），先通过 sink 写入一个 gameEvent，验证即使 invoke 抛异常，`gameEnded` 仍被设置（try/finally 保障）。参考 [`research.md`](./research.md) D5 测试策略
   - **won 场景仍触发 planner**：现有 `playOneGamePlayerModel` 测试已覆盖 won——但注意该测试依赖旧 loop 行为的断言需按下一条 bullet 更新（loop 行为变化），更新后验证 won 场景下 planner 仍被触发。参考现有 `"routes player→planner on game end"` 测试
@@ -123,13 +123,13 @@
 
 ---
 
-- [ ] T009 [US2] 在 `projects/game/agent/src/team/planner.ts` 中，修改 `buildReviewInput` 函数签名从 `(gameState: GameState | null)` 改为 `(buffer: EphemeralGameBuffer)`，改为读取 `buffer.gameLog` 渲染完整游戏过程。渲染逻辑：gameLog 为空时返回 `new HumanMessage("请复盘本局游戏（无可用游戏记录）。")`；非空时按顺序拼接每条 `GameLogEntry` 的 `序号. tool(coord) → status` + `renderBoardText(entry.state)`，末尾追加复盘指令。需要 import `renderBoardText` from `"@dominion/game-saolei-board"`（已 import）和 `EphemeralGameBuffer` type。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §2.2 和 [`data-model.md`](./data-model.md) §2 渲染示例
+- [X] T009 [US2] 在 `projects/game/agent/src/team/planner.ts` 中，修改 `buildReviewInput` 函数签名从 `(gameState: GameState | null)` 改为 `(buffer: EphemeralGameBuffer)`，改为读取 `buffer.gameLog` 渲染完整游戏过程。渲染逻辑：gameLog 为空时返回 `new HumanMessage("请复盘本局游戏（无可用游戏记录）。")`；非空时按顺序拼接每条 `GameLogEntry` 的 `序号. tool(coord) → status` + `renderBoardText(entry.state)`，末尾追加复盘指令。需要 import `renderBoardText` from `"@dominion/game-saolei-board"`（已 import）和 `EphemeralGameBuffer` type。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §2.2 和 [`data-model.md`](./data-model.md) §2 渲染示例
 
-- [ ] T010 [US2] 在 `projects/game/agent/src/team/planner.ts` 的 `createPlannerNode` 返回的节点函数中，将 `buildReviewInput(peekGameState(buffer))` 调用改为 `buildReviewInput(buffer)`（传递整个 buffer 而非仅 gameState）。移除不再需要的 `peekGameState` import（如果 planner.ts 中不再使用）。注意 `EphemeralGameBuffer` import 已存在
+- [X] T010 [US2] 在 `projects/game/agent/src/team/planner.ts` 的 `createPlannerNode` 返回的节点函数中，将 `buildReviewInput(peekGameState(buffer))` 调用改为 `buildReviewInput(buffer)`（传递整个 buffer 而非仅 gameState）。移除不再需要的 `peekGameState` import（如果 planner.ts 中不再使用）。注意 `EphemeralGameBuffer` import 已存在
 
-- [ ] T011 [US2] 在 `projects/game/agent/src/team/planner.ts` 中，将节点函数签名从 `(state: TeamStateValue)` 改为 `(state: TeamStateValue, config?: RunnableConfig)`（US4 planner 部分）。在 `invokeWithRetry` 函数签名中新增 `config?: RunnableConfig` 参数，并在 `agent.invoke({ messages: input })` 调用中传入 config。节点函数调用 `invokeWithRetry(plannerAgent, input, config)`。新增 `import type { RunnableConfig } from "@langchain/core/runnables"`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §3.2
+- [X] T011 [US2] 在 `projects/game/agent/src/team/planner.ts` 中，将节点函数签名从 `(state: TeamStateValue)` 改为 `(state: TeamStateValue, config?: RunnableConfig)`（US4 planner 部分）。在 `invokeWithRetry` 函数签名中新增 `config?: RunnableConfig` 参数，并在 `agent.invoke({ messages: input })` 调用中传入 config。节点函数调用 `invokeWithRetry(plannerAgent, input, config)`。新增 `import type { RunnableConfig } from "@langchain/core/runnables"`。参考 [`contracts/team-graph-fix-contract.md`](./contracts/team-graph-fix-contract.md) §3.2
 
-- [ ] T012 [US2] 在 `projects/game/agent/src/team/graph.test.ts` 中新增测试用例覆盖 Issue 2：
+- [X] T012 [US2] 在 `projects/game/agent/src/team/graph.test.ts` 中新增测试用例覆盖 Issue 2：
   - **多步操作的复盘输入**：构造 fake player tool 先 `sink.onMove("saolei_click", 3, 4, state1)` → `sink.onMove("saolei_click", 5, 2, state2)` → `sink.onGameEnd(state2, "lost")`。验证 planner 的 `plannerMessages` 中包含复盘输入 HumanMessage，其文本内容含 `saolei_click(3, 4)`、`saolei_click(5, 2)`、`lost` 以及 `renderBoardText` 输出。可通过检查 `plannerMessages` 中 `_getType() === "human"` 的消息 content 断言
   - **空 gameLog 场景**：构造 buffer.gameLog 为空（不调用任何 sink 回调），触发 planner，验证复盘输入为 `"请复盘本局游戏（无可用游戏记录）。"`
   - **现有测试文本断言更新**：`buildReviewInput` 输出文本变更后（"本局已结束…" → "本局游戏过程：…请复盘本局游戏表现…"），更新依赖旧文本的现有断言（源码依据 `graph.test.ts`，已确认会失败）：
@@ -138,7 +138,7 @@
     - 多局游戏测试 reviewRequests filter（`graph.test.ts:310`：含 "本局已结束"）→ 改为新文本
   - **说明（planner tab 可见性）**：US2 acceptance #5 / SC-004 的 ListMessages 可见性依赖现有基础设施（`contracts/team-graph-fix-contract.md` §2.3：human → MESSAGE_ROLE_USER），本 task 仅验证 `plannerMessages` 通道内容；端到端可见性由 T016 大型测试覆盖
 
-- [ ] T017 [US4] 在 `projects/game/agent/src/team/graph.test.ts` 中新增 Issue 4 测试用例：
+- [X] T017 [US4] 在 `projects/game/agent/src/team/graph.test.ts` 中新增 Issue 4 测试用例：
   - **>25 步不触发 GraphRecursionError（player）**：构造持续调用 tool 但不触发游戏结束的 fake player tool（不调用 sink 回调）+ 连续 26+ 次 tool 调用响应的 fake model（如 `respondWithTools` 链），`graph.invoke` 以 `recursionLimit: 1000` 调用，断言不抛出 `GraphRecursionError`（内部 createAgent 继承外层 recursionLimit 而非默认 25；对应 US4 acceptance #1 / SC-006）。参考 [`research.md`](./research.md) D2
   - **planner 继承 recursionLimit**：以相同方式验证 planner 节点的 createAgent 继承外层 recursionLimit（对应 US4 acceptance #2，可与上一条合并为参数化场景）
   - **abort 信号传播**：构造 `AbortController`，`graph.invoke` 传入 `{ signal }`，通过 `buildTestGraph` 的 `createAgentFn` DI 参数捕获内部 createAgent 的 `invoke` 调用，断言收到的 config 携带该 signal（对应 US4 acceptance #3）
