@@ -6,10 +6,12 @@
  * FR-011), never fires per move, and NEVER touches the desktop (FR-010).
  *
  * - **Input**: `plannerMessages` history + a fresh review request built from
- *   the ephemeral buffer's `gameState` (the terminal board, D6 step 6); its
- *   system context = [复盘指令] + [当前策略, 初始 `""`] (FR-014 — the strategy
- *   is read fresh each entry and injected as a fixed-id `SystemMessage`, then
- *   filtered out of the channel write-back: strategy stays in StrategyStore).
+ *   the ephemeral buffer's `gameLog` (the full move sequence of the current
+ *   game — Issue 2, `specs/036-team-mode-bugfix/contracts/
+ *   team-graph-fix-contract.md` §2.2); its system context = [复盘指令] +
+ *   [当前策略, 初始 `""`] (FR-014 — the strategy is read fresh each entry and
+ *   injected as a fixed-id `SystemMessage`, then filtered out of the channel
+ *   write-back: strategy stays in StrategyStore).
  * - **Tools**: ONLY `update_strategy` (FR-012, no read tools).
  * - **Retry/degrade**: `update_strategy` retries live INSIDE this node (D6 /
  *   需求方 #6): tool-call failures surface to the model within the agent
@@ -29,7 +31,7 @@
 import { createAgent } from "langchain";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
-import type { GameState } from "@dominion/game-saolei-board";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { renderBoardText } from "@dominion/game-saolei-board";
 import { warn } from "@dominion/common-js-logs";
 
@@ -37,7 +39,6 @@ import type { ChatModel } from "../model-provider";
 import type { StrategyStore } from "../strategy-store";
 import type { TeamStateValue } from "./state";
 import type { EphemeralGameBuffer } from "./team-sink";
-import { peekGameState } from "./team-sink";
 import { buildUpdateStrategyTool } from "./update-strategy";
 import type { CreateAgentFn } from "./player";
 
@@ -102,39 +103,55 @@ function buildStrategyMessage(strategy: string): BaseMessage {
 }
 
 /**
- * Build the review request from the ephemeral buffer's `gameState` (the
- * terminal board — D6 step 6). The board is rendered to text via
- * `renderBoardText` so the model receives the same compact board the saolei
- * tools produce (no image, no tool-result parsing).
+ * Build the review request from the ephemeral buffer's `gameLog` — the full
+ * move sequence of the current game (Issue 2: the planner sees every step's
+ * tool, coordinates and post-step board, not just the terminal snapshot —
+ * `specs/036-team-mode-bugfix/contracts/team-graph-fix-contract.md` §2.2,
+ * `specs/036-team-mode-bugfix/data-model.md` §2). Each entry's board is
+ * rendered via `renderBoardText` so the model receives the same compact board
+ * the saolei tools produce (no image, no tool-result parsing).
  */
-function buildReviewInput(gameState: GameState | null): BaseMessage {
-	if (!gameState) {
-		return new HumanMessage(
-			"请复盘本局游戏（无可用终局棋盘 — 可能未识别到状态）。",
-		);
+function buildReviewInput(buffer: EphemeralGameBuffer): BaseMessage {
+	const log = buffer.gameLog;
+	if (log.length === 0) {
+		return new HumanMessage("请复盘本局游戏（无可用游戏记录）。");
 	}
-	return new HumanMessage(
-		`本局已结束，以下是终局棋盘，请复盘并判断是否需要更新策略：\n${renderBoardText(gameState)}`,
+	const lines: string[] = ["本局游戏过程："];
+	for (let i = 0; i < log.length; i += 1) {
+		const entry = log[i];
+		const coord = entry.x != null ? `(${entry.x}, ${entry.y})` : "";
+		lines.push(`${i + 1}. ${entry.tool}${coord} → ${entry.status}`);
+		lines.push(renderBoardText(entry.state));
+		lines.push("");
+	}
+	lines.push(
+		"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
 	);
+	return new HumanMessage(lines.join("\n"));
 }
 
 /**
  * Run a stateless `createAgent` invoke with a bounded retry (D6 — retry
  * lives inside the planner node; the graph scheduler never re-routes the
  * planner). Re-throws when all attempts fail so the node can degrade.
+ * The outer graph's `config` (recursionLimit / signal) is forwarded to the
+ * agent invoke (Issue 4 — `specs/036-team-mode-bugfix/contracts/
+ * team-graph-fix-contract.md` §3.2).
  */
 async function invokeWithRetry(
 	agent: {
-		invoke(input: {
-			messages: BaseMessage[];
-		}): Promise<{ messages: BaseMessage[] }>;
+		invoke(
+			input: { messages: BaseMessage[] },
+			config?: RunnableConfig,
+		): Promise<{ messages: BaseMessage[] }>;
 	},
 	input: BaseMessage[],
+	config?: RunnableConfig,
 ): Promise<{ messages: BaseMessage[] }> {
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= MAX_PLANNER_ATTEMPTS; attempt += 1) {
 		try {
-			return (await agent.invoke({ messages: input })) as {
+			return (await agent.invoke({ messages: input }, config)) as {
 				messages: BaseMessage[];
 			};
 		} catch (err) {
@@ -156,12 +173,16 @@ async function invokeWithRetry(
  * (tools = `update_strategy` only), then unconditionally clears
  * `gameEnded` (D6 step 6).
  *
- * @returns An async node `(state) => Partial<TeamStateValue>` suitable for
- *   `StateGraph.addNode("planner", ...)`.
+ * @returns An async node `(state, config?) => Partial<TeamStateValue>`
+ *   suitable for `StateGraph.addNode("planner", ...)` (Issue 4 — the node
+ *   accepts and forwards the outer graph's config, FR-013).
  */
 export function createPlannerNode(
 	deps: PlannerNodeDeps,
-): (state: TeamStateValue) => Promise<Partial<TeamStateValue>> {
+): (
+	state: TeamStateValue,
+	config?: RunnableConfig,
+) => Promise<Partial<TeamStateValue>> {
 	const { strategyStore, buffer, sessionId } = deps;
 	const createAgentFn = deps.createAgentFn ?? createAgent;
 
@@ -177,11 +198,14 @@ export function createPlannerNode(
 		systemPrompt,
 	});
 
-	return async (state: TeamStateValue): Promise<Partial<TeamStateValue>> => {
+	return async (
+		state: TeamStateValue,
+		config?: RunnableConfig,
+	): Promise<Partial<TeamStateValue>> => {
 		// FR-014: current strategy (initial "") as system context, fresh read.
 		const strategy = await strategyStore.get(sessionId);
-		// D6 step 6: review input = the ephemeral buffer's gameState.
-		const reviewInput = buildReviewInput(peekGameState(buffer));
+		// Issue 2: review input = the ephemeral buffer's full gameLog.
+		const reviewInput = buildReviewInput(buffer);
 		const input: BaseMessage[] = [
 			buildStrategyMessage(strategy),
 			...state.plannerMessages,
@@ -190,7 +214,7 @@ export function createPlannerNode(
 
 		let result: { messages: BaseMessage[] };
 		try {
-			result = await invokeWithRetry(plannerAgent, input);
+			result = await invokeWithRetry(plannerAgent, input, config);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			warn("planner failed after retries; degrading", { error: message });

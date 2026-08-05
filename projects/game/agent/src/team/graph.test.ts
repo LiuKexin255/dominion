@@ -19,7 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
 import { fakeModel } from "@langchain/core/testing";
-import { tool } from "langchain";
+import { createAgent, tool } from "langchain";
 import { z } from "zod";
 import type { GameState } from "@dominion/game-saolei-board";
 
@@ -31,7 +31,7 @@ import {
 	type EphemeralGameBuffer,
 } from "./team-sink";
 import { buildTeamGraph, SAOLEI_TEAM_AGENTS } from "./graph";
-import { DEFAULT_PLAYER_BASE } from "./player";
+import { createPlayerNode, DEFAULT_PLAYER_BASE } from "./player";
 import type { CreateAgentFn } from "./player";
 import { DEFAULT_PLANNER_BASE } from "./planner";
 import type { TeamStateValue } from "./state";
@@ -67,10 +67,10 @@ function buildGameEndingPlayerTool(buffer: EphemeralGameBuffer) {
 /** The player's fake model for a "play one game then idle" flow. */
 function playOneGamePlayerModel() {
 	// call 1: make a move (fires the fake tool → sink.onGameEnd("won"));
-	// call 2: stop (game over); call 3: the planner→player return — idle.
+	// call 2: the planner→player return — idle. No "stop" call: the
+	// gameEndGuard middleware stops the loop right after the game end.
 	return fakeModel()
 		.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
-		.respond(new AIMessage("game won, stopping"))
 		.respond(new AIMessage("idle, no new game"));
 }
 
@@ -148,8 +148,10 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 
 		// planner→player edge: the player ran AGAIN after the planner
 		// (idle — no new game ⇒ gameEnded stays null ⇒ END). The player
-		// model was called 3 times: move / stop / idle.
-		expect(playerModel.calls).toHaveLength(3);
+		// model was called 2 times: move / idle — the gameEndGuard
+		// middleware stops the loop right after the game end, so the
+		// pre-fix "stop" call no longer happens.
+		expect(playerModel.calls).toHaveLength(2);
 		expect(result.playerMessages.length).toBeGreaterThan(0);
 
 		// The strategy message never entered the channel (D4 — strategy not
@@ -199,11 +201,11 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 		// Player's channel holds the player's conversation only.
 		const playerTexts = snapshot.values.playerMessages.map(contentType);
 		expect(playerTexts.some((t) => t.includes("开始游戏"))).toBe(true);
-		expect(playerTexts.some((t) => t.includes("本局已结束"))).toBe(false);
+		expect(playerTexts.some((t) => t.includes("本局游戏过程"))).toBe(false);
 
 		// Planner's channel holds the review conversation only.
 		const plannerTexts = snapshot.values.plannerMessages.map(contentType);
-		expect(plannerTexts.some((t) => t.includes("本局已结束"))).toBe(true);
+		expect(plannerTexts.some((t) => t.includes("本局游戏过程"))).toBe(true);
 		expect(plannerTexts.some((t) => t.includes("开始游戏"))).toBe(false);
 	});
 
@@ -249,9 +251,11 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 			(m) => m._getType() === "system" && contentType(m).includes("corner-first"),
 		);
 		expect(strategyMsg).toBeDefined();
-		// The review input (gameState) is present as the planner's prompt.
+		// The review input (full gameLog rendering) is present as the
+		// planner's prompt (Issue 2 — `specs/036-team-mode-bugfix/
+		// contracts/team-graph-fix-contract.md` §2.2).
 		expect(
-			firstCall.some((m) => contentType(m).includes("本局已结束")),
+			firstCall.some((m) => contentType(m).includes("本局游戏过程")),
 		).toBe(true);
 	});
 
@@ -273,13 +277,462 @@ describe("team graph — game-end flow (player → planner → player)", () => {
 	});
 });
 
-describe("team graph — multi-game loop (FR-009)", () => {
-	it("plays two games in one turn: planner fires once per game end and the strategy accumulates", async () => {
+describe("team graph — Issue 1 (036): game-end loop stop & resilient post-process", () => {
+	it("routes player→planner on a LOST game end and stops the loop (Issue 1)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		const losingMoveTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				// D6 step 2: structured signal via the sink, no text parsing.
+				await sink.onGameEnd(makeState(), "lost");
+				return `moved to (${x},${y}); game lost`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that loses the game.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
 		const playerModel = fakeModel()
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
-			.respond(new AIMessage("game 1 won"))
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [losingMoveTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-lost" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The planner RAN (game ended ⇒ routed exactly once): its channel
+		// carries the review request and the strategy was written (FR-013).
+		expect(result.plannerMessages.length).toBeGreaterThan(0);
+		expect(await store.get("graph-test")).toBe("safer-play");
+		// The planner cleared gameEnded (D6 step 6) — final value null.
+		expect(result.gameEnded).toBeNull();
+		// The gameEndGuard middleware stopped the loop right after the game
+		// end: the game-end turn used exactly ONE model call (move) — the
+		// pre-fix "stop"/restart call no longer happens; the planner→player
+		// return adds the final idle call.
+		expect(playerModel.calls).toHaveLength(2);
+	});
+
+	it("stops the player loop before the model's restart attempt when the game ends (US1 acceptance #4)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		const moveExecutor = vi.fn(async ({ x, y }: { x: number; y: number }) => {
+			await sink.onGameEnd(makeState(), "lost");
+			return `moved to (${x},${y}); game lost`;
+		});
+		const losingMoveTool = tool(moveExecutor, {
+			name: "fake_saolei_move",
+			description: "Fake saolei move that loses the game.",
+			schema: z.object({ x: z.number(), y: z.number() }),
+		});
+		const restartExecutor = vi.fn(async () => "new game started");
+		const restartTool = tool(restartExecutor, {
+			name: "saolei_init",
+			description: "Restart a new saolei game.",
+			schema: z.object({}),
+		});
+		// The model first makes the losing move, then ATTEMPTS to restart a
+		// new game (saolei_init). With the game-end event still unconsumed,
+		// the gameEndGuard middleware stops the loop before the attempt.
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
+			.respondWithTools([{ name: "saolei_init", args: {} }])
+			.respond(new AIMessage("idle, no new game"));
+		const store = new FakeStrategyStore();
+		const node = createPlayerNode({
+			model: playerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			tools: [losingMoveTool, restartTool],
+			playerBasePrompt: "",
+		});
+
+		const result = await node({
+			playerMessages: [new HumanMessage("开始游戏")],
+		} as TeamStateValue);
+
+		// The post-process consumed the event and set gameEnded.
+		expect(result.gameEnded).toBe("lost");
+		expect(buffer.gameEvent?.consumed).toBe(true);
+		// The loop stopped after the move: the model was called exactly once,
+		// so the saolei_init response was never consumed (tool call count =
+		// 0 — the middleware stopped the loop).
+		expect(playerModel.calls).toHaveLength(1);
+		expect(restartExecutor).not.toHaveBeenCalled();
+		// The tool seam was actually exercised (style/javascript.md — verify
+		// the fake tool path works).
+		expect(moveExecutor).toHaveBeenCalledTimes(1);
+	});
+
+	it("consumes the game-end event and routes to the planner even when the player invoke throws (try/finally, Issue 1)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		// Pre-write an unconsumed game-end event (e.g. the agent loop crashed
+		// right after the game ended, before the node's post-process ran).
+		await sink.onGameEnd(makeState(), "lost");
+
+		// DI spy (style/javascript.md §测试): the PLAYER agent's invoke throws
+		// (e.g. GraphRecursionError / model / tool error); the planner agent
+		// is the real one, so the routed-to planner completes normally. The
+		// player prompt always carries the appended saolei skill body
+		// (FR-034), the planner's never does — same dispatch heuristic as
+		// captureSystemPrompts.
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+				return {
+					invoke: async () => {
+						throw new Error("player agent loop crashed");
+					},
+				};
+			}
+			return createAgent(config as Parameters<typeof createAgent>[0]);
+		});
+		const plannerModel = updateStrategyPlannerModel("post-crash-strategy");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel: fakeModel().respond(new AIMessage("unused")),
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+			createAgentFn,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-invoke-crash" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The spy was actually exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// try/finally: the pre-written event was consumed despite the throw.
+		expect(buffer.gameEvent?.consumed).toBe(true);
+		// gameEnded WAS set ("lost") ⇒ the conditional edge routed to the
+		// planner, which ran and cleared it (D6 step 6).
+		expect(result.plannerMessages.length).toBeGreaterThan(0);
+		expect(await store.get("graph-test")).toBe("post-crash-strategy");
+		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — Issue 2 (036): planner review input renders the full gameLog", () => {
+	it("renders every gameLog entry — tool, coordinates, status and board — in the review input (US2 acceptance #1-4)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		const sink = createTeamSink(buffer);
+		// Two moves (still playing), then a losing game end — the sink
+		// accumulates one gameLog entry per step (Phase 2, T002-T004).
+		const moveTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				if (x === 3 && y === 4) {
+					sink.onMove("saolei_click", 3, 4, makeState());
+				} else {
+					sink.onMove("saolei_click", 5, 2, makeState());
+					sink.onGameEnd(makeState(), "lost");
+				}
+				return `moved to (${x},${y})`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that accumulates a gameLog.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 3, y: 4 } }])
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 5, y: 2 } }])
+			.respond(new AIMessage("idle, no new game"));
+		const plannerModel = updateStrategyPlannerModel("safer-play");
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [moveTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-gamelog" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		// The review request (human message) renders every gameLog entry in
+		// order — tool + coordinates + status + text board.
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("本局游戏过程"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		const text = contentType(reviewRequests[0] as BaseMessage);
+		expect(text).toContain("1. saolei_click(3, 4) → playing");
+		expect(text).toContain("2. saolei_click(5, 2) → playing");
+		expect(text).toContain("3. (game-end) → lost");
+		// Each step's board is text-rendered into the review input.
+		expect(text).toContain("board size 3*3");
+		// The review request ends with the update_strategy instruction.
+		expect(text).toContain(
+			"请复盘本局游戏表现，判断策略是否有效，若需要更新则调用 update_strategy。",
+		);
+		// The game really ended (lost) ⇒ the planner ran and wrote strategy.
+		expect(await store.get("graph-test")).toBe("safer-play");
+	});
+
+	it("sends a notice review request when the gameLog is empty (US2 acceptance #6 / FR-009)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// An unconsumed game-end event WITHOUT any gameLog entry (an abnormal
+		// session where no sink callback ever wrote a log): the planner still
+		// runs, but its review input is the no-record notice — no empty
+		// content, no crash.
+		buffer.gameEvent = {
+			state: makeState(),
+			status: "lost",
+			endedAt: Date.now(),
+			consumed: false,
+		};
+		const playerModel = fakeModel().respond(new AIMessage("idle"));
+		const plannerModel = fakeModel().respond(new AIMessage("no update"));
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel,
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{ configurable: { thread_id: "t-empty-log" }, recursionLimit: 50 },
+		)) as TeamStateValue;
+
+		const reviewRequests = result.plannerMessages.filter(
+			(m) =>
+				m._getType() === "human" &&
+				contentType(m).includes("请复盘本局游戏（无可用游戏记录）。"),
+		);
+		expect(reviewRequests).toHaveLength(1);
+		expect(result.gameEnded).toBeNull();
+	});
+});
+
+describe("team graph — Issue 4 (036): inner createAgents inherit the outer graph config", () => {
+	it("player's createAgent loop runs >25 model calls without GraphRecursionError (US4 acceptance #1 / SC-006)", async () => {
+		const buffer = createEphemeralGameBuffer();
+		// A move tool that NEVER ends the game (no sink calls): the player's
+		// createAgent loop keeps iterating — the gameEndGuard middleware has
+		// no end event to stop on.
+		const moveTool = tool(
+			async ({ x, y }: { x: number; y: number }) => {
+				return `moved to (${x},${y}); still playing`;
+			},
+			{
+				name: "fake_saolei_move",
+				description: "Fake saolei move that never ends the game.",
+				schema: z.object({ x: z.number(), y: z.number() }),
+			},
+		);
+		// 26 tool-call responses + 1 idle = 27 model calls — the loop needs
+		// ~53 inner super-steps, far beyond the createAgent default
+		// recursionLimit of 25 (research.md D2). With the outer graph's
+		// recursionLimit (1000) inherited via config (FR-013), the loop
+		// completes; without it, the inner graph throws GraphRecursionError.
+		// NOTE: plain `respond(AIMessage)` (fixed content) is used instead of
+		// `respondWithTools` — the latter derives each AI message's content
+		// from ALL prior messages (fakeModel `deriveContent`), which grows
+		// exponentially across 27 calls (content doubles each step) and
+		// exhausts the heap; real LLMs do not echo history into every
+		// response, so a fixed-content tool-call response is the faithful
+		// test double here.
+		const playerModel = fakeModel();
+		for (let i = 0; i < 26; i += 1) {
+			playerModel.respond(
+				new AIMessage({
+					content: "move",
+					tool_calls: [
+						{ name: "fake_saolei_move", args: { x: i, y: i } },
+					],
+				}),
+			);
+		}
+		playerModel.respond(new AIMessage("idle, stopping"));
+		const store = new FakeStrategyStore();
+		const { graph } = buildTeamGraph({
+			playerModel,
+			plannerModel: updateStrategyPlannerModel("never"),
+			strategyStore: store,
+			buffer,
+			sessionId: "graph-test",
+			playerTools: [moveTool],
+			playerBasePrompt: "",
+			plannerBasePrompt: "",
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-recursion-player" },
+				recursionLimit: 1000,
+			},
+		)) as TeamStateValue;
+
+		// The inner loop inherited the outer recursionLimit: >25 model calls
+		// completed (no GraphRecursionError from the inner createAgent).
+		expect(playerModel.calls.length).toBeGreaterThan(25);
+		// No game ended (the tool never fired the sink): no planner, END.
+		expect(result.gameEnded).toBeNull();
+		expect(result.plannerMessages).toEqual([]);
+	});
+
+	it("planner's createAgent loop runs >25 model calls in a single invoke, no retry (US4 acceptance #2)", async () => {
+		// Wrap the real createAgent and count the PLANNER's invokes: with the
+		// recursionLimit inherited, the >25-step loop completes on the FIRST
+		// invoke; without it, the first invoke throws GraphRecursionError and
+		// invokeWithRetry (planner.ts) retries — the count exposes the fix.
+		let plannerInvokeCount = 0;
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			const agent = createAgent(config as Parameters<typeof createAgent>[0]);
+			if (config.systemPrompt?.includes(SKILL_PROMPT_SEPARATOR)) {
+				return agent;
+			}
+			return {
+				invoke: async (input: unknown, cfg?: unknown) => {
+					plannerInvokeCount += 1;
+					return agent.invoke(input, cfg);
+				},
+			};
+		});
+		// The player plays one game (move → won) so the conditional edge
+		// routes to the planner; the planner then runs its own long loop.
+		const playerModel = playOneGamePlayerModel();
+		const plannerModel = fakeModel();
+		// Same fixed-content tool-call responses as the player test above:
+		// `respondWithTools` would grow each AI message's content
+		// exponentially (fakeModel `deriveContent` echoes ALL prior messages
+		// into every response) and blow the heap across 27 calls.
+		for (let i = 0; i < 26; i += 1) {
+			plannerModel.respond(
+				new AIMessage({
+					content: "review",
+					tool_calls: [
+						{
+							name: "update_strategy",
+							args: { content: `v${i + 1}` },
+						},
+					],
+				}),
+			);
+		}
+		plannerModel.respond(new AIMessage("review done"));
+		const { graph, store } = buildTestGraph({
+			playerModel,
+			plannerModel,
+			createAgentFn,
+		});
+
+		const result = (await graph.invoke(
+			{ playerMessages: [new HumanMessage("开始游戏")] },
+			{
+				configurable: { thread_id: "t-recursion-planner" },
+				recursionLimit: 1000,
+			},
+		)) as TeamStateValue;
+
+		// The DI seam was exercised (style/javascript.md §测试).
+		expect(createAgentFn).toHaveBeenCalled();
+		// One single successful invoke — no GraphRecursionError, no retry.
+		expect(plannerInvokeCount).toBe(1);
+		expect(plannerModel.calls.length).toBeGreaterThan(25);
+		expect(await store.get("graph-test")).toBe("v26");
+		expect(result.gameEnded).toBeNull();
+	});
+
+	it("propagates the outer graph's abort signal into the inner createAgent invokes (US4 acceptance #3)", async () => {
+		const controller = new AbortController();
+		let invokesSeen = 0;
+		const createAgentFn = vi.fn((config: { systemPrompt?: string }) => {
+			return {
+				invoke: async (
+					_input: unknown,
+					cfg?: { signal?: AbortSignal },
+				) => {
+					invokesSeen += 1;
+					// FR-013: the config the node forwards to the inner
+					// createAgent invoke MUST carry an abort signal derived
+					// from the outer graph's — aborting the outer controller
+					// aborts the signal the inner agent received. The abort
+					// happens DURING the invoke: LangGraph disposes the
+					// composed-signal listeners once a graph run finishes
+					// (pregel runner `disposeCombinedSignal`), so propagation
+					// is only observable while the node runs.
+					expect(cfg?.signal).toBeDefined();
+					if (cfg?.signal) {
+						controller.abort();
+						expect(cfg.signal.aborted).toBe(true);
+					}
+					return { messages: [] as BaseMessage[] };
+				},
+			};
+		});
+		const { graph, buffer } = buildTestGraph({ createAgentFn });
+		// Pre-write an unconsumed game-end event so the turn also routes
+		// through the planner node — both nodes' config forwarding (FR-013)
+		// is exercised.
+		const sink = createTeamSink(buffer);
+		await sink.onGameEnd(makeState(), "lost");
+
+		// Aborting mid-invoke interrupts the node execution (LangGraph races
+		// node calls against the composed signal), which is exactly the
+		// propagation the fix must deliver — without config forwarding the
+		// graph run would complete normally instead.
+		await expect(
+			graph.invoke(
+				{ playerMessages: [new HumanMessage("开始游戏")] },
+				{
+					configurable: { thread_id: "t-abort" },
+					recursionLimit: 50,
+					signal: controller.signal,
+				},
+			),
+		).rejects.toThrow();
+		expect(invokesSeen).toBeGreaterThan(0);
+		expect(createAgentFn).toHaveBeenCalled();
+		expect(controller.signal.aborted).toBe(true);
+	});
+});
+
+describe("team graph — multi-game loop (FR-009)", () => {
+	it("plays two games in one turn: planner fires once per game end and the strategy accumulates", async () => {
+		// One move per game end (the gameEndGuard middleware stops the loop
+		// right after each game end — the pre-fix "game N won" stop calls are
+		// gone); the planner runs between games; the final idle ends the turn.
+		const playerModel = fakeModel()
+			.respondWithTools([{ name: "fake_saolei_move", args: { x: 1, y: 1 } }])
 			.respondWithTools([{ name: "fake_saolei_move", args: { x: 2, y: 2 } }])
-			.respond(new AIMessage("game 2 won"))
 			.respond(new AIMessage("idle, stopping"));
 		const plannerModel = fakeModel()
 			.respondWithTools([
@@ -307,11 +760,13 @@ describe("team graph — multi-game loop (FR-009)", () => {
 		const reviewRequests = result.plannerMessages.filter(
 			(m) =>
 				m._getType() === "human" &&
-				contentType(m).includes("本局已结束"),
+				contentType(m).includes("本局游戏过程"),
 		);
 		expect(reviewRequests).toHaveLength(2);
-		// Player: 5 model calls (move/stop ×2 + idle).
-		expect(playerModel.calls).toHaveLength(5);
+		// Player: 3 model calls — one move per game end (the gameEndGuard
+		// middleware stops the loop right after each game end) + a final
+		// idle. The pre-fix "game N won" stop calls no longer happen.
+		expect(playerModel.calls).toHaveLength(3);
 	});
 });
 
